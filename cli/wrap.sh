@@ -21,25 +21,9 @@ source "$API_HELPER"
 APP=""
 SESSION_ID=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --app)
-      APP="$2"
-      shift 2
-      ;;
-    --id)
-      SESSION_ID="$2"
-      shift 2
-      ;;
-    --)
-      shift
-      break
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "wrap" '{"APP":{"option":"app"},"SESSION_ID":{"option":"id"},"wrapped_command":{"rest":0}}' "$@") || exit $?
+eval "$binding"
+set -- "${wrapped_command[@]}"
 
 if [ $# -eq 0 ]; then
   echo "Usage: mandible wrap [--app NAME] [--id ID] -- command [args...]" >&2

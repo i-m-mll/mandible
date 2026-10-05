@@ -56,66 +56,11 @@ export MANDIBLE_PORT="${MANDIBLE_PORT:-$MANDIBLE_DEFAULT_BACKEND_PORT}"
 # api.sh selects the private socket when no transport was explicitly chosen.
 
 usage() {
-  cat <<'EOF'
-Usage: mandible <command> [args...]
-
-Commands:
-  wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
-  task <description>               Set session task status
-  reminder create|show|list|cancel Durable one-shot reminders
-  inbox [check|ack|watch|add]      Manage session inbox
-  issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
-  changes --project <ref>          Read the bounded ledger change feed
-  umbrella status <id>             Print coordinator fact packet
-  description <subcommand>         Alias for issue description operations
-  auth list [opts]                 List active auth requests
-  auth action <subcommand>         Manage staged auth request actions
-  auth check [opts]                Check queued merge independence
-  auth clearance <subcommand>      Manage scoped protected-merge clearances
-  auth request [branch] [opts]     Submit an approval request
-  auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
-  auth replay-archives <id>        Replay Codex archive attempts
-  auth merge <branch> [opts]       Execute authenticated merge
-  logs <subcommand>                Inspect source logs and retained daemon telemetry
-  conversations <subcommand>       Inspect DB-backed conversations
-  conversation-cutover <command>   Build and audit source-backed cutover proof
-  db <subcommand>                  Read-only SQL over the live ledger database
-  artifact <subcommand>            Register, resolve, link, and check artifacts
-  briefing create <version-ref>    Create a Briefing from one exact artifact version
-  briefing rename <briefing-ref>   Rename an existing Briefing in place
-  briefing describe <briefing-ref> Set or clear a Briefing description
-  briefing archive|restore <ref>   Hide or restore a Briefing organizationally
-  briefing bundle <subcommand>     Create, add to, replace, rename, and show review bundles
-  space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
-  project <subcommand>             Canonical project registry (list, show, add, audit, repair)
-  user <subcommand>                User registry (setup, list, show, credential, token, binding)
-  credential redact <id>           Mask a leaked credential in stored transcripts
-  claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
-  instructions <subcommand>        Install or diff the Mandible instruction fragment
-  work-unit <subcommand>           Policy-free work-unit lifecycle client
-  trash <subcommand>               Reversible branch/worktree trash custody
-  issue-file <subcommand>          Read/write the .issue helper file
-  session link-issue <id> ...      Link sessions to issues
-  search "<query>" [opts]          Search chat history across providers
-  help                             Show this help
-EOF
+  "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help
 }
 
 auth_usage() {
-  cat <<'EOF'
-Usage: mandible auth <subcommand> [args...]
-
-Subcommands:
-  list [opts]                 List active auth requests
-  action <subcommand>         Manage staged auth request actions
-  check [opts]                Check queued merge independence
-  clearance <subcommand>      Manage scoped protected-merge clearances
-  request [branch] [opts]     Submit an approval request
-  withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
-  candidate-repair inspect|apply <id> [opts]  Inspect or repair candidate-only snapshot drift
-  replay-archives <id>        Replay Codex archive attempts
-  merge <branch> [opts]       Execute authenticated merge
-EOF
+  "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help auth
 }
 
 case "${1:-}" in

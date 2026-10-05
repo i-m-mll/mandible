@@ -21,49 +21,7 @@ err() { printf "%b\n" "$*" >&2; }
 die() { err "$1"; exit "${2:-1}"; }
 
 usage() {
-  cat <<'EOF'
-Usage:
-  mandible credential redact <credential-id> [--patch-sources] [--json]
-
-redact rescans every stored conversation block — its text and its tool
-metadata, plus the conversation titles and summaries derived from them — for
-the given credential's plaintext, verifying each `mandible_pat_...` candidate
-against that credential's stored fingerprint, and replaces every confirmed
-occurrence with `[mandible-credential:<id-prefix>]`. Only counts are reported;
-the matched secret is never printed or logged.
-
-A redacted block's id is recomputed to the value the next ingest of the
-redacted text derives, so links captured after the redaction keep working
-across re-ingest. When two blocks of one conversation derive the same id, the
-whole conversation's ids are re-derived in the order a fresh ingest assigns
-them, so the round trip stays stable; anything that could not be settled that
-way is reported rather than left silently unreproducible.
-
-Revoked credentials are accepted deliberately — the recommended order is to
-rotate first (`mandible user token mint <ref> --store`, then
-`mandible user token revoke <credential-id>`) and redact afterwards.
-
---patch-sources additionally rewrites the same verified spans in the local
-source transcripts the affected conversations came from, so a later full
-re-ingest cannot resurrect the plaintext. Every other byte of those files is
-preserved; each file is replaced atomically, and a file that changed while its
-replacement was being prepared is re-read rather than overwritten from the
-stale snapshot. Bytes a live agent appends during the swap itself are read back
-off the replaced file and carried onto the patched one, masked, and counted as
-recovered; if a writer appends faster than that drains, the remainder is
-reported so the redaction can be re-run once the agent exits, and a remainder
-that could not even be measured is reported as unknown rather than as zero.
-Files that are no longer on disk are reported as missing, and files that kept
-changing (or whose scan could not check every candidate) are reported as
-refused — never partially rewritten. A file whose write failed in a way that
-could not be rolled back is reported as indeterminate and needs manual
-inspection: it is never counted as patched. A patched file whose original
-permissions could not be put back is reported too, rather than left quietly
-readable by more accounts than before.
-
-An unmarked local operator shell uses the registered local service. Managed
-agent shells require their own explicit credential.
-EOF
+  mandible_command_help credential
 }
 
 require_tools() {
@@ -73,15 +31,9 @@ require_tools() {
 
 cmd_redact() {
   local id="" patch_sources=0 json=0 payload response
-  while (( $# > 0 )); do
-    case "$1" in
-      --patch-sources) patch_sources=1; shift ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "credential.redact" '{"patch_sources":{"option":"patch-sources","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || die "Usage: mandible credential redact <credential-id> [--patch-sources] [--json]" 2
   require_tools
 
@@ -161,7 +113,7 @@ cmd_redact() {
             else "" end)
          + (if (.sources.mode_restore_failed_files // 0) > 0 then
               "\n  WARNING:           \(.sources.mode_restore_failed_files) patched file(s) kept"
-              + "\n                     the replacement's permissions; the original mode could"
+              + "\n                     the replacement\u0027s permissions; the original mode could"
               + "\n                     not be restored, so check and set it yourself"
             else "" end)
        end)'

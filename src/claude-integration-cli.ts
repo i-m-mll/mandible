@@ -4,39 +4,11 @@ import {
   uninstallUserClaudeIntegration,
 } from "./claude-hook-settings.js";
 
-function usage(): never {
-  console.error("Usage: mandible claude-integration <install|uninstall|status> [--settings <path>] [--json]");
-  process.exit(2);
-}
-
-const args = process.argv.slice(2);
-const action = args.shift();
-let settingsPath: string | undefined;
-let json = false;
-
-while (args.length > 0) {
-  const arg = args.shift();
-  switch (arg) {
-    case "--settings":
-      settingsPath = args.shift();
-      if (!settingsPath) usage();
-      break;
-    case "--json":
-      json = true;
-      break;
-    case "-h":
-    case "--help":
-    case "help":
-      usage();
-      break;
-    default:
-      usage();
-  }
-}
-
-if (!action) {
-  usage();
-}
+import { parseCommand, stringOption, flagOption } from "./cli/grammar.js";
+const parsed = parseCommand(["claude-integration"], process.argv.slice(2));
+const action = parsed.command.split(".").at(-1);
+const settingsPath = stringOption(parsed, "settings");
+const json = flagOption(parsed, "json");
 
 switch (action) {
   case "install": {
@@ -56,7 +28,7 @@ switch (action) {
     break;
   }
   default:
-    usage();
+    throw new Error("Unknown integration action");
 }
 
 function print(result: object): void {

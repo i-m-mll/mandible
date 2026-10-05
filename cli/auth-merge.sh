@@ -40,21 +40,7 @@ die() {
 }
 
 usage() {
-  cat <<'USAGE'
-Usage:
-  mandible auth merge <source-branch>
-  mandible auth merge <source-branch> --into <target>
-  mandible auth merge <source-branch> --preserve-head-branch
-
-Options:
-  --into <target>          Target/base branch (default: protected branch)
-  --preserve-head-branch   Do not tear down the merged source branch/worktree
-                           after a successful merge. Used when the source is a
-                           long-lived branch (e.g. the Spaces docs branch) that
-                           must survive promotion. Promotion normally cuts a
-                           throwaway promote/docs/<ts> proxy branch instead, so
-                           this flag is a defensive belt-and-suspenders guard.
-USAGE
+  mandible_command_help auth merge
 }
 
 # Promotion proxy branches (promote/docs/<ts>) are deliberately disposable: a
@@ -1208,40 +1194,9 @@ main() {
   local preserve_head=0
   local -a sources=()
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --help|-h)
-        usage
-        exit 0
-        ;;
-      --preserve-head-branch)
-        preserve_head=1
-        shift
-        ;;
-      --into)
-        if (( $# < 2 )); then
-          die "Missing value for --into." 2
-        fi
-        target=$2
-        shift 2
-        ;;
-      --)
-        shift
-        break
-        ;;
-      -* )
-        die "Unknown option: $1" 2
-        ;;
-      * )
-        sources+=("$1")
-        shift
-        ;;
-    esac
-  done
-
-  if (( $# > 0 )); then
-    sources+=("$@")
-  fi
+  local binding
+  binding=$(mandible_bind_arguments "auth.merge" '{"preserve_head":{"option":"preserve-head-branch","constant":"1"},"target":{"option":"into"},"sources":{"rest":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$target" ]]; then
     target=$(protected_branch)

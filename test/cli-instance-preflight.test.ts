@@ -5,12 +5,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  operationalMutationCategoryForPath,
-  OPERATIONAL_MUTATION_EXEMPT_ROUTES,
-  OPERATIONAL_ROUTE_CATEGORIES,
-  UNSAFE_MUTATION_METHODS,
-} from "../src/instance-policy.js";
+import { registeredOperationRouter } from "./helpers/registered-operation-router.js";
+const operations = registeredOperationRouter().operationCatalog("test-candidate");
+function withCatalog(instance: Record<string, unknown>) {
+  const bound = { instance_id: operations.runtime.instance_id, backend_generation: operations.runtime.backend_generation, ...instance };
+  return { instance: bound, operations };
+}
 
 type RecordedRequest = {
   method: string;
@@ -105,7 +105,8 @@ function listenForInstancePreflight(options: {
   const sendResponse = (res: http.ServerResponse, response: StubResponse) => {
     res.writeHead(response.status, { "Content-Type": "application/json" });
     if (Object.hasOwn(response, "body")) {
-      res.end(JSON.stringify(response.body));
+      const body = response.body as { instance?: Record<string, unknown> };
+      res.end(JSON.stringify(body?.instance ? { ...body, ...withCatalog(body.instance) } : body));
     } else {
       res.end();
     }
@@ -136,7 +137,7 @@ function listenForInstancePreflight(options: {
           return;
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ instance }));
+        res.end(JSON.stringify(withCatalog(instance)));
         return;
       }
       if (req.method === "GET" && req.url === "/api/health") {
@@ -146,7 +147,7 @@ function listenForInstancePreflight(options: {
           return;
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(healthInstance ? { ready: true, instance: healthInstance } : { ready: true }));
+        res.end(JSON.stringify(healthInstance ? { ready: true, ...withCatalog(healthInstance) } : { ready: true }));
         return;
       }
       if (req.method === "POST" && req.url === "/api/auth/check") {
@@ -253,67 +254,6 @@ function writeRouteMutationCategories(payload: unknown): string {
   return file;
 }
 
-// --- Route mutation-category drift check (issue c81e101) ---
-
-// Any instance that refuses operational mutations makes evaluateInstanceMutation
-// report the category it derived, which is the authoritative answer cli/api.sh
-// has to reproduce. It keeps the private categorizer private.
-function authoritativeCategory(method: string, pathname: string): string | null {
-  const key = `${method.toUpperCase()} ${pathname}`;
-  if (!UNSAFE_MUTATION_METHODS.has(method.toUpperCase())
-      || OPERATIONAL_MUTATION_EXEMPT_ROUTES.has(key)) return null;
-  return operationalMutationCategoryForPath(method, pathname);
-}
-
-// Issue 97cf613 exported these tables so both TypeScript gates share one copy;
-// the probe set reads them directly instead of scraping the module text, so a
-// rename or literal reshape is a compile error here rather than a silently
-// empty probe set. The drift-catching property is unchanged: probes still
-// enumerate every route family the authoritative tables declare, and every
-// answer is compared against evaluateInstanceMutation.
-function operationalPrefixes(): string[] {
-  return OPERATIONAL_ROUTE_CATEGORIES.map((route) => route.prefix);
-}
-
-function exemptRoutes(): Array<{ method: string; path: string }> {
-  return [...OPERATIONAL_MUTATION_EXEMPT_ROUTES].map((entry) => {
-    const separator = entry.indexOf(" ");
-    return { method: entry.slice(0, separator), path: entry.slice(separator + 1) };
-  });
-}
-
-function buildCategoryProbes(
-  prefixes: string[],
-  exceptions: Array<{ method: string; path: string }>,
-): Array<{ method: string; path: string }> {
-  const unsafeMethods = [...UNSAFE_MUTATION_METHODS];
-  const paths: string[] = [];
-  for (const prefix of prefixes) {
-    paths.push(prefix, `${prefix}/child`, `${prefix}/child/grandchild`);
-  }
-  for (const exception of exceptions) {
-    paths.push(exception.path, `${exception.path}/child`);
-  }
-  // Prefix-table misses, the /api catch-all, and non-API paths.
-  paths.push("/api", "/api/unregistered-surface", "/api/work", "/api/work-units", "/health");
-  // Query strings must be stripped before matching.
-  paths.push("/api/projects?scope=all");
-
-  const probes: Array<{ method: string; path: string }> = [];
-  const seen = new Set<string>();
-  for (const path of paths) {
-    for (const method of [...unsafeMethods, "GET", "HEAD", "OPTIONS"]) {
-      const key = `${method}|${path}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      probes.push({ method, path });
-    }
-  }
-  return probes;
-}
-
 function writeRestartAvailability(port: number, payload: Record<string, unknown>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-restart-receipt-"));
   tempRoots.push(root);
@@ -381,7 +321,7 @@ describe("CLI instance mutation preflight", () => {
       '  "average_seconds": 18.4,',
       '  "retry_after_seconds": 12,',
       '  "message": "Mandible rebuilding; request not sent (self-merge, about 12 s remaining; average 18.4 s over 7 rebuilds).",',
-      '  "category": "ledger"',
+      '  "category": "operation"',
       "}",
       "",
     ].join("\n"));
@@ -507,150 +447,32 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
-  it("uses generated route mutation categories before the fallback table", async () => {
-    const categoryFile = writeRouteMutationCategories({
-      schema: 1,
-      routes: [
-        { method: "POST", path: "/api/custom/:id/reconcile", category: "custom_generated" },
-      ],
-    });
-    const result = await runBash([
-      "set -euo pipefail",
-      "source cli/api.sh",
-      "api_operational_mutation_category POST /api/custom/abc/reconcile",
-    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("custom_generated");
-  });
-
-  it("falls back to the built-in category table when generated data is malformed", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-"));
-    tempRoots.push(root);
-    const categoryFile = path.join(root, "route-mutation-categories.json");
-    fs.writeFileSync(categoryFile, "{not-json\n", "utf8");
-    const result = await runBash([
-      "set -euo pipefail",
-      "source cli/api.sh",
-      "api_operational_mutation_category POST /api/projects",
-    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
-
+  it("reads exact method/template classification from the selected runtime catalog", async () => {
+    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
+    const result = await runBash(`source cli/api.sh
+api_operational_mutation_category POST /api/projects '${file}'`, 1);
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("projects");
+    const exempt = await runBash(`source cli/api.sh
+api_operational_mutation_category POST /api/auth/check '${file}'`, 1);
+    expect(exempt.status).toBe(0);
+    expect(exempt.stdout).toBe("");
   });
 
-  it("classifies Briefing mutations through the built-in fallback table", async () => {
-    const result = await runBash([
-      "set -euo pipefail",
-      "source cli/api.sh",
-      "api_operational_mutation_category POST /api/briefings/briefing-1/rounds/round-1/submit",
-    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: "/missing/categories.json" });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("briefing");
-  });
-
-  it("keeps auth check out of operational preflight even if generated data lists it", async () => {
-    const categoryFile = writeRouteMutationCategories({
-      schema: 1,
-      routes: [
-        { method: "POST", path: "/api/auth/check", category: "auth" },
-      ],
-    });
-    const result = await runBash([
-      "set -euo pipefail",
-      "source cli/api.sh",
-      "if api_operational_mutation_category POST /api/auth/check; then printf bad; else printf bypass; fi",
-    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("bypass");
-  });
-
-  // Issue c81e101 — cli/api.sh carries a hand-maintained copy of the route
-  // mutation-category table for the case where the generated JSON is missing or
-  // malformed, and it had drifted from src/instance-policy.ts. This is a
-  // behavioral drift check: it runs the shell categorizer over every route
-  // family the TypeScript source declares and compares each answer with the
-  // authoritative decision, so a future edit to one side without the other
-  // fails here instead of silently gating (or silently exempting) a route.
-  it("keeps the api.sh fallback category table in sync with instance-policy", async () => {
-    const prefixes = operationalPrefixes();
-    const exceptions = exemptRoutes();
-    // If either table is emptied or narrowed, fail loudly rather than
-    // comparing a degenerate probe set.
-    expect(prefixes.length).toBeGreaterThanOrEqual(20);
-    expect(exceptions.length).toBeGreaterThanOrEqual(2);
-
-    const probes = buildCategoryProbes(prefixes, exceptions);
-    const missingCategoryFile = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-")),
-      "route-mutation-categories.json",
-    );
-    tempRoots.push(path.dirname(missingCategoryFile));
-
-    const result = await runBash([
-      "set -uo pipefail",
-      "source cli/api.sh",
-      "while IFS='|' read -r probe_method probe_path; do",
-      '  [[ -n "$probe_method" ]] || continue',
-      '  if probe_category="$(api_operational_mutation_category "$probe_method" "$probe_path")"; then',
-      `    printf '%s|%s|%s\\n' "$probe_method" "$probe_path" "$probe_category"`,
-      "  else",
-      `    printf '%s|%s|-\\n' "$probe_method" "$probe_path"`,
-      "  fi",
-      'done <<< "$MANDIBLE_TEST_CATEGORY_PROBES"',
-    ].join("\n"), 1, {
-      MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: missingCategoryFile,
-      MANDIBLE_TEST_CATEGORY_PROBES: probes
-        .map((probe) => `${probe.method}|${probe.path}`)
-        .join("\n"),
-    });
-
-    expect(result.stderr).toBe("");
-    expect(result.status).toBe(0);
-    expect(result.stdout.trimEnd().split("\n")).toEqual(
-      probes.map((probe) => {
-        // api.sh takes a request path and strips the query itself; the
-        // TypeScript categorizer is always handed a parsed URL pathname.
-        const pathname = probe.path.split("?")[0];
-        return `${probe.method}|${probe.path}|${authoritativeCategory(probe.method, pathname) ?? "-"}`;
-      }),
-    );
-  });
-
-  it("keeps exempt routes exempt when the generated table is present", async () => {
-    // The generator only emits routes that have a category, so an exempt route
-    // is absent from the JSON and looks exactly like an unknown route. The
-    // exemption therefore has to be applied before the fallback prefix table.
-    const categoryFile = writeRouteMutationCategories({
-      schema: 1,
-      source: "Router.listRoutePolicies",
-      routes: [
-        { method: "POST", path: "/api/timeline/:id/rows", category: "timeline" },
-      ],
-      fallbackCategory: "api",
-    });
-    const result = await runBash([
-      "set -uo pipefail",
-      "source cli/api.sh",
-      "for probe in 'POST /api/timeline/project' 'POST /api/auth/check' 'PUT /api/timeline/project'; do",
-      "  set -- $probe",
-      '  if category="$(api_operational_mutation_category "$1" "$2")"; then',
-      `    printf '%s %s=%s\\n' "$1" "$2" "$category"`,
-      "  else",
-      `    printf '%s %s=exempt\\n' "$1" "$2"`,
-      "  fi",
-      "done",
-    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trimEnd().split("\n")).toEqual([
-      "POST /api/timeline/project=exempt",
-      "POST /api/auth/check=exempt",
-      // Only the exact method/path pair is exempt, matching the TypeScript set.
-      "PUT /api/timeline/project=timeline",
-    ]);
+  it("fails closed on absent, malformed, mismatched, and unknown operation metadata", async () => {
+    for (const payload of [{ instance: MAIN_INSTANCE }, { ...withCatalog(MAIN_INSTANCE), operations: { schema: 1 } },
+      { ...withCatalog(MAIN_INSTANCE), instance: { ...MAIN_INSTANCE, instance_id: "other", backend_generation: "other" } }]) {
+      const file = writeRouteMutationCategories(payload);
+      const result = await runBash(`source cli/api.sh
+api_operational_mutation_category POST /api/projects '${file}'`, 1);
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe("");
+    }
+    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
+    const unknown = await runBash(`source cli/api.sh
+api_operational_mutation_category POST /api/future-write '${file}'`, 1);
+    expect(unknown.status).toBe(3);
+    expect(unknown.stderr).toContain("Unknown Mandible operation");
   });
 
   it("forwards preview writes to the selected daemon after validating instance metadata", async () => {
@@ -704,7 +526,7 @@ describe("CLI instance mutation preflight", () => {
 
   it.each([
     ["external effects", "/api/work/scan", { error: "effect_forbidden", missing_effects: ["files:production"] }],
-    ["unknown operations", "/api/not-registered", { error: "unknown_operation", missing_effects: [] }],
+
   ] as const)("preserves the selected daemon's 403 response for %s", async (_label, requestPath, body) => {
     const target = await listenForInstancePreflight({
       routeResponses: [{ method: "POST", url: requestPath, response: { status: 403, body } }],
@@ -749,6 +571,7 @@ describe("CLI instance mutation preflight", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toBe("200\n{\"check\":{\"status\":\"clean\"}}");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
         "POST /api/auth/check",
       ]);
     } finally {

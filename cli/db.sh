@@ -10,4 +10,4 @@ if [ ! -f "$entry" ]; then
   exit 1
 fi
 
-exec "$("$repo_root/scripts/bun-runtime.sh")" "$entry" "$@"
+exec "$("$repo_root/scripts/bun-runtime.sh")" --no-install "$entry" "$@"

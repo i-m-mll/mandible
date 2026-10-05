@@ -1264,50 +1264,15 @@ function readJson(target) {
   return JSON.parse(fs.readFileSync(path.resolve(target), "utf8"));
 }
 
-function requiredValue(argv, index, flag) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
-}
-
 function parseArgs(argv) {
-  const command = argv[0];
-  const options = { command, excludeTables: [], restoreReports: [] };
-  for (let index = 1; index < argv.length; index += 1) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--source": options.source = requiredValue(argv, ++index, arg); break;
-      case "--destination": options.destination = requiredValue(argv, ++index, arg); break;
-      case "--exclude-table": options.excludeTables.push(requiredValue(argv, ++index, arg)); break;
-      case "--evidence": options.evidence = requiredValue(argv, ++index, arg); break;
-      case "--log-db": options.logDb = requiredValue(argv, ++index, arg); break;
-      case "--structure-cache": options.structureCache = requiredValue(argv, ++index, arg); break;
-      case "--rebuild-report": options.rebuildReport = requiredValue(argv, ++index, arg); break;
-      case "--restore-report": options.restoreReports.push(requiredValue(argv, ++index, arg)); break;
-      case "--metadata-sql": options.metadataSql = requiredValue(argv, ++index, arg); break;
-      case "--custody-root": options.custodyRoot = requiredValue(argv, ++index, arg); break;
-      case "--destination-root": options.destinationRoot = requiredValue(argv, ++index, arg); break;
-      case "--json": options.json = true; break;
-      case "--help": case "-h": options.help = true; break;
-      default: throw new Error(`Unknown argument: ${arg}`);
-    }
-  }
+  const parsed = require("../cli/command-syntax.cjs").parse(["conversation-cutover", ...argv]);
+  const repeated = key => Array.isArray(parsed.options[key]) ? parsed.options[key] : parsed.options[key] ? [parsed.options[key]] : [];
+  const options = { command: parsed.command.split(".").at(-1), excludeTables: repeated("exclude-table"), restoreReports: repeated("restore-report"), json: parsed.options.json === true };
+  for (const [key, target] of Object.entries({source:"source", destination:"destination", evidence:"evidence", "log-db":"logDb", "structure-cache":"structureCache", "rebuild-report":"rebuildReport", "metadata-sql":"metadataSql", "custody-root":"custodyRoot", "destination-root":"destinationRoot"})) options[target] = parsed.options[key];
   return options;
 }
-
 function usage() {
-  console.log(`Usage: bun scripts/conversation-cutover-proof.mjs <command> [options]
-
-Commands:
-  binding --source DB [--json]
-  rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
-  reclaim --source DB --destination DB [--log-db DB] [--structure-cache DB] [--json]
-  restore-drill --source DB --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
-  audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
-
-The audit command emits a source-bound evidence checklist. It can only return
-NO-GO; caller-authored evidence is not an automated cutover authority.
-`);
+  console.log(require("../cli/command-syntax.cjs").help(["conversation-cutover"]));
 }
 
 async function main(argv) {
@@ -1315,6 +1280,7 @@ async function main(argv) {
     usage();
     return 0;
   }
+  if (argv.some(arg => arg === "--help" || arg === "-h")) { usage(); return 0; }
   const options = parseArgs(argv);
   if (options.help || !options.command) { usage(); return options.command ? 0 : 2; }
   let report;

@@ -12,19 +12,12 @@ API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
 
 usage() {
-    echo "Usage: mandible task <task description>"
-    echo "       mandible task --clear"
-    exit 1
+  mandible_command_help task
 }
 
-if [ $# -eq 0 ]; then
-    usage
-fi
-
-task="$1"
-if [ "$task" = "--clear" ]; then
-    task=""
-fi
+task=""
+binding=$(mandible_bind_main_arguments "task" '{"task":[{"option":"clear","constant":""},{"position":0}]}' "$@") || exit $?
+eval "$binding"
 
 # Walk PPID chain to find a PID with an active session
 find_session_id() {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseCommand, commandHelp, stringOption, flagOption, repeatedOption } from "./grammar.js";
 import { getDbPath, openDb } from "../db.js";
 import {
   auditEscapedMarkdownBodies,
@@ -23,11 +24,11 @@ interface ParsedArgs {
 }
 
 function main(argv: string[]): number {
-  const args = parseArgs(argv);
-  if (!args.command || args.command === "help" || args.command === "-h" || args.command === "--help") {
+  if (!argv.length || argv[0] === "help") {
     usage();
-    return args.command ? 0 : 2;
+    return argv.length ? 0 : 2;
   }
+  const args = parseArgs(argv);
 
   const db = openDb(args.dbPath);
   try {
@@ -91,43 +92,13 @@ function parseArgs(argv: string[]): ParsedArgs {
     scope: {},
   };
 
-  for (let index = 1; index < argv.length; index += 1) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--db":
-        parsed.dbPath = requireValue(argv, ++index, "--db");
-        break;
-      case "--json":
-        parsed.json = true;
-        break;
-      case "--apply":
-        parsed.apply = true;
-        break;
-      case "--all-configured":
-        parsed.allConfigured = true;
-        break;
-      case "--all-matches":
-        parsed.allMatches = true;
-        break;
-      case "--out-dir":
-        parsed.outDir = requireValue(argv, ++index, "--out-dir");
-        break;
-      case "--issue":
-        parsed.scope.issue_refs = [...(parsed.scope.issue_refs ?? []), requireValue(argv, ++index, "--issue")];
-        break;
-      case "--project":
-        parsed.scope.project_refs = [...(parsed.scope.project_refs ?? []), requireValue(argv, ++index, "--project")];
-        break;
-      case "--repo":
-        parsed.scope.repo_refs = [...(parsed.scope.repo_refs ?? []), requireValue(argv, ++index, "--repo")];
-        break;
-      case "--comment":
-        parsed.scope.comment_ids = [...(parsed.scope.comment_ids ?? []), requireValue(argv, ++index, "--comment")];
-        break;
-      default:
-        throw new Error(`Unknown option: ${arg}`);
-    }
-  }
+  const input = parseCommand(["issue", "markdown"], argv);
+  parsed.dbPath = stringOption(input, "db") ?? getDbPath();
+  parsed.json = flagOption(input, "json"); parsed.apply = flagOption(input, "apply");
+  parsed.allConfigured = flagOption(input, "all-configured"); parsed.allMatches = flagOption(input, "all-matches");
+  parsed.outDir = stringOption(input, "out-dir") ?? "";
+  parsed.scope = { issue_refs: repeatedOption(input, "issue"), project_refs: repeatedOption(input, "project"),
+    repo_refs: repeatedOption(input, "repo"), comment_ids: repeatedOption(input, "comment") };
 
   if (parsed.command === "export" && !parsed.allConfigured && !parsed.outDir.trim()) {
     throw new Error("markdown export requires --out-dir unless --all-configured is used");
@@ -135,13 +106,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   return parsed;
 }
 
-function requireValue(argv: string[], index: number, flag: string): string {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
+
 
 function printResult(result: unknown, json: boolean): void {
   if (json) {
@@ -201,17 +166,7 @@ function isNormalizeResult(value: unknown): value is {
   );
 }
 
-function usage(): void {
-  process.stdout.write(`Usage:
-  mandible issue markdown audit [--issue <ref>] [--repo <ref>] [--project <ref>] [--comment <id>] [--json]
-  mandible issue markdown normalize [--apply] [--issue <ref>|--repo <ref>|--project <ref>|--comment <id>|--all-matches] [--json]
-  mandible issue markdown export --out-dir <dir> [--issue <ref>|--repo <ref>|--project <ref>] [--json]
-  mandible issue markdown export --all-configured [--json]
-
-Normalization defaults to dry-run. Applying normalization requires --apply and
-explicit targets, or --all-matches for every current audit finding.
-`);
-}
+function usage(): void { process.stdout.write(commandHelp(["issue", "markdown"])); }
 
 try {
   process.exitCode = main(process.argv.slice(2));

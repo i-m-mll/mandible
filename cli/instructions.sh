@@ -18,18 +18,7 @@ CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
 BUN_RUNTIME="$("$MANDIBLE_ROOT/scripts/bun-runtime.sh")"
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  mandible instructions diff [--target <file>]
-  {{command instructions.install}}
-  mandible instructions cleanup --target <file> --mode managed-block|standalone [--force]
-  mandible instructions targets list
-  mandible instructions targets add <path> [--mode managed-block|standalone]
-  mandible instructions targets rm <path>
-  mandible instructions post-export get
-  mandible instructions post-export set <command>
-  mandible instructions post-export clear
-EOF
+  mandible_command_help instructions
 }
 
 default_target() {
@@ -573,31 +562,8 @@ case "$subcommand" in
   cleanup)
     cleanup_mode="managed-block"
     cleanup_target_path=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --target)
-          cleanup_target_path="${2:?--target requires a value}"
-          shift 2
-          ;;
-        --mode)
-          cleanup_mode="${2:?--mode requires a value}"
-          shift 2
-          ;;
-        --force)
-          force=1
-          shift
-          ;;
-        -h|--help)
-          usage
-          exit 0
-          ;;
-        *)
-          printf 'Unexpected argument: %s\n' "$1" >&2
-          usage >&2
-          exit 2
-          ;;
-      esac
-    done
+    binding=$(mandible_bind_main_arguments "instructions.cleanup" '{"cleanup_target_path":{"option":"target"},"cleanup_mode":{"option":"mode"},"force":{"option":"force","constant":"1"}}' "$@") || exit $?
+    eval "$binding"
     if [[ -z "$cleanup_target_path" ]]; then
       printf 'cleanup requires --target <file>\n' >&2
       usage >&2
@@ -611,29 +577,23 @@ case "$subcommand" in
     shift || true
     case "$action" in
       list)
+        binding=$(mandible_bind_main_arguments "instructions.targets.list" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper targets-list
         ;;
       add)
         target_arg="${1:?targets add requires a path}"
         shift
         mode="managed-block"
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --mode)
-              mode="${2:?--mode requires a value}"
-              shift 2
-              ;;
-            *)
-              printf 'Unexpected argument: %s\n' "$1" >&2
-              usage >&2
-              exit 2
-              ;;
-          esac
-        done
+        binding=$(mandible_bind_main_arguments "instructions.targets.add" '{"mode":{"option":"mode"}}' "$target_arg" "$@") || exit $?
+        eval "$binding"
         settings_helper targets-add "$target_arg" "$mode"
         ;;
       rm|remove)
-        settings_helper targets-rm "${1:?targets rm requires a path}"
+        target_arg=""
+        binding=$(mandible_bind_main_arguments "instructions.targets.rm" '{"target_arg":{"position":0}}' "$@") || exit $?
+        eval "$binding"
+        settings_helper targets-rm "$target_arg"
         ;;
       -h|--help|help)
         usage
@@ -651,12 +611,18 @@ case "$subcommand" in
     shift || true
     case "$action" in
       get)
+        binding=$(mandible_bind_main_arguments "instructions.post-export.get" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper post-export-get
         ;;
       set)
-        settings_helper post-export-set "$@"
+        binding=$(mandible_bind_main_arguments "instructions.post-export.set" '{"command_parts":{"rest":0}}' "$@") || exit $?
+        eval "$binding"
+        settings_helper post-export-set "${command_parts[@]}"
         ;;
       clear|rm|remove)
+        binding=$(mandible_bind_main_arguments "instructions.post-export.clear" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper post-export-clear
         ;;
       -h|--help|help)
@@ -672,32 +638,8 @@ case "$subcommand" in
     ;;
 esac
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --target)
-      target="${2:?--target requires a value}"
-      explicit_target=1
-      shift 2
-      ;;
-    --worktree)
-      worktree="${2:?--worktree requires a value}"
-      shift 2
-      ;;
-    --force)
-      force=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      printf 'Unexpected argument: %s\n' "$1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "@instructions ${subcommand}" '{"target":{"option":"target"},"explicit_target":{"option":"target","constant":"1"},"worktree":{"option":"worktree"},"force":{"option":"force","constant":"1"}}' "$@") || exit $?
+eval "$binding"
 
 if [[ -n "$worktree" ]]; then
   target="$(map_target_to_worktree "$target" "$worktree")"

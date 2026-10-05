@@ -655,6 +655,16 @@ export class Router implements RouteRegistrar {
         }
       }
 
+      const schema = route.options.operation.requestSchema;
+      if (schema !== null) {
+        const parsed = schema.safeParse(body);
+        if (!parsed.success) {
+          response.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+          return true;
+        }
+        body = parsed.data;
+      }
+
       // Direct invocation is a trusted process-local composition boundary.
       // HTTP and file-RPC are ingress and must satisfy both the instance and
       // credential effect ceilings; treating an omitted test/internal
@@ -671,16 +681,6 @@ export class Router implements RouteRegistrar {
           });
           return true;
         }
-      }
-
-      const schema = route.options.operation.requestSchema;
-      if (schema !== null) {
-        const parsed = schema.safeParse(body);
-        if (!parsed.success) {
-          response.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
-          return true;
-        }
-        body = parsed.data;
       }
 
       const query: Record<string, string> = {};
