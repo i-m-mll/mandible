@@ -153,13 +153,7 @@ export interface RepoInfo {
   last_scanned_at: string | null;
 }
 
-export interface ScanSummary {
-  scanned_repos: number;
-  branches_updated: number;
-  branches_removed: number;
-  missing_repos: string[];
-  duration_ms: number;
-}
+export type ScanSummary = import("./contracts.js").WorkScanSummary;
 
 export interface WorkScannerOptions {
   db?: SqliteDatabase;
