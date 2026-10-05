@@ -265,6 +265,19 @@ function assertHandoffInstallation(binding) {
   if (processStart(binding.oldProcess.pid) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
 }
 
+async function unloadExactHandoffService(label, expectedArguments) {
+  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
+  if (result.status !== 0) throw new Error(`Could not unload exact service ${label} (launchctl exit ${result.status}): stdout=${JSON.stringify(result.stdout.trim())}; stderr=${JSON.stringify(result.stderr.trim())}`);
+  const deadline = Date.now() + 5000;
+  while (true) {
+    const remaining = inspectJob(label);
+    if (!remaining.loaded) return;
+    if (JSON.stringify(remaining.argv) !== JSON.stringify(expectedArguments)) throw new Error(`Service ${label} changed while unloading; preserving it.`);
+    if (Date.now() >= deadline) throw new Error(`Exact service ${label} is still loaded after successful bootout.`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 export async function removeHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
@@ -279,16 +292,7 @@ export async function removeHandoffDefinitions(binding) {
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
       if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
     }
-    const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
-    if (result.status !== 0) throw new Error(`Could not unload exact service ${label}: ${result.stderr.trim()}`);
-    const deadline = Date.now() + 5000;
-    while (true) {
-      const remaining = inspectJob(label);
-      if (!remaining.loaded) break;
-      if (JSON.stringify(remaining.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed while unloading; preserving it.`);
-      if (Date.now() >= deadline) throw new Error(`Exact service ${label} is still loaded after bootout.`);
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await unloadExactHandoffService(label, prior.argv);
   }
 }
 
@@ -302,8 +306,7 @@ export async function startHandoffDefinitions(binding) {
     const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
     if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
       if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
-      const removed = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
-      if (removed.status !== 0 || inspectJob(label).loaded) throw new Error(`Could not unload changed gateway ${label}.`);
+      await unloadExactHandoffService(label, binding.priorGateway.argv);
     }
     ensureEnabledAndLoaded(label);
     const started = runLaunchctl(['kickstart', `${DOMAIN}/${label}`]);
