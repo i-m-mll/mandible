@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+
+
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_ARTIFACT_MEDIA_TYPE, mediaTypeForPath } from "../../src/artifact-media-type.js";

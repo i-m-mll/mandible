@@ -3,10 +3,10 @@
 // Covers the shared AddToSpace picker (issue/artifact/graph surfaces) and the
 // IssueDetail action-gating flip: the menu must appear on an otherwise
 // read-only issue pane once `onAddToSpace` is provided.
-import { readFileSync } from 'node:fs';
+
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { h } from 'preact';
+
 
 // Mock only the API helpers the picker touches; everything else in the module
 // is re-exported types or unrelated helpers.

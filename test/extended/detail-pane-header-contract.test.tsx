@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -317,8 +317,4 @@ describe('shared collapsible panel', () => {
 
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/collapsible-panel.css'), 'utf8');
   });
-});
-
-describe('detail pane composition migration boundary', () => {
-
 });
