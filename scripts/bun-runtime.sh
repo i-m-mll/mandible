@@ -29,13 +29,17 @@ verify() {
     [ "$("$1" --version)" = "$version" ] &&
     [ "$("$1" --no-install --print 'Bun.revision')" = "$revision" ]
 }
+emit_runtime() {
+  "$1" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
+  printf '%s\n' "$1"
+}
 if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
   if ! verify "$MANDIBLE_RUNTIME"; then
     echo "MANDIBLE_RUNTIME must match the pinned Bun $version revision and binary checksum" >&2
     exit 1
   fi
   if [ "$mode" = runtime ]; then
-    printf '%s\n' "$MANDIBLE_RUNTIME"
+    emit_runtime "$MANDIBLE_RUNTIME"
     exit 0
   fi
 fi
@@ -47,7 +51,7 @@ fi
 if [ -e "$runtime" ]; then
   verify "$runtime" || { echo "Pinned Bun cache is corrupt: $runtime; preserve it and supply a verified runtime archive" >&2; exit 1; }
   if [ "$mode" = runtime ]; then
-    printf '%s\n' "$runtime"
+    emit_runtime "$runtime"
     exit 0
   elif [ -f "$archive_cache" ]; then
     printf '%s\n' "$archive_cache"
@@ -80,4 +84,4 @@ fi
 if ! ln "$scratch/unpacked/$asset/bun" "$runtime" 2>/dev/null; then
   verify "$runtime" || { echo "Pinned Bun runtime publication failed" >&2; exit 1; }
 fi
-if [ "$mode" = --archive ]; then printf '%s\n' "$archive_cache"; else printf '%s\n' "$runtime"; fi
+if [ "$mode" = --archive ]; then printf '%s\n' "$archive_cache"; else emit_runtime "$runtime"; fi
