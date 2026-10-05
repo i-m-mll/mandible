@@ -114,10 +114,9 @@ describe("auth list CLI", () => {
     const result = await run(["auth", "--help"], 9);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("Usage: mandible auth <subcommand>");
-    expect(result.stdout).toContain("list [opts]");
-    expect(result.stdout).toContain("request <branch>");
-    expect(result.stdout).toContain("merge <branch>");
+    for (const command of ["list", "request", "merge"]) {
+      expect(result.stdout).toContain(`mandible auth ${command} `);
+    }
   });
 
   it("prints active auth requests in a compact human format", async () => {

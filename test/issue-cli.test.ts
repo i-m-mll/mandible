@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -247,12 +248,7 @@ function listen(): Promise<number> {
       };
 
       if (req.method === "GET" && req.url === "/api/instance") {
-        res.end(JSON.stringify({
-          instance: {
-            role: "main",
-            operational_mutations: "allow",
-          },
-        }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
         return;
       }
       if (req.url?.startsWith("/api/issues?")) {
@@ -602,27 +598,12 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("branch add <id> <branch>");
   });
 
-  it("prints help for nested issue coordination subcommands", async () => {
-    const link = await run(["issue", "link", "--help"], 9);
-    expect(link.status).toBe(0);
-    expect(link.stdout).toContain("mandible issue link <src> <target...>");
-    expect(link.stdout).toContain("Accepted relationship types:");
-
-    const unlink = await run(["issue", "unlink", "--help"], 9);
-    expect(unlink.status).toBe(0);
-    expect(unlink.stdout).toContain("mandible issue unlink <src> <target...>");
-
-    const checkpointAdd = await run(["issue", "checkpoint", "add", "--help"], 9);
-    expect(checkpointAdd.status).toBe(0);
-    expect(checkpointAdd.stdout).toContain("--payload <json-or->");
-
-    const checkpointShow = await run(["issue", "checkpoint", "show", "--help"], 9);
-    expect(checkpointShow.status).toBe(0);
-    expect(checkpointShow.stdout).toContain("mandible issue checkpoint show");
-
-    const parentRoleAssume = await run(["issue", "parent-role", "assume", "--help"], 9);
-    expect(parentRoleAssume.status).toBe(0);
-    expect(parentRoleAssume.stdout).toContain("MANDIBLE_SESSION_ID");
+  it("prints help for nested issue coordination commands without contacting the daemon", async () => {
+    for (const command of [["link"], ["unlink"], ["checkpoint", "add"], ["checkpoint", "show"], ["parent-role", "assume"]]) {
+      const result = await run(["issue", ...command, "--help"], 9);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`mandible issue ${command.join(" ")} `);
+    }
   });
 
   it("adds comments with the official comment add namespace", async () => {
@@ -651,8 +632,8 @@ describe("issue CLI body revisions", () => {
     const result = await run(["issue", "close", "abc"], 9);
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Missing --resolution");
-    expect(result.stderr).toContain("delivered, duplicate, wontfix");
+    expect(result.stderr).toContain("--resolution");
+    expect(result.stderr).toContain("delivered|duplicate|wontfix");
   });
 
   it("closes a duplicate without creating commit-resolution evidence", async () => {
@@ -1764,7 +1745,7 @@ describe("issue CLI body revisions", () => {
     const result = await run(["issue", "description", "edit", "abc"], port);
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("description edit <issue-ref> -m <body>");
+    expect(result.stderr).toContain("Arguments do not match: mandible issue description edit");
   });
 
   it("prints compact issue body history without snapshots by default", async () => {
@@ -1843,7 +1824,7 @@ describe("issue CLI body revisions", () => {
     });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, tracker, unknown");
+    expect(result.stderr).toContain("Arguments do not match: mandible issue kind set");
   });
 
   it("shows one comment by last-comment reference", async () => {

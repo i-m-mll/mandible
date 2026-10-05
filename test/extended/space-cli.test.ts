@@ -101,7 +101,7 @@ describe("space CLI surface", () => {
 
   it("is wired into the top-level mandible dispatch + help", () => {
     const help = runOffline(["help"]);
-    expect(help.stdout).toContain("space <subcommand>");
+    expect(help.stdout).toContain("mandible space create");
     const unknown = runOffline(["space", "bogus-sub"]);
     expect(unknown.status).toBe(2);
     expect(unknown.stderr).toContain("Unknown space subcommand");

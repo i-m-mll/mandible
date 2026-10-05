@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -125,15 +126,7 @@ function listen(): Promise<{ port: number; requests: Array<Record<string, unknow
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       if (req.method === "GET" && req.url === "/api/instance") {
-        res.end(JSON.stringify({
-          instance: {
-            role: "main",
-            operational_mutations: "allow",
-            operational_mutations_overridden: false,
-            db_path: "/tmp/mandible-test.db",
-            db_path_source: "test",
-          },
-        }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
         return;
       }
       if (req.method === "GET" && req.url?.startsWith("/api/ledger/issues/abc123")) {

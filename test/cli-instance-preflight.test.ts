@@ -105,8 +105,7 @@ function listenForInstancePreflight(options: {
   const sendResponse = (res: http.ServerResponse, response: StubResponse) => {
     res.writeHead(response.status, { "Content-Type": "application/json" });
     if (Object.hasOwn(response, "body")) {
-      const body = response.body as { instance?: Record<string, unknown> };
-      res.end(JSON.stringify(body?.instance ? { ...body, ...withCatalog(body.instance) } : body));
+      res.end(JSON.stringify(response.body));
     } else {
       res.end();
     }
@@ -475,6 +474,31 @@ api_operational_mutation_category POST /api/future-write '${file}'`, 1);
     expect(unknown.stderr).toContain("Unknown Mandible operation");
   });
 
+  it.each([
+    ["missing catalog", { instance: withCatalog(MAIN_INSTANCE).instance }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["malformed catalog", { ...withCatalog(MAIN_INSTANCE), operations: { schema: "wrong" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["different instance", { ...withCatalog(MAIN_INSTANCE), instance: { ...withCatalog(MAIN_INSTANCE).instance, instance_id: "other" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["different generation", { ...withCatalog(MAIN_INSTANCE), instance: { ...withCatalog(MAIN_INSTANCE).instance, backend_generation: "next" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["unknown child path", withCatalog(MAIN_INSTANCE), "/api/projects/not-a-registered-operation/extra", "cli_operation_unknown"],
+  ])("does not send a mutation after %s preflight", async (_label, payload, requestPath, error) => {
+    const target = await listenForInstancePreflight({ instanceResponses: [{ status: 200, body: payload }] });
+    try {
+      const result = await runBash([
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        `status=$(api_send_capture POST '${requestPath}' '{}' "$tmp_response")`,
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, { MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.startsWith("403\n")).toBe(true);
+      expect(JSON.parse(result.stdout.slice(result.stdout.indexOf("\n") + 1))).toMatchObject({ error, request_sent: false });
+      expect(target.requests.map(request => `${request.method} ${request.url}`)).toEqual(["GET /api/instance"]);
+    } finally {
+      await target.close();
+    }
+  });
+
   it("forwards preview writes to the selected daemon after validating instance metadata", async () => {
     const target = await listenForInstancePreflight();
     try {
@@ -580,7 +604,7 @@ api_operational_mutation_category POST /api/future-write '${file}'`, 1);
   });
 
   it("retries transient metadata failures before work-unit, session-link, and comment mutations", async () => {
-    const mainPayload = { instance: MAIN_INSTANCE };
+    const mainPayload = withCatalog(MAIN_INSTANCE);
     const target = await listenForInstancePreflight({
       instance: MAIN_INSTANCE,
       instanceResponses: [

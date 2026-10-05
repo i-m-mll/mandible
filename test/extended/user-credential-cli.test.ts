@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -67,6 +68,11 @@ function createSigningKey(
 
 async function startFakeDaemon(bodies: Record<string, unknown>[]): Promise<number> {
   server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/api/instance") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/api/users/operator/credentials") {
       res.statusCode = 404;
       res.end("not found");

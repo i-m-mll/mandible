@@ -83,7 +83,7 @@ afterEach(() => {
 describe("project CLI surface", () => {
   it("is wired into the top-level mandible dispatch", () => {
     const help = runOffline(["help"]);
-    expect(help.stdout).toContain("project <subcommand>");
+    expect(help.stdout).toContain("mandible project list");
   });
 
   it("documents the project command surface", () => {

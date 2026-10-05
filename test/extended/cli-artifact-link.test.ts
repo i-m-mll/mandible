@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -72,6 +73,11 @@ function startHttpRecorder(
         body = undefined;
       }
       const recorded: RecordedRequest = { method: req.method ?? "GET", url: req.url ?? "/", body };
+      if (recorded.method === "GET" && recorded.url === "/api/instance") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
+        return;
+      }
       requests.push(recorded);
       const result = handler(recorded);
       res.writeHead(result.status, { "Content-Type": "application/json" });
@@ -101,8 +107,8 @@ function linkResponse(body: Record<string, unknown>, versionNo = 3) {
   const linkKind = body.link_kind === "living" ? "living" : "pinned";
   return {
     resolution: {
-      artifact: { id: "artifact:abc123def456" },
-      version: { version_no: versionNo },
+      logical_artifact: { id: "artifact:abc123def456" },
+      artifact_version: { version_no: versionNo },
     },
     link: {
       id: "artifact-link-1",
@@ -126,18 +132,6 @@ afterEach(() => {
 });
 
 describe("artifact link CLI", () => {
-  it("documents typed link flags and canonical artifact refs", () => {
-    const result = run(["artifact", "--help"]);
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[--pinned|--living]");
-    expect(result.stdout).toContain("artifact:<short-id>            logical artifact");
-    expect(result.stdout).toContain("artifact-version:<short-id>    specific artifact version");
-    expect(result.stdout).toContain("artifact-blob:<short-hash>     immutable artifact bytes only");
-    expect(result.stdout).toContain("artifact format <ref> [--as id|url|markdown|full]");
-    expect(result.stdout).not.toContain("artifact:sha256:<hash>");
-  });
-
   it("formats a resolved typed identity as short id, URL, Markdown, full id, or JSON", async () => {
     const fullId = `artifact-blob:${"a".repeat(64)}`;
     const shortRef = "artifact-blob:aaaaaaaaaaaa";
@@ -201,8 +195,8 @@ describe("artifact link CLI", () => {
               scheme: "artifact-series",
               target_type: "artifact_version",
               target_id: "artifact-version:version-full",
-              series: { id: "artifact-series:series-full", ref: "artifact-series:series" },
-              version: { id: "artifact-version:version-full", version_no: 3 },
+              logical_artifact: { id: "artifact:series-full", ref: "artifact:series" },
+              artifact_version: { id: "artifact-version:version-full", ref: "artifact-version:version", version_no: 3 },
               warnings: pinned ? [] : ["series_latest_not_pinned"],
             },
           },
@@ -249,7 +243,7 @@ describe("artifact link CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe(
         "linked artifact:abc123def456 references issue:issue-1234567890 [pinned v3]",
       );
@@ -320,7 +314,7 @@ describe("artifact link CLI", () => {
     ]);
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--pinned and --living are mutually exclusive");
+    expect(result.stderr).toContain("Arguments do not match");
   });
 
   it("surfaces backend evidence_links_must_be_pinned errors clearly", async () => {
@@ -385,7 +379,7 @@ describe("artifact link CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
       expect(body).toMatchObject({
         ref: "artifact-blob:resolved",
@@ -429,7 +423,7 @@ describe("artifact link CLI", () => {
         { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
       );
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
       expect(body).toMatchObject({
         ref: "artifact:abc123def456",
@@ -485,7 +479,7 @@ describe("artifact versions CLI display", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("artifact artifact:series-1 [managed] 2 version(s)");
       expect(result.stdout).not.toContain("artifact-series:series-1");
       expect(result.stdout).toContain("v1 managed artifact:111111111111 (draft)");
@@ -518,7 +512,7 @@ describe("artifact versions CLI display", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const payload = JSON.parse(result.stdout);
       expect(payload).toHaveProperty("history.series");
       expect(payload).toHaveProperty("history.versions");

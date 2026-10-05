@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -7,24 +8,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
-import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
-import type { InstanceInfo } from "../src/types.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
-const MAIN_INSTANCE_RESPONSE = {
-  instance: {
-    role: "main",
-    instance_id: "production",
-    installation_id: "test-installation",
-    public_origin: "https://app.mandible.localhost:19420",
-    backend_generation: "production",
-    allowed_effects: PRODUCTION_EFFECTS,
-    writable_roots: [],
-    user_preferences_root: "/tmp/mandible-test-user-preferences",
-    db_path: "/tmp/mandible-main.db",
-    db_path_source: "env",
-  },
-} satisfies { instance: InstanceInfo };
+const MAIN_INSTANCE_RESPONSE = MAIN_CLI_INSTANCE_RESPONSE;
 
 let tempDir = "";
 let tempRoots: string[] = [];
@@ -144,28 +130,12 @@ afterEach(() => {
 });
 
 describe("artifact CLI", () => {
-  it("documents the artifact command surface", () => {
+  it("exposes retained artifact commands in generated help", () => {
     const result = run(["artifact", "--help"], process.cwd());
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("mandible artifact ingest <path...>");
-    expect(result.stdout).toContain("mandible artifact snapshot <artifact-ref> --from <path>");
-    expect(result.stdout).toContain("mandible artifact bundle create");
-    expect(result.stdout).toContain("Exact committed bytes");
-  });
-
-  it("documents the version identity command surface", () => {
-    const result = run(["artifact", "--help"], process.cwd());
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("artifact:<short-id>            logical artifact");
-    expect(result.stdout).toContain("artifact-version:<short-id>    specific artifact version");
-    expect(result.stdout).toContain("artifact-blob:<short-hash>     immutable artifact bytes only");
-    expect(result.stdout).toContain("[--blob-only]");
-    expect(result.stdout).toContain("mandible artifact associate <ref> --project <project>");
-    expect(result.stdout).toContain("mandible artifact versions <ref>");
-    expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
-    expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
+    expect(result.status, result.stderr).toBe(0);
+    for (const command of ["ingest", "snapshot", "bundle create", "associate", "versions", "diff", "record"]) {
+      expect(result.stdout).toContain(`mandible artifact ${command} `);
+    }
   });
 
   it("records logical paths atomically and keeps blob-only transport explicit",async()=>{
@@ -187,7 +157,7 @@ describe("artifact CLI", () => {
     const recorder=await startHttpRecorder(req=>({status:200,body:{dry_run:true,plans:[{custody_mode:'git'}],registered:[],failed:[]}}));
     try {
       const result=await runAsync(['artifact','ingest','report.md','--dry-run','--json'],tempDir,{MANDIBLE_BASE:`http://127.0.0.1:${recorder.port}`});
-      expect(result.status).toBe(0);expect(recorder.requests).toHaveLength(1);
+      expect(result.status, result.stderr).toBe(0);expect(recorder.requests).toHaveLength(1);
       expect(recorder.requests[0].body).toMatchObject({paths:[fs.realpathSync(path.join(tempDir,'report.md'))],dry_run:true});
       expect(recorder.requests[0].body).not.toHaveProperty('content_base64');
     } finally {await recorder.close();}
@@ -217,7 +187,7 @@ describe("artifact CLI", () => {
       const result = await runAsync(["artifact", "resolve", "artifact-blob:abc123"], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("resolved artifact_blob artifact-blob:abc123 artifact-blob:abc123");
     } finally {
       await recorder.close();
@@ -264,7 +234,7 @@ describe("artifact CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout).artifact.id).toBe(shortId);
       expect(recorder.requests.map((request) => request.url)).toEqual([
         `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
@@ -307,7 +277,7 @@ describe("artifact CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toBe("compact content\n\n");
       expect(recorder.requests.map((request) => request.url)).toEqual([
         `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
@@ -341,7 +311,7 @@ describe("artifact CLI", () => {
       const result = await runAsync(["artifact", "resolve", `artifact:sha256:${"a".repeat(64)}`], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("unsupported legacy_artifact - artifact:abc123def456");
       expect(result.stdout).not.toContain("artifact:sha256:");
       expect(result.stdout).toContain("warning: legacy_artifact_ref_unsupported");
@@ -354,7 +324,7 @@ describe("artifact CLI", () => {
   it("rejects an unknown record kind without contacting the daemon", () => {
     const result = run(["artifact", "record", "report.md", "--kind", "bogus"]);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("Unknown --kind");
+    expect(result.stderr).toContain("Invalid value for --kind");
   });
 
   it("preserves zsh PATH while recording a local artifact version", async () => {
@@ -380,7 +350,7 @@ describe("artifact CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).not.toContain("curl not found");
       const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/versions");
       expect(record).toBeDefined();
@@ -440,7 +410,7 @@ describe("artifact CLI", () => {
       MANDIBLE_BASE: `file://${spoolDir}`,
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     const payload = JSON.parse(result.stdout);
     const planned = payload.registered[0].planned_payload;
     expect(payload.custody_mode).toBe("managed");
@@ -586,7 +556,7 @@ describe("artifact CLI", () => {
         },
       );
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const payload = JSON.parse(result.stdout);
       expect(payload.artifact.id).toBe(newRef);
       expect(payload.link.artifact_id).toBe(newRef);
@@ -641,7 +611,7 @@ describe("artifact CLI", () => {
         MANDIBLE_FILE_RPC_TIMEOUT: "10",
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).not.toMatch(/argument list too long/);
       // The full 2 MiB rode as a spool attachment, not in the JSON body/argv.
       expect(attachmentSize).toBe(bigBytes.length);
@@ -697,7 +667,7 @@ describe("artifact CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/ingest");
       expect(record).toBeDefined();
       const body = record!.body as Record<string, unknown>;
@@ -741,7 +711,7 @@ describe("artifact CLI", () => {
   it("previews bundle identity while preserving member recoverability in dry-run JSON", () => {
     const result = run(["artifact", "bundle", "create", "--name", "smoke", "report.md", "--dry-run", "--json"]);
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     const payload = JSON.parse(result.stdout);
     expect(payload.planned_payload.role).toBe("run_packet");
     expect(payload.planned_payload.reference.identity_kind).toBe("bundle_manifest");
@@ -779,7 +749,7 @@ describe("artifact CLI", () => {
         { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
       );
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       const payload = JSON.parse(result.stdout);
       expect(payload.planned_payload.json.members[0]).toMatchObject({
         artifact_id: `artifact-blob:${hash}`,

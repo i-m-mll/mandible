@@ -51,6 +51,11 @@ describe("instructions CLI", () => {
     tempRoots.push(root);
     const cli = path.join(root, "cli");
     fs.cpSync(path.join(process.cwd(), "cli"), cli, { recursive: true });
+    fs.mkdirSync(path.join(root, "scripts"));
+    for (const file of ["bun-runtime.sh", "bun-runtime-lock.tsv"]) {
+      fs.copyFileSync(path.join(process.cwd(), "scripts", file), path.join(root, "scripts", file));
+    }
+    fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(root, ".bun-version"));
     const authored = "# Authored\n{{command absent.command}}\n";
     fs.writeFileSync(path.join(cli, "instructions-contract.md"), authored);
     const target = path.join(root, "AGENTS.md");
@@ -66,18 +71,18 @@ describe("instructions CLI", () => {
     expect(fs.readFileSync(path.join(cli, "instructions-contract.md"), "utf8")).toBe(authored);
   });
 
-  it("uses NODE_BIN for embedded Node helpers when node is not on PATH", async () => {
+  it("uses the pinned Bun runtime when Bun is not on PATH", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-node-bin-"));
     tempRoots.push(home);
 
     const list = await run(["instructions", "targets", "list"], {
       HOME: home,
-      MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db"),
-      NODE_BIN: process.execPath,
+      MANDIBLE_DB: path.join(home, "fixture.db"),
+      MANDIBLE_RUNTIME: process.execPath,
       PATH: "/usr/bin:/bin",
     });
 
-    expect(list.status).toBe(0);
+    expect(list.status, list.stderr).toBe(0);
     expect(list.stderr).toBe("");
   });
 
@@ -93,10 +98,10 @@ describe("instructions CLI", () => {
     expect(diff.stdout).toContain("User policy stays here.");
 
     const install = await run(["instructions", "install", "--target", target]);
-    expect(install.status).toBe(0);
+    expect(install.status, install.stderr).toBe(0);
     const installed = fs.readFileSync(target, "utf8");
     expect(installed).toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
-    expect(installed).toContain("mandible auth request <branch>");
+    expect(installed).toContain("mandible auth request ");
     expect(installed).toContain("Authored ledger Markdown issue refs use `[issue:<id>]`");
     expect(installed).toContain("Do not write `[references:<id>]`, `[closes:<id>]`");
     expect(installed).toContain("Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`");
@@ -111,8 +116,8 @@ describe("instructions CLI", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-home-"));
     tempRoots.push(home);
 
-    const install = await run(["instructions", "install"], { HOME: home });
-    expect(install.status).toBe(0);
+    const install = await run(["instructions", "install"], { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") });
+    expect(install.status, install.stderr).toBe(0);
     const claudeTarget = path.join(home, ".claude", "CLAUDE.md");
     const codexTarget = path.join(home, ".codex", "AGENTS.md");
     expect(fs.readFileSync(claudeTarget, "utf8")).toContain("Mandible Interface Contract");
@@ -155,7 +160,7 @@ describe("instructions CLI", () => {
       worktree,
     ]);
 
-    expect(install.status).toBe(0);
+    expect(install.status, install.stderr).toBe(0);
     const worktreeTarget = path.join(worktree, ".codex", "AGENTS.md");
     expect(install.stdout).toContain(worktreeTarget);
     expect(fs.readFileSync(worktreeTarget, "utf8")).toContain("Mandible Interface Contract");
@@ -166,20 +171,20 @@ describe("instructions CLI", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-config-home-"));
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-config-target-"));
     tempRoots.push(home, targetDir);
-    const dbPath = path.join(home, ".cache", "mandible", "mandible.db");
+    const dbPath = path.join(home, "fixture.db");
     const target = path.join(targetDir, "50-mandible.generated.md");
     const hookOut = path.join(targetDir, "hook-ran.txt");
     const env = { HOME: home, MANDIBLE_DB: dbPath, HOOK_OUT: hookOut };
 
     const add = await run(["instructions", "targets", "add", target, "--mode", "standalone"], env);
-    expect(add.status).toBe(0);
-    const hookCommand = "node -e \"require('node:fs').writeFileSync(process.env.HOOK_OUT, 'ran')\"";
+    expect(add.status, add.stderr).toBe(0);
+    const hookCommand = `'${process.execPath}' --no-install -e "require('node:fs').writeFileSync(process.env.HOOK_OUT, 'ran')"`;
     const setHook = await run(["instructions", "post-export", "set", hookCommand], env);
     expect(setHook.status).toBe(0);
 
     const install = await run(["instructions", "install"], env);
 
-    expect(install.status).toBe(0);
+    expect(install.status, install.stderr).toBe(0);
     const installed = fs.readFileSync(target, "utf8");
     expect(installed).toContain("Mandible Interface Contract");
     expect(installed).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
@@ -212,7 +217,7 @@ describe("instructions CLI", () => {
 
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-clean-home-"));
     tempRoots.push(home);
-    const env = { HOME: home, MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db") };
+    const env = { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") };
     expect((await run(["instructions", "targets", "add", standaloneTarget, "--mode", "standalone"], env)).status).toBe(0);
     expect((await run(["instructions", "install"], env)).status).toBe(0);
     expect(fs.existsSync(standaloneTarget)).toBe(true);
@@ -264,7 +269,7 @@ describe("instructions CLI", () => {
     const standaloneLink = path.join(tempDir, "home", "50-mandible.generated.md");
     fs.writeFileSync(standaloneReal, "stale\n", "utf8");
     fs.symlinkSync(standaloneReal, standaloneLink);
-    const env = { HOME: home, MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db") };
+    const env = { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") };
 
     const addStandalone = await run(["instructions", "targets", "add", standaloneLink, "--mode", "standalone"], env);
     expect(addStandalone.status).toBe(0);
