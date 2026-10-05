@@ -9,8 +9,8 @@ import type { Logger } from "../../src/types.js";
 
 let tempDir = "";
 let db: Db | null = null;
-let stopIngestion: (() => void) | null = null;
-let savedHome: string | undefined;
+let stopIngestion: (() => Promise<void>) | null = null;
+let sessionRoot = "";
 
 function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;
@@ -76,9 +76,12 @@ async function waitForSourceUnavailable(filePath: string, timeoutMs = 3000): Pro
 }
 
 beforeEach(async () => {
-  savedHome = process.env.HOME;
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ingestion-watch-"));
-  process.env.HOME = path.join(tempDir, "home");
+  tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ingestion-watch-")));
+  // The runner creates this private home before Bun captures it. Keep fixture
+  // transcripts within the real watched root rather than overriding HOME late.
+  const watchedRoot = path.join(os.homedir(), ".codex", "sessions");
+  fs.mkdirSync(watchedRoot, { recursive: true });
+  sessionRoot = fs.mkdtempSync(path.join(watchedRoot, "latency-fixture-"));
   vi.resetModules();
 
   const dbModule = await import("../../src/db.js");
@@ -87,16 +90,15 @@ beforeEach(async () => {
   dbModule.setDb(db);
 
   const ingestion = await import("../../src/ingestion.js");
-  stopIngestion = ingestion.stopIngestion;
+  stopIngestion = ingestion.stopIngestionGracefully;
 });
 
-afterEach(() => {
-  stopIngestion?.();
+afterEach(async () => {
+  await stopIngestion?.();
   stopIngestion = null;
   db?.close();
   db = null;
-  if (savedHome === undefined) delete process.env.HOME;
-  else process.env.HOME = savedHome;
+  fs.rmSync(sessionRoot, { recursive: true, force: true });
   fs.rmSync(tempDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -104,7 +106,7 @@ afterEach(() => {
 describe("watched tail ingestion latency", () => {
   it("ingests appended watched JSONL records without waiting for reconcile", async () => {
     const ingestion = await import("../../src/ingestion.js");
-    const sessionDir = path.join(process.env.HOME!, ".codex", "sessions", "2026", "07", "02");
+    const sessionDir = path.join(sessionRoot, "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
     const sessionPath = path.join(sessionDir, "rollout-2026-07-02T00-00-00-watchlatency.jsonl");
     await fsp.writeFile(sessionPath, initialRows(), "utf8");
@@ -142,7 +144,7 @@ describe("watched tail ingestion latency", () => {
 
   it("tombstones a missing watched source while preserving its durable coordinates", async () => {
     const ingestion = await import("../../src/ingestion.js");
-    const sessionDir = path.join(process.env.HOME!, ".codex", "sessions", "2026", "07", "02");
+    const sessionDir = path.join(sessionRoot, "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
     const sessionPath = path.join(sessionDir, "rollout-2026-07-02T00-00-00-watchdelete.jsonl");
     await fsp.writeFile(sessionPath, initialRows(), "utf8");

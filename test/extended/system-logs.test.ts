@@ -75,11 +75,12 @@ function logLine(index: number, message = `entry-${index}`): string {
 }
 
 describe("system log routes", () => {
-  const originalHome = process.env.HOME;
+  const originalLogPath = process.env.MANDIBLE_STDERR_LOG_PATH;
   let tempHome = "";
 
   afterEach(() => {
-    process.env.HOME = originalHome;
+    if (originalLogPath === undefined) delete process.env.MANDIBLE_STDERR_LOG_PATH;
+    else process.env.MANDIBLE_STDERR_LOG_PATH = originalLogPath;
     vi.resetModules();
     if (tempHome) {
       fs.rmSync(tempHome, { recursive: true, force: true });
@@ -89,12 +90,12 @@ describe("system log routes", () => {
 
   async function setupSystemRoutes(lines: string[]) {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-system-logs-home-"));
-    process.env.HOME = tempHome;
     vi.resetModules();
 
     const logDir = path.join(tempHome, ".cache", "mandible");
     fs.mkdirSync(logDir, { recursive: true });
     fs.writeFileSync(path.join(logDir, "launchd-stderr.log"), `${lines.join("\n")}\n`, "utf8");
+    process.env.MANDIBLE_STDERR_LOG_PATH = path.join(logDir, "launchd-stderr.log");
 
     const { registerSystemRoutes } = await import("../../src/routes/system.js");
     const routes = new TestRoutes();
