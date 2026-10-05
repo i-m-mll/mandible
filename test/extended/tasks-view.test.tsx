@@ -1040,10 +1040,9 @@ describe('TasksView task-command v2', () => {
     const before = stub.inventoryReads();
     await waitFor(() => expect(intervalSpy.mock.calls
       .some((call) => call[1] === 2_000)).toBe(true));
-    invalidateApiGetCache('/api/tasks');
-    window.dispatchEvent(new CustomEvent('task-command:sse', {
-      detail: { type: 'tasks.commands.changed', data: { command_id: 'command-enable' } },
-    }));
+    const poll = intervalSpy.mock.calls.find((call) => call[1] === 2_000)![0];
+    expect(typeof poll).toBe('function');
+    (poll as () => void)();
     await waitFor(() => expect(stub.inventoryReads()).toBeGreaterThan(before));
     expect(screen.getByText('Rejected: stale_target.')).toBeTruthy();
     expect((search as HTMLInputElement).value).toBe('daily');

@@ -1150,6 +1150,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
           ? { ...current, command }
           : current);
         if (command.state === 'rejected' && command.rejection_reason === 'stale_target') {
+          invalidateApiGetCache('/api/tasks');
           void load();
         }
       } catch (reconcileError) {
