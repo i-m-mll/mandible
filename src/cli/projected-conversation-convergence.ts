@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { parseCommand, stringOption, flagOption } from "./grammar.js";
 import SqliteDatabase from "../sqlite.js";

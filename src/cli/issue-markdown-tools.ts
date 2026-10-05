@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { parseCommand, commandHelp, stringOption, flagOption, repeatedOption } from "./grammar.js";
 import { getDbPath, openDb } from "../db.js";
 import {

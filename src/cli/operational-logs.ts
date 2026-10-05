@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { parseCommand, stringOption, numberOption, flagOption } from "./grammar.js";
 
 import {

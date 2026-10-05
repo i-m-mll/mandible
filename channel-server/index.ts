@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Bug: 1d652d5 — MCP channel server entry point
 //
 // This server runs as a stdio subprocess spawned by Claude Code when
