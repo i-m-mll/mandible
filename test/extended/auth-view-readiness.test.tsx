@@ -1,9 +1,12 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
 import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { render } from './notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
 
 import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
 import type { AuthRequestAction, InstanceInfo } from '../../ui/src/api';
@@ -72,7 +75,10 @@ const deferredAction: AuthRequestAction = {
 };
 
 const previewInstance: InstanceInfo = {
+  ...authMainInstance,
   role: 'preview',
+  instance_id: 'auth-ui-preview',
+  backend_generation: 'auth-ui-preview-1',
   allowed_effects: ['ledger:read', 'ledger:write', 'files:preview', 'preferences:instance'],
   operational_mutations: 'reject',
   operational_mutations_overridden: true,
@@ -96,7 +102,7 @@ function renderView(
       outputs={{}}
       selectedAuthId={selectedAuthId}
       daemonReady={daemonReady}
-      instance={instance}
+      instance={instance ?? authMainInstance}
       onApprove={onApprove}
       onReject={() => undefined}
       onRetry={() => undefined}
@@ -106,8 +112,10 @@ function renderView(
   );
 }
 
-beforeEach(() => {
-  __resetBrowserSessionForTests();
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindAuthUiOperations();
+  bindAuthUiOperations(previewInstance);
   installMemoryLocalStorage();
   Element.prototype.scrollIntoView = vi.fn();
   // Keep the auto-approve status / action probes hermetic and offline.
@@ -115,6 +123,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetBrowserSessionForTests();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -133,6 +142,7 @@ describe('AuthQueueView daemon readiness gate', () => {
       },
     };
     const props = {
+      instance: authMainInstance,
       queue: [blockedRequest], historyQueue: [], outputs: {}, selectedAuthId: 'req-1',
       daemonReady: true, onApprove, onReject: () => undefined,
       onRetry: () => undefined, onDismiss: () => undefined,

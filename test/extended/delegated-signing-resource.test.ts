@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
@@ -119,7 +118,7 @@ function fixture() {
 
 describe("delegated signer reconnect lifecycle", () => {
   it.runIf(process.platform === "darwin")("proves a real throwaway ssh-agent key with the production inspector", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-reconnect-smoke-"));
+    const dir = fs.mkdtempSync("/tmp/mandible-sign-");
     fs.chmodSync(dir, 0o700);
     const keyPath = path.join(dir, "id_ed25519");
     execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
@@ -138,7 +137,7 @@ describe("delegated signer reconnect lifecycle", () => {
       getDelegatedSigningStatus: () => ({ configured: true }),
       setupDelegatedSigning: async () => ({ configured: true }),
       freshPresenceChallenge: async (ttlSeconds: number): Promise<AuthApprovalContext> => {
-        const output = execFileSync("ssh-agent", ["-s"], { encoding: "utf8" });
+        const output = execFileSync("ssh-agent", ["-a", path.join(dir, "agent.sock"), "-s"], { encoding: "utf8" });
         agentPid = output.match(/SSH_AGENT_PID=([^;]+);/)![1];
         socketPath = output.match(/SSH_AUTH_SOCK=([^;]+);/)![1];
         execFileSync("ssh-add", ["-t", String(ttlSeconds), keyPath], {

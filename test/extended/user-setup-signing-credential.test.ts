@@ -4,6 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 
 // Issue 2205073 — the protected-merge signing credential must not be a hidden
 // manual step. Every operator otherwise lands in the signature_not_trusted
@@ -102,6 +103,10 @@ async function startFakeDaemon(
         res.writeHead(status, { "Content-Type": "application/json" });
         res.end(JSON.stringify(payload));
       };
+      if (req.method === "GET" && url === "/api/instance") {
+        json(200, MAIN_CLI_INSTANCE_RESPONSE);
+        return;
+      }
       if (req.method === "POST" && url === "/api/users/setup") {
         json(200, { user: { id: "user-1", slug: "operator-slug", display_name: "Op", email: null } });
         return;
@@ -130,7 +135,6 @@ async function runSetup(port: number): Promise<{ status: number | null; stdout: 
     HOME: homeDir,
     MANDIBLE_BASE: `http://127.0.0.1:${port}`,
     MANDIBLE_PORT: String(port),
-    MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
     GIT_OPTIONAL_LOCKS: "0",
     // Pin both non-repository config scopes into the sandbox so "global" means
     // this test's file and never the developer machine's real signing key.

@@ -1,5 +1,7 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DelegatedSigningSection } from "../../ui/src/views/settings";
 import { __resetBrowserSessionForTests } from "../../ui/src/client-auth-token";
@@ -28,6 +30,11 @@ const configured = {
   },
 };
 
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindAuthUiOperations();
+});
+
 afterEach(() => {
   cleanup();
   __resetBrowserSessionForTests();
@@ -37,12 +44,6 @@ afterEach(() => {
 describe("delegated signing settings", () => {
   it("requires confirmation, removes key material, and refreshes visible status", async () => {
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/api/client-auth/whoami") {
-        return response({ authenticated: true, session: {
-          family_id: "settings-signing-test", audience: "production", csrf_token: "csrf",
-          effect_ceiling: ["config:write"],
-        } });
-      }
       expect(String(input)).toBe("/api/auth/clearances/signing");
       return response(init?.method === "DELETE"
         ? { ...configured.signing, configured: false, public_key: null }
@@ -50,17 +51,20 @@ describe("delegated signing settings", () => {
     });
     vi.stubGlobal("fetch", fetch);
 
-    render(<DelegatedSigningSection />);
+    render(<DelegatedSigningSection instance={authMainInstance} />);
     const remove = await screen.findByRole("button", { name: "Remove" });
     fireEvent.click(remove);
     expect(fetch.mock.calls.some(([input]) => String(input) === "/api/auth/clearances/signing")).toBe(true);
     expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Remove key material" }));
     await waitFor(() => expect(screen.getByText("Delegated signing material removed")).toBeTruthy());
     expect(fetch.mock.calls.find(([input, init]) =>
       String(input) === "/api/auth/clearances/signing" && init?.method === "DELETE")?.[1])
-      .toMatchObject({ method: "DELETE" });
+      .toMatchObject({ method: "DELETE", credentials: "same-origin" });
+    const removal = fetch.mock.calls.find(([, init]) => init?.method === "DELETE")?.[1];
+    expect(new Headers(removal?.headers).get("X-Mandible-CSRF")).toBe("test-csrf");
     expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
   });
 });
