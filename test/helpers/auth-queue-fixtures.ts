@@ -383,16 +383,16 @@ export function executionEvidenceChain(
 
 /**
  * Generates a real keypair inside the repository, exactly as before. The key is
- * deliberately not memoised: it lives in the working tree, so `git add .` in
- * `commitOnBranch` commits it, and sharing one key across cases would change
- * what those commits contain. The measured cost is ~0.5s of a 101.5s file.
+ * deliberately not memoised across repositories. It lives in private Git
+ * metadata so branch switches and broad fixture staging cannot delete or
+ * commit its bytes.
  */
 export function configureSigningCredential(
   db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
-  const keyPath = path.join(repo, ".mandible-test-signing-key");
+  const keyPath = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "mandible-test-signing-key");
   execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
   const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
   const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
@@ -573,7 +573,7 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
     request = queue.update(id, { cwd: createAuthCheckRepo() });
   }
   if (request.cwd && fs.existsSync(path.join(request.cwd, '.git')) &&
-      !fs.existsSync(path.join(request.cwd, '.mandible-test-signing-key'))) {
+      !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
     configureSigningCredential(db, request.cwd, 'ssh_key');
   }
   return queue.approveWithOperatorProof(id, getOperator(db)!.id);
