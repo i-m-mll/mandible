@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { sqliteRuntimePaths } from '../../src/sqlite-runtime.js';
+import { sqliteRuntimePaths, verifySqliteArchive } from '../../src/sqlite-runtime.js';
 
 // Deployment fixtures exercise the real selector with the qualified source
 // and preserved stock library, without network acquisition per test.
@@ -10,5 +10,9 @@ export function copyRuntimeFixture(root: string) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(path.join(process.cwd(), name), target);
   }
-  return { MANDIBLE_SQLITE_LIBRARY: sqliteRuntimePaths().library, MANDIBLE_SQLITE_LIBRARY_ARCHIVE: sqliteRuntimePaths().archive };
+  if (process.platform !== 'darwin') return {};
+  // The test runtime provisions before per-file HOME isolation. Preserve its
+  // verified archive input instead of deriving a nonexistent later-home path.
+  const archive = process.env.MANDIBLE_SQLITE_LIBRARY_ARCHIVE || sqliteRuntimePaths().archive;
+  return { MANDIBLE_SQLITE_LIBRARY_ARCHIVE: verifySqliteArchive(archive) };
 }

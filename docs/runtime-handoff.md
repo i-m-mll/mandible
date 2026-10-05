@@ -44,7 +44,7 @@ without dependency mutation:
 ```bash
 runtime="$(scripts/bun-runtime.sh)"
 MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
-  "$runtime" node_modules/vitest/vitest.mjs run \
+  "$runtime" scripts/run-vitest.js run \
   --config vitest.extended.config.ts \
   test/extended/runtime-handoff-launchd.test.ts
 ```
@@ -75,9 +75,10 @@ MANDIBLE_TEST_OLD_CHECKOUT="/absolute/path/to/deployed/old/checkout" \
 MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
 MANDIBLE_TEST_CANDIDATE_REVISION="<committed candidate SHA>" \
 MANDIBLE_TEST_CA_HOME="/absolute/path/to/existing/trusted/installation" \
+MANDIBLE_TEST_BUILD_HOME="/absolute/path/to/existing/build/user/home" \
 MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
 MANDIBLE_SQLITE_LIBRARY_ARCHIVE="/absolute/path/to/verified/sqlite.tar.gz" \
-  "$runtime" node_modules/vitest/vitest.mjs run \
+  "$runtime" scripts/run-vitest.js run \
   --config vitest.extended.config.ts \
   test/extended/runtime-handoff-full.test.ts
 ```
@@ -101,7 +102,7 @@ native install path is private and explicitly frozen in the fixture hook
 command. Provider secrets and test-mode variables are absent from subprocess
 environments. The receipt records both source revisions and the transforms.
 
-Compact success or failure evidence goes to the calling user's
+Compact success or failure evidence goes to the explicit build home's
 `.cache/mandible/acceptance/upgrade-evidence`. Teardown stops only declared
 fixture jobs and deletes their generated data. The separate paired daemon and
 desktop gate still runs on the exact unmodified integration candidate; this

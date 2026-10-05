@@ -20,6 +20,14 @@ avoid duplicate execution. `local-ca-lockf.test.ts` runs on provisioned macOS
 with Xcode Command Line Tools and the real `lockf`; the maintained runner omits
 it on other platforms. Explicitly requesting it on an unsupported host fails.
 
+The runtime handoff fixtures are explicit macOS upgrade gates.
+`runtime-handoff-launchd.test.ts` skips when no legacy interpreter input is
+provided; `runtime-handoff-full.test.ts` skips when its documented old checkout,
+interpreter, candidate revision, trusted CA, build home, or runtime archive input is absent.
+These are reported as skipped, never passing upgrade evidence. Provided invalid
+inputs fail. Their provisioned commands and final gate are documented in
+[runtime handoff](../../docs/runtime-handoff.md).
+
 Every other kept file executes. Historical failures and content hashes do not
 exclude tests. A failure needs a current verdict: repair a defective fixture,
 fix the product through its owning issue, or retire an incidental assertion

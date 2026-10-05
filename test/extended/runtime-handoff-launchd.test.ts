@@ -21,7 +21,7 @@ const wait = async (predicate: () => boolean, timeout = 15000) => {
   while (Date.now() < deadline) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 100)); }
   throw new Error('Isolated launchd fixture did not reach its expected state.');
 };
-it('arms one independent helper under loaded legacy Node arguments and survives helper death without build mutation', async () => {
+it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUNTIME)('arms one independent helper under loaded legacy Node arguments and survives helper death without build mutation', async () => {
   if (process.platform !== 'darwin') throw new Error('This explicit launchd check requires macOS.');
   // Opt-in exact legacy binary: no Node acquisition or retained Node backend.
   const legacy = process.env.MANDIBLE_TEST_LEGACY_RUNTIME;

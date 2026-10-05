@@ -49,13 +49,16 @@ function configurePorts(root: string, runtime: string, ports: { public: number; 
   fs.writeFileSync(generator, generatorSource.replace('origin.port !== "19420"', `origin.port !== "${ports.public}"`));
   command(runtime, ['scripts/generate-canonical-origin.mjs'], { cwd: root, env });
 }
-it('hands the actual old daemon over to the candidate through isolated production supervision', async () => {
+const missingInputs = ['MANDIBLE_TEST_OLD_CHECKOUT', 'MANDIBLE_TEST_LEGACY_RUNTIME', 'MANDIBLE_TEST_CANDIDATE_REVISION', 'MANDIBLE_TEST_CA_HOME', 'MANDIBLE_TEST_BUILD_HOME', 'MANDIBLE_RUNTIME_ARCHIVE'].some(key => !process.env[key]);
+it.skipIf(process.platform !== 'darwin' || missingInputs)('hands the actual old daemon over to the candidate through isolated production supervision', async () => {
   const oldRoot = process.env.MANDIBLE_TEST_OLD_CHECKOUT;
   const legacy = process.env.MANDIBLE_TEST_LEGACY_RUNTIME;
   const candidateRef = process.env.MANDIBLE_TEST_CANDIDATE_REVISION;
   const sourceHome = process.env.MANDIBLE_TEST_CA_HOME;
+  const buildHome = process.env.MANDIBLE_TEST_BUILD_HOME;
   const archivePath = process.env.MANDIBLE_RUNTIME_ARCHIVE;
-  if (process.platform !== 'darwin' || !oldRoot || !legacy || !candidateRef || !sourceHome || !archivePath) throw new Error('Full upgrade gate requires macOS and all documented old/candidate/runtime/CA inputs.');
+  if (process.platform !== 'darwin' || !oldRoot || !legacy || !candidateRef || !sourceHome || !buildHome || !archivePath) throw new Error('Full upgrade gate requires macOS and all documented old/candidate/runtime/CA/build-home inputs.');
+  if (!path.isAbsolute(buildHome) || !fs.statSync(buildHome).isDirectory()) throw new Error('The explicit build home must be an existing absolute directory.');
   const candidate = command('git', ['rev-parse', '--verify', `${candidateRef}^{commit}`], { cwd: process.cwd(), env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).trim();
   const oldMarker = JSON.parse(fs.readFileSync(path.join(oldRoot, 'dist/build-revision.json'), 'utf8'));
   const oldRevision = process.env.MANDIBLE_TEST_OLD_REVISION || oldMarker.commit;
@@ -78,15 +81,15 @@ it('hands the actual old daemon over to the candidate through isolated productio
   const suffix = digest(home).slice(0, 8); const domain = `gui/${process.getuid!()}`;
   const backendLabel = `bio.mll.mandible.local-session-production.${suffix}`; const gatewayLabel = `bio.mll.mandible.local-front-door.${suffix}`;
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let queue: AuthQueue | undefined; let requestId = ''; let executionId = ''; let journal: any;
-  const evidence = path.join(os.homedir(), '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
+  const evidence = path.join(buildHome, '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
     // Reuse the installed build toolchain, while cloning dependency cache bytes
     // into the disposable home. Neither operation changes user configuration.
     for (const name of ['.cargo', '.rustup']) {
-      const source = fs.realpathSync(path.join(os.homedir(), name));
+      const source = fs.realpathSync(path.join(buildHome, name));
       fs.symlinkSync(source, path.join(userHome, name), 'dir');
     }
-    const bunCache = path.join(os.homedir(), '.bun/install/cache');
+    const bunCache = path.join(buildHome, '.bun/install/cache');
     if (!fs.existsSync(bunCache)) throw new Error('Full fixture requires the qualified dependency cache from frozen installation.');
     fs.mkdirSync(path.join(userHome, '.bun/install'), { recursive: true });
     command('/bin/cp', ['-c', '-R', bunCache, path.join(userHome, '.bun/install/cache')]);
