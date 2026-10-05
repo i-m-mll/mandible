@@ -667,7 +667,9 @@ export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguo
 
 export type ArtifactAliasRecord = {
   id: string;
-  artifact_id: string | null;
+  blob_id: string | null;
+  /** Historical HTTP projection; internal aliases carry blob_id. */
+  artifact_id?: string | null;
   scheme: string;
   alias: string;
   normalized_ref: string;
@@ -839,19 +841,68 @@ export type ArtifactVersionRecord = {
   created_at: number;
 };
 
-export type ArtifactResolveResult = {
-  status: ArtifactAliasResolutionStatus;
+export type CanonicalArtifactTargetType = "artifact" | "artifact_version" | "artifact_blob";
+export type ArtifactIdentityKind = "logical" | "pinned-version" | "blob";
+export type ArtifactRequestedKind = ArtifactIdentityKind | "alias" | "series" | "unknown";
+
+interface ArtifactIdentityBase {
   ref: string;
   scheme: string;
   normalized_ref: string;
-  target_type?: "artifact" | "artifact_version" | "artifact_blob";
-  target_id?: string | null;
-  artifact: ArtifactRecord | null;
+  warnings: string[];
   alias: ArtifactAliasRecord | null;
-  logical_artifact?: ArtifactIdentityRecord | null;
-  artifact_version?: CanonicalArtifactVersionRecord | null;
-  artifact_blob?: ArtifactBlobRecord | null;
-  warnings?: string[];
+}
+
+export type ResolvedArtifactIdentity = ArtifactIdentityBase & { status: "resolved" } & (
+  | { kind: "logical"; target_type: "artifact"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord } & (
+      | { artifact_version: CanonicalArtifactVersionRecord; artifact_blob: ArtifactBlobRecord }
+      | { artifact_version: null; artifact_blob: null })
+  | { kind: "pinned-version"; target_type: "artifact_version"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord; artifact_version: CanonicalArtifactVersionRecord;
+      artifact_blob: ArtifactBlobRecord }
+  | { kind: "blob"; target_type: "artifact_blob"; target_id: string;
+      logical_artifact: null; artifact_version: null; artifact_blob: ArtifactBlobRecord }
+);
+
+export interface FailedArtifactIdentity extends ArtifactIdentityBase {
+  status: "unresolved" | "ambiguous" | "unsupported";
+  kind: "unresolved" | "ambiguous" | "unsupported";
+  requested_kind: ArtifactRequestedKind;
+  target_type: CanonicalArtifactTargetType | null;
+  target_id: null;
+  logical_artifact: ArtifactIdentityRecord | null;
+  artifact_version: null;
+  artifact_blob: null;
+}
+
+export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
+
+export type ArtifactCustody =
+  | { kind: "git"; project_id: string; commit: string; path: string; hash: string }
+  | { kind: "managed"; storage_uri: string; hash: string };
+
+export interface ArtifactMaterializationTarget {
+  id: string;
+  version_id: string | null;
+  blob: ArtifactBlobRecord;
+  custody: ArtifactCustody;
+  metadata: Record<string, unknown>;
+}
+
+export type ArtifactMaterializationError = {
+  code: "unknown_reference" | "unavailable_material" | "ambiguous_source" | "invalid_custody" | "hash_mismatch" | "size_limit";
+  message: string;
+};
+export type ArtifactMaterializationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ArtifactMaterializationError };
+
+/** Provider HTTP projection retained for historical and external consumers. */
+export type ArtifactResolveResult = ArtifactIdentityResolution & {
+  artifact: ArtifactRecord | null;
+  series: ArtifactSeriesRecord | null;
+  version: ArtifactVersionRecord | null;
 };
 
 export type ArtifactSeriesSummary = {
@@ -889,7 +940,12 @@ export type ArtifactDraftRecord = {
   updated_at: number;
 };
 
-export type ArtifactVersionRecordResult = {
+export type ArtifactVersionWriteResult = Extract<ResolvedArtifactIdentity, { kind: "pinned-version" }> & {
+  created: boolean;
+};
+export type ArtifactDraftWriteResult = { draft: ArtifactDraftRecord; result: ArtifactVersionWriteResult };
+
+export type ArtifactVersionRecordResult = ArtifactVersionWriteResult & {
   series: ArtifactSeriesRecord;
   version: ArtifactVersionRecord;
   artifact: ArtifactRecord;

@@ -11,6 +11,7 @@ import {
   getArtifact,
   projectArtifactPublicValue,
   resolveArtifactIdentity,
+  resolvedArtifactRecord,
 } from "../provider-artifacts.js";
 import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
@@ -616,9 +617,9 @@ function listAssociatedArtifacts(
     for (const ref of refs) {
       try {
         const resolution = resolveArtifactIdentity(db, ref, "link");
-        if (!resolution.artifact) continue;
+        if (!resolvedArtifactRecord(resolution)) continue;
         const displayIdentity = artifactDisplayIdentity(resolution);
-        upsertAssociatedArtifact(artifacts, resolution.artifact, {
+        upsertAssociatedArtifact(artifacts, resolvedArtifactRecord(resolution)!, {
           ref,
           title: displayIdentity.title,
           logicalName: displayIdentity.logicalName,
@@ -765,7 +766,7 @@ function resolveIssueDetailLinkArtifact(
       : null;
     const displayIdentity = artifactDisplayIdentity(resolution);
     return {
-      artifact: resolution?.artifact ?? fallback,
+      artifact: resolvedArtifactRecord(resolution) ?? fallback,
       link,
       title: displayIdentity.title,
       logicalName: displayIdentity.logicalName,
@@ -789,13 +790,13 @@ function resolveIssueDetailLinkArtifact(
 
   try {
     const resolution = resolveArtifactIdentity(db, ref, "surface");
-    if (resolution.artifact) {
+    if (resolvedArtifactRecord(resolution)) {
       const logical = resolution.logical_artifact;
       const version = resolution.artifact_version;
       const resolvedSeriesId = logical ? seriesRefForLogicalArtifact(logical.id) : link.series_id;
       const resolvedVersionNo = version?.version_no ?? null;
       return {
-        artifact: resolution.artifact,
+        artifact: resolvedArtifactRecord(resolution),
         link: { ...link, series_id: resolvedSeriesId, resolved_version_no: resolvedVersionNo },
         ...artifactDisplayIdentity(resolution),
         pinState: "living",

@@ -51,7 +51,7 @@ import type { BriefingGroupDestinationChangeInput } from "../feedback/briefing-g
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { evaluateProjectAccess, PermissionError, requireProjectAccess } from "../permissions/store.js";
 import { resolveArtifactProject } from "../permissions/resources.js";
-import { resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { placeBriefingReport } from "../feedback/briefing-report-destinations.js";
 import { sendJson } from "./http.js";
 import {
@@ -169,7 +169,7 @@ function artifactPublisherAccess(db: Db, req: RequestLike, artifactId: string): 
 
 function artifactProjectForWrite(db: Db, req: RequestLike, artifactRef: string):
   { logicalArtifactId: string; projectId: string } {
-  const resolved = resolveArtifactRefReadonlyFull(db, artifactRef);
+  const resolved = resolveArtifactIdentity(db, artifactRef, "strict-read");
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact" || !resolved.target_id) {
     throw new BriefingStoreError("Provide one exact logical Artifact ref", 404, "artifact_not_found");
   }
@@ -559,8 +559,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         ? requestBody.expected_current_round_id : "";
       const expectedVersion = typeof requestBody.expected_current_artifact_version_ref === "string"
         ? requestBody.expected_current_artifact_version_ref : "";
-      const newVersion = resolveArtifactRefReadonlyFull(db, versionRef);
-      const oldVersion = resolveArtifactRefReadonlyFull(db, expectedVersion);
+      const newVersion = resolveArtifactIdentity(db, versionRef, "strict-read");
+      const oldVersion = resolveArtifactIdentity(db, expectedVersion, "strict-read");
       if (newVersion.status === "resolved" && oldVersion.status === "resolved"
           && newVersion.target_type === "artifact_version" && oldVersion.target_type === "artifact_version"
           && newVersion.target_id === oldVersion.target_id) throw new BriefingStoreError(
@@ -988,7 +988,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       if (!title) throw new BriefingStoreError("title must be a nonblank string");
       if (getUserById(db, publication.publisherUserId)?.kind === "agent") {
-        const version = resolveArtifactRefReadonlyFull(db, artifactVersionRef);
+        const version = resolveArtifactIdentity(db, artifactVersionRef, "strict-read");
         if (version.status !== "resolved" || version.target_type !== "artifact_version" || !version.target_id) {
           throw new BriefingStoreError("Briefing creation requires one exact Artifact version", 404,
             "artifact_version_not_found");

@@ -12,13 +12,12 @@ import {
   associateProjectArtifact,
   listProjectArtifactAssociations,
   listArtifactVersions,
-  recordArtifactVersion,
   registerLocalArtifactPath,
   projectArtifactPublicValue,
   resolveAndLinkArtifact,
-  resolveArtifactRef,
   resolveArtifactVersionHistory,
 } from "../src/provider-artifacts.js";
+import { recordArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
 import { diffArtifacts, getArtifactContent, readArtifactBytesFull } from "../src/artifact-content.js";
 import { METADATA_BACKUP_TABLES, buildMetadataBackupSql } from "../src/ledger/backup.js";
 import {

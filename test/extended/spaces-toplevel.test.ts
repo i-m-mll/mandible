@@ -19,7 +19,7 @@ import {
 import { LedgerStore } from "../../src/ledger/store.js";
 import { registerSpacesRoutes } from "../../src/routes/spaces.js";
 import { Router } from "../../src/server.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 
 // Issue 812df41 (umbrella de56ffa): top-level / global Spaces + grouped-list API +
 // cross-project item resolution. The v86 migration rebuilds `spaces` with a

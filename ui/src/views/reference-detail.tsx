@@ -1,3 +1,4 @@
+import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import {
@@ -197,7 +198,7 @@ export function ArtifactReferenceDetail({
       .then(async (nextResolution) => {
         if (cancelled) return;
         const nextArtifact =
-          nextResolution.artifact ??
+          resolvedArtifactRecord(nextResolution) ??
           (nextResolution.artifact_version
             ? await getArtifact(nextResolution.artifact_version.id)
             : await getArtifact(artifactRef));

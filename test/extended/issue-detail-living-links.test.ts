@@ -7,7 +7,8 @@ import { systemAction } from "../../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../../src/ledger/issue-detail.js";
 import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
 import { LedgerStore } from "../../src/ledger/store.js";
-import { recordArtifactVersion, resolveAndLinkArtifact } from "../../src/provider-artifacts.js";
+import { resolveAndLinkArtifact } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 
 let tempDir = "";
 let db: Db;

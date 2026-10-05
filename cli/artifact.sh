@@ -568,7 +568,7 @@ payload_for_path() {
 print_batch_human() {
   api_jq_human '
     (.registered[]? |
-      if .version then "\(.status // (if .created == false then "unchanged" elif .version.version_no == 1 then "created" else "updated" end)) \(.artifact | mandible_display_ref) \(.version | mandible_display_ref)"
+      if .artifact_version then "\(.status // (if .created == false then "unchanged" elif .artifact_version.version_no == 1 then "created" else "updated" end)) \(.artifact | mandible_display_ref) \(.artifact_version | mandible_display_ref)"
       elif .blob_only then "registered blob \(.artifact | mandible_display_ref)"
       else "registered \(.artifact | mandible_display_ref) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
     (.linked[]? | "linked \(.artifact | mandible_display_ref) \(.link.link_type) issue:\(.link.entity_id | mandible_short_id)"),
@@ -847,7 +847,7 @@ cmd_link() {
       .link as $l
       | .resolution as $r
       | ($l.link_kind // "pinned") as $kind
-      | ($l.resolved_version_no // $r.resolved_version_no // $r.version.version_no // null) as $version
+      | ($l.resolved_version_no // $r.resolved_version_no // $r.artifact_version.version_no // null) as $version
       | (if $version == null then "" else " v\($version)" end) as $version_suffix
       | (if $kind == "living" then "[living · latest\($version_suffix)]" else "[pinned\($version_suffix)]" end) as $badge
       | "linked \($r.artifact | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
@@ -897,18 +897,18 @@ cmd_format() {
   identity="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
     .resolution as $r
     | if $r.status != "resolved" then error("artifact ref did not resolve")
-      elif ($input_ref | test("^artifact-series:"; "i")) and $r.series then
-        ($r.series.ref // $r.series.id)
-        + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+      elif ($input_ref | test("^artifact-series:"; "i")) and $r.logical_artifact then
+        (($r.logical_artifact.ref // $r.logical_artifact.id) | sub("^artifact:"; "artifact-series:"))
+        + (if ($input_ref | test("@[0-9]+$")) and $r.artifact_version then "@" + ($r.artifact_version.version_no | tostring) else "" end)
       elif $r.target_type == "artifact" then ($r.logical_artifact.ref // $r.logical_artifact.id)
-      elif $r.target_type == "artifact_version" then ($r.artifact_version.ref // $r.version.ref // $r.target_id)
+      elif $r.target_type == "artifact_version" then ($r.artifact_version.ref // $r.target_id)
       elif $r.target_type == "artifact_blob" then ($r.artifact_blob.ref // $r.target_id)
       else error("unsupported artifact target type") end
   ')" || die "${RED}Artifact ref did not resolve to a typed identity.${RESET}" 1
   full_id="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
     .resolution as $r
-    | if ($input_ref | test("^artifact-series:"; "i")) and $r.series then
-        $r.series.id + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+    | if ($input_ref | test("^artifact-series:"; "i")) and $r.logical_artifact then
+        ($r.logical_artifact.id | sub("^artifact:"; "artifact-series:")) + (if ($input_ref | test("@[0-9]+$")) and $r.artifact_version then "@" + ($r.artifact_version.version_no | tostring) else "" end)
       else $r.target_id end')"
   target_type="$(printf '%s\n' "$response" | jq -r --arg input_ref "$ref" '
     if ($input_ref | test("^artifact-series:"; "i")) then "artifact_series" else .resolution.target_type end')"
@@ -1329,9 +1329,9 @@ cmd_record() {
   else
     printf '%s\n' "$response" | api_jq_human '
       .result as $r
-      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version | mandible_display_ref)",
-        "series \($r.series | mandible_display_ref) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
-        "artifact \($r.artifact | mandible_display_ref)",
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.artifact_version.version_no) \($r.artifact_version | mandible_display_ref)",
+        "series \($r.logical_artifact | mandible_display_ref) [\($r.logical_artifact.source_kind)] \($r.logical_artifact.version_count) version(s)",
+        "artifact \($r.logical_artifact | mandible_display_ref)",
         ( ($r.warnings // [])[] | "warning: \(.)" )'
   fi
 }

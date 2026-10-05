@@ -3,13 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../../src/db.js";
-import {
-  getArtifactDraft,
-  publishArtifactDraft,
-  rebaseArtifactDraft,
-  recordArtifactVersion,
-  saveArtifactDraft,
-} from "../../src/provider-artifacts.js";
+import { getArtifactDraft, rebaseArtifactDraft, saveArtifactDraft } from "../../src/provider-artifacts.js";
+import { publishArtifactDraft, recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { registerProviderRoutes } from "../../src/routes/providers.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
 

@@ -17,7 +17,7 @@ import { LocalSessionAuthority } from "../../src/client-auth/session-authority.j
 import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
 import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
 import { seedPreviewUserPreferences } from "../../scripts/iab-preview.mjs";

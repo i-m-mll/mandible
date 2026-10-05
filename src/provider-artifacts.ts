@@ -18,23 +18,21 @@ import { resolveProjectRef } from "./ledger/project-registry.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 import {
   classifyArtifactRef,
+  projectCanonicalArtifactRecord,
+  resolvedArtifactRecord,
+  artifactMaterializationTarget,
   DEFAULT_ARTIFACT_ID_PREFIX_LENGTH,
   emptyArtifactIdentityPayload,
   failedArtifactIdentity,
   formatCompactArtifactId,
-  projectArtifactResolution,
-  resolvedArtifactIdentity,
-  type ArtifactIdentityKind,
   type ArtifactIdentityResolution,
   type ArtifactRequestedKind,
   type ArtifactResolutionMode,
-  type CanonicalArtifactTargetType,
+  type CanonicalArtifactTargetType
 } from "./artifact-identity.js";
-// Cyclic import (artifact-content also imports from this module). Safe: both
-// sides reference each other only from inside functions, never at module-eval
-// top level. Used by recordArtifactVersion's managed-`ref` path to read the
-// full bytes of an existing artifact before snapshotting it into CAS.
-import { readArtifactBytesFull } from "./artifact-content.js";
+import {
+  readArtifactMaterial
+} from "./artifact-materialization.js";
 import { materializeArtifactFileIntoCas, readAndHashArtifactFile } from "./artifact-ingest-pool.js";
 import type {
   ArtifactAliasRecord,
@@ -46,16 +44,13 @@ import type {
   ArtifactIdentitySourceKind,
   ArtifactLinkRecord,
   ArtifactRecord,
-  ArtifactDraftPublishResult,
   ArtifactDraftRecord,
   ArtifactRecoverability,
-  ArtifactResolveResult,
   ArtifactSeriesSummary,
   ArtifactSeriesRecord,
   ArtifactSeriesSourceKind,
   ArtifactVersionHistory,
   ArtifactVersionRecord,
-  ArtifactVersionRecordResult,
   ArtifactVersionSourceKind,
   CanonicalArtifactVersionRecord,
   GraphAction,
@@ -219,7 +214,7 @@ export interface ArtifactResolveAndLinkInput {
 }
 
 export interface ArtifactResolveAndLinkResult {
-  resolution: ArtifactResolveResult;
+  resolution: ArtifactIdentityResolution;
   link: ArtifactLinkRecord | null;
 }
 
@@ -2209,11 +2204,10 @@ function resolveIssueEntity(
 // no series, so fall back to the series that contain the resolved artifact
 // version: a unique hit is usable, while 0 or >1 is ambiguous. This never
 // touches the resolver core — it is a link-write-time lookup only.
-function livingSeriesCandidates(db: Db, resolution: ArtifactResolveResult): ArtifactSeriesRecord[] {
+function livingSeriesCandidates(db: Db, resolution: ArtifactIdentityResolution): ArtifactSeriesRecord[] {
   if (resolution.logical_artifact) return [projectCanonicalSeriesRecord(resolution.logical_artifact)];
   if (artifactIdentityTablesExist(db)) {
-    const blob = resolution.artifact_blob
-      ?? (resolution.artifact ? canonicalBlobForCompatibilityRef(db, resolution.artifact.id) : null);
+    const blob = resolution.artifact_blob;
     if (blob) {
       const rows = db.prepare(
         "SELECT DISTINCT artifact_id FROM artifact_version WHERE blob_id = ?",
@@ -2234,11 +2228,11 @@ export function resolveAndLinkArtifact(
 ): ArtifactResolveAndLinkResult {
   const ref = asString(input.ref) ?? asString(input.artifact_ref) ?? asString(input.artifact_id);
   if (!ref) throw new Error("artifact ref is required");
-  const resolution = resolveArtifactLinkRef(db, ref, now);
+  const resolution = resolveArtifactIdentity(db, ref, "link", now);
   if (resolution.status === "ambiguous") {
     throw new Error(`ambiguous artifact ref: ${ref}`);
   }
-  if (!resolution.artifact) {
+  if (!resolvedArtifactRecord(resolution)) {
     throw new Error(`artifact ref did not resolve: ${ref}`);
   }
 
@@ -2255,10 +2249,8 @@ export function resolveAndLinkArtifact(
   // way — the route also pre-validates this for a clean HTTP-edge contract.
   let seriesId: string | undefined;
   let seriesRef: string | undefined;
-  let canonicalArtifact = resolution.logical_artifact
-    ?? (resolution.artifact_version ? getLogicalArtifact(db, resolution.artifact_version.artifact_id) : null);
+  const canonicalArtifact = resolution.logical_artifact;
   let canonicalVersion = resolution.artifact_version;
-  if (!canonicalArtifact && canonicalVersion) canonicalArtifact = getLogicalArtifact(db, canonicalVersion.artifact_id);
   if (!canonicalVersion && canonicalArtifact?.latest_version_id) {
     canonicalVersion = getCanonicalArtifactVersion(db, canonicalArtifact.latest_version_id);
   }
@@ -2274,14 +2266,14 @@ export function resolveAndLinkArtifact(
       seriesId = candidates[0].id;
     }
     // `series_ref` records the author-facing ref exactly as supplied; the stored
-    // artifact_id is the latest-at-creation fallback (resolution.artifact.id).
+    // artifact_id is the latest-at-creation fallback (resolvedArtifactRecord(resolution)!.id).
     seriesRef = ref;
   }
 
   const issueResolution = entityType === "issue"
     ? resolveIssueEntity(db, rawEntityId, asString(input.issue_project) ?? asString(input.repo_id))
     : null;
-  const link = registerArtifactLink(db, resolution.artifact.id, {
+  const link = registerArtifactLink(db, resolvedArtifactRecord(resolution)!.id, {
     entity_type: entityType,
     entity_id: issueResolution?.entity_id ?? rawEntityId,
     link_type: linkType,
@@ -2335,7 +2327,7 @@ export function snapshotArtifactBytes(
   const hash = hashBuffer(bytes);
   const ref = asString(input.ref) ?? asString(input.artifact_ref);
   if (ref) {
-    const existing = resolveArtifactRef(db, ref, now).artifact;
+    const existing = resolvedArtifactRecord(resolveArtifactIdentity(db, ref, "strict-read", now));
     if (existing?.algorithm === "sha256" && existing.content_hash.toLowerCase() !== hash) {
       throw new Error("snapshot bytes do not match registered sha256");
     }
@@ -2408,7 +2400,7 @@ export async function snapshotArtifactBytesAsync(
   const hash = materialized.hash;
   const ref = asString(input.ref) ?? asString(input.artifact_ref);
   if (ref) {
-    const existing = resolveArtifactRef(db, ref, now).artifact;
+    const existing = resolvedArtifactRecord(resolveArtifactIdentity(db, ref, "strict-read", now));
     if (existing?.algorithm === "sha256" && existing.content_hash.toLowerCase() !== hash) {
       throw new Error("snapshot bytes do not match registered sha256");
     }
@@ -2506,10 +2498,10 @@ function resolveBundleMemberRef(
 ): ArtifactRecord {
   const ref = asString(member.ref) ?? asString(member.artifact_ref);
   if (!ref) throw new Error("bundle member ref or path is required");
-  const resolution = resolveArtifactRef(db, ref, now);
+  const resolution = resolveArtifactIdentity(db, ref, "strict-read", now);
   if (resolution.status === "ambiguous") throw new Error(`ambiguous artifact ref: ${ref}`);
-  if (!resolution.artifact) throw new Error(`artifact ref did not resolve: ${ref}`);
-  return resolution.artifact;
+  if (!resolvedArtifactRecord(resolution)) throw new Error(`artifact ref did not resolve: ${ref}`);
+  return resolvedArtifactRecord(resolution)!;
 }
 
 // Off-thread twin of resolveBundleMemberArtifact: a path member is read+hashed
@@ -2647,7 +2639,7 @@ export function addArtifactBundleMembers(
   members: ArtifactBundleMemberInput[],
   now = Date.now(),
 ): ArtifactBundleRecord {
-  const bundle = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef, now).artifact;
+  const bundle = getArtifact(db, bundleRef);
   if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
   const existingMembers = listArtifactBundleMembers(db, bundle.id);
   const start = existingMembers.length;
@@ -2665,7 +2657,7 @@ export async function addArtifactBundleMembersAsync(
   members: ArtifactBundleMemberInput[],
   now = Date.now(),
 ): Promise<ArtifactBundleRecord> {
-  const bundle = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef, now).artifact;
+  const bundle = getArtifact(db, bundleRef);
   if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
   const existingMembers = listArtifactBundleMembers(db, bundle.id);
   const start = existingMembers.length;
@@ -2701,7 +2693,7 @@ export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBun
 }
 
 export function getArtifactBundle(db: Db, bundleRef: string): ArtifactBundleRecord | null {
-  const artifact = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef).artifact;
+  const artifact = getArtifact(db, bundleRef);
   if (!artifact) return null;
   return { bundle: artifact, members: listArtifactBundleMembers(db, artifact.id) };
 }
@@ -3487,29 +3479,8 @@ export function getProviderHealth(db: Db, id: string): {
  * (recorded on their blob as `metadata.compatibility_artifact_id`).
  */
 export function getArtifact(db: Db, id: string): ArtifactRecord | null {
-  if (!artifactIdentityTablesExist(db)) return null;
-  let logical: ArtifactIdentityRecord | null = null;
-  let version: CanonicalArtifactVersionRecord | null = null;
-  let blob: ArtifactBlobRecord | null = null;
-  const hash = artifactHashFromRef(id) ?? (isSha256(id.trim().toLowerCase()) ? id.trim().toLowerCase() : undefined);
-  if (hash) {
-    blob = getArtifactBlob(db, hash);
-  } else if (/^artifact-blob:/i.test(id)) {
-    blob = getArtifactBlob(db, id);
-  } else if (/^artifact-version:/i.test(id)) {
-    version = getCanonicalArtifactVersion(db, id);
-    logical = version ? getLogicalArtifact(db, version.artifact_id) : null;
-    blob = version ? getArtifactBlob(db, version.blob_id) : null;
-  } else if (/^artifact:ref:/i.test(id)) {
-    blob = blobByCompatibilityArtifactId(db, id.trim());
-  } else if (/^artifact:/i.test(id)) {
-    logical = getLogicalArtifact(db, id);
-    version = logical?.latest_version_id ? getCanonicalArtifactVersion(db, logical.latest_version_id) : null;
-    blob = version ? getArtifactBlob(db, version.blob_id) : null;
-  }
-  if (!blob) return null;
-  const artifact = projectCanonicalArtifactRecord(blob, logical, version);
-  if (version) artifact.id = version.id;
+  const artifact = resolvedArtifactRecord(resolveArtifactIdentity(db, id, "surface"));
+  if (!artifact) return null;
   if (artifactAliasTablesExist(db)) {
     artifact.aliases = listArtifactAliases(db, artifact.content_hash);
     artifact.links = listArtifactLinks(db, artifact.content_hash);
@@ -3975,6 +3946,9 @@ export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
       Object.entries(value as Record<string, unknown>)
         .map(([key, entry]) => [key, projectArtifactPublicValue(db, entry)]),
     );
+    if (typeof projected.scheme === "string" && typeof projected.normalized_ref === "string" && "blob_id" in projected) {
+      projected.artifact_id = projected.blob_id;
+    }
     const id = asString(projected.id);
     if (id && /^artifact-blob:/i.test(id) && asString(projected.content_hash)) {
       projected.ref = canonicalArtifactBlobShortRef(db, id);
@@ -3994,122 +3968,129 @@ export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
   return value;
 }
 
-/** Project the selected version and its shared content descriptor. */
-export function projectCanonicalArtifactRecord(blob: ArtifactBlobRecord, logical: ArtifactIdentityRecord | null = null,
-  version: CanonicalArtifactVersionRecord | null = null): ArtifactRecord {
-  const git = version?.custody_mode === 'git';
-  const locator = git ? {repo_id: version.source_project_id, path: version.repo_path, commit: version.commit_sha} : {};
-  return {
-    id: version?.id ?? blob.id, algorithm: blob.algorithm, content_hash: blob.content_hash,
-    uri: git ? `repo://${version.source_project_id}@${version.commit_sha}/${version.repo_path}` : blob.storage_uri ?? blob.id,
-    media_type: blob.media_type, role: blob.role, size_bytes: blob.size_bytes,
-    provider_id: blob.provider_id, manifest_id: blob.manifest_id,
-    metadata: mergeJsonRecords(blob.metadata, logical?.metadata, version?.metadata),
-    pinned: true, custody_mode: version?.custody_mode ?? (blob.storage_uri ? 'managed' : null), home_repo_id: git ? version.source_project_id : null,
-    repo_locator: locator, availability: blob.storage_uri || git ? 'present' : 'missing', retention: {},
-    reference: {canonical_blob_id:blob.id,canonical_artifact_id:logical?.id ?? null,canonical_version_id:version?.id ?? null},
-    created_at:version?.created_at ?? blob.created_at,
-  };
+function makeResolutionBase(ref: string) {
+  return { ref, scheme: schemeFromRef(ref), normalized_ref: ref, ...emptyArtifactIdentityPayload() };
 }
 
-type ResolutionBase = Pick<
-  ArtifactResolveResult,
-  | "ref"
-  | "scheme"
-  | "normalized_ref"
-  | "artifact"
-  | "alias"
-  | "logical_artifact"
-  | "artifact_version"
-  | "artifact_blob"
->;
+type ArtifactResolutionInput = Omit<ReturnType<typeof makeResolutionBase>, "logical_artifact" | "artifact_version" | "artifact_blob" | "alias"> & {
+  status: "resolved" | "unresolved" | "ambiguous" | "unsupported";
+  target_type?: CanonicalArtifactTargetType | null;
+  target_id?: string | null;
+  logical_artifact: ArtifactIdentityRecord | null;
+  artifact_version: CanonicalArtifactVersionRecord | null;
+  artifact_blob: ArtifactBlobRecord | null;
+  alias: ArtifactAliasRecord | null;
+  warnings: string[];
+};
 
-function makeResolutionBase(ref: string): ResolutionBase {
-  return {
-    ref,
-    scheme: schemeFromRef(ref),
-    normalized_ref: ref,
-    artifact: null,
-    alias: null,
-    logical_artifact: null,
-    artifact_version: null,
-    artifact_blob: null,
-  };
+function artifactIdentityFromRecords(input: ArtifactResolutionInput): ArtifactIdentityResolution {
+  const { ref, scheme, normalized_ref, warnings, alias } = input;
+  const base = { ref, scheme, normalized_ref, warnings, alias };
+  if (input.status === "resolved") {
+    if (input.target_type === "artifact" && input.logical_artifact) {
+      const head = input.artifact_version && input.artifact_blob
+        ? { artifact_version: input.artifact_version, artifact_blob: input.artifact_blob }
+        : { artifact_version: null, artifact_blob: null };
+      return { ...base, status: "resolved", kind: "logical", target_type: "artifact", target_id: input.logical_artifact.id,
+        logical_artifact: input.logical_artifact, ...head };
+    }
+    if (input.target_type === "artifact_version" && input.logical_artifact && input.artifact_version && input.artifact_blob) return {
+      ...base, status: "resolved", kind: "pinned-version", target_type: "artifact_version", target_id: input.artifact_version.id,
+      logical_artifact: input.logical_artifact, artifact_version: input.artifact_version, artifact_blob: input.artifact_blob,
+    };
+    if (input.target_type === "artifact_blob" && input.artifact_blob) return {
+      ...base, status: "resolved", kind: "blob", target_type: "artifact_blob", target_id: input.artifact_blob.id,
+      logical_artifact: null, artifact_version: null, artifact_blob: input.artifact_blob,
+    };
+  }
+  return failedArtifactIdentity({ ...base, status: input.status === "resolved" ? "unresolved" : input.status,
+    requested_kind: requestedIdentityKind(ref), target_type: input.target_type
+      ?? (requestedIdentityKind(ref) === "logical" ? "artifact"
+        : ["pinned-version", "series"].includes(requestedIdentityKind(ref)) ? "artifact_version"
+          : requestedIdentityKind(ref) === "blob" ? "artifact_blob" : null),
+    logical_artifact: input.logical_artifact, artifact_version: null, artifact_blob: null });
+}
+
+/** Historical HTTP fields are owned by the provider API boundary. */
+export function projectArtifactResolution(db: Db, resolution: ArtifactIdentityResolution): import("./types.js").ArtifactResolveResult {
+  return { ...resolution, alias: resolution.alias ? { ...resolution.alias, artifact_id: resolution.alias.blob_id } : null, artifact: resolvedArtifactRecord(resolution),
+    series: resolution.logical_artifact ? projectCanonicalSeriesRecord(resolution.logical_artifact) : null,
+    version: resolution.artifact_version ? projectCanonicalVersionRecord(db, resolution.artifact_version) : null };
 }
 
 function resolutionForCanonicalVersion(
   db: Db,
   ref: string,
   lookup: PrefixLookupResult<CanonicalArtifactVersionRecord>,
-): ArtifactResolveResult {
+): ArtifactIdentityResolution {
   const base = makeResolutionBase(ref);
   if (lookup.status !== "resolved") {
-    return {
+    return artifactIdentityFromRecords({
       ...base,
       status: lookup.status,
       target_type: "artifact_version",
       target_id: null,
       warnings: lookup.status === "unsupported" ? ["artifact_version_prefix_too_short"] : [`artifact_version_${lookup.status}`],
-    };
+    });
   }
   const version = lookup.value;
   const logical = getLogicalArtifact(db, version.artifact_id);
   const blob = getArtifactBlob(db, version.blob_id);
-  return {
+  return artifactIdentityFromRecords({
     ...base,
     status: "resolved",
     normalized_ref: version.id,
     target_type: "artifact_version",
     target_id: version.id,
-    artifact: blob ? projectCanonicalArtifactRecord(blob, logical, version) : null,
+
     logical_artifact: logical,
     artifact_version: version,
     artifact_blob: blob,
     warnings: [],
-  };
+  });
 }
 
 function resolutionForLogicalArtifact(
   db: Db,
   ref: string,
   lookup: PrefixLookupResult<ArtifactIdentityRecord>,
-): ArtifactResolveResult {
+): ArtifactIdentityResolution {
   const base = makeResolutionBase(ref);
   if (lookup.status !== "resolved") {
-    return {
+    return artifactIdentityFromRecords({
       ...base,
       status: lookup.status,
       target_type: "artifact",
       target_id: null,
       warnings: lookup.status === "unsupported" ? ["artifact_prefix_too_short"] : [`artifact_${lookup.status}`],
-    };
+    });
   }
   const logical = lookup.value;
   const version = logical.latest_version_id ? getCanonicalArtifactVersion(db, logical.latest_version_id) : null;
   const blob = version ? getArtifactBlob(db, version.blob_id) : null;
-  return {
+  return artifactIdentityFromRecords({
     ...base,
     status: "resolved",
     normalized_ref: logical.id,
     target_type: "artifact",
     target_id: logical.id,
-    artifact: blob ? projectCanonicalArtifactRecord(blob, logical, version) : null,
+
     logical_artifact: logical,
     artifact_version: version,
     artifact_blob: blob,
     warnings: version ? [] : ["artifact_has_no_latest_version"],
-  };
+  });
 }
 
 function resolutionForArtifactBlob(
   ref: string,
   lookup: PrefixLookupResult<ArtifactBlobRecord>,
   legacy: boolean,
-): ArtifactResolveResult {
+): ArtifactIdentityResolution {
   const base = makeResolutionBase(ref);
   const legacyWarnings = legacy ? ["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"] : [];
   if (lookup.status !== "resolved") {
-    return {
+    return artifactIdentityFromRecords({
       ...base,
       status: lookup.status,
       target_type: "artifact_blob",
@@ -4118,30 +4099,30 @@ function resolutionForArtifactBlob(
         ...legacyWarnings,
         ...(lookup.status === "unsupported" ? ["artifact_blob_prefix_too_short"] : [`artifact_blob_${lookup.status}`]),
       ],
-    };
+    });
   }
   const blob = lookup.value;
-  return {
+  return artifactIdentityFromRecords({
     ...base,
     status: "resolved",
     normalized_ref: blob.id,
     target_type: "artifact_blob",
     target_id: blob.id,
-    artifact: projectCanonicalArtifactRecord(blob),
+
     artifact_blob: blob,
     warnings: legacyWarnings,
-  };
+  });
 }
 
-function unsupportedLegacyArtifactRef(ref: string, warning: string, repairWarning?: string): ArtifactResolveResult {
+function unsupportedLegacyArtifactRef(ref: string, warning: string, repairWarning?: string): ArtifactIdentityResolution {
   const trimmed = ref.trim();
-  return {
+  return artifactIdentityFromRecords({
     ...makeResolutionBase(ref),
     status: "unsupported",
     normalized_ref: trimmed,
     target_id: null,
     warnings: repairWarning ? [warning, repairWarning] : [warning],
-  };
+  });
 }
 
 function splitArtifactSeriesSelector(ref: string): { seriesRef: string; versionSelector: string | null } {
@@ -4163,22 +4144,22 @@ function splitArtifactSeriesSelector(ref: string): { seriesRef: string; versionS
  * table it was named after is gone, so it resolves through the canonical
  * logical artifact and its version history.
  */
-function resolutionForArtifactSeries(db: Db, ref: string): ArtifactResolveResult {
+function resolutionForArtifactSeries(db: Db, ref: string): ArtifactIdentityResolution {
   const { seriesRef, versionSelector } = splitArtifactSeriesSelector(ref);
   const base = { ...makeResolutionBase(ref), scheme: schemeFromRef(seriesRef), normalized_ref: seriesRef };
   if (!artifactIdentityTablesExist(db)) {
-    return { ...base, status: "unsupported", target_id: null, warnings: ["artifact_versioning_unavailable"] };
+    return artifactIdentityFromRecords({ ...base, status: "unsupported", target_id: null, warnings: ["artifact_versioning_unavailable"] });
   }
   const lookup = resolveLogicalArtifactForSeriesRef(db, seriesRef);
   if (lookup.status !== "resolved") {
-    return {
+    return artifactIdentityFromRecords({
       ...base,
       status: lookup.status,
       target_id: null,
       warnings: lookup.status === "unsupported"
         ? ["artifact_series_prefix_too_short"]
         : [`artifact_series_${lookup.status}`],
-    };
+    });
   }
   const logical = lookup.value;
   const seriesId = legacySeriesIdFromCanonicalArtifact(logical.id);
@@ -4187,14 +4168,14 @@ function resolutionForArtifactSeries(db: Db, ref: string): ArtifactResolveResult
   if (selector && selector !== "latest") {
     const versionNo = Number.parseInt(selector, 10);
     if (!Number.isFinite(versionNo) || String(versionNo) !== selector || versionNo < 1) {
-      return {
+      return artifactIdentityFromRecords({
         ...base,
         normalized_ref: `${seriesId}@${versionSelector}`,
         logical_artifact: logical,
         status: "unsupported",
         target_id: null,
         warnings: ["artifact_series_version_invalid"],
-      };
+      });
     }
     version = listCanonicalArtifactVersions(db, logical.id)
       .find((candidate) => candidate.version_no === versionNo) ?? null;
@@ -4202,31 +4183,31 @@ function resolutionForArtifactSeries(db: Db, ref: string): ArtifactResolveResult
     version = getCanonicalArtifactVersion(db, logical.latest_version_id);
   }
   if (!version) {
-    return {
+    return artifactIdentityFromRecords({
       ...base,
       normalized_ref: versionSelector ? `${seriesId}@${versionSelector}` : seriesId,
       logical_artifact: logical,
       status: "unresolved",
       target_id: null,
       warnings: ["artifact_series_version_unresolved"],
-    };
+    });
   }
   const blob = getArtifactBlob(db, version.blob_id);
-  return {
+  return artifactIdentityFromRecords({
     ...base,
     normalized_ref: version.id,
     status: blob ? "resolved" : "unresolved",
     target_type: "artifact_version",
     target_id: blob ? version.id : null,
-    artifact: blob ? projectCanonicalArtifactRecord(blob, logical, version) : null,
+
     logical_artifact: logical,
     artifact_version: version,
     artifact_blob: blob,
     warnings: selector === null || selector === "latest" ? ["series_latest_not_pinned"] : [],
-  };
+  });
 }
 
-function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactResolveResult | null {
+function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactIdentityResolution | null {
   const trimmed = ref.trim();
   const classified = classifyArtifactRef(trimmed);
   if (classified.kind === "series") return resolutionForArtifactSeries(db, ref);
@@ -4261,12 +4242,12 @@ function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactResolveResult 
       if ((logicalResolved && blobResolved)
         || logicalLookup.status === "ambiguous"
         || blobLookup.status === "ambiguous") {
-        return {
+        return artifactIdentityFromRecords({
           ...makeResolutionBase(ref),
           status: "ambiguous",
           target_id: null,
           warnings: ["artifact_identity_ambiguous"],
-        };
+        });
       }
       if (logicalResolved) return resolutionForLogicalArtifact(db, ref, logicalLookup);
       return resolutionForArtifactBlob(ref, blobLookup, false);
@@ -4475,12 +4456,12 @@ export interface ProjectArtifactAssociationInput {
 function resolveAssociationTarget(
   db: Db,
   input: ProjectArtifactAssociationInput,
-): { targetType: "artifact" | "artifact_version"; targetId: string; resolution: ArtifactResolveResult | null } {
+): { targetType: "artifact" | "artifact_version"; targetId: string; resolution: ArtifactIdentityResolution | null } {
   if (input.target_type && input.target_id) {
     return { targetType: input.target_type, targetId: input.target_id, resolution: null };
   }
   if (!input.target_ref) throw new Error("target_ref or target_type plus target_id is required");
-  const resolution = resolveArtifactRef(db, input.target_ref);
+  const resolution = resolveArtifactIdentity(db, input.target_ref, "strict-read");
   if (resolution.status !== "resolved" || !resolution.target_type || !resolution.target_id) {
     throw new Error(`artifact target did not resolve: ${input.target_ref}`);
   }
@@ -4498,7 +4479,7 @@ export function associateProjectArtifact(
   db: Db,
   input: ProjectArtifactAssociationInput,
   now = Date.now(),
-): { association: ProjectArtifactAssociationRecord; resolution: ArtifactResolveResult | null } {
+): { association: ProjectArtifactAssociationRecord; resolution: ArtifactIdentityResolution | null } {
   if (!tableExists(db, "project_artifact_associations")) {
     throw new Error("project_artifact_associations table is not present in this database");
   }
@@ -4792,8 +4773,8 @@ export function ensureArtifactSeries(db: Db, input: EnsureArtifactSeriesInput, n
 export interface AppendArtifactVersionInput {
   source_project_id?: string;
   source_repo_id?: string;
-  series_id: string;
-  artifact_id: string;
+  logical_artifact_id: string;
+  blob_id: string;
   source_kind: ArtifactVersionSourceKind;
   content_hash: string;
   natural_key?: string;
@@ -4820,7 +4801,7 @@ function canonicalParentVersionId(db: Db, artifactId: string, versionNo: number)
 }
 
 type VersionEvidenceInput = {
-  [K in keyof Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id' | 'source_kind'>]?: AppendArtifactVersionInput[K] | null;
+  [K in keyof Omit<AppendArtifactVersionInput, 'logical_artifact_id' | 'blob_id' | 'source_kind'>]?: AppendArtifactVersionInput[K] | null;
 };
 function artifactVersionEvidence(input: VersionEvidenceInput): string {
   return stableJsonStringify({
@@ -4829,11 +4810,11 @@ function artifactVersionEvidence(input: VersionEvidenceInput): string {
     custody: input.custody_mode ?? null, label: input.label ?? null, note: input.note ?? null, metadata: input.metadata ?? {},
   });
 }
-function artifactEvidenceVersionId(seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>): string {
+function artifactEvidenceVersionId(seriesId: string, input: Omit<AppendArtifactVersionInput, 'logical_artifact_id' | 'blob_id'>): string {
   return versionIdFor(seriesId, input.source_kind, stableJsonStringify([input.natural_key ?? null, artifactVersionEvidence(input)]));
 }
 
-function findRepeatedArtifactVersion(db: Db, seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>, registeredFile = false): CanonicalArtifactVersionRecord | null {
+function findRepeatedArtifactVersion(db: Db, seriesId: string, input: Omit<AppendArtifactVersionInput, 'logical_artifact_id' | 'blob_id'>, registeredFile = false): CanonicalArtifactVersionRecord | null {
   const current = getCanonicalArtifactVersion(db, artifactEvidenceVersionId(seriesId, input));
   if (current) return current;
   const legacyKey = input.natural_key ?? (input.source_kind === 'tracked_repo'
@@ -4855,7 +4836,7 @@ export function appendArtifactVersion(
   db: Db,
   input: AppendArtifactVersionInput,
   now = Date.now(),
-): { version: ArtifactVersionRecord; created: boolean } {
+): { version: CanonicalArtifactVersionRecord; created: boolean } {
   assertVersioningTables(db);
   if (!VERSION_SOURCE_KINDS.has(input.source_kind)) {
     throw new Error(`unsupported version source_kind: ${input.source_kind}`);
@@ -4869,12 +4850,13 @@ export function appendArtifactVersion(
   // is taken before the MAX read; within one process better-sqlite3 is already
   // serialized. If we are already inside a transaction, run inline (the
   // caller's transaction provides the boundary).
-  const body = (): { version: ArtifactVersionRecord; created: boolean } => {
-    const series = getArtifactSeries(db, input.series_id);
-    if (!series) throw new Error(`artifact series not found: ${input.series_id}`);
-    const logicalId = canonicalArtifactIdForSeriesRef(series.id);
-    const blob = canonicalBlobForCompatibilityRef(db, input.artifact_id);
-    if (!blob) throw new Error(`canonical artifact blob not found: ${input.artifact_id}`);
+  const body = (): { version: CanonicalArtifactVersionRecord; created: boolean } => {
+    const logical = getLogicalArtifact(db, input.logical_artifact_id);
+    if (!logical) throw new Error(`Logical artifact not found: ${input.logical_artifact_id}`);
+    const logicalId = logical.id;
+    const seriesId = legacySeriesIdFromCanonicalArtifact(logicalId);
+    const blob = getArtifactBlob(db, input.blob_id);
+    if (!blob) throw new Error(`Canonical artifact blob not found: ${input.blob_id}`);
     if (blob.content_hash !== input.content_hash) throw new Error('Version hash differs from immutable blob');
     const state = getArtifactCurrentSource(db, logicalId);
     if (!state?.source || state.reconciliation_reason) throw new Error('Artifact source requires reconciliation');
@@ -4896,9 +4878,9 @@ export function appendArtifactVersion(
     } else {
       if (!blob.storage_uri?.startsWith('file://') || hashBuffer(fs.readFileSync(fileURLToPath(blob.storage_uri))) !== input.content_hash) throw new Error('Managed version requires verified stored bytes');
     }
-    const versionId = artifactEvidenceVersionId(series.id, input);
-    const existing = findRepeatedArtifactVersion(db, series.id, input);
-    if (existing) return { version: projectCanonicalVersionRecord(db, existing), created: false };
+    const versionId = artifactEvidenceVersionId(seriesId, input);
+    const existing = findRepeatedArtifactVersion(db, seriesId, input);
+    if (existing) return { version: existing, created: false };
     const nextNo = Number((db.prepare(
       "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_version WHERE artifact_id = ?",
     ).get(logicalId) as { n: number }).n) + 1;
@@ -4933,10 +4915,10 @@ export function appendArtifactVersion(
     });
     const created = result.changes > 0;
     if (created) {
-      const nextSourceKind: ArtifactSeriesSourceKind = series.version_count === 0
+      const nextSourceKind: ArtifactSeriesSourceKind = logical.version_count === 0
         ? input.source_kind
-        : series.source_kind === "mixed" || series.source_kind === input.source_kind
-          ? series.source_kind
+        : logical.source_kind === "mixed" || logical.source_kind === input.source_kind
+          ? logical.source_kind
           : "mixed";
       db.prepare(
         `UPDATE artifact
@@ -4957,10 +4939,7 @@ export function appendArtifactVersion(
         role:'historical-source-access',source:'system'},now);
     }
     return {
-      version: projectCanonicalVersionRecord(
-        db,
-        getCanonicalArtifactVersion(db, versionId) as CanonicalArtifactVersionRecord,
-      ),
+      version: getCanonicalArtifactVersion(db, versionId) as CanonicalArtifactVersionRecord,
       created,
     };
   };
@@ -5094,13 +5073,15 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       logicalName ??= local.logical_name;
       mediaType ??= local.media_type;
     } else if (input.ref) {
-      const resolved = resolveArtifactRefReadonlyFull(db, input.ref);
-      if (!resolved.artifact) return artifactFailure('invalid_input', 'Artifact reference did not resolve');
-      const read = readArtifactBytesFull(db, resolved.artifact_version?.id ?? resolved.logical_artifact?.id ?? resolved.artifact.id);
-      if (!read.ok) return artifactFailure('invalid_input', `Artifact bytes are not materializable (${read.reason})`);
-      bytes = read.bytes;
-      logicalName ??= asString(resolved.artifact.metadata.logical_name) ?? asString(resolved.artifact.metadata.filename);
-      mediaType ??= resolved.artifact.media_type ?? undefined;
+      const resolved = resolveArtifactIdentity(db, input.ref, "strict-read");
+      if (!resolvedArtifactRecord(resolved)) return artifactFailure('invalid_input', 'Artifact reference did not resolve');
+      const target = artifactMaterializationTarget(resolved);
+      if (!target.ok) return artifactFailure('invalid_input', target.error.message);
+      const read = readArtifactMaterial(db, target.value, 4 * 1024 * 1024);
+      if (!read.ok) return artifactFailure('invalid_input', `Artifact bytes are not materializable (${read.error.message})`);
+      bytes = read.value.bytes;
+      logicalName ??= asString(resolvedArtifactRecord(resolved)!.metadata.logical_name) ?? asString(resolvedArtifactRecord(resolved)!.metadata.filename);
+      mediaType ??= resolvedArtifactRecord(resolved)!.media_type ?? undefined;
     } else if (typeof input.content === 'string' || typeof input.content_base64 === 'string' || 'json' in input) {
       bytes = bufferFromSnapshotInput(input);
     } else return artifactFailure('invalid_input', 'Version requires a path, content, content_base64, json, or ref');
@@ -5210,9 +5191,21 @@ function revalidateArtifactVersion(db: Db, plan: ArtifactVersionPlan): ArtifactL
   return { ok: true, value: prepared };
 }
 
-export function commitArtifactVersionBatch(db: Db, plans: ArtifactVersionPlan[], now = Date.now(), artifactRoot = getArtifactRoot(db)): ArtifactLifecycleResult<ArtifactVersionRecordResult[]> {
+function artifactVersionWriteResult(db: Db, version: CanonicalArtifactVersionRecord, created: boolean, warnings: string[]): import("./contracts.js").ArtifactVersionWriteResult {
+  const resolution = resolutionForCanonicalVersion(db, version.id, { status: "resolved", value: version });
+  if (resolution.status !== "resolved" || resolution.kind !== "pinned-version") throw new Error("Saved artifact version lacks canonical material");
+  return { ...resolution, created, warnings };
+}
+
+export function projectArtifactVersionWriteResult(db: Db, result: import("./contracts.js").ArtifactVersionWriteResult): import("./contracts.js").ArtifactVersionRecordResult {
+  const projected = projectArtifactResolution(db, result);
+  if (!projected.series || !projected.version || !projected.artifact) throw new Error("Saved artifact HTTP projection lacks material");
+  return { ...result, series: projected.series, version: projected.version, artifact: projected.artifact };
+}
+
+export function commitArtifactVersionBatch(db: Db, plans: ArtifactVersionPlan[], now = Date.now(), artifactRoot = getArtifactRoot(db)): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult[]> {
   try {
-    return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult[]> => {
+    return db.transaction((): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult[]> => {
       for (const plan of plans) {
         const checked = revalidateArtifactVersion(db, plan);
         if (!checked.ok) return checked;
@@ -5229,8 +5222,8 @@ export function commitArtifactVersionBatch(db: Db, plans: ArtifactVersionPlan[],
 
 export function commitArtifactVersion(
   db: Db, plan: ArtifactVersionPlan, now = Date.now(), artifactRoot = getArtifactRoot(db),
-): ArtifactLifecycleResult<ArtifactVersionRecordResult> {
-  return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult> => {
+): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult> {
+  return db.transaction((): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult> => {
     const checked = revalidateArtifactVersion(db, plan);
     if (!checked.ok) return checked;
     return commitPreparedArtifactVersion(db, plan, checked.value, now, artifactRoot);
@@ -5238,9 +5231,9 @@ export function commitArtifactVersion(
 }
 
 function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepared: PreparedArtifactVersion,
-  now: number, artifactRoot: string): ArtifactLifecycleResult<ArtifactVersionRecordResult> {
+  now: number, artifactRoot: string): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult> {
   try {
-    return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult> => {
+    return db.transaction((): ArtifactLifecycleResult<import("./contracts.js").ArtifactVersionWriteResult> => {
       const input = prepared.input;
       let logicalId = plan.artifact_id;
       if (!logicalId) {
@@ -5266,9 +5259,7 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
       };
       const seriesId = legacySeriesIdFromCanonicalArtifact(logicalId);
       const repeated = findRepeatedArtifactVersion(db, seriesId, evidence, true);
-      if (repeated) return { ok: true, value: { series: getArtifactSeries(db, seriesId)!,
-        artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, repeated.content_hash)!, getLogicalArtifact(db, logicalId), repeated),
-        version: projectCanonicalVersionRecord(db, repeated), created: false, warnings: plan.warnings } };
+      if (repeated) return { ok: true, value: artifactVersionWriteResult(db, repeated, false, plan.warnings) };
       const artifact = ingestArtifact(db, {
         ...(linked ? { [VERIFIED_GIT_DESCRIPTOR]: true as const, sha256: plan.content_hash, uri: `repo://${plan.source_repo_id}@${plan.commit_sha}/${plan.repo_path}` }
           : { content_buffer: prepared.bytes }),
@@ -5278,17 +5269,15 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         metadata: mergeJsonRecords(input.metadata, { recoverability: linked ? 'repo_commit' : 'mandible_cas',
           observed_path: plan.observed_path, filename: prepared.logical_name }),
       }, now, artifactRoot);
-      const appended = appendArtifactVersion(db, { ...evidence, series_id: seriesId, artifact_id: artifact.id }, now);
-      return { ok: true, value: { series: getArtifactSeries(db, seriesId)!,
-        artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, artifact.content_hash)!, getLogicalArtifact(db, logicalId), getCanonicalArtifactVersion(db, appended.version.id)),
-        ...appended, warnings: plan.warnings } };
+      const appended = appendArtifactVersion(db, { ...evidence, logical_artifact_id: logicalId, blob_id: artifact.id }, now);
+      return { ok: true, value: artifactVersionWriteResult(db, appended.version, appended.created, plan.warnings) };
     }).immediate();
   } catch (error) { return artifactFailure('storage_error', String(error)); }
 }
 
 export function recordArtifactVersion(
   db: Db, input: RecordArtifactVersionInput, now = Date.now(), artifactRoot = getArtifactRoot(db),
-): ArtifactVersionRecordResult {
+): import("./contracts.js").ArtifactVersionWriteResult {
   const plan = planArtifactVersion(db, input);
   if (!plan.ok) throw new Error(plan.error.message);
   const result = commitArtifactVersion(db, plan.value, now, artifactRoot);
@@ -5478,9 +5467,11 @@ export function rebaseArtifactDraft(db: Db, ref: string, now = Date.now()): Arti
     throw new Error("artifact draft base or latest version is missing");
   }
   const readText = (versionId: string): string => {
-    const bytes = readArtifactBytesFull(db, versionId);
-    if (!bytes.ok) throw new Error(`artifact version bytes unavailable: ${bytes.reason}`);
-    return bytes.bytes.toString("utf8");
+    const target = artifactMaterializationTarget(resolveArtifactIdentity(db, versionId));
+    if (!target.ok) throw new Error(target.error.message);
+    const bytes = readArtifactMaterial(db, target.value, 4 * 1024 * 1024);
+    if (!bytes.ok) throw new Error(`artifact version bytes unavailable: ${bytes.error.message}`);
+    return bytes.value.bytes.toString("utf8");
   };
   const content = simpleLineThreeWayMerge(
     readText(draft.base_version_id),
@@ -5514,7 +5505,7 @@ export function publishArtifactDraft(
   db: Db,
   input: PublishArtifactDraftInput,
   now = Date.now(),
-): ArtifactDraftPublishResult {
+): import("./contracts.js").ArtifactDraftWriteResult {
   const draft = getArtifactDraft(db, input.ref);
   if (!draft) throw new Error("artifact draft not found");
   if (draft.stale && !input.allow_stale) {
@@ -5549,10 +5540,7 @@ export function publishArtifactDraft(
 // immutable blob owned by exactly one logical artifact.
 export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVersionHistory | null {
   const canonicalResolution = resolveArtifactIdentityRef(db, ref.trim());
-  const canonicalLogical = canonicalResolution?.logical_artifact
-    ?? (canonicalResolution?.artifact_version
-      ? getLogicalArtifact(db, canonicalResolution.artifact_version.artifact_id)
-      : null);
+  const canonicalLogical = canonicalResolution?.logical_artifact;
   if (canonicalLogical) return canonicalArtifactVersionHistory(db, canonicalLogical);
   if (canonicalResolution?.artifact_blob) {
     const owners = db.prepare(
@@ -5568,7 +5556,7 @@ export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVers
   // only when exactly one owns it.
   const registered = resolveRegisteredArtifactRef(db, ref.trim());
   const blob = registered.artifact_blob
-    ?? (registered.artifact ? canonicalBlobForCompatibilityRef(db, registered.artifact.id) : null);
+    ?? (resolvedArtifactRecord(registered) ? canonicalBlobForCompatibilityRef(db, resolvedArtifactRecord(registered)!.id) : null);
   if (!blob) return null;
   const owners = db.prepare(
     "SELECT DISTINCT artifact_id FROM artifact_version WHERE blob_id = ? LIMIT 2",
@@ -5620,7 +5608,7 @@ function canonicalArtifactVersionHistory(
 // entities: it resolves version/series refs and looks up already-registered
 // artifacts/aliases only. Returns null for an unregistered ref.
 export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord | null {
-  return resolveArtifactRefReadonlyFull(db, ref).artifact;
+  return resolvedArtifactRecord(resolveArtifactIdentity(db, ref, "strict-read"));
 }
 
 /**
@@ -5630,7 +5618,7 @@ export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord 
  * remains here is the alias namespace — external `repo://`, `https://`,
  * `git-bug://` and similar refs registered against a blob.
  */
-function resolveRegisteredArtifactRef(db: Db, ref: string): ArtifactResolveResult {
+function resolveRegisteredArtifactRef(db: Db, ref: string): ArtifactIdentityResolution {
   const trimmed = ref.trim();
   const identityResolution = resolveArtifactIdentityRef(db, trimmed);
   if (identityResolution) return identityResolution;
@@ -5641,27 +5629,28 @@ function resolveRegisteredArtifactRef(db: Db, ref: string): ArtifactResolveResul
     normalized_ref: normalized.normalizedRef,
   };
   if (normalized.invalidReason) {
-    return { ...base, status: "unsupported", target_id: null, warnings: [normalized.invalidReason] };
+    return artifactIdentityFromRecords({ ...base, status: "unsupported", target_id: null, warnings: [normalized.invalidReason] });
   }
   if (tableExists(db, "artifact_aliases")) {
     const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
     if (alias) {
-      const blob = canonicalBlobForCompatibilityRef(db, alias.normalized_ref)
-        ?? (alias.artifact_id ? canonicalBlobForCompatibilityRef(db, alias.artifact_id) : null);
-      return {
+      if (alias.resolution_status === "ambiguous") return artifactIdentityFromRecords({
+        ...base, alias, status: "ambiguous", warnings: ["artifact_alias_ambiguous"] });
+      const blob = alias.blob_id ? getArtifactBlob(db, alias.blob_id) : null;
+      return artifactIdentityFromRecords({
         ...base,
         status: blob ? "resolved" : "unresolved",
         normalized_ref: alias.normalized_ref,
-        artifact: blob ? projectCanonicalArtifactRecord(blob) : null,
+
         alias,
         target_type: blob ? "artifact_blob" : undefined,
         target_id: blob?.id ?? null,
         artifact_blob: blob,
         warnings: [],
-      };
+      });
     }
   }
-  return { ...base, status: "unresolved", warnings: [] };
+  return artifactIdentityFromRecords({ ...base, status: "unresolved", warnings: [] });
 }
 
 /**
@@ -5670,34 +5659,28 @@ function resolveRegisteredArtifactRef(db: Db, ref: string): ArtifactResolveResul
  * surface and link boundaries still resolve them for existing clients and
  * authored text.
  */
-function resolutionForRetiredContentHashRef(db: Db, ref: string): ArtifactResolveResult | null {
+function resolutionForRetiredContentHashRef(db: Db, ref: string): ArtifactIdentityResolution | null {
   const trimmed = ref.trim();
   if (classifyArtifactRef(trimmed).kind !== "legacy-blob") return null;
   const blob = canonicalBlobForCompatibilityRef(db, trimmed);
   if (!blob) return null;
-  return {
+  return artifactIdentityFromRecords({
     ...makeResolutionBase(ref),
     status: "resolved",
     scheme: schemeFromRef(trimmed),
-    normalized_ref: projectCanonicalArtifactRecord(blob).id,
-    artifact: projectCanonicalArtifactRecord(blob),
+    normalized_ref: blob.id,
+
     target_type: "artifact_blob",
     target_id: blob.id,
     artifact_blob: blob,
     warnings: [],
-  };
+  });
 }
 
 /** Surface mode: strict read, plus the retired content-hash spellings. */
-function resolveArtifactSurfaceRef(db: Db, ref: string): ArtifactResolveResult {
+function resolveArtifactSurfaceRef(db: Db, ref: string): ArtifactIdentityResolution {
   return resolutionForRetiredContentHashRef(db, ref) ?? resolveRegisteredArtifactRef(db, ref);
 }
-
-/** Resolve existing authored aliases without creating custody from references. */
-function resolveArtifactLinkRefCompat(db: Db, ref: string, _now = Date.now()): ArtifactResolveResult {
-  return resolutionForRetiredContentHashRef(db, ref) ?? resolveRegisteredArtifactRef(db, ref);
-}
-
 
 function requestedIdentityKind(ref: string): ArtifactRequestedKind {
   const classified = classifyArtifactRef(ref);
@@ -5706,123 +5689,8 @@ function requestedIdentityKind(ref: string): ArtifactRequestedKind {
   return classified.kind;
 }
 
-function discriminatedArtifactResolution(
-  db: Db,
-  legacy: ArtifactResolveResult,
-): ArtifactIdentityResolution {
-  const payload = {
-    ...emptyArtifactIdentityPayload(),
-    artifact: legacy.artifact,
-    alias: legacy.alias,
-    logical_artifact: legacy.logical_artifact ?? null,
-    artifact_version: legacy.artifact_version ?? null,
-    artifact_blob: legacy.artifact_blob ?? null,
-  };
-  const warnings = legacy.warnings ?? [];
-  const requestedKind = requestedIdentityKind(legacy.ref);
-  if (legacy.status !== "resolved") {
-    const requestedTarget: CanonicalArtifactTargetType | null = requestedKind === "logical"
-      ? "artifact"
-      : requestedKind === "pinned-version" || requestedKind === "series"
-        ? "artifact_version"
-        : requestedKind === "blob"
-          ? "artifact_blob"
-          : null;
-    return failedArtifactIdentity({
-      status: legacy.status,
-      requested_kind: requestedKind,
-      ref: legacy.ref,
-      scheme: legacy.scheme,
-      normalized_ref: legacy.normalized_ref,
-      target_type: requestedTarget,
-      warnings,
-      ...payload,
-    });
-  }
-
-  let targetType = legacy.target_type === "artifact"
-    || legacy.target_type === "artifact_version"
-    || legacy.target_type === "artifact_blob"
-    ? legacy.target_type
-    : null;
-  let targetId = legacy.target_id ?? null;
-  let kind: ArtifactIdentityKind = legacy.alias
-    ? "alias"
-    : targetType === "artifact"
-      ? "logical"
-      : targetType === "artifact_version"
-        ? "pinned-version"
-        : "blob";
-  if ((!targetType || !targetId) && legacy.artifact) {
-    const blob = legacy.artifact_blob ?? canonicalBlobForCompatibilityRef(db, legacy.artifact.id);
-    if (blob) {
-      targetType = "artifact_blob";
-      targetId = blob.id;
-      payload.artifact_blob = blob;
-      kind = legacy.alias ? "alias" : "blob";
-    }
-  }
-  if (!targetType || !targetId) {
-    return failedArtifactIdentity({
-      status: "unresolved",
-      requested_kind: requestedKind,
-      ref: legacy.ref,
-      scheme: legacy.scheme,
-      normalized_ref: legacy.normalized_ref,
-      target_type: null,
-      warnings: [...warnings, "canonical_artifact_target_missing"],
-      ...payload,
-      artifact: null,
-    });
-  }
-  return resolvedArtifactIdentity({
-    kind,
-    ref: legacy.ref,
-    scheme: legacy.scheme,
-    normalized_ref: legacy.normalized_ref,
-    target_type: targetType,
-    target_id: targetId,
-    warnings,
-    ...payload,
-  });
-}
-
-/**
- * Shared strict artifact identity contract. Read modes never write; only the
- * all modes resolve existing identities without creating custody from references.
- */
-export function resolveArtifactIdentity(
-  db: Db,
-  ref: string,
-  mode: ArtifactResolutionMode = "strict-read",
-  now = Date.now(),
-): ArtifactIdentityResolution {
-  const resolved = mode === "surface"
-    ? resolveArtifactSurfaceRef(db, ref)
-    : mode === "link"
-      ? resolveArtifactLinkRefCompat(db, ref, now)
-      : resolveRegisteredArtifactRef(db, ref);
-  return discriminatedArtifactResolution(db, resolved);
-}
-
-function resolveArtifactResult(db: Db, ref: string, mode: ArtifactResolutionMode = "strict-read", now = Date.now()): ArtifactResolveResult {
-  return projectArtifactResolution(resolveArtifactIdentity(db,ref,mode,now));
-}
-
-export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
-  return resolveArtifactResult(db, ref, "strict-read");
-}
-
-export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
-  return resolveArtifactResult(db, ref, "surface");
-}
-
-export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  return resolveArtifactResult(db, ref, "link", now);
-}
-
-export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  return resolveArtifactResult(db, ref, "strict-read", now);
+export function resolveArtifactIdentity(db: Db, ref: string, mode: ArtifactResolutionMode = "strict-read", _now = Date.now()): ArtifactIdentityResolution {
+  return mode === "strict-read" ? resolveRegisteredArtifactRef(db, ref) : resolveArtifactSurfaceRef(db, ref);
 }
 
 export function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null {
@@ -6001,11 +5869,11 @@ function compatibilityArtifactIdFromAssociationRow(db: Db, row: Record<string, u
   return blob ? projectCanonicalArtifactRecord(blob).id : null;
 }
 
-function artifactAliasFromRow(db: Db, row: Record<string, unknown>): ArtifactAliasRecord {
+function artifactAliasFromRow(_db: Db, row: Record<string, unknown>): ArtifactAliasRecord {
   const status = String(row.resolution_status);
   return {
     id: String(row.id),
-    artifact_id: compatibilityArtifactIdFromAssociationRow(db, row),
+    blob_id: nullableString(row.blob_id),
     scheme: String(row.scheme),
     alias: String(row.alias),
     normalized_ref: String(row.normalized_ref),
@@ -6205,3 +6073,5 @@ export function getIndexedGraphCount(db: Db, mode: GraphMode): number {
   ).get(...entityTypes) as { count: number };
   return row.count;
 }
+
+export { projectCanonicalArtifactRecord, resolvedArtifactRecord } from "./artifact-identity.js";
