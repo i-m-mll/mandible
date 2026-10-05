@@ -267,7 +267,7 @@ describe("preview log ownership", () => {
     const production = path.join(tempDir, "production.log");
     fs.writeFileSync(production, "production sentinel");
     fs.writeFileSync(stdout, "preview stdout"); fs.writeFileSync(stderr, "preview stderr");
-    db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('stderr_rotation_max_bytes','4'),('stderr_rotation_keep_segments','2')").run();
+    db.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('stderr_rotation_max_bytes','4',1),('stderr_rotation_keep_segments','2',1)").run();
     vi.stubEnv("MANDIBLE_INSTANCE_ROLE", "preview"); vi.stubEnv("MANDIBLE_PREVIEW_ROOT", preview);
     vi.stubEnv("MANDIBLE_STDOUT_LOG_PATH", stdout); vi.stubEnv("MANDIBLE_STDERR_LOG_PATH", stderr);
     try {
