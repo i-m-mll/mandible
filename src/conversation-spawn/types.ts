@@ -53,6 +53,7 @@ export interface ConversationSpawnReceipt {
   state: ConversationSpawnState | HistoricalConversationSpawnState;
   attempt_count: number;
   native_session_id: string | null;
+  controller_instance_id?: string | null;
   provider_session_id: string | null;
   provider_receipt: Record<string, unknown> | null;
   initial_message_state?: "queued" | "delivering" | "delivered" | "failed";

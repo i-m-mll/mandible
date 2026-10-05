@@ -62,18 +62,6 @@ function checkRateLimit(source: string): boolean {
   return entry.count <= RATE_LIMIT_MAX_REQUESTS;
 }
 
-// --- Prompt formatting ---
-
-function formatWebhookAsPrompt(event: WebhookEvent): string {
-  const header = `[Webhook: ${event.source}/${event.event_type}]`;
-  const title = event.title || "External event received";
-  const dataStr = typeof event.data === "string"
-    ? event.data
-    : JSON.stringify(event.data, null, 2);
-
-  return `${header}\n${title}\n\n${dataStr}`;
-}
-
 // --- Routing logic ---
 
 interface RouteResult {
@@ -115,7 +103,7 @@ function requireOperatorForCredentialBearingSession(
 function tryRouteToConsoleSession(
   sessionManager: SessionManager,
   sessionId: string,
-  event: WebhookEvent,
+  _event: WebhookEvent,
   req: RequestLike,
   res: ResponseLike,
 ): RouteAttempt {
@@ -129,12 +117,9 @@ function tryRouteToConsoleSession(
     return null;
   }
 
-  backend.sendPrompt(formatWebhookAsPrompt(event));
-  return {
-    status: "delivered",
-    delivered_to: sessionId,
-    message: `Webhook delivered to console session ${sessionId}`,
-  };
+  // Terminal input is not a provider message protocol. Keep the durable event
+  // queued until it is explicitly routed through the conversation controller.
+  return null;
 }
 
 function tryRouteByIssue(

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type {
   ActivityItem,
   ActivityKind,
@@ -17,12 +16,14 @@ import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLi
 import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { chatItemIdentityKey } from "./provider-live.js";
 import { claudeAttachmentContent } from "./attachment-delivery.js";
-import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
+import { ClaudeSdkTransport, type ClaudeSdk } from "./claude-sdk-transport.js";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ConversationControlError,
   ConversationLifecycleEvent,
   ConversationOutboxItem,
   ProviderAdapterEvent,
+  ProviderRuntimeEvent,
   ProviderDeliveryReceipt,
   Result,
 } from "./types.js";
@@ -39,7 +40,14 @@ type ClaudeController = {
   generation: number;
   controllerInstanceId: string;
   providerSessionId: string;
-  process: StructuredJsonProcess;
+  nativeIdentityBound: boolean;
+  identityPendingRecords: unknown[];
+  process: ClaudeSdkTransport;
+  queuedTurns: string[];
+  consumedTogether: string[];
+  messageTurns: Map<string, string>;
+  acquisition: ControllerAcquisitionRequest;
+  interrupting: boolean;
   state: "ready" | "running" | "waiting" | "stopping";
   activeTurnId: string | null;
   pending: PendingClaudeDelivery | null;
@@ -54,62 +62,43 @@ function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 }
 
-export class ClaudeStreamControllerAdapter implements ConversationControllerAdapter {
+export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter {
   readonly id = CLAUDE_SDK_MANAGED_PROFILE.adapter_id;
   readonly provider = CLAUDE_SDK_MANAGED_PROFILE.provider;
   readonly capabilities: ControllerAdapterCapabilities = CLAUDE_SDK_MANAGED_PROFILE.capabilities;
 
   private readonly lifecycle = new AdapterLifecycle();
   private readonly providerEvents = new AdapterProviderEvents();
+  private readonly runtimeListeners = new Set<(event: ProviderRuntimeEvent) => void>();
   private readonly controllers = new Map<string, ClaudeController>();
-  private readonly spawnProcess: StructuredProcessSpawner | undefined;
-
-  constructor(options: { spawnProcess?: StructuredProcessSpawner } = {}) {
-    this.spawnProcess = options.spawnProcess;
-  }
+  private readonly acquiring = new Set<string>();
+  constructor(private readonly options: { sdk?: ClaudeSdk } = {}) {}
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>> {
-    if (input.kind === "resume-message-anchor") {
-      return { ok: false, error: adapterFailure(this.id, "message-anchor-unsupported", "Claude stream JSON cannot resume an exact message anchor") };
+    if (this.controllers.has(input.conversation_id) || this.acquiring.has(input.conversation_id)) {
+      return { ok: false, error: adapterFailure(this.id, "controller-already-owned", "A Claude controller already owns this conversation") };
     }
-    const providerSessionId = input.kind === "start" ? randomUUID() : input.provider_session_id;
-    const args = [
-      "-p",
-      "--input-format", "stream-json",
-      "--output-format", "stream-json",
-      "--verbose",
-      "--include-partial-messages",
-      "--replay-user-messages",
-      ...(input.runtime_options?.model ? ["--model", input.runtime_options.model] : []),
-      ...(input.runtime_options?.effort ? ["--effort", input.runtime_options.effort] : []),
-      ...(input.runtime_options?.permission_mode
-        && ["default", "acceptEdits", "bypassPermissions"].includes(input.runtime_options.permission_mode)
-        ? ["--permission-mode", input.runtime_options.permission_mode] : []),
-      input.kind === "start" ? "--session-id" : "--resume",
-      providerSessionId,
-    ];
-    let processOwner: StructuredJsonProcess | null = null;
-    let aborted = input.kind === "start" && input.signal?.aborted === true;
-    const abort = () => {
-      aborted = true;
-      if (processOwner) void processOwner.close();
-    };
-    if (input.kind === "start") input.signal?.addEventListener("abort", abort, { once: true });
+    this.acquiring.add(input.conversation_id);
+    let processOwner: ClaudeSdkTransport | null = null;
     try {
-      if (aborted) throw new Error("Claude controller acquisition was cancelled");
-      processOwner = await StructuredJsonProcess.start("claude", args, {
-        cwd: input.kind === "start" ? input.cwd : undefined,
-        spawnProcess: this.spawnProcess,
-      });
-      if (aborted) throw new Error("Claude controller acquisition was cancelled");
+      const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
+      processOwner = new ClaudeSdkTransport(input, sdk);
+      await processOwner.start();
       const controller: ClaudeController = {
         conversationId: input.conversation_id,
         generation: input.generation,
         controllerInstanceId: input.controller_instance_id,
-        providerSessionId,
+        providerSessionId: processOwner.reservedSessionId,
+        nativeIdentityBound: processOwner.providerSessionId !== null,
+        identityPendingRecords: [],
         process: processOwner,
         state: "ready",
         activeTurnId: null,
+        queuedTurns: [],
+        consumedTogether: [],
+        messageTurns: new Map(),
+        acquisition: input,
+        interrupting: false,
         pending: null,
         delivered: new Map(),
         intentionalStop: false,
@@ -117,17 +106,14 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
         liveMessageId: null,
         liveText: new Map(),
       };
-      processOwner.onRecord((record) => this.acceptRecord(controller, record));
-      processOwner.onMalformed(() => this.markAmbiguous(controller));
-      processOwner.onExit((exit) => this.processExited(controller, exit));
       this.controllers.set(input.conversation_id, controller);
-      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: providerSessionId } };
+      processOwner.onRecord((record) => this.acceptRecord(controller, record));
+      processOwner.onExit((exit) => this.processExited(controller, exit));
+      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: controller.nativeIdentityBound ? controller.providerSessionId : null } };
     } catch (thrown) {
       if (processOwner) await processOwner.close();
       return { ok: false, error: adapterFailure(this.id, "startup-failed", thrown, { retryable: true }) };
-    } finally {
-      if (input.kind === "start") input.signal?.removeEventListener("abort", abort);
-    }
+    } finally { this.acquiring.delete(input.conversation_id); }
   }
 
   async deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>> {
@@ -141,7 +127,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     if (item.operation === "steer" && !controller.value.activeTurnId) {
       return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Claude steering requires the exact active turn") };
     }
-    if (item.operation === "queue" || item.operation === "resume-message-anchor") {
+    if (item.operation === "steer") {
       return { ok: false, error: adapterFailure(this.id, "unsupported-operation", item.operation) };
     }
 
@@ -151,6 +137,35 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     } catch (error) {
       return { ok: false, error: adapterFailure(this.id, "attachment-custody-failed", error) };
     }
+
+    try {
+      const owned = controller.value;
+      const settings = item.operation === "queue" ? owned.acquisition.runtime_options ?? {} : item.runtime_options;
+      const immutable = ["effort", "system_prompt", "max_turns", "max_cost_usd", "setting_sources", "allowed_tools"] as const;
+      const changed = immutable.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(owned.acquisition.runtime_options?.[key]));
+      if (changed) {
+        if (owned.activeTurnId) throw new Error("Startup settings can change only between turns");
+        await owned.process.close();
+        const acquisition: ControllerAcquisitionRequest = owned.nativeIdentityBound
+          ? { kind: "resume-provider-session", conversation_id: owned.conversationId, generation: owned.generation, controller_instance_id: owned.controllerInstanceId, provider_session_id: owned.providerSessionId, cwd: owned.acquisition.cwd, runtime_options: settings }
+          : { kind: "start", conversation_id: owned.conversationId, generation: owned.generation, controller_instance_id: owned.controllerInstanceId, cwd: owned.acquisition.cwd!, runtime_options: settings };
+        const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
+        const replacement = new ClaudeSdkTransport(acquisition, sdk);
+        await replacement.start();
+        owned.process = replacement;
+        owned.providerSessionId = replacement.reservedSessionId;
+        owned.nativeIdentityBound = replacement.providerSessionId !== null;
+        replacement.onRecord((record) => this.acceptRecord(owned, record));
+        replacement.onExit((exit) => this.processExited(owned, exit));
+        owned.acquisition = acquisition;
+      } else {
+        await owned.process.configure(settings);
+        owned.acquisition.runtime_options = settings;
+      }
+    }
+    catch (error) { return { ok: false, error: adapterFailure(this.id, "configuration-failed", error) }; }
+
+    controller.value.messageTurns.set(item.id, item.turn_id);
 
     const acknowledged = new Promise<ProviderDeliveryReceipt>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -163,15 +178,17 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     try {
       controller.value.process.write({
         type: "user",
-        uuid: item.idempotency_key,
-        message: { role: "user", content },
+        uuid: item.id as `${string}-${string}-${string}-${string}-${string}`,
+        session_id: controller.value.providerSessionId,
+        message: { role: "user", content: content as SDKUserMessage["message"]["content"] },
         parent_tool_use_id: null,
       });
       const receipt = await acknowledged;
       controller.value.delivered.set(item.id, receipt);
       return { ok: true, value: receipt };
     } catch (error) {
-      return { ok: false, error: this.controlError(error, "delivery-failed", item.id) };
+      this.rejectPending(controller.value, { kind: "delivery-uncertain", delivery_id: item.id });
+      return { ok: false, error: { kind: "delivery-uncertain", delivery_id: item.id } };
     }
   }
 
@@ -183,14 +200,14 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     if (
       controller.generation !== input.generation
       || controller.controllerInstanceId !== input.controller_instance_id
-      || controller.providerSessionId !== input.provider_session_id
+      || (controller.nativeIdentityBound ? controller.providerSessionId : null) !== input.provider_session_id
     ) {
       return { ok: true, value: { kind: "unknown", reason: "provider-identity-changed" } };
     }
     return { ok: true, value: {
       kind: "owned",
       controller_instance_id: controller.controllerInstanceId,
-      provider_session_id: controller.providerSessionId,
+      provider_session_id: controller.nativeIdentityBound ? controller.providerSessionId : null,
       state: controller.state,
     } };
   }
@@ -212,6 +229,30 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     await controller.process.close();
     this.controllers.delete(input.conversation_id);
     return { ok: true, value: undefined };
+  }
+
+  async interrupt(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>> {
+    const controller = this.controllers.get(input.conversation_id);
+    if (!controller || controller.generation !== input.generation || !controller.activeTurnId) {
+      return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Claude has no owned active turn") };
+    }
+    try { controller.interrupting = true; await controller.process.interrupt(); return { ok: true, value: undefined }; }
+    catch (error) { return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+  }
+
+  permissions(conversationId: string) { return this.controllers.get(conversationId)?.process.pendingPermissions() ?? []; }
+
+  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+    const controller = this.controllers.get(input.conversation_id);
+    if (!controller || controller.generation !== input.generation || !controller.process.decidePermission(input.request_id, input.decision)) {
+      return { ok: false, error: adapterFailure(this.id, "permission-not-found", "Permission request is no longer pending on this controller") };
+    }
+    this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
+    return { ok: true, value: undefined };
+  }
+
+  subscribeRuntimeEvents(listener: (event: ProviderRuntimeEvent) => void): () => void {
+    this.runtimeListeners.add(listener); return () => this.runtimeListeners.delete(listener);
   }
 
   subscribe(listener: (event: AdapterLifecycleEvent) => Result<void, ConversationControlError>): () => void {
@@ -245,9 +286,27 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       void this.abandon(controller);
       return;
     }
+    if (record.type === "system" && record.subtype === "init" && sessionId && !controller.nativeIdentityBound) {
+      const bound = this.lifecycle.emit(this.event(controller, { kind: "provider-session-bound", provider_session_id: sessionId, at: Date.now() }));
+      if (!bound.ok) { void this.abandon(controller); return; }
+      controller.nativeIdentityBound = true;
+      for (const pendingRecord of controller.identityPendingRecords.splice(0)) this.acceptRecord(controller, pendingRecord);
+    }
+    if (!controller.nativeIdentityBound) { controller.identityPendingRecords.push(value); return; }
     if (record.type === "user") {
       this.acknowledgeUser(controller, record);
       return;
+    }
+    // The SDK may consume several queued prompts in one native turn. Track
+    // that native evidence instead of inventing one result per queued message.
+    const consumed = Array.isArray(record.user_message_uuids) ? record.user_message_uuids
+      : typeof record.user_message_uuid === "string" ? [record.user_message_uuid] : [];
+    for (const uuid of consumed) {
+      const turn = typeof uuid === "string" ? controller.messageTurns.get(uuid) : undefined;
+      if (turn && turn !== controller.activeTurnId && controller.queuedTurns.includes(turn)) {
+        controller.queuedTurns = controller.queuedTurns.filter(value => value !== turn);
+        if (!controller.consumedTogether.includes(turn)) controller.consumedTogether.push(turn);
+      }
     }
     if (record.type === "assistant") {
       this.publishClaudeRecord(controller, record);
@@ -278,10 +337,12 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
   private acknowledgeUser(controller: ClaudeController, record: Record<string, unknown>): void {
     const pending = controller.pending;
     if (!pending) return;
-    if (record.uuid !== pending.item.idempotency_key) return;
+    if (record.uuid !== pending.item.id) return;
     controller.pending = null;
     clearTimeout(pending.timer);
-    if (pending.item.operation !== "steer") {
+    if (controller.activeTurnId) {
+      controller.queuedTurns.push(pending.item.turn_id);
+    } else {
       controller.activeTurnId = pending.item.turn_id;
       controller.state = "running";
       this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
@@ -579,10 +640,25 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.markAmbiguous(controller);
       return;
     }
+    const usage: ProviderRuntimeEvent = {
+      kind: "usage", conversation_id: controller.conversationId, generation: controller.generation, provider_session_id: controller.providerSessionId,
+      provider_record_id: typeof record.uuid === "string" ? record.uuid : `${controller.providerSessionId}:${controller.activeTurnId}`,
+      observed_at: Date.now(), snapshot: {
+        ...(object(record.usage) ? { usage: object(record.usage)! } : {}),
+        ...(object(record.modelUsage) ? { model_usage: object(record.modelUsage)! } : {}),
+        ...(typeof record.total_cost_usd === "number" ? { total_cost_usd: record.total_cost_usd } : {}),
+        ...(typeof record.duration_ms === "number" ? { duration_ms: record.duration_ms } : {}),
+        ...(typeof record.num_turns === "number" ? { num_turns: record.num_turns } : {}),
+      },
+    };
+    for (const listener of this.runtimeListeners) listener(usage);
     const turnId = controller.activeTurnId;
     controller.activeTurnId = null;
     const now = Date.now();
-    if (record.is_error === false && record.subtype === "success") {
+    if (controller.interrupting) {
+      controller.interrupting = false;
+      this.lifecycle.emit(this.event(controller, { kind: "turn-cancelled", turn_id: turnId, at: now }));
+    } else if (record.is_error === false && record.subtype === "success") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-completed", turn_id: turnId, at: now }));
     } else if (record.is_error === true && record.subtype !== "success") {
       this.lifecycle.emit(this.event(controller, {
@@ -594,8 +670,21 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     } else {
       this.lifecycle.emit(this.event(controller, { kind: "turn-unknown", turn_id: turnId, at: now, reason: "probe-ambiguous" }));
     }
-    controller.state = "waiting";
-    this.lifecycle.emit(this.event(controller, { kind: "controller-waiting", at: now }));
+    for (const consumedTurn of controller.consumedTogether.splice(0)) {
+      this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: consumedTurn, at: now }));
+      this.lifecycle.emit(this.event(controller, record.is_error === false && record.subtype === "success"
+        ? { kind: "turn-completed", turn_id: consumedTurn, at: now }
+        : { kind: "turn-unknown", turn_id: consumedTurn, at: now, reason: "probe-ambiguous" }));
+    }
+    const queued = controller.queuedTurns.shift();
+    if (queued) {
+      controller.activeTurnId = queued;
+      controller.state = "running";
+      this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: queued, at: now }));
+    } else {
+      controller.state = "waiting";
+      this.lifecycle.emit(this.event(controller, { kind: "controller-waiting", at: now }));
+    }
   }
 
   private markAmbiguous(controller: ClaudeController): void {
@@ -613,7 +702,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     }
   }
 
-  private processExited(controller: ClaudeController, exit: StructuredProcessExit): void {
+  private processExited(controller: ClaudeController, exit: { code: number | null; signal: string | null; stderr: string }): void {
     this.controllers.delete(controller.conversationId);
     this.rejectPending(controller, adapterFailure(this.id, "process-exited", exit.stderr || `Claude exited with ${exit.code ?? exit.signal}`));
     if (controller.intentionalStop) return;
@@ -649,13 +738,6 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     clearTimeout(controller.pending.timer);
     controller.pending.reject(error);
     controller.pending = null;
-  }
-
-  private controlError(error: unknown, code: string, deliveryId: string): ConversationControlError {
-    const candidate = object(error);
-    if (candidate?.kind === "delivery-uncertain") return { kind: "delivery-uncertain", delivery_id: deliveryId };
-    if (candidate?.kind === "adapter-failure") return error as ConversationControlError;
-    return adapterFailure(this.id, code, error, { retryable: true });
   }
 
   private async abandon(controller: ClaudeController): Promise<void> {

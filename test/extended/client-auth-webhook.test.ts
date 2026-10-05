@@ -136,8 +136,8 @@ describe("client-auth operator webhook delivery", () => {
 
     const allowed = await ingest({ target_session: "operator-session" }, operatorToken);
     expect(allowed.status).toBe(200);
-    expect(allowed.body).toMatchObject({ status: "delivered", delivered_to: "operator-session" });
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(allowed.body).toMatchObject({ status: "queued", delivered_to: null });
+    expect(sendPrompt).not.toHaveBeenCalled();
   });
 
   it("protects manual delivery of a queued webhook", async () => {
@@ -160,8 +160,9 @@ describe("client-auth operator webhook delivery", () => {
       credential: operatorToken,
       transport: "http",
     });
-    expect(allowed.status).toBe(200);
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(allowed.status).toBe(422);
+    expect(allowed.body).toMatchObject({ error: "delivery_failed" });
+    expect(sendPrompt).not.toHaveBeenCalled();
   });
 
   it("protects every selector for an app-bound non-operator session", async () => {
@@ -200,6 +201,6 @@ describe("client-auth operator webhook delivery", () => {
 
     const allowed = await ingest({ target_session: "agent-session" }, operatorToken);
     expect(allowed.status).toBe(200);
-    expect(agentSendPrompt).toHaveBeenCalledTimes(1);
+    expect(agentSendPrompt).not.toHaveBeenCalled();
   });
 });

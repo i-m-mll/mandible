@@ -1,4 +1,4 @@
-const conversationControlSchemaSql = (includeRuntimeOptions: boolean): readonly string[] => [
+const conversationControlSchemaSql = (includeRuntimeOptions: boolean, allowPendingNativeIdentity = false): readonly string[] => [
   `CREATE TABLE conversation_control_state (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE RESTRICT,
     provider TEXT NOT NULL,
@@ -18,7 +18,7 @@ const conversationControlSchemaSql = (includeRuntimeOptions: boolean): readonly 
     updated_at INTEGER NOT NULL,
     CHECK (
       (owner_kind = 'none' AND controller_state = 'stopped' AND controller_instance_id IS NULL AND adapter_id IS NULL AND owner_detail_json = '{}')
-      OR (owner_kind = 'mandible' AND controller_state != 'stopped' AND controller_instance_id IS NOT NULL AND adapter_id IS NOT NULL AND provider_session_id IS NOT NULL AND last_authoritative_signal IS NOT NULL)
+      OR (owner_kind = 'mandible' AND controller_state != 'stopped' AND controller_instance_id IS NOT NULL AND adapter_id IS NOT NULL AND ${allowPendingNativeIdentity ? "(provider_session_id IS NOT NULL OR (provider = 'claude_code' AND json_extract(owner_detail_json, '$.native_identity_pending') = 1))" : 'provider_session_id IS NOT NULL'} AND last_authoritative_signal IS NOT NULL)
       OR (owner_kind = 'external' AND controller_state = 'unknown' AND controller_instance_id IS NULL AND adapter_id IS NULL AND last_authoritative_signal IS NOT NULL)
       OR (owner_kind = 'unknown' AND controller_state = 'unknown' AND controller_instance_id IS NULL AND adapter_id IS NULL)
     ),
@@ -83,4 +83,11 @@ const conversationControlSchemaSql = (includeRuntimeOptions: boolean): readonly 
 export const CONVERSATION_CONTROL_SCHEMA_V163_SQL = conversationControlSchemaSql(false);
 
 /** Current head shape used by fresh databases. */
-export const CONVERSATION_CONTROL_SCHEMA_SQL = conversationControlSchemaSql(true);
+export const CONVERSATION_CONTROL_SCHEMA_SQL = conversationControlSchemaSql(true, true);
+
+export const CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL = [
+  CONVERSATION_CONTROL_SCHEMA_SQL[0].replace('CREATE TABLE conversation_control_state', 'CREATE TABLE conversation_control_state_v189'),
+  'INSERT INTO conversation_control_state_v189 SELECT * FROM conversation_control_state',
+  'DROP TABLE conversation_control_state',
+  'ALTER TABLE conversation_control_state_v189 RENAME TO conversation_control_state',
+] as const;

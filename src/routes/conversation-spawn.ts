@@ -85,7 +85,7 @@ export function registerConversationSpawnRoutes(
         );
         if (!materialized.ok) throw new Error(JSON.stringify(materialized.error));
         const ready = spawns.ready(reservationId, generation, lease.controller_instance_id, lease.provider_session_id, {
-          kind: "native-conversation-controller-ready",
+          kind: lease.provider_session_id ? "native-conversation-controller-ready" : "controller-ready-awaiting-native-identity",
           adapter_id: lease.adapter_id,
           controller_instance_id: lease.controller_instance_id,
           provider_session_id: lease.provider_session_id,
