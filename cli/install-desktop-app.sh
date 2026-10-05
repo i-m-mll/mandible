@@ -219,7 +219,7 @@ fi
 "$runtime_command" "$repo_root/scripts/local-runtime.mjs" install --root "$repo_root"
 err "[desktop-install] installed persistent Mandible runtime LaunchAgents"
 
-if [[ "$was_running" == "true" ]]; then
+if [[ "$was_running" == "true" && -z "${MANDIBLE_RUNTIME_HANDOFF_JOURNAL:-}" ]]; then
   if [[ -n "${MANDIBLE_DESKTOP_RELAUNCH_COMMAND:-}" ]]; then
     bash -lc "$MANDIBLE_DESKTOP_RELAUNCH_COMMAND"
   else
