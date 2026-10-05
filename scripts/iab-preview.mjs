@@ -69,6 +69,7 @@ async function runCli() {
       ? await cleanupPreviewCache(args)
       : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
     printResult(result, args.json);
+    if (result.ok === false) process.exitCode = 1;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (args.json) {
@@ -126,7 +127,7 @@ async function createOrReusePreview(options) {
   let worktree;
   let mode;
 
-  if (!options.forceNew && currentIsIntegration && !currentIsProtected) {
+  if (!options.forceNew && currentIsIntegration && !currentIsProtected && (!options.branch || options.branch === currentBranch)) {
     branch = currentBranch;
     worktree = repoRoot;
     mode = "current-integration";
@@ -300,15 +301,15 @@ async function createOrReusePreview(options) {
 
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
-  ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
-  ownership.state = "active";
-  ownership.revision += 1;
-  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
   const priorRegistration = registerPreviewInstance(instanceEnv);
   let started = null;
   let health;
   try {
     reloadLocalFrontDoor();
+    ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
+    ownership.state = "active";
+    ownership.revision += 1;
+    saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
     started = await startPreviewProcess({
       runScript,
       worktree,
@@ -775,7 +776,12 @@ export async function finalizePreview(options) {
     if (active) throw new Error(active);
     const finalized = finalizeOwnedRun(file, { expectedRevision: Number(options.revision), outcome: options.outcome,
       converged: options.converged, disposition: options.disposition, destination: options.destination, summary: options.summary, reviewBy: options.reviewBy, transferReference: options.transferReference });
-    return { ok: true, status: "finalized", ...cleanupOwnedRun(file, { apply: true }), runId: finalized.ownership.runId };
+    const activeAfterDisposition = await previewConsumerReason(finalized, root);
+    const cleanup = activeAfterDisposition ? { action: "skip-active", reason: activeAfterDisposition, remaining: finalized.ownership.cleanup.remaining }
+      : cleanupOwnedRun(file, { apply: true });
+    const complete = cleanup.action === "delete-owned" && cleanup.remaining?.length === 0;
+    return { ok: complete || options.outcome === "investigating", status: options.outcome === "investigating" ? "investigating" : complete ? "cleaned" : "cleanup-pending", ...cleanup,
+      outcome: options.outcome, converged: options.converged, runId: finalized.ownership.runId };
   });
 }
 
@@ -790,7 +796,7 @@ function resolvePreviewOwner(worktree, branch, options) {
 }
 
 function previewLogSegments(dbPath) {
-  const db = new Database(dbPath, { readonly: true });
+  const db = new SqliteDatabase(dbPath, { readonly: true });
   try {
     const value = Number.parseInt(db.prepare("SELECT value FROM settings WHERE key = 'stderr_rotation_keep_segments'").get()?.value ?? "5", 10);
     return Number.isFinite(value) && value > 0 ? value : 5;

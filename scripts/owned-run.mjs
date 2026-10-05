@@ -37,8 +37,24 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
 
 export function saveOwnedMetadata(file, metadata) {
   const temp = `${file}.partial-${process.pid}`;
-  fs.writeFileSync(temp, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+  const fd = fs.openSync(temp, 'wx', 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify(metadata, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
+  const directoryFd = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+}
+
+function readOwnedMetadata(file) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Owner metadata must be an exact regular file: ${file}`);
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function receiptDirectory(root) {
+  const directory = path.join(path.dirname(root), '.receipts');
+  fs.mkdirSync(directory, { recursive: true });
+  if (fs.lstatSync(directory).isSymbolicLink()) throw new Error('Compact receipt directory is a symlink');
+  return directory;
 }
 
 export function inspectRunConsumers(root) {
@@ -47,7 +63,7 @@ export function inspectRunConsumers(root) {
     return { idle: false, reason: `open-file inspection failed: ${result.error?.message ?? result.stderr ?? result.status}` };
   }
   return result.stdout.trim()
-    ? { idle: false, reason: 'owned files have active consumers' }
+    ? { idle: false, reason: `owned files have active consumers: ${result.stdout.trim().slice(0, 2000)}` }
     : { idle: true };
 }
 
@@ -84,8 +100,22 @@ function inventory(root, relative, hashBytes = true) {
     ...(hashBytes ? { sha256: createHash('sha256').update(fs.readFileSync(target)).digest('hex') } : {}) }];
 }
 
+function outputDigest(outputs) {
+  return createHash('sha256').update(JSON.stringify(outputs)).digest('hex');
+}
+
+function verifyTransfer(root, manifest, destination) {
+  if (!destination || fs.realpathSync(destination) === fs.realpathSync(root) || fs.realpathSync(destination).startsWith(`${fs.realpathSync(root)}${path.sep}`)) throw new Error('Transfer destination must be outside the cleanup root');
+  for (const file of manifest.filter(file => file.kind !== 'directory')) {
+    const target = contained(path.resolve(destination), file.path, file.kind === 'symlink');
+    if (file.kind === 'symlink') {
+      if (!fs.lstatSync(target).isSymbolicLink() || fs.readlinkSync(target) !== file.link) throw new Error(`Transferred link not verified: ${file.path}`);
+    } else if (!fs.existsSync(target) || createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== file.sha256) throw new Error(`Transferred bytes not verified: ${file.path}`);
+  }
+}
+
 export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, converged = false, disposition, destination, summary, reviewBy, transferReference }, { inspect = inspectRunConsumers } = {}) {
-  const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  const metadata = readOwnedMetadata(metadataFile);
   const run = metadata.ownership;
   const root = path.dirname(metadataFile);
   if (!run || !identityMatches(root, run) || run.revision !== expectedRevision) throw new Error('Owned run identity or revision changed');
@@ -108,28 +138,19 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');
-        if (!destination || path.resolve(destination).startsWith(`${root}${path.sep}`) || path.resolve(destination) === root) throw new Error('Transfer destination must be outside the cleanup root');
-        for (const file of manifest.filter(file => file.kind !== 'directory')) {
-          const target = contained(path.resolve(destination), file.path, file.kind === 'symlink');
-          if (file.kind === 'symlink') {
-            if (!fs.lstatSync(target).isSymbolicLink() || fs.readlinkSync(target) !== file.link) throw new Error(`Transferred link not verified: ${file.path}`);
-            continue;
-          }
-          if (!fs.existsSync(target) || (file.sha256 && createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== file.sha256)) throw new Error(`Transferred bytes not verified: ${file.path}`);
-        }
+        verifyTransfer(root, manifest, destination);
       } else if (disposition !== 'discard' && !run.disposable) {
         throw new Error('cleanup blocked: unresolved preview material; transfer exact bytes or explicitly discard');
       }
     }
     return { ...output, disposition: 'disposable', manifest };
   });
-  const receiptDir = path.join(path.dirname(root), '.receipts');
-  fs.mkdirSync(receiptDir, { recursive: true });
+  const receiptDir = receiptDirectory(root);
   const receipt = path.join(receiptDir, `${run.runId}.json`);
   const result = { schema: OWNED_RUN_SCHEMA, runId: run.runId, instanceId: run.instanceId,
     project: run.project, workUnit: run.workUnit, outcome, converged, disposition: disposition ?? 'disposable-fixture',
     destination: destination ? path.resolve(destination) : null, transferReference: transferReference ?? null, summary, finalizedAt: new Date().toISOString(),
-    cleanup: 'pending', apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
+    cleanup: 'pending', manifestDigest: outputDigest(outputs), apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
   saveOwnedMetadata(receipt, result);
   metadata.ownership = { ...run, revision: run.revision + 1, state: 'terminal', outcome, converged, outputs, receipt,
     cleanup: { state: 'pending', remaining: outputs.flatMap(output => output.manifest.map(file => file.path)) } };
@@ -139,7 +160,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
 
 export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspectRunConsumers } = {}) {
   const root = path.dirname(metadataFile);
-  let metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  let metadata = readOwnedMetadata(metadataFile);
   let run = metadata.ownership;
   const blocked = reason => ({ action: 'skip', reason, bytes: 0, reclaimedBytes: 0 });
   if (!run || !identityMatches(root, run)) return blocked('missing or invalid ownership; manual inspection required');
@@ -148,20 +169,24 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
     if (!apply) return blocked(`investigation expired for ${run.workUnit}; generated intermediates eligible, interactive material preserved`);
     const consumers = inspect(root);
     if (!consumers.idle) return blocked(consumers.reason);
-    const receiptDir = path.join(path.dirname(root), '.receipts'); fs.mkdirSync(receiptDir, { recursive: true });
+    const receiptDir = receiptDirectory(root);
     run.receipt = path.join(receiptDir, `${run.runId}.json`);
-    saveOwnedMetadata(run.receipt, { schema: OWNED_RUN_SCHEMA, runId: run.runId, project: run.project, workUnit: run.workUnit, outcome: 'failed', summary: `Investigation review expired: ${run.investigation.summary}`, cleanup: 'pending' });
     run.outputs = run.outputs.map(output => output.kind === 'generated'
       ? { ...output, disposition: 'disposable', manifest: inventory(root, output.path, false) } : output);
+    saveOwnedMetadata(run.receipt, { schema: OWNED_RUN_SCHEMA, runId: run.runId, project: run.project, workUnit: run.workUnit, outcome: 'failed', summary: `Investigation review expired: ${run.investigation.summary}`, cleanup: 'pending', manifestDigest: outputDigest(run.outputs) });
     run.state = 'terminal'; run.outcome = 'failed'; run.revision += 1;
     saveOwnedMetadata(metadataFile, metadata);
   }
   if (run.state !== 'terminal' || !run.receipt || !fs.existsSync(run.receipt)
       || (run.outcome === 'accepted' && !run.converged)) return blocked('cleanup blocked: unresolved preview material');
-  const receipt = JSON.parse(fs.readFileSync(run.receipt, 'utf8'));
-  if (receipt.runId !== run.runId || receipt.outcome !== run.outcome) return blocked('compact outcome does not match owner');
+  if (path.resolve(run.receipt) !== path.join(path.dirname(path.resolve(root)), '.receipts', `${run.runId}.json`)) return blocked('compact outcome path is outside owner receipts');
+  const receipt = readOwnedMetadata(run.receipt);
+  if (receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) return blocked('compact outcome does not match owner');
   const consumers = inspect(root);
   if (!consumers.idle) return blocked(consumers.reason);
+  if (receipt.disposition === 'transferred') {
+    for (const output of run.outputs.filter(output => output.kind === 'interactive')) verifyTransfer(root, output.manifest, receipt.destination);
+  }
   const files = run.outputs.flatMap(output => {
     if (output.disposition === 'pending' && output.kind === 'interactive') return [];
     if (output.disposition !== 'disposable' || !Array.isArray(output.manifest)) throw new Error('Output disposition is not proven');
@@ -182,7 +207,7 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
     bytes += file.size ?? 0;
   }
   if (!apply) return { action: 'delete-owned', reason: 'terminal bytes have verified disposition and saved outcome', bytes, reclaimedBytes: 0 };
-  if (JSON.parse(fs.readFileSync(metadataFile, 'utf8')).ownership.revision !== run.revision) return blocked('metadata revision changed');
+  if (readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('metadata revision changed');
   let reclaimedBytes = 0;
   try {
     for (const file of remaining) {

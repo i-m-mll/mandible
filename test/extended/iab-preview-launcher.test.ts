@@ -1045,6 +1045,32 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
 }
 
 describe("iab-preview launcher", () => {
+  it("creates, uses and finalizes a real disposable preview with only its compact receipt retained", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-real-lifecycle-"))); tempRoots.push(base);
+    const source = path.join(base, "source.db"); openDb(source).close();
+    const before = fileHash(source);
+    const env = { ...previewLauncherEnv(base), MANDIBLE_RUNTIME: process.execPath };
+    const launched = await execFileAsync(process.execPath, [SCRIPT, "--no-build", "--db", source, "--disposable-fixture", "--owner-project", "fixture-project", "--owner-work-unit", "fixture-work-unit", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 40000 });
+    const preview = JSON.parse(launched.stdout);
+    standInPidFiles.push(preview.pidFile);
+    const health = await fetch(`http://127.0.0.1:${preview.port}/api/health`).then(response => response.json());
+    expect(health.ready).toBe(true); expect(health.instance.instance_id).toBe(preview.ownership.instanceId);
+    const edited = new SqliteDatabase(preview.db);
+    edited.prepare("INSERT INTO settings(key,value,updated_at) VALUES('fixture-edit','unique',1)").run(); edited.close();
+    fs.writeFileSync(path.join(preview.previewRoot, "artifacts", "fixture-document"), "disposable managed edits");
+    const pid = readPidFile(preview.pidFile); expect(pid).not.toBeNull();
+    process.kill(pid!, "SIGTERM");
+    const deadline = Date.now() + 5000;
+    while (isProcessAlive(pid!) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(isProcessAlive(pid!)).toBe(false);
+    const finalized = spawnSync(process.execPath, [SCRIPT, "finalize", "--root", preview.previewRoot, "--revision", String(preview.ownership.revision), "--outcome", "assessed", "--summary", "Disposable real preview interaction completed", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 15000 });
+    expect(finalized.status, `fixture process ${process.pid}: ${finalized.stdout || finalized.stderr}`).toBe(0);
+    const result = JSON.parse(finalized.stdout);
+    expect(result.status).toBe("cleaned"); expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(fs.existsSync(preview.previewRoot)).toBe(false); expect(fs.existsSync(result.receipt)).toBe(true);
+    expect(fileHash(source)).toBe(before);
+  }, 45000);
+
   it("preserves stopped interactive ledger and managed bytes including older snapshots", async () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
     const root = path.join(base, "edited"); fs.mkdirSync(root);
