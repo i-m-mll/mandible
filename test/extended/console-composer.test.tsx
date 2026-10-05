@@ -14,7 +14,6 @@ vi.mock("../../ui/src/api", () => ({
 }));
 
 import { Composer } from "../../ui/src/components/console/Composer";
-import { SessionControls } from "../../ui/src/components/console/SessionControls";
 
 afterEach(() => {
   cleanup();
@@ -82,58 +81,3 @@ describe("Composer", () => {
   });
 });
 
-describe("SessionControls", () => {
-  it("saves SDK thinking effort through session options", async () => {
-    apiMocks.updateConsoleSessionOptions.mockResolvedValue({});
-    render(
-      <SessionControls
-        sessionId="sdk-1"
-        runOptions={{ backendType: "sdk", command: "provider", phase: "ready", revision: 1, options: [
-          { id: "model", label: "Model", category: "model", kind: "select", nullable: true, source: "backend",
-            availability: "available", currentValue: "model-a", allowedValues: [{ value: "model-a", label: "Model A" }],
-            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
-          { id: "thinking_effort", label: "Thinking effort", category: "thought_level", kind: "select", nullable: true, source: "backend",
-            availability: "available", currentValue: null, allowedValues: [{ value: "high", label: "High" }],
-            enforcement: { status: "enforced", owner: "backend", effectiveFrom: "next_prompt" } },
-        ] }}
-        allowedTools={["Read"]}
-        availableTools={["Read"]}
-      />,
-    );
-
-    changeSelect(screen.getByLabelText("Thinking effort"), "high");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("sdk-1", {
-      allowedTools: ["Read"],
-      runOptions: { model: "model-a", thinking_effort: "high" },
-    }));
-  });
-
-  it("does not render or send SDK-only thinking effort for ACP sessions", async () => {
-    apiMocks.updateConsoleSessionOptions.mockResolvedValue({});
-    render(
-      <SessionControls
-        sessionId="acp-1"
-        runOptions={{ backendType: "acp", command: "provider", phase: "ready", revision: 1, options: [
-          { id: "model", label: "Model", category: "model", kind: "select", nullable: false, source: "composed",
-            availability: "available", currentValue: "model-a", allowedValues: [{ value: "model-a", label: "Model A" }],
-            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
-          { id: "reasoning_effort", label: "Reasoning effort", category: "thought_level", kind: "select", nullable: false, source: "composed",
-            availability: "available", currentValue: "high", allowedValues: [{ value: "high", label: "High" }],
-            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
-        ] }}
-        allowedTools={["Read"]}
-        availableTools={["Read"]}
-      />,
-    );
-
-    expect(screen.queryByLabelText("Thinking effort")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("acp-1", {
-      allowedTools: ["Read"],
-      runOptions: { model: "model-a", reasoning_effort: "high" },
-    }));
-  });
-});

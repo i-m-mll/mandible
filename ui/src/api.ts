@@ -1588,6 +1588,7 @@ export type LedgerIssueDetailLiveness = {
 
 export type LedgerIssueDetailWorkUnit = {
   id: string;
+  custody_generation: number;
   issue_id: string;
   ledger_issue_id: string | null;
   repo_id: string;
@@ -1878,7 +1879,7 @@ export async function getIssueSessions(repoId: string, issueId: string): Promise
 
 // Bug: cbbb3d9 — spawn SDK console session from issue hub
 export type SpawnIssueAgentResult = {
-  console_session_id: string;
+  conversation_id: string;
   continuation: string | null;
   branch: string | null;
   cwd: string | null;
@@ -1887,11 +1888,11 @@ export type SpawnIssueAgentResult = {
 export async function spawnIssueAgent(
   repoId: string,
   issueId: string,
-  label?: string,
+  workUnit: { id: string; custody_generation: number },
 ): Promise<SpawnIssueAgentResult> {
   const response = await apiPost(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/spawn`,
-    label ? { label } : {},
+    { work_unit_id: workUnit.id, expected_custody_generation: workUnit.custody_generation },
   );
   return (await parseMaybeJson(response)) as SpawnIssueAgentResult;
 }

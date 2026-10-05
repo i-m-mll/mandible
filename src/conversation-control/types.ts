@@ -38,7 +38,7 @@ export type ControllerOwnership =
       generation: number;
       controller_instance_id: string;
       adapter_id: string;
-      provider_session_id: string;
+      provider_session_id: string | null;
       last_authoritative_signal: number;
     }
   | {
@@ -108,7 +108,27 @@ export type ConversationControlOperation =
   | "resume-provider-session"
   | "resume-message-anchor";
 
+export type ProviderRuntimeEvent = {
+  kind: "usage";
+  conversation_id: string;
+  generation: number;
+  provider_session_id: string;
+  provider_record_id: string;
+  observed_at: number;
+  snapshot: { usage?: Record<string, unknown>; model_usage?: Record<string, unknown>; total_cost_usd?: number; duration_ms?: number; num_turns?: number };
+};
+
+export type ManagedPermissionRequest = {
+  id: string; tool_name: string; tool_input: unknown; created_at: number; expires_at: number;
+  title?: string; description?: string;
+};
+
 export type ConversationRuntimeOptions = {
+  system_prompt?: string;
+  setting_sources?: ("user" | "project" | "local")[];
+  allowed_tools?: string[];
+  max_turns?: number;
+  max_cost_usd?: number;
   model?: string;
   effort?: string;
   permission_mode?: "read-only" | "agent" | "agent-full-access" | "default" | "acceptEdits" | "bypassPermissions";

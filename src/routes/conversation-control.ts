@@ -5,6 +5,7 @@ import type { ConversationControlError, ConversationSubmitRequest } from "../con
 import type { Db } from "../db.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { InstanceInfo } from "../types.js";
+import { parseConversationRuntimeOptions } from "../conversation-control/runtime-options.js";
 import { bodyRecord, sendJson } from "./http.js";
 
 function statusFor(error: ConversationControlError): number {
@@ -20,31 +21,6 @@ function statusFor(error: ConversationControlError): number {
     case "stale-generation":
     case "delivery-uncertain": return 409;
   }
-}
-
-function runtimeOptions(value: unknown): ConversationSubmitRequest["runtime_options"] {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Runtime options must be an object");
-  }
-  const input = value as Record<string, unknown>;
-  const allowed = new Set(["model", "effort", "permission_mode"]);
-  const unexpected = Object.keys(input).find((key) => !allowed.has(key));
-  if (unexpected) throw new Error(`Unsupported runtime option '${unexpected}'`);
-  const result: NonNullable<ConversationSubmitRequest["runtime_options"]> = {};
-  for (const key of ["model", "effort"] as const) {
-    const option = input[key];
-    if (option === undefined || option === null || option === "") continue;
-    if (typeof option !== "string" || !option.trim()) throw new Error(`${key} must be a nonblank string`);
-    result[key] = option.trim();
-  }
-  const permission = input.permission_mode;
-  if (permission !== undefined && permission !== null && permission !== "") {
-    const values = ["read-only", "agent", "agent-full-access", "default", "acceptEdits", "bypassPermissions"] as const;
-    if (!values.includes(permission as typeof values[number])) throw new Error("permission_mode is not supported");
-    result.permission_mode = permission as NonNullable<typeof result.permission_mode>;
-  }
-  return result;
 }
 
 export function registerConversationControlRoutes(
@@ -119,7 +95,7 @@ export function registerConversationControlRoutes(
     }
     let parsedRuntimeOptions: ConversationSubmitRequest["runtime_options"];
     try {
-      parsedRuntimeOptions = runtimeOptions(body.runtime_options);
+      parsedRuntimeOptions = parseConversationRuntimeOptions(body.runtime_options);
     } catch (error) {
       const invalid: ConversationControlError = { kind: "invalid-request", field: "runtime_options", message: error instanceof Error ? error.message : String(error) };
       sendJson(res, statusFor(invalid), { ok: false, error: invalid });
@@ -162,6 +138,66 @@ export function registerConversationControlRoutes(
       return;
     }
     sendJson(res, result.ok ? 202 : statusFor(result.error), result);
+  }), { fileRpc: "deny" });
+
+  server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute((req, res) => {
+    const result = control.getRuntimeSettings(req.params.id);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }), { fileRpc: "deny" });
+
+  server.patch("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute((req, res) => {
+    const body = bodyRecord(req);
+    const revision = Number(body.expected_revision);
+    if (!Number.isSafeInteger(revision) || revision < 0) return sendJson(res, 400, { error: "invalid_revision" });
+    try {
+      const result = control.saveRuntimeSettings(req.params.id, revision, parseConversationRuntimeOptions(body.runtime_options));
+      sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+    } catch (error) { sendJson(res, 400, { error: "invalid_runtime_options", message: String(error) }); }
+  }), { fileRpc: "deny" });
+
+  server.get("/api/conversations/:id/control/permissions", operatorOnlyManagedSessionRoute((req, res) => {
+    const result = control.permissions(req.params.id);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }), { fileRpc: "deny" });
+
+  server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
+    const result = control.getRuntimeSettings(req.params.id);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }), { fileRpc: "deny" });
+
+  server.patch("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute(async (req, res) => {
+    const body = bodyRecord(req);
+    const revision = Number(body.expected_revision);
+    if (!Number.isSafeInteger(revision) || revision < 0) return sendJson(res, 400, { error: "invalid_revision" });
+    const snapshot = control.getSnapshot(req.params.id);
+    if (!snapshot.ok) return sendJson(res, statusFor(snapshot.error), snapshot);
+    if (!await previewControlAllowed(req.params.id, snapshot.value.ownership.generation)) return rejectIneligiblePreviewControl(res);
+    try {
+      const result = control.saveRuntimeSettings(req.params.id, revision, parseConversationRuntimeOptions(body.runtime_options));
+      sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+    } catch (error) {
+      sendJson(res, 400, { error: "invalid_runtime_options", message: error instanceof Error ? error.message : String(error) });
+    }
+  }), { fileRpc: "deny" });
+
+  server.post("/api/conversations/:id/control/permission/:requestId", operatorOnlyManagedSessionRoute(async (req, res) => {
+    const body = bodyRecord(req);
+    const generation = Number(body.generation);
+    const decision = body.decision;
+    if (!Number.isSafeInteger(generation) || generation < 1 || !["allow", "deny", "allow_always"].includes(String(decision))) {
+      return sendJson(res, 400, { ok: false, error: { kind: "invalid-request", field: "permission", message: "A generation and supported decision are required" } });
+    }
+    if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
+    const result = await control.decidePermission({ conversation_id: req.params.id, generation, request_id: req.params.requestId, decision: decision as "allow" | "deny" | "allow_always" });
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }), { fileRpc: "deny" });
+
+  server.post("/api/conversations/:id/control/interrupt", operatorOnlyManagedSessionRoute(async (req, res) => {
+    const generation = Number(bodyRecord(req).generation);
+    if (!Number.isSafeInteger(generation) || generation < 1) return sendJson(res, 400, { error: "invalid_generation" });
+    if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
+    const result = await control.interrupt(req.params.id, generation);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
   }), { fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/stop", operatorOnlyManagedSessionRoute(async (req, res) => {

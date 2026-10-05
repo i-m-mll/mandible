@@ -286,7 +286,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }));
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
-  const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
+  const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
   registerIssueRoutes(router, workScanner, issueDeps);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
@@ -340,6 +340,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
+  issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);

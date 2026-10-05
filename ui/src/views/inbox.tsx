@@ -635,6 +635,7 @@ function WorkUnitContinuationDetail({
   instance?: InstanceInfo | null;
 }): JSX.Element {
   const [spawning, setSpawning] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const spawnPath = `/api/issues/${encodeURIComponent(item.repo_id)}/${encodeURIComponent(item.issue_id)}/spawn`;
   const spawnAllowed = canPerformOperation(instance, 'POST', spawnPath, {});
 
@@ -642,10 +643,10 @@ function WorkUnitContinuationDetail({
     if (!spawnAllowed || spawning) return;
     setSpawning(true);
     try {
-      const result = await spawnIssueAgent(item.repo_id, item.issue_id);
-      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-    } catch {
-      // silently fail
+      const result = await spawnIssueAgent(item.repo_id, item.issue_id, item);
+      window.location.hash = `#/console?conversation=${encodeURIComponent(result.conversation_id)}`;
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : String(error));
     } finally {
       setSpawning(false);
     }
@@ -653,6 +654,7 @@ function WorkUnitContinuationDetail({
 
   return (
     <div className="inbox-detail__content">
+      {resumeError && <p role="alert">{resumeError}</p>}
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"

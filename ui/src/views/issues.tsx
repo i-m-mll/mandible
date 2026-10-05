@@ -1107,14 +1107,16 @@ export function IssuesView({
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
     setActionInFlight(true);
     try {
-      const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
-      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-    } catch {
-      // silently fail
+      const units = visibleLedgerIssueDetail?.work_units.filter(unit => unit.assigned_session_id && ['open', 'committed'].includes(unit.state)) ?? [];
+      if (units.length !== 1) throw new Error('Select an exact assigned work unit in Inbox before resuming.');
+      const result = await spawnIssueAgent(selectedRepoId, selectedIssueId, units[0]);
+      window.location.hash = `#/console?conversation=${encodeURIComponent(result.conversation_id)}`;
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, visibleLedgerIssueDetail]);
 
   const handleOpenLedgerEntity = useCallback((type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string, repoId?: string) => {
     if (type === 'issue') {

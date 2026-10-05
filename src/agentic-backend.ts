@@ -1,13 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
 import type { ConsoleSession, ConsoleSessionStatus, ConsoleStreamEvent } from "./types.js";
-import type {
-  BackendRunOptionDeclaration,
-  SessionRunOptionsPatch,
-  SessionRunOptionsSnapshot,
-  SessionRunOptionsUpdateResult,
-} from "./session-run-options.js";
-import type { ProviderStartupProvenance } from "./provider-startup.js";
+
 
 export type BackendType = "pty" | "sdk" | "spawn" | "acp";
 export type PermissionDecision =
@@ -71,48 +65,18 @@ export type BackendMetaUpdate = Partial<
   >
 >;
 
-export interface AgenticBackend extends EventEmitter {
+export interface TerminalBackend extends EventEmitter {
   readonly id: string;
   meta: ConsoleSession;
   start(): void;
   stop(signal?: string): void;
   destroy(): void;
   clear(): void;
-  sendPrompt(text: string): void;
   write(data: string): void;
   resize(cols: number, rows: number): void;
   addWsClient(ws: WebSocket): void;
   removeWsClient(ws: WebSocket): void;
   getBufferSnapshot(): Buffer;
   getStreamEvents(): ConsoleStreamEvent[];
-  ingestStructuredEvent(event: ConsoleStreamEvent): void;
-  ingestText(data: string): void;
-  prepare?(signal?: AbortSignal): Promise<void>;
-  getStartupProvenance?(): ProviderStartupProvenance;
 }
 
-export interface PermissionAwareBackend {
-  getPendingPermissions(): PermissionRequest[];
-  resolvePermission(requestId: string, decision: PermissionDecision): boolean;
-}
-
-export interface ConfigurableBackend {
-  readonly runOptionDeclaration: BackendRunOptionDeclaration;
-  getRunOptions(): SessionRunOptionsSnapshot;
-  applyRunOptions(
-    patch: SessionRunOptionsPatch,
-    context: { phase: "initial" | "runtime" },
-  ): Promise<SessionRunOptionsUpdateResult>;
-}
-
-export interface ToolPolicyBackend {
-  setAllowedTools(tools: readonly string[]): Promise<void> | void;
-}
-
-export interface UsageAwareBackend<TUsage> {
-  getUsage(): TUsage[];
-}
-
-export interface CancellablePromptBackend {
-  cancelActivePrompt(): boolean;
-}
