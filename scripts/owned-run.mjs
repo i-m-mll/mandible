@@ -24,6 +24,8 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
   const stat = fs.lstatSync(root);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Owned run root must be a canonical directory');
   for (const output of outputs) contained(root, output.path);
+  const paths = outputs.map(output => output.path);
+  if (new Set(paths).size !== paths.length || paths.some(a => paths.some(b => a !== b && a.startsWith(`${b}${path.sep}`)))) throw new Error('Owned outputs must not overlap');
   return {
     schema: OWNED_RUN_SCHEMA, runId: randomUUID(), revision: 1,
     root: fs.realpathSync(root), rootIdentity: { dev: stat.dev, ino: stat.ino },
@@ -40,7 +42,7 @@ export function saveOwnedMetadata(file, metadata) {
 }
 
 export function inspectRunConsumers(root) {
-  const result = spawnSync('lsof', ['-F', 'n', '+D', root], { encoding: 'utf8' });
+  const result = spawnSync('lsof', ['-F', 'n', '+D', root], { encoding: 'utf8', timeout: 5_000 });
   if (result.error || ![0, 1].includes(result.status) || result.stderr.trim()) {
     return { idle: false, reason: `open-file inspection failed: ${result.error?.message ?? result.stderr ?? result.status}` };
   }
@@ -49,14 +51,14 @@ export function inspectRunConsumers(root) {
     : { idle: true };
 }
 
-function contained(root, relative) {
+function contained(root, relative, allowLeafLink = false) {
   if (!relative || path.isAbsolute(relative) || relative.split(path.sep).some(part => part === '..' || part === '.')) throw new Error(`Invalid owned path: ${relative}`);
   const resolved = path.resolve(root, relative);
   if (!resolved.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error(`Owned path escapes root: ${relative}`);
   let ancestor = root;
   for (const part of relative.split(path.sep)) {
     ancestor = path.join(ancestor, part);
-    if (fs.existsSync(ancestor) && fs.lstatSync(ancestor).isSymbolicLink()) throw new Error(`Owned path is a symlink: ${ancestor}`);
+    if (fs.existsSync(ancestor) && fs.lstatSync(ancestor).isSymbolicLink() && !(allowLeafLink && ancestor === resolved)) throw new Error(`Owned path is a symlink: ${ancestor}`);
   }
   return resolved;
 }
@@ -69,9 +71,10 @@ function identityMatches(root, run) {
 }
 
 function inventory(root, relative, hashBytes = true) {
-  const target = contained(root, relative);
-  if (!fs.existsSync(target)) return [];
-  const stat = fs.lstatSync(target);
+  const target = contained(root, relative, true);
+  let stat;
+  try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  if (stat.isSymbolicLink()) return [{ path: relative, kind: 'symlink', link: fs.readlinkSync(target), dev: stat.dev, ino: stat.ino }];
   if (stat.isDirectory()) return [
     ...fs.readdirSync(target).flatMap(child => inventory(root, path.join(relative, child), hashBytes)),
     { path: relative, kind: 'directory', dev: stat.dev, ino: stat.ino },
@@ -96,8 +99,12 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!destination || path.resolve(destination).startsWith(`${root}${path.sep}`) || path.resolve(destination) === root) throw new Error('Transfer destination must be outside the cleanup root');
-        for (const file of manifest.filter(file => file.kind === 'file')) {
-          const target = contained(path.resolve(destination), file.path);
+        for (const file of manifest.filter(file => file.kind !== 'directory')) {
+          const target = contained(path.resolve(destination), file.path, file.kind === 'symlink');
+          if (file.kind === 'symlink') {
+            if (!fs.lstatSync(target).isSymbolicLink() || fs.readlinkSync(target) !== file.link) throw new Error(`Transferred link not verified: ${file.path}`);
+            continue;
+          }
           if (!fs.existsSync(target) || (file.sha256 && createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== file.sha256)) throw new Error(`Transferred bytes not verified: ${file.path}`);
         }
       } else if (disposition !== 'discard' && !run.disposable) {
@@ -139,10 +146,11 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   let bytes = 0;
   const remaining = [];
   for (const file of files) {
-    const target = contained(root, file.path);
-    if (!fs.existsSync(target)) continue;
-    const stat = fs.lstatSync(target);
+    const target = contained(root, file.path, file.kind === 'symlink');
+    let stat;
+    try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     if (stat.dev !== file.dev || stat.ino !== file.ino
+      || (file.kind === 'symlink' && (!stat.isSymbolicLink() || fs.readlinkSync(target) !== file.link))
       || (file.kind === 'file' && (!stat.isFile() || stat.size !== file.size || (file.sha256 && createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== file.sha256)))) {
       return blocked(`owned bytes changed after disposition: ${file.path}`);
     }
@@ -154,10 +162,10 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   let reclaimedBytes = 0;
   try {
     for (const file of remaining) {
-      const target = contained(root, file.path);
+      const target = contained(root, file.path, file.kind === 'symlink');
       if (file.kind === 'directory') {
         if (fs.readdirSync(target).length === 0) fs.rmdirSync(target);
-      } else { fs.unlinkSync(target); reclaimedBytes += file.size; }
+      } else { fs.unlinkSync(target); reclaimedBytes += file.size ?? 0; }
     }
     const extras = fs.readdirSync(root).filter(name => name !== path.basename(metadataFile));
     run.cleanup = { state: extras.length ? 'pending' : 'completed', remaining: extras };
