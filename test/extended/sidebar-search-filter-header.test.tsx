@@ -1,10 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+
+
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SidebarSearchFilterHeader } from '../../ui/src/components/shared/SidebarSearchFilterHeader';
-import { readResolvedStylesheet } from '../helpers/css-manifest';
+
 
 afterEach(() => {
   cleanup();

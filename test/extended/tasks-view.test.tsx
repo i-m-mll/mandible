@@ -16,11 +16,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  TASK_INVENTORY_SCHEMA,
-  TASK_INVENTORY_SCHEMA_V2,
-  type TaskInventoryResponse,
-} from '../../src/contracts.js';
+import { TASK_INVENTORY_SCHEMA_V2, type TaskInventoryResponse } from '../../src/contracts.js';
 import { migrate, setDb, type Db } from '../../src/db.js';
 import {
   getTaskInventoryView,
