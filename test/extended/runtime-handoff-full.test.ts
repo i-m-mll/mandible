@@ -169,6 +169,7 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     db = new SqliteDatabase(ledger);
     setupOperator(db, { slug: 'isolated-upgrade-operator', display_name: 'Isolated Upgrade Operator' });
     const signing = configureSigningCredential(db, repo, 'ssh_key'); fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\n');
+    git(repo, ['config', 'commit.gpgsign', 'true']);
     registerWorkRepo(db, repo); const registered = createLedgerProject(db, repo);
     addOrUpdateCheckout(db, registered.project.id, { root: candidateRoot, name: 'retained candidate executor', default_branch: 'main' });
     const issue = createLedgerIssue(db, registered.project.id, 'bootstrap-private', 'Private exact candidate bootstrap');
@@ -198,7 +199,16 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${candidateRoot}/bin`);
     await approveBootstrapDelivery(operatorApi, request.id);
-    await until(() => { const hook = db!.prepare('SELECT id FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as { id: string } | undefined; if (hook) executionId = hook.id; journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null; return !!journal?.bridgeInstalled; }, 60000, 'Candidate executor source-root handoff admission');
+    await until(() => {
+      const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
+      if (hook) executionId = hook.id;
+      journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null;
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
+      const state = db!.prepare('SELECT status, exit_code, output FROM auth_requests WHERE id=?').get(request.id) as any;
+      if (state && (state.status === 'rejected' || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-16000) })}`);
+      return !!journal?.bridgeInstalled;
+    }, 60000, 'Candidate executor source-root handoff admission');
     expect(journal.binding.source.root).toBe(candidateRoot); expect(journal.binding.root).toBe(repo);
     expect(journal.binding.source.head).toBe(sourceManifest.revision); expect(fs.existsSync(poisonMarker)).toBe(false);
     await until(() => {
@@ -220,7 +230,10 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: journal.binding.mergeCommit }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'ordinary candidate self-merge runtime drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, 'bootstrap.log'), path.join(scratch, '.cache/mandible/production-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
-    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
+    const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;
+    if (requestState?.output) requestState.output = requestState.output.slice(-16000);
+    const hookStates = requestId && db ? (db.prepare('SELECT hook_id, position, state, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? ORDER BY position').all(requestId) as any[]).map(row => ({ ...row, output: row.output?.slice(-16000) })) : [];
+    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
   } finally {
     if (requestId && executionId) spawnSync('/bin/launchctl', ['bootout', `${domain}/bio.mll.mandible.runtime-handoff.${digest(`${home}:${requestId}:${executionId}`).slice(0, 16)}`], { timeout: 5000 });
     for (const label of [backendLabel, gatewayLabel]) spawnSync('/bin/launchctl', ['bootout', `${domain}/${label}`], { timeout: 5000 });
