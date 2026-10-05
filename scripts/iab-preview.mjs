@@ -71,7 +71,10 @@ async function runCli() {
     printResult(result, args.json);
     if (result.ok === false) process.exitCode = 1;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const describeError = (failure) => failure instanceof AggregateError
+      ? `${failure.message}: ${failure.errors.map(describeError).join('; ')}`
+      : failure instanceof Error ? failure.message : String(failure);
+    const message = describeError(error);
     if (args.json) {
       console.log(JSON.stringify({ ok: false, error: message }, null, 2));
     } else {

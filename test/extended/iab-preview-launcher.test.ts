@@ -883,7 +883,7 @@ function installStandInDaemonDist(repo: string, details: {
 }): void {
   const realDist = path.join(process.cwd(), "dist");
   if (!fs.existsSync(path.join(realDist, "db.js"))) {
-    throw new Error(`the refresh fixture needs a built dist; run \`npm run build\` first (looked in ${realDist})`);
+    throw new Error(`the refresh fixture needs a built dist; run the pinned Bun build first (looked in ${realDist})`);
   }
   const repoDist = path.join(repo, "dist");
   fs.mkdirSync(repoDist, { recursive: true });
@@ -1009,14 +1009,11 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
   const metadataPath = path.join(previewRoot, "metadata.json");
   fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
 
-  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-shims-"));
-  tempRoots.push(shimDir);
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
   fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), path.join(repo, "scripts", "bun-runtime.sh"));
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime-lock.tsv"), path.join(repo, "scripts", "bun-runtime-lock.tsv"));
   fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
-  const runtimeShim = path.join(shimDir, "bun");
-  const realRuntime = `'${process.execPath.replaceAll("'", "'\\''")}'`;
-  fs.writeFileSync(runtimeShim, `#!/bin/sh\nif [ "$1" = --version ]; then echo 1.4.2; exit 0; fi\nif [ "$1" = install ]; then exit 0; fi\nif [ "$1" = run ]; then ${options.buildFails ? "exit 23" : "exit 0"}; fi\nexec ${realRuntime} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ private: true, scripts: { build: options.buildFails ? "exit 23" : "exit 0" } }));
 
   return {
     repo,
@@ -1037,8 +1034,7 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
     refreshedHealthPath,
     env: {
       ...previewLauncherEnv(previewBase),
-      PATH: `${shimDir}:${process.env.PATH}`,
-      MANDIBLE_RUNTIME: runtimeShim,
+      MANDIBLE_RUNTIME: process.execPath,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
     },
   };
@@ -1050,7 +1046,9 @@ describe("iab-preview launcher", () => {
     const source = path.join(base, "source.db"); openDb(source).close();
     const before = fileHash(source);
     const env = { ...previewLauncherEnv(base), MANDIBLE_RUNTIME: process.execPath };
-    const launched = await execFileAsync(process.execPath, [SCRIPT, "--no-build", "--db", source, "--disposable-fixture", "--owner-project", "fixture-project", "--owner-work-unit", "fixture-work-unit", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 40000 });
+    const launched = await execFileAsync(process.execPath, [SCRIPT, "--no-build", "--db", source, "--disposable-fixture", "--owner-project", "fixture-project", "--owner-work-unit", "fixture-work-unit", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 40000 }).catch(error => {
+      throw new Error(`Real preview launch failed: ${error.stderr || error.stdout || error.message}`, { cause: error });
+    });
     const preview = JSON.parse(launched.stdout);
     standInPidFiles.push(preview.pidFile);
     const health = await fetch(`http://127.0.0.1:${preview.port}/api/health`).then(response => response.json());
