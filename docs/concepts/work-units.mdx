@@ -112,8 +112,9 @@ commits, or sessions:
 mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
 mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
-mandible work-unit resolve --id WU [--auth-request-id AR] [--graceful]
-mandible work-unit release --issue I --repo R [--graceful]
+mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
+mandible work-unit release --repo R --branch B --expected-generation N [--graceful]
+mandible work-unit release-issue --issue I --repo R --units-file snapshot.json
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]
 mandible issue-file write [--cwd P] I...
@@ -124,6 +125,17 @@ These commands take mechanism inputs and do not encode worktree layout, signing,
 attribution, provider/model profile, or local command naming. Callers that
 should continue when Mandible is unavailable can use `--graceful` or set
 `MANDIBLE_LEDGER_GRACEFUL=1`.
+
+`release` abandons exactly one unit, by ID or repository and branch. Read its
+`custody_generation` from `find` and pass that number as `--expected-generation`.
+Only its exact durable credential owner can release or resolve it. Cleanup cannot
+release a unit bound to an auth request. An ID retry on the same abandoned unit
+is unchanged; stale custody or ambiguous branch matches fail without mutation.
+
+`release-issue` is deliberate issue-wide abandonment. Its snapshot file is an
+array of `{ "id": "...", "expected_generation": 1 }` entries for every active
+unit of that issue and repository. All entries must match current custody and
+the complete active set; any conflict leaves all units unchanged.
 
 `activate --worker` is an explicit worker-role assertion. It binds the caller's
 allowlisted ambient Codex thread to `worker_provider_session_id`, which is the
