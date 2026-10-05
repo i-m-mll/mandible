@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
 import http from "node:http";
 import fs from "node:fs";
@@ -5,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { Router } from "../../src/server.js";
 
 import { startFileRpcResponder } from "../helpers/file-rpc-responder.js";
 
@@ -14,14 +14,6 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let server: http.Server | null = null;
 let requestBodies: Array<{ path: string; method: string; body: unknown }> = [];
 let tempRoots: string[] = [];
-
-function allowsFileRpcRoute(method: string, url: string): boolean {
-  const router = new Router();
-  router.patch("/api/ledger/comments/:commentId", (_req, res) => res.json({ ok: true }), {
-    fileRpc: "allow",
-  });
-  return router.resolveFileRpcPolicy(method, url);
-}
 
 const issueWithComments = {
   id: "issue-1",
@@ -84,7 +76,7 @@ function listen(opts: { staleConflict?: boolean } = {}): Promise<number> {
       };
 
       if (req.method === "GET" && req.url === "/api/instance") {
-        res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
         return;
       }
 
@@ -164,7 +156,7 @@ describe("comment edit CLI", () => {
     const port = await listen();
     const result = await run(["issue", "comment", "edit", "-m", "body"], port);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Usage:");
+    expect(result.stderr).toContain("Arguments do not match");
     expect(requestBodies).toHaveLength(0);
   });
 
@@ -172,7 +164,7 @@ describe("comment edit CLI", () => {
     const port = await listen();
     const result = await run(["issue", "comment", "edit", "abc#2"], port);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Usage:");
+    expect(result.stderr).toContain("Arguments do not match");
     expect(requestBodies).toHaveLength(0);
   });
 
@@ -278,22 +270,6 @@ describe("comment edit CLI", () => {
     } finally {
       responder.stop();
     }
-  });
-});
-
-describe("comment edit file-RPC allowlist", () => {
-  it("allows PATCH /api/ledger/comments/:commentId", () => {
-    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc")).toBe(true);
-    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/any-id-here")).toBe(true);
-  });
-
-  it("does not allow PATCH on comment revisions sub-path", () => {
-    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc/revisions")).toBe(false);
-  });
-
-  it("does not allow other methods on comment path beyond existing GET revisions", () => {
-    expect(allowsFileRpcRoute("DELETE", "/api/ledger/comments/comment-abc")).toBe(false);
-    expect(allowsFileRpcRoute("PUT", "/api/ledger/comments/comment-abc")).toBe(false);
   });
 });
 

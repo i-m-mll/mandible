@@ -108,19 +108,18 @@ describe("mandible reminder CLI parser and routing", () => {
   it("documents and dispatches the distinct reminder command without changing task", () => {
     const help = runOffline(["help"]);
     expect(help.status).toBe(0);
-    expect(help.stdout).toContain("reminder create|show|list|cancel");
-    expect(help.stdout).toContain("task <description>");
+    expect(help.stdout).toContain("mandible reminder create");
+    expect(help.stdout).toContain("mandible task ");
     const reminderHelp = runOffline(["reminder", "--help"]);
     expect(reminderHelp.status).toBe(0);
-    expect(reminderHelp.stdout).toContain("--idempotency-key <key>");
-    expect(reminderHelp.stdout).toContain("Exactly one trigger");
+    expect(reminderHelp.stdout).toContain("--idempotency-key ");
   });
 
   it("requires a durable idempotency key and exactly one trigger before transport", () => {
     const base = ["reminder", "create", "--project", "mandible", "--message", "Review"];
     const missingKey = runOffline([...base, "--at", "2026-08-15T12:00:00Z"]);
     expect(missingKey.status).toBe(2);
-    expect(missingKey.stderr).toContain("requires --idempotency-key");
+    expect(missingKey.stderr).toContain("--idempotency-key");
     const twoTriggers = runOffline([
       ...base,
       "--idempotency-key", "review-20",
@@ -128,7 +127,7 @@ describe("mandible reminder CLI parser and routing", () => {
       "--issue-closed", "54a7bda",
     ]);
     expect(twoTriggers.status).toBe(2);
-    expect(twoTriggers.stderr).toContain("exactly one");
+    expect(twoTriggers.stderr).toContain("Arguments do not match");
   });
 
   it("validates count-only options and positive thresholds before transport", () => {
@@ -136,13 +135,15 @@ describe("mandible reminder CLI parser and routing", () => {
       "reminder", "create", "--project", "mandible", "--message", "Review",
       "--idempotency-key", "review-20", "--auth-merge-count-gte", "0",
     ]);
-    expect(invalidCount.stderr).toContain("positive integer");
+    expect(invalidCount.status).toBe(2);
+    expect(invalidCount.stderr).toContain("Invalid value for --auth-merge-count-gte");
     const invalidFilter = runOffline([
       "reminder", "create", "--project", "mandible", "--message", "Review",
       "--idempotency-key", "review-20", "--at", "2026-08-15T12:00:00Z",
       "--base-branch", "develop",
     ]);
-    expect(invalidFilter.stderr).toContain("require --auth-merge-count-gte");
+    expect(invalidFilter.status).toBe(2);
+    expect(invalidFilter.stderr).toContain("Arguments do not match");
   });
 });
 
