@@ -56,8 +56,9 @@ function isUnderTestRunner() {
 
 // Canonicalize to the real on-disk path so a symlink, relative segment, or
 // case-insensitive alias cannot smuggle the production path past a string
-// compare. Falls back to a resolved (non-real) path when the file is absent.
-function canonicalizePath(target) {
+// compare. Missing leaves retain the canonical identity of their existing
+// ancestor; dangling parent links are resolved before allocation too.
+function canonicalizePath(target, seenLinks = new Set()) {
   const expanded =
     target === "~"
       ? realSystemHomeDir()
@@ -67,16 +68,22 @@ function canonicalizePath(target) {
   let probe = path.resolve(expanded);
   const suffix = [];
   while (!fs.existsSync(probe)) {
+    let entry;
+    try { entry = fs.lstatSync(probe); } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    }
+    if (entry?.isSymbolicLink()) {
+      if (seenLinks.has(probe) || seenLinks.size >= 40) throw new Error("Database path symlink cycle");
+      seenLinks.add(probe);
+      const linked = path.resolve(path.dirname(probe), fs.readlinkSync(probe));
+      return path.join(canonicalizePath(linked, seenLinks), ...suffix);
+    }
     const parent = path.dirname(probe);
     if (parent === probe) break;
     suffix.unshift(path.basename(probe));
     probe = parent;
   }
-  try {
-    return path.join(fs.realpathSync.native(probe), ...suffix);
-  } catch {
-    return path.resolve(expanded);
-  }
+  return path.join(fs.realpathSync.native(probe), ...suffix);
 }
 
 // Same-file check by device+inode, catching hard links and case-alias entries
@@ -122,6 +129,7 @@ function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_
 }
 
 module.exports = {
+  canonicalizePath,
   PRODUCTION_DB_PATH,
   LEGACY_PRODUCTION_DB_PATH,
   PRODUCTION_OPERATIONAL_LOG_DB_PATH,

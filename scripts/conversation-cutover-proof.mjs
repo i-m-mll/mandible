@@ -12,6 +12,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 const require = createRequire(import.meta.url);
 const {
   PRODUCTION_DB_PATHS,
+  canonicalizePath: canonicalFuturePath,
   resolvesToAnyProductionDbPath,
 } = require("../cli/production-db-guard.cjs");
 
@@ -65,28 +66,6 @@ function canonicalPath(target) {
   } catch {
     return path.resolve(target);
   }
-}
-
-function canonicalFuturePath(target, seenLinks = new Set()) {
-  let probe = path.resolve(target);
-  const suffix = [];
-  while (!fs.existsSync(probe)) {
-    let entry;
-    try { entry = fs.lstatSync(probe); } catch (error) {
-      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
-    }
-    if (entry?.isSymbolicLink()) {
-      if (seenLinks.has(probe) || seenLinks.size >= 40) throw new Error('Destination symlink cycle');
-      seenLinks.add(probe);
-      const linked = path.resolve(path.dirname(probe), fs.readlinkSync(probe));
-      return path.join(canonicalFuturePath(linked, seenLinks), ...suffix);
-    }
-    const parent = path.dirname(probe);
-    if (parent === probe) break;
-    suffix.unshift(path.basename(probe));
-    probe = parent;
-  }
-  return path.join(canonicalPath(probe), ...suffix);
 }
 
 function sameFile(left, right) {

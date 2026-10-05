@@ -134,6 +134,20 @@ describe("production database isolation guard (issue 07edc0d)", () => {
   // none of those smuggle the production bytes past the guard. Tested against a
   // synthetic "production" file so the assertions hold with no real DB present.
   describe("path canonicalization (symlink / hard link / alias bypass)", () => {
+    it("resolves a missing protected leaf through dangling parent links and refuses cycles", () => {
+      const protectedDirectory = path.join(tempDir, "future-protected");
+      const protectedDb = path.join(protectedDirectory, "mandible.db");
+      const alias = path.join(tempDir, "future-alias");
+      fs.symlinkSync(protectedDirectory, alias);
+      expect(resolvesToProductionDbPath(path.join(alias, "mandible.db"), protectedDb)).toBe(true);
+      expect(fs.existsSync(protectedDirectory)).toBe(false);
+      const first = path.join(tempDir, "cycle-first");
+      const second = path.join(tempDir, "cycle-second");
+      fs.symlinkSync(second, first);
+      fs.symlinkSync(first, second);
+      expect(() => resolvesToProductionDbPath(path.join(first, "mandible.db"), protectedDb)).toThrow(/symlink cycle|ELOOP/);
+    });
+
     it("detects a symlink pointing at the production file", () => {
       const prod = path.join(tempDir, "prod.db");
       const link = path.join(tempDir, "link-to-prod.db");
