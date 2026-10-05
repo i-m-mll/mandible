@@ -4,6 +4,7 @@
 # A native build must not overwrite dist/index.js after `bun run build`.
 set -e
 bun scripts/generate-canonical-origin.mjs --check
+bun scripts/prepare-desktop-runtime.mjs
 mkdir -p src-tauri/dist
 scripts/build-local-ca-trust-helper.sh
 cp src-tauri/bootstrap/index.html src-tauri/dist/index.html

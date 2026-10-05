@@ -517,7 +517,7 @@ function prepareRunner(root) {
 }
 
 const PRESERVED_BACKEND_ENVIRONMENT = new Set([
-  "MANDIBLE_DB", "MANDIBLE_LAUNCH_MODE", "MANDIBLE_PID_FILE", "MANDIBLE_STDERR_LOG_PATH", "NODE_OPTIONS", "PATH",
+  "MANDIBLE_DB", "MANDIBLE_LAUNCH_MODE", "MANDIBLE_PID_FILE", "MANDIBLE_STDERR_LOG_PATH", "MANDIBLE_SQLITE_LIBRARY", "MANDIBLE_SQLITE_LIBRARY_ARCHIVE", "NODE_OPTIONS", "PATH",
 ]);
 
 function existingBackendEnvironment() {
@@ -544,6 +544,7 @@ function prepareServicePlists(production, main, launchMode) {
   const pathValue = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
   const backendEnvironment = {
     ...existingBackendEnvironment(),
+    ...Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]])),
     HOME: os.homedir(),
     MANDIBLE_HOME: HOME,
     MANDIBLE_PRODUCTION_ROOT: production.root,

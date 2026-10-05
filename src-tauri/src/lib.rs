@@ -222,8 +222,7 @@ fn run_ca_setup_command(
     command_name: &str,
 ) -> Result<SecureLocalConnectionsStatus, String> {
     let script = resolve_ca_setup_script(app)?;
-    let runtime = resolve_runtime_binary(app)?;
-    let output = Command::new(runtime)
+    let output = runtime_command(app)?
         .arg(script)
         .arg(command_name)
         .env("MANDIBLE_HOME", mandible_home())
@@ -526,9 +525,8 @@ fn run_local_runtime(
     config: &DesktopConfig,
 ) -> Result<DaemonStatus, String> {
     let script = resolve_local_runtime_script(app)?;
-    let runtime = resolve_runtime_binary(app)?;
     let working_directory = resolve_runtime_controller_working_directory(&script)?;
-    let mut child = Command::new(runtime)
+    let mut child = runtime_command(app)?
         .arg(script)
         .arg(operation)
         .arg(format!("--launch-mode={}", config.daemon_launch_mode))
@@ -640,11 +638,27 @@ fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
         .resource_dir()
         .ok()
         .map(|dir| dir.join("scripts/bun-runtime.sh"));
-    let script = bundled.filter(|path| path.is_file()).unwrap_or_else(|| {
+    let packaged = bundled.filter(|path| path.is_file());
+    let script = packaged.clone().unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/bun-runtime.sh")
     });
-    let output = Command::new("/bin/sh")
-        .arg(&script)
+    let mut command = Command::new("/bin/sh");
+    command.arg(&script);
+    if packaged.is_some() {
+        let archive = script
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("packaged Bun selector has no resource root")?
+            .join("runtime/bun.zip");
+        if !archive.is_file() {
+            return Err(
+                "the verified offline Bun archive is missing from the desktop package".into(),
+            );
+        }
+        command.env_remove("MANDIBLE_RUNTIME");
+        command.env("MANDIBLE_RUNTIME_ARCHIVE", archive);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("failed to select the pinned Bun runtime: {error}"))?;
     if !output.status.success() {
@@ -658,6 +672,24 @@ fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
         return Err("Bun selector returned an invalid executable path".into());
     }
     Ok(runtime)
+}
+
+fn runtime_command(app: &AppHandle) -> Result<Command, String> {
+    let mut command = Command::new(resolve_runtime_binary(app)?);
+    if let Ok(resources) = app.path().resource_dir() {
+        if resources.join("scripts/bun-runtime.sh").is_file() {
+            let archive = resources.join("runtime/sqlite.tar.gz");
+            if !archive.is_file() {
+                return Err(
+                    "the verified offline SQLite archive is missing from the desktop package"
+                        .into(),
+                );
+            }
+            command.env_remove("MANDIBLE_SQLITE_LIBRARY");
+            command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", archive);
+        }
+    }
+    Ok(command)
 }
 
 fn resolve_runtime_controller_working_directory(script: &Path) -> Result<PathBuf, String> {

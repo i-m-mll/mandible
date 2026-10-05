@@ -6,7 +6,6 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 import { assessLogs } from './runtime-log-assessment.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -73,7 +72,8 @@ function controller(journal, command, { capture = true } = {}) {
 }
 async function publication(journal) {
   const module = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'proof.mjs')).href);
-  const db = new DatabaseSync(journal.database, { readOnly: true, allowExtension: false });
+  const { default: SqliteDatabase } = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'sqlite.mjs')).href);
+  const db = new SqliteDatabase(journal.database, { readonly: true, fileMustExist: true });
   try { return module.verifyRuntimeHandoffPublication(db, journal.binding); } finally { db.close(); }
 }
 export function legacyHandoffBridge(file, target, deadline) {
@@ -83,7 +83,8 @@ function plist(journal, helper) {
   const esc = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const binding = journal.binding;
   const dir = path.dirname(journalFile(binding));
-  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${esc(journal.helperLabel)}</string><key>ProgramArguments</key><array>${[binding.runtime.path, helper, 'worker', journalFile(binding)].map(v => `<string>${esc(v)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>WorkingDirectory</key><string>${esc(dir)}</string><key>StandardOutPath</key><string>${esc(path.join(dir, 'helper.log'))}</string><key>StandardErrorPath</key><string>${esc(path.join(dir, 'helper.log'))}</string></dict></plist>`;
+  const environment = ['HOME', 'MANDIBLE_HOME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => journal.environment[key]).map(key => `<key>${esc(key)}</key><string>${esc(journal.environment[key])}</string>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${esc(journal.helperLabel)}</string><key>ProgramArguments</key><array>${[binding.runtime.path, helper, 'worker', journalFile(binding)].map(v => `<string>${esc(v)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict>${environment}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>WorkingDirectory</key><string>${esc(dir)}</string><key>StandardOutPath</key><string>${esc(path.join(dir, 'helper.log'))}</string><key>StandardErrorPath</key><string>${esc(path.join(dir, 'helper.log'))}</string></dict></plist>`;
 }
 export async function armRuntimeHandoff(root) {
   if (process.platform !== 'darwin') throw new Error('Production runtime handoff requires macOS launchd.');
@@ -118,7 +119,7 @@ export async function armRuntimeHandoff(root) {
     requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
-    nativeApp: '/Applications/Mandible.app', desktopWasRunning: desktopRunning('/Applications/Mandible.app'),
+    nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
     runtime: { path: runtime, version: run(runtime, ['--version']), sha256: fileHash(runtime) } };
   if (binding.priorBackend.argv[0] === runtime) {
     for (const name of ['sqlite.mjs', 'preparation.json']) fs.unlinkSync(path.join(dir, name));

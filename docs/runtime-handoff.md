@@ -55,4 +55,49 @@ packaged desktop. The coordinator runs that gate after all source inputs
 stabilize. The isolated candidate command is documented in
 [candidate acceptance](candidate-acceptance.md).
 
+## Full daemon transition gate
+
+The full fixture archives the deployed old source revision from its build
+marker, clones its installed dependencies, and starts that actual daemon in a
+private installation. It imports the selected candidate source into a signed
+temporary test repository. The old daemon's existing finalizer sweep consumes
+one fixture publication, runs the real hook, and follows its existing drain
+and exit path. The candidate worker builds and installs a private desktop
+bundle, starts candidate production, and waits for receipt reconciliation.
+No request is submitted to the production ledger.
+
+```bash
+runtime="$(scripts/bun-runtime.sh)"
+MANDIBLE_TEST_OLD_CHECKOUT="/absolute/path/to/deployed/old/checkout" \
+MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
+MANDIBLE_TEST_CANDIDATE_REVISION="<committed candidate SHA>" \
+MANDIBLE_TEST_CA_HOME="/absolute/path/to/existing/trusted/installation" \
+MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
+  "$runtime" node_modules/vitest/vitest.mjs run \
+  --config vitest.extended.config.ts \
+  test/extended/runtime-handoff-full.test.ts
+```
+
+Pass the qualified stock SQLite library inputs when required by its canonical
+startup contract. `MANDIBLE_TEST_OLD_REVISION` may explicitly select the retained
+old commit; otherwise the old build marker supplies it. The old checkout must
+retain its compatible dependencies. The candidate revision must include every
+runtime, storage and handoff source change being qualified.
+
+Isolation transforms only the fixture copies: generated frontend/backend
+ports, the generator's exact expected frontend port, and the Caddy admin port.
+The fixture copies the existing trusted CA snapshot into private storage and
+preserves its certificate and key digests; it changes no OS trust store.
+Unique installation-directory hashes produce distinct launchd labels. Its
+native install path is private and explicitly frozen in the fixture hook
+command. Provider secrets and test-mode variables are absent from subprocess
+environments. The receipt records both source revisions and the transforms.
+
+Compact success or failure evidence goes to the calling user's
+`.cache/mandible/acceptance/upgrade-evidence`. Teardown stops only declared
+fixture jobs and deletes their generated data. The separate paired daemon and
+desktop gate still runs on the exact unmodified integration candidate; this
+transition fixture does not claim identical source bytes after its necessary
+port transforms.
+
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
