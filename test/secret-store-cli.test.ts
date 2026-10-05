@@ -1,4 +1,5 @@
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { sqliteRuntimePaths } from "../src/sqlite-runtime.js";
 // Issue e2cb93f — the secret-backend seam in cli/api.sh and the one-command
 // provisioning flow `mandible user token mint <ref> --store`.
 //
@@ -242,6 +243,8 @@ function seedItem(service: string, account: string, secret: string): void {
 function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     MANDIBLE_RUNTIME: process.execPath,
+    MANDIBLE_SQLITE_LIBRARY: sqliteRuntimePaths().library,
+    MANDIBLE_SQLITE_LIBRARY_ARCHIVE: sqliteRuntimePaths().archive,
     GIT_OPTIONAL_LOCKS: "0",
     PATH: `${stubDir}:${process.env.PATH ?? ""}`,
     HOME: homeDir,

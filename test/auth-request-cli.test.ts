@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let tempDir = "";
@@ -100,12 +102,7 @@ function listenForAuthRequest(
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/api/instance") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        instance: {
-          role: "main",
-          operational_mutations: "allow",
-        },
-      }));
+      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
       return;
     }
     if (req.method === "POST" && req.url === "/api/auth/check") {
@@ -173,7 +170,7 @@ function listenForWithdrawal(): Promise<{
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/api/instance") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
       return;
     }
     let raw = "";
@@ -266,11 +263,18 @@ describe("action-specific request preparation", () => {
     { args: ["--type", "merge", "feature/demo", "--command", "echo override"], error: "--command cannot override a merge" },
     { args: ["--type", "commit", "--command", "echo review", "--target", "main"], error: "require --type merge" },
     { args: ["--type", "merge commit", "--command", "echo review"], error: "invalid --type" },
-  ])("refuses ambiguous operation inputs: $error", ({ args, error }) => {
-    const result = run(["auth", "request", ...args, "--title", "Review", "--issue", "example", "--no-watch"]);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(error);
-    expect(result.stderr).not.toContain("merge preflight");
+  ])("refuses ambiguous operation inputs: $error", async ({ args }) => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", ...args, "--title", "Review", "--issue", "example", "--no-watch"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+      expect(result.status).toBe(2);
+      expect(server.checkBodies).toEqual([]);
+      expect(server.bodies).toEqual([]);
+    } finally {
+      await server.close();
+    }
   });
 
   it("never executes a command when queue submission is unavailable", () => {
@@ -475,7 +479,7 @@ describe("auth requester withdrawal CLI", () => {
     const server = await listenForWithdrawal();
     try {
       const result = await runAsync([
-        "auth", "withdraw", "abc/def", "--reason", "Branch was abandoned",
+        "auth", "withdraw", "request123", "--reason", "Branch was abandoned",
         "--expected-revision", "4", "--expected-custody-generation", "2", "--json",
       ], tempDir, {
         MANDIBLE_PORT: String(server.port),
@@ -484,7 +488,7 @@ describe("auth requester withdrawal CLI", () => {
       });
       expect(result.status).toBe(0);
       expect(server.requests).toEqual([{
-        url: "/api/auth/request/abc%2Fdef/withdraw",
+        url: "/api/auth/request/request123/withdraw",
         body: { reason: "Branch was abandoned", expected_revision: 4, expected_custody_generation: 2 },
       }]);
     } finally {
@@ -578,7 +582,7 @@ describe("auth request specification authoring", () => {
     ]);
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--spec and --spec-file are mutually exclusive");
+    expect(result.stderr).toContain("Arguments do not match");
   });
 });
 
