@@ -43,6 +43,20 @@ describe("one CLI grammar", () => {
       .toThrow();
     expect(syntax.bindEntry("wrap", { argv: { rest: 0 } }, ["--", "command", "--help"]))
       .toBe("argv=('command' '--help')");
+    expect(syntax.parse(["artifact", "bundle", "create", "--name", "smoke", "report.md", "--dry-run", "--json"]))
+      .toMatchObject({ options: { name: "smoke", "dry-run": true }, positionals: ["report.md"] });
+    expect(syntax.parse(["artifact", "snapshot", "artifact-version:one", "--from", "report.md", "--json"]).options.from)
+      .toBe("report.md");
+    expect(syntax.bindEntry("session.link-issue", { session: [{ option: ["session", "session-id"] }, { position: 0 }] },
+      ["--session-id", "session", "--issue", "issue", "--repo", "repo"]))
+      .toBe("session='session'");
+    expect(syntax.parse(["auth", "list", "--head", "feature/topic", "--type", "merge"]).options)
+      .toEqual({ head: "feature/topic", type: "merge" });
+    expect(syntax.bindEntry("project.repair", { source: { option: "merge", valueIndex: 0 }, target: { option: "merge", valueIndex: 1 } },
+      ["--merge", "a", "b"]))
+      .toBe("source='a'\ntarget='b'");
+    expect(syntax.parse(["space", "block", "edit", "space", "block", "--parent", ""]).options.parent)
+      .toBe("");
     expect(syntax.bindEntry("conversations.comment", { message: { option: "m" } }, ["id", "-m", "$(touch bad)'literal"]))
       .toContain("'$(touch bad)'\\''literal'");
   });

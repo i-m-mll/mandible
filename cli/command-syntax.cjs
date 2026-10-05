@@ -67,7 +67,9 @@ function walk(node, fn) {
   if (node.item) walk(node.item, fn);
 }
 function validValue(spec, value) {
-  if (value === undefined || value === '') return false;
+  if (value === undefined) return false;
+  if (spec.type === 'string') return true;
+  if (value === '') return false;
   if (spec.type === 'enum') return spec.values.includes(value);
   if (spec.type === 'literal') return value === spec.value;
   if (spec.type === 'integer') return /^\d+$/.test(value) && Number.isSafeInteger(Number(value))

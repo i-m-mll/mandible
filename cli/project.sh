@@ -213,7 +213,7 @@ cmd_audit() {
 cmd_repair() {
   local apply=0 force=0 merge_src="" merge_dst="" json=0
   local binding
-  binding=$(mandible_bind_arguments "project.repair" '{"apply":{"option":"apply","constant":"1"},"force":{"option":"force","constant":"1"},"merge_src":{"option":"merge"},"merge_dst":{"option":"merge","valueIndex":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "project.repair" '{"apply":{"option":"apply","constant":"1"},"force":{"option":"force","constant":"1"},"merge_src":{"option":"merge","valueIndex":0},"merge_dst":{"option":"merge","valueIndex":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
   require_tools
   local payload response
