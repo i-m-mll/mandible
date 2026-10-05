@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 import { getParserForFile } from "../parsers/index.js";
 import { getParserCapability, PARSER_CAPABILITIES } from "../parsers/capabilities.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
@@ -107,7 +107,7 @@ async function runConversations(args: CliArgs): Promise<void> {
   const dbPath = args.positional[0];
   const ident = args.positional[1];
   if (!dbPath || !ident) throw new Error("missing database path or conversation id");
-  const db = new Database(dbPath, { readonly: true });
+  const db = new SqliteDatabase(dbPath, { readonly: true });
   db.pragma("busy_timeout = 5000");
   db.pragma("query_only = ON");
   try {

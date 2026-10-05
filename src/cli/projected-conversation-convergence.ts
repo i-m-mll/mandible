@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 import { pathToFileURL } from "node:url";
 import { configureIngestionWorker, convergeProjectedConversationTitlesForWorker } from "../ingestion.js";
 import { setDb, type Db } from "../db.js";
 
 export async function convergeProjectedConversationCopy(dbPath: string) {
-  const db = new Database(dbPath) as Db;
+  const db = new SqliteDatabase(dbPath) as Db;
   try {
     db.pragma("journal_mode = DELETE");
     db.pragma("foreign_keys = ON");

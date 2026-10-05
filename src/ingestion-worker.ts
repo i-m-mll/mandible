@@ -1,3 +1,4 @@
+import { isSqliteBusy } from "./sqlite.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { openDb, setDb } from "./db.js";
 import {
@@ -90,11 +91,7 @@ async function withBusyRetry<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-function isSqliteBusy(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED"
-    || /SQLITE_(?:BUSY|LOCKED)|database is locked/i.test(String(error));
-}
+
 
 process.once("exit", () => {
   try { db.close(); } catch { /* best effort */ }

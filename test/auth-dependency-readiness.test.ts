@@ -1,5 +1,5 @@
 // @vitest-environment node
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 function setup(): { db: Db; queue: AuthQueue; router: Router } {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   setupOperator(db, { slug: "dependency-test", display_name: "Dependency Test" });

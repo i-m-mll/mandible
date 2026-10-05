@@ -215,7 +215,7 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |    Push Manager    - SSH batch push         |  |
 |  |    Reaper Timer    - dead session cleanup   |  |
 |  |                                             |  |
-|  |  SQLite (better-sqlite3, WAL mode)          |  |
+|  |  SQLite (Bun node:sqlite, WAL mode)          |  |
 |  +---------------------------------------------+ |
 +--------------------------------------------------+
 

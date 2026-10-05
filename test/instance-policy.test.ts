@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
@@ -214,7 +214,7 @@ describe("instance effect policy", () => {
     const copy = path.join(previewRoot, "preview.db");
     const userPreferences = path.join(previewRoot, "settings", "users");
     fs.mkdirSync(userPreferences, { recursive: true });
-    const production = new Database(source);
+    const production = new SqliteDatabase(source);
     production.exec("CREATE TABLE notes (value TEXT NOT NULL); INSERT INTO notes VALUES ('production')");
     production.close();
     fs.copyFileSync(source, copy);
@@ -233,11 +233,11 @@ describe("instance effect policy", () => {
       dbPath: copy,
       sourceDbPath: source,
     });
-    const previewDb = new Database(instance.db_path);
+    const previewDb = new SqliteDatabase(instance.db_path);
     previewDb.prepare("INSERT INTO notes VALUES (?)").run("preview-only");
     previewDb.close();
 
-    const unchanged = new Database(source, { readonly: true });
+    const unchanged = new SqliteDatabase(source, { readonly: true });
     expect(unchanged.prepare("SELECT value FROM notes ORDER BY rowid").pluck().all()).toEqual(["production"]);
     unchanged.close();
     expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("PUT", "/api/host-preferences/app-theme"))).toEqual({ allowed: true });

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/sse", () => ({ broadcast: vi.fn() }));
@@ -21,7 +21,7 @@ import { Router } from "../../src/server";
 let db: Db;
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
 });

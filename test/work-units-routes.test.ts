@@ -1,5 +1,5 @@
 import http from "node:http";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
@@ -18,7 +18,7 @@ let db: Db;
 let router: Router;
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   router = new Router();

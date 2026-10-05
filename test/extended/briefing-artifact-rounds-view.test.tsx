@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -96,14 +96,14 @@ function createCopiedPreviewDatabase(root: string): {
   fs.mkdirSync(path.join(previewRoot, 'settings', 'users'), { recursive: true });
   const sourceDbPath = path.join(sourceRoot, 'source.db');
   const dbPath = path.join(previewRoot, 'copy.db');
-  const sourceDb = new Database(sourceDbPath);
+  const sourceDb = new SqliteDatabase(sourceDbPath);
   try {
     migrate(sourceDb);
   } finally {
     sourceDb.close();
   }
   fs.copyFileSync(sourceDbPath, dbPath);
-  return { db: new Database(dbPath), dbPath, sourceDbPath, previewRoot, sourceRoot };
+  return { db: new SqliteDatabase(dbPath), dbPath, sourceDbPath, previewRoot, sourceRoot };
 }
 
 function exactTestInstanceEnv(role: 'test' | 'preview', details: {

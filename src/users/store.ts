@@ -1,3 +1,4 @@
+import { isSqliteConstraint as isUniqueConstraint } from "../sqlite.js";
 import type { Db } from "../db.js";
 import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
 import { ulid } from "./ids.js";
@@ -894,8 +895,3 @@ export function listEvidence(db: Db, credentialId?: string): AttributionEvidence
 }
 
 // --- internals ---
-
-function isUniqueConstraint(error: unknown): boolean {
-  const code = (error as { code?: string } | null)?.code;
-  return code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT";
-}
