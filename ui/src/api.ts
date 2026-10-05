@@ -1044,12 +1044,18 @@ export async function setAuthRequestActionVeto(
   throw new Error('Invalid action veto response.');
 }
 
+export async function cancelApprovalProof(requestId: string): Promise<void> {
+  const path = `/api/auth/request/${encodeURIComponent(requestId)}/cancel-proof`;
+  const response = await apiWrite('POST', path);
+  if (!response.ok) throw new Error('Could not cancel operator signing.');
+}
+
 export async function approveAuthRequest(requestId: string): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
   // if Mandible is mid-startup-scan and the event loop is saturated.
-  const APPROVE_TIMEOUT_MS = 10_000;
+  const APPROVE_TIMEOUT_MS = 65_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
 
