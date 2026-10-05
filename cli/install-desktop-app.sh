@@ -90,7 +90,7 @@ cd "$repo_root"
 
 runtime="$("$repo_root/scripts/bun-runtime.sh")"
 export MANDIBLE_RUNTIME="$runtime"
-export PATH="$("$runtime" "$repo_root/scripts/runtime-environment.mjs" "$runtime" "$repo_root")"
+export PATH="$("$runtime" "$repo_root/scripts/runtime-environment-path.mjs" "$runtime" "$repo_root")"
 
 dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-bun install --frozen-lockfile --force}"
 build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-bun run tauri:build -- --bundles app}"

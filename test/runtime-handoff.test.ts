@@ -98,3 +98,15 @@ it('admits a drain only for the active armed helper and exact current process st
   fs.writeFileSync(activeFile, JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: foreign.bindingDigest }));
   expect(runtimeHandoffDrainIdentity(foreign)).toBeNull();
 });
+
+
+it('runs the staged bundled helper without activating imported command-line entrypoints', () => {
+  const { dir, journal } = fixture();
+  fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify({ ...journal, phase: 'failed' }));
+  const runtime = execFileSync('/bin/sh', ['scripts/bun-runtime.sh'], { encoding: 'utf8' }).trim();
+  const helper = path.join(dir, 'helper.mjs');
+  execFileSync(runtime, ['build', 'scripts/runtime-handoff.mjs', '--target', 'bun', '--outfile', helper], { stdio: 'pipe' });
+  // A terminal journal must exit without admission, rebuild or service changes.
+  expect(execFileSync(runtime, [helper, 'worker', path.join(dir, 'journal.json')], { encoding: 'utf8', timeout: 5000 })).toBe('');
+  expect(readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId)?.phase).toBe('failed');
+});
