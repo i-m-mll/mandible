@@ -242,6 +242,7 @@ function seedItem(service: string, account: string, secret: string): void {
 function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     MANDIBLE_RUNTIME: process.execPath,
+    GIT_OPTIONAL_LOCKS: "0",
     PATH: `${stubDir}:${process.env.PATH ?? ""}`,
     HOME: homeDir,
     TMPDIR: process.env.TMPDIR ?? "/tmp",

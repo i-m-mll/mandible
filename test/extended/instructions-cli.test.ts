@@ -72,7 +72,7 @@ describe("instructions CLI", () => {
   });
 
   it("uses the pinned Bun runtime when Bun is not on PATH", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-node-bin-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-bun-runtime-"));
     tempRoots.push(home);
 
     const list = await run(["instructions", "targets", "list"], {
