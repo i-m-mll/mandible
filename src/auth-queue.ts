@@ -1024,6 +1024,7 @@ export class AuthQueue {
 
     for (const row of rows) {
       const request = mapRow(row);
+      if (this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) continue;
       if (excludeInFlight && this.inFlight.has(request.id)) {
         continue;
       }
@@ -2828,7 +2829,7 @@ export class AuthQueue {
       );
     }
 
-    if (extractAtomicMergeState(request.output).prepared) {
+    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) {
       throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
     }
     const now = this.now();
@@ -2871,7 +2872,7 @@ export class AuthQueue {
       );
     }
 
-    if (extractAtomicMergeState(request.output).prepared) {
+    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) {
       throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
     }
     const now = this.now();
@@ -3040,12 +3041,12 @@ export class AuthQueue {
     this.enforceCanonicalMergeCommand(request);
     const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
     if (contextUpdate) request = this.recordApprovalContextUpdate(request, contextUpdate, this.now());
-    request = this.ensureOriginalMergeRangeForApproval(request);
     if (isAuthMergeCommand(request) && !this.mergeCandidateExact(request)) {
       const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
       request = this.recomputeStaleCandidateForApproval(request, refusalSink) ?? request;
       if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
     }
+    request = this.ensureOriginalMergeRangeForApproval(request);
     if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || this.hasNativeMergeHooks(request.cwd))) {
       throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
     }

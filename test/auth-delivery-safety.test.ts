@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager } from "../src/auth-hooks.js";
+import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
 import { getAttributionEvidence } from "../src/users/store.js";
 import {
@@ -48,6 +48,54 @@ function protectedState() {
 }
 
 describe("protected delivery evidence", () => {
+  it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
+    queue.dispose();
+    let journal: RuntimeHandoffJournal | null = null;
+    let receiptValid = false;
+    let acknowledgements = 0;
+    const hooks = new AuthHookManager(db, { handoffClient: {
+      readRuntimeHandoff: async () => journal,
+      verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
+      acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; },
+    } });
+    db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}\\n'; exit 75`, "builtin-mandible-rebuild");
+    queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
+    const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, "handoff-close");
+    const request = submitMerge([issue.id]);
+    await queue.approveWithOperatorProof(request.id, operatorId);
+    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
+    db.prepare("UPDATE auth_requests SET output = ?, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
+    await hooks.runPending(queue.getRequest(request.id)!);
+    let run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
+    const attemptHistory = run.attempt_history;
+    expect(run).toMatchObject({ state: "pending", exit_code: 75, attempts: 1 });
+    expect(await hooks.runPending(queue.getRequest(request.id)!)).toEqual([]);
+    expect(hooks.grantRetry(request.id)).toBe(0);
+    db.prepare("UPDATE auth_hook_executions SET state = 'running' WHERE id = ?").run(run.id);
+    hooks.reclaimInterruptedRuns(request.id);
+    expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("running");
+    const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
+    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...verifyRuntimeHandoffPublication(db, binding) }, bindingDigest: "a".repeat(64), phase: "complete", receipt: { health: "candidate" } };
+    await queue.resumeHookConvergence();
+    expect(queue.getRequest(request.id)?.status).toBe("executing");
+    expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("failed");
+    expect(acknowledgements).toBe(0);
+    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "open" });
+    receiptValid = true;
+    await queue.resumeHookConvergence();
+    run = hooks.getRun(request.id, run.hook_id)!;
+    expect(run).toMatchObject({ state: "complete", exit_code: 0, attempts: 1 });
+    expect(run.attempt_history).toEqual(attemptHistory);
+    expect(queue.getRequest(request.id)).toMatchObject({ status: "completed", exit_code: 0 });
+    expect(getAttributionEvidence(db, queue.getRequest(request.id)!.execution_evidence_id!)?.details.publication_verified).toBe(true);
+    expect(acknowledgements).toBe(1);
+    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
+    await queue.resumeHookConvergence();
+    expect(acknowledgements).toBe(1);
+    expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
+  });
+
   it("runs frozen native post-hooks once with original arguments and refuses changed hook bytes", async () => {
     queue.dispose();
     const hooks = new AuthHookManager(db);
