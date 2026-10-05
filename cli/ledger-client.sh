@@ -172,43 +172,68 @@ mandible_work_unit_find() {
 }
 
 mandible_work_unit_resolve() {
-  local id="" auth_request_id="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local id="" auth_request_id="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   while (( $# > 0 )); do
     case "$1" in
       --id) id="${2:-}"; shift 2 ;;
       --auth-request-id) auth_request_id="${2:-}"; shift 2 ;;
+      --expected-generation) expected_generation="${2:-}"; shift 2 ;;
       --graceful) graceful=1; shift ;;
       *) mandible_ledger_die "Unknown work-unit resolve option: $1" 2; return $? ;;
     esac
   done
-
   [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
+  [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
   mandible_ledger_require_tools || return $?
-
   local payload
-  payload=$(jq -n --arg auth_request_id "$auth_request_id" \
-    '{state:"resolved"} + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
+  payload=$(jq -n --arg auth_request_id "$auth_request_id" --argjson expected_generation "$expected_generation" \
+    '{state:"resolved",expected_generation:$expected_generation} + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
   mandible_ledger_request PATCH "/api/work-units/$(mandible_ledger_urlencode "$id")" "$payload" "$graceful"
 }
 
 mandible_work_unit_release() {
-  local issue_id="" repo_id="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local id="" issue_id="" repo_id="" branch="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   while (( $# > 0 )); do
     case "$1" in
+      --id) id="${2:-}"; shift 2 ;;
       --issue|--issue-id) issue_id="${2:-}"; shift 2 ;;
       --repo|--repo-id) repo_id="${2:-}"; shift 2 ;;
+      --branch) branch="${2:-}"; shift 2 ;;
+      --expected-generation) expected_generation="${2:-}"; shift 2 ;;
       --graceful) graceful=1; shift ;;
       *) mandible_ledger_die "Unknown work-unit release option: $1" 2; return $? ;;
     esac
   done
-
-  [[ -n "$issue_id" ]] || mandible_ledger_die "Missing --issue" 2 || return $?
-  [[ -n "$repo_id" ]] || mandible_ledger_die "Missing --repo" 2 || return $?
+  if [[ -n "$id" ]]; then
+    [[ -z "$issue_id$repo_id$branch" ]] || mandible_ledger_die "--id cannot be combined with issue, repository or branch" 2 || return $?
+  else
+    [[ -n "$repo_id" && -n "$branch" ]] || mandible_ledger_die "Select --id or --repo and --branch" 2 || return $?
+  fi
+  [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
   mandible_ledger_require_tools || return $?
-
   local payload
-  payload=$(mandible_ledger_payload_base "$issue_id" "$repo_id")
+  payload=$(jq -n --arg id "$id" --arg issue_id "$issue_id" --arg repo_id "$repo_id" --arg branch "$branch" --argjson expected_generation "$expected_generation" \
+    '{expected_generation:$expected_generation} + (if $id != "" then {id:$id} else {repo_id:$repo_id,branch:$branch} + (if $issue_id != "" then {issue_id:$issue_id} else {} end) end)')
   mandible_ledger_request POST "/api/work-units/release" "$payload" "$graceful"
+}
+
+mandible_work_unit_release_issue() {
+  local issue_id="" repo_id="" units_file="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  while (( $# > 0 )); do
+    case "$1" in
+      --issue) issue_id="${2:-}"; shift 2 ;;
+      --repo) repo_id="${2:-}"; shift 2 ;;
+      --units-file) units_file="${2:-}"; shift 2 ;;
+      --graceful) graceful=1; shift ;;
+      *) mandible_ledger_die "Unknown work-unit release-issue option: $1" 2; return $? ;;
+    esac
+  done
+  [[ -n "$issue_id" && -n "$repo_id" && -f "$units_file" ]] || mandible_ledger_die "Explicit --issue, --repo and --units-file snapshot required" 2 || return $?
+  mandible_ledger_require_tools || return $?
+  local payload
+  payload=$(jq -n --arg issue_id "$issue_id" --arg repo_id "$repo_id" --slurpfile units "$units_file" \
+    '{issue_id:$issue_id,repo_id:$repo_id,work_units:$units[0]}') || return $?
+  mandible_ledger_request POST "/api/work-units/release-issue" "$payload" "$graceful"
 }
 
 mandible_work_unit_custody_assume() {

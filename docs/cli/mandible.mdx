@@ -177,8 +177,8 @@ and attribution policy belong to callers such as dotfiles.
 mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]
 mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--worker] [--graceful]
 mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state open|committed|resolved|abandoned] [--graceful]
-mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]
-mandible work-unit release --issue <id> --repo <repo> [--graceful]
+mandible work-unit resolve --id <work-unit-id> --expected-generation <n> [--auth-request-id <id>] [--graceful]
+mandible work-unit release --repo <repo> --branch <branch> --expected-generation <n> [--graceful]
 ```
 
 **Subcommands:**

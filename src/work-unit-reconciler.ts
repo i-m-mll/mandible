@@ -140,7 +140,7 @@ export class WorkUnitReconciler {
       if (committed.length === 0) return 0;
 
       const checkBranch = db.prepare(
-        "SELECT 1 FROM branches WHERE branch = ? LIMIT 1"
+        "SELECT repo_root FROM branches WHERE branch = ?"
       );
 
       const abandonStmt = db.prepare(
@@ -155,7 +155,10 @@ export class WorkUnitReconciler {
 
       let count = 0;
       for (const row of committed) {
-        const exists = checkBranch.get(row.branch) as unknown;
+        const workUnitKeys = canonicalRepoKeysForRef(db, row.repo_id);
+        const exists = (checkBranch.all(row.branch) as Array<{ repo_root: string }>).some(branch =>
+          branch.repo_root === row.repo_id || [...canonicalRepoKeysForRef(db, branch.repo_root)]
+            .some(key => workUnitKeys.has(key)));
         if (!exists) {
           const sessionId = row.assigned_session_id
             ?? row.worker_provider_session_id
@@ -268,16 +271,16 @@ export class WorkUnitReconciler {
       // Find open work units that have a branch with commits ahead of default
       const openWithBranch = db
         .prepare(
-          `SELECT wu.id, wu.branch FROM work_units wu
+          `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
            WHERE wu.state = 'open' AND wu.branch IS NOT NULL
            ORDER BY wu.id`
         )
-        .all() as Array<{ id: string; branch: string }>;
+        .all() as Array<{ id: string; branch: string; repo_id: string }>;
 
       if (openWithBranch.length === 0) return 0;
 
       const checkAhead = db.prepare(
-        "SELECT ahead_default FROM branches WHERE branch = ? AND ahead_default > 0 LIMIT 1"
+        "SELECT repo_root FROM branches WHERE branch = ? AND ahead_default > 0"
       );
 
       const commitStmt = db.prepare(
@@ -287,7 +290,10 @@ export class WorkUnitReconciler {
       const now = Date.now();
       let count = 0;
       for (const row of openWithBranch) {
-        const ahead = checkAhead.get(row.branch) as { ahead_default: number } | undefined;
+        const workUnitKeys = canonicalRepoKeysForRef(db, row.repo_id);
+        const ahead = (checkAhead.all(row.branch) as Array<{ repo_root: string }>).some(branch =>
+          branch.repo_root === row.repo_id || [...canonicalRepoKeysForRef(db, branch.repo_root)]
+            .some(key => workUnitKeys.has(key)));
         if (ahead) {
           commitStmt.run(now, row.id);
           count++;
