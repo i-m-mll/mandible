@@ -89,8 +89,8 @@ it('keeps timers responsive during slow Git and preserves the snapshot after a s
     expect(scanner.getRepoById(repo)?.last_scanned_at).toBe(freshness);
 
     // An ordinary inventory command failure is also not an empty successful scan.
-    fs.writeFileSync(wrapper, '#!/bin/sh\nif [ "$1" = branch ]; then exit 1; fi\nexec "$SCANNER_REAL_GIT" "$@"\n', { mode: 0o755 });
-    await expect(scanner.refreshRepoAsync(repo)).rejects.toThrow('git branch');
+    fs.writeFileSync(wrapper, '#!/bin/sh\nif [ "$1" = for-each-ref ]; then exit 1; fi\nexec "$SCANNER_REAL_GIT" "$@"\n', { mode: 0o755 });
+    await expect(scanner.refreshRepoAsync(repo)).rejects.toThrow('git for-each-ref');
     expect(db.prepare('SELECT * FROM branches WHERE repo_root = ? ORDER BY branch').all(repo)).toEqual(snapshot);
     expect(scanner.getRepoById(repo)?.last_scanned_at).toBe(freshness);
   } finally {

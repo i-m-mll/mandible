@@ -200,6 +200,31 @@ describe.sequential("WorkScanner", () => {
     }
   });
 
+  it("reports failed Git identity in a linked checkout without losing its prior projection", async () => {
+    const db = createMigratedDb();
+    const linked = path.join(tempRoot, "linked-probe");
+    run(`git worktree add --detach ${linked} main`, repoRoot);
+    const scanner = new WorkScanner({ db, repo_roots: [linked] });
+    try {
+      await scanner.scanAllAsync();
+      expect(scanner.getRepoById(linked)?.last_scanned_at).not.toBeNull();
+      expect(scanner.getBranches(linked).some(branch => branch.branch === "(no branch)")).toBe(false);
+      const before = db.prepare("SELECT * FROM work_repos WHERE root = ?").get(linked);
+      const metadata = path.join(linked, ".git");
+      const original = fs.readFileSync(metadata, "utf8");
+      fs.writeFileSync(metadata, "gitdir: /nonexistent/scanner-test-metadata\n");
+      try {
+        await expect(scanner.scanAllAsync()).rejects.toThrow("git rev-parse --show-toplevel");
+        expect(scanner.getRepoDiscoveryStatus()).toBe("failed");
+        expect(db.prepare("SELECT * FROM work_repos WHERE root = ?").get(linked)).toEqual(before);
+        expect(scanner.getCachedRepos()).toContainEqual(expect.objectContaining({ root: linked, exists: true }));
+      } finally { fs.writeFileSync(metadata, original); }
+    } finally {
+      await scanner.stop();
+      run(`git worktree remove ${linked}`, repoRoot);
+    }
+  });
+
   it("removes repos through a preview-owned roots file and rejects symlink escapes", () => {
     const db = createMigratedDb();
     const previewRoot = path.join(tempRoot, "preview-work-copy");

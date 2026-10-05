@@ -1642,7 +1642,7 @@ export class WorkScanner {
   }
 
   private async isGitRepo(repoRoot: string): Promise<boolean> {
-    const output = await runGit(["rev-parse", "--show-toplevel"], { cwd: repoRoot, signal: this.scanAbort.signal, absent_exit_codes: this.isGitDirectory(repoRoot) ? [] : [128] });
+    const output = await runGit(["rev-parse", "--show-toplevel"], { cwd: repoRoot, signal: this.scanAbort.signal, absent_exit_codes: pathExists(path.join(repoRoot, ".git")) ? [] : [128] });
     return this.matchesToplevel(repoRoot, output);
   }
 
@@ -1906,7 +1906,7 @@ export class WorkScanner {
   }
 
   private async listBranches(repoRoot: string): Promise<string[]> {
-    const output = await runGit(["branch", "-a", "--format=%(refname:short)"], {
+    const output = await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"], {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
 
