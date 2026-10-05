@@ -562,3 +562,35 @@ export function insertWorkUnit(
     input.authRequestId,
   );
 }
+
+/** Obtain genuine operator proof in a private fixture repository. */
+export async function approveFixtureRequest(queue: AuthQueue, id: string): Promise<ReturnType<AuthQueue['approve']>> {
+  const db = (queue as unknown as { db: Db }).db;
+  let request = queue.getRequest(id)!;
+  // Command-state tests need a real signing context even when their command
+  // has no repository semantics. Set it through the normal pending edit API.
+  if (!request.cwd && !request.command.includes('auth merge')) {
+    request = queue.update(id, { cwd: createAuthCheckRepo() });
+  }
+  if (request.cwd && fs.existsSync(path.join(request.cwd, '.git')) &&
+      !fs.existsSync(path.join(request.cwd, '.mandible-test-signing-key'))) {
+    configureSigningCredential(db, request.cwd, 'ssh_key');
+  }
+  return queue.approveWithOperatorProof(id, getOperator(db)!.id);
+}
+
+/** Stored historical rows test projections/recovery, never execution authority. */
+export function seedHistoricalAuthCompletion(queue: AuthQueue, id: string, output = '', exitCode = 0, error: string | null = null): void {
+  const db = (queue as unknown as { db: Db }).db;
+  const request = queue.getRequest(id)!;
+  db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = ?, error = ?, output = ?, resolved_at = ?, updated_at = ? WHERE id = ?")
+    .run(exitCode, error, output, request.created_at, request.created_at, id);
+}
+
+/** A historical interrupted process, without invented signing evidence. */
+export function seedHistoricalAuthExecution(queue: AuthQueue, id: string): void {
+  const db = (queue as unknown as { db: Db }).db;
+  const request = queue.getRequest(id)!;
+  db.prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?")
+    .run(request.created_at, request.created_at, id);
+}
