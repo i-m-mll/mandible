@@ -33,6 +33,7 @@ import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from 
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
+import { getMandibleHome } from "./platform-paths.js";
 import type { Db } from "./db.js";
 import type {
   AuthConvergence,
@@ -262,7 +263,7 @@ export class AuthHookManager {
 
   private handoffPath(run: AuthHookRun): string {
     if (!/^[a-zA-Z0-9-]+$/.test(run.auth_request_id) || !/^[a-zA-Z0-9-]+$/.test(run.id)) throw new Error("Invalid runtime handoff identity");
-    return path.join(process.env.HOME ?? os.homedir(), "config", "local-sessions", "handoff", `${run.auth_request_id}-${run.id}`, "journal.json");
+    return path.join(getMandibleHome(), "config", "local-sessions", "handoff", `${run.auth_request_id}-${run.id}`, "journal.json");
   }
 
   private hasRuntimeHandoff(run: AuthHookRun): boolean {
@@ -283,7 +284,7 @@ export class AuthHookManager {
       try {
         const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
         const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(moduleUrl);
-        const journal = await runtime.readRuntimeHandoff(process.env.HOME ?? os.homedir(), run.auth_request_id, run.id);
+        const journal = await runtime.readRuntimeHandoff(getMandibleHome(), run.auth_request_id, run.id);
         if (!journal) throw new Error("The retained runtime handoff journal is unavailable");
         const binding = journal.binding as RuntimePublicationBinding;
         if (journal.schema !== "mandible-runtime-handoff@1" || binding.requestId !== run.auth_request_id || binding.executionId !== run.id || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest) throw new Error("Runtime handoff journal differs from the retained hook");

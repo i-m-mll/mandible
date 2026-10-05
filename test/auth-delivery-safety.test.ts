@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
@@ -35,7 +35,7 @@ beforeEach(() => {
     executor: async () => { executorCalls += 1; return new Promise(() => {}); },
   });
 });
-afterEach(() => { queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
 
 function submitMerge(issueClosures: string[] = []) {
   return queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
@@ -50,11 +50,13 @@ function protectedState() {
 describe("protected delivery evidence", () => {
   it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
     queue.dispose();
+    const installationHome = path.join(repo, ".git", "private-installation");
+    vi.stubEnv("MANDIBLE_HOME", installationHome);
     let journal: RuntimeHandoffJournal | null = null;
     let receiptValid = false;
     let acknowledgements = 0;
     const hooks = new AuthHookManager(db, { handoffClient: {
-      readRuntimeHandoff: async () => journal,
+      readRuntimeHandoff: async (home) => home === installationHome ? journal : null,
       verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
       acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("acknowledgment interrupted"); if (journal) journal.phase = "acknowledged"; },
     } });
