@@ -206,10 +206,10 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `space-canvas.test.tsx` | Retain | partitionOccurrences / shelf vs canvas / occurrencesToGraph + seedLayoutPositions. Mounted interaction/projection evidence retained. |
 | `space-cli.test.ts` | Retain | space CLI surface / space CLI write round-trips. Process/transport boundary retained. |
 | `space-export-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
-| `space-promote-docs.test.ts` | Retain | mandible space promote-docs. Process/transport boundary retained. |
+| `space-promote-docs.test.ts` | Retired | The long-lived docs branch and proxy promotion command were removed by explicit immutable publication. Signed snapshot, issue-linked auth, destination drift, retry, and protected-boundary contracts remain in ../spaces-publication.test.ts, ../auth-publication.test.ts, and spaces-publication-ui.test.tsx. |
 | `space-seed-dialog.test.tsx` | Retain | SpaceSeedDialog. Mounted interaction/projection evidence retained. |
 | `spaces-add-to-space.test.tsx` | Trim / retain | AddToSpace picker / AddToSpace cross-project (default). Mounted interaction/projection evidence retained. |
-| `spaces-block-editor.test.tsx` | Retain | blockEditorModel sort keys / deriveDocumentCustody. Mounted interaction/projection evidence retained. |
+| `spaces-block-editor.test.tsx` | Retain | blockEditorModel sort keys / managed editing, draft persistence, and reconciliation. Mounted interaction/projection evidence retained. |
 | `spaces-board-model.test.ts` | Retain | board default columns from worker_status / manual and filter custom columns. Behavioral, persisted-record, or format boundary retained. |
 | `spaces-board-view.test.tsx` | Retain | SpaceBoardRenderer. Mounted interaction/projection evidence retained. |
 | `spaces-canvas-mount-reachability.test.tsx` | Retain | renderers. Mounted interaction/projection evidence retained. |

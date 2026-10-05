@@ -1,3 +1,6 @@
+import { invalidateApiGetCache } from '../../ui/src/api';
+import { bindSpacesOperationCatalog } from '../helpers/spaces-operation-catalog';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Spaces document block editor tests (umbrella de56ffa, C14c / issue cef3eac).
 //
 // Covers the acceptance criteria:
@@ -326,13 +329,15 @@ function json(payload: unknown, status = 200): Response {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
   stubLocalStorage();
+  bindSpacesOperationCatalog(mainInstance);
   const notices = document.createElement('div');
   notices.id = 'editor-notices';
   document.body.append(notices);
   queryClient.clear();
-  __resetBrowserSessionForTests();
+  await establishTestClientAccess();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
   __resetSharedSseForTests();
@@ -365,6 +370,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
   cleanup();
   document.getElementById('editor-notices')?.remove();
   queryClient.clear();
@@ -495,6 +501,7 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
 }) {
   const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
+  if (instance) bindSpacesOperationCatalog(instance);
   render(
     <AppShellProvider value={{ active: true, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
     <DocumentBlockEditor
@@ -643,7 +650,6 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(screen.queryByTestId('spaces-block-editor-delete')).toBeNull();
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
-    expect(editor.getAttribute('data-stale')).toBe('false');
   });
 
   it('renders the document without waiting for the space fact packet', async () => {
