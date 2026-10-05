@@ -1,3 +1,4 @@
+import { configureSqliteRuntime } from "./sqlite-runtime.js";
 import { SqliteBindings } from "./sqlite-bindings.js";
 import { assertNotProductionDbUnderTest } from "../cli/production-db-guard.cjs";
 import { DatabaseSync } from "node:sqlite";
@@ -104,6 +105,8 @@ type Transaction<Args extends any[], Value> = ((...args: Args) => Value) & {
   exclusive(...args: Args): Value;
 };
 export interface SqliteOpenOptions { readonly?: boolean; fileMustExist?: boolean; timeout?: number }
+configureSqliteRuntime();
+
 export default class SqliteDatabase {
   private readonly native: NativeDatabase;
   private savepoint = 0;
@@ -178,7 +181,7 @@ export default class SqliteDatabase {
     return new Promise((resolve, reject) => {
       const directory = fs.mkdtempSync(path.join(path.dirname(path.resolve(destination)), ".mandible-snapshot-"));
       const staging = path.join(directory, "snapshot.db");
-      const source = `import {DatabaseSync,backup} from "node:sqlite"; const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
+      const source = `import ${JSON.stringify(import.meta.url)}; import {DatabaseSync,backup} from "node:sqlite"; const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(process.execPath, ["--no-install", "--eval", source, this.name, staging], { stdio: ["ignore", "ignore", "pipe"], signal: options.signal });

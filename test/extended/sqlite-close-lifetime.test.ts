@@ -30,6 +30,13 @@ it.runIf(process.platform === "darwin")("close releases database and WAL handles
     expect(() => iterator.next()).toThrow();
     expect(() => db.close()).toThrow("database is not open");
     expect(retained).toEqual([]);
+    expect(fs.existsSync(`${filename}-wal`)).toBe(false);
+    expect(fs.existsSync(`${filename}-shm`)).toBe(false);
+    const reader = new SqliteDatabase(filename, { readonly: true });
+    try {
+      expect(reader.prepare("SELECT value FROM item").all()).toEqual([{ value: "retained" }]);
+      expect(() => reader.exec("INSERT INTO item VALUES('bad')")).toThrow();
+    } finally { reader.close(); }
   } finally {
     if (db.open) db.close();
     fs.rmSync(directory, { recursive: true, force: true });
