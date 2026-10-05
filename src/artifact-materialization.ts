@@ -23,7 +23,7 @@ export function readArtifactMaterial(db: Db, target: ArtifactMaterializationTarg
       case "managed": {
         const filename = fileURLToPath(custody.storage_uri);
         const stat = fs.statSync(filename);
-        if (!stat.isFile()) return { ok: false, error: { code: "unavailable_material", message: "Stored artifact is not a regular file" } };
+        if (!stat.isFile()) return { ok: false, error: { code: "unavailable_material", message: "stored artifact is not a regular file" } };
         if (stat.size > maxBytes) return { ok: false, error: { code: "size_limit", message: "Artifact exceeds size limit" } };
         bytes = fs.readFileSync(filename);
         source = custody.storage_uri;
