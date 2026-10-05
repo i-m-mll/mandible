@@ -144,11 +144,12 @@ no_watch=0
 force=false
 dirty_policy=""
 dirty_branch_prefix=""
+space_publication_id=""
 promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"commit_message":{"option":"commit-message"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"commit_message":{"option":"commit-message"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 
 if [[ -z "$title" ]]; then
@@ -355,6 +356,7 @@ payload=$(jq -nc \
   --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
   --arg conversation_id "$conversation_id" \
+  --arg space_publication_id "$space_publication_id" \
   --argjson issue_references "$issue_references_json" \
   --argjson issue_closures "$issue_closures_json" \
   --argjson actions "$actions_json" \
@@ -388,7 +390,7 @@ payload=$(jq -nc \
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     protected_root_dirty_action: $protected_root_dirty_action
-  }')
+  } + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish
 # a 409 Conflict (duplicate) from a connection failure. curl -sf treats HTTP 4xx
