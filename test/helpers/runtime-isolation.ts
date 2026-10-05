@@ -10,6 +10,7 @@ fs.mkdirSync(home);
 
 const isolatedValues: Record<string, string | undefined> = {
   HOME: home,
+  MANDIBLE_INSTALLATION_ID: 'test-installation',
   APPDATA: path.join(home, 'AppData', 'Roaming'),
   XDG_CONFIG_HOME: path.join(home, '.config'),
   XDG_CACHE_HOME: path.join(home, '.cache'),
