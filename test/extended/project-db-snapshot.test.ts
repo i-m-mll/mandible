@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
@@ -7,8 +9,6 @@ import SqliteDatabase from "../../src/sqlite.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { openDb, resetDb, setDb, type Db } from "../../src/db.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "project-db-snapshot.mjs");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -449,39 +449,43 @@ describe("project-db-snapshot", () => {
       source_mtime: 1_800_000_005_000,
       block_count: 2,
     });
+    expect(canonicalBlocks).toHaveLength(2);
     expect(projected.prepare(`
       SELECT id, type, role, content, position, metadata_json, compressed
       FROM conversation_blocks
       WHERE conversation_id = ?
       ORDER BY position
-    `).all(fixture.conversationId)).toEqual(canonicalBlocks);
+    `).all(fixture.conversationId)).toEqual([]);
 
+    // The projection excludes its disposable coordinate cache. Prepare it
+    // through normal ingestion before checking source-backed route reads.
+    const { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } = await import("../../src/ingestion.js");
+    configureIngestionWorker(() => {}, () => {});
+    await ingestBatchForWorker([fixture.transcript], true, true, true);
+    await stopIngestionGracefully();
+    const { Router } = await import("../../src/server.js");
+    const { registerConversationRoutes } = await import("../../src/routes/conversations.js");
     const router = new Router();
     registerConversationRoutes(router);
     const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?limit=10" });
     expect(sidebar.body).toEqual(expect.objectContaining({
-      groups: expect.arrayContaining([
-        expect.objectContaining({
-          kind: "pinned",
-          conversations: expect.arrayContaining([
-            expect.objectContaining({
-              id: fixture.conversationId,
-              title: "Review and take over QA successor briefing task",
-            }),
-          ]),
-        }),
-      ]),
+      groups: expect.arrayContaining([expect.objectContaining({
+        kind: "pinned",
+        conversations: expect.arrayContaining([expect.objectContaining({
+          id: fixture.conversationId,
+          title: "Review and take over QA successor briefing task",
+        })]),
+      })]),
     }));
-    const detail = await router.invoke({
-      method: "GET",
-      url: `/api/conversations/${fixture.conversationId}`,
-    });
+    const detail = await router.invoke({ method: "GET", url: `/api/conversations/${fixture.conversationId}` });
+    expect(detail.status).toBe(200);
     expect(detail.body).toEqual(expect.objectContaining({
       conversation: expect.objectContaining({
         id: fixture.conversationId,
         title: "Review and take over QA successor briefing task",
       }),
     }));
+
     projected.close();
     resetDb({ poison: false });
   });
@@ -498,8 +502,8 @@ describe("project-db-snapshot", () => {
     const replacement = runSnapshot(malformed.source, output, ["--replace"]);
     expect(replacement.status).toBe(1);
     expect(replacement.stderr).toContain("did not reach source metadata");
-    expect(fs.readFileSync(output)).toEqual(acceptedDb);
-    expect(fs.readFileSync(manifestPath)).toEqual(acceptedManifest);
+    expect(fs.readFileSync(output).equals(acceptedDb)).toBe(true);
+    expect(fs.readFileSync(manifestPath).equals(acceptedManifest)).toBe(true);
     expect(fs.readdirSync(good.root).some((name) => name.includes(".partial-"))).toBe(false);
   });
 
