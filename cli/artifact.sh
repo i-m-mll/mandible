@@ -701,7 +701,6 @@ cmd_ref() {
   (( ${#refs[@]} > 0 )) || die "No refs supplied." 2
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
-  [[ -n "$mode" ]] || mode="managed"
 
   local registered='[]' failed='[]' ref response artifact link_payload link_response result
   for ref in "${refs[@]}"; do
