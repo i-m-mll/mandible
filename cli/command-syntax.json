@@ -1357,7 +1357,7 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--request"],"values": [{"kind": "argument","name": "request-id","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]},{"kind": "option","names": ["--base"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "integer","min": 1}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--credential"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--duration-minutes"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-uses"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
