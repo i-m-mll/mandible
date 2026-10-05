@@ -1,3 +1,4 @@
+import * as z from "zod";
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -791,7 +792,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
       sendJson(res,200,{ publications:listPublications(db,space.id), history:listDocumentHistory(db,space.id), destinations:publicationDestinations(db,space.id) });
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/publications", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
       const publication=publicationValue(preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
@@ -799,14 +800,14 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,201,publication);
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
       const publication=publicationValue(await executePublication(db,space.id,req.params.publication_id));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,200,publication);
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/publications/:publication_id/submit", effects: ["ledger:write", "files:production", "process:external", "auth:protected"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/documents/import", (req,res)=> {
     try { const db=getDb(),body=bodyRecord(req);
       const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:requireString(body,"ref"),title:requireString(body,"title"),projectId:optionalString(body,"project_id") })
@@ -814,13 +815,13 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);
       sendJson(res,201,space);
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? ["ledger:read", "ledger:write"] : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
     try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
       const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
     } catch(error){handleExportError(res,error);}
-  },{fileRpc:"allow"});
+  }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ["ledger:read", "ledger:write"], requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
       const result=serializeSpaceDocument(db,space.id);
@@ -829,12 +830,12 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       if (!res.text) throw new HttpError(500,"Download response unavailable");
       res.text(result,"text/markdown; charset=utf-8");
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/document/download", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/document/export", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
       sendJson(res,200,exportUntrackedCopy(db,{spaceId:space.id,destPath:requireString(body,"dest_path"),repoId:optionalString(body,"repo_id")}));
     } catch(error) { handleExportError(res,error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
 
 }
 
