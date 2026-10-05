@@ -282,8 +282,7 @@ describe("durable-state root (issue 24f0316)", () => {
           expect(
             mainOnlyDb
               .prepare("SELECT value FROM settings WHERE key = ?")
-              .pluck()
-              .get("copy_forward_marker"),
+              .get("copy_forward_marker")?.value,
           ).toBe("main-file-value");
         } finally {
           mainOnlyDb.close();
@@ -563,8 +562,7 @@ describe("durable-state root (issue 24f0316)", () => {
       try {
         expect(
           db.prepare("SELECT value FROM settings WHERE key = ?")
-            .pluck()
-            .get("copy_forward_marker"),
+            .get("copy_forward_marker")?.value,
         ).toBe("not-stranded");
       } finally {
         db.close();

@@ -205,7 +205,7 @@ describe("plural Briefing routes", () => {
     expect(moved).toMatchObject({ status: 200, body: { changed: true, group_id: other.id } });
     expect(db.prepare("SELECT group_id, bound_by_user_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
       .get(logical.artifact_id)).toEqual({ group_id: other.id,
-        bound_by_user_id: db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get() });
+        bound_by_user_id: db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get()?.id });
     expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
       body: { ...placement, operation_key: "stale" } }))
       .toMatchObject({ status: 409, body: { code: "briefing_destination_owner_drift" } });
@@ -248,7 +248,7 @@ describe("plural Briefing routes", () => {
       credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3", routes: [route] } }))
       .toMatchObject({ status: 409, body: { code: "briefing_destination_project_unresolved" } });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_mutations WHERE actor_user_id = ?")
-      .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get())).toEqual({ n: 5 });
+      .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get()?.id)).toEqual({ n: 5 });
   });
   it("guards deterministic destination-route plan, apply, replay, and inspect behind the operator token", async () => {
     setSetting(db, "user.operator_id", humanId);

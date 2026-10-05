@@ -157,7 +157,7 @@ describe("conversation cutover compact rebuild", () => {
     expect(report.excluded_tables).toEqual(["conversation_search_cache"]);
     expect(fs.readFileSync(source)).toEqual(before);
     const rebuilt = new SqliteDatabase(destination, { readonly: true });
-    expect(rebuilt.prepare("SELECT content FROM conversation_blocks WHERE id = 'block-legacy'").pluck().get()).toBe("kept");
+    expect(rebuilt.prepare("SELECT content FROM conversation_blocks WHERE id = 'block-legacy'").get()?.content).toBe("kept");
     expect(rebuilt.prepare("SELECT name FROM sqlite_master WHERE name = 'conversation_search_cache'").get()).toBeUndefined();
     expect(rebuilt.pragma("integrity_check", { simple: true })).toBe("ok");
     expect(rebuilt.pragma("foreign_key_check")).toEqual([]);
