@@ -23,6 +23,7 @@ describe("desktop bootstrap build", () => {
     // This test isolates the bootstrap copy step; origin generation has its
     // own checks and must not make the temporary fixture imitate the whole repo.
     fs.writeFileSync(path.join(root, "scripts", "generate-canonical-origin.mjs"), "process.exit(0);\n");
+    fs.writeFileSync(path.join(root, 'scripts', 'prepare-desktop-runtime.mjs'), 'process.exit(0);\n');
     const trustHelper = path.join(root, "scripts", "build-local-ca-trust-helper.sh");
     fs.writeFileSync(trustHelper, "#!/bin/sh\nexit 0\n");
     fs.chmodSync(trustHelper, 0o755);
