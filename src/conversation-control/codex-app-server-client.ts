@@ -5,6 +5,7 @@ import type {
   GetAccountParams,
   InitializeParams,
   ThreadReadParams,
+  ThreadUnarchiveParams,
   ThreadResumeParams,
   ThreadStartParams,
   TurnInterruptParams,
@@ -19,6 +20,7 @@ type CodexRequestParams = {
   "thread/start": ThreadStartParams;
   "thread/resume": ThreadResumeParams;
   "thread/read": ThreadReadParams;
+  "thread/unarchive": ThreadUnarchiveParams;
   "turn/start": TurnStartParams;
   "turn/steer": TurnSteerParams;
   "turn/interrupt": TurnInterruptParams;

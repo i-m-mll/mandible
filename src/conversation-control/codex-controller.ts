@@ -109,6 +109,21 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       client = await this.connectedClient();
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
+      if (input.kind === "resume-provider-session") {
+        const stored = responseThread(await client.request("thread/read", { threadId: input.provider_session_id }));
+        if (stringField(stored, "id") !== input.provider_session_id) {
+          throw new UncertainCodexAcquisition("Codex App Server read a different thread identity");
+        }
+        // The native metadata is authoritative for the current rollout location.
+        // Restore only an archived rollout, never infer archive state from our cached history.
+        const nativePath = stringField(stored, "path");
+        if (nativePath?.split(/[\\/]/).includes("archived_sessions")) {
+          const restored = responseThread(await client.request("thread/unarchive", { threadId: input.provider_session_id }));
+          if (stringField(restored, "id") !== input.provider_session_id) {
+            throw new UncertainCodexAcquisition("Codex App Server restored a different thread identity");
+          }
+        }
+      }
       const result = input.kind === "start"
         ? await client.request("thread/start", {
           cwd: input.cwd,
