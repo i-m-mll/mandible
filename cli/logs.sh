@@ -12,7 +12,7 @@ usage() {
 
 if [[ "${1:-}" == "daemon" ]]; then
   shift
-  exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
+  exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
 fi
 
 logs_source() {
@@ -143,7 +143,7 @@ export MANDIBLE_DB="$(api_live_db_path)"
 
 export MANDIBLE_PARSED_COMMAND
 MANDIBLE_PARSED_COMMAND=$(mandible_parse_command logs "$@") || exit $?
-export MANDIBLE_RUNTIME="$("$SCRIPT_DIR/../scripts/bun-runtime.sh")"
+export MANDIBLE_RUNTIME="$(mandible_bun_runtime)"
 exec python3 - "$@" <<'PY'
 from __future__ import annotations
 

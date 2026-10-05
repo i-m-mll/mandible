@@ -245,10 +245,10 @@ afterEach(async () => {
   tempRoots = [];
 });
 
-function writeRouteMutationCategories(payload: unknown): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-"));
+function writeOperationMetadata(payload: unknown): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-operation-metadata-"));
   tempRoots.push(root);
-  const file = path.join(root, "route-mutation-categories.json");
+  const file = path.join(root, "instance.json");
   fs.writeFileSync(file, `${JSON.stringify(payload)}\n`, "utf8");
   return file;
 }
@@ -447,7 +447,7 @@ describe("CLI instance mutation preflight", () => {
   });
 
   it("reads exact method/template classification from the selected runtime catalog", async () => {
-    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
+    const file = writeOperationMetadata(withCatalog(MAIN_INSTANCE));
     const result = await runBash(`source cli/api.sh
 api_operational_mutation_category POST /api/projects '${file}'`, 1);
     expect(result.status).toBe(0);
@@ -458,20 +458,29 @@ api_operational_mutation_category POST /api/auth/check '${file}'`, 1);
     expect(exempt.stdout).toBe("");
   });
 
-  it("fails closed on absent, malformed, mismatched, and unknown operation metadata", async () => {
-    for (const payload of [{ instance: MAIN_INSTANCE }, { ...withCatalog(MAIN_INSTANCE), operations: { schema: 1 } },
-      { ...withCatalog(MAIN_INSTANCE), instance: { ...MAIN_INSTANCE, instance_id: "other", backend_generation: "other" } }]) {
-      const file = writeRouteMutationCategories(payload);
-      const result = await runBash(`source cli/api.sh
-api_operational_mutation_category POST /api/projects '${file}'`, 1);
-      expect(result.status).toBe(2);
-      expect(result.stdout).toBe("");
+  it.each([
+    ["missing catalog", { instance: withCatalog(MAIN_INSTANCE).instance }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["malformed catalog", { ...withCatalog(MAIN_INSTANCE), operations: { schema: "wrong" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["different instance", { ...withCatalog(MAIN_INSTANCE), instance: { ...withCatalog(MAIN_INSTANCE).instance, instance_id: "other" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["different generation", { ...withCatalog(MAIN_INSTANCE), instance: { ...withCatalog(MAIN_INSTANCE).instance, backend_generation: "next" } }, "/api/projects", "cli_operation_metadata_incompatible"],
+    ["unknown child path", withCatalog(MAIN_INSTANCE), "/api/projects/not-a-registered-operation/extra", "cli_operation_unknown"],
+  ])("does not send a mutation after %s preflight", async (_label, payload, requestPath, error) => {
+    const target = await listenForInstancePreflight({ instanceResponses: [{ status: 200, body: payload }] });
+    try {
+      const result = await runBash([
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        `status=$(api_send_capture POST '${requestPath}' '{}' "$tmp_response")`,
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, { MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.startsWith("403\n")).toBe(true);
+      expect(JSON.parse(result.stdout.slice(result.stdout.indexOf("\n") + 1))).toMatchObject({ error, request_sent: false });
+      expect(target.requests.map(request => `${request.method} ${request.url}`)).toEqual(["GET /api/instance"]);
+    } finally {
+      await target.close();
     }
-    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
-    const unknown = await runBash(`source cli/api.sh
-api_operational_mutation_category POST /api/future-write '${file}'`, 1);
-    expect(unknown.status).toBe(3);
-    expect(unknown.stderr).toContain("Unknown Mandible operation");
   });
 
   it.each([

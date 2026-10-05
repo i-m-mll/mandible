@@ -777,7 +777,7 @@ cmd_link() {
       | ($l.resolved_version_no // $r.resolved_version_no // $r.artifact_version.version_no // null) as $version
       | (if $version == null then "" else " v\($version)" end) as $version_suffix
       | (if $kind == "living" then "[living · latest\($version_suffix)]" else "[pinned\($version_suffix)]" end) as $badge
-      | "linked \($r.artifact | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
+      | "linked \(($r.logical_artifact // $r.artifact_version // $r.artifact_blob) | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
   fi
 }
 
@@ -942,11 +942,6 @@ cmd_associations() {
       .associations[]?
       | "\(.project_key // (.project_id | mandible_short_id)) \(.association_kind) \((.target_ref // (.target_type + ":" + .target_id)) | mandible_typed_short_ref)\(if .role != "" then " " + .role else "" end)"'
   fi
-}
-
-artifact_id_for_ref() {
-  local ref="$1"
-  api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" | jq -r '.resolution.artifact.id'
 }
 
 artifact_route_target_for_ref() {
@@ -1415,7 +1410,7 @@ bundle_add() {
   [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: $(mandible_command_syntax artifact.bundle.add)" 2
   require_tools
   local bundle_id member artifact response payload linked='[]' failed='[]' members_payload='[]'
-  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  bundle_id="$(artifact_route_target_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   for member in "${members[@]}"; do
     if [[ -e "$member" ]]; then
       members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" '. + [{path:$path}]')"
@@ -1436,7 +1431,7 @@ bundle_show() {
   local bundle_ref="$1" json="${2:-0}"
   require_tools
   local bundle_id result
-  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  bundle_id="$(artifact_route_target_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   result="$(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")")" || die "${RED}Failed to show bundle.${RESET}" 1
   if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | api_jq_human '"bundle \(.bundle | mandible_display_ref) members=\(.members|length)"'; fi
 }
@@ -1463,7 +1458,7 @@ cmd_bundle() {
       eval "$binding"
       [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.bundle.check)" 2
       local bundle_id refs=()
-      bundle_id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+      bundle_id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
       for member_id in $(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")" | jq -r '.members[].artifact.id'); do
         refs+=("$member_id")
       done

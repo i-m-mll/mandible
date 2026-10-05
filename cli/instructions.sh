@@ -15,7 +15,7 @@ END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
 CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
-BUN_RUNTIME="$("$MANDIBLE_ROOT/scripts/bun-runtime.sh")"
+BUN_RUNTIME="$(mandible_bun_runtime)"
 
 usage() {
   mandible_command_help instructions
