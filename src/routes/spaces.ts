@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -815,13 +816,13 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);
       sendJson(res,201,space);
     } catch(error) { handleExportError(res,error); }
-  }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? ["ledger:read", "ledger:write"] : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? documentArtifactImportEffects(getDb(), (body as { ref: string }).ref) : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
     try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
       const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
     } catch(error){handleExportError(res,error);}
-  }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ["ledger:read", "ledger:write"], requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
       const result=serializeSpaceDocument(db,space.id);

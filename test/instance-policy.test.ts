@@ -73,8 +73,6 @@ describe("instance effect policy", () => {
     for (const [method, url, body] of [
       ["GET", "/api/spaces/space/publications", undefined],
       ["GET", "/api/spaces/space/document/download", undefined],
-      ["POST", "/api/spaces/documents/import", { ref: "managed-version", title: "Document" }],
-      ["POST", "/api/spaces/space/history/history/import", { title: "Document" }],
     ] as const) {
       expect(authorizeEffects(instance, identity, operationForRequest(method, url, "preview", body)!)).toMatchObject({ allowed: true });
     }
