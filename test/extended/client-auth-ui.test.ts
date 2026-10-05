@@ -5,6 +5,7 @@ import {
   __resetBrowserSessionForTests, browserSessionFetch, ensureClientAccess,
   getClientAccessState, retryClientAccess,
 } from "../../ui/src/client-auth-token.js";
+import { DOMAIN_EVENTS } from "../../src/contracts.js";
 import { SSEClient } from "../../ui/src/sse-client.js";
 
 const ready = () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: "csrf" } }), {
@@ -64,13 +65,15 @@ describe("SSE transport", () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes("whoami")) return ready();
       expect(init?.method).toBe("POST");
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('data: {"type":"issue:updated","data":{"id":"x"}}\n\n')); } }), {
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: DOMAIN_EVENTS.HEARTBEAT, data: { timestamp: 123 } })}\n\n`)); } }), {
         status: 200, headers: { "content-type": "text/event-stream" },
       });
     }) as typeof fetch;
     const client = new SSEClient({ fetchImpl, backoffMs: 10 });
-    const received = vi.fn(); client.on("issue:updated", received); client.connect();
-    await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1));
-    client.close();
+    const received = vi.fn(); client.on(DOMAIN_EVENTS.HEARTBEAT, received); client.connect();
+    try {
+      await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+      expect(received).toHaveBeenCalledWith({ type: DOMAIN_EVENTS.HEARTBEAT, data: { timestamp: 123 } });
+    } finally { client.close(); }
   });
 });
