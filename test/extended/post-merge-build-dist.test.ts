@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { copyRuntimeFixture } from '../helpers/runtime-fixture.js';
 
 const tempRoots: string[] = [];
 
@@ -47,10 +48,7 @@ function runHookAfterMerge(
   fs.mkdirSync(path.join(repo, "dist"));
   const sqliteBuild = spawnSync(process.execPath, ["build", path.join(process.cwd(), "src/sqlite.ts"), "--target", "bun", "--outfile", path.join(repo, "dist/sqlite.js")], { encoding: "utf8" });
   expect(sqliteBuild.status, sqliteBuild.stderr).toBe(0);
-  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(repo, "scripts/bun-runtime.sh"));
-  fs.chmodSync(path.join(repo, "scripts/bun-runtime.sh"), 0o755);
-  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
+  const runtimeInputs = copyRuntimeFixture(repo);
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
 
@@ -142,6 +140,7 @@ exec "$REAL_GIT" "$@"
     encoding: "utf8",
     env: {
       ...hookEnv,
+      ...runtimeInputs,
       HOME: home,
       MANDIBLE_DB: path.join(tempDir, "fixture.db"),
       MANDIBLE_RUNTIME: process.execPath,
