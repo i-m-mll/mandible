@@ -381,12 +381,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       sourceRoot: MANDIBLE_ROOT,
       version,
       logger,
-      generatedFiles: [
-        {
-          path: "route-mutation-categories.json",
-          contents: routeMutationCategoriesJson(router, version),
-        },
-      ],
     });
   } catch (error) {
     logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
@@ -825,10 +819,6 @@ function resolveMandibleRoot(): string {
 }
 
 const MANDIBLE_ROOT = resolveMandibleRoot();
-
-function routeMutationCategoriesJson(router: Router, version: string): string {
-  return `${JSON.stringify(router.operationCatalog(version), null, 2)}\n`;
-}
 
 function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {
   return new Promise((resolve) => {
