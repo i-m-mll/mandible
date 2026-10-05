@@ -254,7 +254,7 @@ async function worker(file) {
     const log = path.join(path.dirname(file), 'convergence.log');
     const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: file };
     for (const [stage, binary, args, timeout] of [
-      ['dependencies', b.runtime.path, ['install', '--frozen-lockfile'], 180000],
+      ['dependencies', b.runtime.path, ['install', '--frozen-lockfile', '--force'], 180000],
       ['build', b.runtime.path, ['run', 'build'], 180000],
       ['desktop', '/bin/bash', ['cli/install-desktop-app.sh'], 600000],
       ['instructions', '/bin/bash', ['cli/instructions.sh', 'install'], 60000],

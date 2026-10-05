@@ -92,7 +92,7 @@ runtime="$("$repo_root/scripts/bun-runtime.sh")"
 export MANDIBLE_RUNTIME="$runtime"
 export PATH="$(dirname "$runtime"):$PATH"
 
-dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-bun install --frozen-lockfile}"
+dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-bun install --frozen-lockfile --force}"
 build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-bun run tauri:build -- --bundles app}"
 built_app="${MANDIBLE_DESKTOP_BUNDLE_PATH:-$repo_root/src-tauri/target/release/bundle/macos/Mandible.app}"
 install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"

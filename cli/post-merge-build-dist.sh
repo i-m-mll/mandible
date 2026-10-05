@@ -27,7 +27,7 @@ if [[ "${MANDIBLE_AUTH_REPO:-}" == "mandible" && "${MANDIBLE_HOOK_ID:-}" == "bui
   "$runtime" "$repo_root/scripts/runtime-handoff.mjs" arm "$repo_root"
 fi
 
-dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-bun install --frozen-lockfile}"
+dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-bun install --frozen-lockfile --force}"
 build_command="${MANDIBLE_POST_MERGE_BUILD_COMMAND:-bun run build}"
 desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop-app.sh}"
 
