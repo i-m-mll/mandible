@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export type OperatorProofResult =
   | { ok: true; credentialId: string; signature: string }
@@ -20,7 +20,10 @@ function isExecutable(program: string): boolean {
 }
 
 export function operatorSigningProgram(configured: string | null, executable = isExecutable): string | null {
-  if (configured) return configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+  if (configured) {
+    const program = configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+    return isAbsolute(program) ? program : null;
+  }
   return ["/opt/homebrew/opt/openssh/bin/ssh-keygen", "/usr/local/opt/openssh/bin/ssh-keygen", "/usr/bin/ssh-keygen", "/bin/ssh-keygen"]
     .find(executable) ?? null;
 }
@@ -59,7 +62,9 @@ export async function signOperatorChallenge(
   }
   const signer = operatorSigningProgram(configuredSigner);
   if (!signer) {
-    return { ok: false, reason: "signing_failed", detail: "No executable OpenSSH signer is available; configure the operator's global gpg.ssh.program with a FIDO-capable signer for security keys." };
+    return { ok: false, reason: "signing_failed", detail: configuredSigner
+      ? "The operator's gpg.ssh.program must name an absolute executable path (~/ is supported); repository-relative signing programs are not allowed."
+      : "No executable OpenSSH signer is available; configure the operator's global gpg.ssh.program with a FIDO-capable signer for security keys." };
   }
   const signed = await new Promise<{ code: number | null; timedOut: boolean; signature: string; error: string }>((resolve) => {
     const child = spawn(signer, ["-Y", "sign", "-n", "mandible-auth", "-f", key], {

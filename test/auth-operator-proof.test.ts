@@ -44,6 +44,8 @@ describe("fresh operator proof", () => {
     expect(await signOperatorChallenge(repo, "exact challenge", allowed)).toMatchObject({ ok: false, reason: "signing_failed", detail: `${program}: configured-signer-failed` });
     rmSync(program);
     expect(await signOperatorChallenge(repo, "exact challenge", allowed)).toMatchObject({ ok: false, reason: "signing_failed" });
+    writeFileSync(join(repo, "signer.config"), '[gpg "ssh"]\n  program = ./hostile\n');
+    expect(await signOperatorChallenge(repo, "exact challenge", allowed)).toMatchObject({ ok: false, reason: "signing_failed", detail: expect.stringContaining("absolute executable path") });
   });
 
   it("selects known executable Homebrew OpenSSH before the system signer independently of PATH", () => {
@@ -55,6 +57,8 @@ describe("fresh operator proof", () => {
     expect(operatorSigningProgram(null, path => path === system)).toBe(system);
     expect(operatorSigningProgram(null, () => false)).toBeNull();
     expect(operatorSigningProgram("/operator/configured-signer", () => false)).toBe("/operator/configured-signer");
+    expect(operatorSigningProgram("./repository-signer", () => true)).toBeNull();
+    expect(operatorSigningProgram("ssh-keygen", () => true)).toBeNull();
   });
 
   it("times out the selected signer without reusable proof or retrying another executable", async () => {
