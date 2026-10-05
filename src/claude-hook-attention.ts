@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import type { Database as BetterSqliteDatabase } from "better-sqlite3";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
@@ -56,7 +57,7 @@ export function raiseHookNotificationAttention(input: HookAttentionInput): HookA
     provider_session_id: resolved.provider_session_id,
   };
   hookAttentionBySession.set(resolved.session_id, state);
-  broadcast("console:attention", {
+  broadcast(DOMAIN_EVENTS.CONSOLE_ATTENTION, {
     console_session_id: resolved.session_id,
     session_id: resolved.session_id,
     needs_attention: true,
@@ -73,7 +74,7 @@ export function clearHookNotificationAttention(input: HookAttentionInput): HookA
       for (const [sessionId, state] of hookAttentionBySession) {
         if (state.transcript_path === transcriptPath) {
           hookAttentionBySession.delete(sessionId);
-          broadcast("console:attention", {
+          broadcast(DOMAIN_EVENTS.CONSOLE_ATTENTION, {
             console_session_id: sessionId,
             session_id: sessionId,
             needs_attention: false,
@@ -91,7 +92,7 @@ export function clearHookNotificationAttention(input: HookAttentionInput): HookA
     return { ok: true, status: "not_set", session_id: resolved.session_id };
   }
   hookAttentionBySession.delete(resolved.session_id);
-  broadcast("console:attention", {
+  broadcast(DOMAIN_EVENTS.CONSOLE_ATTENTION, {
     console_session_id: resolved.session_id,
     session_id: resolved.session_id,
     needs_attention: false,

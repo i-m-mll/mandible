@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -124,7 +125,7 @@ export class SessionDiscovery {
       duration_ms: Date.now() - start,
     };
 
-    broadcast("session:discovery:completed", result);
+    broadcast(DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED, result);
 
     return result;
   }
@@ -412,7 +413,7 @@ export class ReaperTimer {
 
       if (reaped > 0) {
         this.log("info", "reaper_tick", { reaped, duration_ms: duration });
-        broadcast("reaper:tick", {
+        broadcast(DOMAIN_EVENTS.REAPER_TICK, {
           reaped,
           duration_ms: duration,
           total_reaped: this._totalReaped,

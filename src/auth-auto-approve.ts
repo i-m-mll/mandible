@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -533,7 +534,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   private broadcastStatus(reason: string): void {
     this.broadcast({
-      event: "auth:auto-approve",
+      event: DOMAIN_EVENTS.AUTH_AUTO_APPROVE,
       data: { reason, status: this.getStatus() },
     });
   }

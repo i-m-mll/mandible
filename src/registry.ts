@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -714,7 +715,7 @@ export class SessionRegistry {
         );
       const session = this.getSession(input.id);
       if (session) {
-        broadcast("session:updated", session);
+        broadcast(DOMAIN_EVENTS.SESSION_UPDATED, session);
         return session;
       }
     }
@@ -783,7 +784,7 @@ export class SessionRegistry {
       session.pinned = 1;
     }
 
-    broadcast("session:registered", session);
+    broadcast(DOMAIN_EVENTS.SESSION_REGISTERED, session);
     return session;
   }
 
@@ -819,9 +820,9 @@ export class SessionRegistry {
       if (status === "ended" || status === "dead") {
         // Bug: cbbb3d9 — transfer continuation to work unit on session end
         this.transferContinuationToWorkUnit(updated);
-        broadcast("session:ended", updated);
+        broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
       } else {
-        broadcast("session:updated", updated);
+        broadcast(DOMAIN_EVENTS.SESSION_UPDATED, updated);
       }
     }
     return updated;
@@ -846,7 +847,7 @@ export class SessionRegistry {
       task: input.description ?? null,
       status: input.status ?? "active",
     });
-    broadcast("session:child:added", { parent_id: parentId, child });
+    broadcast(DOMAIN_EVENTS.SESSION_CHILD_ADDED, { parent_id: parentId, child });
     return child;
   }
 
@@ -857,7 +858,7 @@ export class SessionRegistry {
     }
     const updated = this.updateSession(childId, { status });
     if (updated && (status === "ended" || status === "dead")) {
-      broadcast("session:child:ended", { parent_id: parentId, child: updated });
+      broadcast(DOMAIN_EVENTS.SESSION_CHILD_ENDED, { parent_id: parentId, child: updated });
     }
     return updated;
   }
@@ -1054,12 +1055,12 @@ export class SessionRegistry {
 
     const updated = this.getSession(id);
     if (updated) {
-      broadcast("session:updated", updated);
+      broadcast(DOMAIN_EVENTS.SESSION_UPDATED, updated);
       if (
         (updated.nav_metadata_status === "degraded" || updated.nav_metadata_status === "failed") &&
         updated.nav_metadata_status !== session.nav_metadata_status
       ) {
-        broadcast("session:metadata-warning", {
+        broadcast(DOMAIN_EVENTS.SESSION_METADATA_WARNING, {
           session_id: updated.id,
           nav_metadata_status: updated.nav_metadata_status,
           nav_metadata_last_error: updated.nav_metadata_last_error,
@@ -1131,7 +1132,7 @@ export class SessionRegistry {
       .run(now, sessionId);
     const updated = this.getSession(sessionId);
     if (updated) {
-      broadcast("session:updated", updated);
+      broadcast(DOMAIN_EVENTS.SESSION_UPDATED, updated);
     }
   }
 
@@ -1151,7 +1152,7 @@ export class SessionRegistry {
       .run(now, sessionId);
     const updated = this.getSession(sessionId);
     if (updated) {
-      broadcast("session:updated", updated);
+      broadcast(DOMAIN_EVENTS.SESSION_UPDATED, updated);
     }
   }
 
@@ -1228,7 +1229,7 @@ export class SessionRegistry {
     const updated = { ...session, status: "dead" as SessionStatus, ended_at: now, updated_at: now };
     // Bug: cbbb3d9 — transfer continuation to work unit on session death
     this.transferContinuationToWorkUnit(updated);
-    broadcast("session:ended", updated);
+    broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
     return updated;
   }
 }

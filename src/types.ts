@@ -92,11 +92,7 @@ import type {
 import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
 import type { AnthropicBillingPosture } from "./claude-lane-policy.js";
 
-export interface SSEEvent {
-  type: string;
-  data: unknown;
-  timestamp: string;
-}
+export type { SSEEvent } from "./contracts.js";
 
 export interface StartupCommitInfo {
   hash: string;
@@ -733,11 +729,7 @@ export interface SessionIssueLink {
 
 // --- SSE event type used by partitions (P2/P3/P4) ---
 
-export interface SseEvent {
-  event: string;
-  type?: string;
-  data: unknown;
-}
+export type { SseEvent } from "./contracts.js";
 
 // --- Console session types (Bug: e980dd8) ---
 
