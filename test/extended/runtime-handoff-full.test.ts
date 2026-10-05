@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
@@ -79,10 +79,25 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
   const initialRepo = createAuthCheckRepo(); fs.cpSync(initialRepo, repo, { recursive: true }); fs.rmSync(initialRepo, { recursive: true, force: true });
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
   fs.mkdirSync(userHome); fs.mkdirSync(home);
+  const privateKeychain = path.join(scratch, 'executor.keychain-db');
+  const securityAdapter = path.join(scratch, 'private-security');
+  const keychainSelector = (operation: string) => {
+    const result = spawnSync('/usr/bin/security', [operation, '-d', 'user'], { encoding: 'utf8', timeout: 5000 });
+    if (result.error) throw new Error('Native Keychain selector inspection failed.');
+    return JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr });
+  };
+  const keychainSearchBefore = keychainSelector('list-keychains');
+  const keychainDefaultBefore = keychainSelector('default-keychain');
+  fs.writeFileSync(securityAdapter, `#!/bin/sh
+set -eu
+[ "$1" = find-generic-password ] && [ "$2" = -s ] && [ "$3" = mandible-operator ] || exit 2
+case "$#" in 3) ;; 4) [ "$4" = -w ] || exit 2 ;; *) exit 2 ;; esac
+exec /usr/bin/security "$@" ${quote(privateKeychain)}
+`, { mode: 0o700 });
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
   const env = { USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home,
     MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(ports.backend), MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: repo, depth: 0 }]),
-    MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_ARCHIVE: archivePath, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
+    MANDIBLE_SECURITY_BIN: securityAdapter, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_ARCHIVE: archivePath, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
   const libraryInputs = Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]!]));
   Object.assign(env, libraryInputs);
   const suffix = digest(home).slice(0, 8); const domain = `gui/${process.getuid!()}`;
@@ -162,7 +177,7 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     command(runtime, ['scripts/local-runtime.mjs', 'start'], { cwd: candidateRoot, env: bootstrapEnv });
     await until(async () => { try { const health = await (await fetch(`http://127.0.0.1:${ports.backend}/api/health`)).json(); return health.ready === true && health.instance.backend_generation === sourceManifest.revision; } catch { return false; } }, 30000, 'Candidate executor bootstrap readiness');
     const bootstrapJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]);
-    expect(bootstrapJob).toContain(candidateRoot); expect(bootstrapJob).toContain(installedPath);
+    expect(bootstrapJob).toContain(candidateRoot); expect(bootstrapJob).toContain(installedPath); expect(bootstrapJob).toContain(securityAdapter);
     expect(digest(fs.readFileSync(path.join(candidateRoot, 'bin/mandible')))).toBe(sourceManifest.cliSha256);
     // Use supported setup mechanisms for private identities and custody. Auth
     // request publication and approval are exclusively ordinary HTTP routes.
@@ -177,6 +192,21 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     addGrant(db, { subject_type: 'user', subject: agent.id, resource_type: 'project', resource: registered.project.id, permission: 'write' });
     const pepper = loadOrCreatePepper(db, path.join(home, 'config/client-auth'));
     const agentToken = mintApiToken(db, pepper, agent.id); const operatorToken = mintApiToken(db, pepper, signing.operatorId);
+    // Real native Keychain lookup, scoped to an owned file. Secret material
+    // travels only through stdin/memory; no default/search-list mutation.
+    const batchQuote = (value: string) => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    const keychainPassword = randomBytes(32).toString('hex');
+    const keychainBatch = [
+      `create-keychain -p ${batchQuote(keychainPassword)} ${batchQuote(privateKeychain)}`,
+      `unlock-keychain -p ${batchQuote(keychainPassword)} ${batchQuote(privateKeychain)}`,
+      `add-generic-password -s mandible-operator -a ${batchQuote('isolated-upgrade-operator')} -T /usr/bin/security -w ${batchQuote(operatorToken.token)} ${batchQuote(privateKeychain)}`,
+    ].join('\n') + '\n';
+    const provision = spawnSync('/usr/bin/security', ['-i'], { input: keychainBatch, stdio: ['pipe', 'ignore', 'ignore'], timeout: 10000 });
+    if (provision.status !== 0 || provision.error) throw new Error('Private native Keychain provisioning failed.');
+    const lookup = spawnSync(securityAdapter, ['find-generic-password', '-s', 'mandible-operator', '-w'], { encoding: 'utf8', timeout: 10000 });
+    if (lookup.status !== 0 || lookup.stdout.trim() !== operatorToken.token) throw new Error('Private native Keychain credential readback failed.');
+    expect(keychainSelector('list-keychains')).toBe(keychainSearchBefore);
+    expect(keychainSelector('default-keychain')).toBe(keychainDefaultBefore);
     const baseUrl = `http://127.0.0.1:${ports.backend}`;
     const agentApi = { baseUrl, headers: { Authorization: `Bearer ${agentToken.token}` } };
     const operatorApi = { baseUrl, headers: { Authorization: `Bearer ${operatorToken.token}` } };
@@ -205,7 +235,7 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
       journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null;
       if (journal?.phase === 'failed') throw new Error(journal.error);
       if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
-      const state = db!.prepare('SELECT status, exit_code, output FROM auth_requests WHERE id=?').get(request.id) as any;
+      const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(request.id) as any;
       if (state && (state.status === 'rejected' || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-16000) })}`);
       return !!journal?.bridgeInstalled;
     }, 60000, 'Candidate executor source-root handoff admission');
@@ -226,11 +256,11 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     expect(fs.existsSync(poisonMarker)).toBe(false);
     const nativeRuns = db.prepare('SELECT hook_id, position, state, exit_code FROM auth_hook_executions WHERE auth_request_id=? AND position < 0 ORDER BY position').all(request.id) as any[];
     expect(nativeRuns.map(row => [row.position, row.state, row.exit_code])).toEqual([[-2, 'complete', 0], [-1, 'complete', 0]]);
-    const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).not.toContain(legacy); expect(newJob).toContain(`${repo}/bin`);
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: journal.binding.mergeCommit }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'ordinary candidate self-merge runtime drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).not.toContain(legacy); expect(newJob).toContain(`${repo}/bin`); expect(newJob).toContain(securityAdapter);
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: journal.binding.mergeCommit }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'ordinary candidate self-merge runtime drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, 'bootstrap.log'), path.join(scratch, '.cache/mandible/production-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
-    const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;
+    const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, error, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;
     if (requestState?.output) requestState.output = requestState.output.slice(-16000);
     const hookStates = requestId && db ? (db.prepare('SELECT hook_id, position, state, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? ORDER BY position').all(requestId) as any[]).map(row => ({ ...row, output: row.output?.slice(-16000) })) : [];
     fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
@@ -238,6 +268,9 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     if (requestId && executionId) spawnSync('/bin/launchctl', ['bootout', `${domain}/bio.mll.mandible.runtime-handoff.${digest(`${home}:${requestId}:${executionId}`).slice(0, 16)}`], { timeout: 5000 });
     for (const label of [backendLabel, gatewayLabel]) spawnSync('/bin/launchctl', ['bootout', `${domain}/${label}`], { timeout: 5000 });
     db?.close();
+    if (fs.existsSync(privateKeychain)) command('/usr/bin/security', ['delete-keychain', privateKeychain]);
+    expect(keychainSelector('list-keychains')).toBe(keychainSearchBefore);
+    expect(keychainSelector('default-keychain')).toBe(keychainDefaultBefore);
     if (candidateRoot && fs.existsSync(candidateRoot)) {
       git(candidateRoot, ['status', '--short', '--untracked-files=all']);
       command(fs.existsSync(path.join(buildHome, '.dotfiles/bin/wt')) ? path.join(buildHome, '.dotfiles/bin/wt') : 'wt', ['rm', 'feature/actual-upgrade', '--force', '--keep-branch'], { cwd: repo, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
