@@ -14,6 +14,7 @@ import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
 import { validateRuntimeSource } from '../../src/runtime-handoff-proof.js';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
+import { parseLoadedService } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { createLedgerIssue } from '../helpers/auth-queue-fixtures.js';
 import { addOrUpdateCheckout } from '../../src/ledger/project-registry.js';
@@ -180,7 +181,11 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       command(runtime, ['scripts/local-runtime.mjs', 'start'], { cwd: candidateRoot, env: bootstrapEnv });
       await until(async () => { try { const health = await (await fetch(`http://127.0.0.1:${ports.backend}/api/health`)).json(); return health.ready === true && health.instance.backend_generation === sourceManifest.revision; } catch { return false; } }, 30000, 'Candidate executor bootstrap readiness');
       const bootstrapJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]);
-      expect(bootstrapJob).toContain(candidateRoot); expect(bootstrapJob).toContain(installedPath); expect(bootstrapJob).toContain(securityAdapter);
+      expect(bootstrapJob).toContain(candidateRoot); expect(bootstrapJob).toContain(securityAdapter);
+      expect(parseLoadedService(bootstrapJob).environment.PATH.split(':')).toEqual([
+        path.dirname(runtime), path.join(candidateRoot, 'bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin',
+        path.join(userHome, '.cargo/bin'), '/opt/homebrew/bin',
+      ]);
     }
     const bootstrapJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]);
     if (installedUpdate) { expect(bootstrapJob).toBe(oldJob); expect(bootstrapJob).toContain(repo); }
