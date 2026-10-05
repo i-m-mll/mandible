@@ -46,7 +46,7 @@ beforeEach(() => {
   previewDb = null;
   restoreArtifactDir = false;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-write-"));
-  db = new SqliteDatabase(":memory:"); migrate(db); setDb(db);
+  db = new SqliteDatabase(path.join(root, "fixture.db")); migrate(db); setDb(db);
   setSetting(db, "artifact_root", path.join(root, "cas"));
   operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   agent = createUser(db, { slug: "writer", kind: "agent", display_name: "Writer" });
@@ -358,10 +358,12 @@ describe("artifact write authorization", () => {
   it("runs CLI ingest, guarded rename, old-path reuse and exact historical reads against the API", async () => {
     const requests: string[] = [];
     const cliInstance = resolveInstanceInfo({ env: {} });
+    router = authenticatedTestRouter(agent, { instance: cliInstance });
+    registerProviderRoutes(router);
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/api/instance") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ instance: cliInstance }));
+        res.end(JSON.stringify({ instance: cliInstance, operations: router.operationCatalog("test-candidate") }));
         return;
       }
       requests.push(`${req.method} ${req.url}`);
