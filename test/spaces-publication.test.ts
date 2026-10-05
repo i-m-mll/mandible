@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { beforeEach, afterEach, expect, it } from 'vitest';
 import SqliteDatabase from '../src/sqlite.js';
-import { migrate, type Db } from '../src/db.js';
+import { migrate, setDb, type Db } from '../src/db.js';
 import { createSpace } from '../src/ledger/spaces.js';
 import { createSpaceBlock, listSpaceBlocks, updateSpaceBlock } from '../src/ledger/space-blocks.js';
 import { LedgerStore } from '../src/ledger/store.js';
@@ -14,6 +14,12 @@ import { preparePublication as prepareResult, executePublication as executeResul
 import { preserveLegacyDocuments, listDocumentHistory } from '../src/spaces/history.js';
 import { serializeSpaceDocument } from '../src/spaces/export.js';
 import { recordArtifactVersion } from '../src/provider-artifacts.js';
+import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
+import { setClientAuthMode } from '../src/client-auth/mode.js';
+import { createUser, setupOperator } from '../src/users/store.js';
+import { addGrant, setProjectRestricted } from '../src/permissions/store.js';
+import { registerSpacesRoutes } from '../src/routes/spaces.js';
+import { Router } from '../src/server.js';
 
 function unwrap<T>(result:import('../src/spaces/publication.js').PublicationResult<T>):T {
   if(!result.ok)throw new Error(result.error.message);return result.value;
@@ -65,8 +71,10 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   const publication=preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'});
   updateSpaceBlock(db,space,listSpaceBlocks(db,space)[0].id,{markdown:'later'});
   let submissions=0;
-  const runner:PublicationRunner={createWorktree:()=>repo,commit:(directory,value)=> {
-    git(directory,'add',value.path);git(directory,'commit','-m','Fixture publication');return git(directory,'rev-parse','HEAD');
+  const proposal=path.join(root,'proposal');git(root,'clone','--shared',repo,proposal);
+  git(proposal,'config','user.name','Fixture');git(proposal,'config','user.email','fixture@example.test');git(proposal,'config','gpg.format','ssh');git(proposal,'config','user.signingkey',path.join(root,'fixture-key'));git(proposal,'config','commit.gpgsign','true');
+  const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=> {
+    git(directory,'add',value.path);git(directory,'commit','-m','Fixture publication');git(repo,'fetch',directory,'HEAD:refs/heads/fixture-proposal');return git(directory,'rev-parse','HEAD');
   },submit:()=>{submissions++;return 'fixture-auth';}};
   const published=await executePublication(db,space,publication.id,runner);
   expect(published.state).toBe('submitted');expect(published.version_ref).toBeTruthy();
@@ -133,4 +141,63 @@ it('publication import retains embedded snapshots and metadata independently of 
   const imported=importManagedDocument(db,{ref:publication.snapshot_ref,title:'Snapshot import',projectId:'p'});
   const copied=listSpaceBlocks(db,imported.id).find(block=>block.block_type==='artifact_embed');
   expect(copied?.item_snapshot?.title).toBe('Frozen attachment');expect(copied?.metadata.view).toEqual({zoom:2});
+});
+
+it('rechecks the destination after a committed submission failure without changing the signed snapshot',async()=> {
+  const repo=path.join(root,'repo');fs.writeFileSync(path.join(repo,'seed'),'seed');git(repo,'add','seed');git(repo,'commit','-m','Seed');
+  const proposal=path.join(root,'proposal');git(root,'clone','--shared',repo,proposal);
+  for(const [key,value] of [['user.name','Fixture'],['user.email','fixture@example.test'],['gpg.format','ssh'],['user.signingkey',path.join(root,'fixture-key')],['commit.gpgsign','true']])git(proposal,'config',key,value);
+  const prepared=preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'});
+  let commits=0,submissions=0;
+  const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=>{
+    commits++;git(directory,'add',value.path);git(directory,'commit','-m','Frozen snapshot');git(repo,'fetch',directory,'HEAD:refs/heads/fixture-proposal');return git(directory,'rev-parse','HEAD');
+  },submit:()=>{submissions++;throw new Error('submission unavailable');}};
+  await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('submission unavailable');
+  const committed=getPublication(db,space,prepared.id);expect(committed.state).toBe('committed');
+  fs.writeFileSync(path.join(repo,'doc.md'),'new destination bytes');
+  await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('Destination changed');
+  expect(getPublication(db,space,prepared.id)).toEqual(committed);
+  expect(commits).toBe(1);expect(submissions).toBe(1);
+  fs.unlinkSync(path.join(repo,'doc.md'));fs.writeFileSync(path.join(proposal,'doc.md'),'changed proposal');
+  await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('Publication checkout changed');
+  expect(getPublication(db,space,prepared.id)).toEqual(committed);expect(submissions).toBe(1);
+  expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
+});
+
+it('blocks inaccessible document sources and publication destinations before copying bytes or mutating state',async()=> {
+  setDb(db);setupOperator(db,{slug:'operator',display_name:'Operator'});
+  const auth=new ClientAuthenticator(db,{secretsDir:path.join(root,'auth')});
+  const user=createUser(db,{slug:'fixture-agent',kind:'agent',display_name:'Fixture agent'});
+  const {token}=auth.mintApiToken(user.id);
+  const router=new Router({clientAuth:auth});registerSpacesRoutes(router);setClientAuthMode(db,'strict');
+  setProjectRestricted(db,'p',true);
+  const global=createSpace(db,{title:'Accessible draft',default_renderer:'document'});
+  createSpaceBlock(db,global.id,{block_type:'paragraph',markdown:'accessible'});
+  const snapshot=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',repo_id:'p',series_key:'restricted-document',content:serializeSpaceDocument(db,space)});
+  const prepared=preparePublication(db,{spaceId:global.id,repoId:'c',path:'doc.md',issue:'abc1234'});
+  db.prepare(`INSERT INTO space_document_history (id,space_id,kind,content,artifact_ref,provenance_json,created_at) VALUES (?,?,?,NULL,?,?,?)`).run('restricted-history',global.id,'last_export',snapshot.artifact_version.id,JSON.stringify({repo_id:'c'}),1);
+  const request=(method:string,url:string,body?:unknown)=>router.invoke({method,url,body,credential:token,transport:'http'});
+  const spaceCount=()=>Number((db.prepare('SELECT count(*) n FROM spaces').get() as {n:number}).n);
+  const before=spaceCount();
+  for(const [method,url,body] of [
+    ['GET',`/api/spaces/${space}/publications`,undefined],
+    ['GET',`/api/spaces/${space}/document/download`,undefined],
+    ['POST',`/api/spaces/${space}/document/export`,{dest_path:path.join(root,'denied.md')}],
+    ['POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'}],
+    ['POST',`/api/spaces/${global.id}/publications/${prepared.id}/submit`,{}],
+    ['POST','/api/spaces/documents/import',{ref:snapshot.artifact_version.id,title:'Denied source'}],
+    ['POST','/api/spaces/documents/import',{project:'p',commit:'HEAD',path:'doc.md',title:'Denied Git source'}],
+    ['POST',`/api/spaces/${global.id}/history/restricted-history/import`,{title:'Denied history'}],
+  ] as const)expect((await request(method,url,body)).status,`${method} ${url}`).toBe(403);
+  expect(spaceCount()).toBe(before);expect(fs.existsSync(path.join(root,'denied.md'))).toBe(false);
+  const listing=await request('GET',`/api/spaces/${global.id}/publications`);
+  expect(listing.status).toBe(200);expect(listing.body).toMatchObject({publications:[],history:[],destinations:[]});
+  const publicSnapshot=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',series_key:'public-document',content:serializeSpaceDocument(db,global.id)});
+  expect((await request('POST','/api/spaces/documents/import',{ref:publicSnapshot.artifact_version.id,title:'Denied target',project_id:'p'})).status).toBe(403);
+  addGrant(db,{subject_type:'user',subject:user.id,resource_type:'project',resource:'p',permission:'read'});
+  expect((await request('GET',`/api/spaces/${space}/document/download`)).status).toBe(200);
+  expect((await request('POST','/api/spaces/documents/import',{ref:snapshot.artifact_version.id,title:'Allowed read copy'})).status).toBe(201);
+  expect((await request('POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'})).status).toBe(403);
+  addGrant(db,{subject_type:'user',subject:user.id,resource_type:'project',resource:'p',permission:'write'});
+  expect((await request('POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'})).status).toBe(201);
 });

@@ -136,9 +136,12 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
     if (publication.state === 'submitted') return publication;
     const checkout = getProjectCheckout(db,publication.repo_id);
     if (!checkout) throw new ExportError('checkout_not_found','Destination checkout unavailable');
-    if (publication.state === 'prepared') {
+    const checkDestination = () => {
       if (destinationHash(checkout.root,publication.path) !== publication.expected_destination_sha256)
         throw new ExportError('stale_destination','Destination changed since preparation. Prepare a new publication; the frozen snapshot and draft are retained.');
+    };
+    checkDestination();
+    if (publication.state === 'prepared') {
       const branch = publication.branch ?? `feature/spaces-${id}`;
       const worktree = publication.worktree ?? await runner.createWorktree(checkout.root,branch,publication.issue_id);
       db.prepare('UPDATE space_publications SET branch=?,worktree=? WHERE id=?').run(branch,worktree,id);
@@ -159,6 +162,12 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
       db.prepare('UPDATE space_publications SET version_ref=? WHERE id=?').run(produced.artifact_version.id,id);
       publication = getPublication(db,spaceId,id);
     }
+    const committed = artifactMaterializationTarget(resolveArtifactIdentity(db,publication.version_ref!,'strict-read'));
+    if (!committed.ok || committed.value.custody.hash !== publication.source_revision)
+      throw new ExportError('stale_destination','Signed publication differs from its frozen source; inspect the retained commit before submitting');
+    checkDestination();
+    if (destinationHash(publication.worktree!,publication.path) !== publication.source_revision)
+      throw new ExportError('stale_destination','Publication checkout changed after committing; the signed snapshot is retained.');
     const auth = await runner.submit(publication.worktree!,publication);
     db.prepare("UPDATE space_publications SET auth_request_id=?,state='submitted' WHERE id=?").run(auth,id);
     return getPublication(db,spaceId,id);
