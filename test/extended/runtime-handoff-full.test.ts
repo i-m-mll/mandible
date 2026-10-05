@@ -65,7 +65,8 @@ it('hands the actual old daemon over to the candidate through isolated productio
   // same real paths in its argv and launch definition so the deployed main
   // entry guard actually starts the daemon.
   const repo = fs.realpathSync(createAuthCheckRepo());
-  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-actual-upgrade-')));
+  // Keep HOME short enough for macOS's Unix-domain socket path limit.
+  const scratch = fs.realpathSync(fs.mkdtempSync('/tmp/mandible-upgrade-'));
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
   fs.mkdirSync(userHome); fs.mkdirSync(home);
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
