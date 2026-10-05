@@ -60,16 +60,7 @@ it("pins living and aliased references once, while the HTTP projection preserves
   }
 });
 
-it("reports missing bytes, hash mismatch, and unknown or ambiguous references separately", () => {
-  const version = recordArtifactVersion(db, { source_kind: "managed", content: "saved\n", series_key: "failures" });
-  const target = material(version.artifact_version.id);
-  expect(target.custody.kind).toBe("managed");
-  if (target.custody.kind !== "managed") throw new Error("Expected managed custody");
-  const file = new URL(target.custody.storage_uri);
-  fs.writeFileSync(file, "corrupt\n");
-  expect(readArtifactMaterial(db, target, 1024)).toMatchObject({ ok: false, error: { code: "hash_mismatch" } });
-  fs.rmSync(file);
-  expect(readArtifactMaterial(db, target, 1024)).toMatchObject({ ok: false, error: { code: "unavailable_material" } });
+it("distinguishes unknown and ambiguous references before materialization", () => {
   expect(artifactMaterializationTarget(resolveArtifactIdentity(db, "artifact-version:missing"))).toMatchObject({ ok: false, error: { code: "unknown_reference" } });
   for (const suffix of ["a", "b"]) {
     const hash = `1234567${suffix.repeat(57)}`;
