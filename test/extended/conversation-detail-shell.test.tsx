@@ -861,7 +861,7 @@ describe('compact detail pane shell', () => {
     expect(body?.textContent).toContain('Scrollable content');
     expect(footer?.textContent).toContain('Submit');
 
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+
 
 
     const defaultShell = render(

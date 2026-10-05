@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+
+
 import { render } from '@testing-library/preact';
 import { describe, expect, it } from 'vitest';
 
@@ -37,7 +37,7 @@ describe('anchored detail pane footer contract', () => {
     rerender(<DetailPaneShell header={<span>Header</span>}>Scrollable body</DetailPaneShell>);
     expect(container.querySelector('.detail-pane-shell__footer')).toBeNull();
 
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+
   });
 
 });

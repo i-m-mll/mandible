@@ -7,13 +7,13 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRef } from 'preact';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+
+
 
 import { ViewSidebar } from '../../ui/src/components/ViewSidebar';
 import { AppShellProvider, type AppShellContextValue } from '../../ui/src/app-shell';
-import { VIEW_SIDEBAR_GEOMETRY } from '../../ui/src/view-sidebar-geometry';
-import { readResolvedStylesheet } from '../helpers/css-manifest';
+
+
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so width persistence round-trips.

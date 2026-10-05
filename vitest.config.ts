@@ -31,7 +31,7 @@ export function mandibleVitestConfig(include: string[], options: MandibleSuiteOp
       pool: 'forks',
       fileParallelism: true,
       // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
-      setupFiles: ['./test/helpers/db-reset-backstop.ts'],
+      setupFiles: ['./test/helpers/runtime-isolation.ts', './test/helpers/db-reset-backstop.ts'],
       ...(options.timingContract
         ? { reporters: ['default', './test/helpers/timing-reporter.ts'] }
         : {}),

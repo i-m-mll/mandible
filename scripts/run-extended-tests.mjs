@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
+import { createTestRuntime } from "./test-runtime-isolation.mjs";
 import { runIabPreviewTests } from "./run-iab-preview-tests.mjs";
 
 const root = process.cwd();
@@ -37,11 +38,12 @@ function processTreeRss(rootPid) {
 }
 
 async function runPhase(label, script, args = []) {
+  const runtime = createTestRuntime();
   const child = spawn(process.execPath, [path.join(root, script), ...args], {
     cwd: root,
     detached: true,
     env: {
-      ...process.env,
+      ...runtime.env,
       NODE_OPTIONS: "--max-old-space-size=512",
     },
     stdio: "inherit",
@@ -63,6 +65,7 @@ async function runPhase(label, script, args = []) {
     result = await supervisor.settle(child);
   } finally {
     clearInterval(monitor);
+    runtime.close();
   }
   process.stdout.write(`extended phase ${label} peak_rss_kib=${peakKiB} memory_killed=${memoryKilled}\n`);
   if (memoryKilled) throw new Error(`Extended phase ${label} exceeded ${rssLimitKiB} KiB aggregate RSS.`);

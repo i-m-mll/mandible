@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';

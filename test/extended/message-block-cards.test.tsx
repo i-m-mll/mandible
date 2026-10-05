@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/preact';
+
+import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
@@ -137,7 +137,7 @@ describe('message action cards', () => {
 
 
   it('renders expanded tool input and output as distinct boxes without boxing grouped rows', () => {
-    const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+
 
     const tool = render(<ToolUseBlock
       toolName="Read"

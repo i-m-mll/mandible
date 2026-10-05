@@ -28,6 +28,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import os from "node:os";
 
+import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
 import type { Db } from "./db.js";
 import type {
@@ -184,6 +185,7 @@ export function buildAuthHookEnv(
   // which convergence work the original merge required.
   env.MANDIBLE_AUTH_MERGE_BASE_SHA = request.merge_preflight_base_sha ?? "";
   env.MANDIBLE_AUTH_MERGE_HEAD_SHA = request.merge_head_sha ?? "";
+  env.MANDIBLE_AUTH_MERGE_COMMIT_SHA = extractSuccessfulMergeCommitSha(request.output) ?? "";
   env.MANDIBLE_HOOK_ID = context.hook_id;
   env.MANDIBLE_HOOK_LABEL = context.hook_label;
   env.MANDIBLE_HOOK_ATTEMPT = String(context.attempt);
@@ -281,9 +283,9 @@ export class AuthHookManager {
    * adopts the in-progress record and its attempt count rather than resetting
    * the attempt budget.
    */
-  planRuns(request: AuthRequest): AuthHookRun[] {
+  planRuns(request: AuthRequest, additionalHooks: AuthHook[] = []): AuthHookRun[] {
     if (!this.hasDurableTables()) return [];
-    const hooks = this.findMatchingHooks(request.repo, request.type);
+    const hooks = [...additionalHooks, ...this.findMatchingHooks(request.repo, request.type)];
     const now = Date.now();
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO auth_hook_executions (
@@ -454,6 +456,7 @@ export class AuthHookManager {
   async executeHooks(
     request: AuthRequest,
     onOutput?: (hookLabel: string, text: string) => void,
+    options: { reusePlan?: boolean } = {},
   ): Promise<AuthHookExecutionResult[]> {
     if (!this.hasDurableTables()) {
       // Legacy/partial DBs (old fixtures) keep the pre-27241e6 behaviour rather
@@ -470,7 +473,7 @@ export class AuthHookManager {
       return results;
     }
 
-    this.planRuns(request);
+    if (!options.reusePlan) this.planRuns(request);
     this.reclaimInterruptedRuns(request.id);
     return this.runPending(request, onOutput);
   }

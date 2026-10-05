@@ -5,10 +5,10 @@
 // filter/sort menu, foldable headers, drag-reorder persistence, the shared leading action typed create
 // flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
-import { readFileSync } from 'node:fs';
+
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { h } from 'preact';
+
 
 // Mock the seed POST so the SpaceSeedDialog mount path doesn't hit a daemon.
 const seedSpace = vi.fn();
