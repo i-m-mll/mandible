@@ -46,7 +46,8 @@ function relationship(
     id: "rel-1",
     direction: "outgoing",
     relationship_type: "parent_child",
-    provenance: "explicit",
+    provenance: "manual",
+    link_type: "parent_child", note: null,
     confidence: "certain",
     metadata: {},
     created_at: 1,
@@ -58,9 +59,11 @@ function relationship(
 
 function detail(overrides: Partial<LedgerIssueDetailProjection> = {}): LedgerIssueDetailProjection {
   return {
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
     id: "issue-umbrella-canonical",
     display_id: "96c5090",
-    project: {
+    project: { work_repo_id: null,
       id: "project-1",
       project_key: "mandible",
       display_name: "Mandible",

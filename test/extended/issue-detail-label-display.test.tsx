@@ -9,10 +9,12 @@ afterEach(cleanup);
 
 function detail(labels: string[]): LedgerIssueDetailProjection {
   return {
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
     id: 'issue-1',
     display_id: 'issue-1',
     detail_stage: 'full',
-    project: {
+    project: { work_repo_id: null, project_key: 'mandible',
       id: 'project-1',
       display_name: 'Mandible',
       remote_identity: '',
@@ -29,7 +31,7 @@ function detail(labels: string[]): LedgerIssueDetailProjection {
     kind: 'feature',
     priority: 'unknown',
     source: 'mandible',
-    author: { id: null, type: 'mandible_user', display: 'Mandible' },
+    author: { id: null, type: 'mandible_user', display: 'Mandible', legacy_display: 'Mandible', attribution: null },
     created_at: 1,
     updated_at: 1,
     closed_at: null,
@@ -43,7 +45,7 @@ function detail(labels: string[]): LedgerIssueDetailProjection {
     sessions: [],
     auth_requests: [],
     associated_artifacts: [],
-  } as LedgerIssueDetailProjection;
+  };
 }
 
 function openWorkingNotes(): void {
@@ -81,19 +83,23 @@ describe('issue detail label presentation', () => {
     const projection = detail([]);
     projection.relationships = [
       {
-        id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child',
-        related_issue: { id: 'child', display_id: 'child-1', title: 'Child issue', status: 'open', resolution: null },
+        id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child', link_type: 'parent_child', note: null,
+        provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
+        related_issue: { id: 'child', display_id: 'child-1', project_id: 'project-1', kind: 'feature', priority: 'unknown', labels: [], title: 'Child issue', status: 'open', resolution: null },
       },
       {
-        id: 'reference-edge', direction: 'outgoing', relationship_type: 'references',
-        related_issue: { id: 'reference', display_id: 'ref-1', title: 'Referenced issue', status: 'open', resolution: null },
+        id: 'reference-edge', direction: 'outgoing', relationship_type: 'references', link_type: 'references', note: null,
+        provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
+        related_issue: { id: 'reference', display_id: 'ref-1', project_id: 'project-1', kind: 'feature', priority: 'unknown', labels: [], title: 'Referenced issue', status: 'open', resolution: null },
       },
-    ] as LedgerIssueDetailProjection['relationships'];
+    ];
     projection.associated_artifacts = [{
       id: 'artifact-1', ref: 'artifact:artifact-1', title: 'Decision brief', logical_name: null,
       uri: 'file:///tmp/decision.md', content_hash: 'a'.repeat(64), role: 'reference', media_type: 'text/markdown',
+      algorithm: 'sha256', manifest_id: null, custody_mode: 'managed', created_at: 1,
+      pin_state: 'pinned', is_latest: null, resolved_version_no: null, series_id: null, warnings: [],
       provider_id: null, availability: 'present', refs: [], links: [],
-    }] as LedgerIssueDetailProjection['associated_artifacts'];
+    }];
 
     render(<LedgerIssueDetail detail={projection} />);
 
@@ -123,7 +129,7 @@ describe('issue detail label presentation', () => {
       id: 'notes-event-1',
       kind: 'event',
       event_type: 'issue.work_notes_updated',
-      author: { id: null, type: 'agent', display: 'Agent' },
+      author: { id: null, type: 'agent', display: 'Agent', legacy_display: 'Agent', attribution: null },
       source: 'mandible',
       created_at: 2,
       payload: { work_notes: 'Historical notes before the current edit' },

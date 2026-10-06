@@ -42,7 +42,7 @@ export type IssueSummary = {
   status: (typeof LEDGER_ISSUE_STATUSES)[number];
   kind?: string;
   priority?: string;
-  resolution?: string | null;
+  resolution?: (typeof LEDGER_ISSUE_RESOLUTIONS)[number] | null;
   labels: string[];
   author: string;
   created_at: string;
@@ -215,7 +215,7 @@ function formatIssueFilter(parsed: ParsedIssueFilter): string {
   return tokens.join(' ');
 }
 
-function canonicalIssueKind(issue: { kind?: string }): string {
+function canonicalIssueKind(issue: { kind?: string }) {
   return normalizeLedgerIssueKind(issue.kind);
 }
 
@@ -413,6 +413,7 @@ function synthesizeLedgerIssueDetail(
       remote_identity: '',
       upstream_identity: '',
       repo_id: repo.repo_id,
+      work_repo_id: null,
       repo_name: repo.repo_name,
       repo_root: repo.repo_root ?? null,
       default_branch: null,
@@ -420,6 +421,12 @@ function synthesizeLedgerIssueDetail(
     title: issue.title,
     body: issue.description ?? '',
     status: issue.status,
+    worker_status: 'none',
+    work_notes: '',
+    work_notes_revision: null,
+    issue_branches: [],
+    dependencies: [],
+    dependency_warning: false,
     resolution,
     kind,
     priority,
