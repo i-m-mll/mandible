@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { ProcessGroupSupervisor, runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
+import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../../scripts/test-phase-executor.mjs';
 
 const temporaryRoots: string[] = [];
 
@@ -32,6 +33,7 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
   const pidFile = path.join(root, "descendant.pid");
   const readyFile = path.join(root, "descendant.ready");
   const leaderTermFile = path.join(root, "leader-term");
+  const runtimeFile = path.join(root, "runtime-root");
   const supervisorUrl = new URL("../../scripts/process-group-supervisor.mjs", import.meta.url).href;
   const launcherUrl = new URL("../../scripts/run-iab-preview-tests.mjs", import.meta.url).href;
   const outer = spawn(process.execPath, ["--input-type=module", "-e", `
@@ -44,7 +46,9 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
       await runIabPreviewTests({
         supervisor,
         selectedShards: [{ label: "synthetic", args: [] }],
-        spawnShard: () => spawn(process.execPath, ["-e", ${JSON.stringify(`
+        spawnShard: (_shard, env) => {
+          fs.writeFileSync(${JSON.stringify(runtimeFile)}, env.MANDIBLE_TEST_RUNTIME_ROOT);
+          return spawn(process.execPath, ["-e", ${JSON.stringify(`
           const { spawn } = require("node:child_process");
           const fs = require("node:fs");
           process.on("SIGTERM", () => {
@@ -59,7 +63,8 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
             setInterval(() => {}, 1000);
           `)}], { stdio: "ignore" });
           setInterval(() => {}, 1000);
-        `)}], { detached: true, stdio: "ignore" }),
+        `)}], { detached: true, stdio: "ignore" });
+        },
         measureRssKiB: () => ${JSON.stringify(trigger)} === "watchdog" && fs.existsSync(${JSON.stringify(readyFile)}) ? 2 : 0,
         rssLimitKiB: 1,
         monitorIntervalMs: 10,
@@ -73,6 +78,7 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
   if (trigger === "signal") outer.kill("SIGTERM");
   await waitForExit(outer, 2_000);
   await waitUntil(() => !isAlive(descendantPid), 2_000);
+  expect(fs.existsSync(fs.readFileSync(runtimeFile, "utf8"))).toBe(false);
   expect(fs.existsSync(leaderTermFile)).toBe(true);
   expect(isAlive(descendantPid)).toBe(false);
 }, 6_000);
@@ -155,5 +161,99 @@ it("reports EPERM without positive zombie-only evidence", async () => {
   } finally {
     kill.mockRestore();
     await supervisor.close();
+  }
+});
+
+function privateRuntime() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-phase-cleanup-"));
+  temporaryRoots.push(root);
+  return {
+    env: { ...process.env, MANDIBLE_TEST_RUNTIME_ROOT: root },
+    close: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+it("settles sequential phases and reports normal and nonzero exits", async () => {
+  const supervisor = new ProcessGroupSupervisor({ graceMs: 100 });
+  const roots: string[] = [];
+  const groupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-phase-descendant-"));
+  temporaryRoots.push(groupRoot);
+  const pidFile = path.join(groupRoot, "descendant.pid");
+  const leaderScript = `
+    const fs = require("node:fs");
+    require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`
+      process.on("SIGTERM", () => {});
+      require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      setInterval(() => {}, 1000);
+    `)}], { stdio: "ignore" });
+    const ready = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(pidFile)})) { clearInterval(ready); process.exit(0); }
+    }, 10);
+  `;
+  try {
+    for (const code of [0, 7]) {
+      const outcome = await executeTestPhase({
+        supervisor,
+        createRuntime: privateRuntime,
+        spawnChild: (env: NodeJS.ProcessEnv) => {
+          roots.push(env.MANDIBLE_TEST_RUNTIME_ROOT!);
+          if (code !== 0) expect(isAlive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(false);
+          return spawn(process.execPath, ["-e", code === 0 ? leaderScript : `process.exit(${code})`], { detached: true, env, stdio: "ignore" });
+        },
+        monitorIntervalMs: 10,
+      });
+      expect(outcome.status).toBe(code === 0 ? "passed" : "failed");
+      expect(outcome.result).toEqual({ code, signal: null });
+      expect(fs.existsSync(roots.at(-1)!)).toBe(false);
+      expect(isAlive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(false);
+    }
+  } finally {
+    await supervisor.close();
+  }
+});
+
+it.each(["throw", "missing-binary", "measurement"])("releases acquired resources after %s failure", async (failure) => {
+  const supervisor = new ProcessGroupSupervisor({ graceMs: 100 });
+  let runtimeRoot = "";
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const outcome = await executeTestPhase({
+      supervisor,
+      createRuntime: privateRuntime,
+      spawnChild: (env: NodeJS.ProcessEnv) => {
+        runtimeRoot = env.MANDIBLE_TEST_RUNTIME_ROOT!;
+        if (failure === "throw") throw new Error("synchronous spawn failure");
+        child = spawn(failure === "missing-binary" ? path.join(runtimeRoot, "absent-binary") : process.execPath,
+          ["-e", "setInterval(() => {}, 1000)"], { detached: true, env, stdio: "ignore" });
+        return child;
+      },
+      measureRssKiB: () => { throw new Error("ps sample unavailable"); },
+      monitorIntervalMs: 10,
+    });
+    expect(outcome.status).toBe("error");
+    expect(String(outcome.error)).toMatch(failure === "throw" ? /synchronous spawn failure/ : failure === "missing-binary" ? /ENOENT/ : /ps sample unavailable/);
+    expect(fs.existsSync(runtimeRoot)).toBe(false);
+    if (child?.pid) expect(isAlive(child.pid)).toBe(false);
+    const next = await executeTestPhase({
+      supervisor, createRuntime: privateRuntime,
+      spawnChild: (env: NodeJS.ProcessEnv) => spawn(process.execPath, ["-e", "process.exit(0)"], { detached: true, env, stdio: "ignore" }),
+    });
+    expect(next.status).toBe("passed");
+  } finally {
+    await supervisor.close();
+  }
+});
+
+it("counts parent RSS only when requested and reports failed ps samples", () => {
+  const child = { pid: 123 };
+  const measurement = { treeRssKiB: () => 80, parentRssKiB: () => 25 };
+  expect(measureTestRssKiB(child, measurement)).toBe(80);
+  expect(measureTestRssKiB(child, { ...measurement, includeParentRss: true })).toBe(105);
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = "/mandible-phase-missing-path";
+    expect(() => processTreeRss(process.pid)).toThrow("Cannot measure test process RSS");
+  } finally {
+    process.env.PATH = previousPath;
   }
 });
