@@ -18,6 +18,7 @@ import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
 import { registerConversationControlRoutes } from "../src/routes/conversation-control.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
@@ -54,6 +55,27 @@ describe("restricted project route enforcement", () => {
   afterEach(() => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("checks canonical project read access before resolving approval references", async () => {
+    registerSpacesRoutes(router);
+    const project = addProject(db, { project_key: "auth-restricted", display_name: "Restricted approvals" });
+    setProjectRestricted(db, project.id, true);
+    const agent = createUser(db, { slug: "approval-reader", kind: "agent", display_name: "Approval Reader" });
+    const { token } = authenticator.mintApiToken(agent.id);
+    const id = "2257522a-39a2-467b-b3f8-491aea66754c";
+    db.prepare(`INSERT INTO auth_requests (id, command, title, repo, created_at, updated_at, expires_at)
+      VALUES (?, 'true', 'Private approval title', ?, 1, 1, 9999999999999)`).run(id, project.project_key);
+    const resolve = (ref: string) => router.invoke({ method: "GET", url: `/api/refs/resolve?ref=${encodeURIComponent(ref)}`, credential: token, transport: "http" });
+    for (const ref of [`auth:${id}`, "auth:2257522a", `mandible:///auth?request=${id}`]) {
+      const denied = await resolve(ref);
+      expect(denied.status).toBe(403);
+      expect(JSON.stringify(denied.body)).not.toContain("Private approval title");
+    }
+    addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "read" });
+    const allowed = await resolve("auth:2257522a");
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toMatchObject({ resolution: { kind: "auth", resolved: true, entity: { id: "2257522a", title: "Private approval title" } } });
   });
 
   it("denies then restores agent HTTP and file-RPC writes through an agents-group grant", async () => {

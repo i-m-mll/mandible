@@ -120,10 +120,10 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 
 - Authored ledger Markdown issue refs use `[issue:<id>]` or `[issue:<project>/<id>]`. These refs create normal text-reference relationships.
 - Authored ledger Markdown comment refs use `[comment:<issue>#<comment>]` or `[comment:<project>/<issue>#<comment>]`; `[comment:#<comment>]` is a local issue UI shortcut, not a relationship-ref form.
+- Authored ledger Markdown auth request refs use `[auth:<short-id>]`, resolved with the same ambiguity-safe prefix rules as `mandible auth` commands. Auth request ids are global, so there is no project-qualified form. An auth ref links readers to the request; it creates no issue relationship and never changes the request's structured issue context or closure actions, which come only from `mandible auth request` fields.
 - Relationship type names such as `references`, `resolves`, `fixed_by`, `blocks`, and `tests` are `mandible issue link --type` values, not authored Markdown tags. Do not write `[references:<id>]`, `[closes:<id>]`, or similar relationship-name bracket refs.
 - Artifact refs are typed by meaning: `[artifact:<short-id>]` names a logical artifact, `[artifact-version:<short-id>]` pins one version, `[artifact-series:<short-id>]` follows a living series (or `[artifact-series:<short-id>@<version>]` pins its numbered version), and `[artifact-blob:<short-hash>]` names immutable bytes only. Current producers use ambiguity-safe short refs and must never emit legacy `[artifact:sha256:<hash>]` refs.
 - For user-facing artifact links, use `mandible artifact format <ref> --as markdown` instead of constructing routes by hand. Use `--as url`, `--as id`, or `--as full` only when that output is specifically needed; do not present a blob as though it were a logical artifact.
-- Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`. Link them through `mandible auth request`, auth issue links, or normal issue refs when describing the related work.
 
 ## Auth Requests
 

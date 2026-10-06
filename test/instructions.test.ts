@@ -28,7 +28,7 @@ describe("Mandible instructions fragment", () => {
     expect(fragment).toContain("`mandible artifact format <ref> --as markdown`");
     expect(fragment).toContain("mandible artifact ingest");
     expect(fragment).toContain("must never emit legacy `[artifact:sha256:<hash>]`");
-    expect(fragment).toContain("Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`");
+    expect(fragment).toContain("Authored ledger Markdown auth request refs use `[auth:<short-id>]`");
     expect(fragment).toContain("worker_status");
     expect(fragment).toContain("MANDIBLE_BASE=file:///path/to/spool");
     expect(fragment).not.toContain("YubiKey");

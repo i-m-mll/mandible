@@ -1,8 +1,16 @@
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { createUser } from "../src/users/store.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
+import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
+import { parseAuthoredReferences } from "../src/ledger/authored-references.js";
+import type { ResolveRefResponse } from "../src/contracts.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
@@ -13,6 +21,9 @@ import { SPACE_EVENT_VALUES, SPACE_EVENTS, isSpaceEvent } from "../src/spaces/ev
 
 let db: Db;
 let router: Router;
+let approvalRouter: Router | null = null;
+let approvalToken = "";
+let approvalSecrets = "";
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
 const PROJECT_ID = "prj_00spaces_test_unique";
@@ -74,6 +85,20 @@ async function call(method: string, url: string, body?: unknown) {
   return router.invoke({ method, url, body });
 }
 
+async function checkedResolve(url: string): Promise<ResolveRefResponse> {
+  if (!approvalRouter) {
+    approvalSecrets = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-ref-test-"));
+    const authenticator = new ClientAuthenticator(db, { secretsDir: approvalSecrets });
+    const reader = createUser(db, { slug: "approval-reader", kind: "agent", display_name: "Approval Reader" });
+    approvalToken = authenticator.mintApiToken(reader.id).token;
+    approvalRouter = new Router({ clientAuth: authenticator });
+    registerSpacesRoutes(approvalRouter);
+  }
+  const response = await approvalRouter.invoke({ method: "GET", url, credential: approvalToken, transport: "http" });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return response.body as ResolveRefResponse;
+}
+
 function allowsFileRpcRoute(method: string, url: string): boolean {
   return router.resolveFileRpcPolicy(method, url);
 }
@@ -89,6 +114,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  approvalRouter = null;
+  if (approvalSecrets) fs.rmSync(approvalSecrets, { recursive: true, force: true });
+  approvalSecrets = "";
   db.close();
 });
 
@@ -566,6 +594,47 @@ describe("unified ref resolver", () => {
     const repoResolution = (repoRes.body as { resolution: { kind: string; detail?: unknown } }).resolution;
     expect(repoResolution.kind).toBe("repo");
     expect(repoResolution.detail).toBeTruthy();
+  });
+
+  it("resolves exact and unique approval prefixes without writing issue links or closure actions", async () => {
+    const ids = ["2257522a-39a2-467b-b3f8-491aea66754c", "2257522a-49a2-467b-b3f8-491aea66754c"];
+    const insert = db.prepare(`INSERT INTO auth_requests (id, command, title, repo, created_at, updated_at, expires_at)
+      VALUES (?, 'true', 'Merge feature/x', 'spaces-test', 1, 1, 9999999999999)`);
+    ids.forEach(id => insert.run(id));
+    const resolve = async (ref: string) => (await checkedResolve(`/api/refs/resolve?ref=${encodeURIComponent(ref)}`)).resolution;
+    expect(await resolve(`auth:${ids[0]}`)).toMatchObject({ kind: "auth", resolved: true, entity: { id: "2257522a-3", title: "Merge feature/x" } });
+    expect(await resolve("auth:2257522a-4")).toMatchObject({ resolved: true, entity: { id: "2257522a-4" } });
+    expect(await resolve("auth:2257522a")).toMatchObject({ kind: "auth", resolved: false, error: "ambiguous", entity: null });
+    expect(await resolve("auth:ffffffff")).toMatchObject({ kind: "auth", resolved: false, error: "not_found", entity: null });
+    expect(await resolve(`mandible:///auth?request=${ids[0]}`)).toMatchObject({ kind: "auth", resolved: true, entity: { id: "2257522a-3" } });
+    expect(await resolve(`mandible:///auth?request=${ids[0]}&issue=missing`)).toMatchObject({ kind: "auth", resolved: true });
+    const refs = parseAuthoredReferences("See [auth:2257522a-3], not [auth:spaces-test/2257522a-4], `[auth:2257522a-4]`, or \n```\n[auth:2257522a-4]\n```\n[link](https://example.test/[auth:2257522a-4]).");
+    expect(refs.map(ref => [ref.kind, ref.target])).toEqual([["auth", "2257522a-3"]]);
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({ ...SYSTEM_ACTOR, project_id: PROJECT_ID, title: "Approval mention", body: `[auth:${ids[0]}]`, kind: "feature" });
+    store.addComment(issue.id, { ...SYSTEM_ACTOR, body: `[auth:${ids[1]}]` });
+    for (const table of ["ledger_issue_relationships", "ledger_relationship_edges", "ledger_auth_issue_links", "auth_request_actions"]) {
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
+    expect(db.prepare("SELECT status FROM auth_requests ORDER BY id").all()).toEqual([{ status: "pending" }, { status: "pending" }]);
+  });
+
+  it("refuses approval metadata when its project is absent, ambiguous, or conflicting", async () => {
+    const id = "2257522a-39a2-467b-b3f8-491aea66754c";
+    db.prepare(`INSERT INTO auth_requests (id, command, title, created_at, updated_at, expires_at)
+      VALUES (?, 'true', 'Hidden metadata', 1, 1, 9999999999999)`).run(id);
+    const resolve = async () => (await checkedResolve(`/api/spaces/resolve?ref=auth:${id}`)).resolution;
+    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    db.prepare("UPDATE auth_requests SET repo = 'unknown-project'").run();
+    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    db.prepare("UPDATE ledger_projects SET display_name = 'Shared'").run();
+    db.prepare("UPDATE auth_requests SET repo = 'Shared'").run();
+    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    db.prepare("UPDATE auth_requests SET repo = ?, target_repo_root = ?").run(PROJECT_ID, OTHER_PROJECT_ID);
+    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    addOrUpdateCheckout(db, PROJECT_ID, { root: "/fixture/approval-checkout", name: "Approval checkout", default_branch: "main" });
+    db.prepare("UPDATE auth_requests SET repo = NULL, target_repo_root = ?").run("/fixture/approval-checkout");
+    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a" } });
   });
 
   it("returns an unresolved result for unknown refs and 400 for a missing ref param", async () => {

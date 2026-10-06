@@ -27,6 +27,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('approval references', () => {
+  it('preserves full lookup and navigation authority while protecting code', () => {
+    const fullId = '2257522a-39a2-467b-b3f8-491aea66754c';
+    expect(parseResourceRef(`auth:${fullId}`)).toMatchObject({ kind: 'auth', canonical: `auth:${fullId}` });
+    expect(parseResourceRef('auth:mandible/2257522a')).toBeNull();
+    expect(resourceRefHref(`auth:${fullId}`)).toBe(`#/auth?request=${fullId}`);
+    const container = document.createElement('div');
+    container.innerHTML = linkifyResourceRefs(`<p>[auth:${fullId}]</p><code>[auth:2257522b]</code><pre>[auth:2257522c]</pre><a href="auth:${fullId}">Review</a>`);
+    const anchors = container.querySelectorAll<HTMLAnchorElement>('a.resource-ref__link');
+    expect(anchors).toHaveLength(2);
+    expect([...anchors].map(anchor => anchor.getAttribute('href'))).toEqual([`#/auth?request=${fullId}`, `#/auth?request=${fullId}`]);
+    expect(container.querySelector('code a')).toBeNull();
+    expect(container.querySelector('pre a')).toBeNull();
+  });
+});
+
 describe('legacy artifact ref rejection', () => {
   it('does not recognize obsolete hash refs as normal resource refs', () => {
     expect(parseResourceRef(`artifact:sha256:${HASH64}`)).toBeNull();
