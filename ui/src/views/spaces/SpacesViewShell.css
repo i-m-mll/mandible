@@ -7,10 +7,8 @@
  * `.spaces-shell` so co-bundled component stylesheets never collide, and theme
  * tokens come from CSS custom properties so the shell inherits the app theme.
  *
- * The `.spaces-shell__*` class names are deliberately distinct from the
- * `.spaces-view__*` names in space-view.css (the first exemplar, owned by C3):
- * this is the shell frame, not the per-Space view. Renderer children scope their
- * own classes under `.space-canvas`, `.space-board`, etc.
+ * Renderer children scope their own classes under `.space-canvas`,
+ * `.space-board`, etc.
  */
 
 /*

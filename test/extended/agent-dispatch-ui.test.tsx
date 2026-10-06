@@ -23,14 +23,16 @@ afterEach(() => {
 describe('issue header launch-agent affordance', () => {
   function detail(): LedgerIssueDetailProjection {
     return {
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
       id: 'ledger-issue-1', display_id: 'ce83a84', detail_stage: 'full',
-      project: { id: 'proj-1', display_name: 'mandible', remote_identity: '', upstream_identity: '', repo_id: 'mandible', repo_name: 'mandible', repo_root: null, default_branch: 'main' },
+      project: { work_repo_id: null, project_key: 'mandible', id: 'proj-1', display_name: 'mandible', remote_identity: '', upstream_identity: '', repo_id: 'mandible', repo_name: 'mandible', repo_root: null, default_branch: 'main' },
       title: 'Agent dispatch affordances', body: 'Body', status: 'open', resolution: null,
       kind: 'feature', priority: 'unknown', source: 'mandible', created_at: 0, updated_at: 0,
-      closed_at: null, author: { id: null, type: 'mandible_user', display: 'Mandible' },
+      closed_at: null, author: { id: null, type: 'mandible_user', display: 'Mandible', legacy_display: 'Mandible', attribution: null },
       labels: [], aliases: [], comments: [], relationships: [], sessions: [], work_units: [],
       auth_requests: [], associated_artifacts: [], timeline: [], checkpoints: [],
-    } as unknown as LedgerIssueDetailProjection;
+    };
   }
 
   it('offers a confirm-first launch item without dispatching from the menu click', async () => {

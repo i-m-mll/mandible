@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { readPersistedDetail, writePersistedDetail } from '../detail-cache';
 
@@ -8,6 +8,7 @@ type DetailState<T> = {
   loading: boolean;
   revalidating: boolean;
   error: string | null;
+  failure: unknown;
   stale: boolean;
 };
 
@@ -20,14 +21,19 @@ export function useKeyedAsyncDetail<T>({
   requestKey,
   namespace,
   load,
+  accept,
 }: {
   requestKey: string | null;
   namespace: string;
   load: (signal: AbortSignal) => Promise<T>;
+  accept?: (data: T) => boolean;
 }): KeyedAsyncDetail<T> {
   const hydrated = useMemo(
-    () => requestKey ? readPersistedDetail<T>(namespace, requestKey) : null,
-    [namespace, requestKey],
+    () => {
+      const cached = requestKey ? readPersistedDetail<T>(namespace, requestKey) : null;
+      return cached && (!accept || accept(cached)) ? cached : null;
+    },
+    [accept, namespace, requestKey],
   );
   const [nonce, setNonce] = useState(0);
   const [state, setState] = useState<DetailState<T>>(() => ({
@@ -36,18 +42,20 @@ export function useKeyedAsyncDetail<T>({
     loading: Boolean(requestKey) && !hydrated,
     revalidating: Boolean(requestKey && hydrated),
     error: null,
+    failure: null,
     stale: Boolean(hydrated),
   }));
   const generationRef = useRef(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     if (!requestKey) {
-      setState({ key: null, data: null, loading: false, revalidating: false, error: null, stale: false });
+      setState({ key: null, data: null, loading: false, revalidating: false, error: null, failure: null, stale: false });
       return undefined;
     }
-    const cached = readPersistedDetail<T>(namespace, requestKey);
+    const persisted = readPersistedDetail<T>(namespace, requestKey);
+    const cached = persisted && (!accept || accept(persisted)) ? persisted : null;
     setState((current) => {
       const sameKeyData = current.key === requestKey ? current.data : null;
       const data = sameKeyData ?? cached;
@@ -57,6 +65,7 @@ export function useKeyedAsyncDetail<T>({
         loading: !data,
         revalidating: Boolean(data),
         error: null,
+        failure: null,
         stale: current.key === requestKey
           ? current.stale || Boolean(cached)
           : Boolean(cached),
@@ -66,8 +75,12 @@ export function useKeyedAsyncDetail<T>({
     load(controller.signal)
       .then((data) => {
         if (controller.signal.aborted || generationRef.current !== generation) return;
+        if (accept && !accept(data)) {
+          setState((current) => ({ ...current, loading: false, revalidating: false }));
+          return;
+        }
         writePersistedDetail(namespace, requestKey, data);
-        setState({ key: requestKey, data, loading: false, revalidating: false, error: null, stale: false });
+        setState({ key: requestKey, data, loading: false, revalidating: false, error: null, failure: null, stale: false });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted || generationRef.current !== generation) return;
@@ -76,10 +89,11 @@ export function useKeyedAsyncDetail<T>({
           loading: false,
           revalidating: false,
           error: error instanceof Error ? error.message : String(error),
+          failure: error,
         }));
       });
     return () => controller.abort();
-  }, [load, namespace, nonce, requestKey]);
+  }, [accept, load, namespace, nonce, requestKey]);
 
   const coherentState = state.key === requestKey
     ? state
@@ -89,6 +103,7 @@ export function useKeyedAsyncDetail<T>({
         loading: Boolean(requestKey) && !hydrated,
         revalidating: Boolean(requestKey && hydrated),
         error: null,
+        failure: null,
         stale: Boolean(hydrated),
       };
 

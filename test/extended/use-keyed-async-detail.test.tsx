@@ -1,3 +1,4 @@
+import { ApiError, isApiErrorStatus } from '../../ui/src/api';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { useCallback } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -56,6 +57,7 @@ function DetailHarness({
     <div>
       <span data-testid="detail">{state.data ? `${state.data.id}:${state.data.title}` : 'empty'}</span>
       <span data-testid="phase">{state.loading ? 'loading' : state.revalidating ? 'revalidating' : 'ready'}</span>
+      <span data-testid="error-status">{isApiErrorStatus(state.failure, 404) ? 'missing' : state.error}</span>
       <span data-testid="stale">{state.stale ? 'stale' : 'fresh'}</span>
       <button type="button" onClick={state.refresh}>Refresh</button>
     </div>
@@ -83,6 +85,14 @@ describe('useKeyedAsyncDetail', () => {
 
     await act(async () => first.resolve({ id: 'first', title: 'late' }));
     expect(screen.getByTestId('detail').textContent).toBe('second:selected');
+  });
+
+  it('retains structured API failures for domain decisions', async () => {
+    const request = deferred<{ id: string; title: string }>();
+    render(<DetailHarness id="missing" requests={new Map([['missing', request]])} />);
+    await act(async () => request.reject(new ApiError('No status in this message', 404)));
+    await waitFor(() => expect(screen.getByTestId('error-status').textContent).toBe('missing'));
+    expect(screen.getByTestId('phase').textContent).toBe('ready');
   });
 
   it('paints same-key persisted data while revalidating and retains it on refresh', async () => {

@@ -31,9 +31,13 @@ function detail(): LedgerIssueDetailProjection {
     attribution: null,
   };
   return {
+    associated_artifacts: [],
+    detail_stage: 'full',
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
     id: 'issue-1',
     display_id: 'issue-1',
-    project: {
+    project: { work_repo_id: null, project_key: 'mandible',
       id: 'project-1',
       display_name: 'Mandible',
       remote_identity: '',
@@ -93,7 +97,7 @@ function detail(): LedgerIssueDetailProjection {
     work_units: [],
     sessions: [],
     auth_requests: [],
-  } as LedgerIssueDetailProjection;
+  };
 }
 
 describe('issue attribution presentation', () => {

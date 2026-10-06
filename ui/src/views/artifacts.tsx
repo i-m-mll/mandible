@@ -18,7 +18,8 @@ import sql from 'highlight.js/lib/languages/sql';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
+import { detailRequestKey, writePersistedDetail } from '../detail-cache';
 import { parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -287,15 +288,9 @@ export function ArtifactsView({
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
   const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
-  const [artifactContent, setArtifactContent] = useState<ArtifactContentResult | null>(null);
-  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [contentLoading, setContentLoading] = useState(false);
-  const [contentError, setContentError] = useState<string | null>(null);
-  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
@@ -306,10 +301,6 @@ export function ArtifactsView({
   const facetRequestIdRef = useRef(0);
   const seriesListReadRef = useRef<Promise<void>>(Promise.resolve());
   const facetListReadRef = useRef<Promise<void>>(Promise.resolve());
-  const versionsRequestIdRef = useRef(0);
-  const artifactRequestIdRef = useRef(0);
-  const contentRequestIdRef = useRef(0);
-  const knowledgeRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
     initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: routeSelection.versionNo } : null,
@@ -529,165 +520,89 @@ export function ArtifactsView({
     setError(null);
   }, [initialSeriesRef, initialVersionNo]);
 
+  const loadVersions = useCallback(async (signal: AbortSignal) => (
+    sortedVersionHistory(await getArtifactVersions(selectedSeriesRef!, { signal }))
+  ), [selectedSeriesRef, selectedVersionNo]);
+  const acceptVersions = useCallback((history: ArtifactVersionHistory) => (
+    seriesRecordRef(history.series) === selectedSeriesRef
+  ), [selectedSeriesRef]);
+  const versionsDetail = useKeyedAsyncDetail({
+    namespace: 'artifact-versions',
+    requestKey: selectedSeriesRef ? detailRequestKey('artifact-versions', { ref: selectedSeriesRef }) : null,
+    load: loadVersions,
+    accept: acceptVersions,
+  });
   useLayoutEffect(() => {
-    if (!selectedSeriesRef) {
-      versionsRequestIdRef.current += 1;
+    if (versionsDetail.error) {
       setVersionHistory(null);
-      setDetailLoading(false);
+      if (isApiErrorStatus(versionsDetail.failure, 404) && !deepLinkActiveRef.current) {
+        setSelectedSeriesRef(null);
+        setSelectedVersionNo(null);
+        setSelectedArtifactId(null);
+        setSelectedArtifact(null);
+        setResolution(null);
+        setError(null);
+      }
       return;
     }
-    const requestId = versionsRequestIdRef.current + 1;
-    versionsRequestIdRef.current = requestId;
-    const controller = new AbortController();
-    const requestKey = detailRequestKey('artifact-versions', { ref: selectedSeriesRef });
-    const cached = readPersistedDetail<ArtifactVersionHistory>('artifact-versions', requestKey);
-    if (cached) {
-      const newestFirst = sortedVersionHistory(cached);
-      setVersionHistory(newestFirst);
-      const cachedSelection = selectedVersionNo === null
-        ? newestFirst.versions[0] ?? null
-        : newestFirst.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
-      if (cachedSelection) setSelectedArtifactId(cachedSelection.artifact_id);
-    }
-    setDetailLoading(true);
-    setError(null);
-    getArtifactVersions(selectedSeriesRef, { signal: controller.signal })
-      .then((history) => {
-        if (versionsRequestIdRef.current !== requestId) return;
-        const newestFirst = sortedVersionHistory(history);
-        writePersistedDetail('artifact-versions', requestKey, newestFirst);
-        setVersionHistory(newestFirst);
-        const selectedVersion = selectedVersionNo === null
-          ? newestFirst.versions[0] ?? null
-          : newestFirst.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
-        setSelectedArtifactId(selectedVersion?.artifact_id ?? null);
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (versionsRequestIdRef.current === requestId) {
-          setVersionHistory(null);
-          if (isApiErrorStatus(err, 404) && !deepLinkActiveRef.current) {
-            setSelectedSeriesRef(null);
-            setSelectedVersionNo(null);
-            setSelectedArtifactId(null);
-            setSelectedArtifact(null);
-            setResolution(null);
-            setError(null);
-          } else {
-            setError(err instanceof Error ? err.message : String(err));
-          }
-        }
-      })
-      .finally(() => {
-        if (versionsRequestIdRef.current === requestId) setDetailLoading(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [selectedSeriesRef, selectedVersionNo]);
-
-  useLayoutEffect(() => {
-    if (!selectedArtifactId) return;
-    if (selectedArtifact?.id === selectedArtifactId && resolvedArtifactRecord(resolution)?.id === selectedArtifactId
-      && selectedArtifact.links && selectedArtifact.aliases) return;
-    const requestId = artifactRequestIdRef.current + 1;
-    artifactRequestIdRef.current = requestId;
-    const controller = new AbortController();
-    const requestKey = detailRequestKey('artifact-record', { id: selectedArtifactId });
-    const cached = readPersistedDetail<ArtifactRecord>('artifact-record', requestKey);
-    if (cached?.id === selectedArtifactId) setSelectedArtifact(cached);
-    setDetailLoading(true);
-    setError(null);
-    getArtifact(selectedArtifactId, { signal: controller.signal })
-      .then((artifact) => {
-        if (artifactRequestIdRef.current !== requestId || artifact.id !== selectedArtifactId) return;
-        writePersistedDetail('artifact-record', requestKey, artifact);
-        setSelectedArtifact(artifact);
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (artifactRequestIdRef.current === requestId) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (artifactRequestIdRef.current === requestId) setDetailLoading(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [resolvedArtifactRecord(resolution)?.id, selectedArtifact?.id, selectedArtifactId]);
-
-  useLayoutEffect(() => {
-    if (!selectedArtifactId) {
-      contentRequestIdRef.current += 1;
-      setArtifactContent(null);
-      setKnowledgeBackrefs([]);
-      setContentError(null);
-      setKnowledgeError(null);
-      setContentLoading(false);
-      setKnowledgeLoading(false);
+    if (!selectedSeriesRef) {
+      setVersionHistory(null);
       return;
     }
-    const artifactId = selectedArtifactId;
-    const requestId = contentRequestIdRef.current + 1;
-    contentRequestIdRef.current = requestId;
-    const controller = new AbortController();
-    const requestKey = detailRequestKey('artifact-content', { id: artifactId });
-    const cached = readPersistedDetail<ArtifactContentResult>('artifact-content', requestKey);
-    setArtifactContent(cached?.artifact_id === artifactId ? cached : null);
-    setContentLoading(true);
-    setContentError(null);
-    getArtifactContent(artifactId, { signal: controller.signal })
-      .then((content) => {
-        if (contentRequestIdRef.current !== requestId || content.artifact_id !== artifactId) return;
-        writePersistedDetail('artifact-content', requestKey, content);
-        setArtifactContent(content);
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (contentRequestIdRef.current === requestId) setContentError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (contentRequestIdRef.current === requestId) setContentLoading(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [selectedArtifactId]);
+    if (!versionsDetail.data) return;
+    const history = sortedVersionHistory(versionsDetail.data);
+    setVersionHistory(history);
+    const version = selectedVersionNo === null
+      ? history.versions[0] ?? null
+      : history.versions.find((entry) => entry.version_no === selectedVersionNo) ?? null;
+    if (version || !versionsDetail.stale) setSelectedArtifactId(version?.artifact_id ?? null);
+  }, [selectedSeriesRef, selectedVersionNo, versionsDetail.data, versionsDetail.error, versionsDetail.failure, versionsDetail.stale]);
 
+  const recordResolved = selectedArtifact?.id === selectedArtifactId
+    && resolvedArtifactRecord(resolution)?.id === selectedArtifactId
+    && Boolean(selectedArtifact?.links && selectedArtifact?.aliases);
+  const loadRecord = useCallback((signal: AbortSignal) => (
+    getArtifact(selectedArtifactId!, { signal })
+  ), [selectedArtifactId]);
+  const acceptRecord = useCallback((artifact: ArtifactRecord) => artifact.id === selectedArtifactId, [selectedArtifactId]);
+  const recordDetail = useKeyedAsyncDetail({
+    namespace: 'artifact-record',
+    requestKey: selectedArtifactId && !recordResolved ? detailRequestKey('artifact-record', { id: selectedArtifactId }) : null,
+    load: loadRecord,
+    accept: acceptRecord,
+  });
   useLayoutEffect(() => {
-    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
-      knowledgeRequestIdRef.current += 1;
-      setKnowledgeBackrefs([]);
-      setKnowledgeError(null);
-      setKnowledgeLoading(false);
-      return;
-    }
-    const requestId = knowledgeRequestIdRef.current + 1;
-    knowledgeRequestIdRef.current = requestId;
-    const controller = new AbortController();
-    const requestKey = detailRequestKey('artifact-backrefs', { id: selectedArtifact.id });
-    const cached = readPersistedDetail<KnowledgeBackrefRecord[]>('artifact-backrefs', requestKey);
-    setKnowledgeLoading(true);
-    setKnowledgeError(null);
-    setKnowledgeBackrefs(cached ?? []);
-    getArtifactKnowledgeBackrefs(selectedArtifact.id, { signal: controller.signal })
-      .then((backrefs) => {
-        if (knowledgeRequestIdRef.current === requestId) {
-          writePersistedDetail('artifact-backrefs', requestKey, backrefs);
-          setKnowledgeBackrefs(backrefs);
-        }
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (knowledgeRequestIdRef.current === requestId) setKnowledgeError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (knowledgeRequestIdRef.current === requestId) setKnowledgeLoading(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [selectedArtifact?.id, selectedArtifactId]);
+    if (recordDetail.data) setSelectedArtifact(recordDetail.data);
+  }, [recordDetail.data]);
+
+  const loadContent = useCallback((signal: AbortSignal) => (
+    getArtifactContent(selectedArtifactId!, { signal })
+  ), [selectedArtifactId]);
+  const acceptContent = useCallback((content: ArtifactContentResult) => content.artifact_id === selectedArtifactId, [selectedArtifactId]);
+  const contentDetail = useKeyedAsyncDetail({
+    namespace: 'artifact-content',
+    requestKey: selectedArtifactId ? detailRequestKey('artifact-content', { id: selectedArtifactId }) : null,
+    load: loadContent,
+    accept: acceptContent,
+  });
+  const artifactContent = contentDetail.data;
+  const contentLoading = contentDetail.loading || contentDetail.revalidating;
+  const contentError = contentDetail.error;
+
+  const backrefsId = selectedArtifact?.id === selectedArtifactId ? selectedArtifactId : null;
+  const loadBackrefs = useCallback((signal: AbortSignal) => (
+    getArtifactKnowledgeBackrefs(backrefsId!, { signal })
+  ), [backrefsId]);
+  const backrefsDetail = useKeyedAsyncDetail({
+    namespace: 'artifact-backrefs',
+    requestKey: backrefsId ? detailRequestKey('artifact-backrefs', { id: backrefsId }) : null,
+    load: loadBackrefs,
+  });
+  const knowledgeBackrefs = backrefsDetail.data ?? [];
+  const knowledgeLoading = backrefsDetail.loading || backrefsDetail.revalidating;
+  const knowledgeError = backrefsDetail.error;
+  const detailError = versionsDetail.error ?? recordDetail.error ?? error;
+  const requestDetailLoading = detailLoading || versionsDetail.loading || recordDetail.loading;
 
   const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
   const coherentVersionHistory = selectedSeriesRef && versionHistory
@@ -764,7 +679,6 @@ export function ArtifactsView({
     setSelectedVersionNo(published.result.artifact_version.version_no);
     setSelectedArtifactId(published.result.artifact_version.id);
     setSelectedArtifact(resolvedArtifactRecord(published.result));
-    setArtifactContent(null);
     setResolution(published.result);
     writeArtifactHash(nextSeriesRef, published.result.artifact_version.version_no, lastWrittenHashRef);
     void loadSeries();
@@ -877,23 +791,23 @@ export function ArtifactsView({
               })}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
-        {error && !coherentSelectedArtifact && <DetailPaneNotice severity="error" title="Artifacts could not be loaded">{error}</DetailPaneNotice>}
-        {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
+        {detailError && !coherentSelectedArtifact && <DetailPaneNotice severity="error" title="Artifacts could not be loaded">{detailError}</DetailPaneNotice>}
+        {(requestDetailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
-        {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
+        {!requestDetailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">No artifacts in this view.</div>
         )}
-        {!detailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
+        {!requestDetailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
           <UnsupportedArtifactBlob resolution={resolution} />
         )}
-        {!detailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolvedArtifactRecord(resolution) && (
+        {!requestDetailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolvedArtifactRecord(resolution) && (
           <UnresolvedArtifact resolution={resolution} />
         )}
         {coherentSelectedArtifact && (
           <ArtifactDetail
             artifact={coherentSelectedArtifact}
-            detailError={error}
+            detailError={detailError}
             resolution={resolution}
             series={coherentVersionHistory?.series ?? selectedSeries ?? null}
             versions={coherentVersionHistory?.versions ?? []}
@@ -907,7 +821,7 @@ export function ArtifactsView({
             onMetadataOpenChange={setDetailMetadataOpen}
             content={coherentArtifactContent}
             contentLoading={coherentContentLoading}
-            contentError={error ? null : contentError}
+            contentError={detailError ? null : contentError}
             knowledgeBackrefs={knowledgeBackrefs}
             knowledgeLoading={knowledgeLoading}
             knowledgeError={knowledgeError}

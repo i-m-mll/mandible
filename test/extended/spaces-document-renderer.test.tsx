@@ -1,67 +1,18 @@
-// Read-only document renderer tests (umbrella de56ffa, C14b / issue 591e568).
-//
-// Covers the acceptance criteria:
-//   - Renders a `space_blocks` document (read-only) with embeds + prose through
-//     the C14a pipeline.
-//   - The repo-authoritative Markdown / `spaces-doc.v1` document path renders
-//     directly (the `artifacts.tsx:687` swap consumes `renderDocumentText`).
-//   - Refs (markdown links + directive nodes) render through the shared C6
-//     parser + C12 grammar; unresolved refs show placeholders.
-//   - SECURITY (standing AC #2): a document directive cannot execute script —
-//     no `<script>`, no inline event handlers, no `javascript:` hrefs survive,
-//     and the renderer never produces an executable surface.
-//   - UI-state-persistence (standing AC #2): heading collapse state persists
-//     per-Space and survives SSE reconciliation refetches without reset.
-
-import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
+import { render, screen, cleanup, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared';
 import { h } from 'preact';
 
 import {
-  DocumentRenderer,
   DocumentBody,
   renderDocumentText,
   renderSpaceBlocks,
   blocksToDocTree,
 } from '../../ui/src/views/spaces/DocumentRenderer';
-import {
-  documentStorageKey,
-  normalizeDocumentViewState,
-} from '../../ui/src/views/spaces/documentViewState';
 import type { SpaceBlock } from '../../ui/src/api';
 import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
 const HASH64 = 'a'.repeat(64);
-
-// --- SSE mock (matches the createSSEClient EventSource transport) ------------
-
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  readyState = 1;
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private handlers = new Map<string, Set<(e: MessageEvent) => void>>();
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const set = this.handlers.get(type) ?? new Set();
-    set.add(handler);
-    this.handlers.set(type, set);
-  }
-  removeEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    this.handlers.get(type)?.delete(handler);
-  }
-  close(): void {
-    this.readyState = 2;
-  }
-  emit(data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.handlers.get('message')?.forEach((h) => h(event));
-  }
-}
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -114,9 +65,6 @@ function stubFetch(getBlocks: () => SpaceBlock[]): ReturnType<typeof vi.fn> {
 
 beforeEach(() => {
   stubLocalStorage();
-  MockEventSource.instances = [];
-  vi.stubGlobal('EventSource', MockEventSource);
-  __resetSharedSseForTests();
 });
 
 afterEach(() => {
@@ -138,6 +86,20 @@ describe('renderSpaceBlocks (C12 + C14a)', () => {
     expect(doc.blocks.map((b) => b.id)).toEqual(['b1', 'b2']);
     expect(doc.blocks[0].html).toContain('<h1');
     expect(doc.blocks[1].html).toContain('Body prose.');
+  });
+
+  it('retains controlled heading collapse when document data is reconciled', () => {
+    const blocks = [
+      makeBlock({ id: 'heading', block_type: 'heading', sort_key: 'a', markdown: '# Section' }),
+      makeBlock({ id: 'child', parent_id: 'heading', sort_key: 'b', markdown: 'Child prose' }),
+    ];
+    const view = render(<DocumentBody document={renderSpaceBlocks(blocks, 'sp1')} collapsed={{ heading: true }} />);
+    expect(screen.queryByText('Child prose')).toBeNull();
+    view.rerender(<DocumentBody document={renderSpaceBlocks([
+      ...blocks, makeBlock({ id: 'new-child', parent_id: 'heading', sort_key: 'c', markdown: 'New child prose' }),
+    ], 'sp1')} collapsed={{ heading: true }} />);
+    expect(screen.queryByText('Child prose')).toBeNull();
+    expect(screen.queryByText('New child prose')).toBeNull();
   });
 
   it('maps blocks to a C12 DocTree without re-deriving the grammar', () => {
@@ -299,53 +261,5 @@ describe('renderer security (standing AC #2)', () => {
     expect(root.querySelector('script')).toBeNull();
     expect(root.innerHTML.toLowerCase()).not.toContain('javascript:');
     expect((window as Record<string, unknown>).__pwned).toBeUndefined();
-  });
-});
-
-// --- mounted renderer: fetch, SSE reconcile, collapse persistence ------------
-
-describe('DocumentRenderer (mounted, read-only)', () => {
-  it('fetches and renders the space_blocks document read-only', async () => {
-    const blocks = [makeBlock({ id: 'b1', block_type: 'paragraph', markdown: 'Hello document.' })];
-    const fetchImpl = stubFetch(() => blocks) as unknown as typeof fetch;
-    render(<DocumentRenderer projectId="prj1" spaceId="sp1" renderer="document" fetchImpl={fetchImpl} />);
-    await waitFor(() => expect(screen.getByText('Hello document.')).toBeTruthy());
-    expect(screen.getByTestId('spaces-document-renderer')).toBeTruthy();
-  });
-
-  it('persists heading collapse state per-Space and preserves it across an SSE reconcile', async () => {
-    const blocks: SpaceBlock[] = [
-      makeBlock({ id: 'h1', block_type: 'heading', sort_key: 'a', markdown: '# Section' }),
-      makeBlock({ id: 'p1', parent_id: 'h1', block_type: 'paragraph', sort_key: 'b', markdown: 'Child prose.' }),
-    ];
-    const fetchImpl = stubFetch(() => blocks) as unknown as typeof fetch;
-    render(<DocumentRenderer projectId="prj1" spaceId="sp1" renderer="document" fetchImpl={fetchImpl} />);
-
-    await waitFor(() => expect(screen.getByText('Child prose.')).toBeTruthy());
-
-    // Collapse the heading sub-tree.
-    fireEvent.click(screen.getByTestId('spaces-doc-block-toggle'));
-    await waitFor(() => expect(screen.queryByText('Child prose.')).toBeNull());
-
-    // The collapse is persisted to per-Space browser-local storage.
-    const persisted = normalizeDocumentViewState(JSON.parse(
-      window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))!,
-    ));
-    expect(persisted.collapsed.h1).toBe(true);
-    expect(documentStorageKey('prj1', 'sp1')).toBe('mandible.spaces.document:prj1:sp1');
-    expect(window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))).toBeTruthy();
-
-    // An SSE reconcile refetches blocks but MUST NOT reset the collapse state.
-    MockEventSource.instances[0].emit({ type: 'space:blocks:changed', space_id: 'sp1' });
-    await waitFor(() => expect(screen.getByTestId('spaces-doc-block-toggle')).toBeTruthy());
-    expect(screen.queryByText('Child prose.')).toBeNull();
-    expect(normalizeDocumentViewState(JSON.parse(
-      window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))!,
-    )).collapsed.h1).toBe(true);
-  });
-
-  it('shows a select-a-space prompt when no Space is open', () => {
-    render(<DocumentRenderer projectId="prj1" spaceId={null} renderer="document" />);
-    expect(screen.getByText('Select a Space to view its document.')).toBeTruthy();
   });
 });

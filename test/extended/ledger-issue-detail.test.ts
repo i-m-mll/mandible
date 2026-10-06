@@ -136,7 +136,11 @@ describe("ledger issue detail projection", () => {
         WHERE id = ?`,
     ).run(legacyDisplay, legacyComment.id);
 
-    const projection = buildLedgerIssueDetailProjection(db, issue.id);
+    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../../ui/src/api").LedgerIssueDetailProjection;
+    const initial = JSON.parse(JSON.stringify(buildLedgerIssueDetailInitialProjection(db, issue.id, { commentLimit: 1 }))) as import("../../ui/src/api").LedgerIssueDetailProjection;
+    expect(initial).toMatchObject({ detail_stage: "initial", timeline_partial: true, author: projection.author, associated_artifacts: [] });
+    expect(projection).toMatchObject({ detail_stage: "full", timeline_partial: false, worker_status: "none", work_notes: "", work_notes_revision: null, issue_branches: [], dependencies: [], dependency_warning: false });
+    expect(projection.project).toHaveProperty("work_repo_id");
     expect(projection.author).toMatchObject({
       display: "Read Surface Agent",
       legacy_display: "Mandible",
@@ -578,12 +582,15 @@ describe("ledger issue detail projection", () => {
       )`,
     ).run(`artifact-blob:${linkedHash}`, issue.id, `artifact-blob:${linkedHash}`);
 
-    const artifacts = buildLedgerIssueDetailProjection(db, issue.id).associated_artifacts;
+    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../../ui/src/api").LedgerIssueDetailProjection;
+    const artifacts = projection.associated_artifacts;
 
     expect(artifacts).toHaveLength(3);
     expect(artifacts[0]).toMatchObject({
       id: `artifact-blob:${linkedHash}`,
       uri: `artifact:${linkedHash}`,
+      ref: `artifact-blob:${linkedHash.slice(0, 12)}`,
+      pin_state: "pinned", is_latest: null, resolved_version_no: null, series_id: null, warnings: [],
       links: [{ id: "link_1", link_type: "produced_by", role: "report" }],
     });
     expect(artifacts.map((artifact) => artifact.refs).flat().sort()).toEqual([

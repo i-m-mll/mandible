@@ -873,134 +873,50 @@ interface DependencyScan {
   errors: string[];
 }
 
-function collectDependencies(db: Db, versions: ArtifactVersionRow[]): DependencyScan {
-  const versionIds = new Set(versions.map(version => version.id));
-  const references = new Map<string, ArtifactDependencyReference[]>();
-  const errors: string[] = [];
-  if (versionIds.size === 0) return { references, errors };
-  const tables = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-  ).all() as Array<{ name: string }>;
-  for (const { name: table } of tables) {
-    if (table.startsWith("sqlite_") || table === "artifact_version") continue;
-    let columns: Array<{ name: string; pk: number }>;
-    try {
-      columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name: string; pk: number }>;
-    } catch {
-      continue;
-    }
-    const columnNames = new Set(columns.map(column => column.name));
-    const versionColumns = columns
-      .map(column => column.name)
-      .filter(column => /(?:^version_id$|_version_id$|^artifact_version_id$)/.test(column));
-    try {
-      const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(table)})`).all() as Array<{ table?: string; from?: string }>;
-      for (const foreignKey of foreignKeys) {
-        if (foreignKey.table === "artifact_version" && foreignKey.from) versionColumns.push(foreignKey.from);
-      }
-    } catch {
-      errors.push(`${table}.[foreign_key_list]`);
-    }
-    if (columnNames.has("target_id") && columnNames.has("target_type")) versionColumns.push("target_id");
-    for (const column of Array.from(new Set(versionColumns)).sort()) {
-      const placeholders = Array.from({ length: versionIds.size }, () => "?").join(",");
-      let rows: JsonObject[];
-      try {
-        rows = db.prepare(
-          `SELECT rowid AS __recovery_rowid, * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column)} IN (${placeholders})`,
-        ).all(...versionIds) as JsonObject[];
-      } catch {
-        try {
-          rows = db.prepare(
-            `SELECT * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column)} IN (${placeholders})`,
-        ).all(...versionIds) as JsonObject[];
-        } catch {
-          errors.push(`${table}.${column}`);
-          continue;
-        }
-      }
-      for (const row of rows) {
-        const value = asString(row[column]);
-        if (!value || !versionIds.has(value)) continue;
-        if (column === "target_id" && row.target_type !== "artifact_version") continue;
-        const classification = contentDependencyClass(table);
-        const backupRow = { ...row };
-        const reference: ArtifactDependencyReference = {
-          table,
-          column,
-          identity: primaryIdentity(columns, row),
-          ...classification,
-          value,
-          row: backupRow,
-        };
-        const existing = references.get(value) ?? [];
-        if (!existing.some(item => canonicalJson(item) === canonicalJson(reference))) existing.push(reference);
-        references.set(value, existing);
-      }
-    }
-  }
-  for (const list of references.values()) list.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
-  return { references, errors: Array.from(new Set(errors)).sort() };
+type DependencyTarget = "artifact" | "artifact_version" | "artifact_blob";
+
+interface DependencyRule {
+  excluded_tables: readonly string[];
+  recognized_column: RegExp | null;
+  retry_without_rowid: boolean;
+  classify: typeof contentDependencyClass;
 }
 
-function collectArtifactDependencies(db: Db, artifactIds: Set<string>): DependencyScan {
-  const references = new Map<string, ArtifactDependencyReference[]>();
-  const errors: string[] = [];
-  if (artifactIds.size === 0) return { references, errors };
-  const tables = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-  ).all() as Array<{ name: string }>;
-  for (const { name: table } of tables) {
-    if (table.startsWith("sqlite_") || table === "artifact" || table === "artifact_version") continue;
-    let columns: Array<{ name: string; pk: number }>;
-    try {
-      columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name: string; pk: number }>;
-    } catch {
-      continue;
-    }
-    const columnNames = new Set(columns.map(column => column.name));
-    if (!columnNames.has("target_id") || !columnNames.has("target_type")) continue;
-    const placeholders = Array.from({ length: artifactIds.size }, () => "?").join(",");
-    let rows: JsonObject[];
-    try {
-      rows = db.prepare(
-        `SELECT rowid AS __recovery_rowid, * FROM ${quoteIdentifier(table)}
-          WHERE target_type = 'artifact' AND target_id IN (${placeholders})`,
-      ).all(...artifactIds) as JsonObject[];
-    } catch {
-      errors.push(`${table}.target_id`);
-      continue;
-    }
-    for (const row of rows) {
-      const value = asString(row.target_id);
-      if (!value || !artifactIds.has(value)) continue;
-      const classification = table === "project_artifact_associations"
-        ? { dependency_class: "content-owning" as const, unique_user_content: true }
-        : contentDependencyClass(table);
-      const reference: ArtifactDependencyReference = {
-        table,
-        column: "target_id",
-        identity: primaryIdentity(columns, row),
-        ...classification,
-        value,
-        row: { ...row },
-      };
-      const existing = references.get(value) ?? [];
-      if (!existing.some(item => canonicalJson(item) === canonicalJson(reference))) existing.push(reference);
-      references.set(value, existing);
-    }
-  }
-  for (const list of references.values()) list.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
-  return { references, errors: Array.from(new Set(errors)).sort() };
-}
+const DEPENDENCY_RULES: Record<DependencyTarget, DependencyRule> = {
+  artifact: {
+    excluded_tables: ["artifact", "artifact_version"],
+    recognized_column: null,
+    retry_without_rowid: false,
+    classify: table => table === "project_artifact_associations"
+      ? { dependency_class: "content-owning", unique_user_content: true }
+      : contentDependencyClass(table),
+  },
+  artifact_version: {
+    excluded_tables: ["artifact_version"],
+    recognized_column: /(?:^version_id$|_version_id$|^artifact_version_id$)/,
+    retry_without_rowid: true,
+    classify: contentDependencyClass,
+  },
+  artifact_blob: {
+    excluded_tables: ["artifact_blob"],
+    recognized_column: /(?:^blob_id$|_blob_id$)/,
+    retry_without_rowid: true,
+    classify: table => ["artifact_version", "artifact_aliases", "artifact_links"].includes(table)
+      ? { dependency_class: "derived-reference", unique_user_content: false }
+      : contentDependencyClass(table),
+  },
+};
 
-function collectBlobDependencies(db: Db, blobIds: Set<string>): DependencyScan {
+function collectDependencies(db: Db, target: DependencyTarget, ids: Set<string>): DependencyScan {
   const references = new Map<string, ArtifactDependencyReference[]>();
   const errors: string[] = [];
-  if (blobIds.size === 0) return { references, errors };
+  if (ids.size === 0) return { references, errors };
+  const rule = DEPENDENCY_RULES[target];
+  const placeholders = Array.from(ids, () => "?").join(",");
+  const captured = new Map<string, Map<string, ArtifactDependencyReference>>();
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>;
   for (const { name: table } of tables) {
-    if (table.startsWith("sqlite_") || table === "artifact_blob") continue;
+    if (table.startsWith("sqlite_") || rule.excluded_tables.includes(table)) continue;
     let columns: Array<{ name: string; pk: number }>;
     try {
       columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name: string; pk: number }>;
@@ -1008,29 +924,33 @@ function collectBlobDependencies(db: Db, blobIds: Set<string>): DependencyScan {
       continue;
     }
     const columnNames = new Set(columns.map(column => column.name));
-    const blobColumns = columns.map(column => column.name).filter(column => /(?:^blob_id$|_blob_id$)/.test(column));
-    try {
-      const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(table)})`).all() as Array<{ table?: string; from?: string }>;
-      for (const foreignKey of foreignKeys) {
-        if (foreignKey.table === "artifact_blob" && foreignKey.from) blobColumns.push(foreignKey.from);
+    const referenceColumns = new Set(columns.map(column => column.name).filter(column => rule.recognized_column?.test(column)));
+    if (rule.recognized_column) {
+      try {
+        const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(table)})`).all() as Array<{ table?: string; from?: string }>;
+        for (const foreignKey of foreignKeys) {
+          if (foreignKey.table === target && foreignKey.from) referenceColumns.add(foreignKey.from);
+        }
+      } catch {
+        errors.push(`${table}.[foreign_key_list]`);
       }
-    } catch {
-      errors.push(`${table}.[foreign_key_list]`);
     }
-    if (columnNames.has("target_id") && columnNames.has("target_type")) blobColumns.push("target_id");
-    for (const column of Array.from(new Set(blobColumns)).sort()) {
-      const placeholders = Array.from({ length: blobIds.size }, () => "?").join(",");
+    if (columnNames.has("target_id") && columnNames.has("target_type")) referenceColumns.add("target_id");
+    for (const column of Array.from(referenceColumns).sort()) {
+      const where = `${target === "artifact" ? "target_type = 'artifact' AND " : ""}${quoteIdentifier(column)} IN (${placeholders})`;
+      const readRows = (withRowid: boolean): JsonObject[] => db.prepare(
+        `SELECT ${withRowid ? "rowid AS __recovery_rowid, " : ""}* FROM ${quoteIdentifier(table)} WHERE ${where}`,
+      ).all(...ids) as JsonObject[];
       let rows: JsonObject[];
       try {
-        rows = db.prepare(
-          `SELECT rowid AS __recovery_rowid, * FROM ${quoteIdentifier(table)}
-            WHERE ${quoteIdentifier(column)} IN (${placeholders})`,
-        ).all(...blobIds) as JsonObject[];
+        rows = readRows(true);
       } catch {
+        if (!rule.retry_without_rowid) {
+          errors.push(`${table}.${column}`);
+          continue;
+        }
         try {
-          rows = db.prepare(
-            `SELECT * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column)} IN (${placeholders})`,
-          ).all(...blobIds) as JsonObject[];
+          rows = readRows(false);
         } catch {
           errors.push(`${table}.${column}`);
           continue;
@@ -1038,52 +958,29 @@ function collectBlobDependencies(db: Db, blobIds: Set<string>): DependencyScan {
       }
       for (const row of rows) {
         const value = asString(row[column]);
-        if (!value || !blobIds.has(value)) continue;
-        if (column === "target_id" && row.target_type !== "artifact_blob") continue;
-        const classification = table === "artifact_version" || table === "artifact_aliases" || table === "artifact_links"
-          ? { dependency_class: "derived-reference" as const, unique_user_content: false }
-          : contentDependencyClass(table);
+        if (!value || !ids.has(value)) continue;
+        if (column === "target_id" && row.target_type !== target) continue;
         const reference: ArtifactDependencyReference = {
           table,
           column,
           identity: primaryIdentity(columns, row),
-          ...classification,
+          ...rule.classify(table),
           value,
           row: { ...row },
         };
-        const existing = references.get(value) ?? [];
-        if (!existing.some(item => canonicalJson(item) === canonicalJson(reference))) existing.push(reference);
-        references.set(value, existing);
+        const existing = captured.get(value) ?? new Map<string, ArtifactDependencyReference>();
+        existing.set(canonicalJson(reference), reference);
+        captured.set(value, existing);
       }
     }
   }
-  for (const list of references.values()) list.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+  for (const [value, rows] of captured) {
+    references.set(value, Array.from(rows).sort(([a], [b]) => a.localeCompare(b)).map(([, reference]) => reference));
+  }
   return { references, errors: Array.from(new Set(errors)).sort() };
 }
 
-function originalVersionFingerprint(row: ArtifactVersionRow): string {
-  return canonicalJson({
-    id: row.id,
-    artifact_id: row.artifact_id,
-    version_no: row.version_no,
-    blob_id: row.blob_id,
-    source_kind: row.source_kind,
-    content_hash: row.content_hash,
-    source_project_id: row.source_project_id,
-    source_repo_id: row.source_repo_id,
-    repo_path: row.repo_path,
-    commit_sha: row.commit_sha,
-    observed_path: row.observed_path,
-    source_locator_json: row.source_locator_json,
-    custody_mode: row.custody_mode,
-    metadata_json: row.metadata_json,
-    label: row.label,
-    note: row.note,
-    created_at: row.created_at,
-  });
-}
-
-function currentVersionFingerprint(row: JsonObject): string {
+function versionFingerprint(row: ArtifactVersionRow | JsonObject): string {
   return canonicalJson({
     id: row.id,
     artifact_id: row.artifact_id,
@@ -1341,10 +1238,10 @@ function makeSummary(versions: PlannedVersion[], blobs: PlannedBlob[], dependenc
 
 export function planArtifactRecovery(db: Db, options: ArtifactRecoveryOptions = {}): ArtifactRecoveryPlan {
   const versions = readVersionRows(db, options.max_versions);
-  const dependencyScan = collectDependencies(db, versions);
-  const artifactDependencyScan = collectArtifactDependencies(db, new Set(versions.map(version => version.artifact_id)));
+  const dependencyScan = collectDependencies(db, "artifact_version", new Set(versions.map(version => version.id)));
+  const artifactDependencyScan = collectDependencies(db, "artifact", new Set(versions.map(version => version.artifact_id)));
   const blobRows = readAllBlobs(db);
-  const blobDependencyScan = collectBlobDependencies(db, new Set(blobRows.map(blob => blob.id)));
+  const blobDependencyScan = collectDependencies(db, "artifact_blob", new Set(blobRows.map(blob => blob.id)));
   const dependencyScanErrors = Array.from(new Set([
     ...dependencyScan.errors,
     ...artifactDependencyScan.errors,
@@ -1443,7 +1340,7 @@ export function planArtifactRecovery(db: Db, options: ArtifactRecoveryOptions = 
       artifact_id: version.artifact_id,
       blob_id: version.blob_id,
       version_no: version.version_no,
-      original: { ...version, original_fingerprint: originalVersionFingerprint(version) },
+      original: { ...version, original_fingerprint: versionFingerprint(version) },
       disposition,
       hash_origin: hashOriginValue,
       desired,
@@ -1830,11 +1727,11 @@ function assertPlanInputsUnchanged(
   }
   const currentVersions = readVersionRows(db);
   const currentById = new Map(currentVersions.map(version => [version.id, version]));
-  const currentDependencyScan = collectDependencies(db, currentVersions);
-  const currentArtifactDependencyScan = collectArtifactDependencies(db, new Set(plan.versions.map(version => version.artifact_id)));
+  const currentDependencyScan = collectDependencies(db, "artifact_version", new Set(currentVersions.map(version => version.id)));
+  const currentArtifactDependencyScan = collectDependencies(db, "artifact", new Set(plan.versions.map(version => version.artifact_id)));
   const currentBlobRows = readAllBlobs(db);
   const currentBlobById = new Map(currentBlobRows.map(blob => [blob.id, blob]));
-  const currentBlobDependencyScan = collectBlobDependencies(db, new Set(plan.blobs.map(blob => blob.blob_id)));
+  const currentBlobDependencyScan = collectDependencies(db, "artifact_blob", new Set(plan.blobs.map(blob => blob.blob_id)));
   if (currentDependencyScan.errors.length > 0 || currentArtifactDependencyScan.errors.length > 0) {
     throw new Error(`dependency scan failed during recovery: ${[...currentDependencyScan.errors, ...currentArtifactDependencyScan.errors].join(", ")}`);
   }
@@ -1847,7 +1744,7 @@ function assertPlanInputsUnchanged(
       if (version.disposition === "retire") continue;
       throw new Error(`artifact version disappeared during recovery: ${version.version_id}`);
     }
-    const currentFingerprint = currentVersionFingerprint(current);
+    const currentFingerprint = versionFingerprint(current);
     if (version.disposition === "retire") {
       if (currentFingerprint !== String(version.original.original_fingerprint)) {
         throw new Error(`artifact version changed since recovery plan: ${version.version_id}`);
@@ -2053,7 +1950,7 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
         continue;
       }
       if (!version.desired || !current) throw new Error(`artifact version disappeared during recovery: ${version.version_id}`);
-      const currentFingerprint = currentVersionFingerprint(current);
+      const currentFingerprint = versionFingerprint(current);
       if (currentFingerprint === desiredVersionFingerprint(version)) {
         skippedVersions += 1;
       } else {

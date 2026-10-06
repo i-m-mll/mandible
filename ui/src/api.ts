@@ -1481,304 +1481,34 @@ export async function getIssueContext(repoId: string, issueId: string): Promise<
   return (await parseMaybeJson(response)) as IssueContext;
 }
 
-export type LedgerActorType = 'mandible_user' | 'agent' | 'system' | 'external_adapter';
-
-export type ReadUserIdentity = {
-  id: string;
-  display_name: string;
-  kind: 'human' | 'agent' | 'system' | 'external';
-};
-
-/**
- * Mirrors `MergeSignatureClaim` in src/identity/read-projection.ts. Three
- * mutually exclusive states, so "verification failed" cannot render as
- * "verified" the way the previous `verified_signature: boolean` allowed.
- */
-export type MergeSignatureClaim =
-  | { state: 'none' }
-  | { state: 'verified'; fingerprint: string | null }
-  | { state: 'unverified'; reason: string | null };
-
-export type AttributionReadProjection = {
-  user: ReadUserIdentity | null;
-  evidence_method: string | null;
-  evidence_id: string | null;
-  credential: {
-    id: string;
-    type: string;
-    label: string | null;
-  } | null;
-};
-
-export type LedgerIssueDetailActor = {
-  id: string | null;
-  type: LedgerActorType;
-  display: string;
-  legacy_display: string;
-  attribution: AttributionReadProjection | null;
-};
-
-export type LedgerIssueDetailComment = {
-  id: string;
-  ordinal: number;
-  body: string;
-  author: LedgerIssueDetailActor;
-  source: string;
-  created_at: number;
-  updated_at: number | null;
-};
-
-export type LedgerIssueDetailCheckpoint = {
-  id: string;
-  issue_id: string;
-  kind: string;
-  payload: unknown;
-  author: LedgerIssueDetailActor;
-  source: string;
-  created_at: number;
-};
-
-export type LedgerIssueTimelineEntry =
-  | {
-      id: string;
-      kind: 'body';
-      ordinal: 0;
-      body: string;
-      author: LedgerIssueDetailActor;
-      source: string;
-      created_at: number;
-      updated_at: number | null;
-    }
-  | {
-      id: string;
-      kind: 'comment';
-      comment_id: string;
-      ordinal: number;
-      body: string;
-      author: LedgerIssueDetailActor;
-      source: string;
-      created_at: number;
-      updated_at: number | null;
-    }
-  | {
-      id: string;
-      kind: 'state';
-      event_type: string;
-      status: string | null;
-      resolution: string | null;
-      author: LedgerIssueDetailActor;
-      source: string;
-      created_at: number;
-      payload: Record<string, unknown>;
-    }
-  | {
-      id: string;
-      kind: 'event';
-      event_type: string;
-      author: LedgerIssueDetailActor;
-      source: string;
-      created_at: number;
-      payload: Record<string, unknown>;
-    }
-  | {
-      id: string;
-      kind: 'checkpoint';
-      checkpoint_id: string;
-      checkpoint_kind: string;
-      payload: unknown;
-      author: LedgerIssueDetailActor;
-      source: string;
-      created_at: number;
-    };
-
-export type LedgerIssueSummaryRef = {
-  id: string;
-  display_id: string;
-  project_id: string;
-  title: string;
-  status: string;
-  resolution: string | null;
-  kind: string;
-  priority: string;
-  labels: string[];
-};
-
-export type LedgerIssueDetailRelationship = {
-  id: string;
-  direction: 'incoming' | 'outgoing';
-  relationship_type: string;
-  provenance: string;
-  confidence: string;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-  related_issue: LedgerIssueSummaryRef | null;
-};
-
-export type LedgerIssueDetailLiveness = {
-  has_live_agent: boolean;
-  agent_session_id: string | null;
-  agent_status: string | null;
-  is_processing: boolean;
-  last_activity: number | null;
-};
-
-export type LedgerIssueDetailWorkUnit = {
-  id: string;
-  custody_generation: number;
-  issue_id: string;
-  ledger_issue_id: string | null;
-  repo_id: string;
-  branch: string | null;
-  parent_branch: string | null;
-  kind: string;
-  state: string;
-  assigned_session_id: string | null;
-  provider: string | null;
-  provider_session_id: string | null;
-  continuation: string | null;
-  continuation_by: string | null;
-  continuation_at: number | null;
-  created_at: number;
-  activated_at: number | null;
-  last_commit_at: number | null;
-  resolved_at: number | null;
-  auth_request_id: string | null;
-  link_type: string;
-  link_source: string;
-  link_created_at: number | null;
-  last_seen_at: number | null;
-  metadata: Record<string, unknown>;
-  liveness: LedgerIssueDetailLiveness;
-};
-
-export type LedgerIssueDetailSession = {
-  id: string;
-  app: string;
-  parent_id: string | null;
-  status: string;
-  branch: string | null;
-  worktree: string | null;
-  task: string | null;
-  description: string | null;
-  agent_type: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-  ended_at: string | null;
-  last_active: string | null;
-  owner: ReadUserIdentity | null;
-  has_conversation: boolean;
-  link_type: string;
-  link_source: string;
-  link_created_at: number | null;
-  last_seen_at: number | null;
-  metadata: Record<string, unknown>;
-};
-
-export type LedgerIssueDetailAuthRequest = {
-  id: string;
-  type: string;
-  title: string;
-  status: string;
-  repo: string | null;
-  base_branch: string | null;
-  head_branch: string | null;
-  created_at: number | null;
-  approved_at: number | null;
-  resolved_at: number | null;
-  skipped_at: number | null;
-  exit_code: number | null;
-  error: string | null;
-  requester: ReadUserIdentity | null;
-  approver: ReadUserIdentity | null;
-  execution_evidence: AttributionReadProjection | null;
-  link_type: string;
-  link_source: string;
-  link_created_at: number | null;
-  metadata: Record<string, unknown>;
-};
-
-export type LedgerIssueDetailArtifactLink = {
-  id: string;
-  entity_type: string;
-  entity_id: string;
-  link_type: string;
-  role: string | null;
-  repo_id: string | null;
-  provider_id: string | null;
-  source: string;
-  metadata: Record<string, unknown>;
-  link_kind: 'pinned' | 'living';
-  series_id: string | null;
-  series_ref: string | null;
-  resolved_version_no: number | null;
-  target_type: 'artifact' | 'artifact_version' | 'artifact_blob' | null;
-  target_id: string | null;
-  created_at: number;
-  updated_at: number;
-};
-
-export type LedgerIssueDetailAssociatedArtifact = {
-  id: string;
-  /** Public ref for the immutable bytes; present on canonical projections. */
-  ref?: string;
-  title: string | null;
-  logical_name: string | null;
-  algorithm: string;
-  content_hash: string;
-  uri: string;
-  media_type: string | null;
-  role: string | null;
-  provider_id: string | null;
-  manifest_id: string | null;
-  custody_mode: 'git' | 'managed';
-  availability: 'present' | 'missing' | 'stale' | 'unchecked' | 'remote_only' | 'pinned';
-  created_at: number;
-  refs: string[];
-  links: LedgerIssueDetailArtifactLink[];
-};
-
-export type LedgerIssueDetailProjection = {
-  id: string;
-  display_id: string;
-  project: {
-    id: string;
-    project_key?: string | null;
-    display_name: string;
-    remote_identity: string;
-    upstream_identity: string;
-    repo_id: string | null;
-    repo_name: string | null;
-    repo_root: string | null;
-    default_branch: string | null;
-  };
-  title: string;
-  body: string;
-  work_notes?: string;
-  work_notes_revision?: string | null;
-  status: 'open' | 'closed';
-  resolution: string | null;
-  kind: string;
-  priority: string;
-  source: string;
-  author: LedgerIssueDetailActor;
-  created_at: number;
-  updated_at: number;
-  closed_at: number | null;
-  aliases: Array<{ kind: string; alias: string; external_id: string; source: string; primary: boolean }>;
-  labels: string[];
-  comments: LedgerIssueDetailComment[];
-  checkpoints: LedgerIssueDetailCheckpoint[];
-  timeline: LedgerIssueTimelineEntry[];
-  relationships: LedgerIssueDetailRelationship[];
-  dependencies?: LedgerIssueSummaryRef[];
-  work_units: LedgerIssueDetailWorkUnit[];
-  sessions: LedgerIssueDetailSession[];
-  auth_requests: LedgerIssueDetailAuthRequest[];
-  associated_artifacts?: LedgerIssueDetailAssociatedArtifact[];
-  detail_stage?: 'initial' | 'full';
-  timeline_partial?: boolean;
-};
+import type {
+  LedgerIssueDetailProjection,
+} from '../../src/issue-detail-contract';
+export type {
+  LedgerIssueDetailAlias,
+  LedgerIssueDetailActor,
+  LedgerIssueDetailComment,
+  LedgerIssueDetailCheckpoint,
+  LedgerIssueDetailBranch,
+  LedgerIssueTimelineEntry,
+  LedgerIssueSummaryRef,
+  LedgerIssueWorkMetadata,
+  LedgerIssueDetailRelationship,
+  LedgerIssueDetailProject,
+  LedgerIssueDetailWorkUnit,
+  LedgerIssueDetailSession,
+  LedgerIssueDetailAuthRequest,
+  LedgerIssueDetailArtifactLink,
+  LedgerIssueDetailAssociatedArtifact,
+  LedgerIssueDetailProjection,
+} from '../../src/issue-detail-contract';
+export type { LedgerActorType } from '../../src/ledger/types';
+export type {
+  ReadUserIdentity,
+  MergeSignatureClaim,
+  AttributionReadProjection,
+} from '../../src/identity/contracts';
+export type { WorkUnitLiveness as LedgerIssueDetailLiveness } from '../../src/contracts';
 
 export type LedgerBodyRevision = {
   id: string;

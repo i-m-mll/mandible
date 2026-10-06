@@ -32,7 +32,6 @@ import {
   normalizeBlockEditorViewState,
   EMPTY_BLOCK_EDITOR_VIEW_STATE,
 } from './blockEditorViewState';
-import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import {
   ReferenceDetailContent,
@@ -952,7 +951,6 @@ export function DocumentBlockEditor({
               <DocumentBody
                 document={rendered}
                 sources={sources}
-                collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
               />
             </div>
           )}
@@ -999,7 +997,6 @@ export function DocumentBlockEditor({
                         <DocumentBody
                           document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
                           sources={sources}
-                          collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
                         />
                       </div>
                     )}
