@@ -2449,6 +2449,8 @@
           {"kind": "argument","name": "request-id","value": {"type": "string"}},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]},
           {"kind": "option","names": ["--issue","--target-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+          {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--payload-json"],"values": [{"kind": "argument","name": "json","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--body"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--reason-comment"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
@@ -2470,6 +2472,8 @@
         "items": [
           {"kind": "argument","name": "request-id","value": {"type": "string"}},
           {"kind": "argument","name": "action-id","value": {"type": "string"}},
+          {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+          {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2483,6 +2487,8 @@
           {"kind": "argument","name": "action-id","value": {"type": "string"}},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]},
           {"kind": "option","names": ["--issue","--target-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+          {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--payload-json"],"values": [{"kind": "argument","name": "json","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--body"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--reason-comment"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},

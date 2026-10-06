@@ -11,6 +11,7 @@
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
 //   - issue:<id>                    (Mandible issue refs)
 //   - comment:<issue>#<comment>     (Mandible comment refs)
+//   - auth:<id-or-prefix>           (Mandible auth request refs)
 //   - mandible://<repo>/issue/<id>  (app-route entity refs)
 //
 // It drives an unresolved-reference UI: every recognized ref is linkified with a
@@ -22,9 +23,11 @@
 // `registerResourceRefRecognizer` extension point; this module deliberately
 // owns only the resource-ref grammar, not directive nodes.
 
+import type { ResolverRefKind, ResolverResult } from '../../src/contracts';
+
 // --- ref grammar -------------------------------------------------------------
 
-export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'submission' | 'unknown';
+export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'auth' | 'submission' | 'unknown';
 
 export interface ParsedResourceRef {
   /** The original matched ref text (trimmed of trailing punctuation). */
@@ -60,6 +63,8 @@ const ARTIFACT_VERSION_REF = /^artifact-version:([^\s]+)$/i;
 const ARTIFACT_BLOB_REF = /^artifact-blob:([0-9a-f]{7,64})$/i;
 const ISSUE_REF = /^issue:([^\s\]]+)$/i;
 const COMMENT_REF = /^comment:([^\s\]]+)$/i;
+// Auth request ids are global, so the authority has no project qualifier.
+const AUTH_REF = /^auth:([^\s\]\/#]+)$/i;
 const SUBMISSION_REF = /^submission:([0-9a-f][0-9a-f-]{6,})(?:#([1-9][0-9]*))?$/i;
 
 /**
@@ -131,6 +136,9 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   }
   if (COMMENT_REF.test(raw)) {
     return { raw, canonical: raw, kind: 'comment', display: compactCommentRef(raw) };
+  }
+  if (AUTH_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'auth', display: compactAuthRef(raw) };
   }
   if (SUBMISSION_REF.test(raw)) {
     return { raw, canonical: raw, kind: 'submission', display: compactSubmissionRef(raw) };
@@ -226,6 +234,13 @@ export function compactCommentRef(ref: string): string {
   );
 }
 
+export function compactAuthRef(ref: string): string {
+  return ref.replace(
+    /^auth:(.+)$/i,
+    (_match, id: string) => `auth:${compactLongIdSegments(id)}`,
+  );
+}
+
 export function compactSubmissionRef(ref: string): string {
   return ref.replace(
     /^submission:([0-9a-f-]+)(#[1-9][0-9]*)?$/i,
@@ -248,6 +263,12 @@ export function resourceRefHref(ref: string): string {
     const params = new URLSearchParams({ issue: issue.ref });
     if (issue.repoId) params.set('repo', issue.repoId);
     return `#/issues?${params.toString()}`;
+  }
+  const auth = AUTH_REF.exec(ref.trim());
+  if (auth) {
+    // The auth view resolves prefixes; inbound refs pass through untouched so a
+    // full id keeps its power to disambiguate.
+    return `#/auth?request=${encodeURIComponent(auth[1])}`;
   }
   if (SUBMISSION_REF.test(ref.trim())) {
     return `/r/submission/${encodeURIComponent(ref.trim())}`;
@@ -376,16 +397,7 @@ export function versionDetailHref(ref: string, versionNo: number): string {
 
 // --- C2 resolver -------------------------------------------------------------
 
-export type ResolverRefKind = 'issue' | 'comment' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
-
-export interface ResolverResult {
-  ref: string;
-  kind: ResolverRefKind;
-  resolved: boolean;
-  entity: Record<string, unknown> | null;
-  detail?: Record<string, unknown> | null;
-  error?: string;
-}
+export type { ResolverRefKind, ResolverResult };
 
 /**
  * Resolve a resource ref against the C2 unified resolver endpoint. The endpoint
@@ -411,7 +423,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment|submission):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment|auth|submission):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');

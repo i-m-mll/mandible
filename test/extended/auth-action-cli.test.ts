@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { startFileRpcResponder } from "../helpers/file-rpc-responder.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
+const guards = ["--expected-revision", "0", "--expected-custody-generation", "2"];
 
 function run(
   args: string[],
@@ -76,6 +77,7 @@ describe("auth action CLI", () => {
         "abc",
         "--body",
         "Hello",
+        ...guards,
       ], env);
       expect(add.status).toBe(0);
 
@@ -91,10 +93,11 @@ describe("auth action CLI", () => {
         "abc",
         "--label",
         "ready",
+        "--expected-revision", "1", "--expected-custody-generation", "3",
       ], env);
       expect(edit.status).toBe(0);
 
-      const rm = await run(["auth", "action", "rm", "req1", "act1"], env);
+      const rm = await run(["auth", "action", "rm", "req1", "act1", "--expected-revision", "2", "--expected-custody-generation", "3"], env);
       expect(rm.status).toBe(0);
 
       expect(recorder.requests.map((request) => [request.method, request.path])).toEqual([
@@ -107,14 +110,38 @@ describe("auth action CLI", () => {
         kind: "comment_add",
         target_issue_ref: "abc",
         payload: { body: "Hello" },
+        expected_revision: 0,
+        expected_custody_generation: 2,
       });
       expect(recorder.requests[2].body).toMatchObject({
         kind: "label_add",
         target_issue_ref: "abc",
         payload: { label: "ready" },
+        expected_revision: 1,
+        expected_custody_generation: 3,
       });
+      expect(recorder.requests[3].body).toEqual({ expected_revision: 2, expected_custody_generation: 3 });
     } finally {
       recorder.stop();
     }
   });
+  it("rejects missing and invalid guards before writing a transport request", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-action-guards-"));
+    tempDirs.push(spoolDir);
+    const env = { MANDIBLE_BASE: `file://${spoolDir}`, MANDIBLE_FILE_RPC_TIMEOUT: "1" };
+    for (const subcommand of ["add", "edit", "rm"]) {
+      const args = ["auth", "action", subcommand, "req1",
+        ...(subcommand === "add" ? [] : ["act1"]),
+        ...(subcommand === "rm" ? [] : ["--kind", "comment_add", "--issue", "abc", "--body", "Hello"])];
+      for (const flag of ["--expected-revision", "--expected-custody-generation"]) {
+        const other = flag === "--expected-revision" ? "--expected-custody-generation" : "--expected-revision";
+        for (const invalid of [undefined, "-1", "1.5", "wrong", "9007199254740992"]) {
+          const result = await run([...args, other, "2", ...(invalid === undefined ? [] : [flag, invalid])], env);
+          expect(result.status, result.stderr).toBe(2);
+          expect(result.stderr).toContain(flag);
+          expect(fs.readdirSync(spoolDir).filter((file) => file.endsWith(".request.json"))).toEqual([]);
+        }
+      }
+    }
+  }, 30_000);
 });

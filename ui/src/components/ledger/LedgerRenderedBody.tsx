@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'preact/hooks';
 
 import { renderMarkdown } from '../../lib/markdown';
 import { linkifyResourceRefs, attachResourceRefResolution } from '../../resource-refs';
-import { shortRouteId } from '../../routing';
 
 export type LedgerRenderedBodyContext = {
   id: string;
@@ -12,7 +11,6 @@ export type LedgerRenderedBodyContext = {
     repo_id?: string | null;
     display_name: string;
   };
-  auth_requests?: readonly { id: string }[];
 };
 
 export function LedgerRenderedBody({
@@ -146,14 +144,6 @@ function refLink(match: RegExpExecArray, detail: LedgerRenderedBodyContext): HTM
     return anchor;
   }
 
-  const auth = detail.auth_requests?.find((request) => request.id.startsWith(ref));
-  if (auth) {
-    anchor.textContent = auth.id.slice(0, 8);
-    // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
-    anchor.href = `#/auth?request=${encodeURIComponent(shortRouteId(auth.id))}`;
-    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
-    return anchor;
-  }
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
   anchor.textContent = issueRefLabel(parsedIssue, detail);

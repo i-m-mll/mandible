@@ -19,6 +19,10 @@ describe("mandible-briefing.v2 directives", () => {
       .toBe(':::spec-item{key="ship" type="verdict" required="false"}\nShip it?\n:::');
   });
 
+  it("masks explicit approval refs without interpreting them as directives", () => {
+    expect(parseBriefingDirectives("See [auth:2257522a] and [auth:2257522a-39a2-467b-b3f8-491aea66754c].", BRIEFING_PROFILE_V3, { allowEmpty: true })).toEqual([]);
+  });
+
   it("keeps v2 frozen while v3 parses exact text alternatives", () => {
     const source = `# Policy
 

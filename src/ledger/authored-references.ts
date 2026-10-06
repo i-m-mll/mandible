@@ -5,6 +5,7 @@ export const AUTHORED_REFERENCE_KINDS = [
   "artifact-version",
   "artifact-series",
   "artifact-blob",
+  "auth",
 ] as const;
 
 export type AuthoredReferenceKind = (typeof AUTHORED_REFERENCE_KINDS)[number];
@@ -44,6 +45,8 @@ function isValidTarget(kind: AuthoredReferenceKind, target: string): boolean {
   if (kind === "issue") return /^(?:[^\/#]+\/)?[^\/#]+$/.test(target);
   if (kind === "comment") return /^(?:[^\/#]+\/)?[^\/#]+#[^\/#]+$/.test(target);
   if (kind === "artifact") return !/^sha256:/i.test(target);
+  // Auth request ids are global, so there is no project-qualified form.
+  if (kind === "auth") return /^[^\/#]+$/.test(target);
   return true;
 }
 
