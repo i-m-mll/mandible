@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
-import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
+import { getLedgerIssueHead, batchLedgerIssueHeads } from "../src/ledger/issue-heads.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import { batchLedgerIssueHeads, buildUmbrellaStatus } from "../src/routes/issues.js";
+import { buildUmbrellaStatus } from "../src/routes/issues.js";
 
 let tempDir = "";
 let db: Db;
@@ -63,7 +63,95 @@ function linkParentChild(parentId: string, childId: string, at: number): void {
   });
 }
 
+function fixedHeadFixture() {
+  for (const id of ["fixed-root", "fixed-inner", "fixed-shared", "fixed-empty"]) {
+    store.createIssue({ ...SYSTEM_ACTOR, id, project_id: projectId, title: id, kind: "feature", created_at: 1 });
+  }
+  linkParentChild("fixed-root", "fixed-inner", 200);
+  linkParentChild("fixed-inner", "fixed-shared", 201);
+  linkParentChild("fixed-shared", "fixed-root", 202);
+  linkParentChild("fixed-root", "fixed-root", 203);
+  store.upsertIssueRelationship({ actor: SYSTEM_ACTOR, source_issue_id: "fixed-root",
+    target_issue_id: "fixed-shared", relationship_type: "parent_child", provenance: "manual", created_at: 204 });
+  const comment = store.addComment("fixed-shared", { ...SYSTEM_ACTOR, body: "comment", created_at: 1 });
+  const deleted = store.addComment("fixed-root", { ...SYSTEM_ACTOR, body: "deleted", created_at: 1 });
+  const checkpoint = store.addIssueCheckpoint("fixed-root", { ...SYSTEM_ACTOR, kind: "delegation-manifest", payload: [], created_at: 1 });
+  db.prepare("DELETE FROM ledger_events").run();
+  db.prepare("UPDATE ledger_comments SET id = 'fixed-comment' WHERE id = ?").run(comment.id);
+  db.prepare("UPDATE ledger_comments SET id = 'fixed-deleted', deleted_at = 1 WHERE id = ?").run(deleted.id);
+  db.prepare("UPDATE ledger_issue_checkpoints SET id = 'fixed-checkpoint' WHERE id = ?").run(checkpoint.id);
+  db.prepare("UPDATE ledger_relationship_edges SET id = 'fixed-self' WHERE source_issue_id = target_issue_id").run();
+  db.prepare("UPDATE ledger_issue_relationships SET id = 'fixed-legacy'").run();
+  const insert = db.prepare(`INSERT INTO ledger_events
+    (id, entity_type, entity_id, event_type, actor_type, source, payload_json, occurred_at, observed_at)
+    VALUES (?, ?, ?, ?, 'agent', 'mandible', ?, ?, ?)`);
+  for (const [id, type, entity, at] of [
+    ["tie-\u{E000}", "issue", "fixed-root", 10],
+    ["tie-\u{10000}", "issue", "fixed-root", 10],
+    ["inner", "issue", "fixed-inner", 9],
+    ["comment", "comment", "fixed-comment", 11],
+    ["deleted", "comment", "fixed-deleted", 12],
+    ["checkpoint", "issue_checkpoint", "fixed-checkpoint", 13],
+    ["self", "relationship_edge", "fixed-self", 14],
+    ["legacy", "issue_relationship", "fixed-legacy", 15],
+    ["later", "issue", "fixed-shared", 30],
+  ] as const) insert.run(id, type, entity, `${type}.changed`, '{"b":2,"a":1}', at, at);
+}
+
 describe("subtree digests", () => {
+  it("preserves fixed digest bytes from the independent pre-consolidation engines", () => {
+    fixedHeadFixture();
+    const current = getLedgerIssueHead(db, "fixed-root");
+    expect(current).toMatchObject({
+      digest: "a8734c42bdc661f425aa13cd7625c6bda510e293bc6624804515c51084f28ad2",
+      subtree_digest: "384296a42a8d7ad45a08515d84295673077314c6e420f02c9fe09ae4e5d89872",
+      last_event_at: 15, last_event_kind: "issue_relationship.changed",
+      subtree_last_event_at: 30, subtree_last_event_kind: "issue.changed",
+    });
+    const options = { at: 15, excludeCheckpointId: "fixed-checkpoint" };
+    expect(getLedgerIssueHead(db, "fixed-root", options)).toMatchObject({
+      digest: "2c90611b83c0b46855bfd288cbd46bc69ebb6395c789791d386301a99903f8a3",
+      subtree_digest: "f9db15fffee4ff63fbab642fe55c1fea59df533bd97e27179aec21b6b188e6b1",
+      subtree_last_event_at: 15, subtree_last_event_kind: "issue_relationship.changed",
+    });
+    const batch = batchLedgerIssueHeads(db, ["fixed-root", "fixed-inner", "fixed-empty", "missing"]);
+    expect(batch.get("fixed-root")).toEqual(current);
+    expect(batch.get("fixed-inner")?.digest).toBe("c676aacbec8524874be9013855cf8aefa7fecd2b573bd32f2bb93d85fd90347a");
+    expect(batch.get("fixed-empty")).toMatchObject({
+      digest: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      subtree_digest: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      last_event_at: null, last_event_kind: null, subtree_last_event_at: null, subtree_last_event_kind: null,
+    });
+    expect(batch.has("missing")).toBe(false);
+    expect(() => getLedgerIssueHead(db, "missing")).toThrow("Ledger issue not found: missing");
+    expect(batchLedgerIssueHeads(db, ["fixed-root", "fixed-inner"], options).get("fixed-root"))
+      .toEqual(getLedgerIssueHead(db, "fixed-root", options));
+  });
+
+  it("keeps event reads set-based as the root count grows", () => {
+    fixedHeadFixture();
+    const roots = ["fixed-root", "fixed-inner", "fixed-shared", "fixed-empty"];
+    for (let n = 0; n < 96; n++) {
+      const id = `batch-root-${n}`;
+      store.createIssue({ ...SYSTEM_ACTOR, id, project_id: projectId, title: id, kind: "feature" });
+      roots.push(id);
+    }
+    const prepare = vi.spyOn(db, "prepare");
+    try {
+      for (const ids of [[roots[0]], roots, [...roots, ...roots]]) {
+        prepare.mockClear();
+        expect(batchLedgerIssueHeads(db, ids).size).toBe(new Set(ids).size);
+        expect(prepare.mock.calls).toHaveLength(3);
+        expect(prepare.mock.calls.filter(([sql]) => sql.includes("FROM ledger_events"))).toHaveLength(1);
+      }
+      prepare.mockClear();
+      expect(batchLedgerIssueHeads(db, []).size).toBe(0);
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
   it("propagates a grandchild change to ancestor subtree digests while leaving own digests stable", () => {
     const umbrella = makeIssue("Umbrella", "umbrella", ["umbrella"]);
     const sub = makeIssue("Sub umbrella", "umbrella", ["umbrella"]);
