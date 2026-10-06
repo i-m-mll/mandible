@@ -290,6 +290,10 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
 
 function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
   return {
+    kind: 'feature', priority: 'unknown', source: 'mandible', resolution: null, comments: [], checkpoints: [],
+    detail_stage: 'full',
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
     id: issueId,
     display_id: issueId,
     title: `Issue ${issueId}`,
@@ -300,7 +304,7 @@ function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
     created_at: NOW,
     updated_at: NOW,
     closed_at: null,
-    author: { id: null, type: 'mandible_user', display: 'Mandible' },
+    author: { id: null, type: 'mandible_user', display: 'Mandible', legacy_display: 'Mandible', attribution: null },
     project: {
       id: 'prj1',
       project_key: 'mandible',
@@ -319,7 +323,7 @@ function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
     work_units: [],
     timeline: [],
     associated_artifacts: [],
-  } as unknown as LedgerIssueDetailProjection;
+  };
 }
 
 function json(payload: unknown, status = 200): Response {

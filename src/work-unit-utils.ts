@@ -12,18 +12,8 @@ import {
 } from "./session-liveness.js";
 import type { WorkUnit } from "./types.js";
 
-// Bug: 8a281b3 — liveness data derived at query time, not stored
-export interface WorkUnitLiveness {
-  has_live_agent: boolean;
-  agent_session_id: string | null;
-  agent_status: string | null;
-  is_processing: boolean;
-  last_activity: number | null;
-}
-
-export interface WorkUnitWithLiveness extends WorkUnit {
-  liveness: WorkUnitLiveness;
-}
+import type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
+export type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
 
 export type WorkUnitSessionResolver = (db: Db, id: string) => SessionAliasResolution | null;
 

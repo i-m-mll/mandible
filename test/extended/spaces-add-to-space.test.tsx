@@ -173,9 +173,12 @@ describe('AddToSpace cross-project (default)', () => {
 
 function readOnlyDetail(): LedgerIssueDetailProjection {
   return {
+    detail_stage: 'full',
+    work_notes: '', work_notes_revision: null, worker_status: 'none',
+    issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,
     id: 'ledger-issue-1',
     display_id: '08c312a',
-    project: {
+    project: { work_repo_id: null, project_key: 'mandible',
       id: 'proj-1',
       display_name: 'mandible',
       remote_identity: '',
@@ -195,7 +198,7 @@ function readOnlyDetail(): LedgerIssueDetailProjection {
     created_at: 0,
     updated_at: 0,
     closed_at: null,
-    author: { id: null, type: 'mandible_user', display: 'Mandible' },
+    author: { id: null, type: 'mandible_user', display: 'Mandible', legacy_display: 'Mandible', attribution: null },
     labels: [],
     aliases: [],
     comments: [],
@@ -206,7 +209,7 @@ function readOnlyDetail(): LedgerIssueDetailProjection {
     associated_artifacts: [],
     timeline: [],
     checkpoints: [],
-  } as unknown as LedgerIssueDetailProjection;
+  };
 }
 
 describe('IssueDetail Add-to-Space gating', () => {
