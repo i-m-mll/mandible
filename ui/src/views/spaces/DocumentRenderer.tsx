@@ -1,34 +1,4 @@
-// Read-only Spaces document renderer (umbrella de56ffa, child C14b / issue
-// 591e568).
-//
-// This is the READ-ONLY document view over the `space_blocks` tree (C11). It is
-// deliberately NOT an editor (block editing is C14c) and owns no `space_blocks`
-// mutation, serialization grammar, or parse/sanitize pipeline — it CONSUMES the
-// frozen surfaces of its dependencies:
-//
-//   - C14a `ui/src/spaces/doc-pipeline.ts`  -> the secure, NON-EXECUTABLE
-//     parse/sanitize pipeline. All prose HTML this view renders comes from that
-//     pipeline (marked -> DOMPurify); there is no other HTML-producing path, so
-//     no document directive can ever execute script (standing AC #2).
-//   - C12 `src/spaces/serialize.ts`         -> the frozen `spaces-doc.v1`
-//     grammar + `exportDocument`. A `space_blocks` row set is mapped to a
-//     `DocTree` and serialized to canonical text, then rendered through the C14a
-//     pipeline so block identity + directive refs stay authoritative.
-//   - C6 `ui/src/resource-refs.ts`          -> the shared resource-ref parser +
-//     `linkifyResourceRefs` unresolved-ref UI. Markdown-link refs in prose AND
-//     `:ref`/`:::embed` directive refs are rendered as quiet placeholders;
-//     unresolved refs are never silently dropped.
-//   - C11 `GET /api/spaces/:id/blocks`      -> the read-only block source.
-//   - C10 `SpacesViewShell` mount contract   -> the `document` renderer mount.
-//
-// SECURITY: this view never injects raw, un-sanitized HTML. Block prose is
-// rendered through the C14a pipeline (which sanitizes via DOMPurify) and then
-// only re-processed by C6's DOM-based `linkifyResourceRefs`, which builds
-// anchors with `textContent`/`setAttribute` and never re-introduces markup. A
-// renderer test asserts that a document directive cannot execute script.
-
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
+import { useCallback, useMemo } from 'preact/hooks';
 
 import {
   parseResourceRef,
@@ -47,25 +17,13 @@ import {
 import {
   exportDocument,
   SPACES_DOC_VERSION,
-  FORMAT_KEY,
   type DocTree,
   type DocBlock,
   type BlockType,
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
-import { acquireSharedSse } from '../../sse-shared';
-import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import { leadingMarkdownFrontmatter, renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
-import type { SpaceRendererMountProps } from './SpacesViewShell';
-import {
-  documentStorageKey,
-  normalizeDocumentViewState,
-  reconcileDocumentViewState,
-  EMPTY_DOCUMENT_VIEW_STATE,
-} from './documentViewState';
 import './DocumentRenderer.css';
-
-const SPACE_EVENT_PREFIX = 'space:';
 
 // Ensure the C6 shared parser recognizes `spaces-doc.v1` directive refs so the
 // document path classifies directive refs through the frozen grammar. Idempotent.
@@ -484,7 +442,7 @@ function DocBlockView({
 export function DocumentBody({
   document: doc,
   sources,
-  collapsed = EMPTY_DOCUMENT_VIEW_STATE.collapsed,
+  collapsed = {},
   onToggleCollapse,
 }: {
   document: RenderedDocument;
@@ -534,159 +492,3 @@ export function DocumentBody({
     </div>
   );
 }
-
-// --- the renderer mount (read-only, fetches blocks) --------------------------
-
-type LoadState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; blocks: SpaceBlock[] }
-  | { status: 'error'; message: string };
-
-/**
- * Read-only block fetch for `GET /api/spaces/:id/blocks`. The renderer reads
- * blocks directly (this is a read path; the C3 typed client owns no block-list
- * helper), parameterized by an injectable `fetchImpl` for tests. It is GET-only:
- * this view never writes block or space state.
- */
-async function fetchSpaceBlocks(
-  spaceId: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<SpaceBlock[]> {
-  const response = await fetchImpl(`/api/spaces/${encodeURIComponent(spaceId)}/blocks`, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!response.ok) {
-    throw new Error(`load blocks for ${spaceId} failed: ${response.status}`);
-  }
-  const payload = (await response.json()) as { blocks?: SpaceBlock[] };
-  return Array.isArray(payload.blocks) ? payload.blocks : [];
-}
-
-export interface DocumentRendererProps extends SpaceRendererMountProps {
-  /** Test seam: inject a fetch implementation for the read-only block load. */
-  fetchImpl?: typeof fetch;
-}
-
-/**
- * Read-only Spaces document renderer mount. Registered for the `document`
- * renderer in the C10 shell. It fetches the `space_blocks` tree, renders it
- * through the C14a pipeline + C12 grammar + C6 ref UI, and preserves browser-
- * local collapse state across refetches, SSE reconciliation, and remounts
- * (Dataful-UX contract): SSE `space:*` events refetch blocks but never reset
- * collapse state.
- */
-export function DocumentRenderer({
-  projectId,
-  spaceId,
-  fetchImpl,
-}: DocumentRendererProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
-  const [viewState, setViewState] = usePersistedViewState(
-    spaceId ? documentStorageKey(projectId, spaceId) : '',
-    normalizeDocumentViewState,
-    EMPTY_DOCUMENT_VIEW_STATE,
-  );
-  const fetchRef = useRef(fetchImpl);
-  fetchRef.current = fetchImpl;
-
-  const loadBlocks = useCallback(
-    async (isReconcile: boolean) => {
-      if (!spaceId) {
-        setLoad({ status: 'idle' });
-        return;
-      }
-      if (!isReconcile) setLoad({ status: 'loading' });
-      try {
-        const blocks = await fetchSpaceBlocks(spaceId, fetchRef.current ?? fetch);
-        setLoad({ status: 'ready', blocks });
-        // Reconcile collapse keys against live block ids without resetting
-        // user collapse intent (Dataful-UX: refetch is a reconciliation input).
-        setViewState((prior) =>
-          reconcileDocumentViewState(prior, blocks.map((b) => b.id)),
-        );
-      } catch (err) {
-        setLoad({ status: 'error', message: err instanceof Error ? err.message : String(err) });
-      }
-    },
-    [spaceId],
-  );
-
-  useEffect(() => {
-    void loadBlocks(false);
-  }, [loadBlocks]);
-
-  // SSE reconciliation: any `space:*` event refetches blocks as a reconciliation
-  // input. Collapse state is preserved across the refetch.
-  useEffect(() => {
-    if (!spaceId) return;
-    const client = acquireSharedSse();
-    const unsubscribe = client.on('*', (payload) => {
-      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
-        void loadBlocks(true);
-      }
-    });
-    // Reconnect resync: refetch after a dropped stream so events missed during
-    // the gap are reconciled.
-    const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void loadBlocks(true);
-    });
-    client.connect();
-    return () => {
-      unsubscribe();
-      offState();
-      client.close();
-    };
-  }, [spaceId, loadBlocks]);
-
-  const onToggleCollapse = useCallback((id: string) => {
-    setViewState((prior) => ({
-      ...prior,
-      collapsed: { ...prior.collapsed, [id]: !prior.collapsed[id] },
-    }));
-  }, []);
-
-  const rendered = useMemo(
-    () => (load.status === 'ready' ? renderSpaceBlocks(load.blocks, spaceId ?? undefined) : null),
-    [load, spaceId],
-  );
-  const sources = useMemo(() => {
-    const map = new Map<string, SpaceBlock>();
-    if (load.status === 'ready') for (const b of load.blocks) map.set(b.id, b);
-    return map;
-  }, [load]);
-
-  if (!spaceId) {
-    return (
-      <div className="spaces-doc-renderer spaces-doc-renderer--empty" data-testid="spaces-document-renderer">
-        Select a Space to view its document.
-      </div>
-    );
-  }
-
-  return (
-    <div className="spaces-doc-renderer" data-testid="spaces-document-renderer">
-      {load.status === 'loading' && (
-        <div className="spaces-doc-renderer__status">Loading document…</div>
-      )}
-      {load.status === 'error' && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not load document">{load.message}</DetailPaneNotice>
-      )}
-      <div className="spaces-doc-renderer__body">
-        {rendered && (
-          <DocumentBody
-            document={rendered}
-            sources={sources}
-            collapsed={viewState.collapsed}
-            onToggleCollapse={onToggleCollapse}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-export default DocumentRenderer;
-
-// Re-export the frozen markers consumers commonly need alongside the renderer.
-export { SPACES_DOC_VERSION, FORMAT_KEY };

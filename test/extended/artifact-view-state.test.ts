@@ -1,3 +1,4 @@
+import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache';
 import { makeArtifactResolution } from "../helpers/artifact-resolution-fixtures";
 import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
@@ -58,6 +59,77 @@ describe('ArtifactsView', () => {
       'mandible:artifacts:list-controls:v1',
     ))).selectedSeriesRef).toBe(artifactSeries.summary.ref));
   });
+
+  it('keeps an explicit missing series deep link visible instead of selecting a fallback', async () => {
+    const artifact = makeArtifactFixture('a', 'available.md');
+    const series = makeArtifactSeries('available', [artifact]);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [series.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return Promise.resolve(new Response(
+        JSON.stringify({ error: 'Explicit series is missing' }),
+        { status: 404, headers: { 'content-type': 'application/json' } },
+      ));
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+    render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:removed' }));
+    expect(await screen.findByText('Explicit series is missing')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'available.md' })).toBeNull();
+  });
+
+  it.each(['valid', 'wrong record', 'wrong content', 'wrong fetched identity'] as const)(
+    'hydrates coherent artifact caches before paint while revalidating (%s)', async (cacheCase) => {
+      const artifact = makeArtifactFixture('a', 'cached.md');
+      const series = makeArtifactSeries('cached-series', [artifact]);
+      const content = {
+        artifact_id: artifact.id, status: 'available', kind: 'text', media_type: 'text/markdown',
+        size_bytes: 32, source: null, reason: null,
+        preview: { encoding: 'utf-8', text: 'Cached selected preview', truncated: false },
+        download: { available: false, media_type: 'text/markdown', size_bytes: 32, filename: null },
+      };
+      writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref: series.summary.ref }), series.history);
+      writePersistedDetail('artifact-record', detailRequestKey('artifact-record', { id: artifact.id }),
+        cacheCase === 'wrong record' ? { ...artifact, id: 'other-artifact', metadata: { title: 'Wrong cached record' } } : artifact);
+      writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifact.id }),
+        cacheCase === 'wrong content' ? { ...content, artifact_id: 'other-artifact', preview: { ...content.preview, text: 'Wrong cached content' } } : content);
+      let finishRecord!: (value: Response) => void;
+      let finishContent!: (value: Response) => void;
+      const recordRead = new Promise<Response>((resolve) => { finishRecord = resolve; });
+      const contentRead = new Promise<Response>((resolve) => { finishContent = resolve; });
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+        const url = String(input);
+        if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [series.summary] });
+        if (url.startsWith('/api/artifacts/versions?')) return new Promise<Response>(() => {});
+        if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+        if (url.endsWith('/content')) return contentRead;
+        if (url.includes(encodeURIComponent(artifact.id))) return recordRead;
+        return Promise.reject(new Error(`unexpected fetch ${url}`));
+      }));
+      render(h(ArtifactsView, { initialSeriesRef: series.summary.ref }));
+      expect(screen.queryByText('Wrong cached record')).toBeNull();
+      expect(screen.queryByText('Wrong cached content')).toBeNull();
+      if (cacheCase === 'valid' || cacheCase === 'wrong fetched identity') {
+        expect(screen.getByRole('heading', { name: 'cached.md' })).toBeTruthy();
+        expect(screen.getByText('Cached selected preview')).toBeTruthy();
+      } else if (cacheCase === 'wrong record') {
+        expect(screen.queryByRole('heading', { name: 'cached.md' })).toBeNull();
+      } else {
+        expect(screen.getByRole('heading', { name: 'cached.md' })).toBeTruthy();
+        expect(screen.queryByText('Cached selected preview')).toBeNull();
+      }
+      await act(async () => {
+        finishRecord(await jsonResponse({ artifact: cacheCase === 'wrong fetched identity' ? { ...artifact, id: 'other-artifact', metadata: { title: 'Wrong fetched record' } } : artifact }));
+        finishContent(await jsonResponse({ content: { ...content, artifact_id: cacheCase === 'wrong fetched identity' ? 'other-artifact' : artifact.id, preview: { ...content.preview, text: 'Fresh selected preview' } } }));
+      });
+      if (cacheCase === 'wrong fetched identity') {
+        expect(screen.getByText('Cached selected preview')).toBeTruthy();
+        expect(screen.queryByText('Fresh selected preview')).toBeNull();
+        expect(screen.queryByText('Wrong fetched record')).toBeNull();
+      } else {
+        expect(await screen.findByText('Fresh selected preview')).toBeTruthy();
+      }
+    },
+  );
 
   it('shows artifact load failures once below the detail header', async () => {
     const artifact = makeArtifactFixture('d', 'failed-detail.md', {
