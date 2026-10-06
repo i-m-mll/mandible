@@ -9,7 +9,7 @@ Each Spaces view/component owns its **own** `ui/src/views/spaces/*.css` and
 imports it directly from its `.tsx` entry, e.g.:
 
 ```tsx
-import './space-view.css';
+import './SpacesViewShell.css';
 ```
 
 This mirrors how `ui/src/views/graph.tsx` imports
@@ -31,7 +31,7 @@ piling Spaces rules into it makes every UI child collide on one file. Instead:
   Spaces views inherit the existing theme tokens rather than re-declaring
   colors.
 
-`space-view.css` in this directory is the first exemplar of the rule.
+`SpacesViewShell.css` in this directory is the first exemplar of the rule.
 
 ## 2. Import contract types from `contracts`, view types from here
 
