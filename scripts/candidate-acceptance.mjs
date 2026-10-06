@@ -152,7 +152,7 @@ async function main() {
     const packagedRuntime = command('/bin/sh', [path.join(resources, 'scripts/bun-runtime.sh')], { env: resourceEnv });
     const packagedSqlite = command(packagedRuntime, [path.join(resources, 'scripts/sqlite-runtime-install.mjs')], { env: resourceEnv });
     if (!packagedRuntime.startsWith(`${resourceEnv.XDG_DATA_HOME}${path.sep}`) || !packagedSqlite.startsWith(`${resourceEnv.XDG_DATA_HOME}${path.sep}`)) throw new Error('Packaged runtime escaped the owned durable data root.');
-    for (const name of ['local-runtime.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'pinned-caddy.mjs', 'local-ca-trust.mjs']) {
+    for (const name of ['local-runtime.mjs', 'runtime-environment.mjs', 'runtime-environment-path.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'pinned-caddy.mjs', 'local-ca-trust.mjs']) {
       if (sha256(path.join(resources, name)) !== sha256(path.join(root, 'scripts', name))) throw new Error(`Native package has stale ${name}`);
     }
     result.provenance = { marker, daemon_sha256: sha256(path.join(root, 'dist', 'index.js')), native_sha256: sha256(path.join(app, 'Contents', 'MacOS', 'mandible-app')), harness_sha256: sha256(fileURLToPath(import.meta.url)), packaged_runtime_sha256: sha256(packagedRuntime), packaged_runtime_revision: command(packagedRuntime, ['--no-install', '--print', 'Bun.revision']), packaged_archive_sha256: sha256(path.join(resources, 'runtime/bun.zip')), packaged_sqlite_archive_sha256: sha256(path.join(resources, 'runtime/sqlite.tar.gz')), packaged_sqlite_sha256: sha256(packagedSqlite) };

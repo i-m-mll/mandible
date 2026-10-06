@@ -20,7 +20,8 @@ runtime="$("$repo_root/scripts/bun-runtime.sh")"
 export MANDIBLE_RUNTIME="$runtime"
 export PATH="$(dirname "$runtime"):$PATH"
 
-# A loaded interpreter change cannot be applied with kickstart. Admission
+# Managed self-updates must replace the loaded definition and the build only
+# after the old process drains. Admission
 # returns 75 only after an independently supervised convergence owner and the
 # dependency-free old-runner guard are durable; the old daemon then drains.
 if [[ "${MANDIBLE_AUTH_REPO:-}" == "mandible" && "${MANDIBLE_HOOK_ID:-}" == "builtin-mandible-rebuild" && -z "${MANDIBLE_RUNTIME_HANDOFF_JOURNAL:-}" ]]; then

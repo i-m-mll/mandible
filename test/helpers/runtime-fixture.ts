@@ -13,7 +13,7 @@ export function qualifiedRuntimeFixtureEnv() {
 // Deployment fixtures exercise the real selector with the qualified source
 // and preserved stock library, without network acquisition per test.
 export function copyRuntimeFixture(root: string) {
-  for (const name of ['.bun-version', 'scripts/bun-runtime.sh', 'scripts/bun-runtime-lock.tsv', 'scripts/sqlite-runtime-install.mjs', 'src/sqlite-runtime.ts']) {
+  for (const name of ['.bun-version', 'scripts/bun-runtime.sh', 'scripts/runtime-environment.mjs', 'scripts/runtime-environment-path.mjs', 'scripts/bun-runtime-lock.tsv', 'scripts/sqlite-runtime-install.mjs', 'src/sqlite-runtime.ts']) {
     const target = path.join(root, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(path.join(process.cwd(), name), target);

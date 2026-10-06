@@ -5,6 +5,12 @@ directory **is** the whitelist: a file is in the gate because it is here, and
 nothing else marks it. There is no annotation to keep in sync and no list to
 drift.
 
+Build the daemon before running the default gate in a fresh checkout or after
+server source changes: `bun run build:server`. The daemon auto-start boundary
+launches `dist/index.js`, so an absent or stale build cannot test the current
+source. The full `bun run build` used by candidate packaging also satisfies
+this prerequisite.
+
 | Suite | Command | Must |
 | --- | --- | --- |
 | `test/` | `bun run test` | pass |

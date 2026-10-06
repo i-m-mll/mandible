@@ -11,12 +11,12 @@ Mandible is a local-first agent control plane and conversation browser. It provi
 ## Build
 
 ```bash
-npm run build        # Full build (TypeScript + esbuild UI)
-npm run build:watch  # UI hot-reload (esbuild watch only)
-npm run dev          # TypeScript watch + UI watch (both in parallel)
-npm run iab-preview  # Create/reuse an isolated integration-branch IAB preview
-npm start            # Run daemon (requires prior build)
-npm test             # Run tests (vitest)
+bun run build        # Full build (TypeScript + esbuild UI)
+bun run build:watch  # UI hot-reload (esbuild watch only)
+bun run dev          # TypeScript watch + UI watch (both in parallel)
+bun run iab-preview  # Create/reuse an isolated integration-branch IAB preview
+bun run start            # Run daemon (requires prior build)
+bun run test             # Run tests (vitest)
 ```
 
 ## IAB integration previews
@@ -26,7 +26,7 @@ in-app browser, open Mandible from an integration branch, or run a copy-instance
 of Mandible for browser iteration, start with the deterministic local launcher:
 
 ```bash
-npm run iab-preview -- --json
+bun run iab-preview -- --json
 ```
 
 This is the expected one-command path for preview setup. It creates or reuses
@@ -55,7 +55,7 @@ for that specific instance to be restarted or replaced.
 
 ## Database
 
-Uses SQLite via better-sqlite3. Schema migrations live in `src/db.ts` in the `MIGRATIONS` array.
+Uses the shared `src/sqlite.ts` storage boundary backed by the pinned Bun SQLite runtime. Schema migrations live in `src/db-migrations.ts`.
 
 **Always add new columns/tables via a new migration entry** — never via ad-hoc `CREATE TABLE IF NOT EXISTS` in individual modules. The `ensureSchema()` functions are fallbacks for fresh databases only; they do NOT alter existing tables.
 
@@ -94,22 +94,10 @@ Key conventions:
 
 ## Test suites
 
-`npm test` is the **default suite**: `vitest.config.ts` includes
-`test/*.test.{ts,tsx}` — a single star — so it is exactly the flat `test/`
-directory. It must stay green on a machine that has run nothing but `npm ci`;
-`.github/workflows/ci.yml` provisions nothing else. Never add a default-suite
-test that depends on an external binary.
-
-A suite that does need provisioning lives in `test/<suite>/` with its own
-config and npm script. The single-star include keeps it out of `npm test` by
-construction. Today there is one:
-
-- `npm run test:browser` — `test/browser/`, real headless Chromium plus
-  ImageMagick `magick`. Run it locally before delivering app-chrome or
-  detail-pane layout changes. See `test/browser/README.md`.
-
-Both configs come from the same `mandibleVitestConfig()` factory in
-`vitest.config.ts`; a suite chooses only its include globs.
+The flat `test/*.test.{ts,tsx}` directory is the default contract suite, selected
+by `vitest.config.ts`. See [test/README.md](test/README.md) for the maintained default,
+extended, quarantine, and browser gates. External runtime fixtures remain in
+explicit provisioned suites.
 
 ## Dist files
 
@@ -151,18 +139,19 @@ horizontal time coordinates.
 
 ## Worktree build notes
 
-**Never run `npm ci` in a feature worktree.** `npm ci` deletes `node_modules` before reinstalling — if the worktree shares or symlinks `node_modules` from main, it destroys the main install and crashes the running daemon.
+Each worktree owns its dependencies. Inspect shared links before setup, then
+use the verified runtime with a frozen install in the issue-linked worktree:
 
-Correct build procedure in a worktree:
 ```bash
-cp -a <main-worktree>/node_modules <feature-worktree>/node_modules
-cd <feature-worktree>
-npm run build
+runtime_path="$(scripts/bun-runtime.sh)"
+export PATH="$(dirname "$runtime_path"):$PATH"
+"$runtime_path" install --frozen-lockfile
+"$runtime_path" run build
 ```
 
-`-a`, not `-r`: `cp -r` dereferences the `node_modules/.bin` symlinks, so every
-copied launcher resolves its relative entry point against `.bin/` and dies with
-`ERR_MODULE_NOT_FOUND` (`npx vitest` reports a missing `.bin/dist/cli.js`).
+Do not copy or mutate another worktree's dependencies. The canonical
+[installation guide](docs/getting-started/installation.mdx) and
+[Bun contract](docs/bun-foundation.md) describe runtime setup.
 
 ## Auth flow
 

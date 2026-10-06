@@ -114,27 +114,29 @@ SDK session stream events are cached in IndexedDB on the client for instant hydr
 
 ### Requirements
 
-- **Node.js** >= 18 (ESM, `node:` imports, `structuredClone`)
+- **Bun** at the exact version and verified binary selected by `scripts/bun-runtime.sh`
 - **macOS** (primary target; Linux should work but is less tested)
-- **node-pty** native module (postinstall script fixes permissions)
+- The stock SQLite library qualified by the [Bun runtime contract](docs/bun-foundation.md)
 
 ### Installation
 
 ```bash
 git clone <repo-url> mandible
 cd mandible
-npm install
-npm run build
+runtime_path="$(scripts/bun-runtime.sh)"
+export PATH="$(dirname "$runtime_path"):$PATH"
+"$runtime_path" install --frozen-lockfile
+"$runtime_path" run build
 ```
 
 ### Running
 
 ```bash
 # Start the daemon (default backend port: 29420)
-npm start
+bun run start
 
 # Or run directly
-node dist/index.js
+"$(scripts/bun-runtime.sh)" --no-install dist/index.js
 
 # Open the dashboard
 open https://app.mandible.localhost:19420
@@ -325,27 +327,26 @@ mandible help                            Show help
 ## Development
 
 ```bash
-npm run build          # Full build (TypeScript + esbuild UI)
-npm run build:server   # TypeScript only
-npm run build:ui       # UI only
-npm run build:watch    # UI hot-reload (esbuild watch)
-npm run dev            # TypeScript watch + UI watch in parallel
-npm test               # Run tests (vitest)
-npm run tauri          # Tauri dev mode
-npm run tauri:build    # Build Tauri desktop app
+bun run build          # Full build (TypeScript + esbuild UI)
+bun run build:server   # TypeScript only
+bun run build:ui       # UI only
+bun run build:watch    # UI hot-reload (esbuild watch)
+bun run dev            # TypeScript watch + UI watch in parallel
+bun run test               # Run tests (vitest)
+bun run tauri          # Tauri dev mode
+bun run tauri:build    # Build Tauri desktop app
 ```
 
 Schema uses numbered migrations in `src/db.ts`. New columns or tables must be added as a new migration entry — never modify existing migrations.
 
 ### Worktree Build Notes
 
-Never run `npm ci` in a feature worktree — it deletes `node_modules`, which may be shared/symlinked from main. Instead:
-
-```bash
-cp -r <main-worktree>/node_modules <feature-worktree>/node_modules
-cd <feature-worktree>
-npm run build
-```
+Worktrees own their dependency trees. Inspect shared links first, then use the
+verified Bun runtime for `install --frozen-lockfile` in the issue-linked worktree.
+Do not copy or mutate the serving checkout's dependencies. See the canonical
+[installation guide](docs/getting-started/installation.mdx),
+[Bun runtime contract](docs/bun-foundation.md), and
+[test suite guide](test/README.md).
 
 ## Other Features
 

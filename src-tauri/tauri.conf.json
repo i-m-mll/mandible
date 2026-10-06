@@ -51,6 +51,8 @@
       "../dist/build-revision.json": "build-revision.json",
       "../scripts/local-ca-trust.mjs": "local-ca-trust.mjs",
       "../scripts/local-runtime.mjs": "local-runtime.mjs",
+      "../scripts/runtime-environment.mjs": "runtime-environment.mjs",
+      "../scripts/runtime-environment-path.mjs": "runtime-environment-path.mjs",
       "../scripts/canonical-origin.mjs": "canonical-origin.mjs",
       "../scripts/build-revision.mjs": "build-revision.mjs",
       "../scripts/pinned-caddy.mjs": "pinned-caddy.mjs",

@@ -14,6 +14,7 @@ import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs"
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
+import { runtimeEnvironment } from "./runtime-environment.mjs";
 
 const DEFAULT_HOME = path.join(os.homedir(), ".mandible");
 const configuredHome = process.env.MANDIBLE_HOME?.trim() || DEFAULT_HOME;
@@ -202,13 +203,31 @@ function runLaunchctl(args, timeout = 2500) {
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
+export function parseLoadedService(detail) {
+  const argumentsText = detail.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
+  const environmentText = detail.match(/\n\s*environment = \{\n([\s\S]*?)\n\s*\}/)?.[1];
+  const environment = Object.fromEntries((environmentText?.split('\n') ?? []).flatMap(line => {
+    const match = line.trim().match(/^([^ ]+) => (.*)$/);
+    return match && !['OSLogRateLimit', 'XPC_SERVICE_NAME'].includes(match[1]) ? [[match[1], match[2]]] : [];
+  }));
+  const field = name => detail.split('\n').map(line => line.trim()).find(line => line.startsWith(`${name} = `))?.slice(name.length + 3);
+  return { argv: argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [], environment,
+    workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path') };
+}
+
+export function loadedServiceMatches(record, job) {
+  const normalized = environment => JSON.stringify(Object.entries(environment ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+  return JSON.stringify(record.ProgramArguments) === JSON.stringify(job.argv)
+    && normalized(record.EnvironmentVariables) === normalized(job.environment)
+    && record.WorkingDirectory === job.workingDirectory
+    && record.StandardOutPath === job.stdoutPath && record.StandardErrorPath === job.stderrPath;
+}
+
 function inspectJob(label) {
   const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
   const loaded = result.status === 0;
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
-  const argumentsText = result.stdout.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
-  const argv = argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [];
-  return { loaded, pid, argv, detail: result.stderr.trim() };
+  return { loaded, pid, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
 }
 
 function processStart(pid) {
@@ -222,10 +241,10 @@ function handoffService(label) {
   if (!installed) throw new Error(`Owned service ${label} is missing.`);
   const job = inspectJob(label);
   const argv = installed.record.ProgramArguments;
-  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && JSON.stringify(job.argv) !== JSON.stringify(argv))) {
-    throw new Error(`Loaded arguments differ from the owned service definition for ${label}.`);
+  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && !loadedServiceMatches(installed.record, job))) {
+    throw new Error(`Loaded arguments, environment, working directory or logs differ from the owned service definition for ${label}.`);
   }
-  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded };
+  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded, definition: installed.record };
 }
 
 export function captureRuntimeHandoff(root) {
@@ -255,7 +274,7 @@ export function captureRuntimeHandoff(root) {
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
   return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
-    daemonLog: readRunnerMetadata(production).logFile,
+    daemonLog: locateLaunchAgent(BACKEND_LABEL).record.StandardErrorPath,
     oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
 }
 
@@ -286,7 +305,9 @@ export async function removeHandoffDefinitions(binding) {
     if (label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
     const current = inspectJob(label);
     if (!current.loaded) continue;
-    if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
+    // Retained journals predating definition capture retain their argv guard.
+    // New journals must still own the complete loaded definition after drain.
+    if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv) || prior.definition && !loadedServiceMatches(prior.definition, current)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
     if (label === BACKEND_LABEL && current.pid) {
       const file = path.join(RUNTIME_DIR, 'handoff', `${binding.requestId}-${binding.executionId}`, 'bridge-process.json');
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
@@ -305,7 +326,7 @@ export async function startHandoffDefinitions(binding) {
     const job = inspectJob(label);
     const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
     if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
-      if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
+      if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL || binding.priorGateway.definition && !loadedServiceMatches(binding.priorGateway.definition, job)) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
       await unloadExactHandoffService(label, binding.priorGateway.argv);
     }
     ensureEnabledAndLoaded(label);
@@ -322,7 +343,17 @@ export async function verifyHandoffDefinitions(binding) {
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
   const status = await inspectRuntime({ launchMode: binding.priorBackend.launchMode });
   if (!status.status.dashboard_ready || status.main.backend_generation !== binding.mergeCommit) throw new Error('Candidate production front door is not ready at the exact merge generation.');
-  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document };
+  const job = inspectJob(BACKEND_LABEL);
+  const startedAt = processStart(job.pid);
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  const logPath = installed?.record.StandardErrorPath;
+  if (!job.pid || !startedAt || !path.isAbsolute(logPath || '')) throw new Error('Current daemon process or launchd log provenance is unavailable.');
+  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
+  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
+  const log = fs.statSync(logPath);
+  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document,
+    process: { pid: job.pid, startedAt, startupEpoch: status.backend.document.startup_epoch },
+    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
 }
 
 function portOpen(url) {
@@ -568,7 +599,7 @@ function installedLaunchMode() {
 
 function prepareServicePlists(production, main, launchMode) {
   const runtime = runtimeBinary();
-  const pathValue = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
+  const pathValue = runtimeEnvironment({ runtime, root: production.root }).PATH;
   const backendEnvironment = {
     ...existingBackendEnvironment(),
     // Preserve the CLI's documented credential-tool test seam for isolated
@@ -582,6 +613,7 @@ function prepareServicePlists(production, main, launchMode) {
     MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(RUNTIME_DIR, "context-verification-key.pem"),
     MANDIBLE_LAUNCH_MODE: launchMode,
     MANDIBLE_PORT: String(Number(main.backendUrl.port) || DEFAULT_BACKEND_PORT),
+    MANDIBLE_STDERR_LOG_PATH: path.join(LOG_DIR, "production-stderr.log"),
     MANDIBLE_BASE: PRODUCTION_ORIGIN,
     PATH: pathValue,
     GIT_OPTIONAL_LOCKS: "0",

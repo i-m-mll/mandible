@@ -21,6 +21,28 @@ export interface RuntimePublicationBinding {
   frozenCandidate?: { tree: string; snapshotRevision: number; snapshotDigest: string; signerCredentialId: string };
 }
 
+export type RuntimeSourceReadiness =
+  | { ok: true; projectId: string; commonGitDir: string }
+  | { ok: false; reason: string };
+
+export function validateRuntimeSource(db: Db, sourcePath: string, destinationPath: string): RuntimeSourceReadiness {
+  try {
+    const source = realpathSync(sourcePath);
+    const destination = realpathSync(destinationPath);
+    const destinationProject = resolveCheckoutPath(db, destination);
+    const sourceProject = resolveCheckoutPath(db, source);
+    if (!destinationProject) return { ok: false, reason: `Destination checkout is unregistered. Register its verified canonical project with mandible project add-checkout <project> --root '${destination}'.` };
+    if (!sourceProject) return { ok: false, reason: `Installed source checkout is unregistered. After verifying ownership, run mandible project add-checkout ${destinationProject.project_key} --root '${source}'.` };
+    if (sourceProject.id !== destinationProject.id) return { ok: false, reason: 'Installed source and destination are registered to different canonical projects; reassociation is not automatic.' };
+    const common = (cwd: string) => realpathSync(execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', timeout: 5000 }).trim());
+    const commonGitDir = common(source);
+    if (common(destination) !== commonGitDir) return { ok: false, reason: 'Installed source and destination belong to different Git repositories.' };
+    return { ok: true, projectId: destinationProject.id, commonGitDir };
+  } catch (error) {
+    return { ok: false, reason: `Runtime source readiness could not be verified: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 /** Read-only, narrowly bound first-upgrade proof. A journal never authorizes a merge. */
 export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicationBinding) {
   const fail = (reason: string): never => { throw new Error(`Runtime handoff publication refused: ${reason}`); };
@@ -61,10 +83,9 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
   if (binding.source) {
     const source = binding.source;
     const sourceRoot = realpathSync(source.root);
-    const destinationProject = resolveCheckoutPath(db, root);
-    const sourceProject = resolveCheckoutPath(db, sourceRoot);
-    if (!destinationProject || !sourceProject || sourceProject.id !== destinationProject.id) fail("source and destination canonical projects differ");
-    sourceProjectId = destinationProject!.id;
+    const readiness = validateRuntimeSource(db, sourceRoot, root);
+    if (!readiness.ok) fail(readiness.reason);
+    sourceProjectId = readiness.ok ? readiness.projectId : undefined;
     if (binding.sourceProjectId && binding.sourceProjectId !== sourceProjectId) fail("source canonical project changed");
     if (sourceRoot === root || realpathSync(gitAt(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== source.commonGitDir ||
         realpathSync(git(["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== source.commonGitDir ||

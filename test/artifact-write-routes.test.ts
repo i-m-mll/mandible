@@ -133,7 +133,9 @@ describe("artifact write authorization", () => {
     expect(fs.readFileSync(sourceFile)).toEqual(sourceBytes);
     expect(fs.readFileSync(sourceDbPath)).toEqual(sourceDbBytes);
     expect(snapshot(previewDb, previewCas)).not.toEqual(sourceState);
-  });
+  // Baseline and candidate take about 4.5s for this copied-storage integration
+  // case. This deadline bounds fixture IO; file and suite timing gates remain.
+  }, 10_000);
 
   it("denies path, explicit identity, upload and legacy-key updates before any mutation", async () => {
     const project = addProject(db, { project_key: "owner", display_name: "Owner" });

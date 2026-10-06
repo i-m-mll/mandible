@@ -11,11 +11,20 @@ import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-q
  */
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import type { SseEvent } from "../src/types.js";
-import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+import { commitOnBranch, createAuthCheckRepo, createMigratedDb, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+
+function admittedRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun?: () => void | Promise<void>): AuthHookManager {
+  const hooks = new AuthHookManager(db);
+  db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(`printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, '*', 'builtin-mandible-rebuild');
+  vi.spyOn(hooks, 'admittedDrainIdentity').mockImplementation(async requestId => hooks.getRun(requestId, 'builtin-mandible-rebuild')?.exit_code === 75 ? 'private-current-admission' : null);
+  const execute = hooks.executeHooks.bind(hooks);
+  hooks.executeHooks = async (...args) => { await beforeRun?.(); return execute(...args); };
+  return hooks;
+}
 
 describe("auth queue", () => {
   describe("self-rebuild event ordering", () => {
@@ -45,7 +54,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
-          hookManager: createNoopHookManager(),
+          hookManager: admittedRebuildHooks(db),
           broadcast: (event) => {
             events.push(event);
             if (event.event === "auth:resolved") {
@@ -86,6 +95,30 @@ describe("auth queue", () => {
       }
     });
 
+    it.each([0, 3])('keeps the healthy daemon running without exact admission after hook exit %i', async exitCode => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+      const restart = vi.fn();
+      const hooks = admittedRebuildHooks(db);
+      db.prepare('UPDATE auth_hooks SET command = ? WHERE id = ?').run(`exit ${exitCode}`, 'builtin-mandible-rebuild');
+      try {
+        commitOnBranch(repo, 'feature/build-failure', { 'failed.txt': 'reviewed change\n' });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, restartFn: restart,
+          executor: async options => publishFixtureExecution(queue!, options) });
+        const request = queue.submit({ type: 'merge', command: 'mandible auth merge feature/build-failure --into main',
+          title: 'Failed runtime build', repo: 'mandible', cwd: repo, base_branch: 'main', head_branch: 'feature/build-failure',
+          merge_head_sha: git(repo, ['rev-parse', 'feature/build-failure']), execution_mode: 'daemon' });
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, 'completed');
+        await vi.waitFor(() => expect(queue!.isRebuilding).toBe(false));
+        expect(hooks.getRun(request.id, 'builtin-mandible-rebuild')).toMatchObject({ state: exitCode === 0 ? 'complete' : 'pending', exit_code: exitCode });
+        expect(restart).not.toHaveBeenCalled();
+        expect(db.prepare('SELECT value FROM meta WHERE key = ?').get('auth_self_merge_shutdown_at')).toBeUndefined();
+      } finally { queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    });
+
     // Bug: 645f8a8 — the readiness gate relies on mandible:rebuilding being
     // broadcast BEFORE the post-merge hooks run (so the splash is up during the
     // build), and on auth:resolved remaining ordered after it. This locks that
@@ -108,13 +141,9 @@ describe("auth queue", () => {
 
       // A hook manager that records, in the same event stream, the moment hooks
       // run — so we can assert mandible:rebuilding fired strictly before it.
-      const hookManager = {
-        reclaimAllInterruptedRuns: () => 0,
-        executeHooks: async () => {
-          events.push({ event: "test:hooks-ran", data: {} });
-          return [];
-        },
-      } as unknown as AuthHookManager;
+      const hookManager = admittedRebuildHooks(db, () => {
+        events.push({ event: "test:hooks-ran", data: {} });
+      });
 
       try {
         commitOnBranch(repo, "feature/order-fix", { "order.txt": "fix\n" });
@@ -183,13 +212,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
-          hookManager: {
-            reclaimAllInterruptedRuns: () => 0,
-            executeHooks: async () => {
-              lifecycleEvents.push("hooks");
-              return [];
-            },
-          } as unknown as AuthHookManager,
+          hookManager: admittedRebuildHooks(db, () => { lifecycleEvents.push("hooks"); }),
           restartAvailability: {
             markRebuildStarted: (generationId) => {
               lifecycleEvents.push(`rebuild:${generationId}`);
@@ -263,13 +286,7 @@ describe("auth queue", () => {
       });
       // Hold the self-merge in its hook phase, keeping admission closed while we
       // approve a second request.
-      const hookManager = {
-        reclaimAllInterruptedRuns: () => 0,
-        executeHooks: async () => {
-          await hookGate;
-          return [];
-        },
-      } as unknown as AuthHookManager;
+      const hookManager = admittedRebuildHooks(db, async () => { await hookGate; });
 
       try {
         commitOnBranch(repo, "feature/self-park", { "park.txt": "fix\n" });
