@@ -77,7 +77,8 @@ build_action_body() {
   [[ -n "$kind" ]] || { echo "Error: --kind is required" >&2; exit 2; }
   [[ -n "$issue" ]] || { echo "Error: --issue is required" >&2; exit 2; }
   jq -nc --arg kind "$kind" --arg issue "$issue" --argjson payload "$payload" \
-    '{kind:$kind,target_issue_ref:$issue,payload:$payload}'
+    --argjson expected_revision "$expected_revision" --argjson expected_custody_generation "$expected_custody_generation" \
+    '{kind:$kind,target_issue_ref:$issue,payload:$payload,expected_revision:$expected_revision,expected_custody_generation:$expected_custody_generation}'
 }
 
 parse_action_options() {
@@ -97,7 +98,7 @@ parse_action_options() {
   local binding
   local -a selector=("$request_id")
   [[ "$subcommand" != "edit" ]] || selector+=("$action_id")
-  binding=$(mandible_bind_arguments "auth.action.${subcommand}" '{"kind":{"option":"kind"},"issue":{"option":["issue","target-issue"]},"payload_json":{"option":"payload-json"},"body":{"option":"body"},"reason_comment":{"option":"reason-comment"},"status_value":{"option":"status"},"label":{"option":"label"},"checkpoint_kind":{"option":"checkpoint-kind"},"checkpoint_payload_json":{"option":"checkpoint-payload-json"},"target":{"option":"target"},"link_type":{"option":"type"},"note":{"option":"note"}}' "${selector[@]}" "$@") || return $?
+  binding=$(mandible_bind_arguments "auth.action.${subcommand}" '{"kind":{"option":"kind"},"issue":{"option":["issue","target-issue"]},"payload_json":{"option":"payload-json"},"body":{"option":"body"},"reason_comment":{"option":"reason-comment"},"status_value":{"option":"status"},"label":{"option":"label"},"checkpoint_kind":{"option":"checkpoint-kind"},"checkpoint_payload_json":{"option":"checkpoint-payload-json"},"target":{"option":"target"},"link_type":{"option":"type"},"note":{"option":"note"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"}}' "${selector[@]}" "$@") || return $?
   eval "$binding"
 }
 
@@ -153,9 +154,10 @@ case "$subcommand" in
     api_send PUT "/api/auth/request/${request_id}/actions/${action_id}" "$body_json"
     ;;
   rm|delete|remove)
-    binding=$(mandible_bind_main_arguments "auth.action.rm" '{"request_id":{"position":0},"action_id":{"position":1}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.action.rm" '{"request_id":{"position":0},"action_id":{"position":1},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"}}' "$@") || exit $?
     eval "$binding"
-    api_send DELETE "/api/auth/request/${request_id}/actions/${action_id}" "{}"
+    body_json=$(jq -nc --argjson expected_revision "$expected_revision" --argjson expected_custody_generation "$expected_custody_generation" '{expected_revision:$expected_revision,expected_custody_generation:$expected_custody_generation}')
+    api_send DELETE "/api/auth/request/${request_id}/actions/${action_id}" "$body_json"
     ;;
   ""|-h|--help|help)
     usage
