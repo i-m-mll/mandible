@@ -187,6 +187,103 @@ afterEach(() => {
 });
 
 describe("artifact custody recovery", () => {
+  it("captures target-specific dependencies and blocks unknown references or incomplete scans", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "artifact-recovery-scan-"));
+    db = createMigratedDb();
+    const hash = sha256("missing scan bytes");
+    addArtifact(db, {
+      id: "artifact-scan", versionId: "version-scan", blobId: "blob-scan", hash,
+      sourceKind: "external", custodyMode: "external", blobCustody: "external", blobAvailability: "remote_only",
+    });
+    const project = addProject(db, path.join(tempRoot, "empty-checkout"), "scan-repo");
+    addDerivedRefs(db, "version-scan", "blob-scan", project);
+    db.exec(`
+      CREATE TABLE scan_fk (
+        id TEXT PRIMARY KEY,
+        pointer TEXT REFERENCES artifact_version(id),
+        version_id TEXT REFERENCES artifact_version(id),
+        payload TEXT
+      );
+      INSERT INTO scan_fk VALUES ('fk', 'version-scan', 'version-scan', 'preserve all bytes');
+      CREATE TABLE scan_composite (
+        z TEXT, a TEXT, saved_version_id TEXT, saved_blob_id TEXT, payload TEXT,
+        PRIMARY KEY (z, a)
+      ) WITHOUT ROWID;
+      INSERT INTO scan_composite VALUES ('last', 'first', 'version-scan', 'blob-scan', 'composite bytes');
+      CREATE TABLE scan_blob_fk (id TEXT PRIMARY KEY, pointer TEXT REFERENCES artifact_blob(id));
+      INSERT INTO scan_blob_fk VALUES ('blob-fk', 'blob-scan');
+      CREATE TABLE scan_poly (id TEXT PRIMARY KEY, target_type TEXT, target_id TEXT, payload TEXT);
+      INSERT INTO scan_poly VALUES
+        ('logical', 'artifact', 'artifact-scan', 'logical bytes'),
+        ('version', 'artifact_version', 'version-scan', 'version bytes'),
+        ('blob', 'artifact_blob', 'blob-scan', 'blob bytes'),
+        ('unrelated', 'issue', 'version-scan', 'ignore this target');
+    `);
+    db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, status, source, metadata_json, created_at, updated_at)
+      VALUES ('logical-owner', ?, 'artifact', 'artifact-scan', 'associated', 'owner', 'active', 'user', '{}', 1, 1)`)
+      .run(project);
+    const options = { recovery_receipt_path: path.join(tempRoot, "scan.receipt.json") };
+    const plan = planArtifactRecovery(db, options);
+    expect(plan.dependency_scan_errors).toEqual([]);
+    const version = plan.versions[0];
+    const scanRefs = version.dependencies.filter(ref => ref.table.startsWith("scan_"));
+    expect(scanRefs).toEqual([
+      {
+        table: "scan_fk", column: "pointer", identity: { id: "fk" }, dependency_class: "unknown-reference", unique_user_content: false,
+        value: "version-scan", row: { __recovery_rowid: 1, id: "fk", pointer: "version-scan", version_id: "version-scan", payload: "preserve all bytes" },
+      },
+      {
+        table: "scan_composite", column: "saved_version_id", identity: { z: "last", a: "first" },
+        dependency_class: "unknown-reference", unique_user_content: false, value: "version-scan",
+        row: { z: "last", a: "first", saved_version_id: "version-scan", saved_blob_id: "blob-scan", payload: "composite bytes" },
+      },
+      {
+        table: "scan_poly", column: "target_id", identity: { id: "version" }, dependency_class: "unknown-reference",
+        unique_user_content: false, value: "version-scan",
+        row: { __recovery_rowid: 2, id: "version", target_type: "artifact_version", target_id: "version-scan", payload: "version bytes" },
+      },
+      {
+        table: "scan_fk", column: "version_id", identity: { id: "fk" }, dependency_class: "unknown-reference", unique_user_content: false,
+        value: "version-scan", row: { __recovery_rowid: 1, id: "fk", pointer: "version-scan", version_id: "version-scan", payload: "preserve all bytes" },
+      },
+    ]);
+    expect(Object.keys(scanRefs[1].identity)).toEqual(["z", "a"]);
+    expect(version.dependencies.filter(ref => ref.table === "project_artifact_associations"))
+      .toMatchObject([{ dependency_class: "derived-reference", unique_user_content: false }]);
+    expect(version.artifact_dependencies).toMatchObject([
+      { table: "project_artifact_associations", identity: { id: "logical-owner" }, dependency_class: "content-owning", unique_user_content: true },
+      { table: "scan_poly", identity: { id: "logical" }, dependency_class: "unknown-reference" },
+    ]);
+    const blobRefs = plan.blobs[0].dependencies;
+    expect(blobRefs.filter(ref => ref.table.startsWith("scan_")).map(ref => [ref.table, ref.column, ref.identity, ref.value]))
+      .toEqual([
+        ["scan_blob_fk", "pointer", { id: "blob-fk" }, "blob-scan"],
+        ["scan_composite", "saved_blob_id", { z: "last", a: "first" }, "blob-scan"],
+        ["scan_poly", "target_id", { id: "blob" }, "blob-scan"],
+      ]);
+    expect(blobRefs.filter(ref => ["artifact_version", "artifact_links"].includes(ref.table)))
+      .toMatchObject([{ dependency_class: "derived-reference" }, { dependency_class: "derived-reference" }]);
+    expect(version.original.original_fingerprint).toBe(
+      String.raw`{"artifact_id":"artifact-scan","blob_id":"blob-scan","commit_sha":null,"content_hash":"${hash}","created_at":1,"custody_mode":"external","id":"version-scan","label":null,"metadata_json":"{}","note":null,"observed_path":null,"repo_path":null,"source_kind":"external","source_locator_json":"{\"parent_version_id\":null}","source_project_id":null,"source_repo_id":null,"version_no":1}`,
+    );
+    const blocked = applyArtifactRecovery(db, plan, options);
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.blockers.join(" ")).toContain("unknown dependency");
+    expect(blocked.blockers.join(" ")).toContain("content-owning");
+    expect(db.prepare("SELECT payload FROM scan_fk").get()).toEqual({ payload: "preserve all bytes" });
+
+    db.exec(`CREATE TABLE scan_logical_without_rowid (
+      target_type TEXT, target_id TEXT, PRIMARY KEY (target_type, target_id)
+    ) WITHOUT ROWID;
+    INSERT INTO scan_logical_without_rowid VALUES ('artifact', 'artifact-scan');`);
+    const incompleteOptions = { recovery_receipt_path: path.join(tempRoot, "incomplete.receipt.json") };
+    const incomplete = planArtifactRecovery(db, incompleteOptions);
+    expect(incomplete.dependency_scan_errors).toEqual(["scan_logical_without_rowid.target_id"]);
+    expect(applyArtifactRecovery(db, incomplete, incompleteOptions).status).toBe("blocked");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM artifact_version").get()).toEqual({ count: 1 });
+  });
+
   it("recovers direct and nested Git evidence plus staged managed bytes, then retries idempotently", () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "artifact-recovery-"));
     db = createMigratedDb();
