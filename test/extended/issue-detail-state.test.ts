@@ -186,7 +186,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, issue_legacy_alias, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, [artifact:bbbbbbbbbbbb], [artifact:feedbax://runs/demo], [artifact:repo://mandible@main/results/report.md], and `#deadbee` in code.',
+      body: 'See [issue:def456], #789abcd, issue_legacy_alias, auth request 2257522a, [auth:2257522a], [issue:2257522a], `[auth:2257522b]`, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, [artifact:bbbbbbbbbbbb], [artifact:feedbax://runs/demo], [artifact:repo://mandible@main/results/report.md], and `#deadbee` in code.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -243,7 +243,8 @@ describe('LedgerIssueDetail', () => {
     expect(issueLinks).toContainEqual({ text: 'def456', href: '#/issues?repo=mandible&issue=def456' });
     expect(issueLinks.some((link) => link.text === '#789abcd')).toBe(false);
     expect(issueLinks.some((link) => link.text === 'issue_legacy_alias')).toBe(false);
-    expect(issueLinks.some((link) => link.text === '2257522a')).toBe(false);
+    expect(issueLinks).toContainEqual({ text: '2257522a', href: '#/issues?repo=mandible&issue=2257522a' });
+    expect(issueLinks.some((link) => link.href?.startsWith('#/auth'))).toBe(false);
     expect(issueLinks.some((link) => link.text === '204ade09bc3a')).toBe(false);
     expect(issueLinks).toContainEqual({
       text: 'def456#com_2',
@@ -260,6 +261,8 @@ describe('LedgerIssueDetail', () => {
       text: node.textContent,
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
+    expect(artifactLinks).toContainEqual({ text: 'auth:2257522a', href: '#/auth?request=2257522a' });
+    expect(artifactLinks.some((link) => link.text === 'auth:2257522b')).toBe(false);
     expect(artifactLinks).toContainEqual({
       text: 'artifact:bbbbbbbbbbbb',
       href: '#/artifacts?ref=artifact%3Abbbbbbbbbbbb',

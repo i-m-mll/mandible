@@ -101,7 +101,7 @@ describe("instructions CLI", () => {
     expect(installed).toContain("mandible auth request ");
     expect(installed).toContain("Authored ledger Markdown issue refs use `[issue:<id>]`");
     expect(installed).toContain("Do not write `[references:<id>]`, `[closes:<id>]`");
-    expect(installed).toContain("Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`");
+    expect(installed).toContain("Authored ledger Markdown auth request refs use `[auth:<short-id>]`");
     expect(installed).toContain("User policy stays here.");
 
     const cleanDiff = await run(["instructions", "diff", "--target", target]);

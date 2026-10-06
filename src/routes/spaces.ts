@@ -1,6 +1,6 @@
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
-import { getDb, type Db } from "../db.js";
+import { getDb, resolvePrefix, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -60,11 +60,13 @@ import { exportUntrackedCopy, serializeSpaceDocument, ExportError, resolveChecko
 import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
 import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
+import { shortestUniquePrefix } from "../ledger/ids.js";
+import type { ResolverRefKind, ResolverResult } from "../contracts.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { requireProjectAccess, PermissionError, sendPermissionError, type ProjectRole } from "../permissions/store.js";
-import { artifactAccessProjectIds } from "../permissions/resources.js";
+import { artifactAccessProjectIds, resolveWorkProject } from "../permissions/resources.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 
 function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
@@ -260,25 +262,14 @@ function validateItemRef(
 
 // --- unified ref resolver ----------------------------------------------------
 
-type ResolverRefKind = "issue" | "comment" | "artifact" | "mandible" | "repo" | "unknown";
-
-interface ResolverResult {
-  ref: string;
-  kind: ResolverRefKind;
-  resolved: boolean;
-  entity: Record<string, unknown> | null;
-  detail?: Record<string, unknown> | null;
-  error?: string;
-}
-
-function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
+function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverResult {
   const ref = rawRef.trim();
   const store = new LedgerStore(db);
 
   // mandible:// app-route refs (e.g. mandible:///issues?issue=...) — parse the
   // embedded entity ref where present, otherwise report as an app route.
   if (ref.startsWith("mandible://")) {
-    return resolveMandibleRef(db, store, ref);
+    return resolveMandibleRef(db, req, store, ref);
   }
 
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
@@ -301,6 +292,7 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
     const rest = ref.slice(colon + 1);
     if (prefix === "issue") return resolveIssueRef(store, rest, ref);
     if (prefix === "comment") return resolveCommentRef(db, rest, ref);
+    if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
   }
@@ -317,7 +309,7 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
   return resolveArtifactResult(db, ref);
 }
 
-function resolveMandibleRef(db: Db, store: LedgerStore, ref: string): ResolverResult {
+function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: string): ResolverResult {
   let url: URL;
   try {
     url = new URL(ref);
@@ -327,6 +319,8 @@ function resolveMandibleRef(db: Db, store: LedgerStore, ref: string): ResolverRe
   const issueParam = url.searchParams.get("issue");
   const requestParam = url.searchParams.get("request");
   const artifactParam = url.searchParams.get("ref");
+  const route = url.pathname.replace(/^\/+/, "");
+  if (requestParam && route === "auth") return resolveAuthRef(db, req, requestParam, ref);
   if (issueParam) return resolveIssueRef(store, issueParam, ref);
   if (artifactParam) return resolveArtifactResult(db, artifactParam, "mandible", ref);
   return {
@@ -337,7 +331,6 @@ function resolveMandibleRef(db: Db, store: LedgerStore, ref: string): ResolverRe
     detail: {
       route: url.pathname.replace(/^\/+/, ""),
       params: Object.fromEntries(url.searchParams.entries()),
-      ...(requestParam ? { auth_request_id: requestParam } : {}),
     },
   };
 }
@@ -362,6 +355,35 @@ function resolveIssueRef(store: LedgerStore, refValue: string, ref: string): Res
   } catch (error) {
     return { ref, kind: "issue", resolved: false, entity: null, error: String(error) };
   }
+}
+
+function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string): ResolverResult {
+  const resolved = resolvePrefix(db, "auth_requests", "id", refValue.trim());
+  if (!resolved.ok) {
+    return { ref, kind: "auth", resolved: false, entity: null, error: resolved.error };
+  }
+  const request = db.prepare(
+    `SELECT id, type, title, status, repo, target_repo_root, base_branch, head_branch,
+            created_at, approved_at, resolved_at, exit_code
+       FROM auth_requests WHERE id = ?`,
+  ).get(resolved.id) as Record<string, unknown>;
+  const projects = new Set<string>();
+  for (const projectRef of [request.target_repo_root, request.repo]) {
+    if (typeof projectRef !== "string" || !projectRef.trim()) continue;
+    const project = resolveWorkProject(db, projectRef);
+    if (!project.ok && project.reason === "ambiguous") {
+      return { ref, kind: "auth", resolved: false, entity: null, error: "project_unresolved" };
+    }
+    if (project.ok) projects.add(project.project_id);
+  }
+  if (projects.size !== 1) {
+    return { ref, kind: "auth", resolved: false, entity: null, error: "project_unresolved" };
+  }
+  requireProjectAccess(db, req, [...projects][0], "read");
+  const ids = db.prepare("SELECT id FROM auth_requests").all() as Array<{ id: string }>;
+  const id = shortestUniquePrefix(request.id as string, ids.map((row) => row.id), 8);
+  const { target_repo_root: _root, ...entity } = request;
+  return { ref, kind: "auth", resolved: true, entity: { ...entity, id } };
 }
 
 function resolveCommentRef(db: Db, refValue: string, ref: string): ResolverResult {
@@ -404,7 +426,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const ref = queryString(req, "ref") ?? queryString(req, "uri");
       if (!ref) throw new HttpError(400, "ref query parameter required");
       const db = getDb();
-      sendJson(res, 200, { resolution: resolveUnifiedRef(db, ref) });
+      sendJson(res, 200, { resolution: resolveUnifiedRef(db, req, ref) });
     } catch (error) {
       handleError(res, error);
     }
