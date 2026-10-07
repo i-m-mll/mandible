@@ -6,6 +6,8 @@ import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { ChatSessionOverview } from '../../ui/src/chat/ChatRightSidebar';
+import type { ManagedConversationOverview } from '../../ui/src/views/session-overview';
 import { SessionOverviewView } from '../../ui/src/views/session-overview';
 
 const PAGE_BINDING = 'aaaabbbb';
@@ -75,7 +77,7 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
-function stubFetch(options: { registered: { value: boolean } }): { calls: FetchCall[] } {
+function stubFetch(options: { registered: { value: boolean }; provider?: 'claude' | 'codex' }): { calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -100,7 +102,7 @@ function stubFetch(options: { registered: { value: boolean } }): { calls: FetchC
         provider: null,
         provider_session_id: PAGE_BINDING,
         truncated: false,
-        matches: [options.registered.value ? boundMatch : conversationOnlyMatch],
+        matches: [{ ...(options.registered.value ? boundMatch : conversationOnlyMatch), provider: options.provider ?? 'codex' }],
       }));
     }
     if (url.startsWith('/api/sessions/overview/by-provider')) {
@@ -111,7 +113,7 @@ function stubFetch(options: { registered: { value: boolean } }): { calls: FetchC
       return Promise.resolve(jsonResponse({ id: REGISTERED_ID, provider: 'codex' }));
     }
     if (url.startsWith(`/api/sessions/${encodeURIComponent(REGISTERED_ID)}/overview`)) {
-      return Promise.resolve(jsonResponse(boundOverview));
+      return Promise.resolve(jsonResponse({ ...boundOverview, session: { ...boundOverview.session, app: options.provider ?? 'codex' } }));
     }
     return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
   }));
@@ -247,5 +249,54 @@ describe('SessionOverviewView truncated resolution (review C4)', () => {
     expect(screen.queryByRole('list', { name: 'Session picker' })).toBeNull();
     expect(screen.getByText('aaaabbbb-1111-2222-3333-4…')).toBeTruthy();
     expect(screen.getByText('aaaabbbb-1111-2222-3333-9…')).toBeTruthy();
+  });
+});
+
+
+describe('Managed conversation overview', () => {
+  const context = (provider: 'claude' | 'codex', id = 'conv-1'): ManagedConversationOverview => ({
+    conversation: { id, title: `New ${provider} chat`, source: provider, cwd: '/project', branch: 'feature/example', model: null, started_at: '2026-10-06T12:00:00Z' },
+    control: null,
+    spawn: null,
+  });
+
+  it.each(['claude', 'codex'] as const)('keeps known %s context mounted while provider identity binds', async (provider) => {
+    const { calls } = stubFetch({ registered: { value: true }, provider });
+    const managedConversation = context(provider);
+    const { container, rerender } = render(<ChatSessionOverview conversationId="conv-1" providerSessionId={null} managedConversation={managedConversation} />);
+    const facts = screen.getByRole('region', { name: 'Conversation' });
+    const overview = container.querySelector('.session-overview');
+    expect(facts.textContent).toContain('/project');
+    expect(calls).toHaveLength(0);
+    rerender(<ChatSessionOverview conversationId="conv-1" providerSessionId={PAGE_BINDING} managedConversation={managedConversation} />);
+    await screen.findByText('Linked issues');
+    expect(screen.getByRole('region', { name: 'Conversation' })).toBe(facts);
+    expect(container.querySelector('.session-overview')).toBe(overview);
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+
+  it('shows the spawn failure without waiting for provider identity', () => {
+    const managedConversation = context('claude');
+    managedConversation.spawn = {
+      state: 'failed', error: { code: 'spawn-failed', message: 'Provider executable is unavailable', retryable: false },
+    } as ManagedConversationOverview['spawn'];
+    render(<ChatSessionOverview conversationId="conv-1" providerSessionId={null} managedConversation={managedConversation} />);
+    expect(screen.getByRole('alert').textContent).toContain('Provider executable is unavailable');
+  });
+
+  it('isolates the new conversation from an outstanding resolver response', async () => {
+    let resolvePending!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/client-auth/whoami') return Promise.resolve(jsonResponse({ authenticated: true, session: { csrf_token: 'csrf' } }));
+      if (String(input).startsWith('/api/sessions/resolve')) return new Promise<Response>((resolve) => { resolvePending = resolve; });
+      return Promise.reject(new Error(`unexpected fetch ${String(input)}`));
+    }));
+    const { rerender } = render(<ChatSessionOverview conversationId="conv-1" providerSessionId="switch-isolation-binding" managedConversation={context('claude')} />);
+    await waitFor(() => expect(resolvePending).toBeDefined());
+    rerender(<ChatSessionOverview conversationId="conv-2" providerSessionId={null} managedConversation={context('codex', 'conv-2')} />);
+    resolvePending(jsonResponse({ matches: [boundMatch], truncated: false }));
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Conversation' }).textContent).toContain('New codex chat'));
+    expect(screen.queryByText('New claude chat')).toBeNull();
+    expect(screen.queryByText('Linked issues')).toBeNull();
   });
 });

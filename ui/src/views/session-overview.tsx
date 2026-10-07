@@ -17,6 +17,9 @@ import {
   getSessions,
   invalidateApiGetCache,
   resolveAgentSession,
+  type Conversation,
+  type ConversationControlSnapshot,
+  type ConversationSpawnReceipt,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
   type SessionOverview,
@@ -26,6 +29,8 @@ import {
   type SessionOverviewWorkUnit,
   type SessionResolveMatch,
 } from '../api';
+import { conversationControlPresentation } from '../chat/conversationControl';
+import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import { shortRouteId } from '../routing';
 import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
@@ -43,13 +48,46 @@ type BindingState =
   | { kind: 'provider-scoped'; match: SessionResolveMatch }
   // Review C4 — truncated marks a capped prefix scan: even a single returned
   // match must not be presented (or auto-bound) as unique.
-  | { kind: 'many'; matches: SessionResolveMatch[]; truncated?: boolean }
-  | { kind: 'error'; message: string };
+  | { kind: 'many'; matches: SessionResolveMatch[]; truncated?: boolean };
+
+export type ManagedConversationOverview = {
+  conversation: Pick<Conversation, 'id' | 'title' | 'source' | 'cwd' | 'branch' | 'model' | 'started_at'>;
+  control: ConversationControlSnapshot | null;
+  spawn: ConversationSpawnReceipt | null;
+};
+
+function ManagedConversationFacts({ conversation, control, spawn }: ManagedConversationOverview): JSX.Element {
+  const matchingControl = control?.conversation_id === conversation.id ? control : null;
+  const failure = spawn?.error?.message ?? (
+    matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
+      : matchingControl?.controller.kind === 'failed' ? chatControlFailureNotice(matchingControl.controller.error).detail
+        : null
+  );
+  const status = spawn?.state === 'failed' ? 'Failed'
+    : spawn && (spawn.state === 'reserved' || spawn.state === 'starting') && (!matchingControl || matchingControl.turn.kind === 'none') ? spawn.state
+    : matchingControl ? conversationControlPresentation(matchingControl).status
+      : spawn?.state ?? null;
+  return (
+    <section className="session-overview__section" aria-label="Conversation">
+      <dl className="session-overview__facts">
+        <div className="session-overview__facts-wide"><dt>Conversation</dt><dd>{conversation.title}</dd></div>
+        <div><dt>Provider</dt><dd>{conversation.source}</dd></div>
+        {status ? <div><dt>Status</dt><dd>{status}</dd></div> : null}
+        {conversation.model ? <div><dt>Model</dt><dd>{conversation.model}</dd></div> : null}
+        {conversation.branch ? <div><dt>Branch</dt><dd>{conversation.branch}</dd></div> : null}
+        {conversation.cwd ? <div className="session-overview__facts-wide"><dt>Cwd</dt><dd className="session-overview__path">{conversation.cwd}</dd></div> : null}
+        <div><dt>Started</dt><dd>{formatTimestamp(conversation.started_at)}</dd></div>
+        {failure ? <div className="session-overview__facts-wide" role="alert"><dt>Failure</dt><dd>{failure}</dd></div> : null}
+      </dl>
+    </section>
+  );
+}
 
 export type SessionOverviewViewProps = {
   initialSessionId: string | null;
   agentBinding: string | null;
   embedded?: boolean;
+  managedConversation?: ManagedConversationOverview;
 };
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
@@ -330,10 +368,12 @@ export function SessionOverviewView({
   initialSessionId,
   agentBinding,
   embedded = false,
+  managedConversation,
 }: SessionOverviewViewProps): JSX.Element {
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
   const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
+  const [bindingError, setBindingError] = useState<string | null>(null);
   const [overview, setOverview] = useState<SessionOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -343,6 +383,7 @@ export function SessionOverviewView({
   const [providerOverviewError, setProviderOverviewError] = useState<string | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const scrollOwnerRef = useRef<HTMLDivElement>(null);
+  const resolvedBindingRef = useRef<string | null>(null);
 
   // Deep-link/param changes (e.g. clicking a child session row) win over the
   // in-memory selection.
@@ -353,15 +394,35 @@ export function SessionOverviewView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSessionId]);
 
-  // Resolve the page-local agent binding once, only when no explicit session
+  const managedBindingRefresh = managedConversation ? refreshToken : 0;
+  const bindingProvider = managedConversation?.conversation.source;
+
+  // Resolve the page-local agent binding only when no explicit session
   // selection exists. Provider-neutral, and the binding may be a full id or a
   // short prefix. Zero/one/many are surfaced honestly — only exactly one
   // bindable match auto-selects.
   useEffect(() => {
-    if (!agentBinding || initialSessionId) return;
+    if (initialSessionId) return;
+    if (!agentBinding) {
+      if (resolvedBindingRef.current) {
+        resolvedBindingRef.current = null;
+        setBinding({ kind: 'none' });
+        setSelectedSessionId(null);
+        setOverview(null);
+        setProviderOverview(null);
+      }
+      return;
+    }
     let cancelled = false;
-    setBinding({ kind: 'resolving' });
-    const initialLoad = resolveAgentSession(agentBinding)
+    setBindingError(null);
+    if (resolvedBindingRef.current !== agentBinding) {
+      setBinding({ kind: 'resolving' });
+      setSelectedSessionId(null);
+      setOverview(null);
+      setProviderOverview(null);
+      resolvedBindingRef.current = agentBinding;
+    }
+    const initialLoad = resolveAgentSession(agentBinding, bindingProvider)
       .then((result) => {
         if (cancelled) return;
         const bindable = result.matches.filter((match) => match.mandible_session_id);
@@ -390,17 +451,15 @@ export function SessionOverviewView({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setBinding({
-          kind: 'error',
-          message: err instanceof Error ? err.message : 'Resolver request failed',
-        });
+        setBindingError(err instanceof Error ? err.message : 'Resolver request failed');
+        setBinding((current) => current.kind === 'resolving' ? { kind: 'none' } : current);
       });
     registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentBinding, registerInitialRouteLoad]);
+  }, [agentBinding, bindingProvider, managedBindingRefresh, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -436,7 +495,7 @@ export function SessionOverviewView({
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
   useEffect(() => {
-    if (embedded || typeof window === 'undefined') return undefined;
+    if ((embedded && !managedConversation) || typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
       if (document.visibilityState !== 'visible') return;
       if (selectedSessionId) {
@@ -452,7 +511,7 @@ export function SessionOverviewView({
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [embedded, selectedSessionId]);
+  }, [embedded, Boolean(managedConversation), selectedSessionId]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
   // state, keyed on the full identity and provider the (possibly short)
@@ -473,7 +532,7 @@ export function SessionOverviewView({
       // honest unavailable state for other providers instead of presenting
       // their data as codex-scoped.
       setProviderOverview(null);
-      setProviderOverviewError(
+      setProviderOverviewError(managedConversation ? null :
         `Provider-scoped overview is not available for provider ${providerScopedProvider ?? 'unknown'} yet.`,
       );
       return;
@@ -486,7 +545,6 @@ export function SessionOverviewView({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setProviderOverview(null);
         setProviderOverviewError(
           err instanceof Error ? err.message : 'Failed to load provider-scoped overview',
         );
@@ -550,10 +608,11 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
+      {managedConversation ? <ManagedConversationFacts {...managedConversation} /> : null}
       <AppOperationalNoticeOutlet registerAsMain={!embedded} />
-      {(binding.kind === 'error' || providerOverviewError || overviewError || pickerError) ? (
+      {(bindingError || providerOverviewError || overviewError || pickerError) ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
-          {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError ?? pickerError}
+          {bindingError ?? providerOverviewError ?? overviewError ?? pickerError}
         </DetailPaneNotice>
       ) : null}
       <DetailPaneModal
@@ -571,7 +630,7 @@ export function SessionOverviewView({
         </dl>
       </DetailPaneModal>
 
-      {agentBinding && binding.kind !== 'bound' && binding.kind !== 'provider-scoped' ? (
+      {!managedConversation && agentBinding && binding.kind !== 'bound' && binding.kind !== 'provider-scoped' ? (
         <div className="session-overview__binding" role="status">
           {binding.kind === 'resolving' && (
             <span>Resolving agent session {shortUuid(agentBinding)}…</span>
@@ -634,7 +693,7 @@ export function SessionOverviewView({
 
       {!selectedSessionId && binding.kind === 'provider-scoped' ? (
         <div className="session-overview__body">
-          {!providerOverview && !providerOverviewError ? (
+          {!managedConversation && !providerOverview && !providerOverviewError ? (
             <p className="text-muted">Loading provider-scoped overview…</p>
           ) : null}
           {providerOverview ? (
@@ -684,11 +743,12 @@ export function SessionOverviewView({
           ) : null}
         </div>
       ) : !selectedSessionId && (binding.kind === 'many' || binding.kind === 'resolving') ? null
+      : !selectedSessionId && managedConversation ? null
       : !selectedSessionId ? (
         <SessionPicker onSelect={handleSelect} onErrorChange={setPickerError} />
       ) : (
         <div className="session-overview__body">
-          {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
+          {overviewLoading && !overview && !managedConversation ? <p className="text-muted">Loading overview…</p> : null}
           {session ? (
             <>
               {embedded ? <section className="session-overview__section" aria-label="Session">

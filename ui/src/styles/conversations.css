@@ -1254,9 +1254,6 @@
 }
 
 .chat-right-sidebar__empty {
-  display: grid;
-  min-height: 100%;
-  place-items: center;
   padding: 0;
   color: var(--text-muted);
   font-size: 13px;
