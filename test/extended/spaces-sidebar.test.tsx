@@ -137,10 +137,7 @@ describe('SpacesSidebar render + grouping', () => {
     const alphaGroup = screen.getByTestId('spaces-group-proj-a');
     expect(alphaGroup.parentElement).toBe(scroll);
     expect(alphaGroup.classList.contains('sidebar-group-node--folder')).toBe(true);
-    expect(
-      alphaGroup.querySelector('[data-testid="spaces-group-header-proj-a"]')
-        ?.classList.contains('sidebar-reorder-handle'),
-    ).toBe(true);
+    expect(alphaGroup.querySelector('[data-sidebar-reorder-handle]')).toBeNull();
     expect(scroll.contains(topLevelGroup)).toBe(true);
     expect(scroll.contains(alphaGroup)).toBe(true);
     expect(topLevelGroup.compareDocumentPosition(alphaGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -497,7 +494,7 @@ describe('SpacesSidebar empty projects (compact, Stage 3)', () => {
     await screen.findByText('Roadmap');
 
     // The empty project header is present (so the user can create under it)…
-    expect(screen.getByTestId('spaces-group-header-proj-empty')).toBeTruthy();
+    expect(screen.getByTestId('spaces-group-toggle-proj-empty')).toBeTruthy();
     expect(screen.getByText('Empty')).toBeTruthy();
     // …but no per-project "No spaces yet" filler line anywhere.
     expect(screen.queryByText('No spaces yet')).toBeNull();

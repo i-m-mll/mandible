@@ -8,6 +8,7 @@ const DRAG_THRESHOLD_PX = 6;
 type DragState = {
   itemId: string;
   pointerId: number;
+  captureTarget: HTMLElement;
   startX: number;
   startY: number;
   active: boolean;
@@ -54,14 +55,24 @@ export function useSidebarReorder({
     if (disabled || (dragRef.current && dragRef.current.originOrder.join('\0') !== idsSignature)) cancel();
   }, [cancel, disabled, idsSignature]);
 
-  const binding = (itemId: string): SidebarReorderBinding | undefined => {
+  const binding = (itemId: string, { handleOnly = false }: { handleOnly?: boolean } = {}): SidebarReorderBinding | undefined => {
     if (disabled) return undefined;
     const begin = (event: JSX.TargetedPointerEvent<HTMLElement>) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target as Element | null;
+      if (!handleOnly) {
+        if (target?.closest('[data-sidebar-reorder-id]') !== event.currentTarget) return;
+        const interactive = target?.closest<HTMLElement>('button, a, input, textarea, select, [contenteditable], [role="button"]');
+        if (interactive && !interactive.matches('.sidebar-item-row__select, .sidebar-group-node__heading')) return;
+      }
+      // Capture the selection button so a sub-threshold gesture still clicks it.
+      const captureTarget = handleOnly ? event.currentTarget
+        : target?.closest<HTMLElement>('.sidebar-item-row__select, .sidebar-group-node__heading') ?? event.currentTarget;
       const originOrder = [...ids];
       dragRef.current = {
         itemId,
         pointerId: event.pointerId,
+        captureTarget,
         startX: event.clientX,
         startY: event.clientY,
         active: false,
@@ -69,7 +80,7 @@ export function useSidebarReorder({
         originOrder,
         order: originOrder,
       };
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      captureTarget.setPointerCapture?.(event.pointerId);
     };
     const move = (event: JSX.TargetedPointerEvent<HTMLElement>) => {
       const current = dragRef.current;
@@ -82,8 +93,8 @@ export function useSidebarReorder({
       const insertionIndex = rows.findIndex((row) => event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
       const rawIndex = insertionIndex < 0 ? rows.length : insertionIndex;
       const without = current.originOrder.filter((id) => id !== current.itemId);
-      const boundaryId = rows[rawIndex]?.dataset.sidebarReorderId;
-      const lastVisibleId = rows.at(-1)?.dataset.sidebarReorderId;
+      const boundaryId = rows.slice(rawIndex).find(row => row.dataset.sidebarReorderId !== current.itemId)?.dataset.sidebarReorderId;
+      const lastVisibleId = rows.filter(row => row.dataset.sidebarReorderId !== current.itemId).at(-1)?.dataset.sidebarReorderId;
       const adjustedIndex = boundaryId
         ? without.indexOf(boundaryId)
         : lastVisibleId ? without.indexOf(lastVisibleId) + 1 : without.length;
@@ -104,7 +115,7 @@ export function useSidebarReorder({
       const current = dragRef.current;
       if (!current || current.pointerId !== event.pointerId) return;
       cancel();
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      current.captureTarget.releasePointerCapture?.(event.pointerId);
       if (!current.active) return;
       onCommit(current.order);
       suppressClickRef.current = { itemId, until: Date.now() + 500 };
@@ -128,16 +139,24 @@ export function useSidebarReorder({
       onCommit(next);
       setAnnouncement(`${label(itemId)} moved to position ${target + 1} of ${ids.length}.`);
     };
+    const pointer = { onPointerDown: begin, onPointerMove: move, onPointerUp: finish, onPointerCancel: cancelPointer, onLostPointerCapture: cancelPointer };
     return {
+      handleOnly,
       dragging: drag?.active === true && drag.itemId === itemId,
       dropTarget: drag?.active === true && drag.overId === itemId,
       root: {
         'data-sidebar-reorder-id': itemId,
+        ...(!handleOnly ? pointer : {}),
         onClickCapture: (event) => {
           const suppressed = suppressClickRef.current;
+          const target = event.target as Element;
+          if (!handleOnly) {
+            const interactive = target.closest('button, a, input, textarea, select, [contenteditable], [role="button"]');
+            if (interactive && !interactive.matches('.sidebar-item-row__select, .sidebar-group-node__heading')) return;
+          }
           const handleId = (event.target as Element).closest<HTMLElement>('[data-sidebar-reorder-handle]')
             ?.dataset.sidebarReorderHandle;
-          if (suppressed?.itemId !== itemId || handleId !== itemId || Date.now() > suppressed.until) return;
+          if (suppressed?.itemId !== itemId || (handleOnly && handleId !== itemId) || Date.now() > suppressed.until) return;
           suppressClickRef.current = null;
           event.preventDefault();
           event.stopPropagation();
@@ -154,11 +173,7 @@ export function useSidebarReorder({
         'aria-keyshortcuts': 'Control+Shift+ArrowUp Control+Shift+ArrowDown',
         'data-sidebar-reorder-handle': itemId,
         onKeyDown: keyDown,
-        onPointerDown: begin,
-        onPointerMove: move,
-        onPointerUp: finish,
-        onPointerCancel: cancelPointer,
-        onLostPointerCapture: cancelPointer,
+        ...pointer,
       },
     };
   };

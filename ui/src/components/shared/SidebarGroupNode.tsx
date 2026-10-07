@@ -168,7 +168,7 @@ export function SidebarGroupNode({
             <DisclosureChevronIcon expanded={expanded} />
           </button>
         ) : null}
-        {reorder ? (
+        {reorder?.handleOnly ? (
           <span className="sidebar-group-node__reorder-slot contextual-action-group">
             <SidebarReorderHandle binding={reorder} testId={testIds?.dragHandle} />
           </span>
