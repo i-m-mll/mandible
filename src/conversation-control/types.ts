@@ -118,9 +118,25 @@ export type ProviderRuntimeEvent = {
   snapshot: { usage?: Record<string, unknown>; model_usage?: Record<string, unknown>; total_cost_usd?: number; duration_ms?: number; num_turns?: number };
 };
 
+export type ManagedQuestion = {
+  id: string; title: string; question: string;
+  options: { label: string; description?: string }[];
+  multi_select: boolean; allow_other: boolean; secret: boolean;
+};
+export type ManagedRequestResponse = {
+  conversation_id: string; generation: number; request_id: string;
+  decision: "allow" | "deny" | "allow_always" | "answer";
+  answers?: Record<string, string[]>;
+};
+export type ConversationRunOption = {
+  id: "model" | "effort" | "permission_mode"; label: string;
+  choices: { value: string; label: string }[];
+};
+
 export type ManagedPermissionRequest = {
   id: string; tool_name: string; tool_input: unknown; created_at: number; expires_at: number;
   title?: string; description?: string;
+  questions?: ManagedQuestion[];
 };
 
 export type ConversationRuntimeOptions = {

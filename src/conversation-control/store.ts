@@ -452,11 +452,11 @@ export class ConversationControlStore {
           turn = "running"; turnId = event.turn_id; break;
         }
         case "turn-waiting-user": {
-          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-user"]); if (invalid) return invalid;
+          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-user", "waiting-permission"]); if (invalid) return invalid;
           turn = "waiting-user"; break;
         }
         case "turn-waiting-permission": {
-          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-permission"]); if (invalid) return invalid;
+          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-permission", "waiting-user"]); if (invalid) return invalid;
           turn = "waiting-permission"; break;
         }
         case "turn-completed": {
@@ -744,7 +744,7 @@ export class ConversationControlStore {
       capability = unavailable(revision, "controller-transition");
     } else if (["queued", "unknown"].includes(turn.kind)) {
       capability = unavailable(revision, "turn-transition");
-    } else if (["running", "waiting-permission"].includes(turn.kind)) {
+    } else if (["running", "waiting-permission", "waiting-user"].includes(turn.kind)) {
       capability = capabilities.steer
         ? { kind: "live-steer", revision, generation: owner.generation }
         : capabilities.queue

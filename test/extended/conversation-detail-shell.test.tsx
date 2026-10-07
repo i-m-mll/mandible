@@ -1,4 +1,4 @@
-import { mockConversationStructureFromWindow, mockManagedSettings, changeNativeSelect } from '../helpers/conversation-ui-transport';
+import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
 import { establishTestClientAccess } from '../helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -1033,7 +1033,7 @@ describe('compact detail pane shell', () => {
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
     const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
-    const modelSelect = within(runOptionsDialog).getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    const modelSelect = within(runOptionsDialog).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
     expect(modelSelect.getAttribute('aria-label')).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
@@ -1131,14 +1131,14 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(inlineRunOptions?.querySelectorAll('input, select')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
-    changeNativeSelect(screen.getByRole('combobox', { name: 'Permissions' }) as HTMLSelectElement, 'read-only');
+    fireEvent.input(screen.getByRole('combobox', { name: 'Permissions' }), { target: { value: 'read-only' } });
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modeWidth = 230;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     modeWidth = 70;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    changeNativeSelect(inlineRunOptions?.querySelector('select[aria-label="Permissions"]') as HTMLSelectElement, 'read-only');
+    fireEvent.input(inlineRunOptions?.querySelector('select[aria-label="Permissions"]') as HTMLSelectElement, { target: { value: 'read-only' } });
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
@@ -1157,7 +1157,7 @@ describe('compact detail pane shell', () => {
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
     expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
-    fireEvent.input(inlineRunOptions?.querySelector('input[aria-label="Model"]') as HTMLInputElement, { target: { value: 'edited-model' } });
+    fireEvent.input(inlineRunOptions?.querySelector('select[aria-label="Model"]') as HTMLSelectElement, { target: { value: 'edited-model' } });
     fireEvent.click(trigger);
     await screen.findByRole('dialog', { name: 'Run options' });
     await waitFor(() => expect(Array.from(
@@ -1165,7 +1165,7 @@ describe('compact detail pane shell', () => {
       (select) => select.getAttribute('aria-label'),
     )).toEqual(expect.arrayContaining(['Permissions', 'Model', 'Thinking effort'])));
     const popover = screen.getByRole('dialog', { name: 'Run options' });
-    expect((within(popover).getByRole('textbox', { name: 'Model' }) as HTMLInputElement).value).toBe('edited-model');
+    expect((within(popover).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement).value).toBe('edited-model');
     const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Permissions"]')!;
     const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!;
 

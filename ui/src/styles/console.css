@@ -1603,3 +1603,19 @@
   opacity: 0.85;
   padding: 16px 24px;
 }
+
+.session-controls__choice { position: relative; display: inline-flex; flex-direction: row; gap: 0; align-items: center; min-width: 0; }
+.session-controls__choice > svg { position: absolute; right: 5px; pointer-events: none; color: var(--text-muted); }
+.session-controls__select--borderless {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-default);
+  padding: 5px 24px 5px 5px;
+  field-sizing: content;
+  max-width: 100%;
+  cursor: pointer;
+}
+.session-controls__select--borderless:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
+.session-controls__select--borderless:disabled { opacity: .55; cursor: default; }

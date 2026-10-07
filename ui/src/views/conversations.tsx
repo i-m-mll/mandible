@@ -85,7 +85,7 @@ import {
 import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
-import { ManagedConversationControlActions, ManagedConversationControlFields, useManagedConversationControlState } from '../chat/ManagedConversationControls';
+import { ManagedConversationStopButton, ManagedConversationControlActions, ManagedConversationControlFields, useManagedConversationControlState } from '../chat/ManagedConversationControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
@@ -2531,6 +2531,7 @@ export function ConversationDetail({
         </div>
       ) : (
       <div className="conv-compose" data-detail-pane-overlay-visual>
+        <ManagedConversationControlActions state={managedControlState} />
         {draftAttachments.length > 0 && (
           <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
             <div className="conv-compose__attachments" aria-label="Draft attachments">
@@ -2615,6 +2616,9 @@ export function ConversationDetail({
                 </button>
               ) : null}
               <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
+              {managedControlState.execution.canInterrupt || managedControlState.interruptPending ? (
+                <ManagedConversationStopButton state={managedControlState} />
+              ) : (
               <button
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
@@ -2625,6 +2629,7 @@ export function ConversationDetail({
               >
                 {continueBusy ? <span aria-hidden="true">…</span> : <ChatComposerSubmitIcon />}
               </button>
+              )}
             </span>
           </div>
         </div>
@@ -2731,7 +2736,6 @@ export function ConversationDetail({
       onDragOverCapture={handleFileDragOver}
       onDropCapture={handleFileDrop}
       notice={<>
-        <ManagedConversationControlActions state={managedControlState} />
         {controlFailureNotice}
         {creationNotice}
         {actionErrorNotice}

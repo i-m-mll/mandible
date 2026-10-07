@@ -1345,3 +1345,27 @@
   display: grid;
   gap: 10px;
 }
+
+.composer-request-shelf {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(45vh, 360px);
+  overflow: auto;
+  padding: 2px 2px 12px;
+  border-bottom: 1px solid var(--neutral-alpha-10);
+}
+.composer-request { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.composer-request p, .composer-request-shelf__error { margin: 0; }
+.composer-request fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.composer-request legend { font-weight: 600; margin-bottom: 8px; }
+.composer-request__choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.composer-request__choice { display: flex; align-items: flex-start; gap: 6px; padding: 8px; border-radius: 8px; background: var(--neutral-alpha-5); cursor: pointer; }
+.composer-request__choice:has(input:checked) { background: var(--neutral-alpha-10); }
+.composer-request__choice span { display: flex; flex-direction: column; gap: 3px; }
+.composer-request__choice small { color: var(--text-muted); max-width: 32ch; }
+.composer-request__actions { display: flex; gap: 8px; }
+.composer-request pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.composer-request > button { align-self: flex-start; }
+.composer-request-shelf__error { color: var(--status-danger-fg); }
+.conv-compose__stop svg { width: 20px; height: 20px; }

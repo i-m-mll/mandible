@@ -1,5 +1,35 @@
 import type { ConversationControlSnapshot } from '../api';
 
+export type ConversationExecutionState = {
+  phase: 'idle' | 'starting' | 'queued' | 'running' | 'waiting' | 'stopping' | 'terminal' | 'unknown';
+  isExecuting: boolean;
+  canInterrupt: boolean;
+  activeTurnId: string | null;
+  generation: number | null;
+};
+
+export function conversationExecutionState(snapshot: ConversationControlSnapshot | null | undefined): ConversationExecutionState {
+  if (!snapshot) return { phase: 'unknown', isExecuting: false, canInterrupt: false, activeTurnId: null, generation: null };
+  const { turn, controller, ownership } = snapshot;
+  const terminal = ['completed', 'failed', 'cancelled'].includes(turn.kind);
+  const active = ['running', 'queued', 'waiting-user', 'waiting-permission'].includes(turn.kind);
+  const owned = ownership.kind === 'mandible';
+  const phase: ConversationExecutionState['phase'] = terminal ? 'terminal'
+    : ownership.kind === 'unknown' || turn.kind === 'unknown' || controller.kind === 'unknown' || (active && (controller.kind === 'failed' || controller.kind === 'stopped')) ? 'unknown'
+    : controller.kind === 'stopping' ? 'stopping'
+    : turn.kind === 'waiting-user' || turn.kind === 'waiting-permission' ? 'waiting'
+    : turn.kind === 'running' ? 'running'
+    : turn.kind === 'queued' ? 'queued'
+    : controller.kind === 'starting' ? 'starting' : 'idle';
+  return {
+    phase,
+    isExecuting: owned && phase === 'running' && controller.kind === 'running',
+    canInterrupt: owned && active && Boolean(snapshot.provider_capabilities?.stop) && phase !== 'unknown',
+    activeTurnId: active && 'turn_id' in turn ? turn.turn_id : null,
+    generation: ownership.generation,
+  };
+}
+
 export type ConversationControlPresentation = {
   status: string;
   title: string;
@@ -64,7 +94,7 @@ export function conversationControlPresentation(
     return { status: 'Failed', title: 'The Mandible-owned controller failed.', composer, submitLabel };
   }
   if (snapshot.controller.kind === 'stopping') {
-    return { status: 'Stopped', title: 'The Mandible-owned controller is stopping.', composer, submitLabel };
+    return { status: 'Stopping', title: 'The Mandible-owned controller is stopping.', composer, submitLabel };
   }
   if (capability.kind === 'unavailable') {
     return { status: 'Unavailable', title: `Continuation unavailable: ${capability.reason}.`, composer, submitLabel };

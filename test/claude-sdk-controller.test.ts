@@ -7,7 +7,7 @@ import type { ConversationOutboxItem } from "../src/conversation-control/types.j
 const adapters: ClaudeSdkControllerAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map((adapter) => adapter.close())); });
 
-function fakeSdk({ delay = false, identity = true } = {}) {
+function fakeSdk({ delay = false, identity = true, interruptFails = false, interruptCompletes = false } = {}) {
   let options!: Options;
   let nativeId!: string;
   let release!: () => void;
@@ -27,7 +27,7 @@ function fakeSdk({ delay = false, identity = true } = {}) {
       }
     },
     close() { closed++; stopped = true; wake?.(); },
-    async interrupt() { emit({ type: "result", subtype: "error_during_execution", is_error: true, session_id: nativeId }); },
+    async interrupt() { if (interruptFails) throw new Error("interrupt failed"); emit({ type: "result", subtype: interruptCompletes ? "success" : "error_during_execution", is_error: !interruptCompletes, session_id: nativeId }); },
     async setModel(model: string | undefined) { modelChanges.push(model); },
     async setPermissionMode() {},
     async initializationResult() { return {}; },
@@ -108,7 +108,8 @@ it("decides actual SDK tool permissions and interrupts without releasing ownersh
   expect((await adapter.decidePermission({ conversation_id: "conversation", generation: 2, request_id: request.id, decision: "allow" })).ok).toBe(false);
   expect((await adapter.decidePermission({ conversation_id: "conversation", generation: 1, request_id: request.id, decision: "deny" })).ok).toBe(true);
   expect(await permission).toMatchObject({ behavior: "deny" });
-  expect((await adapter.interrupt({ conversation_id: "conversation", generation: 1 })).ok).toBe(true);
+  expect((await adapter.interrupt({ conversation_id: "conversation", generation: 1, turn_id: "prior-turn" })).ok).toBe(false);
+  expect((await adapter.interrupt({ conversation_id: "conversation", generation: 1, turn_id: "turn" })).ok).toBe(true);
   expect(native.closed).toBe(0);
 });
 
@@ -132,4 +133,49 @@ it("accepts an initialized controller with native identity pending and never ack
   expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
   native.emit({ type:"system", subtype:"init", session_id:"different-native" });
   await until(() => events.includes("ownership-unknown"));
+});
+
+
+it("requires explicit question answers and preserves concurrent permission requests", async () => {
+  const native = fakeSdk();
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk }); adapters.push(adapter);
+  const events: string[] = []; adapter.subscribe(event => { events.push(event.kind); return { ok: true, value: undefined }; });
+  expect((await adapter.acquire(start)).ok).toBe(true);
+  expect((await adapter.deliver(message('question-turn'))).ok).toBe(true);
+  const question = native.options.canUseTool!('AskUserQuestion', { questions: [{ question: 'Pick one', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }] }, { signal: new AbortController().signal, toolUseID: 'question' });
+  const approval = native.options.canUseTool!('Write', { path: '/tmp/example' }, { signal: new AbortController().signal, toolUseID: 'approval' });
+  await until(() => adapter.permissions('conversation').length === 2);
+  const request = adapter.permissions('conversation').find(request => request.questions)!;
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: request.id, decision: 'allow' })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: request.id, decision: 'answer', answers: { 'Pick one': ['B'] } })).ok).toBe(true);
+  expect(await question).toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Pick one': 'B' } } });
+  expect(adapter.permissions('conversation')).toHaveLength(1);
+  const remaining = adapter.permissions('conversation')[0];
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: remaining.id, decision: 'deny' })).ok).toBe(true);
+  expect(await approval).toMatchObject({ behavior: 'deny' });
+  expect(events.filter(kind => kind === 'turn-started')).toHaveLength(2);
+});
+
+it("never calls a failed Claude interruption a cancelled turn", async () => {
+  const native = fakeSdk({ interruptFails: true });
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk }); adapters.push(adapter);
+  const events: string[] = []; adapter.subscribe(event => { events.push(event.kind); return { ok: true, value: undefined }; });
+  expect((await adapter.acquire(start)).ok).toBe(true);
+  expect((await adapter.deliver(message('turn'))).ok).toBe(true);
+  expect((await adapter.interrupt({ conversation_id: 'conversation', generation: 1 })).ok).toBe(false);
+  native.emit({ type: 'result', subtype: 'success', is_error: false, session_id: native.options.sessionId });
+  await until(() => events.includes('turn-completed'));
+  expect(events).not.toContain('turn-cancelled');
+});
+
+
+it("keeps a natural Claude completion truthful when it races an accepted interrupt", async () => {
+  const native = fakeSdk({ interruptCompletes: true });
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk }); adapters.push(adapter);
+  const events: string[] = []; adapter.subscribe(event => { events.push(event.kind); return { ok: true, value: undefined }; });
+  expect((await adapter.acquire(start)).ok).toBe(true);
+  expect((await adapter.deliver(message('turn'))).ok).toBe(true);
+  expect((await adapter.interrupt({ conversation_id: 'conversation', generation: 1, turn_id: 'turn' })).ok).toBe(true);
+  await until(() => events.includes('turn-completed'));
+  expect(events).not.toContain('turn-cancelled');
 });

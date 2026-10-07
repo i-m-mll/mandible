@@ -202,7 +202,26 @@ it("keeps Codex approvals and usage on the exact owned turn and interrupts witho
  await waitUntil(()=>events.some(event=>event.kind==='turn-completed'));
  expect(adapter.permissions('conversation-1')).toEqual([]);
  expect((await adapter.deliver(delivery('send','interrupt-turn','hold'))).ok).toBe(true);
- expect((await adapter.interrupt({conversation_id:'conversation-1',generation:4})).ok).toBe(true);
+ expect((await adapter.interrupt({conversation_id:'conversation-1',generation:4,turn_id:'prior-turn'})).ok).toBe(false);
+ expect((await adapter.interrupt({conversation_id:'conversation-1',generation:4,turn_id:'interrupt-turn'})).ok).toBe(true);
  await waitUntil(()=>events.some(event=>event.kind==='turn-cancelled'));
  expect(await adapter.probe({conversation_id:'conversation-1',generation:4,controller_instance_id:'controller-1',provider_session_id:'codex-thread'})).toMatchObject({ok:true,value:{kind:'owned'}});
+});
+
+
+it("routes Codex request_user_input by exact question ID and rejects permission-style answers", async () => {
+  const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner('codex', []), codexExecutable: 'codex' }); adapters.push(adapter);
+  const events = lifecycle(adapter);
+  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
+  expect(await adapter.modelChoices('conversation-1')).toEqual({ ok: true, value: [{ value: 'fixture-model', label: 'Fixture model' }] });
+  expect((await adapter.deliver(delivery('send', 'question-turn', 'question'))).ok).toBe(true);
+  await waitUntil(() => adapter.permissions('conversation-1').length === 1);
+  const request = adapter.permissions('conversation-1')[0];
+  expect(request.questions).toMatchObject([{ id: 'direction', allow_other: false }]);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'allow' })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'answer', answers: { wrong: ['Left'] } })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'answer', answers: { direction: ['Left'] } })).ok).toBe(true);
+  await waitUntil(() => events.some(event => event.kind === 'turn-completed'));
+  expect(events.some(event => event.kind === 'turn-waiting-user')).toBe(true);
+  expect(adapter.permissions('conversation-1')).toEqual([]);
 });

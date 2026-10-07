@@ -1,4 +1,4 @@
-import { providerRuntimeSettingsError } from "./runtime-options.js";
+import { conversationRunOptions, providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -141,11 +141,27 @@ export class ConversationControlService {
     return adapter ? { ok: true, value: adapter } : { ok: false, error: { kind: "adapter-unavailable", adapter_id: snapshot.value.ownership.adapter_id, provider: snapshot.value.provider } };
   }
 
-  async interrupt(conversationId: string, generation: number): Promise<Result<void, ConversationControlError>> {
+  async interrupt(conversationId: string, generation: number, turnId?: string): Promise<Result<void, ConversationControlError>> {
     const owned = this.ownedAdapter(conversationId, generation);
     if (!owned.ok) return owned;
     if (!owned.value.interrupt) return { ok: false, error: { kind: "invalid-request", field: "interrupt", message: "Provider does not support interrupt" } };
-    return trapAdapterCall(owned.value.id, () => owned.value.interrupt!({ conversation_id: conversationId, generation }));
+    return trapAdapterCall(owned.value.id, () => owned.value.interrupt!({ conversation_id: conversationId, generation, turn_id: turnId }));
+  }
+
+  async runOptions(conversationId: string) {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok) return snapshot;
+    let models: { value: string; label: string }[] | undefined;
+    if (snapshot.value.ownership.kind === "mandible" && snapshot.value.controller.kind !== "starting") {
+      const adapter = this.ownedAdapter(conversationId, snapshot.value.ownership.generation);
+      if (!adapter.ok) return adapter;
+      if (adapter.value.modelChoices) {
+        const discovered = await adapter.value.modelChoices(conversationId);
+        if (!discovered.ok) return discovered;
+        models = discovered.value;
+      }
+    }
+    return { ok: true as const, value: conversationRunOptions(snapshot.value.provider, models) };
   }
 
   permissions(conversationId: string): Result<import("./types.js").ManagedPermissionRequest[], ConversationControlError> {
@@ -157,7 +173,7 @@ export class ConversationControlService {
     return { ok: true, value: owned.value.permissions?.(conversationId) ?? [] };
   }
 
-  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+  async decidePermission(input: import("./types.js").ManagedRequestResponse): Promise<Result<void, ConversationControlError>> {
     const owned = this.ownedAdapter(input.conversation_id, input.generation);
     if (!owned.ok) return owned;
     if (!owned.value.decidePermission) return { ok: false, error: { kind: "invalid-request", field: "permission", message: "Provider does not support permission decisions" } };

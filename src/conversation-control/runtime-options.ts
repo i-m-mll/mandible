@@ -1,5 +1,6 @@
 import * as z from "zod";
-import type { ConversationRuntimeOptions } from "./types.js";
+import { CLAUDE_CODE_BOOTSTRAP_MODELS } from "../provider-run-option-catalog.js";
+import type { ConversationRunOption, ConversationRuntimeOptions } from "./types.js";
 
 export const conversationRuntimeOptionsSchema = z.object({
   model: z.string().trim().min(1).optional(),
@@ -17,13 +18,24 @@ export function parseConversationRuntimeOptions(value: unknown): ConversationRun
 }
 
 export function providerRuntimeSettingsError(provider: string, options: ConversationRuntimeOptions): string | null {
-  const efforts = provider === "claude_code" ? ["low", "medium", "high", "xhigh", "max"] : ["none", "minimal", "low", "medium", "high", "xhigh"];
+  const optionsById = new Map(conversationRunOptions(provider).map(option => [option.id, option.choices.map(choice => choice.value)]));
+  const efforts = optionsById.get("effort")!;
   if (options.effort && !efforts.includes(options.effort)) return `${provider} does not support effort '${options.effort}'`;
-  const modes = provider === "claude_code" ? ["default", "acceptEdits", "bypassPermissions"] : ["read-only", "agent", "agent-full-access"];
+  const modes = optionsById.get("permission_mode")!;
   if (options.permission_mode && !modes.includes(options.permission_mode)) return `${provider} does not support permission mode '${options.permission_mode}'`;
   if (provider === "codex") {
     const unsupported = Object.keys(options).find((key) => !["model", "effort", "permission_mode"].includes(key));
     if (unsupported) return `Codex does not support managed option '${unsupported}'`;
   }
   return null;
+}
+
+export function conversationRunOptions(provider: string, models?: { value: string; label: string }[]): ConversationRunOption[] {
+  const claude = provider === "claude_code";
+  const choices = (values: string[]) => values.map(value => ({ value, label: value }));
+  return [
+    { id: "model", label: "Model", choices: models ?? (claude ? CLAUDE_CODE_BOOTSTRAP_MODELS : []) },
+    { id: "effort", label: "Thinking effort", choices: choices(claude ? ["low", "medium", "high", "xhigh", "max"] : ["none", "minimal", "low", "medium", "high", "xhigh"]) },
+    { id: "permission_mode", label: "Permissions", choices: choices(claude ? ["default", "acceptEdits", "bypassPermissions"] : ["read-only", "agent", "agent-full-access"]) },
+  ];
 }
