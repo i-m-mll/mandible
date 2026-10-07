@@ -57,7 +57,7 @@ export class HostUserPreferencesRevisionConflict extends Error {
 }
 
 const MAX_SHOWN_PROJECTS = 500;
-const MAX_ORDERED_SIDEBAR_IDS = 1000;
+export const MAX_ORDERED_SIDEBAR_IDS = 1000;
 const LOCK_WAIT_MS = 2_000;
 const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 10;

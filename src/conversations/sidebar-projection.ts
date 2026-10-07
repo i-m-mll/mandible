@@ -234,7 +234,8 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
         - (pinnedPositions.get(right.id) ?? Number.MAX_SAFE_INTEGER)
         || compareConversationSidebarRows(left, right, options.sort)
       : compareConversationSidebarRows(left, right, options.sort));
-    const page = paginate(
+    if (group.kind === "pinned" && options.cursor) throw new ConversationSidebarCursorError("Pinned chats do not use pagination cursors");
+    const page = group.kind === "pinned" ? { rows: sorted, next_cursor: null } : paginate(
       sorted,
       group.key,
       options.sort,

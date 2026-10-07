@@ -284,56 +284,29 @@ describe('conversation sidebar groups', () => {
     expect(screen.queryByRole('button', { name: /^Removed/ })).toBeNull();
   });
 
-  it('advances only the requested pinned cursor and leaves the generic Chats cursor independent', async () => {
+  it('shows all pinned rows without expanding them and keeps Chats pagination independent', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
       shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
     }));
     const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
-    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async params => {
       requests.push(params);
-      if (params.group_key === 'opaque:pinned') {
-        return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
-      }
-      if (params.group_key === 'opaque:chats') {
-        return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [projectTwo], next_cursor: null })] };
-      }
+      if (params.group_key === 'opaque:chats') return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [projectTwo], next_cursor: null })] };
       return { limit: 1, groups: [
-        group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' }),
+        group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne, pinnedTwo], next_cursor: null }),
         group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [projectOne], next_cursor: 'chats-cursor' }),
       ] };
     });
     renderView();
-
-    await waitFor(() => expect(requests).toContainEqual(expect.objectContaining({
-      project_ids: ['prj-mandible'],
-    })));
-
-    const pinnedHeading = await screen.findByRole('button', { name: /^Pinned/ });
-    expect(pinnedHeading.querySelector('.sidebar-group-node__count')).toBeNull();
-    expect(pinnedHeading.getAttribute('aria-description')).toBe('2 pinned chats');
-    const pinnedSection = pinnedHeading.closest('section') as HTMLElement;
-    const showMore = within(pinnedSection).getByRole('button', { name: 'Show more' });
-    expect(showMore.tagName).toBe('BUTTON');
-    expect(showMore.tabIndex).toBe(0);
-    showMore.focus();
-    expect(document.activeElement).toBe(showMore);
-    const pinnedBody = document.getElementById(pinnedHeading.getAttribute('aria-controls') ?? '');
-    expect(pinnedBody).not.toBeNull();
-    expect(within(pinnedBody as HTMLElement).getByRole('button', { name: 'Show more' })).toBe(showMore);
-    expect(pinnedBody?.querySelector('.sidebar-group-node__show-more-row')).toBe(showMore.parentElement);
-
-    fireEvent.click(showMore);
     await screen.findByRole('button', { name: 'Open conversation Pinned two' });
-    expect(requests.filter((request) => request.group_key)).toEqual([
-      expect.objectContaining({
-        group_key: 'opaque:pinned', cursor: 'pin-cursor', limit: 1,
-        project_ids: ['prj-mandible'],
-      }),
-    ]);
-    expect(screen.getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
-    expect(within(screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement)
-      .getByRole('button', { name: 'Show more' })).toBeTruthy();
+    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
+    expect(within(pinnedSection).queryByRole('button', { name: 'Show more' })).toBeNull();
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section')!;
+    fireEvent.click(within(chatsSection).getByRole('button', { name: 'Show more' }));
+    await screen.findByRole('button', { name: 'Open conversation Project two' });
+    expect(requests.filter(request => request.group_key)).toEqual([expect.objectContaining({ group_key: 'opaque:chats', cursor: 'chats-cursor', limit: 1 })]);
+    expect(screen.getByRole('button', { name: 'Open conversation Pinned one' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Projects' })).toBeTruthy();
   });
 
@@ -673,7 +646,7 @@ describe('conversation sidebar groups', () => {
     expect(requests.at(-1)).toEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
   });
 
-  it('replays each current per-key target during filter reconciliation without losing selection', async () => {
+  it('reconciles complete pinned rows across filters without losing collapse or selection', async () => {
     vi.useFakeTimers();
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
@@ -683,13 +656,12 @@ describe('conversation sidebar groups', () => {
       if (params.group_key === 'opaque:pinned') {
         return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
       }
-      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
+      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne, pinnedTwo], next_cursor: null })] };
     });
     renderView();
     await vi.advanceTimersByTimeAsync(350);
     const first = screen.getByRole('button', { name: 'Open conversation Pinned one' });
     await waitFor(() => expect(first.getAttribute('aria-current')).toBe('true'));
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy());
     const heading = screen.getByRole('button', { name: /^Pinned/ });
     fireEvent.click(heading);
@@ -697,7 +669,7 @@ describe('conversation sidebar groups', () => {
     fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Pinned' } });
     await vi.advanceTimersByTimeAsync(350);
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
-      group_key: 'opaque:pinned', cursor: 'pin-cursor', search: 'Pinned', limit: 1,
+      search: 'Pinned', limit: 1,
       project_ids: ['prj-mandible'],
     })));
     expect(heading.getAttribute('aria-expanded')).toBe('false');
@@ -713,7 +685,7 @@ describe('conversation sidebar groups', () => {
     expect(normalizeSidebarGroupLimit('5 rows')).toBe(5);
   });
 
-  it('patches a known visible row from SSE without resetting its expanded quota', async () => {
+  it('patches a known pinned row from SSE without losing other pins', async () => {
     FakeEventSource.instances = [];
     __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
     vi.stubGlobal('EventSource', FakeEventSource);
@@ -721,11 +693,10 @@ describe('conversation sidebar groups', () => {
       if (params.group_key) {
         return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
       }
-      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
+      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne, pinnedTwo], next_cursor: null })] };
     });
     renderView();
     await screen.findByRole('button', { name: 'Open conversation Pinned one' });
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await screen.findByRole('button', { name: 'Open conversation Pinned two' });
 
     applyConversationSse(queryClient, 'conversation:updated', {

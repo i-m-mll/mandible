@@ -3386,6 +3386,7 @@ export function ConversationsView({
     setVisibleTargets((current) => {
       const next = new Map(current);
       for (const group of serverGroups) {
+        if (group.kind === 'pinned') continue;
         if (!next.has(group.key)) next.set(group.key, sidebarGroupLimit);
       }
       return next.size === current.size ? current : next;
@@ -3393,6 +3394,7 @@ export function ConversationsView({
     setContinuationRequests((current) => {
       let next = current;
       for (const group of serverGroups) {
+        if (group.kind === 'pinned') continue;
         const target = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
         if (group.conversations.length >= target || !group.next_cursor) continue;
         if (next.some((request) => request.group === group.key && request.cursor === group.next_cursor)) continue;
@@ -4218,7 +4220,6 @@ export function ConversationsView({
             </div>
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
-              const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
               return (
                 <SidebarGroupNode
                   id="chat-pinned"
@@ -4227,13 +4228,10 @@ export function ConversationsView({
                   headingDescription={`${group.total} pinned chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('pinned')}
                   onToggle={() => toggleSection('pinned')}
-                  canShowMore={group.entries.length > target || group.nextCursor !== null}
-                  loadingMore={loadingMoreKeys.has(group.key)}
-                  onShowMore={() => { void showMore(group); }}
                   bodyAttributes={pinnedReorder.list}
                 >
                   {pinnedReorder.assistive}
-                  {group.entries.slice(0, target).map((entry) => renderEntry(
+                  {group.entries.map((entry) => renderEntry(
                     entry,
                     entry.conversation ? pinnedReorder.binding(entry.conversation.id) : undefined,
                   ))}
