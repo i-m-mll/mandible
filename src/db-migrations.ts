@@ -3,6 +3,7 @@ import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { preserveLegacyDocuments } from "./spaces/history.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
+import { CONVERSATION_IDENTITY_SCHEMA_SQL, reconcileConversationIdentities } from './conversations/identity.js';
 import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
 import { recoverArtifactCustody } from './artifact-recovery.js';
 import { retainArtifactCommit } from './artifact-repo-resolution.js';
@@ -1779,6 +1780,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v192",
     "DROP TABLE user_settings_v192",
   ] },
+  { version: 194, name: 'durable_chat_identity_aliases', statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
 ];
 
 /**
@@ -2007,4 +2009,5 @@ export function migrate(db: Db): void {
     }
   }
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
+  reconcileConversationIdentities(db);
 }

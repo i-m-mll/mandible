@@ -1,4 +1,5 @@
 import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
+import { canonicalConversationRoutes } from '../conversations/identity.js';
 import { AttachmentValidationError, ChatAttachmentStore } from "../conversation-control/attachment-store.js";
 import type { ConversationControlService } from "../conversation-control/service.js";
 import type { ConversationControlError, ConversationSubmitRequest } from "../conversation-control/types.js";
@@ -28,6 +29,7 @@ export function registerConversationControlRoutes(
   control: ConversationControlService,
   options: { db?: Db; instance?: InstanceInfo } = {},
 ): void {
+  if (options.db) server = canonicalConversationRoutes(server, options.db);
   const discoverModels = options.instance?.role !== "preview"
     && (options.instance?.allowed_effects.includes("provider:send") ?? true);
   const attachmentStore = options.db ? new ChatAttachmentStore(options.db) : null;

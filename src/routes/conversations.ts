@@ -1,4 +1,5 @@
 import { DOMAIN_EVENTS } from "../contracts.js";
+import { canonicalConversationRoutes, resolveConversationId } from '../conversations/identity.js';
 // API routes for the chat log / conversation system.
 
 import { createHash } from "node:crypto";
@@ -116,6 +117,8 @@ function mapConversation(row: ConversationRow, externalNavigation?: Conversation
     ended_at: row.ended_at,
     block_count: row.block_count,
     session_id: row.session_id,
+    identity_aliases: (getDb().prepare('SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ? ORDER BY alias_id')
+      .all(row.id) as { alias_id: string }[]).map((alias) => alias.alias_id),
     project_path: row.project_path,
     cwd: row.cwd,
     branch: row.branch,
@@ -565,6 +568,7 @@ export function registerConversationRoutes(
   sourceFreshness: Pick<ExactConversationFreshnessOptions, "ingest" | "scheduleReparse"> = {},
 ): void {
   const db = getDb();
+  server = canonicalConversationRoutes(server, db);
   const sourceReader = new ConversationSourceReader(db);
   const displaySourceReader = new ConversationSourceReader(db, { legacyFallback: false });
   const ensureFresh = (ref: string, waitForFresh?: boolean) => ensureExactConversationFresh(db, ref, {
@@ -825,7 +829,7 @@ export function registerConversationRoutes(
     const clientPinsAuthoritative = Object.prototype.hasOwnProperty.call(query, "pinned_ids");
     try {
       requestedProjectIds = parseSidebarProjectIds(query.project_ids);
-      clientPinnedIds = parseSidebarIds(query.pinned_ids, "pinned_ids");
+      clientPinnedIds = [...new Set(parseSidebarIds(query.pinned_ids, "pinned_ids").map((id) => resolveConversationId(db, id)))];
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       return;
@@ -846,7 +850,7 @@ export function registerConversationRoutes(
       return;
     }
 
-    const conditions: string[] = [];
+    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
     const params: unknown[] = [];
     conditions.push(lifecycle === "archived" ? "a.conversation_id IS NOT NULL" : "a.conversation_id IS NULL");
     if (query.source) {
@@ -908,7 +912,9 @@ export function registerConversationRoutes(
         s.updated_at AS spawn_updated_at
       FROM conversations c
       LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
-      LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
+      LEFT JOIN conversation_spawn_requests s ON s.id = COALESCE(
+        (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = c.id ORDER BY alias_id LIMIT 1), c.id
+      ) AND s.schema_version = 'mandible-conversation-spawn-request@3'
       LEFT JOIN ledger_projects p ON p.id = s.project_id
       ${where}`).all(...params) as ProjectedConversationRow[])
       ;
@@ -1051,9 +1057,9 @@ export function registerConversationRoutes(
 
     const groupMode = query.group === "true" || query.group === "1";
     const excludeSubagents = groupMode || query.exclude_subagents === "true" || query.exclude_subagents === "1";
-    const parentIdFilter = query.parent_id || null;
+    const parentIdFilter = query.parent_id ? resolveConversationId(db, query.parent_id) : null;
 
-    const conditions: string[] = [];
+    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
     const params: unknown[] = [];
 
     // Filter by source

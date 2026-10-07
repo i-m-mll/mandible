@@ -12,6 +12,7 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
+import { resolveConversationId } from './conversations/identity.js';
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
@@ -2974,14 +2975,19 @@ async function ingestFilePass(
     return;
   }
 
-  const spawnIdentity = db.prepare(`SELECT id
-      FROM conversation_spawn_requests
-     WHERE schema_version = 'mandible-conversation-spawn-request@3'
-       AND provider = ?
-       AND provider_session_id = ?
-     ORDER BY updated_at DESC, id
-     LIMIT 1`)
-    .get(result.conversation.source, result.conversation.session_id) as { id: string } | undefined;
+  const subagentPath = parseClaudeSubagentPath(filePath);
+  const isSidechain = result.conversation.is_sidechain || Boolean(subagentPath);
+  const spawnIdentities = isSidechain ? [] : db.prepare(`SELECT spawn.id
+      FROM conversation_spawn_requests spawn
+      JOIN conversations shell ON shell.id = spawn.id
+     WHERE spawn.schema_version = 'mandible-conversation-spawn-request@3'
+       AND spawn.provider = ?
+       AND (spawn.provider_session_id = ? OR shell.session_id = ?)
+       AND shell.is_sidechain = 0 AND shell.parent_conversation_id IS NULL AND shell.agent_id IS NULL`)
+    .all(result.conversation.source, result.conversation.session_id, result.conversation.session_id) as { id: string }[];
+  const canonicalSpawnIds = [...new Set(spawnIdentities.map((row) => resolveConversationId(db, row.id)))];
+  if (canonicalSpawnIds.length > 1) throw new Error(`Ambiguous creation identity for native session ${result.conversation.session_id}`);
+  const spawnIdentity = canonicalSpawnIds[0] ? { id: canonicalSpawnIds[0] } : undefined;
   if (spawnIdentity) {
     const bound = db.prepare("SELECT * FROM conversations WHERE id = ?")
       .get(spawnIdentity.id) as typeof existing;
@@ -3011,7 +3017,7 @@ async function ingestFilePass(
   );
   if (repairedDuplicateIds.size > 0) {
     existingRows = existingRows.filter((row) => !repairedDuplicateIds.has(row.id));
-    existing = existingRows[0];
+    existing = spawnIdentity ? existingRows.find((row) => row.id === spawnIdentity.id) : existingRows[0];
   }
   logDuplicateConversationRows(
     filePath,
@@ -3056,8 +3062,6 @@ async function ingestFilePass(
     });
   }
 
-  const subagentPath = parseClaudeSubagentPath(filePath);
-  const isSidechain = result.conversation.is_sidechain || Boolean(subagentPath);
   const agentId = result.conversation.agent_id ?? subagentPath?.agentId ?? null;
   const parentConversationId = resolveParentConversationId(
     db,

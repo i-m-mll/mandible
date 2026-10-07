@@ -904,4 +904,5 @@ it("keeps initialized Claude identity pending, binds once, and only recovers an 
   expect(store.bindProviderSession('conversation-1',2,'different').ok).toBe(false);
   expect(store.recoverUnsentDraft('conversation-1',2)).toEqual({ok:true,value:false});
   expect(db.prepare("SELECT session_id FROM conversations WHERE id = 'conversation-1'").get()).toEqual({session_id:'native'});
+  expect(db.prepare("SELECT provider_session_id FROM conversation_spawn_requests WHERE id = 'conversation-1'").get()).toEqual({provider_session_id:'native'});
 });

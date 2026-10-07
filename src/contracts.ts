@@ -543,6 +543,7 @@ export type ConversationExternalNavigation =
     };
 
 export type Conversation = {
+  identity_aliases?: string[];
   id: string;
   source: ConversationSource;
   source_path: string;

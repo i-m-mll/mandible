@@ -3485,6 +3485,42 @@ export function ConversationsView({
     }));
   }, [conversationGroups, hideEmpty, search, searchMode]);
 
+  useEffect(() => {
+    const aliases = new Map(conversationGroups.flatMap((group) => group.conversations.flatMap(
+      (conversation) => (conversation.identity_aliases ?? []).map((alias) => [alias, conversation.id] as const),
+    )));
+    if (aliases.size === 0) return;
+    if ([...aliases].some(([alias, id]) => alias in chatViewState.previewPinOverrides
+        && id in chatViewState.previewPinOverrides
+        && chatViewState.previewPinOverrides[id] !== chatViewState.previewPinOverrides[alias])) {
+      setSidebarToast({ message: 'Saved pin choices disagree for the same Chat. Choose its pin state to resolve them.', type: 'error' });
+    }
+    const canonical = (id: string) => aliases.get(id) ?? id;
+    setSelection((current) => current?.type === 'conversation' && canonical(current.id) !== current.id
+      ? { ...current, id: canonical(current.id) } : current);
+    setChatViewState((current) => {
+      const overrides = { ...current.previewPinOverrides };
+      for (const [alias, id] of aliases) {
+        if (!(alias in overrides)) continue;
+        if (id in overrides && overrides[id] !== overrides[alias]) {
+          // Neither browser-local choice carries a timestamp. Preserve both
+          // instead of silently deciding which explicit choice was newer.
+          continue;
+        }
+        overrides[id] = overrides[alias];
+        delete overrides[alias];
+      }
+      const next = {
+        ...current,
+        pinnedConversationIds: [...new Set(current.pinnedConversationIds.map(canonical))],
+        previewPinOverrides: overrides,
+        lastSelection: current.lastSelection?.type === 'conversation'
+          ? { ...current.lastSelection, id: canonical(current.lastSelection.id) } : current.lastSelection,
+      };
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next;
+    });
+  }, [conversationGroups, chatViewState.previewPinOverrides, setChatViewState]);
+
   const liveByProviderSession = useMemo(() => {
     const map = new Map<string, ConsoleSession>();
     for (const session of liveSessions) {
@@ -3765,7 +3801,11 @@ export function ConversationsView({
       const pinned = !isConversationPinned(entry.conversation);
       pendingPinIntents.current.set(id, pinned);
       pendingPinFocusKey.current = entry.key;
-      setChatViewState(current => ({ ...current, previewPinOverrides: { ...current.previewPinOverrides, [id]: pinned } }));
+      const aliases = new Set(conversationGroups.flatMap((group) => group.conversations
+        .filter((conversation) => conversation.id === id).flatMap((conversation) => conversation.identity_aliases ?? [])));
+      setChatViewState(current => ({ ...current, previewPinOverrides: {
+        ...Object.fromEntries(Object.entries(current.previewPinOverrides).filter(([key]) => !aliases.has(key))), [id]: pinned,
+      } }));
       return;
     }
     if (!sidebarOrder.ready) {
