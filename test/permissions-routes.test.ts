@@ -228,7 +228,7 @@ describe("restricted project route enforcement", () => {
     expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: "claude_code",
       cwd: "/work/spawn-project",
-      runtime_options: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
+      runtime_options: { model: "claude-opus-5-5", permission_mode: "bypassPermissions" },
     }), expect.any(Function));
 
     failNext = true;

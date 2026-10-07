@@ -6,9 +6,11 @@ import type { SessionRunOptionChoice } from "./session-run-options.js";
  * provider client is upgraded. The default model uses its exact provider ID so
  * launch provenance records the requested model without alias resolution.
  */
+export const DEFAULT_CLAUDE_CODE_MODEL = "claude-opus-5-5";
+
 export const CLAUDE_CODE_BOOTSTRAP_MODELS = [
   { value: "fable", label: "Fable 5.1" },
-  { value: "claude-opus-5", label: "Opus 5" },
+  { value: DEFAULT_CLAUDE_CODE_MODEL, label: "Opus 5.5" },
   { value: "sonnet", label: "Sonnet 5" },
   { value: "haiku", label: "Haiku 4.5" },
 ] satisfies readonly SessionRunOptionChoice[];

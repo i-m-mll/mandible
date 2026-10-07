@@ -1,3 +1,4 @@
+import { DEFAULT_CLAUDE_CODE_MODEL } from "../provider-run-option-catalog.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import fs from "node:fs";
 import type { Db } from "../db.js";
@@ -35,7 +36,7 @@ function cwdFor(db: Db, request: ConversationSpawnRequest): string {
 function runtimeOptions(request: ConversationSpawnRequest) {
   return request.provider === "codex"
     ? { model: "gpt-5.6-sol", permission_mode: "agent-full-access" as const }
-    : { model: "claude-opus-5", permission_mode: "bypassPermissions" as const };
+    : { model: DEFAULT_CLAUDE_CODE_MODEL, permission_mode: "bypassPermissions" as const };
 }
 
 export function registerConversationSpawnRoutes(
