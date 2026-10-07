@@ -149,6 +149,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
 });
 
@@ -1100,6 +1101,62 @@ describe('ChatSurface stream behavior', () => {
     view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25'), user('latest', 'entry-26')]}
       streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
     expect(scrollTo).toHaveBeenCalledWith({ top: 9000, behavior: 'auto' });
+  });
+
+  it('keeps the tail visible across viewport resizes without moving an earlier reader', () => {
+    const observers: { callback: () => void; targets: Element[] }[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      record: { callback: () => void; targets: Element[] };
+      constructor(callback: () => void) {
+        this.record = { callback, targets: [] };
+        observers.push(this.record);
+      }
+      observe(target: Element): void { this.record.targets.push(target); }
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    let viewport = 500;
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Math.min(Number(options.top ?? 0), 9000 - viewport);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const view = render(<ChatSurface events={[user('prompt', 'u1'), assistantText('answer', 'a1')]}
+      streaming={false} sessionInfo={{ sessionId: 'viewport-resize' }} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => viewport });
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 9000 });
+    const resize = () => act(() => observers.find((observer) => observer.targets.some(
+      (target) => target.classList.contains('stream-renderer__virtual-canvas'),
+    ))!.callback());
+
+    fireEvent.wheel(scroll, { deltaY: 500 });
+    scroll.scrollTop = 8500;
+    fireEvent.scroll(scroll);
+    viewport = 450; // Delayed notice or composer shelf consumes viewport space.
+    resize();
+    expect(scroll.scrollTop).toBe(8550);
+    const calls = scrollTo.mock.calls.length;
+    resize();
+    expect(scrollTo.mock.calls.length).toBe(calls);
+
+    viewport = 500;
+    scroll.scrollTop = 8500; // Browser clamps the old offset as the viewport grows.
+    fireEvent.scroll(scroll);
+    resize();
+    viewport = 450;
+    resize();
+    expect(scroll.scrollTop).toBe(8550);
+
+    fireEvent.wheel(scroll, { deltaY: -500 });
+    scroll.scrollTop = 1000;
+    fireEvent.scroll(scroll);
+    viewport = 400;
+    const readingCalls = scrollTo.mock.calls.length;
+    resize();
+    expect(scroll.scrollTop).toBe(1000);
+    expect(scrollTo.mock.calls.length).toBe(readingCalls);
+    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:viewport-resize')!).followingTail).toBe(false);
   });
 
   it('does not re-arm tail follow when a content resize moves an earlier reader to the bottom', () => {
