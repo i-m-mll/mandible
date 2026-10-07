@@ -1045,8 +1045,8 @@ describe('compact detail pane shell', () => {
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
     const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
-    const modelSelect = within(runOptionsDialog).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
-    await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
+    const modelSelect = within(runOptionsDialog).getByRole('button', { name: 'Model' });
+    await waitFor(() => expect(modelSelect.textContent).toBe(conversation.model));
     expect(modelSelect.getAttribute('aria-label')).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
@@ -1075,8 +1075,8 @@ describe('compact detail pane shell', () => {
     let runtimeWidth = 380;
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
       if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
-      if (this.classList.contains('session-controls__field')) {
-        const label = this.querySelector('input, select')?.getAttribute('aria-label');
+      if (this.classList.contains('choice-dropdown')) {
+        const label = this.querySelector('button[aria-haspopup]')?.getAttribute('aria-label');
         return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Permissions' ? modeWidth : 90, 30);
       }
       if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
@@ -1140,17 +1140,19 @@ describe('compact detail pane shell', () => {
     const runtime = document.querySelector('.conv-compose__runtime');
     const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
-    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('input, select')).toHaveLength(3));
+    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('button[aria-haspopup]')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
-    fireEvent.input(screen.getByRole('combobox', { name: 'Permissions' }), { target: { value: 'read-only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
+    fireEvent.click(screen.getByRole('option', { name: 'read-only' }));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modeWidth = 230;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     modeWidth = 70;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    fireEvent.input(inlineRunOptions?.querySelector('select[aria-label="Permissions"]') as HTMLSelectElement, { target: { value: 'read-only' } });
+    fireEvent.click(within(inlineRunOptions as HTMLElement).getByRole('button', { name: 'Permissions' }));
+    fireEvent.click(screen.getByRole('option', { name: 'read-only' }));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
@@ -1169,21 +1171,25 @@ describe('compact detail pane shell', () => {
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
     expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
-    fireEvent.input(inlineRunOptions?.querySelector('select[aria-label="Model"]') as HTMLSelectElement, { target: { value: 'edited-model' } });
+    fireEvent.click(within(inlineRunOptions as HTMLElement).getByRole('button', { name: 'Model' }));
+    fireEvent.click(screen.getByRole('option', { name: 'edited-model' }));
     fireEvent.click(trigger);
     await screen.findByRole('dialog', { name: 'Run options' });
     await waitFor(() => expect(Array.from(
-      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('input, select'),
+      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('button[aria-haspopup]'),
       (select) => select.getAttribute('aria-label'),
     )).toEqual(expect.arrayContaining(['Permissions', 'Model', 'Thinking effort'])));
     const popover = screen.getByRole('dialog', { name: 'Run options' });
-    expect((within(popover).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement).value).toBe('edited-model');
-    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Permissions"]')!;
-    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!;
-
-    expect(permission.value).toBe('read-only');
-    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'read-only', 'agent', 'agent-full-access']);
-    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(within(popover).getByRole('button', { name: 'Model' }).textContent).toBe('edited-model');
+    const permission = within(popover).getByRole('button', { name: 'Permissions' });
+    const effort = within(popover).getByRole('button', { name: 'Thinking effort' });
+    expect(permission.textContent).toBe('read-only');
+    fireEvent.click(permission);
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['read-only', 'agent', 'agent-full-access']);
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
+    fireEvent.click(effort);
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
     const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
       kind: 'accepted', delivery_id: 'settings-delivery', turn_id: 'settings-turn', snapshot: ownedControl,
     });

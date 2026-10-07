@@ -578,10 +578,6 @@
   font-size: 12px;
 }
 
-.session-controls__select {
-  min-height: 38px;
-}
-
 .session-controls__input {
   min-height: 38px;
   background: var(--bg-page);
@@ -1537,11 +1533,6 @@
   letter-spacing: 0.04em;
 }
 
-.session-controls__select--compact {
-  width: min(220px, 30vw);
-  min-height: 30px;
-}
-
 @media (max-width: 720px) {
   .composer__meta-row {
     align-items: stretch;
@@ -1582,21 +1573,6 @@
   padding: 16px 24px;
 }
 
-.session-controls__choice { position: relative; display: inline-flex; flex-direction: row; gap: 0; align-items: center; min-width: 0; }
-.session-controls__choice > svg { position: absolute; right: 5px; pointer-events: none; color: var(--text-muted); }
-.session-controls__select--borderless {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--fg-default);
-  padding: 5px 24px 5px 5px;
-  field-sizing: content;
-  max-width: 100%;
-  cursor: pointer;
-}
-.session-controls__select--borderless:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
-.session-controls__select--borderless:disabled { opacity: .55; cursor: default; }
 
 .stream-renderer__persistence-notice {
   color: var(--text-muted);
