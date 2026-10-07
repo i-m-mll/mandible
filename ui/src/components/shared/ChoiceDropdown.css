@@ -1,0 +1,56 @@
+.choice-dropdown { display: inline-flex; min-width: 0; }
+.choice-dropdown__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-default);
+  font: inherit;
+  cursor: pointer;
+}
+.choice-dropdown__trigger:hover,
+.choice-dropdown__trigger[aria-expanded='true'] { background: var(--neutral-alpha-05); }
+.choice-dropdown__trigger:focus { border: 0; box-shadow: none; outline: none; }
+.choice-dropdown__trigger:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.choice-dropdown__trigger:disabled { opacity: .55; cursor: default; }
+.choice-dropdown__trigger > svg { flex: 0 0 auto; color: var(--text-muted); }
+.choice-dropdown__prompt { color: var(--text-muted); }
+/* Reserve both labels so opening cannot change composer overflow placement. */
+.choice-dropdown__label { display: inline-grid; white-space: nowrap; }
+.choice-dropdown__label > span,
+.choice-dropdown__label::before,
+.choice-dropdown__label::after { grid-area: 1 / 1; }
+.choice-dropdown__label::before { content: attr(data-current); visibility: hidden; }
+.choice-dropdown__label::after { content: attr(data-prompt); visibility: hidden; }
+.choice-dropdown__menu {
+  margin: 0;
+  min-width: 160px;
+  padding: 5px;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-soft);
+}
+.choice-dropdown__menu [role='option'] {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.choice-dropdown__menu [role='option']:hover,
+.choice-dropdown__menu [role='option']:focus { background: var(--neutral-alpha-05); outline: none; }
+.choice-dropdown__menu [role='option']:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+.choice-dropdown__menu [aria-selected='true'] { font-weight: 600; }

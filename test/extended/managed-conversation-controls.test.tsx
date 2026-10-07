@@ -16,12 +16,13 @@ it('preserves edited settings across reconciliation and sends generation-scoped 
  });
  const control={conversation_id:'chat',provider:'claude_code',revision:1,controller:{kind:'ready',since:1},ownership:{kind:'mandible',generation:3},turn:{kind:'waiting-permission'}} as ConversationControlSnapshot;
  const view=render(<ManagedConversationControls control={control}/>);
- await vi.waitFor(()=>expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('stored'));
- fireEvent.input(screen.getByLabelText('Model'),{target:{value:'edited'}});
+ await vi.waitFor(()=>expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+ fireEvent.click(screen.getByRole('option', { name: 'edited' }));
  await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
  view.rerender(<ManagedConversationControls control={{...control,revision:2}}/>);
  await vi.waitFor(()=>expect(calls.filter(call=>call.path.endsWith('/settings')).length).toBeGreaterThan(1));
- expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('edited');
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('edited');
  fireEvent.click(screen.getByRole('button',{name:'Allow once'}));
  await vi.waitFor(()=>expect(calls).toContainEqual({path:'/api/conversations/chat/control/permission/permission',body:{generation:3,decision:'allow'}}));
  await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
@@ -38,19 +39,21 @@ it('keeps current edits when an earlier save finishes after A to B to A', async 
  });
  const control = { conversation_id: 'A', provider: 'codex', revision: 1, controller: {kind:'ready',since:1}, ownership: { kind: 'none', generation: 0 }, turn: { kind: 'none' } } as ConversationControlSnapshot;
  const view = render(<ManagedConversationControls control={control}/>);
- await vi.waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('model-A'));
- fireEvent.input(screen.getByLabelText('Model'), { target: { value: 'earlier-edit' } });
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-A'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+ fireEvent.click(screen.getByRole('option', { name: 'earlier-edit' }));
  await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
  await vi.waitFor(() => expect(finishSave).toBeTypeOf('function'));
  view.rerender(<ManagedConversationControls control={{ ...control, conversation_id: 'B' }}/>);
- await vi.waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('model-B'));
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-B'));
  view.rerender(<ManagedConversationControls control={control}/>);
- await vi.waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('model-A'));
- fireEvent.input(screen.getByLabelText('Model'), { target: { value: 'current-edit' } });
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-A'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+ fireEvent.click(screen.getByRole('option', { name: 'current-edit' }));
  finishSave({ ok: true, json: async () => ({ ok: true, value: { revision: 8, runtime_options: { model: 'earlier-edit' } } }) });
  await vi.waitFor(() => expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(false));
- expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('current-edit');
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('current-edit');
 });
 
 const runningControl = {
@@ -105,4 +108,21 @@ it('requires explicit question choices and preserves other requests when answeri
  await vi.waitFor(() => expect(calls).toEqual([{ path: '/api/conversations/chat/control/permission/question', body: { generation: 3, decision: 'answer', answers: { choice: ['B'] } } }]));
  expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy();
  await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Submit answers' })).toBeNull());
+});
+
+it('shows disabled Select prompts until effective values have descriptor choices, without a provider-default reset', async () => {
+ fetcher.mockImplementation(async (path: string) => ({ ok: true, json: async () => ({ ok: true, value: path.endsWith('/settings')
+  ? { revision: 0, runtime_options: { model: 'unavailable-model' }, usage: [] }
+  : path.endsWith('/options') ? [
+   { id: 'model', label: 'Model', choices: [{ value: 'available-model', label: 'Available model' }] },
+   { id: 'effort', label: 'Thinking effort', choices: [{ value: 'high', label: 'High' }] },
+   { id: 'permission_mode', label: 'Permissions', choices: [{ value: 'agent', label: 'Agent' }] },
+  ] : [] }) }));
+ render(<ManagedConversationControls control={runningControl} />);
+ for (const [label, prompt] of [['Model', 'Select model'], ['Thinking effort', 'Select effort'], ['Permissions', 'Select permissions']]) {
+  const trigger = await screen.findByRole('button', { name: label });
+  expect(trigger.textContent).toBe(prompt);
+  expect((trigger as HTMLButtonElement).disabled).toBe(true);
+ }
+ expect(screen.queryByText('Provider default')).toBeNull();
 });

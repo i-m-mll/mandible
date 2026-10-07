@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConversationControlSnapshot, ConversationRuntimeOptions } from '../api';
 import type { ManagedPermissionRequest, ConversationRunOption } from '../../../src/conversation-control/types';
-import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
+import { ChoiceDropdown } from '../components/shared/ChoiceDropdown';
 import { conversationExecutionState } from './conversationControl';
 import { browserSessionFetch } from '../client-auth-token';
 
@@ -107,17 +107,12 @@ export function ManagedConversationControlFields({ state, compact = false, inclu
   const claude = control.provider === 'claude_code';
   const coreFields = <>{state.options.map(option => {
     const value = draft[option.id] ?? '';
-    const known = !value || option.choices.some(choice => choice.value === value);
-    return <span className="session-controls__field session-controls__choice" key={option.id}>
-      <select className="session-controls__select session-controls__select--borderless" disabled={busy || !option.choices.length}
-        aria-label={option.label} title={option.label} value={value}
-        onInput={event => edit(option.id, event.currentTarget.value || undefined)}>
-        <option value="">Provider default</option>
-        {!known && <option value={value}>{value}</option>}
-        {option.choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-      </select>
-      <DisclosureChevronIcon expanded />
-    </span>;
+    const known = option.choices.some(choice => choice.value === value);
+    return <ChoiceDropdown key={option.id} label={option.label}
+      prompt={option.id === 'model' ? 'Select model' : option.id === 'effort' ? 'Select effort' : 'Select permissions'}
+      value={value} disabled={busy || !known}
+      choices={option.choices}
+      onChange={value => edit(option.id, value)} />;
   })}</>;
   if (compact) return coreFields;
   return <div className="session-controls">
