@@ -325,6 +325,7 @@ export function ChatSurface({
   const coverageSignatureRef = useRef('');
   const previousScrollTopRef = useRef<number | null>(null);
   const previousScrollHeightRef = useRef<number | null>(null);
+  const previousViewportHeightRef = useRef<number | null>(null);
   const userScrollIntentRef = useRef<'toward-tail' | 'away' | null>(null);
   const scrollDirectionRef = useRef<'up' | 'down'>('up');
   const tailIntentRef = useRef(false);
@@ -734,6 +735,7 @@ export function ChatSurface({
     tailIntentRef.current = false;
     previousScrollTopRef.current = null;
     previousScrollHeightRef.current = null;
+    previousViewportHeightRef.current = null;
     userScrollIntentRef.current = null;
   }, [storageScope]);
 
@@ -896,14 +898,16 @@ export function ChatSurface({
     if (anchor?.followingTail === false) restoreReadingAnchor(anchor, 'mounted');
   }, [measuredGroupSizesByScope, navigationTarget, restoreReadingAnchor]);
 
-  useLayoutEffect(() => {
+  const pinTailToViewport = useCallback(() => {
     const el = scrollRef.current;
-    if (!el || !tailIntentRef.current || scrollbarDragRef.current || transcript?.hasNewer
+    if (!el || !tailIntentRef.current || navigationTarget || scrollbarDragRef.current || transcript?.hasNewer
         || (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) > 0) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD_PX) {
       el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
     }
-  }, [items, virtualItems, transcript?.hasNewer, transcript?.unmaterializedAfterCount, unmaterializedAfterCount]);
+  }, [navigationTarget, transcript?.hasNewer, transcript?.unmaterializedAfterCount, unmaterializedAfterCount]);
+
+  useLayoutEffect(pinTailToViewport, [items, virtualItems, pinTailToViewport]);
 
   useLayoutEffect(() => () => {
     const el = scrollRef.current;
@@ -1078,12 +1082,18 @@ export function ChatSurface({
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(syncScrollbar);
+    const observer = new ResizeObserver(() => {
+      // A shelf or delayed persistence notice can resize the viewport without
+      // changing any rows. Preserve deliberate tail intent at that boundary.
+      pinTailToViewport();
+      if (scroll.clientHeight > 0) setViewportHeight(scroll.clientHeight);
+      syncScrollbar();
+    });
     observer.observe(scroll);
     const canvas = scroll.querySelector('.stream-renderer__virtual-canvas');
     if (canvas) observer.observe(canvas);
     return () => observer.disconnect();
-  }, [syncScrollbar]);
+  }, [pinTailToViewport, syncScrollbar]);
 
   function handleScrollbarKey(event: KeyboardEvent): void {
     const scroll = scrollRef.current;
@@ -1128,14 +1138,17 @@ export function ChatSurface({
     const nextDistance = Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight);
     const previous = previousScrollTopRef.current;
     const previousHeight = previousScrollHeightRef.current;
-    if (el.scrollTop === 0 && nextDistance > FOLLOW_THRESHOLD_PX) tailIntentRef.current = false;
+    const viewportChanged = previousViewportHeightRef.current !== null
+      && previousViewportHeightRef.current !== nextViewportHeight;
+    if (!viewportChanged && el.scrollTop === 0 && nextDistance > FOLLOW_THRESHOLD_PX) tailIntentRef.current = false;
     if (previous !== null && el.scrollTop < previous && previousHeight === el.scrollHeight
-        && nextDistance > FOLLOW_THRESHOLD_PX) tailIntentRef.current = false;
+        && !viewportChanged && nextDistance > FOLLOW_THRESHOLD_PX) tailIntentRef.current = false;
     if (previous !== null && el.scrollTop !== previous) {
       scrollDirectionRef.current = el.scrollTop < previous ? 'up' : 'down';
     }
     previousScrollTopRef.current = el.scrollTop;
     previousScrollHeightRef.current = el.scrollHeight;
+    previousViewportHeightRef.current = nextViewportHeight;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
     if (userScrollIntentRef.current === 'toward-tail'
