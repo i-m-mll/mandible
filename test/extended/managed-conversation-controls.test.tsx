@@ -2,58 +2,90 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, expect, it, vi } from 'vitest';
 const fetcher=vi.hoisted(()=>vi.fn());
 vi.mock('../../ui/src/client-auth-token',()=>({browserSessionFetch:fetcher}));
-import { ManagedConversationControls, ManagedConversationControlActions, ManagedConversationStopButton, useManagedConversationControlState } from '../../ui/src/chat/ManagedConversationControls';
+import { ManagedConversationControls, ManagedConversationControlFields, ManagedConversationControlActions, ManagedConversationStopButton, useManagedConversationControlState } from '../../ui/src/chat/ManagedConversationControls';
 import type { ConversationControlSnapshot } from '../../ui/src/api';
 afterEach(()=>{cleanup();fetcher.mockReset();});
-it('preserves edited settings across reconciliation and sends generation-scoped decisions',async()=>{
- const calls:{path:string;body:Record<string,unknown>}[]=[];
- fetcher.mockImplementation(async(path:string,init?:RequestInit)=>{
-  const body=init?.body?JSON.parse(String(init.body)):{};calls.push({path,body});
-  const value=path.endsWith('/settings')?{revision:7,runtime_options:{model:'stored'},usage:[]}:
-    path.endsWith('/options')?[{id:'model',label:'Model',choices:[{value:'stored',label:'stored'},{value:'edited',label:'edited'}]}]:
-    path.endsWith('/permissions')?[{id:'permission',tool_name:'Write',tool_input:{path:'file'}}]:undefined;
-  return {ok:true,json:async()=>({ok:true,value})};
+it('autosaves rapid edits in revision order and preserves them through an older refresh', async () => {
+ const patches: Record<string, unknown>[] = [];
+ let finishFirst!: () => void;
+ let revision = 7; let model = 'stored';
+ fetcher.mockImplementation(async (path: string, init?: RequestInit) => {
+  if (init?.method === 'PATCH') {
+   const body = JSON.parse(String(init.body)); patches.push(body);
+   if (patches.length === 1) await new Promise<void>(resolve => { finishFirst = resolve; });
+   revision++; model = body.runtime_options.model;
+  }
+  return { ok: true, json: async () => ({ ok: true, value: path.endsWith('/settings')
+   ? { revision, runtime_options: { model }, usage: [] }
+   : path.endsWith('/options') ? [{ id: 'model', label: 'Model', choices: ['stored', 'first', 'latest'].map(value => ({ value, label: value })) }] : [] }) };
  });
- const control={conversation_id:'chat',provider:'claude_code',revision:1,controller:{kind:'ready',since:1},ownership:{kind:'mandible',generation:3},turn:{kind:'waiting-permission'}} as ConversationControlSnapshot;
- const view=render(<ManagedConversationControls control={control}/>);
- await vi.waitFor(()=>expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored'));
- fireEvent.click(screen.getByRole('button', { name: 'Model' }));
- fireEvent.click(screen.getByRole('option', { name: 'edited' }));
- await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
- view.rerender(<ManagedConversationControls control={{...control,revision:2}}/>);
- await vi.waitFor(()=>expect(calls.filter(call=>call.path.endsWith('/settings')).length).toBeGreaterThan(1));
- expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('edited');
- fireEvent.click(screen.getByRole('button',{name:'Allow once'}));
- await vi.waitFor(()=>expect(calls).toContainEqual({path:'/api/conversations/chat/control/permission/permission',body:{generation:3,decision:'allow'}}));
- await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
- fireEvent.click(screen.getByRole('button',{name:'Save settings'}));
- await vi.waitFor(()=>expect(calls).toContainEqual({path:'/api/conversations/chat/control/settings',body:{expected_revision:7,runtime_options:{model:'edited'}}}));
+ const control = { conversation_id: 'chat', provider: 'claude_code', revision: 1, controller: { kind: 'ready', since: 1 }, ownership: { kind: 'mandible', generation: 3 }, turn: { kind: 'none' } } as ConversationControlSnapshot;
+ const view = render(<ManagedConversationControls control={control}/>);
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' })); fireEvent.click(screen.getByRole('option', { name: 'first' }));
+ await vi.waitFor(() => expect(finishFirst).toBeTypeOf('function'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' })); fireEvent.click(screen.getByRole('option', { name: 'latest' }));
+ view.rerender(<ManagedConversationControls control={{ ...control, revision: 2 }}/>);
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('latest');
+ finishFirst();
+ await vi.waitFor(() => expect(patches).toEqual([
+  { expected_revision: 7, runtime_options: { model: 'first' } },
+  { expected_revision: 8, runtime_options: { model: 'latest' } },
+ ]));
+ await vi.waitFor(() => expect(screen.queryByText('Saving…')).toBeNull());
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('latest');
+ expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
 });
 
-it('keeps current edits when an earlier save finishes after A to B to A', async () => {
- let finishSave!: (value: unknown) => void;
+it('retains failed autosave choices visibly and retries without a hidden Save action', async () => {
+ let fail = true;
  fetcher.mockImplementation(async (path: string, init?: RequestInit) => {
-  if (init?.method === 'PATCH') return new Promise(resolve => { finishSave = resolve; });
+  if (init?.method === 'PATCH' && fail) { fail = false; return { ok: false, json: async () => ({ message: 'Save unavailable' }) }; }
   return { ok: true, json: async () => ({ ok: true, value: path.endsWith('/settings')
-   ? { revision: 7, runtime_options: { model: path.includes('/A/') ? 'model-A' : 'model-B' }, usage: [] } : path.endsWith('/options') ? [{id:'model',label:'Model',choices:['model-A','model-B','earlier-edit','current-edit'].map(value=>({value,label:value}))}] : [] }) };
+   ? { revision: init?.method === 'PATCH' ? 8 : 7, runtime_options: { model: init?.method === 'PATCH' ? 'edited' : 'stored' }, usage: [] }
+   : path.endsWith('/options') ? [{ id: 'model', label: 'Model', choices: ['stored', 'edited'].map(value => ({ value, label: value })) }] : [] }) };
  });
- const control = { conversation_id: 'A', provider: 'codex', revision: 1, controller: {kind:'ready',since:1}, ownership: { kind: 'none', generation: 0 }, turn: { kind: 'none' } } as ConversationControlSnapshot;
- const view = render(<ManagedConversationControls control={control}/>);
- await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-A'));
- fireEvent.click(screen.getByRole('button', { name: 'Model' }));
- fireEvent.click(screen.getByRole('option', { name: 'earlier-edit' }));
- await vi.waitFor(()=>expect((screen.getByRole('button',{name:'Save settings'}) as HTMLButtonElement).disabled).toBe(false));
- fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
- await vi.waitFor(() => expect(finishSave).toBeTypeOf('function'));
- view.rerender(<ManagedConversationControls control={{ ...control, conversation_id: 'B' }}/>);
- await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-B'));
- view.rerender(<ManagedConversationControls control={control}/>);
- await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('model-A'));
- fireEvent.click(screen.getByRole('button', { name: 'Model' }));
- fireEvent.click(screen.getByRole('option', { name: 'current-edit' }));
- finishSave({ ok: true, json: async () => ({ ok: true, value: { revision: 8, runtime_options: { model: 'earlier-edit' } } }) });
- await vi.waitFor(() => expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(false));
- expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('current-edit');
+ const control = { conversation_id: 'chat', provider: 'codex', revision: 1, controller: { kind: 'ready', since: 1 }, ownership: { kind: 'none', generation: 0 }, turn: { kind: 'none' } } as ConversationControlSnapshot;
+ render(<ManagedConversationControls control={control}/>);
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' })); fireEvent.click(screen.getByRole('option', { name: 'edited' }));
+ await vi.waitFor(() => expect(screen.getByText('Save unavailable')).toBeTruthy());
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('edited');
+ fireEvent.click(screen.getByRole('button', { name: 'Retry settings' }));
+ await vi.waitFor(() => expect(screen.queryByText('Save unavailable')).toBeNull());
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('edited');
+});
+
+it('flush waits for autosave and blocks a saved setting the provider rejected', async () => {
+ let finish!: () => void; let flushed: boolean | undefined; let applyError = false;
+ fetcher.mockImplementation(async (path: string, init?: RequestInit) => {
+  if (init?.method === 'PATCH') await new Promise<void>(resolve => { finish = resolve; });
+  return { ok: true, json: async () => ({ ok: true, value: path.endsWith('/settings')
+   ? { revision: init?.method === 'PATCH' ? 8 : 7, runtime_options: { model: init?.method === 'PATCH' ? JSON.parse(String(init.body)).runtime_options.model : 'stored' }, usage: [],
+       ...(applyError ? { application: { generation: 0, acknowledged_options: { model: 'edited' }, fields: {
+         model: { state: 'error', timing: 'next-response', error: 'Model refused' },
+         effort: { state: 'acknowledged', timing: 'next-response' }, permission_mode: { state: 'acknowledged', timing: 'current-session' },
+       } } } : {}) }
+   : path.endsWith('/options') ? [{ id: 'model', label: 'Model', choices: ['stored', 'edited'].map(value => ({ value, label: value })) }] : [] }) };
+ });
+ function FlushHarness() {
+  const state = useManagedConversationControlState({ conversation_id: 'chat', provider: 'codex', revision: 1,
+    controller: { kind: 'ready', since: 1 }, ownership: { kind: 'none', generation: 0 }, turn: { kind: 'none' } } as ConversationControlSnapshot);
+  return <><ManagedConversationControlActions state={state}/><ManagedConversationControlFields state={state} compact/><button onClick={() => { void state.flushSettings().then(value => { flushed = value; }); }}>Send now</button></>;
+ }
+ render(<FlushHarness/>);
+ await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored'));
+ fireEvent.click(screen.getByRole('button', { name: 'Model' })); fireEvent.click(screen.getByRole('option', { name: 'edited' }));
+ fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
+ await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+ expect(flushed).toBeUndefined();
+ finish(); await vi.waitFor(() => expect(flushed).toBe(true));
+ applyError = true; flushed = undefined;
+ fireEvent.click(screen.getByRole('button', { name: 'Model' })); fireEvent.click(screen.getByRole('option', { name: 'stored' }));
+ fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
+ finish(); await vi.waitFor(() => expect(flushed).toBe(false));
+ expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('stored');
+ expect(screen.getByRole('alert').textContent).toContain('Model refused');
 });
 
 const runningControl = {

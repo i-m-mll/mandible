@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConversationControlSnapshot, ConversationRuntimeOptions } from '../api';
-import type { ManagedPermissionRequest, ConversationRunOption } from '../../../src/conversation-control/types';
+import type { ManagedPermissionRequest, ConversationRunOption, RuntimeSettingsApplication } from '../../../src/conversation-control/types';
 import { ChoiceDropdown } from '../components/shared/ChoiceDropdown';
 import { conversationExecutionState } from './conversationControl';
 import { browserSessionFetch } from '../client-auth-token';
 
 type Permission = ManagedPermissionRequest;
-type Settings = { revision: number; runtime_options: ConversationRuntimeOptions; usage: { generation: number; snapshot: Record<string, unknown> }[] };
+type Settings = { application?: RuntimeSettingsApplication; revision: number; runtime_options: ConversationRuntimeOptions; usage: { generation: number; snapshot: Record<string, unknown> }[] };
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await browserSessionFetch(path, { method, headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();
@@ -36,28 +36,41 @@ export function useManagedConversationControlState(control: ConversationControlS
   const permissionScope = useRef<number | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
+  const settingsReadEpoch = useRef(0);
+  const settingsRef = useRef<Settings | null>(null);
+  const draftRef = useRef<ConversationRuntimeOptions>({});
+  const pendingEdits = useRef<ConversationRuntimeOptions>({});
+  const savingScope = useRef<number | null>(null);
+  const savingPromise = useRef<Promise<void> | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const id = control?.conversation_id;
   const controllerGeneration = control?.ownership.generation;
   const scopeRef = useRef({ id, controllerGeneration, generation: 0 });
   if (scopeRef.current.id !== id || scopeRef.current.controllerGeneration !== controllerGeneration) scopeRef.current = { id, controllerGeneration, generation: scopeRef.current.generation + 1 };
   const generation = scopeRef.current.generation;
+  const settingsScope = useRef({ id, epoch: 0 });
+  if (settingsScope.current.id !== id) settingsScope.current = { id, epoch: settingsScope.current.epoch + 1 };
+  const settingsEpoch = settingsScope.current.epoch;
+  const settingsCurrent = () => settingsScope.current.epoch === settingsEpoch;
   const current = () => scopeRef.current.generation === generation;
   const path = `/api/conversations/${encodeURIComponent(id ?? '')}/control`;
   useEffect(() => {
-    dirtyRef.current = false;
+    dirtyRef.current = false; settingsRef.current = null; draftRef.current = {}; pendingEdits.current = {}; savingScope.current = null; setSettingsSaving(false); setSettingsError(null);
     busyRef.current = false; setBusy(false);
-    setInterruptPending(null); setOptions([]); setDirty(false); setSettings(null); setDraft({}); setPermissions([]); setError(null);
+    setInterruptPending(null); setOptions([]); setSettings(null); setDraft({}); setPermissions([]); setError(null);
   }, [id]);
   useEffect(() => {
     if (!id) return;
     let active = true;
+    const readEpoch = settingsReadEpoch.current;
     void request<Settings>(`${path}/settings`).then(value => {
-      if (!active) return;
-      setSettings(value);
-      if (!dirtyRef.current) setDraft(value.runtime_options);
+      if (!active || settingsReadEpoch.current !== readEpoch) return;
+      if (settingsRef.current && value.revision < settingsRef.current.revision) return;
+      settingsRef.current = value; setSettings(value);
+      if (!dirtyRef.current) { draftRef.current = value.runtime_options; setDraft(value.runtime_options); }
     }).catch(cause => { if (active) setError(String(cause)); });
     void request<Permission[]>(`${path}/permissions`).then(value => { if (active) { permissionScope.current = controllerGeneration; setPermissions(value); } })
       .catch(cause => { if (active) setError(String(cause)); });
@@ -75,9 +88,57 @@ export function useManagedConversationControlState(control: ConversationControlS
   useEffect(() => {
     if (interruptPending && (interruptPending.generation !== execution.generation || execution.phase === 'terminal' || interruptPending.turnId !== execution.activeTurnId)) setInterruptPending(null);
   }, [execution.generation, execution.phase, execution.activeTurnId, interruptPending]);
+  const saveEdits = async () => {
+    if (!id || !settingsRef.current || savingScope.current === settingsEpoch) return;
+    savingScope.current = settingsEpoch; setSettingsSaving(true); setSettingsError(null);
+    try {
+      while (settingsCurrent() && Object.keys(pendingEdits.current).length) {
+        const patch = { ...pendingEdits.current }; pendingEdits.current = {};
+        try {
+          let saved: Settings;
+          try { saved = await request<Settings>(`${path}/settings`, 'PATCH', { expected_revision: settingsRef.current!.revision, runtime_options: patch }); }
+          catch (cause) {
+            // Revision conflicts reconcile the canonical desired settings before
+            // retrying only the user's edited fields, never an old whole draft.
+            if (!(cause instanceof Error) || cause.message !== 'capability-drift') throw cause;
+            const latest = await request<Settings>(`${path}/settings`);
+            if (!settingsCurrent()) return;
+            settingsRef.current = latest;
+            saved = await request<Settings>(`${path}/settings`, 'PATCH', { expected_revision: latest.revision, runtime_options: patch });
+          }
+          if (!settingsCurrent()) return;
+          if (saved.revision >= settingsRef.current!.revision) {
+            settingsReadEpoch.current++;
+            settingsRef.current = { ...settingsRef.current!, ...saved }; setSettings(settingsRef.current);
+          }
+          draftRef.current = { ...settingsRef.current!.runtime_options, ...pendingEdits.current };
+          setDraft(draftRef.current);
+        } catch (cause) {
+          if (!settingsCurrent()) return;
+          pendingEdits.current = { ...patch, ...pendingEdits.current };
+          setSettingsError(cause instanceof Error ? cause.message : String(cause));
+          return;
+        }
+      }
+      if (settingsCurrent()) dirtyRef.current = false;
+    } finally {
+      if (settingsCurrent()) { savingScope.current = null; setSettingsSaving(false); }
+    }
+  };
+  const startSave = () => {
+    if (savingScope.current === settingsEpoch) return savingPromise.current ?? Promise.resolve();
+    const promise = saveEdits(); savingPromise.current = promise; return promise;
+  };
+  const flushSettings = async () => {
+    await startSave();
+    return settingsCurrent() && Boolean(settingsRef.current) && !dirtyRef.current
+      && !Object.values(settingsRef.current?.application?.fields ?? {}).some(field => field.state === 'error');
+  };
   const edit = <K extends keyof ConversationRuntimeOptions>(key: K, value: ConversationRuntimeOptions[K]) => {
-    setDraft(current => { const next = { ...current }; if (value === undefined) delete next[key]; else next[key] = value; return next; });
-    dirtyRef.current = true; setDirty(true);
+    draftRef.current = { ...draftRef.current, [key]: value };
+    pendingEdits.current = { ...pendingEdits.current, [key]: value };
+    setDraft(draftRef.current); dirtyRef.current = true; settingsReadEpoch.current++;
+    void startSave();
   };
   const perform = async (action: () => Promise<unknown>) => {
     if (busyRef.current) return;
@@ -91,10 +152,21 @@ export function useManagedConversationControlState(control: ConversationControlS
     try { await request(`${path}/interrupt`, 'POST', { generation: control.ownership.generation, turn_id: execution.activeTurnId }); }
     catch (cause) { if (current()) setInterruptPending(null); throw cause; }
   });
-  return { options, execution, interrupt, interruptPending: Boolean(interruptPending), control, settings, draft, permissions: permissionScope.current === controllerGeneration ? permissions : [], error, busy, dirty, path, edit, perform,
+  const settingsProblems = settings?.application ? Object.entries(settings.application.fields)
+    .filter(([, field]) => field.state === 'error').map(([key, field]) => `${key === 'permission_mode' ? 'Permissions' : key === 'effort' ? 'Effort' : 'Model'}: ${field.error}`) : [];
+  const retrySettings = () => {
+    if (dirtyRef.current) { void startSave(); return; }
+    void perform(async () => {
+      const value = await request<Settings>(`${path}/settings`, 'PATCH', { expected_revision: settingsRef.current!.revision, runtime_options: {} });
+      if (current()) { settingsReadEpoch.current++; settingsRef.current = value; setSettings(value); }
+    });
+  };
+  return { options, execution, interrupt, interruptPending: Boolean(interruptPending), control, settings, draft, settingsSaving, settingsError, settingsProblems, flushSettings, retrySettings, permissions: permissionScope.current === controllerGeneration ? permissions : [], error, busy, path, edit, perform,
     setPermissions: (value: Parameters<typeof setPermissions>[0]) => { if (current()) setPermissions(value); },
-    setSettings: (value: Parameters<typeof setSettings>[0]) => { if (current()) setSettings(value); },
-    clearDirty: () => { if (current()) { dirtyRef.current = false; setDirty(false); } } };
+    setSettings: (value: Parameters<typeof setSettings>[0]) => { if (current()) setSettings(previous => {
+      const next = typeof value === 'function' ? value(previous) : value;
+      settingsReadEpoch.current++; settingsRef.current = next; return next;
+    }); } };
 }
 
 export function ManagedConversationControls({ control }: { control: ConversationControlSnapshot | null }) {
@@ -102,7 +174,7 @@ export function ManagedConversationControls({ control }: { control: Conversation
 }
 
 export function ManagedConversationControlFields({ state, compact = false, includeActions = true }: { state: ReturnType<typeof useManagedConversationControlState>; compact?: boolean; includeActions?: boolean }) {
-  const { control, settings, draft, busy, dirty, path, edit, perform, setSettings, clearDirty } = state;
+  const { control, settings, draft, busy, edit } = state;
   if (!control || !['claude_code', 'codex'].includes(control.provider)) return null;
   const claude = control.provider === 'claude_code';
   const coreFields = <>{state.options.map(option => {
@@ -110,11 +182,20 @@ export function ManagedConversationControlFields({ state, compact = false, inclu
     const known = option.choices.some(choice => choice.value === value);
     return <ChoiceDropdown key={option.id} label={option.label}
       prompt={option.id === 'model' ? 'Select model' : option.id === 'effort' ? 'Select effort' : 'Select permissions'}
-      value={value} disabled={busy || !known}
-      choices={option.choices}
+      value={value} disabled={busy || !settings || !known}
+      hint={settings?.application?.fields[option.id]?.timing === 'next-turn' ? 'Applies on the next message'
+        : option.id === 'permission_mode' ? 'Applies to subsequent permission checks; pending requests still need a decision' : 'Applies to subsequent provider responses'}
+      choices={option.choices.filter(choice => !choice.retained || choice.value === value)}
       onChange={value => edit(option.id, value)} />;
   })}</>;
-  if (compact) return coreFields;
+  const timing = settings?.application?.fields;
+  const fieldLabel = (key: string) => key === 'permission_mode' ? 'Permissions' : key === 'effort' ? 'Effort' : 'Model';
+  const pending = timing && Object.values(timing).some(field => field.state === 'pending');
+  const timingHint = timing ? Object.entries(timing).map(([key, field]) => `${fieldLabel(key)}: ${field.timing === 'next-turn' ? 'next message' : field.timing === 'next-response' ? 'subsequent provider response' : 'subsequent permission checks'}`).join('; ') : '';
+  const status = <span className="session-controls__settings-status" role="status" title={timingHint}>
+    {state.settingsSaving ? 'Saving…' : !state.settingsError && !state.settingsProblems.length && pending ? 'Applies on next message' : ''}
+  </span>;
+  if (compact) return <>{coreFields}{status}</>;
   return <div className="session-controls">
     {includeActions && <ManagedConversationControlActions state={state} />}
     <section aria-label="Conversation settings">
@@ -128,11 +209,7 @@ export function ManagedConversationControlFields({ state, compact = false, inclu
           const sources = new Set<'user' | 'project' | 'local'>(draft.setting_sources ?? ['user', 'project', 'local']); if (event.currentTarget.checked) sources.add(source); else sources.delete(source); edit('setting_sources', [...sources]);
         }} />{source}</label>)}</fieldset>
       </>}
-      <p>Changes apply to the next new turn.</p>
-      <button type="button" disabled={busy || !dirty || !settings} onClick={() => void perform(async () => {
-        const saved = await request<Settings>(`${path}/settings`, 'PATCH', { expected_revision: settings!.revision, runtime_options: draft });
-        setSettings(current => ({ ...current!, ...saved })); clearDirty();
-      })}>Save settings</button>
+      {status}
     </section>
     {settings?.usage.length ? <details><summary>Provider usage</summary>{settings.usage.map(usage => <dl key={usage.generation}>{usageFields(usage.snapshot).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value.toLocaleString()}</dd></div>)}</dl>)}</details> : null}
   </div>;
@@ -166,17 +243,21 @@ function QuestionRequest({ permission, busy, onAnswer }: {
 
 export function ManagedConversationControlActions({ state }: { state: ReturnType<typeof useManagedConversationControlState> }) {
   const { control, error, permissions, busy, path, perform, setPermissions } = state;
-  if (!control || (!error && !permissions.length)) return null;
+  const settingsError = state.settingsError ?? (state.settingsProblems.length ? `Saved; ${state.settingsProblems.join('; ')}` : null);
+  if (!control || (!error && !settingsError && !permissions.length)) return null;
   const respond = (permission: Permission, decision: 'allow' | 'deny' | 'answer', answers?: Record<string, string[]>) => void perform(async () => {
     await request(`${path}/permission/${encodeURIComponent(permission.id)}`, 'POST', { generation: control.ownership.generation, decision, ...(answers ? { answers } : {}) });
     setPermissions(current => current.filter(item => item.id !== permission.id));
   });
   return <div className="composer-request-shelf" aria-label="Pending requests">
     {error && <p className="composer-request-shelf__error" role="alert">{error}</p>}
+    {settingsError && <section className="composer-request"><p className="composer-request-shelf__error" role="alert">{settingsError}</p>
+      <button type="button" onClick={state.retrySettings} disabled={state.settingsSaving || busy}>Retry settings</button></section>}
     {permissions.map(permission => permission.questions?.length
       ? <QuestionRequest key={`${control.ownership.generation}:${permission.id}`} permission={permission} busy={busy || control.ownership.kind !== 'mandible'} onAnswer={answers => respond(permission, 'answer', answers)} />
       : ['AskUserQuestion', 'item/tool/requestUserInput'].includes(permission.tool_name) ? <p key={permission.id} role="alert">This question could not be read. Stop the turn and retry.</p> : <section key={permission.id} className="composer-request" aria-label="Permission request">
         <strong>{permission.title ?? permission.tool_name}</strong>
+        <p>Changing permissions affects subsequent checks. This request still needs your decision.</p>
         {permission.description && <p>{permission.description}</p>}
         <details><summary>Requested action</summary><pre>{JSON.stringify(permission.tool_input, null, 2)}</pre></details>
         <div className="composer-request__actions">{(['allow', 'deny'] as const).map(decision => <button key={decision} type="button" className="btn btn--sm" disabled={busy || control.ownership.kind !== 'mandible'} onClick={() => respond(permission, decision)}>{decision === 'allow' ? 'Allow once' : 'Deny'}</button>)}</div>

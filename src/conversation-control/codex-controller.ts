@@ -38,6 +38,7 @@ type CodexController = {
   controllerInstanceId: string;
   providerSessionId: string;
   client: CodexAppServerClient;
+  acknowledgedOptions: import("./types.js").ConversationRuntimeOptions;
   state: "ready" | "running" | "waiting" | "stopping";
   activeNativeTurnId: string | null;
   activeControlTurnId: string | null;
@@ -155,6 +156,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         controllerInstanceId: input.controller_instance_id,
         providerSessionId,
         client,
+        acknowledgedOptions: input.runtime_options?.model ? { model: input.runtime_options.model } : {},
         state: "ready",
         activeNativeTurnId: null,
         activeControlTurnId: null,
@@ -241,6 +243,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         const turn = responseTurn(result);
         const nativeTurnId = stringField(turn, "id");
         if (!nativeTurnId) throw new Error("Codex App Server returned no turn identity");
+        controller.acknowledgedOptions = { ...item.runtime_options };
         providerTurnId = nativeTurnId;
         controller.activeNativeTurnId = nativeTurnId;
         controller.activeControlTurnId = item.turn_id;
@@ -269,6 +272,11 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (controller.activeDelivery?.id === item.id) controller.activeDelivery = null;
       return { ok: false, error: { kind: "delivery-uncertain", delivery_id: item.id } };
     }
+  }
+
+  runtimeSettings(conversationId: string, generation: number) {
+    const owned = this.controllers.get(conversationId);
+    return owned?.generation === generation ? { acknowledged_options: { ...owned.acknowledgedOptions }, errors: {} } : null;
   }
 
   async probe(input: Parameters<ConversationControllerAdapter["probe"]>[0]): Promise<Result<AdapterProbe, ConversationControlError>> {

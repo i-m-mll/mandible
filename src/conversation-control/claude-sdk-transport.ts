@@ -1,3 +1,4 @@
+import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,7 +76,9 @@ export class ClaudeSdkTransport {
       model: settings.model,
       effort: settings.effort as Options["effort"],
       permissionMode: settings.permission_mode as Options["permissionMode"] ?? "default",
-      allowDangerouslySkipPermissions: settings.permission_mode === "bypassPermissions",
+      // Enables the explicitly selectable live mode; permissionMode still controls
+      // behavior, and mandatory native questions/ask rules stay intact.
+      allowDangerouslySkipPermissions: true,
       systemPrompt: withMandibleInstructionsFragment(settings.system_prompt),
       settingSources: settings.setting_sources ?? ["user", "project", "local"],
       allowedTools: settings.allowed_tools,
@@ -187,10 +190,20 @@ export class ClaudeSdkTransport {
     return (await this.query.supportedModels()).map(model => ({ value: model.value, label: model.displayName }));
   }
   async interrupt(): Promise<void> { if (!this.query || this.closed) throw new Error("Claude controller unavailable"); await this.query.interrupt(); }
-  async configure(settings: ConversationRuntimeOptions): Promise<void> {
+  async configure(settings: ConversationRuntimeOptions, current: ConversationRuntimeOptions) {
     if (!this.query || this.closed) throw new Error("Claude controller unavailable");
-    await this.query.setModel(settings.model);
-    await this.query.setPermissionMode(settings.permission_mode as NonNullable<Options["permissionMode"]> ?? "default");
+    const acknowledged = { ...current };
+    const errors: Partial<Record<"model" | "effort" | "permission_mode", string>> = {};
+    for (const field of RUNTIME_SETTING_FIELDS) {
+      if (settings[field] === undefined || settings[field] === current[field]) continue;
+      try {
+        if (field === "model") await this.query.setModel(settings.model);
+        else if (field === "effort") await this.query.applyFlagSettings({ effortLevel: settings.effort as Options["effort"] });
+        else await this.query.setPermissionMode(settings.permission_mode as NonNullable<Options["permissionMode"]>);
+        Object.assign(acknowledged, { [field]: settings[field] });
+      } catch (error) { errors[field] = error instanceof Error ? error.message : String(error); }
+    }
+    return { acknowledged_options: acknowledged, errors };
   }
   async close(): Promise<void> {
     if (this.closed) return;

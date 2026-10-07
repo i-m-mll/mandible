@@ -16,6 +16,7 @@ function statusFor(error: ConversationControlError): number {
     case "unsupported-operation": return 422;
     case "adapter-failure": return error.retryable ? 503 : 502;
     case "adapter-contract-violation": return 502;
+    case "settings-drift":
     case "capability-drift":
     case "ownership-conflict":
     case "stale-generation":
@@ -166,11 +167,12 @@ export function registerConversationControlRoutes(
     if (!await previewControlAllowed(req.params.id, snapshot.value.ownership.generation)) return rejectIneligiblePreviewControl(res);
     try {
       const result = control.saveRuntimeSettings(req.params.id, revision, parseConversationRuntimeOptions(body.runtime_options));
-      sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+      const applied = result.ok ? await control.applyRuntimeSettings(req.params.id) : result;
+      sendJson(res, applied.ok ? 200 : statusFor(applied.error), applied);
     } catch (error) {
       sendJson(res, 400, { error: "invalid_runtime_options", message: error instanceof Error ? error.message : String(error) });
     }
-  }), { operation: { id: "patch:/api/conversations/:id/control/settings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
+  }), { operation: { id: "patch:/api/conversations/:id/control/settings", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/permission/:requestId", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);

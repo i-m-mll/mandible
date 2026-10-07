@@ -7,7 +7,7 @@ import type { ConversationOutboxItem } from "../src/conversation-control/types.j
 const adapters: ClaudeSdkControllerAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map((adapter) => adapter.close())); });
 
-function fakeSdk({ delay = false, identity = true, interruptFails = false, interruptCompletes = false } = {}) {
+function fakeSdk({ delay = false, identity = true, interruptFails = false, interruptCompletes = false, effortFails = false } = {}) {
   let options!: Options;
   let nativeId!: string;
   let release!: () => void;
@@ -18,6 +18,8 @@ function fakeSdk({ delay = false, identity = true, interruptFails = false, inter
   let stopped = false;
   const emit = (record: unknown) => { records.push(record as SDKMessage); wake?.(); };
   const modelChanges: (string | undefined)[] = [];
+  const permissionChanges: string[] = [];
+  const effortChanges: unknown[] = [];
   const query = {
     async *[Symbol.asyncIterator]() {
       while (!stopped) {
@@ -29,7 +31,8 @@ function fakeSdk({ delay = false, identity = true, interruptFails = false, inter
     close() { closed++; stopped = true; wake?.(); },
     async interrupt() { if (interruptFails) throw new Error("interrupt failed"); emit({ type: "result", subtype: interruptCompletes ? "success" : "error_during_execution", is_error: !interruptCompletes, session_id: nativeId }); },
     async setModel(model: string | undefined) { modelChanges.push(model); },
-    async setPermissionMode() {},
+    async setPermissionMode(mode: string) { permissionChanges.push(mode); },
+    async applyFlagSettings(settings: unknown) { effortChanges.push(settings); if (effortFails) throw new Error("Effort refused"); },
     async initializationResult() { return {}; },
   } as unknown as Query;
   const sdk: ClaudeSdk = { async startup(input) {
@@ -46,7 +49,7 @@ function fakeSdk({ delay = false, identity = true, interruptFails = false, inter
     } as unknown as WarmQuery;
     return warm;
   } };
-  return { sdk, sent, emit, modelChanges, get options() { return options; }, get closed() { return closed; }, release() { release(); } };
+  return { sdk, sent, emit, modelChanges, permissionChanges, effortChanges, get options() { return options; }, get closed() { return closed; }, release() { release(); } };
 }
 const start = { kind: "start" as const, conversation_id: "conversation", generation: 1, controller_instance_id: "controller", cwd: "/tmp" };
 function message(turn: string, operation: "send" | "queue" = "send"): ConversationOutboxItem {
@@ -95,6 +98,33 @@ it("preserves settings, exact continuation, queue semantics, and duplicate accep
   await until(() => events.filter((value) => value === "turn-completed").length === 2);
   expect((await adapter.deliver({ ...message("new"), runtime_options: { ...first.runtime_options, model: "next-model" } })).ok).toBe(true);
   expect(native.modelChanges).toContain("next-model");
+});
+
+it("changes core settings live, reports partial failure and preserves pending approval and questions", async () => {
+  const native = fakeSdk({ effortFails: true });
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk }); adapters.push(adapter);
+  const original = { model: "old-model", effort: "low", permission_mode: "default" as const };
+  expect((await adapter.acquire({ ...start, runtime_options: original })).ok).toBe(true);
+  expect(native.options).toMatchObject({ permissionMode: "default", allowDangerouslySkipPermissions: true });
+  expect((await adapter.deliver({ ...message("active"), runtime_options: original })).ok).toBe(true);
+  const question = native.options.canUseTool!('AskUserQuestion', { questions: [{ question: 'Pick one', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }] }, { signal: new AbortController().signal, toolUseID: 'question' });
+  const approval = native.options.canUseTool!('Write', { path: '/tmp/example' }, { signal: new AbortController().signal, toolUseID: 'approval' });
+  await until(() => adapter.permissions('conversation').length === 2);
+  expect((await adapter.applyRuntimeSettings({ conversation_id: 'conversation', generation: 1,
+    runtime_options: { model: 'new-model', effort: 'high', permission_mode: 'bypassPermissions' } })).ok).toBe(true);
+  expect(native.closed).toBe(0);
+  expect(native.modelChanges).toEqual(['new-model']);
+  expect(native.permissionChanges).toEqual(['bypassPermissions']);
+  expect(native.effortChanges).toEqual([{ effortLevel: 'high' }]);
+  expect(adapter.runtimeSettings('conversation', 1)).toEqual({ acknowledged_options: { ...original, model: 'new-model', permission_mode: 'bypassPermissions' }, errors: { effort: 'Effort refused' } });
+  expect(adapter.permissions('conversation')).toHaveLength(2);
+  const pendingQuestion = adapter.permissions('conversation').find(request => request.questions)!;
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingQuestion.id, decision: 'allow' })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingQuestion.id, decision: 'answer', answers: { 'Pick one': ['B'] } })).ok).toBe(true);
+  expect(await question).toMatchObject({ behavior: 'allow' });
+  const pendingApproval = adapter.permissions('conversation')[0];
+  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingApproval.id, decision: 'deny' })).ok).toBe(true);
+  expect(await approval).toMatchObject({ behavior: 'deny' });
 });
 
 it("decides actual SDK tool permissions and interrupts without releasing ownership", async () => {
