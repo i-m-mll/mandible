@@ -28,6 +28,8 @@ export function registerConversationControlRoutes(
   control: ConversationControlService,
   options: { db?: Db; instance?: InstanceInfo } = {},
 ): void {
+  const discoverModels = options.instance?.role !== "preview"
+    && (options.instance?.allowed_effects.includes("provider:send") ?? true);
   const attachmentStore = options.db ? new ChatAttachmentStore(options.db) : null;
   const previewControlAllowed = async (conversationId: string, generation: number): Promise<boolean> => {
     if (options.instance?.role !== "preview") return true;
@@ -146,9 +148,9 @@ export function registerConversationControlRoutes(
   }), { operation: { id: "get:/api/conversations/:id/control/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute(async (req, res) => {
-    const result = await control.runOptions(req.params.id);
+    const result = await control.runOptions(req.params.id, { discoverModels });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: ["provider:send"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: discoverModels ? ["ledger:read", "provider:send"] : ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.getRuntimeSettings(req.params.id);
