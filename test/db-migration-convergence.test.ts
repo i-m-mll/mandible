@@ -62,6 +62,27 @@ function migrateFixtureThrough(db: SqliteDatabase, targetVersion: number): void 
   }
 }
 
+it("preserves v192 user preference bytes and revisions while admitting managed Chat defaults", () => {
+  const db = new SqliteDatabase(":memory:");
+  try {
+    db.exec(FLOOR_FIXTURE);
+    db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+      crypto.createHash("sha256").update(String(value)).digest("hex"));
+    migrateFixtureThrough(db, 192);
+    const operator = setupOperator(db, { slug: "preferences-operator", display_name: "Operator" });
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'app_rail_order', ?, 7, 123)")
+      .run(operator.id, '["chat","issues"]');
+    expect(() => db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 1, 456)")
+      .run(operator.id)).toThrow(/CHECK constraint/);
+    migrateFixtureThrough(db, 193);
+    expect(db.prepare("SELECT value, revision, updated_at FROM user_settings WHERE user_id = ? AND key = 'app_rail_order'").get(operator.id))
+      .toEqual({ value: '["chat","issues"]', revision: 7, updated_at: 123 });
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 1, 456)")
+      .run(operator.id);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
+
 it("preserves v187 reminder events while admitting truthful local attribution", () => {
   const db = new SqliteDatabase(":memory:");
   try {

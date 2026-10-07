@@ -45,11 +45,7 @@ const USER_SETTINGS_V170_SCHEMA_SQL = `CREATE TABLE user_settings (
         PRIMARY KEY(user_id, key)
       )`;
 
-export interface Migration {
-  version: number;
-  name: string;
-  statements: string[];
-  // Freeze v172's admitted keys independently of the current fresh baseline.
+// Freeze v172's admitted keys independently of the current fresh baseline.
 const USER_SETTINGS_V172_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),
@@ -59,7 +55,11 @@ const USER_SETTINGS_V172_SCHEMA_SQL = `CREATE TABLE user_settings (
         PRIMARY KEY(user_id, key)
       )`;
 
-/** SQLite cannot toggle foreign_keys from inside a transaction. */
+export interface Migration {
+  version: number;
+  name: string;
+  statements: string[];
+  /** SQLite cannot toggle foreign_keys from inside a transaction. */
   requires_foreign_keys_off?: boolean;
 }
 
