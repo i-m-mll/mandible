@@ -48,6 +48,7 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): vo
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(async () => {
+  window.sessionStorage.clear();
   await establishTestClientAccess();
   mockConversationStructureFromWindow();
   mockManagedSettings();
@@ -365,6 +366,8 @@ describe('conversation sidebar groups', () => {
 
     const projectHeading = await screen.findByRole('button', { name: /^Mandible/ });
     const projectSection = projectHeading.closest('section') as HTMLElement;
+    expect(projectHeading.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(projectHeading);
     const codexRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing Codex' });
     const claudeRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' });
     const agyRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' });
@@ -516,6 +519,7 @@ describe('conversation sidebar groups', () => {
     const newChat = placementKind === 'project'
       ? await screen.findByRole('button', { name: 'New chat in Mandible' })
       : within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' });
+    if (placementKind === 'project') fireEvent.click(await screen.findByRole('button', { name: /^Mandible/ }));
     fireEvent.click(newChat);
     fireEvent.click(await screen.findByRole('button', { name: provider === 'codex' ? 'Start with Codex (OpenAI)' : 'Start with Claude' }));
     const row = await screen.findByRole('button', { name: provider === 'codex' ? 'Open conversation New Codex chat' : 'Open conversation New Claude chat' });
@@ -593,6 +597,8 @@ describe('conversation sidebar groups', () => {
 
     const projectHeading = await screen.findByRole('button', { name: /^Mandible/ });
     const projectSection = projectHeading.closest('section') as HTMLElement;
+    expect(projectHeading.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(projectHeading);
     fireEvent.click(within(projectSection).getByRole('button', { name: 'Pin Project one' }));
     const pinnedSection = (await screen.findByRole('button', { name: /^Pinned/ })).closest('section') as HTMLElement;
     expect(within(pinnedSection).getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
@@ -631,6 +637,7 @@ describe('conversation sidebar groups', () => {
       };
     });
     renderView();
+    fireEvent.click(await screen.findByRole('button', { name: /^Mandible/ }));
     await screen.findByRole('button', { name: 'Open conversation Project one' });
     await waitFor(() => expect(requests).toContainEqual(expect.objectContaining({
       project_ids: ['prj-mandible'],
@@ -852,6 +859,7 @@ describe('conversation sidebar groups', () => {
     renderView(sessions, vi.fn(), null, 5);
 
     const projectSection = (await screen.findByRole('button', { name: /^Mandible/ })).closest('section') as HTMLElement;
+    fireEvent.click(within(projectSection).getByRole('button', { name: /^Mandible/ }));
     const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
     const provisionalRow = within(projectSection).getByRole('button', { name: 'Open session Reserved chat' });
     expect(within(chatsSection).getByRole('button', { name: 'Open session Unscoped chat' })).toBeTruthy();
