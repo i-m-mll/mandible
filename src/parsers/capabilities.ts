@@ -35,6 +35,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     },
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
+      "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Messages, plans, tools, and semantic activity expose metadata.chat_item using the shared provider-neutral contract.",
       "Reasoning summary arrays preserve ordered provider-authored parts; readable reasoning content is separate and encrypted content is never normalized.",
       "Tool names are stored in metadata.tool_name.",

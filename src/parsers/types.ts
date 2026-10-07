@@ -115,7 +115,7 @@ export interface BlockMetadata {
   provider_message_id?: string;
   /** Provider-native turn identity shared by the prompt and its terminal receipt. */
   provider_turn_id?: string;
-  /** Caller-supplied user-message identity echoed by the provider event stream. */
+  /** Caller-supplied user-message identity echoed by the provider; also binds the normalized user Chat item. */
   client_intent_id?: string;
   /** Zero-based native record ordinal used by the verified source reader. */
   source_record_ordinal?: number;

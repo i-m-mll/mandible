@@ -35,10 +35,6 @@ import type {
   ConversationTranscriptConsumer,
 } from '../query/conversationData';
 import {
-  deriveLiveLabel,
-  deriveTokenCount,
-  extractTurns,
-  formatElapsed,
   groupActivityItemsForDisplay,
   groupMessagesForDisplay,
   serializeDisplayGroupToMarkdown,
@@ -109,7 +105,6 @@ export function shouldShowJumpToLatest(distancePx: number, viewportHeight: numbe
 type VirtualItem =
   | { kind: 'group'; id: string; group: DisplayGroup; estimatedSize: number }
   | { kind: 'history'; id: string; state: HistoryRowState }
-  | { kind: 'live'; id: string }
   | { kind: 'permission'; id: string };
 
 type HistoryRowState = {
@@ -194,8 +189,9 @@ function tailReadingAnchor(itemId: string): ReadingAnchor {
 }
 
 function blockId(turnId: string, block: ContentBlock, index: number): string {
+  if (block.contentKey) return block.contentKey;
   if (block.type === 'tool_use') {
-    return `${turnId}:tool:${block.id}`;
+    return `tool:${block.id}`;
   }
   return `${turnId}:${block.type}:${index}`;
 }
@@ -214,6 +210,7 @@ function requestedScrollBehavior(smooth: boolean): ScrollBehavior {
 }
 
 function renderNodeContainsBlock(node: RenderNode, targetBlockId: string): boolean {
+  if (node.kind === 'transcript_boundary') return false;
   if (node.key === targetBlockId) return true;
   if (node.kind === 'user_message') return node.persisted?.blockId === targetBlockId;
   if (node.kind === 'semantic_event') return node.event.source.blockId === targetBlockId;
@@ -224,6 +221,7 @@ function renderNodeContainsBlock(node: RenderNode, targetBlockId: string): boole
 }
 
 function renderNodePosition(node: RenderNode, targetBlockId: string | null): number | null {
+  if (node.kind === 'transcript_boundary') return null;
   if (node.kind === 'user_message') return node.persisted?.position ?? null;
   if (node.kind === 'semantic_event') return node.event.source.position ?? null;
   if (node.kind === 'unmatched_tool_result') return node.result.source?.position ?? null;
@@ -256,6 +254,7 @@ function missingPositionRanges(
 }
 
 function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string | null {
+  if (node.kind === 'transcript_boundary') return null;
   if (node.kind === 'user_message') {
     return node.persisted?.position === position ? node.persisted.blockId : null;
   }
@@ -284,7 +283,6 @@ function hasMemberRef(element: HTMLElement, blockId: string): boolean {
 export function ChatSurface({
   events,
   streaming,
-  elapsedSeconds,
   emptyLabel,
   showEmpty = true,
   onSelectMessageInfo,
@@ -389,9 +387,14 @@ export function ChatSurface({
   const displayEntriesByGroup = useMemo(() => new Map(groups.map((group) => (
     [group.id, groupActivityItemsForDisplay(group.nodes)] as const
   ))), [groups]);
-  const turns = useMemo(() => extractTurns(nodes), [nodes]);
-  const liveLabel = deriveLiveLabel(turns, streaming);
-  const tokenCount = deriveTokenCount(turns);
+  const hasPendingPersistence = events.some((event) => event.type === 'chat:item' && event.persistencePending);
+  const [showPendingPersistence, setShowPendingPersistence] = useState(false);
+  useEffect(() => {
+    setShowPendingPersistence(false);
+    if (!hasPendingPersistence) return;
+    const timer = window.setTimeout(() => setShowPendingPersistence(true), 10000);
+    return () => window.clearTimeout(timer);
+  }, [hasPendingPersistence, expansionOwnerScope]);
   const hasContent = nodes.length > 0;
   const hasPermissionCard = Boolean(activePermissionRequest && onPermissionRespond);
   const measuredGroupSizes = measuredGroupSizesByScope.scope === extentScope
@@ -479,9 +482,6 @@ export function ChatSurface({
       groupedItems.push(...positionedItems.map(({ item }) => item));
     } else {
       groupedItems.push(...contentItems.map(({ item }) => item));
-    }
-    if (streaming) {
-      groupedItems.push({ kind: 'live', id: 'stream-live-tail' });
     }
     if (activePermissionRequest && onPermissionRespond) {
       groupedItems.push({ kind: 'permission', id: `permission:${activePermissionRequest.id}` });
@@ -1243,6 +1243,7 @@ export function ChatSurface({
 
   function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
     switch (node.kind) {
+      case 'transcript_boundary': return null;
       case 'user_message': {
         const source = node.persisted;
         return (
@@ -1322,6 +1323,8 @@ export function ChatSurface({
               toolName={node.item.name}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}
+              active={Boolean(node.item.executionActive && streaming)}
+              detailsAvailable={source?.detailsLoaded === false}
               input={node.item.input}
               result={node.item.result}
               defaultExpanded={false}
@@ -1395,8 +1398,8 @@ export function ChatSurface({
               onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
                 setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
               )}
-              getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
-              onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}
+              getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${node.key}:${id}`] ?? defaultExpanded}
+              onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${node.key}:${id}`, expanded)}
               selectedBlockIds={selectedBlockIds}
               selectMode={selectMode}
               onToggleBlockSelect={onToggleBlockSelect}
@@ -1449,6 +1452,7 @@ export function ChatSurface({
               data-member-refs={[...new Set(memberRefs)].join(' ')}
             >
               <ActivityGroup
+                active={streaming && entry.nodes.some((node) => node.item.type === 'tool-call-activity' && node.item.executionActive)}
                 items={entry.nodes.map((node) => node.item)}
                 memberRefs={memberRefs}
                 renderMember={(_, index) => renderNodeBody(entry.nodes[index], memberRefs[index])}
@@ -1459,25 +1463,6 @@ export function ChatSurface({
           );
         })}
       </TurnGroup>
-    );
-  }
-
-  function renderLiveIndicator(): JSX.Element {
-    return (
-      <div className="stream-live-indicator">
-        <span className="stream-live-indicator__dot" />
-        <span className="stream-live-indicator__label">{liveLabel ?? 'Working'}</span>
-        {tokenCount !== undefined && (
-          <span className="stream-live-indicator__tokens">
-            {tokenCount.toLocaleString()} tokens
-          </span>
-        )}
-        {elapsedSeconds !== undefined && (
-          <span className="stream-live-indicator__timer">
-            {formatElapsed(elapsedSeconds)}
-          </span>
-        )}
-      </div>
     );
   }
 
@@ -1529,7 +1514,6 @@ export function ChatSurface({
               >
                 {item.kind === 'group' && renderGroup(item.group)}
                 {item.kind === 'history' && renderHistoryRow(item.state)}
-                {item.kind === 'live' && renderLiveIndicator()}
                 {item.kind === 'permission' && activePermissionRequest && onPermissionRespond && (
                   <TurnGroup speaker="system">
                     <PermissionApprovalCard
@@ -1544,6 +1528,7 @@ export function ChatSurface({
           })}
         </div>
       </div>
+      {showPendingPersistence && <div className="stream-renderer__persistence-notice" role="status">Some content is awaiting confirmation from saved history.</div>}
       <div
         ref={scrollbarTrackRef}
         className={`stream-renderer__scrollbar-track${scrollbarDragging ? ' stream-renderer__scrollbar-track--dragging' : ''}`}

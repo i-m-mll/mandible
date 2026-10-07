@@ -9,6 +9,7 @@ import {
   conversationBlocksToStreamEvents,
   groupActivityItemsForDisplay,
   groupMessagesForDisplay,
+  chatItemStableKey,
   isRoutineActivityStatus,
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
@@ -219,7 +220,7 @@ describe('chat message stream render model', () => {
       canonicalItem({ type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'middle' }], ordinal: 0, turn: 'stable-turn-start' }),
     )]);
     const state = buildStreamState(events);
-    expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: 'stable-turn-start' });
+    expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', turn: { id: 'stable-turn-start' } });
   });
 
   it('keeps distant loaded ranges in separate turn fragments', () => {
@@ -232,8 +233,8 @@ describe('chat message stream render model', () => {
       { ...persistedBlock('distant', item(10)), position: 10 },
     ]);
     const nodes = buildStreamState(events).nodes;
-    expect(nodes.map((node) => node.kind)).toEqual(['assistant_turn', 'assistant_turn']);
-    expect(nodes[0].key).not.toBe(nodes[1].key);
+    expect(nodes.map((node) => node.kind)).toEqual(['assistant_turn', 'transcript_boundary', 'assistant_turn']);
+    expect(nodes[0].key).not.toBe(nodes[2].key);
   });
 
   it('groups consecutive same-speaker nodes before rendering and serializes markdown', () => {
@@ -309,10 +310,10 @@ describe('chat message stream render model', () => {
 
   it('groups consecutive activities across internal kinds and turns', () => {
     const activities = [
-      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 0, turn: 't1' }),
-      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 1, turn: 't1' }),
-      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 2, turn: 't1' }),
-      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 3, turn: 't2' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [{ type: 'text', text: 'First thought' }], ordinal: 0, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [{ type: 'text', text: 'Second thought' }], ordinal: 1, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [{ type: 'text', text: 'Checking' }], ordinal: 2, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [{ type: 'text', text: 'Continuing' }], ordinal: 3, turn: 't2' }),
     ];
     const nodes = buildStreamState(activities.map((item, index) => canonicalEvent(item, `a${index}`))).nodes;
     const entries = groupActivityItemsForDisplay(nodes);
@@ -355,7 +356,7 @@ describe('chat message stream render model', () => {
     }), 'following-activity');
     const groups = groupMessagesForDisplay(buildStreamState([...before, mixed, following]).nodes);
     expect(groups.at(-1)?.nodes.map((node) => node.key)).toContain('mixed-edge');
-    expect(groups.at(-1)?.nodes.map((node) => node.key)).toContain('codex:canonical-session:13:0');
+    expect(groups.at(-1)?.nodes.map((node) => node.key)).toContain(chatItemStableKey((following as { item: ChatItem }).item));
     expect(groups.flatMap((group) => groupActivityItemsForDisplay(group.nodes))
       .filter((entry) => entry.kind === 'activity-group')).toHaveLength(1);
   });
@@ -404,7 +405,7 @@ describe('chat message stream render model', () => {
     expect(expandedView.container.querySelector('.activity-block button')).toBeTruthy();
   });
 
-  it('preserves distinct reasoning identities while folding exact-adjacent visible duplicates', () => {
+  it('preserves distinct reasoning identities even when their prose is identical', () => {
     const reasoning = (ordinal: number, nativeId: string): ActivityItem => {
       const item = canonicalItem<ActivityItem>({
         type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary', ordinal, turn: 't1',
@@ -418,19 +419,16 @@ describe('chat message stream render model', () => {
     };
     const items = [reasoning(644, 'reasoning-one'), reasoning(646, 'reasoning-two')];
     const nodes = buildStreamState(items.map((item, index) => canonicalEvent(item, `reasoning-${index}`))).nodes;
-    expect(nodes.map((node) => node.key)).toEqual([
-      'codex:canonical-session:reasoning-one:item',
-      'codex:canonical-session:reasoning-two:item',
-    ]);
+    expect(nodes.map((node) => node.key)).toEqual(items.map(chatItemStableKey));
     const entry = groupActivityItemsForDisplay(nodes)[0];
-    expect(entry).toMatchObject({ kind: 'activity-group', key: 'activity:codex:canonical-session:reasoning-one:item' });
+    expect(entry).toMatchObject({ kind: 'activity-group', key: `activity:${chatItemStableKey(items[0])}` });
     const presentations = presentActivityItems(items);
-    expect(presentations).toHaveLength(1);
+    expect(presentations).toHaveLength(2);
     expect(presentations[0]).toMatchObject({
       summary: 'Reviewing item identity handling',
       details: ['Refining missing identity error handling'],
     });
-    expect(presentations[0].members.map((item) => item.identity.native_item_id)).toEqual(['reasoning-one', 'reasoning-two']);
+    expect(presentations.flatMap((presentation) => presentation.members.map((item) => item.identity.native_item_id))).toEqual(['reasoning-one', 'reasoning-two']);
 
     const changed = reasoning(647, 'reasoning-three');
     changed.parts[1].text = 'Different detail';
@@ -443,7 +441,7 @@ describe('chat message stream render model', () => {
     expect(presentActivityItems([items[0], changed])).toHaveLength(2);
   });
 
-  it('hides only empty routine Codex start and completion status', () => {
+  it('hides empty status records from both providers while retaining content and errors', () => {
     const status = (
       ordinal: number,
       sourceEventType: string,
@@ -470,11 +468,11 @@ describe('chat message stream render model', () => {
 
     expect(isRoutineActivityStatus(routineStart)).toBe(true);
     expect(isRoutineActivityStatus(routineComplete)).toBe(true);
-    expect([authoredStart, warningComplete, failedComplete, compacted, claudeStatus]
+    expect([authoredStart, warningComplete, failedComplete]
       .every((item) => !isRoutineActivityStatus(item))).toBe(true);
     expect(buildStreamState([
       routineStart, routineComplete, authoredStart, warningComplete, failedComplete, compacted, claudeStatus,
-    ].map((item, index) => canonicalEvent(item, `status-${index}`))).nodes).toHaveLength(5);
+    ].map((item, index) => canonicalEvent(item, `status-${index}`))).nodes).toHaveLength(3);
   });
 });
 
@@ -820,7 +818,7 @@ describe('ChatSurface stream behavior', () => {
     });
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
       if (this.classList.contains('stream-renderer__virtual-row')) {
-        return domRect(0, 0, 600, /:(18|19):0/.test(this.dataset.virtualKey ?? '') ? 600 : 150);
+        return domRect(0, 0, 600, Boolean(this.querySelector('[data-block-id="b18"], [data-block-id="b19"]')) ? 600 : 150);
       }
       return domRect(0, 0, 600, this.classList.contains('stream-renderer__scroll') ? 500 : 0);
     });
@@ -864,7 +862,7 @@ describe('ChatSurface stream behavior', () => {
     view.rerender(<ChatSurface events={events(19)} streaming={false} transcript={transcript(19)} />);
 
     const loadedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
-      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+      .find((row) => row.querySelector('[data-block-id="b19"]'))!;
     expect(loadedRow).toBeTruthy();
     const rowStart = Number.parseFloat(loadedRow.style.transform.split(',')[1]);
     expect(rowStart).toBeLessThan(3300);
@@ -873,7 +871,7 @@ describe('ChatSurface stream behavior', () => {
     const readingInset = scroll.scrollTop - rowStart;
     view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
     const preservedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
-      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+      .find((row) => row.querySelector('[data-block-id="b19"]'))!;
     const preservedStart = Number.parseFloat(preservedRow.style.transform.split(',')[1]);
     expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
   });

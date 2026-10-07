@@ -82,7 +82,7 @@ describe("chat render orchestration", () => {
 
     const reconciled = reconcileProviderProjection(history, projection);
     expect(reconciled).toHaveLength(2);
-    expect((reconciled[1] as { item: ChatItem }).item.parts[0]?.text).toBe("latest");
+    expect((reconciled[0] as { item: ChatItem }).item.parts[0]?.text).toBe("latest");
   });
 
   it("builds the same render model from durable and live canonical items", () => {
@@ -151,7 +151,7 @@ describe("chat render orchestration", () => {
     expect(buildStreamState(orphan).nodes).toMatchObject([{ kind: "unmatched_tool_result" }]);
   });
 
-  it("keeps only the raw-console live tail after persisted history", () => {
+  it("keeps every uncovered raw-console event after persisted history", () => {
     const historyEvents = [{
       type: "assistant", uuid: "assistant-tail-anchor", session_id: "s1", parent_tool_use_id: null,
       message: { id: "assistant-tail-anchor", role: "assistant", content: [{ type: "text", text: "persisted" }] },
@@ -161,7 +161,7 @@ describe("chat render orchestration", () => {
       historyEvents[0],
       { type: "assistant", uuid: "tail", session_id: "s1", parent_tool_use_id: null, message: { role: "assistant", content: [{ type: "text", text: "tail" }] } },
     ];
-    expect(computeLiveTail(historyEvents, memEvents)).toEqual(memEvents.slice(2));
+    expect(computeLiveTail(historyEvents, memEvents)).toEqual([memEvents[0], memEvents[2]]);
   });
 
   it("fails closed on provider-shaped transcript blocks and preserves canonical activity evidence", () => {
@@ -188,7 +188,7 @@ describe("chat render orchestration", () => {
 
   it("deduplicates buffered SSE and derives stopped streaming state", () => {
     const resultEvent: StreamEvent = {
-      type: "result", subtype: "success", session_id: "s1", duration_ms: 0, num_turns: 1,
+      type: "result", uuid: "result-1", subtype: "success", session_id: "s1", duration_ms: 0, num_turns: 1,
       result: "", total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, is_error: false,
     };
     const pending = { current: [resultEvent, resultEvent] };

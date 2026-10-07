@@ -130,7 +130,7 @@ import { compareConversationSidebarRows } from '../../../src/conversations/sideb
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
 import { openMarkdownDocument } from '../chat/markdownActions';
-import { conversationControlPresentation } from '../chat/conversationControl';
+import { conversationExecutionState, conversationControlPresentation } from '../chat/conversationControl';
 import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
 import type { ChatItem } from '../../../src/parsers/types';
 import {
@@ -1705,9 +1705,22 @@ export function ConversationDetail({
     const pendingReconciliations = pendingDurableReconciliationsRef.current
       .splice(0)
       .filter((event) => event.conversation_id === conversationId);
+    const materialized = new Set(payload.blocks.flatMap((block) => {
+      if (block.details_loaded === false) return [];
+      try {
+        const item = (JSON.parse(block.metadata_json) as { chat_item?: ChatItem }).chat_item;
+        return item ? [chatItemIdentityKey(item, { allowTranscriptCoordinates: true })] : [];
+      } catch { return []; }
+    }));
     if (pendingReconciliations.length > 0) {
+      pendingDurableReconciliationsRef.current.push(...pendingReconciliations.flatMap((event) => {
+        const uncovered = event.covered_identities.filter((identity) => !materialized.has(identity));
+        return uncovered.length > 0 ? [{ ...event, covered_identities: uncovered }] : [];
+      }));
       setLiveProjection((current) => pendingReconciliations.reduce(
-        (projection, event) => mergeProviderLiveProjection(projection, event),
+        (projection, event) => mergeProviderLiveProjection(projection, {
+          ...event, covered_identities: event.covered_identities.filter((identity) => materialized.has(identity)),
+        }),
         current,
       ));
     }
@@ -1799,7 +1812,10 @@ export function ConversationDetail({
       if (reconnected) {
         scheduleRefresh();
         refreshControl();
-        void getConversationLiveProjection(conversationId).then(setLiveProjection).catch(() => {});
+        void getConversationLiveProjection(conversationId).then((incoming) => {
+          if (selectionRef.current.conversationId !== conversationId) return;
+          setLiveProjection((current) => incoming.events.reduce((projection, event) => mergeProviderLiveProjection(projection, event), current));
+        }).catch(() => {});
       }
     });
     client.connect();
@@ -1920,14 +1936,13 @@ export function ConversationDetail({
     () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
     [conversation?.session_id, conversationId, visibleBlocks],
   );
+  const transcriptIntentAliases = useRef<{ conversationId: string; aliases: Map<string, string> }>({ conversationId, aliases: new Map() });
+  if (transcriptIntentAliases.current.conversationId !== conversationId) transcriptIntentAliases.current = { conversationId, aliases: new Map() };
   const chatEvents = useMemo(
-    () => reconcileProviderProjection(historyEvents, liveProjection),
-    [historyEvents, liveProjection],
+    () => reconcileProviderProjection(historyEvents, liveProjection, transcriptIntentAliases.current.aliases, control),
+    [historyEvents, liveProjection, control],
   );
-  const providerStreaming = control?.turn.kind === 'queued'
-    || control?.turn.kind === 'running'
-    || control?.turn.kind === 'waiting-user'
-    || control?.turn.kind === 'waiting-permission';
+  const providerStreaming = conversationExecutionState(control).isExecuting;
   const activityItems = useMemo(
     () => [
       ...buildSubagentActivityItems(conversation?.children ?? [], blocks, navigateFromActivity),
