@@ -1935,7 +1935,7 @@ export function ConversationDetail({
     ],
     [blocks, conversation?.children, navigateFromActivity, workflows],
   );
-  const rightSidebarDescriptor = useMemo(() => conversation && windowQuery.data ? ({
+  const rightSidebarDescriptor = useMemo(() => conversation ? ({
     id: 'chat-right-sidebar',
     kind: 'tabs' as const,
     ariaLabel: 'Chat sidebar',
@@ -1958,7 +1958,13 @@ export function ConversationDetail({
         tooltip: 'Session Overview',
         icon: <OverviewTabIcon />,
         scrollOwner: 'detail' as const,
-        content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
+        content: <ChatSessionOverview
+          providerSessionId={control?.conversation_id === conversationId
+            ? control.provider_session_id ?? conversation.session_id ?? null
+            : conversation.session_id ?? null}
+          conversationId={conversationId}
+          managedConversation={{ conversation, control, spawn: creationReceipt ?? null }}
+        />,
       },
       {
         id: 'preview',
@@ -1977,7 +1983,7 @@ export function ConversationDetail({
         content: <ChatActivity items={activityItems} />,
       },
     ],
-  }) : null, [activityItems, conversation, conversationId, currentRightSidebarViewState, rightSidebarState, updateRightSidebarState, windowQuery.data]);
+  }) : null, [activityItems, conversation, conversationId, control, creationReceipt, currentRightSidebarViewState, rightSidebarState, updateRightSidebarState]);
   useRegisterAppRightSidebar(rightSidebarDescriptor);
   const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
   const activeWorkflow = useMemo(

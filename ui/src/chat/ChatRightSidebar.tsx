@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { SessionOverviewView } from '../views/session-overview';
 import { ReferenceDetailContent } from '../views/reference-detail';
+import type { ManagedConversationOverview } from '../views/session-overview';
 import type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
 
 export type ChatActivityItemStatus = 'active' | 'finished' | 'waiting' | 'error';
@@ -29,14 +30,20 @@ function ChatSidebarDetail({ children }: { children: ComponentChildren }): JSX.E
   );
 }
 
-export function ChatSessionOverview({ providerSessionId, conversationId }: { providerSessionId: string | null; conversationId: string }): JSX.Element {
+export function ChatSessionOverview({ providerSessionId, conversationId, managedConversation }: {
+  providerSessionId: string | null;
+  conversationId: string;
+  managedConversation: ManagedConversationOverview;
+}): JSX.Element {
   return (
     <ChatSidebarDetail>
-      {providerSessionId ? (
-        <SessionOverviewView key={conversationId} initialSessionId={null} agentBinding={providerSessionId} embedded />
-      ) : (
-        <div className="chat-right-sidebar__empty">No Session Overview is available for this conversation.</div>
-      )}
+      <SessionOverviewView
+        key={conversationId}
+        initialSessionId={null}
+        agentBinding={providerSessionId}
+        managedConversation={managedConversation}
+        embedded
+      />
     </ChatSidebarDetail>
   );
 }
