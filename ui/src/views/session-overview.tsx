@@ -7,6 +7,7 @@
 // explicit zero/one/many semantics — exactly one match auto-binds, anything
 // else is shown honestly with the session picker as fallback. The binding is
 // display/navigation-only: it is never attached to a mutation request.
+import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identities';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
@@ -51,12 +52,13 @@ type BindingState =
   | { kind: 'many'; matches: SessionResolveMatch[]; truncated?: boolean };
 
 export type ManagedConversationOverview = {
-  conversation: Pick<Conversation, 'id' | 'title' | 'source' | 'cwd' | 'branch' | 'model' | 'started_at'>;
+  conversation: Pick<Conversation, 'id' | 'title' | 'source' | 'cwd' | 'branch' | 'model' | 'started_at'> & { source_path?: string };
   control: ConversationControlSnapshot | null;
   spawn: ConversationSpawnReceipt | null;
 };
 
 function ManagedConversationFacts({ conversation, control, spawn }: ManagedConversationOverview): JSX.Element {
+  const provider = CONVERSATION_SOURCE_TO_PROVIDER[conversation.source] ?? conversation.source;
   const matchingControl = control?.conversation_id === conversation.id ? control : null;
   const failure = spawn?.error?.message ?? (
     matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
@@ -71,10 +73,10 @@ function ManagedConversationFacts({ conversation, control, spawn }: ManagedConve
     <section className="session-overview__section" aria-label="Conversation">
       <dl className="session-overview__facts">
         <div className="session-overview__facts-wide"><dt>Conversation</dt><dd>{conversation.title}</dd></div>
-        <div><dt>Provider</dt><dd>{conversation.source}</dd></div>
+        <div><dt>Provider</dt><dd>{provider}</dd></div>
         {status ? <div><dt>Status</dt><dd>{status}</dd></div> : null}
-        {conversation.model ? <div><dt>Model</dt><dd>{conversation.model}</dd></div> : null}
-        {conversation.branch ? <div><dt>Branch</dt><dd>{conversation.branch}</dd></div> : null}
+        {conversation.model ? <div><dt>{conversation.source_path?.startsWith('mandible://') ? 'Requested model' : 'Recorded model'}</dt><dd>{conversation.model}</dd></div> : null}
+        {conversation.branch ? <div><dt>Branch</dt><dd>{overviewBranch(conversation.branch)}</dd></div> : null}
         {conversation.cwd ? <div className="session-overview__facts-wide"><dt>Cwd</dt><dd className="session-overview__path">{conversation.cwd}</dd></div> : null}
         <div><dt>Started</dt><dd>{formatTimestamp(conversation.started_at)}</dd></div>
         {failure ? <div className="session-overview__facts-wide" role="alert"><dt>Failure</dt><dd>{failure}</dd></div> : null}
@@ -97,6 +99,10 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     return;
   }
   await getSessions<SessionRecord>();
+}
+
+function overviewBranch(branch: string | null): string {
+  return branch === 'HEAD' ? 'No named branch recorded' : branch ?? '—';
 }
 
 function formatTimestamp(value: unknown): string {
@@ -395,7 +401,9 @@ export function SessionOverviewView({
   }, [initialSessionId]);
 
   const managedBindingRefresh = managedConversation ? refreshToken : 0;
-  const bindingProvider = managedConversation?.conversation.source;
+  const bindingProvider = managedConversation
+    ? CONVERSATION_SOURCE_TO_PROVIDER[managedConversation.conversation.source]
+    : undefined;
 
   // Resolve the page-local agent binding only when no explicit session
   // selection exists. Provider-neutral, and the binding may be a full id or a
@@ -596,7 +604,7 @@ export function SessionOverviewView({
       secondaryMetadata={(
         <dl className="session-overview__facts">
           <div><dt>App</dt><dd>{sessionText(session, 'app') ?? '—'}</dd></div>
-          <div><dt>Branch</dt><dd>{sessionText(session, 'branch') ?? '—'}</dd></div>
+          <div><dt>Branch</dt><dd>{overviewBranch(sessionText(session, 'branch'))}</dd></div>
           <div><dt>Cwd</dt><dd className="session-overview__path">{sessionText(session, 'cwd') ?? '—'}</dd></div>
           <div><dt>Created</dt><dd>{formatTimestamp(session.created_at)}</dd></div>
           <div><dt>Last message</dt><dd>{formatTimestamp(session.last_active)}</dd></div>
@@ -767,7 +775,7 @@ export function SessionOverviewView({
                   </div>
                   <div>
                     <dt>Branch</dt>
-                    <dd>{sessionText(session, 'branch') ?? '—'}</dd>
+                    <dd>{overviewBranch(sessionText(session, 'branch'))}</dd>
                   </div>
                   <div>
                     <dt>Cwd</dt>

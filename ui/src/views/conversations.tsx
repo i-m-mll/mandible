@@ -718,7 +718,7 @@ function conversationFromSpawn(
     project_path: null,
     cwd: null,
     branch: null,
-    model: source === 'codex' ? 'gpt-5.6-sol' : 'claude-opus-5',
+    model: null,
     cli_version: null,
     is_sidechain: false,
     agent_id: null,

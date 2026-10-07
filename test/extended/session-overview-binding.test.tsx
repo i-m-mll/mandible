@@ -255,7 +255,7 @@ describe('SessionOverviewView truncated resolution (review C4)', () => {
 
 describe('Managed conversation overview', () => {
   const context = (provider: 'claude' | 'codex', id = 'conv-1'): ManagedConversationOverview => ({
-    conversation: { id, title: `New ${provider} chat`, source: provider, cwd: '/project', branch: 'feature/example', model: null, started_at: '2026-10-06T12:00:00Z' },
+    conversation: { id, title: `New ${provider} chat`, source: provider === 'claude' ? 'claude_code' : provider, cwd: '/project', branch: 'feature/example', model: null, started_at: '2026-10-06T12:00:00Z' },
     control: null,
     spawn: null,
   });
@@ -273,6 +273,8 @@ describe('Managed conversation overview', () => {
     expect(screen.getByRole('region', { name: 'Conversation' })).toBe(facts);
     expect(container.querySelector('.session-overview')).toBe(overview);
     expect(calls.every((call) => call.method === 'GET')).toBe(true);
+    const resolveCall = calls.find((call) => call.url.startsWith('/api/sessions/resolve'))!;
+    expect(new URL(resolveCall.url, 'http://localhost').searchParams.get('provider')).toBe(provider);
   });
 
   it('shows the spawn failure without waiting for provider identity', () => {
@@ -282,6 +284,19 @@ describe('Managed conversation overview', () => {
     } as ManagedConversationOverview['spawn'];
     render(<ChatSessionOverview conversationId="conv-1" providerSessionId={null} managedConversation={managedConversation} />);
     expect(screen.getByRole('alert').textContent).toContain('Provider executable is unavailable');
+  });
+
+  it('preserves the recorded model and handles an unnamed branch without inventing a commit', () => {
+    const managedConversation = context('claude');
+    managedConversation.conversation.model = 'claude-opus-5';
+    managedConversation.conversation.branch = 'HEAD';
+    render(<ChatSessionOverview conversationId="conv-1" providerSessionId={null} managedConversation={managedConversation} />);
+    const facts = screen.getByRole('region', { name: 'Conversation' });
+    expect(facts.querySelector('dd')?.textContent).toBe('New claude chat');
+    const fields = [...facts.querySelectorAll('dl > div')];
+    expect(fields.find((field) => field.querySelector('dt')?.textContent === 'Recorded model')?.querySelector('dd')?.textContent).toBe('claude-opus-5');
+    expect(fields.find((field) => field.querySelector('dt')?.textContent === 'Branch')?.querySelector('dd')?.textContent).not.toBe('HEAD');
+    expect(facts.textContent).not.toContain('claude-opus-5-5');
   });
 
   it('isolates the new conversation from an outstanding resolver response', async () => {
