@@ -131,7 +131,9 @@ export function useManagedConversationControlState(control: ConversationControlS
   };
   const flushSettings = async () => {
     await startSave();
-    return settingsCurrent() && Boolean(settingsRef.current) && !dirtyRef.current
+    // With no local edits, the server can use its canonical settings even if
+    // the initial settings read has not arrived yet.
+    return settingsCurrent() && !dirtyRef.current
       && !Object.values(settingsRef.current?.application?.fields ?? {}).some(field => field.state === 'error');
   };
   const edit = <K extends keyof ConversationRuntimeOptions>(key: K, value: ConversationRuntimeOptions[K]) => {

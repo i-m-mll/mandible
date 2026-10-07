@@ -25,9 +25,16 @@ export function mockConversationStructureFromWindow(): void {
 
 /** Managed settings are fetched separately from transcript and terminal metadata. */
 export function mockManagedSettings(runtime_options: api.ConversationRuntimeOptions = { model: 'gpt-5.6-sol', effort: 'medium', permission_mode: 'agent' }): void {
-  vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL) => {
-    if (String(path).endsWith('/control/settings')) return new Response(JSON.stringify({ ok: true,
-      value: { revision: 1, runtime_options, usage: [] } }), { headers: { 'content-type': 'application/json' } });
+  let revision = 1;
+  vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+    if (String(path).endsWith('/control/settings')) {
+      if (init?.method === 'PATCH') {
+        runtime_options = { ...runtime_options, ...JSON.parse(String(init.body)).runtime_options };
+        revision++;
+      }
+      return new Response(JSON.stringify({ ok: true,
+        value: { revision, runtime_options, usage: [] } }), { headers: { 'content-type': 'application/json' } });
+    }
     if (String(path).endsWith('/control/options')) return new Response(JSON.stringify({ ok: true, value: conversationRunOptions('codex', [{value: runtime_options.model ?? 'gpt-5.6-sol', label: runtime_options.model ?? 'gpt-5.6-sol'}, {value: 'edited-model', label: 'edited-model'}]) }), { headers: { 'content-type': 'application/json' } });
     if (String(path).endsWith('/control/permissions')) return new Response(JSON.stringify({ ok: true, value: [] }),
       { headers: { 'content-type': 'application/json' } });

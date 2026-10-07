@@ -2231,6 +2231,9 @@ export function ConversationDetail({
     setContinueError(null);
     setControlFailure(null);
     try {
+      if (!await managedControlState.flushSettings()) {
+        throw new ApiError('Settings could not be saved. Retry settings before sending.', 409, 'settings-not-saved');
+      }
       const result = await submitConversationControl(
         control,
         intent.message,
@@ -2287,7 +2290,7 @@ export function ConversationDetail({
       }
     }
   }, [control, conversation?.session_id, conversation?.source, conversationId, creationReceipt?.native_session_id,
-    creationReceipt?.provider_session_id, creationReceipt?.request.provider, creationReceipt?.state]);
+    creationReceipt?.provider_session_id, creationReceipt?.request.provider, creationReceipt?.state, managedControlState.flushSettings]);
 
   useEffect(() => {
     if (submitIntent?.state === 'waiting') void dispatchSubmitIntent(submitIntent);
@@ -2308,7 +2311,7 @@ export function ConversationDetail({
     }
     const runtimeOptions: ConversationRuntimeOptions = submitIntent?.state === 'uncertain'
       ? submitIntent.runtimeOptions
-      : managedControlState.draft;
+      : {};
     const messageAnchor = submitIntent?.state === 'uncertain'
       ? submitIntent.messageAnchor
       : control?.capability.kind === 'message-anchor-resume' && latestDagUuid
@@ -2334,7 +2337,7 @@ export function ConversationDetail({
     setControlFailure(null);
     projectPendingIntent(intent);
     setSubmitIntent(intent);
-  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId, managedControlState.draft]);
+  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;

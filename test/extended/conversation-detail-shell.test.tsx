@@ -1196,7 +1196,36 @@ describe('compact detail pane shell', () => {
     fireEvent.input(screen.getByPlaceholderText('Message...'), { target: { value: 'Use these settings.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.any(Object), 'Use these settings.', undefined,
-      { model: 'edited-model', effort: 'medium', permission_mode: 'read-only' }, expect.any(String), []));
+      {}, expect.any(String), []));
+  });
+
+  it('waits for a just-selected setting to save before submitting the message', async () => {
+    const saveGate = deferred<void>();
+    const transport = globalThis.fetch;
+    let saving = false;
+    vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path).endsWith('/control/settings') && init?.method === 'PATCH') {
+        saving = true;
+        await saveGate.promise;
+      }
+      return transport(path, init);
+    }));
+    const scoped = mockConversationDetail(defaultControl);
+    const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
+      kind: 'accepted', delivery_id: 'saved-settings-delivery', turn_id: 'saved-settings-turn', snapshot: defaultControl,
+    });
+    renderConversationDetail(scoped);
+    const effort = await screen.findByRole('button', { name: 'Thinking effort' });
+    await waitFor(() => expect(effort.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(effort);
+    fireEvent.click(screen.getByRole('option', { name: 'high', exact: true }));
+    fireEvent.input(screen.getByPlaceholderText('Message...'), { target: { value: 'Use the new effort.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(saving).toBe(true));
+    expect(submit).not.toHaveBeenCalled();
+    await act(async () => saveGate.resolve());
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.any(Object), 'Use the new effort.', undefined,
+      {}, expect.any(String), []));
   });
 
   it('surfaces managed settings failures instead of hiding provider controls', async () => {
