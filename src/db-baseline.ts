@@ -1,6 +1,7 @@
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
+import { CONVERSATION_IDENTITY_SCHEMA_SQL } from './conversations/identity.js';
 import { ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
@@ -21,7 +22,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 193;
+export const BASELINE_SCHEMA_VERSION = 194;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -236,6 +237,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
       created_at INTEGER NOT NULL
     )`,
   ...CONVERSATION_SPAWN_SCHEMA_SQL,
+  CONVERSATION_IDENTITY_SCHEMA_SQL,
   "CREATE TABLE daemon_log (\n        id              TEXT PRIMARY KEY,\n        ts              INTEGER NOT NULL,\n        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),\n        event           TEXT NOT NULL,\n        subsystem       TEXT NOT NULL DEFAULT 'daemon',\n        fields_json     TEXT NOT NULL DEFAULT '{}',\n        issue_id        TEXT,\n        auth_request_id TEXT,\n        artifact_id     TEXT,\n        session_id      TEXT,\n        repo_id         TEXT\n      )",
   "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
   "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",

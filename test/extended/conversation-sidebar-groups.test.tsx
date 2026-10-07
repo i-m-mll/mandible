@@ -184,6 +184,24 @@ function renderView(
 }
 
 describe('conversation sidebar groups', () => {
+  it('normalizes retained selection and pin references from a durable identity alias', async () => {
+    const canonical = { ...pinnedOne, identity_aliases: ['creation-shell'] };
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      pinnedConversationIds: ['creation-shell'], previewPinOverrides: { 'creation-shell': true },
+      lastSelection: { type: 'conversation', id: 'creation-shell' },
+    }));
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 1, groups: [group({ key: 'pins', kind: 'pinned', label: 'Pinned', total: 1, conversations: [canonical] })],
+    });
+    renderView([], vi.fn(), rejectModePreview);
+    await screen.findByRole('button', { name: 'Open conversation Pinned one' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open conversation Pinned one' }).getAttribute('aria-current')).toBe('true'));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1')!)).toMatchObject({
+      pinnedConversationIds: [canonical.id], previewPinOverrides: { [canonical.id]: true },
+      lastSelection: { type: 'conversation', id: canonical.id },
+    }));
+  });
+
   it('never exposes raw provider ids or machine envelopes as conversation titles', () => {
     expect(getConversationTitle(conversation('raw-id', '01a05d81-ba7c-7a63-b593-1e87e2bd8e3d <in'))).toBe('Codex chat');
     expect(getConversationTitle(conversation('envelope', '<codex_delegation>\n<source_thread_id>01a05d81</source_thread_id>'))).toBe('Codex chat');

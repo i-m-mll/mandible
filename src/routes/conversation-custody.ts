@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { canonicalConversationRoutes } from '../conversations/identity.js';
 import { getDb } from "../db.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { ConversationCustodyStore, CustodyError } from "../conversations/custody-store.js";
@@ -53,6 +54,7 @@ export function registerConversationCustodyRoutes(
   db: Db = getDb(),
   store = new ConversationCustodyStore(),
 ): void {
+  router = canonicalConversationRoutes(router, db);
   const sourceStore = new ConversationSourceStore(db);
 
   router.get("/api/conversations/:id/custody", (req, res) => {

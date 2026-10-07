@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { resolveConversationId } from './identity.js';
 import {
   persistExactCodexTitle,
   scheduleExactPathReparse,
@@ -104,12 +105,12 @@ export interface ExactConversationFreshnessOptions {
 const flights = new Map<string, Promise<FreshConversationResult>>();
 
 function candidateIds(db: Db, ref: string): string[] {
-  return (db.prepare(`
+  return [...new Set((db.prepare(`
     SELECT id FROM conversations WHERE session_id = ?
     UNION
     SELECT conversation_id AS id FROM conversation_sources WHERE native_session_id = ?
     ORDER BY id
-  `).all(ref, ref) as Array<{ id: string }>).map((row) => row.id);
+  `).all(ref, ref) as Array<{ id: string }>).map((row) => resolveConversationId(db, row.id)))];
 }
 
 function pinnedSource(db: Db, conversationId: string, candidates: string[]): PinnedConversationSource | null {
@@ -162,6 +163,7 @@ function legacyConversation(conversationId: string, candidates: string[]): Pinne
 }
 
 export function resolveExactConversation(db: Db, ref: string): PinnedConversationSource {
+  ref = resolveConversationId(db, ref);
   const exact = db.prepare("SELECT id FROM conversations WHERE id = ?").get(ref) as { id: string } | undefined;
   if (exact) {
     const pinned = pinnedSource(db, exact.id, [exact.id]);

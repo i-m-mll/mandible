@@ -500,8 +500,10 @@ export class ConversationControlStore {
         last_authoritative_signal = ?, updated_at = ? WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'`)
         .run(revision, providerSessionId, now, now, conversationId, generation);
       this.db.prepare("UPDATE conversations SET session_id = ? WHERE id = ? AND (session_id IS NULL OR session_id = '')").run(providerSessionId, conversationId);
-      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ? AND attempt_count = ? AND state = 'ready' AND provider_session_id IS NULL")
-        .run(providerSessionId, now, conversationId, generation);
+      // Startup attempt count and controller fencing generation are independent.
+      // mutateOwned already fences this authoritative native-identity binding.
+      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ? AND provider = ? AND schema_version = 'mandible-conversation-spawn-request@3' AND state = 'ready' AND provider_session_id IS NULL")
+        .run(providerSessionId, now, conversationId, row.provider);
       return null;
     }, { provider_session_id: providerSessionId });
   }
