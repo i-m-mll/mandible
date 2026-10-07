@@ -56,6 +56,7 @@ class FakeAdapter implements ConversationControllerAdapter {
   lastAcquisition: ControllerAcquisitionRequest | null = null;
   invalidateOnAcquire = false;
   invalidLeaseOnAcquire = false;
+  lastDelivery: ConversationOutboxItem | null = null;
   delivered = new Set<string>();
   deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
   probeResult: AdapterProbe = {
@@ -89,6 +90,7 @@ class FakeAdapter implements ConversationControllerAdapter {
   }
 
   async deliver(item: ConversationOutboxItem): Promise<Result<import("../src/conversation-control/types.js").ProviderDeliveryReceipt, ConversationControlError>> {
+    this.lastDelivery = item;
     if (!this.delivered.has(item.id)) {
       this.deliveries += 1;
       this.delivered.add(item.id);
@@ -250,6 +252,26 @@ describe("authoritative conversation control", () => {
     });
   });
 
+  it("retains startup defaults for the first send and preserves explicit per-chat choices", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter(); service.registerAdapter(adapter);
+    const defaults = { model: "gpt-5.6-sol", effort: "high", permission_mode: "read-only" } as const;
+    const started = await service.acquireNew({ conversation_id: "conversation-1", provider: "codex", generation: 1, cwd: root, runtime_options: defaults }, () => undefined);
+    expect(started.ok).toBe(true);
+    const settings = service.getRuntimeSettings("conversation-1");
+    expect(settings).toMatchObject({ ok: true, value: { runtime_options: defaults } });
+    const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error('missing snapshot');
+    const submitted = { ...request(snapshot.value.revision, "first-send", snapshot.value.ownership.generation), operation: "send" as const, runtime_options: { effort: "low" } };
+    expect((await service.submit(submitted)).ok).toBe(true);
+    expect(adapter.lastDelivery?.runtime_options).toEqual({ ...defaults, effort: "low" });
+    expect(service.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { ...defaults, effort: "low" } } });
+    const current = service.getRuntimeSettings("conversation-1"); if (!current.ok) throw new Error('missing settings');
+    expect(service.saveRuntimeSettings("conversation-1", current.value.revision, { model: "explicit-model" }).ok).toBe(true);
+    const reopened = new ConversationControlService(db);
+    expect(reopened.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { model: "explicit-model", effort: "low", permission_mode: "read-only" } } });
+    await service.close();
+  });
+
   it("stops a new native controller when its durable commit fails", async () => {
     const service = new ConversationControlService(db);
     const adapter = new FakeAdapter();
@@ -362,7 +384,7 @@ describe("authoritative conversation control", () => {
     expect(service.saveRuntimeSettings("conversation-1", 0, { model: "future-turn" }).ok).toBe(true);
     const retried = await service.submit(submission);
     expect(retried.ok).toBe(true);
-    expect(adapter.lastAcquisition?.runtime_options).toEqual({});
+    expect(adapter.lastAcquisition?.runtime_options).toEqual({ model: "gpt-5.6-sol", effort: "medium", permission_mode: "agent-full-access" });
     expect(adapter.acquisitions).toBe(2);
     expect(adapter.deliveries).toBe(1);
     expect(db.prepare("SELECT state, attempts, generation FROM conversation_control_outbox WHERE idempotency_key = 'same-draft'").get())

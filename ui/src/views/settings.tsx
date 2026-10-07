@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults';
 import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
@@ -141,6 +142,7 @@ const SETTINGS_SECTIONS = {
   projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
   briefings: { id: 'settings-briefings', title: 'Briefings' },
   conversations: { id: 'settings-conversations', title: 'Conversations' },
+  chatDefaults: { id: 'settings-chat-defaults', title: 'Chat defaults' },
   conversationBranching: { id: 'settings-conversation-branching', title: 'Conversation Branching' },
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
@@ -1973,6 +1975,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             settings={settings}
             onSave={saveSetting}
           />
+        </div>
+      </SettingsSectionShell>
+
+      <SettingsSectionShell section={SETTINGS_SECTIONS.chatDefaults}>
+        <SettingsSectionHeader section={SETTINGS_SECTIONS.chatDefaults} description="Choose the model, effort and permissions used for new chats. Existing chats keep their own choices." />
+        <div className="settings-view__section-body">
+          <ManagedChatDefaults canSave={canPerformOperation(instance, 'PUT', '/api/user-settings/managed_chat_defaults')} />
         </div>
       </SettingsSectionShell>
 

@@ -56,6 +56,7 @@ export interface ConversationSpawnReceipt {
   controller_instance_id?: string | null;
   provider_session_id: string | null;
   provider_receipt: Record<string, unknown> | null;
+  runtime_options?: import("../conversation-control/types.js").ConversationRuntimeOptions;
   initial_message_state?: "queued" | "delivering" | "delivered" | "failed";
   error: ConversationSpawnFailure | null;
   created_at: number;

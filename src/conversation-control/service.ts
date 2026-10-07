@@ -1,3 +1,4 @@
+import { effectiveManagedRuntimeOptions } from "../managed-chat-defaults.js";
 import { conversationRunOptions, providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -187,7 +188,7 @@ export class ConversationControlService {
   }
 
   private retainedRuntimeOptions(conversationId: string): import("./types.js").ConversationRuntimeOptions {
-    const conversation = this.db.prepare("SELECT session_id, model FROM conversations WHERE id = ?").get(conversationId) as { session_id: string; model: string | null } | undefined;
+    const conversation = this.db.prepare("SELECT session_id, model, source FROM conversations WHERE id = ?").get(conversationId) as { session_id: string; model: string | null; source: string } | undefined;
     const legacy = conversation ? this.db.prepare("SELECT run_options_json, allowed_tools FROM console_sessions WHERE provider_session_id = ? ORDER BY updated_at DESC LIMIT 1").get(conversation.session_id) as { run_options_json: string; allowed_tools: string | null } | undefined : undefined;
     const result: import("./types.js").ConversationRuntimeOptions = conversation?.model ? { model: conversation.model } : {};
     if (legacy) {
@@ -199,7 +200,7 @@ export class ConversationControlService {
     const rows = this.db.prepare("SELECT runtime_options_json FROM conversation_control_outbox WHERE conversation_id = ? AND state = 'delivered' ORDER BY created_at, id").all(conversationId) as { runtime_options_json: string }[];
     for (const row of rows) Object.assign(result, JSON.parse(row.runtime_options_json));
     const saved = this.db.prepare("SELECT options_json FROM conversation_runtime_settings WHERE conversation_id = ?").get(conversationId) as { options_json: string } | undefined;
-    return saved ? JSON.parse(saved.options_json) : result;
+    return effectiveManagedRuntimeOptions(conversation?.source ?? "", { ...result, ...(saved ? JSON.parse(saved.options_json) : {}) });
   }
 
   getRuntimeSettings(conversationId: string) {
@@ -217,6 +218,7 @@ export class ConversationControlService {
     if (invalid) return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: invalid } };
     const current = this.getRuntimeSettings(conversationId);
     if (!current.ok) return current;
+    settings = { ...current.value.runtime_options, ...settings };
     if (current.value.revision !== expectedRevision) return { ok: false, error: { kind: "capability-drift", expected_revision: expectedRevision, actual_revision: current.value.revision } };
     return this.db.transaction(() => {
       const revision = expectedRevision + 1;
@@ -338,6 +340,8 @@ export class ConversationControlService {
     try {
       this.db.transaction(() => {
         commit(lease);
+        this.db.prepare("INSERT OR IGNORE INTO conversation_runtime_settings (conversation_id, revision, options_json, updated_at) VALUES (?, 0, ?, ?)")
+          .run(request.conversation_id, JSON.stringify(request.runtime_options), Date.now());
         const adopted = this.store.adoptNewController(
           request.conversation_id,
           request.generation,
@@ -384,8 +388,15 @@ export class ConversationControlService {
     if (invalidOptions) return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: invalidOptions } };
     const prepared = this.store.prepareSubmission(request, adapter.capabilities, adapter.id);
     if (!prepared.ok) return prepared;
-    this.db.prepare("INSERT OR IGNORE INTO conversation_delivery_settings (delivery_id, options_json) VALUES (?, ?)")
+    const frozen = this.db.prepare("INSERT OR IGNORE INTO conversation_delivery_settings (delivery_id, options_json) VALUES (?, ?)")
       .run(prepared.value.delivery_id, JSON.stringify(effectiveOptions));
+    if (frozen.changes && request.runtime_options && Object.keys(request.runtime_options).length
+        && ["send", "resume-provider-session", "resume-message-anchor"].includes(request.operation)) {
+      const current = this.getRuntimeSettings(request.conversation_id);
+      if (!current.ok) return current;
+      const selected = this.saveRuntimeSettings(request.conversation_id, current.value.revision, effectiveOptions);
+      if (!selected.ok) return selected;
+    }
     if (prepared.value.already_delivered) {
       return { ok: true, value: {
         kind: "accepted",
