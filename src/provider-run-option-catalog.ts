@@ -25,3 +25,10 @@ export const CLAUDE_CODE_BOOTSTRAP_EFFORTS = [
   value,
   label: value === "xhigh" ? "Extra high" : value[0].toUpperCase() + value.slice(1),
 })) satisfies readonly SessionRunOptionChoice[];
+
+/** Display only: recognize exact catalog IDs without rewriting unknown model names. */
+export function providerModelLabel(provider: string, modelId: string, fallbackLabel = modelId): string {
+  if (provider !== "claude_code") return fallbackLabel;
+  if (modelId === "claude-opus-5") return "Opus 5";
+  return CLAUDE_CODE_BOOTSTRAP_MODELS.find(choice => choice.value === modelId)?.label ?? fallbackLabel;
+}
