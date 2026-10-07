@@ -701,6 +701,8 @@ describe('compact detail pane shell', () => {
 
   it('settles real app-shell registration after selecting a conversation', async () => {
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const control = deferred<ConversationControlSnapshot>();
+    vi.mocked(api.getConversationControl).mockReturnValue(control.promise);
     vi.mocked(api.getConversationSidebar).mockResolvedValue({
       groups: [{
         key: 'chats',
@@ -715,17 +717,27 @@ describe('compact detail pane shell', () => {
     vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
     const sidebarUpdates = vi.fn();
-    render(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);
+    const mounted = render(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);
 
     fireEvent.click(await screen.findByRole('button', {
       name: `Open conversation ${scopedConversation.title}`,
     }));
     expect(await screen.findByRole('heading', { name: scopedConversation.title! })).toBeTruthy();
-    await waitFor(() => expect(sidebarUpdates.mock.calls.length).toBeGreaterThan(0));
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
+    const detailReadyUpdateCount = sidebarUpdates.mock.calls.length;
+
+    await act(async () => control.resolve(defaultControl));
+    const overview = screen.getByRole('region', { name: 'Conversation' });
+    expect(within(overview).getByText('Stopped')).toBeTruthy();
+    expect(sidebarUpdates).toHaveBeenCalledTimes(detailReadyUpdateCount + 1);
+
     const settledUpdateCount = sidebarUpdates.mock.calls.length;
-    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    await act(async () => {
+      mounted.rerender(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);
+      await Promise.resolve();
+    });
     expect(sidebarUpdates).toHaveBeenCalledTimes(settledUpdateCount);
-    expect(settledUpdateCount).toBeLessThanOrEqual(3);
   });
 
 
