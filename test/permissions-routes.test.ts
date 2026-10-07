@@ -14,6 +14,9 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { DEFAULT_MANAGED_CHAT_OPTIONS } from "../src/managed-chat-defaults.js";
+import { USER_SETTING_KEYS } from "../src/contracts.js";
+import { writeUserSetting } from "../src/user-settings.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
@@ -205,7 +208,7 @@ describe("restricted project route enforcement", () => {
       provider: "codex",
       generation: 1,
       cwd: "/work/spawn-project",
-      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+      runtime_options: { model: "gpt-5.6-sol", effort: "medium", permission_mode: "agent-full-access" },
       signal: expect.any(AbortSignal),
     }), expect.any(Function));
     expect(db.prepare("SELECT source, session_id, cwd FROM conversations WHERE id = ?")
@@ -228,9 +231,11 @@ describe("restricted project route enforcement", () => {
     expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: "claude_code",
       cwd: "/work/spawn-project",
-      runtime_options: { model: "claude-opus-5-5", permission_mode: "bypassPermissions" },
+      runtime_options: { model: "claude-opus-5-5", effort: "medium", permission_mode: "bypassPermissions" },
     }), expect.any(Function));
 
+    const chosen = { ...structuredClone(DEFAULT_MANAGED_CHAT_OPTIONS), codex: { model: "gpt-5.6-sol", effort: "high", permission_mode: "read-only" } };
+    writeUserSetting(db, agent.id, USER_SETTING_KEYS.managedChatDefaults, JSON.stringify(chosen));
     failNext = true;
     const failed = await router.invoke({
       ...input,
@@ -248,6 +253,15 @@ describe("restricted project route enforcement", () => {
       });
       expect(row.error_json).not.toContain("secret");
     });
+
+    writeUserSetting(db, agent.id, USER_SETTING_KEYS.managedChatDefaults, JSON.stringify(DEFAULT_MANAGED_CHAT_OPTIONS));
+    const retried = await router.invoke({
+      method: "POST", url: "/api/conversation-spawns/10000000-0000-4000-8000-000000000002/retry",
+      body: { expected_generation: 1 }, credential: token, transport: "http",
+    });
+    expect(retried.status).toBe(202);
+    expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({ runtime_options: chosen.codex }), expect.any(Function));
+    expect(retried.body).toMatchObject({ spawn: { runtime_options: chosen.codex } });
 
     waitForCancellation = true;
     const starting = await router.invoke({

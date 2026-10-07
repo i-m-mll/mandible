@@ -6,6 +6,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_MANAGED_CHAT_OPTIONS } from "../../src/managed-chat-defaults.js";
+import { readManagedChatDefaults } from "../../src/user-settings.js";
 import { USER_SETTING_EVENTS } from "../../src/contracts.js";
 import { openDb, type Db } from "../../src/db.js";
 import { registerUserSettingsRoutes } from "../../src/routes/user-settings.js";
@@ -157,6 +159,29 @@ describe("authenticated user settings routes", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("validates provider defaults atomically and isolates each user's choices", async () => {
+    const db = openDb(":memory:");
+    try {
+      const alice = createUser(db, { slug: "defaults-alice", kind: "human", display_name: "Alice" });
+      const bob = createUser(db, { slug: "defaults-bob", kind: "human", display_name: "Bob" });
+      const routes = new TestRoutes();
+      registerUserSettingsRoutes(routes, db);
+      const chosen = structuredClone(DEFAULT_MANAGED_CHAT_OPTIONS);
+      chosen.codex.effort = "high";
+      chosen.claude_code.permission_mode = "acceptEdits";
+      expect(await call(routes, "PUT", request("PUT", identity(alice.id, alice.slug), JSON.stringify(chosen), "managed_chat_defaults")))
+        .toMatchObject({ statusCode: 200, payload: { revision: 1 } });
+      expect(readManagedChatDefaults(db, alice.id)).toEqual(chosen);
+      expect(readManagedChatDefaults(db, bob.id)).toEqual(DEFAULT_MANAGED_CHAT_OPTIONS);
+      chosen.codex.permission_mode = "bypassPermissions";
+      expect(await call(routes, "PUT", request("PUT", identity(alice.id, alice.slug), JSON.stringify(chosen), "managed_chat_defaults")))
+        .toMatchObject({ statusCode: 400 });
+      expect(readManagedChatDefaults(db, alice.id).codex.permission_mode).toBe("agent-full-access");
+      expect(await call(routes, "GET", request("GET", identity(alice.id, alice.slug), undefined, "managed_chat_defaults")))
+        .toMatchObject({ payload: { revision: 1 } });
+    } finally { db.close(); }
   });
 
   it("persists the authenticated user's row across a database restart", async () => {

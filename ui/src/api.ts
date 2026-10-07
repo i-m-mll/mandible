@@ -1,3 +1,4 @@
+import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DOMAIN_EVENTS, isBriefingEvent } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
@@ -1755,6 +1756,18 @@ export async function updateUserTypographySetting(
 ): Promise<UserTypographySetting> {
   const response = await apiPut(`/api/user-settings/${key}`, { value });
   return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
+export async function getManagedChatDefaults(): Promise<ManagedChatDefaults> {
+  const response = await apiGet('/api/user-settings/managed_chat_defaults');
+  const snapshot = await parseMaybeJson(response) as { value: string | null };
+  return parseManagedChatDefaults(snapshot.value);
+}
+
+export async function updateManagedChatDefaults(value: ManagedChatDefaults): Promise<ManagedChatDefaults> {
+  const response = await apiPut('/api/user-settings/managed_chat_defaults', { value: JSON.stringify(value) });
+  const snapshot = await parseMaybeJson(response) as { value: string };
+  return parseManagedChatDefaults(snapshot.value);
 }
 
 export type {
