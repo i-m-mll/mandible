@@ -113,6 +113,7 @@ import {
   type NewChatProvider,
 } from '../chat';
 import { formatAbsoluteTime, truncate } from '../lib/format';
+import { useChatProjectDisclosure } from './chat-project-disclosure';
 import { acquireSharedSse } from '../sse-shared';
 import { PreviewIcon } from '../components/icons/TabIcons';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
@@ -3042,7 +3043,7 @@ export function ConversationsView({
   const [sort, setSort] = useState<'date' | 'blocks'>('date');
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
-  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [expandedProjects, toggleProject] = useChatProjectDisclosure();
   const conversationLifecycle = chatViewState.conversationLifecycle;
   const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
@@ -3715,18 +3716,6 @@ export function ConversationsView({
     onSelectSession(sessionId);
   };
 
-  const toggleProject = (project: string) => {
-    setCollapsedProjects((prev) => {
-      const next = new Set(prev);
-      if (next.has(project)) {
-        next.delete(project);
-      } else {
-        next.add(project);
-      }
-      return next;
-    });
-  };
-
   const toggleSection = (section: ChatSectionId) => {
     setCollapsedSections((prev) => {
       const next = new Set(prev);
@@ -4278,7 +4267,8 @@ export function ConversationsView({
                 <div className="sidebar-group-node__placeholder">No projects included</div>
               ) : null}
               {chatSections.projects.map((group, index) => {
-                const collapsed = collapsedProjects.has(group.key);
+                const disclosureId = group.canonicalProjectId ?? group.key;
+                const collapsed = !expandedProjects.has(disclosureId);
                 const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
                 return (
                   <SidebarGroupNode
@@ -4291,7 +4281,7 @@ export function ConversationsView({
                     countLabel={`${group.total} chat${group.total === 1 ? '' : 's'} in ${group.label}`}
                     countVisibility="interaction"
                     expanded={!collapsed}
-                    onToggle={() => toggleProject(group.key)}
+                    onToggle={() => toggleProject(disclosureId)}
                     showDisclosure={false}
                     action={group.exactRoot
                       ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
