@@ -3,6 +3,7 @@ import { DOMAIN_EVENTS } from "../contracts.js";
 
 import { createHash } from "node:crypto";
 import { getDb } from "../db.js";
+import { MAX_ORDERED_SIDEBAR_IDS } from "../host-user-preferences.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
 import {
@@ -203,15 +204,17 @@ const MAX_SIDEBAR_PROJECTS = 500;
 const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
 
 function parseSidebarIds(raw: string | undefined, name: string): string[] {
+  const maxIds = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS : MAX_SIDEBAR_PROJECTS;
+  const maxLength = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS * 65 : MAX_SIDEBAR_PROJECT_IDS_LENGTH;
   if (raw === undefined || raw === "") return [];
-  if (raw.length > MAX_SIDEBAR_PROJECT_IDS_LENGTH) {
-    throw new Error(`${name} exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
+  if (raw.length > maxLength) {
+    throw new Error(`${name} exceeds ${maxLength} characters`);
   }
   const values = raw.split(",").map((value) => value.trim());
   if (values.some((value) => !value)) throw new Error(`${name} contains an empty id`);
   const ids = [...new Set(values)];
-  if (ids.length > MAX_SIDEBAR_PROJECTS) {
-    throw new Error(`${name} accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
+  if (ids.length > maxIds) {
+    throw new Error(`${name} accepts at most ${maxIds} ids`);
   }
   return ids;
 }
@@ -809,7 +812,7 @@ export function registerConversationRoutes(
     }
   }, { operation: { id: "post:/api/conversations/export/transform", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
-  // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
+  // GET /api/conversations/sidebar — all matching pins and independently paged Projects and Chats.
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
     const lifecycle = query.lifecycle || "active";

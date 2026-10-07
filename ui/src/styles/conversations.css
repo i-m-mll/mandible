@@ -430,7 +430,7 @@
 .conv-compose__attachment-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
 .conv-compose__attachment-remove { padding: 4px 7px; font-size: 16px; line-height: 1; }
 .conv-compose__add-attachment { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; padding: 0; }
-.conv-compose__add-attachment svg { width: 20px; height: 20px; }
+.conv-compose__add-attachment svg { width: 13.4px; height: 13.4px; }
 .conv-compose__add-attachment:disabled { opacity: 0.4; cursor: default; }
 .conv-compose__preview { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
 .conv-compose__preview-modal { align-items: center; }

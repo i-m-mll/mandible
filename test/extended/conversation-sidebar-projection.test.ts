@@ -277,7 +277,7 @@ describe("conversation sidebar projection", () => {
       ["chats", "Chats", 6],
     ]);
     expect(groups.some((group) => (group.kind as string) === "project")).toBe(false);
-    expect(groups.every((group) => group.conversations.length <= 2)).toBe(true);
+    expect(groups.filter((group) => group.kind !== "pinned").every((group) => group.conversations.length <= 2)).toBe(true);
     const chatsGroup = groups.find((group) => group.kind === "chats")!;
     const pinnedGroup = groups.find((group) => group.kind === "pinned")!;
     expect(chatsGroup.conversations.map((row) => row.id)).toEqual(["chat-archive", "chat-null"]);
@@ -285,7 +285,8 @@ describe("conversation sidebar projection", () => {
       expect.objectContaining({ id: "chat-archive", cwd: "/Users/me/Documents/Codex/2026-08-18/archive.jsonl" }),
     ]));
     expect(chatsGroup.next_cursor).toEqual(expect.any(String));
-    expect(pinnedGroup.next_cursor).toEqual(expect.any(String));
+    expect(pinnedGroup.next_cursor).toBeNull();
+    expect(pinnedGroup.conversations).toHaveLength(3);
 
     const chatsFollow = await router.invoke({
       method: "GET",
@@ -309,16 +310,6 @@ describe("conversation sidebar projection", () => {
     expect(groupsOf(pinnedStillInitial)[0].conversations.map((row) => row.id))
       .toEqual(pinnedGroup.conversations.map((row) => row.id));
 
-    const pinnedFollow = await router.invoke({
-      method: "GET",
-      url: `/api/conversations/sidebar?limit=2&group_key=pinned&cursor=${encodeURIComponent(pinnedGroup.next_cursor!)}`,
-    });
-    expect(groupsOf(pinnedFollow)[0]).toMatchObject({
-      key: "pinned",
-      total: 3,
-      conversations: [expect.objectContaining({ id: "pinned-03" })],
-      next_cursor: null,
-    });
     const chatsStillInitial = await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=2&group_key=chats",
@@ -359,25 +350,20 @@ describe("conversation sidebar projection", () => {
       .toEqual([expect.objectContaining({ id: "legacy-star", starred: true })]);
   });
 
-  it("paginates Pinned in the exact saved order instead of recent-first order", async () => {
-    insertConversation({ id: "recent", startedAt: "2026-08-18T13:00:00Z" });
-    insertConversation({ id: "middle", startedAt: "2026-08-18T12:00:00Z" });
-    insertConversation({ id: "old", startedAt: "2026-08-18T11:00:00Z" });
+  it("returns every matching pin in saved order beyond the normal page cap", async () => {
+    const ids = Array.from({ length: 600 }, (_, index) => `pin-${String(index).padStart(60, '0')}`);
+    for (const id of ids) insertConversation({ id, title: 'matching pin' });
+    insertConversation({ id: 'filtered-pin', title: 'other title' });
+    const order = [...ids].reverse();
     const router = new Router();
     registerConversationRoutes(router);
-    const order = "old,recent,middle";
-
-    const first = groupsOf(await router.invoke({
-      method: "GET",
-      url: `/api/conversations/sidebar?limit=2&pinned_ids=${order}`,
-    })).find((group) => group.kind === "pinned")!;
-    expect(first.conversations.map((row) => row.id)).toEqual(["old", "recent"]);
-    const second = groupsOf(await router.invoke({
-      method: "GET",
-      url: `/api/conversations/sidebar?limit=2&pinned_ids=${order}&group_key=pinned&cursor=${encodeURIComponent(first.next_cursor!)}`,
-    })).find((group) => group.kind === "pinned")!;
-    expect(second.conversations.map((row) => row.id)).toEqual(["middle"]);
-    expect(second.next_cursor).toBeNull();
+    const first = groupsOf(await router.invoke({ method: 'GET',
+      url: `/api/conversations/sidebar?limit=1&search=matching&pinned_ids=${['filtered-pin', ...order].join(',')}`,
+    })).find(group => group.kind === 'pinned')!;
+    expect(first.conversations.map(row => row.id)).toEqual(order);
+    expect(first.total).toBe(600);
+    expect(first.next_cursor).toBeNull();
+    expect((await router.invoke({ method: 'GET', url: '/api/conversations/sidebar?group_key=pinned&cursor=stale' })).status).toBe(400);
   });
 
   it("continues the selected total order across date and block-count ties", async () => {
@@ -604,7 +590,7 @@ describe("conversation sidebar projection", () => {
     })).toMatchObject({ status: 400 });
   });
 
-  it("pages Pinned, a canonical project, and Chats independently and binds cursors to the project set", async () => {
+  it("returns all pins while paging Projects and Chats independently and binding cursors to the project set", async () => {
     const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
     const beta = registerProject("beta", "Beta", "/workspace/beta");
     insertConversation({ id: "pin-new", starred: true, cwd: "/workspace/alpha", startedAt: "2026-08-18T14:00:00Z" });
@@ -624,7 +610,8 @@ describe("conversation sidebar projection", () => {
       ["chats", 2],
     ]);
 
-    for (const group of initialGroups) {
+    expect(initialGroups.find(group => group.kind === "pinned")).toMatchObject({ next_cursor: null, conversations: [expect.any(Object), expect.any(Object)] });
+    for (const group of initialGroups.filter(group => group.kind !== "pinned")) {
       expect(group.next_cursor).toEqual(expect.any(String));
       const follow = groupsOf(await router.invoke({
         method: "GET",

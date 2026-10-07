@@ -11,7 +11,7 @@ select {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
 }
 
-select:not([multiple]) {
+select:not([multiple]):not(.session-controls__select--borderless) {
   appearance: none;
   padding: 0 38px 0 10px;
   background-image:
