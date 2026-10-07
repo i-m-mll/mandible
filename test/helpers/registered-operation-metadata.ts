@@ -36,7 +36,8 @@ export function registeredOperationMetadata(files = fs.readdirSync('src/routes')
           const operation = property(options, 'operation');
           const effects = operation && ts.isObjectLiteralExpression(operation) ? property(operation, 'effects') : undefined;
           if (!operation || !effects) throw new Error(`Missing authored operation descriptor: ${file} ${node.arguments[0].text}`);
-          if (!ts.isArrayLiteralExpression(effects) && !ts.isArrowFunction(effects) && !ts.isFunctionExpression(effects)) {
+          if (!ts.isArrayLiteralExpression(effects) && !ts.isArrowFunction(effects) && !ts.isFunctionExpression(effects)
+              && !ts.isConditionalExpression(effects)) {
             throw new Error(`Unsupported authored route effects: ${file} ${node.arguments[0].text}`);
           }
           if (!ts.isObjectLiteralExpression(operation)) throw new Error(`Nonliteral operation descriptor: ${file}`);

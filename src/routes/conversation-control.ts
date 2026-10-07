@@ -37,11 +37,15 @@ export function registerConversationControlRoutes(
   const previewControlAllowed = async (conversationId: string, generation: number): Promise<boolean> => {
     if (options.instance?.role !== "preview") return true;
     if (!options.db || options.instance.role !== "preview") return false;
-    const spawn = options.db.prepare(`SELECT attempt_count, state FROM conversation_spawn_requests
-      WHERE id = ? AND schema_version = 'mandible-conversation-spawn-request@3'`).get(conversationId) as
-      | { attempt_count: number; state: string }
+    const spawn = options.db.prepare(`SELECT state FROM conversation_spawn_requests
+      WHERE schema_version = 'mandible-conversation-spawn-request@3' AND state = 'ready'
+        AND (id = ? OR id IN (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ?))
+      LIMIT 1`).get(conversationId, conversationId) as
+      | { state: string }
       | undefined;
-    if (!spawn || spawn.attempt_count !== generation || spawn.state !== "ready") return false;
+    // Creation attempts and controller generations are independent counters.
+    // The adapter must still prove ownership of this exact current generation.
+    if (!spawn) return false;
     return control.ownsController(conversationId, generation);
   };
   const rejectIneligiblePreviewControl = (res: ResponseLike) => {
