@@ -56,6 +56,7 @@ type ClaudeController = {
   providerSequence: number;
   liveMessageId: string | null;
   liveText: Map<string, string>;
+  liveTools: Map<number, Record<string, unknown>>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -105,6 +106,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         providerSequence: 0,
         liveMessageId: null,
         liveText: new Map(),
+        liveTools: new Map(),
       };
       this.controllers.set(input.conversation_id, controller);
       processOwner.onRecord((record) => this.acceptRecord(controller, record));
@@ -294,7 +296,12 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     }
     if (!controller.nativeIdentityBound) { controller.identityPendingRecords.push(value); return; }
     if (record.type === "user") {
-      this.acknowledgeUser(controller, record);
+      if (controller.pending && record.uuid === controller.pending.item.id) this.acknowledgeUser(controller, record);
+      else if (typeof record.uuid === "string") {
+        for (const item of this.claudeContentItems(controller, record.uuid, "user", object(record.message)?.content, "complete")) {
+          this.emitItem(controller, item);
+        }
+      }
       return;
     }
     // The SDK may consume several queued prompts in one native turn. Track
@@ -358,7 +365,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     const content = object(record.message)?.content;
     const items = this.claudeContentItems(
       controller,
-      pending.item.idempotency_key,
+      providerMessageId ?? pending.item.idempotency_key,
       "user",
       content ?? pending.item.message,
       "complete",
@@ -384,6 +391,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const message = object(stream.message);
       controller.liveMessageId = typeof message?.id === "string" && message.id ? message.id : null;
       controller.liveText.clear();
+      controller.liveTools.clear();
       return;
     }
     if (stream.type === "content_block_start") {
@@ -391,6 +399,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const index = Number(stream.index);
       const content = object(stream.content_block);
       if (!messageId || !Number.isInteger(index) || index < 0 || !content) return;
+      if (content.type === "tool_use") controller.liveTools.set(index, content);
       const [item] = this.claudeContentItems(
         controller,
         messageId,
@@ -408,6 +417,19 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const messageId = controller.liveMessageId;
       const index = Number(stream.index ?? 0);
       if (!messageId || !Number.isInteger(index) || index < 0 || !delta) return;
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const tool = controller.liveTools.get(index);
+        if (!tool) return;
+        const key = `input:${messageId}:${index}`;
+        const json = `${controller.liveText.get(key) ?? ""}${delta.partial_json}`;
+        controller.liveText.set(key, json);
+        let input: unknown = json;
+        try { input = JSON.parse(json); } catch { /* Partial JSON remains visible until complete. */ }
+        const [item] = this.claudeContentItems(controller, messageId, "assistant",
+          [{ ...tool, input }], "streaming", undefined, index);
+        if (item) this.emitItem(controller, item);
+        return;
+      }
       const activityKind: ActivityKind | null = delta.type === "thinking_delta" ? "thinking" : null;
       const fragment = delta.type === "text_delta" ? delta.text
         : delta.type === "thinking_delta" ? delta.thinking
@@ -451,6 +473,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       generation: controller.generation,
       sequence: ++controller.providerSequence,
       observed_at: Date.now(),
+      ...(controller.activeTurnId ? { control_turn_id: controller.activeTurnId } : {}),
       identity,
       ...(correlation ? { correlation } : {}),
       item,

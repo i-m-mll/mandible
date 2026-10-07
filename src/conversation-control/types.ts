@@ -202,6 +202,8 @@ export type ProviderLiveContentEvent = {
   generation: number;
   sequence: number;
   observed_at: number;
+  /** Mandible turn that owns this event; distinct from any native provider turn id. */
+  control_turn_id?: string;
   /** Exact provider-qualified Chat item/content-block identity. */
   identity: string;
   correlation?: {
@@ -223,12 +225,6 @@ export type ProviderDurableReconciliationEvent = {
   provider_event_id: string;
   /** Live identities proven to have exact durable Chat-item counterparts. */
   covered_identities: string[];
-  /**
-   * Provider-complete live items whose transient lifetime ends after a fresh
-   * terminal transcript is established, even when the provider exposes no
-   * cross-surface identity that could prove durable equivalence.
-   */
-  terminal_retired_identities?: string[];
 };
 
 export type ProviderLineageEvent = {
@@ -262,12 +258,8 @@ export type ProviderAdapterEvent =
   | ProviderTransientRetirementEvent;
 
 /**
- * Bounded live supplements for one provider controller generation.
- *
- * A provisional item lives only until its exact durable Chat-item identity is
- * observed, its controller disconnects, a newer generation replaces it, or
- * the oldest item crosses the bounded projection limit. The provider
- * transcript remains the durable authority throughout this lifecycle.
+ * Live supplements retained until exact durable coverage. Execution ending,
+ * disconnecting, or changing ownership never proves that content was saved.
  */
 export type ProviderLiveProjection = {
   conversation_id: string;

@@ -447,20 +447,20 @@ describe("authoritative conversation control", () => {
     expect(replaced).toMatchObject({
       revision: 4,
       generation: 2,
-      events: [expect.objectContaining({ item: expect.objectContaining({
+      events: [expect.objectContaining({ identity: first.identity }), expect.objectContaining({ identity: second.identity }), expect.objectContaining({ item: expect.objectContaining({
         identity: expect.objectContaining({ native_item_id: "native-3" }),
       }) })],
     });
     expect(mergeProviderLiveProjection(replaced, liveEvent(liveMessage("late", "old owner"), 1, 99))).toBe(replaced);
   });
 
-  it("bounds transient projection custody by evicting the oldest observed item", () => {
+  it("retains uncovered content instead of evicting the oldest observed item", () => {
     let projection = emptyProviderLiveProjection("conversation-1");
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("one", "1"), 1, 1), 2);
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("two", "2"), 1, 2), 2);
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("three", "3"), 1, 3), 2);
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("one", "1"), 1, 1));
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("two", "2"), 1, 2));
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("three", "3"), 1, 3));
     expect(projection.events.map((event) => event.kind === "provisional-content"
-      ? event.item.identity.native_item_id : null)).toEqual(["two", "three"]);
+      ? event.item.identity.native_item_id : null)).toEqual(["one", "two", "three"]);
   });
 
   it("does not let durable text coverage erase a live reasoning sibling", () => {
@@ -489,7 +489,7 @@ describe("authoritative conversation control", () => {
     })]);
   });
 
-  it("retires a disconnected generation and rejects its late provider events", async () => {
+  it("retains disconnected content while rejecting late provider events", async () => {
     const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
     const service = new ConversationControlService(db, { onProviderEvent: (event) => emitted.push(event) });
     const adapter = new FakeAdapter();
@@ -518,7 +518,7 @@ describe("authoritative conversation control", () => {
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: { generation, events: [] },
+      value: { generation, events: [expect.objectContaining({ identity: itemEvent.identity }), expect.objectContaining({ kind: "transient-retirement" })] },
     });
     expect(emitted.at(-1)).toMatchObject({
       kind: "transient-retirement",
@@ -742,15 +742,14 @@ describe("authoritative conversation control", () => {
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: { events: [expect.objectContaining({ identity: assistantEvent.identity })] },
+      value: { events: [expect.objectContaining({ identity: assistantEvent.identity }), expect.objectContaining({ identity: completeLiveOnly.identity })] },
     });
     expect(emitted.at(-1)).toMatchObject({
       kind: "durable-reconciliation",
       covered_identities: [userEvent.identity],
-      terminal_retired_identities: [completeLiveOnly.identity],
     });
     expect(diagnostics).toEqual([expect.objectContaining({
-      ingest_status: "ingested:fresh", retired_live_count: 2, retained_live_count: 1,
+      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 2,
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
   });

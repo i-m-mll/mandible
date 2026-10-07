@@ -133,3 +133,27 @@ it("accepts an initialized controller with native identity pending and never ack
   native.emit({ type:"system", subtype:"init", session_id:"different-native" });
   await until(() => events.includes("ownership-unknown"));
 });
+
+
+it("hydrates streamed Claude tool arguments and publishes exact result identities", async () => {
+  const native = fakeSdk();
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk }); adapters.push(adapter);
+  const events: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+  adapter.subscribeProviderEvents(event => events.push(event));
+  expect((await adapter.acquire(start)).ok).toBe(true);
+  expect((await adapter.deliver(message("tool-turn"))).ok).toBe(true);
+  const session_id = native.options.sessionId;
+  const stream = (event: unknown) => native.emit({ type: "stream_event", session_id, event });
+  stream({ type: "message_start", message: { id: "assistant-message" } });
+  stream({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "Bash", input: {} } });
+  stream({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":' } });
+  stream({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '"pwd"}' } });
+  native.emit({ type: "user", uuid: "result-message", session_id, message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "/tmp" }] } });
+  await until(() => events.some(event => event.kind === "provisional-content" && event.item.type === "tool-call" && event.item.phase === "result"));
+  const items = events.flatMap(event => event.kind === "provisional-content" ? [event.item] : []);
+  expect(items.find(item => item.type === "tool-call" && JSON.stringify(item.input) === '{"command":"pwd"}')).toMatchObject({
+    identity: { native_tool_id: "tool-1" }, input: { command: "pwd" },
+  });
+  expect(events.at(-1)).toMatchObject({ control_turn_id: "tool-turn" });
+  expect(items.at(-1)).toMatchObject({ phase: "result", tool_id: "tool-1", output: "/tmp" });
+});
