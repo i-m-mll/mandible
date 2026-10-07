@@ -2,7 +2,7 @@ import { establishTestClientAccess } from '../helpers/local-client-access';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ConversationControlSnapshot } from "../../ui/src/api.js";
 import { submitConversationControl } from "../../ui/src/api.js";
-import { conversationControlPresentation } from "../../ui/src/chat/conversationControl.js";
+import { conversationExecutionState, conversationControlPresentation } from "../../ui/src/chat/conversationControl.js";
 
 const base: ConversationControlSnapshot = {
   conversation_id: "conversation-1",
@@ -125,4 +125,16 @@ describe("shared conversation control presentation", () => {
       message: "This preview can control only a Chat created and still owned by this preview.",
     });
   });
+});
+
+
+it("requires a current owned executing turn and lets terminal outcomes override stale controller state", () => {
+  const running = { ...owned, controller: { kind: "running", since: 1 }, turn: { kind: "running", turn_id: "turn", since: 1 } } as ConversationControlSnapshot;
+  expect(conversationExecutionState(running)).toMatchObject({ phase: 'running', isExecuting: true, canInterrupt: true, activeTurnId: 'turn', generation: 1 });
+  for (const kind of ['completed', 'failed', 'cancelled'] as const) {
+    expect(conversationExecutionState({ ...running, turn: { kind, turn_id: 'turn', at: 2 } } as ConversationControlSnapshot)).toMatchObject({ phase: 'terminal', isExecuting: false, canInterrupt: false });
+  }
+  expect(conversationExecutionState({ ...running, turn: { kind: 'waiting-user', turn_id: 'turn', since: 2 } })).toMatchObject({ phase: 'waiting', isExecuting: false, canInterrupt: true });
+  expect(conversationExecutionState({ ...running, ownership: { kind: 'none', generation: 2 } })).toMatchObject({ isExecuting: false, canInterrupt: false });
+  expect(conversationExecutionState({ ...running, turn: { kind: 'none' } })).toMatchObject({ phase: 'idle', isExecuting: false, canInterrupt: false });
 });

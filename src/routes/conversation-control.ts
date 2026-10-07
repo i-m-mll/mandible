@@ -145,6 +145,11 @@ export function registerConversationControlRoutes(
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
   }), { operation: { id: "get:/api/conversations/:id/control/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
+  server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute(async (req, res) => {
+    const result = await control.runOptions(req.params.id);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: ["provider:send"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
   server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.getRuntimeSettings(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
@@ -169,19 +174,21 @@ export function registerConversationControlRoutes(
     const body = bodyRecord(req);
     const generation = Number(body.generation);
     const decision = body.decision;
-    if (!Number.isSafeInteger(generation) || generation < 1 || !["allow", "deny", "allow_always"].includes(String(decision))) {
+    if (!Number.isSafeInteger(generation) || generation < 1 || !["allow", "deny", "allow_always", "answer"].includes(String(decision))) {
       return sendJson(res, 400, { ok: false, error: { kind: "invalid-request", field: "permission", message: "A generation and supported decision are required" } });
     }
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
-    const result = await control.decidePermission({ conversation_id: req.params.id, generation, request_id: req.params.requestId, decision: decision as "allow" | "deny" | "allow_always" });
+    const result = await control.decidePermission({ conversation_id: req.params.id, generation, request_id: req.params.requestId, decision: decision as import("../conversation-control/types.js").ManagedRequestResponse["decision"], answers: body.answers as Record<string, string[]> | undefined });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
   }), { operation: { id: "post:/api/conversations/:id/control/permission/:requestId", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/interrupt", operatorOnlyManagedSessionRoute(async (req, res) => {
-    const generation = Number(bodyRecord(req).generation);
+    const body = bodyRecord(req);
+    const generation = Number(body.generation);
+    if (body.turn_id !== undefined && (typeof body.turn_id !== "string" || !body.turn_id)) return sendJson(res, 400, { error: "invalid_turn_id" });
     if (!Number.isSafeInteger(generation) || generation < 1) return sendJson(res, 400, { error: "invalid_generation" });
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
-    const result = await control.interrupt(req.params.id, generation);
+    const result = await control.interrupt(req.params.id, generation, body.turn_id as string | undefined);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
   }), { operation: { id: "post:/api/conversations/:id/control/interrupt", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 

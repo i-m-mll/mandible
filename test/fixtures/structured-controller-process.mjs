@@ -21,9 +21,17 @@ lines.on("line", (line) => {
     activeTurnId=null;
     return;
   }
+  if (request.id === "question-1" && request.result) {
+    send({ method: "serverRequest/resolved", params: { threadId: approvalThread, requestId: request.id } });
+    const answered = request.result.answers?.direction?.answers?.[0] === "Left";
+    send({ method: "turn/completed", params: { threadId: approvalThread, turn: { id: activeTurnId, status: answered ? "completed" : "failed" } } });
+    activeTurnId = null;
+    return;
+  }
   if (request.method === "initialized") return;
   const respond = (result) => send({ id: request.id, result });
   if (request.method === "initialize") respond({ userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" });
+  else if (request.method === "model/list") respond({ data: [{ model: "fixture-model", displayName: "Fixture model" }], nextCursor: null });
   else if (request.method === "account/read") respond({ account: { type: "chatgpt", email: null, planType: "plus" }, requiresOpenaiAuth: true });
   else if (request.method === "thread/unarchive") {
     if (process.env.FAKE_CODEX_UNARCHIVE_FAIL === "1") send({ id: request.id, error: { code: -32600, message: "Archive restore refused" } });
@@ -76,7 +84,13 @@ lines.on("line", (line) => {
       send({ method:"thread/tokenUsage/updated", params:{ threadId:approvalThread,turnId:activeTurnId,tokenUsage:{total:{inputTokens:12,outputTokens:3,totalTokens:15}} } });
       send({ id:"approval-1", method:"item/commandExecution/requestApproval", params:{ threadId:approvalThread,turnId:activeTurnId,command:"true",reason:"bounded approval fixture" } });
     }
-    if (!["hold","permission"].includes(request.params.input[0]?.text)) {
+    if (request.params.input[0]?.text === "question") {
+      approvalThread = request.params.threadId;
+      send({ id: "question-1", method: "item/tool/requestUserInput", params: { threadId: approvalThread, turnId: activeTurnId, itemId: "question-item", questions: [
+        { id: "direction", header: "Direction", question: "Which direction?", isOther: false, isSecret: false, options: [{ label: "Left", description: "Go left" }, { label: "Right", description: "Go right" }] }
+      ] } });
+    }
+    if (!["hold","permission","question"].includes(request.params.input[0]?.text)) {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;
     }

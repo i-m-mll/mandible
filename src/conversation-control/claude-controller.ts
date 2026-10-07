@@ -231,23 +231,30 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     return { ok: true, value: undefined };
   }
 
-  async interrupt(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>> {
+  async interrupt(input: { conversation_id: string; generation: number; turn_id?: string }): Promise<Result<void, ConversationControlError>> {
     const controller = this.controllers.get(input.conversation_id);
-    if (!controller || controller.generation !== input.generation || !controller.activeTurnId) {
+    if (!controller || controller.generation !== input.generation || !controller.activeTurnId || (input.turn_id !== undefined && input.turn_id !== controller.activeTurnId)) {
       return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Claude has no owned active turn") };
     }
     try { controller.interrupting = true; await controller.process.interrupt(); return { ok: true, value: undefined }; }
-    catch (error) { return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+    catch (error) { controller.interrupting = false; return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+  }
+
+  async modelChoices(conversationId: string): Promise<Result<{ value: string; label: string }[], ConversationControlError>> {
+    const controller = this.controllers.get(conversationId);
+    if (!controller) return { ok: false, error: adapterFailure(this.id, "controller-unavailable", "Claude controller unavailable") };
+    try { return { ok: true, value: await controller.process.modelChoices() }; }
+    catch (error) { return { ok: false, error: adapterFailure(this.id, "model-inventory-failed", error) }; }
   }
 
   permissions(conversationId: string) { return this.controllers.get(conversationId)?.process.pendingPermissions() ?? []; }
 
-  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+  async decidePermission(input: import("./types.js").ManagedRequestResponse): Promise<Result<void, ConversationControlError>> {
     const controller = this.controllers.get(input.conversation_id);
-    if (!controller || controller.generation !== input.generation || !controller.process.decidePermission(input.request_id, input.decision)) {
+    if (!controller || controller.generation !== input.generation || !controller.process.decidePermission(input.request_id, input.decision, input.answers)) {
       return { ok: false, error: adapterFailure(this.id, "permission-not-found", "Permission request is no longer pending on this controller") };
     }
-    this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
+    if (!controller.process.pendingPermissions().length && controller.activeTurnId) this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: controller.activeTurnId, at: Date.now() }));
     return { ok: true, value: undefined };
   }
 
@@ -322,7 +329,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       return;
     }
     if (record.type === "control_request" && controller.activeTurnId) {
-      this.lifecycle.emit(this.event(controller, { kind: "turn-waiting-permission", turn_id: controller.activeTurnId, at: Date.now() }));
+      this.lifecycle.emit(this.event(controller, { kind: Array.isArray(object(record.request)?.questions) ? "turn-waiting-user" : "turn-waiting-permission", turn_id: controller.activeTurnId, at: Date.now() }));
       return;
     }
     if (record.type === "control_response" && controller.activeTurnId) {
@@ -655,8 +662,9 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     const turnId = controller.activeTurnId;
     controller.activeTurnId = null;
     const now = Date.now();
-    if (controller.interrupting) {
-      controller.interrupting = false;
+    const interrupted = controller.interrupting;
+    controller.interrupting = false;
+    if (interrupted && record.is_error === true && record.subtype === "error_during_execution") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-cancelled", turn_id: turnId, at: now }));
     } else if (record.is_error === false && record.subtype === "success") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-completed", turn_id: turnId, at: now }));
