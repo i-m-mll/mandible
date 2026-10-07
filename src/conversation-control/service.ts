@@ -1,3 +1,5 @@
+import { RUNTIME_SETTING_FIELDS } from "./types.js";
+import { providerModelLabel } from "../provider-run-option-catalog.js";
 import { effectiveManagedRuntimeOptions } from "../managed-chat-defaults.js";
 import { conversationRunOptions, providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
@@ -31,6 +33,7 @@ import type {
   ProviderLiveProjection,
   Result,
   TurnState,
+  RuntimeSettingsApplication,
 } from "./types.js";
 
 type ActiveTurn = Extract<TurnState, { kind: "queued" | "running" | "waiting-user" | "waiting-permission" }>;
@@ -66,6 +69,8 @@ export class ConversationControlService {
     turn_id: string;
   }) => Promise<{ status: string }>) | undefined;
   private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
+  private readonly runtimeChanges = new Map<string, Promise<unknown>>();
+  private readonly runtimeFailures = new Map<string, { generation: number; message: string }>();
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
 
   constructor(private readonly db: Db, options: {
@@ -163,11 +168,9 @@ export class ConversationControlService {
       }
     }
     const descriptors = conversationRunOptions(snapshot.value.provider, models);
-    if (models === undefined) {
-      const storedModel = this.retainedRuntimeOptions(conversationId).model;
-      const model = descriptors.find(option => option.id === "model")!;
-      if (storedModel && !model.choices.some(choice => choice.value === storedModel)) model.choices.push({ value: storedModel, label: storedModel });
-    }
+    const storedModel = this.retainedRuntimeOptions(conversationId).model;
+    const model = descriptors.find(option => option.id === "model")!;
+    if (storedModel && !model.choices.some(choice => choice.value === storedModel)) model.choices.push({ value: storedModel, label: providerModelLabel(snapshot.value.provider, storedModel), ...(models ? { retained: true } : {}) });
     return { ok: true as const, value: descriptors };
   }
 
@@ -203,12 +206,50 @@ export class ConversationControlService {
     return effectiveManagedRuntimeOptions(conversation?.source ?? "", { ...result, ...(saved ? JSON.parse(saved.options_json) : {}) });
   }
 
+  private serializeRuntime<T>(conversationId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.runtimeChanges.get(conversationId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(action);
+    this.runtimeChanges.set(conversationId, next);
+    void next.finally(() => { if (this.runtimeChanges.get(conversationId) === next) this.runtimeChanges.delete(conversationId); }).catch(() => undefined);
+    return next;
+  }
+
+  private runtimeApplication(snapshot: ConversationControlSnapshot): RuntimeSettingsApplication {
+    const desired = this.retainedRuntimeOptions(snapshot.conversation_id);
+    const adapter = snapshot.ownership.kind === "mandible" ? this.adapters.byAdapterId(snapshot.ownership.adapter_id) : null;
+    const native = adapter?.runtimeSettings?.(snapshot.conversation_id, snapshot.ownership.generation);
+    const failure = this.runtimeFailures.get(snapshot.conversation_id);
+    return { generation: snapshot.ownership.generation, acknowledged_options: native?.acknowledged_options ?? {},
+      fields: Object.fromEntries(RUNTIME_SETTING_FIELDS.map(field => {
+        const error = (native?.acknowledged_options[field] !== desired[field] ? native?.errors[field] : undefined) ?? (failure?.generation === snapshot.ownership.generation ? failure.message : undefined);
+        return [field, { state: error ? "error" : native && native.acknowledged_options[field] === desired[field] ? "acknowledged" : "pending",
+          timing: snapshot.provider === "claude_code" && native ? field === "permission_mode" ? "current-session" : "next-response" : "next-turn",
+          ...(error ? { error } : {}) }];
+      })) as RuntimeSettingsApplication["fields"] };
+  }
+
+  async applyRuntimeSettings(conversationId: string) {
+    return this.serializeRuntime(conversationId, async () => {
+      const snapshot = this.getSnapshot(conversationId);
+      if (!snapshot.ok) return snapshot;
+      const owner = snapshot.value.ownership;
+      const adapter = owner.kind === "mandible" ? this.adapters.byAdapterId(owner.adapter_id) : null;
+      if (adapter?.applyRuntimeSettings) {
+        const result = await trapAdapterCall(adapter.id, () => adapter.applyRuntimeSettings!({ conversation_id: conversationId, generation: owner.generation, runtime_options: this.retainedRuntimeOptions(conversationId) }));
+        if (!result.ok) this.runtimeFailures.set(conversationId, { generation: owner.generation, message: "message" in result.error ? String(result.error.message) : result.error.kind });
+        else this.runtimeFailures.delete(conversationId);
+        this.notify(conversationId);
+      }
+      return this.getRuntimeSettings(conversationId);
+    });
+  }
+
   getRuntimeSettings(conversationId: string) {
     const snapshot = this.getSnapshot(conversationId);
     if (!snapshot.ok) return snapshot;
     const saved = this.db.prepare("SELECT revision FROM conversation_runtime_settings WHERE conversation_id = ?").get(conversationId) as { revision: number } | undefined;
     const usage = this.db.prepare("SELECT generation, provider_session_id, snapshot_json, observed_at FROM conversation_provider_usage WHERE conversation_id = ? ORDER BY generation").all(conversationId) as { generation: number; provider_session_id: string; snapshot_json: string; observed_at: number }[];
-    return { ok: true as const, value: { revision: saved?.revision ?? 0, runtime_options: this.retainedRuntimeOptions(conversationId), usage: usage.map(({ snapshot_json, ...row }) => ({ ...row, snapshot: JSON.parse(snapshot_json) })) } };
+    return { ok: true as const, value: { revision: saved?.revision ?? 0, runtime_options: this.retainedRuntimeOptions(conversationId), application: this.runtimeApplication(snapshot.value), usage: usage.map(({ snapshot_json, ...row }) => ({ ...row, snapshot: JSON.parse(snapshot_json) })) } };
   }
 
   saveRuntimeSettings(conversationId: string, expectedRevision: number, settings: import("./types.js").ConversationRuntimeOptions): Result<{ revision: number; runtime_options: import("./types.js").ConversationRuntimeOptions }, ConversationControlError> {
@@ -259,8 +300,8 @@ export class ConversationControlService {
     const claimed = this.store.claimResume(input.conversation_id, input.expected_revision, input.expected_generation, adapter.capabilities, adapter.id);
     if (!claimed.ok) return claimed;
     this.notify(input.conversation_id);
-    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire({ kind: "resume-provider-session", conversation_id: input.conversation_id,
-      ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) }));
+    const acquired = await this.serializeRuntime(input.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire({ kind: "resume-provider-session", conversation_id: input.conversation_id,
+      ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) })));
     if (!acquired.ok) {
       const failed = this.store.publishLifecycle(input.conversation_id, claimed.value.generation, { kind: "controller-failed", at: Date.now(), error: acquired.error });
       if (!failed.ok) return failed;
@@ -303,7 +344,7 @@ export class ConversationControlService {
       runtime_options: request.runtime_options,
       ...(request.signal ? { signal: request.signal } : {}),
     };
-    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
+    const acquired = await this.serializeRuntime(request.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire(acquisition)));
     if (!acquired.ok) return acquired;
     if (acquired.value.controller_instance_id !== controllerInstanceId
         || acquired.value.provider_session_id === null && adapter.provider !== "claude_code"
@@ -383,20 +424,19 @@ export class ConversationControlService {
       const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
       if (!location.cwd || !isAbsolute(location.cwd) || !existsSync(location.cwd)) return { ok: false, error: { kind: "invalid-request", field: "cwd", message: "Restore this conversation's exact checkout before sending" } };
     }
-    const effectiveOptions = request.operation === "queue" || request.operation === "steer" ? {} : { ...this.retainedRuntimeOptions(request.conversation_id), ...request.runtime_options };
+    const desired = this.getRuntimeSettings(request.conversation_id);
+    if (!desired.ok) return desired;
+    const priorDelivery = this.db.prepare("SELECT id FROM conversation_control_outbox WHERE conversation_id = ? AND idempotency_key = ?")
+      .get(request.conversation_id, request.idempotency_key);
+    if (!priorDelivery && Object.entries(request.runtime_options ?? {}).some(([key, value]) => JSON.stringify(value) !== JSON.stringify(desired.value.runtime_options[key as keyof typeof desired.value.runtime_options]))) {
+      return { ok: false, error: { kind: "settings-drift", desired_revision: desired.value.revision,
+        message: "Per-send settings differ from the saved choices. Save conversation settings before sending." } };
+    }
+    const effectiveOptions = request.operation === "queue" || request.operation === "steer" ? {} : desired.value.runtime_options;
     const invalidOptions = providerRuntimeSettingsError(adapter.provider, effectiveOptions);
     if (invalidOptions) return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: invalidOptions } };
     const prepared = this.store.prepareSubmission(request, adapter.capabilities, adapter.id);
     if (!prepared.ok) return prepared;
-    const frozen = this.db.prepare("INSERT OR IGNORE INTO conversation_delivery_settings (delivery_id, options_json) VALUES (?, ?)")
-      .run(prepared.value.delivery_id, JSON.stringify(effectiveOptions));
-    if (frozen.changes && request.runtime_options && Object.keys(request.runtime_options).length
-        && ["send", "resume-provider-session", "resume-message-anchor"].includes(request.operation)) {
-      const current = this.getRuntimeSettings(request.conversation_id);
-      if (!current.ok) return current;
-      const selected = this.saveRuntimeSettings(request.conversation_id, current.value.revision, effectiveOptions);
-      if (!selected.ok) return selected;
-    }
     if (prepared.value.already_delivered) {
       return { ok: true, value: {
         kind: "accepted",
@@ -409,8 +449,7 @@ export class ConversationControlService {
     this.notify(request.conversation_id);
     if (prepared.value.acquisition_required) {
       const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
-      const frozen = this.db.prepare("SELECT options_json FROM conversation_delivery_settings WHERE delivery_id = ?").get(prepared.value.delivery_id) as { options_json: string };
-      const settings = JSON.parse(frozen.options_json) as import("./types.js").ConversationRuntimeOptions;
+      const settings = this.retainedRuntimeOptions(request.conversation_id);
       const acquisition: ControllerAcquisitionRequest = !prepared.value.provider_session_id
         ? { kind: "start", conversation_id: request.conversation_id, controller_instance_id: prepared.value.controller_instance_id, generation: prepared.value.snapshot.ownership.generation, cwd: location.cwd!, runtime_options: settings }
         : request.operation === "resume-message-anchor"
@@ -433,7 +472,7 @@ export class ConversationControlService {
           runtime_options: settings,
           cwd: location.cwd ?? undefined,
         };
-      const acquiredCall = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
+      const acquiredCall = await this.serializeRuntime(request.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire({ ...acquisition, runtime_options: this.retainedRuntimeOptions(request.conversation_id) })));
       const acquired: typeof acquiredCall = acquiredCall.ok && (
         acquiredCall.value.controller_instance_id !== prepared.value.controller_instance_id
         || (prepared.value.provider_session_id !== null && acquiredCall.value.provider_session_id !== prepared.value.provider_session_id)
@@ -500,6 +539,12 @@ export class ConversationControlService {
   }
 
   async dispatch(deliveryId: string): Promise<Result<ProviderDeliveryReceipt | null, ConversationControlError>> {
+    const row = this.db.prepare("SELECT conversation_id FROM conversation_control_outbox WHERE id = ?").get(deliveryId) as { conversation_id: string } | undefined;
+    if (!row) return this.dispatchRuntime(deliveryId);
+    return this.serializeRuntime(row.conversation_id, () => this.dispatchRuntime(deliveryId));
+  }
+
+  private async dispatchRuntime(deliveryId: string): Promise<Result<ProviderDeliveryReceipt | null, ConversationControlError>> {
     const begun = this.store.beginDelivery(deliveryId);
     if (!begun.ok) return begun;
     if (begun.value.state === "delivered") return { ok: true, value: null };
@@ -513,8 +558,9 @@ export class ConversationControlService {
       this.store.markDeliveryUncertain(deliveryId, begun.value.generation);
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: snapshot.value.ownership.adapter_id, provider: snapshot.value.provider } };
     }
-    const savedSettings = this.db.prepare("SELECT options_json FROM conversation_delivery_settings WHERE delivery_id = ?").get(deliveryId) as { options_json: string } | undefined;
-    const item = { ...begun.value, runtime_options: savedSettings ? JSON.parse(savedSettings.options_json) : begun.value.runtime_options };
+    // Message identity is immutable; settings resolve at actual provider dispatch.
+    // A retry or queued message cannot reapply an older desired revision.
+    const item = { ...begun.value, runtime_options: begun.value.operation === "steer" ? {} : this.retainedRuntimeOptions(begun.value.conversation_id) };
     const invalidSettings = providerRuntimeSettingsError(adapter.provider, item.runtime_options);
     const delivered = invalidSettings
       ? { ok: false as const, error: { kind: "invalid-request" as const, field: "runtime_options", message: invalidSettings } }

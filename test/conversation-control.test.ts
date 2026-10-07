@@ -261,7 +261,10 @@ describe("authoritative conversation control", () => {
     const settings = service.getRuntimeSettings("conversation-1");
     expect(settings).toMatchObject({ ok: true, value: { runtime_options: defaults } });
     const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error('missing snapshot');
-    const submitted = { ...request(snapshot.value.revision, "first-send", snapshot.value.ownership.generation), operation: "send" as const, runtime_options: { effort: "low" } };
+    expect(service.saveRuntimeSettings("conversation-1", 0, { effort: "low" }).ok).toBe(true);
+    expect(await service.submit({ ...request(snapshot.value.revision, "stale-send", snapshot.value.ownership.generation), runtime_options: { effort: "high" } }))
+      .toMatchObject({ ok: false, error: { kind: "settings-drift", desired_revision: 1 } });
+    const submitted = { ...request(snapshot.value.revision, "first-send", snapshot.value.ownership.generation), operation: "send" as const };
     expect((await service.submit(submitted)).ok).toBe(true);
     expect(adapter.lastDelivery?.runtime_options).toEqual({ ...defaults, effort: "low" });
     expect(service.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { ...defaults, effort: "low" } } });
@@ -269,6 +272,62 @@ describe("authoritative conversation control", () => {
     expect(service.saveRuntimeSettings("conversation-1", current.value.revision, { model: "explicit-model" }).ok).toBe(true);
     const reopened = new ConversationControlService(db);
     expect(reopened.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { model: "explicit-model", effort: "low", permission_mode: "read-only" } } });
+    await service.close();
+  });
+
+  it("serializes native changes with queued dispatch and rejects stale draft restoration", async () => {
+    let unblock!: () => void;
+    let applying = false;
+    class LiveAdapter extends FakeAdapter {
+      override readonly capabilities = { ...capabilities, steer: false };
+      acknowledged = {};
+      runtimeSettings() { return { acknowledged_options: this.acknowledged, errors: {} }; }
+      async applyRuntimeSettings(input: { runtime_options: object }) {
+        applying = true;
+        await new Promise<void>(resolve => { unblock = resolve; });
+        this.acknowledged = input.runtime_options;
+        applying = false;
+        return { ok: true as const, value: undefined };
+      }
+      override async deliver(item: ConversationOutboxItem) {
+        expect(applying).toBe(false);
+        this.acknowledged = item.runtime_options;
+        return super.deliver(item);
+      }
+    }
+    const service = new ConversationControlService(db);
+    const adapter = new LiveAdapter(); service.registerAdapter(adapter);
+    expect((await service.submit(request(0, "start"))).ok).toBe(true);
+    const started = service.getSnapshot("conversation-1");
+    if (!started.ok || started.value.turn.kind !== "queued") throw new Error("missing queued turn");
+    adapter.emit({ conversation_id: "conversation-1", generation: started.value.ownership.generation,
+      kind: "turn-started", turn_id: started.value.turn.turn_id, at: Date.now() });
+    expect(service.saveRuntimeSettings("conversation-1", 0, { effort: "high" }).ok).toBe(true);
+    const application = service.applyRuntimeSettings("conversation-1");
+    await Promise.resolve(); await Promise.resolve();
+    expect(applying).toBe(true);
+    const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error("missing snapshot");
+    const queued = service.submit({ ...request(snapshot.value.revision, "queued", snapshot.value.ownership.generation), operation: "queue" });
+    expect(service.saveRuntimeSettings("conversation-1", 1, { permission_mode: "read-only" }).ok).toBe(true);
+    unblock();
+    expect((await application).ok).toBe(true);
+    const queuedResult = await queued; expect(queuedResult.ok, JSON.stringify(queuedResult)).toBe(true);
+    expect(adapter.lastDelivery?.runtime_options).toMatchObject({ effort: "high", permission_mode: "read-only" });
+    expect(service.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { revision: 2, runtime_options: { effort: "high", permission_mode: "read-only" } } });
+    await service.close();
+  });
+
+  it("keeps a historical current model selectable for display when live inventory omits it", async () => {
+    class CatalogAdapter extends FakeAdapter {
+      async modelChoices() { return { ok: true as const, value: [{ value: "supported-model", label: "Supported model" }] }; }
+    }
+    const service = new ConversationControlService(db); const adapter = new CatalogAdapter(); service.registerAdapter(adapter);
+    expect((await service.submit(request(0, "inventory"))).ok).toBe(true);
+    const choices = await service.runOptions("conversation-1", { discoverModels: true });
+    expect(choices.ok && choices.value[0]).toMatchObject({ id: "model", choices: [
+      { value: "supported-model", label: "Supported model" },
+      { value: "gpt-5.6-sol", label: "gpt-5.6-sol", retained: true },
+    ] });
     await service.close();
   });
 
@@ -384,7 +443,7 @@ describe("authoritative conversation control", () => {
     expect(service.saveRuntimeSettings("conversation-1", 0, { model: "future-turn" }).ok).toBe(true);
     const retried = await service.submit(submission);
     expect(retried.ok).toBe(true);
-    expect(adapter.lastAcquisition?.runtime_options).toEqual({ model: "gpt-5.6-sol", effort: "medium", permission_mode: "agent-full-access" });
+    expect(adapter.lastAcquisition?.runtime_options).toEqual({ model: "future-turn", effort: "medium", permission_mode: "agent-full-access" });
     expect(adapter.acquisitions).toBe(2);
     expect(adapter.deliveries).toBe(1);
     expect(db.prepare("SELECT state, attempts, generation FROM conversation_control_outbox WHERE idempotency_key = 'same-draft'").get())
@@ -877,8 +936,7 @@ it("resumes without a message and persists settings independently of delivery re
   expect(service.saveRuntimeSettings('conversation-1', 1, { model: 'next-model' }).ok).toBe(true);
   expect((await service.submit(submission)).ok).toBe(true);
   expect(adapter.deliveries).toBe(1);
-  const frozen = db.prepare('SELECT options_json FROM conversation_delivery_settings').get() as { options_json: string };
-  expect(JSON.parse(frozen.options_json).model).toBe('retained-model');
+  expect(db.prepare('SELECT count(*) AS n FROM conversation_delivery_settings').get()).toEqual({ n: 0 });
   const reopened = new ConversationControlService(db);
   expect(reopened.getRuntimeSettings('conversation-1')).toMatchObject({ ok: true, value: { revision: 2, runtime_options: { model: 'next-model' } } });
   await service.close();

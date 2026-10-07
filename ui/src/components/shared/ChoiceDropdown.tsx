@@ -6,8 +6,8 @@ import './ChoiceDropdown.css';
 type Choice = { value: string; label: string };
 
 /** A single-choice popover sharing the app's top-layer positioning and dismissal. */
-export function ChoiceDropdown({ label, prompt, value, choices, disabled = false, onChange }: {
-  label: string; prompt: string; value: string; choices: Choice[]; disabled?: boolean;
+export function ChoiceDropdown({ label, prompt, value, choices, disabled = false, hint, onChange }: {
+  label: string; prompt: string; value: string; choices: Choice[]; disabled?: boolean; hint?: string;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -43,7 +43,7 @@ export function ChoiceDropdown({ label, prompt, value, choices, disabled = false
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
   }}>
     <button type="button" ref={triggerRef} className="choice-dropdown__trigger" disabled={disabled}
-      aria-label={label} title={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
+      aria-label={label} title={hint ? `${label} · ${hint}` : label} aria-description={hint} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
       onClick={() => open ? close() : show()}
       onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;

@@ -1,3 +1,4 @@
+import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import type {
   ActivityItem,
   ActivityKind,
@@ -43,6 +44,7 @@ type ClaudeController = {
   nativeIdentityBound: boolean;
   identityPendingRecords: unknown[];
   process: ClaudeSdkTransport;
+  settingsErrors: import("./types.js").NativeRuntimeSettings["errors"];
   queuedTurns: string[];
   consumedTogether: string[];
   messageTurns: Map<string, string>;
@@ -93,6 +95,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         nativeIdentityBound: processOwner.providerSessionId !== null,
         identityPendingRecords: [],
         process: processOwner,
+        settingsErrors: {},
         state: "ready",
         activeTurnId: null,
         queuedTurns: [],
@@ -142,8 +145,10 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
 
     try {
       const owned = controller.value;
-      const settings = item.operation === "queue" ? owned.acquisition.runtime_options ?? {} : item.runtime_options;
-      const immutable = ["effort", "system_prompt", "max_turns", "max_cost_usd", "setting_sources", "allowed_tools"] as const;
+      const settings = item.operation === "queue"
+        ? { ...owned.acquisition.runtime_options, ...Object.fromEntries(RUNTIME_SETTING_FIELDS.map(key => [key, item.runtime_options[key]]).filter(([, value]) => value !== undefined)) }
+        : item.runtime_options;
+      const immutable = ["system_prompt", "max_turns", "max_cost_usd", "setting_sources", "allowed_tools"] as const;
       const changed = immutable.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(owned.acquisition.runtime_options?.[key]));
       if (changed) {
         if (owned.activeTurnId) throw new Error("Startup settings can change only between turns");
@@ -161,8 +166,10 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         replacement.onExit((exit) => this.processExited(owned, exit));
         owned.acquisition = acquisition;
       } else {
-        await owned.process.configure(settings);
-        owned.acquisition.runtime_options = settings;
+        const configured = await owned.process.configure(settings, owned.acquisition.runtime_options ?? {});
+        owned.acquisition.runtime_options = configured.acknowledged_options;
+        owned.settingsErrors = configured.errors;
+        if (Object.keys(configured.errors).length) throw new Error(Object.values(configured.errors).join("; "));
       }
     }
     catch (error) { return { ok: false, error: adapterFailure(this.id, "configuration-failed", error) }; }
@@ -240,6 +247,20 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     }
     try { controller.interrupting = true; await controller.process.interrupt(); return { ok: true, value: undefined }; }
     catch (error) { controller.interrupting = false; return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+  }
+
+  runtimeSettings(conversationId: string, generation: number) {
+    const owned = this.controllers.get(conversationId);
+    return owned?.generation === generation ? { acknowledged_options: { ...owned.acquisition.runtime_options }, errors: { ...owned.settingsErrors } } : null;
+  }
+
+  async applyRuntimeSettings(input: { conversation_id: string; generation: number; runtime_options: import("./types.js").ConversationRuntimeOptions }): Promise<Result<void, ConversationControlError>> {
+    const owned = this.controllers.get(input.conversation_id);
+    if (!owned || owned.generation !== input.generation) return { ok: false, error: adapterFailure(this.id, "controller-unavailable", "Claude controller unavailable") };
+    const configured = await owned.process.configure(input.runtime_options, owned.acquisition.runtime_options ?? {});
+    owned.acquisition.runtime_options = configured.acknowledged_options;
+    owned.settingsErrors = configured.errors;
+    return { ok: true, value: undefined };
   }
 
   async modelChoices(conversationId: string): Promise<Result<{ value: string; label: string }[], ConversationControlError>> {

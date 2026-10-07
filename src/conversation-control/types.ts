@@ -64,6 +64,7 @@ export type ReconciliationUnknownReason =
 export type ConversationControlError =
   | { kind: "conversation-not-found"; conversation_id: string }
   | { kind: "invalid-request"; field: string; message: string }
+  | { kind: "settings-drift"; desired_revision: number; message: string }
   | { kind: "capability-drift"; expected_revision: number; actual_revision: number }
   | { kind: "unsupported-operation"; operation: ConversationControlOperation | "stop"; capability: ConversationContinuationCapability }
   | { kind: "ownership-conflict"; owner: "external" | "unknown"; capability: ConversationContinuationCapability }
@@ -130,7 +131,7 @@ export type ManagedRequestResponse = {
 };
 export type ConversationRunOption = {
   id: "model" | "effort" | "permission_mode"; label: string;
-  choices: { value: string; label: string }[];
+  choices: { value: string; label: string; retained?: boolean }[];
 };
 
 export type ManagedPermissionRequest = {
@@ -150,6 +151,22 @@ export type ConversationRuntimeOptions = {
   permission_mode?: "read-only" | "agent" | "agent-full-access" | "default" | "acceptEdits" | "bypassPermissions";
 };
 
+export const RUNTIME_SETTING_FIELDS = ["model", "effort", "permission_mode"] as const;
+export type RuntimeSettingField = typeof RUNTIME_SETTING_FIELDS[number];
+export type NativeRuntimeSettings = {
+  acknowledged_options: ConversationRuntimeOptions;
+  errors: Partial<Record<RuntimeSettingField, string>>;
+};
+export type RuntimeSettingsApplication = {
+  generation: number;
+  fields: Record<RuntimeSettingField, {
+    state: "acknowledged" | "pending" | "error";
+    timing: "current-session" | "next-response" | "next-turn";
+    error?: string;
+  }>;
+  acknowledged_options: ConversationRuntimeOptions;
+};
+
 export type ConversationSubmitRequest = {
   conversation_id: string;
   operation: ConversationControlOperation;
@@ -158,6 +175,7 @@ export type ConversationSubmitRequest = {
   message: string;
   attachments?: ChatAttachment[];
   message_anchor?: string;
+  /** Compatibility assertion against desired choices, never a settings mutation. */
   runtime_options?: ConversationRuntimeOptions;
   idempotency_key: string;
 };
