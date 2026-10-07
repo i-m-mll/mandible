@@ -32,7 +32,7 @@ it('autosaves rapid edits in revision order and preserves them through an older 
   { expected_revision: 7, runtime_options: { model: 'first' } },
   { expected_revision: 8, runtime_options: { model: 'latest' } },
  ]));
- await vi.waitFor(() => expect(screen.queryByText('Saving…')).toBeNull());
+ await vi.waitFor(() => expect({ revision, model }).toEqual({ revision: 9, model: 'latest' }));
  expect(screen.getByRole('button', { name: 'Model' }).textContent).toBe('latest');
  expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
 });

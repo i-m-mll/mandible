@@ -190,14 +190,7 @@ export function ManagedConversationControlFields({ state, compact = false, inclu
       choices={option.choices.filter(choice => !choice.retained || choice.value === value)}
       onChange={value => edit(option.id, value)} />;
   })}</>;
-  const timing = settings?.application?.fields;
-  const fieldLabel = (key: string) => key === 'permission_mode' ? 'Permissions' : key === 'effort' ? 'Effort' : 'Model';
-  const pending = timing && Object.values(timing).some(field => field.state === 'pending');
-  const timingHint = timing ? Object.entries(timing).map(([key, field]) => `${fieldLabel(key)}: ${field.timing === 'next-turn' ? 'next message' : field.timing === 'next-response' ? 'subsequent provider response' : 'subsequent permission checks'}`).join('; ') : '';
-  const status = <span className="session-controls__settings-status" role="status" title={timingHint}>
-    {state.settingsSaving ? 'Saving…' : !state.settingsError && !state.settingsProblems.length && pending ? 'Applies on next message' : ''}
-  </span>;
-  if (compact) return <>{coreFields}{status}</>;
+  if (compact) return coreFields;
   return <div className="session-controls">
     {includeActions && <ManagedConversationControlActions state={state} />}
     <section aria-label="Conversation settings">
@@ -211,7 +204,6 @@ export function ManagedConversationControlFields({ state, compact = false, inclu
           const sources = new Set<'user' | 'project' | 'local'>(draft.setting_sources ?? ['user', 'project', 'local']); if (event.currentTarget.checked) sources.add(source); else sources.delete(source); edit('setting_sources', [...sources]);
         }} />{source}</label>)}</fieldset>
       </>}
-      {status}
     </section>
     {settings?.usage.length ? <details><summary>Provider usage</summary>{settings.usage.map(usage => <dl key={usage.generation}>{usageFields(usage.snapshot).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value.toLocaleString()}</dd></div>)}</dl>)}</details> : null}
   </div>;
