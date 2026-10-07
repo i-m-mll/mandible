@@ -34,7 +34,7 @@ export function conversationRunOptions(provider: string, models?: { value: strin
   const claude = provider === "claude_code";
   const choices = (values: string[]) => values.map(value => ({ value, label: value }));
   return [
-    { id: "model", label: "Model", choices: models ?? (claude ? CLAUDE_CODE_BOOTSTRAP_MODELS : []) },
+    { id: "model", label: "Model", choices: [...(models ?? (claude ? CLAUDE_CODE_BOOTSTRAP_MODELS : []))] },
     { id: "effort", label: "Thinking effort", choices: choices(claude ? ["low", "medium", "high", "xhigh", "max"] : ["none", "minimal", "low", "medium", "high", "xhigh"]) },
     { id: "permission_mode", label: "Permissions", choices: choices(claude ? ["default", "acceptEdits", "bypassPermissions"] : ["read-only", "agent", "agent-full-access"]) },
   ];

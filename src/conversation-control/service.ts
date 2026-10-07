@@ -148,11 +148,11 @@ export class ConversationControlService {
     return trapAdapterCall(owned.value.id, () => owned.value.interrupt!({ conversation_id: conversationId, generation, turn_id: turnId }));
   }
 
-  async runOptions(conversationId: string) {
+  async runOptions(conversationId: string, options: { discoverModels: boolean }) {
     const snapshot = this.getSnapshot(conversationId);
     if (!snapshot.ok) return snapshot;
     let models: { value: string; label: string }[] | undefined;
-    if (snapshot.value.ownership.kind === "mandible" && snapshot.value.controller.kind !== "starting") {
+    if (options.discoverModels && snapshot.value.ownership.kind === "mandible" && snapshot.value.controller.kind !== "starting") {
       const adapter = this.ownedAdapter(conversationId, snapshot.value.ownership.generation);
       if (!adapter.ok) return adapter;
       if (adapter.value.modelChoices) {
@@ -161,7 +161,13 @@ export class ConversationControlService {
         models = discovered.value;
       }
     }
-    return { ok: true as const, value: conversationRunOptions(snapshot.value.provider, models) };
+    const descriptors = conversationRunOptions(snapshot.value.provider, models);
+    if (models === undefined) {
+      const storedModel = this.retainedRuntimeOptions(conversationId).model;
+      const model = descriptors.find(option => option.id === "model")!;
+      if (storedModel && !model.choices.some(choice => choice.value === storedModel)) model.choices.push({ value: storedModel, label: storedModel });
+    }
+    return { ok: true as const, value: descriptors };
   }
 
   permissions(conversationId: string): Result<import("./types.js").ManagedPermissionRequest[], ConversationControlError> {
