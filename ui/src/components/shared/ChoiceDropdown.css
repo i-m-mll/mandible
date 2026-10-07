@@ -7,7 +7,7 @@
   max-width: 100%;
   padding: 5px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-chat-surface);
   background: transparent;
   box-shadow: none;
   color: var(--fg-default);
@@ -33,7 +33,7 @@
   min-width: 160px;
   padding: 5px;
   border: 1px solid var(--neutral-alpha-10);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-chat-surface);
   background: var(--bg-card);
   box-shadow: var(--shadow-soft);
 }

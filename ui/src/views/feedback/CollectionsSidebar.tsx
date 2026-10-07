@@ -426,7 +426,7 @@ export function CollectionsSidebar({
                     onSelect: () => onSelectGroup?.(group),
                   }}
                   headingDescription={`${count} Briefing${count === 1 ? '' : 's'} in ${projection.selectedUpdate ? 'selected proposed update' : 'current layout'}`}
-                  reorder={topLevelReorder.binding(top.id)}
+                  reorder={topLevelReorder.binding(top.id, { handleOnly: true })}
                 >
                   {layout.map((entry, index) => {
                     if (entry.kind === 'briefing') {

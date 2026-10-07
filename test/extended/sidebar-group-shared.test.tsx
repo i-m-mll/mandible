@@ -137,6 +137,7 @@ describe('shared sidebar group presentation', () => {
 
   it('keeps a reorder grip contextual when its neighboring group action is persistent', () => {
     const reorder = {
+      handleOnly: true,
       dragging: false,
       dropTarget: false,
       root: { 'data-sidebar-reorder-id': 'projects', onClickCapture: vi.fn() },
