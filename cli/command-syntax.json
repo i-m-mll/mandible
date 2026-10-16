@@ -286,6 +286,46 @@
         ]
       }
     },
+    "auth.acceptance.run": {
+      "route": ["auth", "acceptance", "run"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "auth.acceptance.show": {
+      "route": ["auth", "acceptance", "show"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "auth.handoff.status": {
+      "route": ["auth", "handoff", "status"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "auth.handoff.retire": {
+      "route": ["auth", "handoff", "retire"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "option","names": ["--binding-digest"],"values": [{"kind": "argument","name": "sha256","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--reason"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
     "auth.replay-archives": {
       "route": ["auth", "replay-archives"],
       "grammar": {

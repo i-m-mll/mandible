@@ -20,6 +20,8 @@
 #   auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
 #   auth candidate-repair inspect|apply <id> [opts]
 #   auth replay-archives <id>        Replay Codex archive attempts
+#   auth acceptance run|show <id>    Run or show candidate acceptance of a self-update
+#   auth handoff status|retire       Inspect or retire the runtime handoff lock
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect source logs and retained daemon telemetry
 #   conversations <subcommand>       Inspect DB-backed conversations
@@ -84,6 +86,8 @@ case "${1:-}" in
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;
       candidate-repair) shift; exec "$MANDIBLE_CLI_DIR/auth-candidate-repair.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
+      acceptance) shift; exec "$MANDIBLE_CLI_DIR/auth-acceptance.sh" "$@" ;;
+      handoff) shift; exec "$MANDIBLE_CLI_DIR/auth-handoff.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;
     esac

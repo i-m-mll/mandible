@@ -66,6 +66,7 @@ import {
   daemonCommitChanged,
   daemonIsReadyAfterEpoch,
   daemonIsWarm,
+  daemonRebuildFailure,
   daemonStartupEpoch,
   daemonStartupCommit,
   shouldEnterSplashOnBackgroundProbe,
@@ -593,10 +594,13 @@ function RebuildingSplash({
   reason = 'rebuilding',
   epochStalled = false,
   stallEscape = false,
+  rebuildFailure = null,
   onContinue,
 }: {
   reason?: 'rebuilding' | 'starting';
   epochStalled?: boolean;
+  // Issue a09b4d2 — the daemon reported that this rebuild will not restart it.
+  rebuildFailure?: string | null;
   // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
   // same commit past the bounded window) the splash must offer an explicit exit
   // so a healthy daemon can never be permanently stranded behind it.
@@ -604,6 +608,23 @@ function RebuildingSplash({
   onContinue?: () => void;
 }): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
+  if (rebuildFailure) {
+    return (
+      <div className="rebuilding-splash" role="alert">
+        <div className="rebuilding-splash__content">
+          <div className="rebuilding-splash__title">Rebuild failed</div>
+          <div className="rebuilding-splash__subtitle">
+            {`The merge landed, but Mandible was not rebuilt, so it is not live. ${rebuildFailure} Mandible is still running its previous build.`}
+          </div>
+          {onContinue ? (
+            <button type="button" className="rebuilding-splash__continue" onClick={onContinue}>
+              Continue
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rebuilding-splash">
       <div className="rebuilding-splash__content">
@@ -613,7 +634,7 @@ function RebuildingSplash({
         </div>
         <div className="rebuilding-splash__subtitle">
           {stallEscape
-            ? 'The daemon is healthy on the current commit — this looks like a manual restart, not a rebuild. You can continue.'
+            ? 'The daemon is healthy, but still on its previous commit: the rebuild did not restart it. You can continue.'
             : epochStalled
             ? 'The daemon is ready, but its startup commit has not changed. The rebuild may not have completed.'
             : isRebuilding
@@ -755,6 +776,7 @@ function App(): JSX.Element {
   // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
   // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
   const [stallEscape, setStallEscape] = useState(false);
+  const [rebuildFailure, setRebuildFailure] = useState<string | null>(null);
   const splashEpochRef = useRef<string | null>(null);
   const splashCommitRef = useRef<string | null>(null);
   const requireNewEpochRef = useRef(false);
@@ -1658,7 +1680,15 @@ function App(): JSX.Element {
       stallSinceRef.current = null;
       setStallEscape(false);
       setEpochStalled(false);
+      setRebuildFailure(null);
       setRebuilding(true);
+    };
+
+    // Issue a09b4d2 — the announced rebuild will not restart the daemon.
+    const rebuildFailedHandler = (payload: SSEPayload) => {
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data as { reason?: unknown } : {};
+      const reason = typeof data.reason === 'string' && data.reason.trim() ? data.reason.trim() : 'The rebuild did not complete.';
+      setRebuildFailure(reason);
     };
 
     const graphRefreshHandler = () => {
@@ -1733,6 +1763,7 @@ function App(): JSX.Element {
       client.on('ledger:issue:reopened', graphRefreshHandler),
       client.on('work:branch:updated', graphRefreshHandler),
       client.on('mandible:rebuilding', rebuildingHandler),
+      client.on('mandible:rebuild-failed', rebuildFailedHandler),
       // Bug: b5abaea — push/sync SSE events forwarded to window for WorkOverviewView
       client.on('push:started', pushEventHandler),
       client.on('push:repo:progress', pushEventHandler),
@@ -1920,6 +1951,15 @@ function App(): JSX.Element {
           setDaemonWarm(daemonIsWarm(data));
           const currentEpoch = daemonStartupEpoch(data);
           const currentCommit = daemonStartupCommit(data);
+          // Issue a09b4d2 — a rebuild that will not restart the daemon is a
+          // failure to report, not a stall to wait out.
+          const failure = requireNewCommitRef.current ? daemonRebuildFailure(data) : null;
+          if (failure) {
+            stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
+            stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
+            setRebuildFailure(failure);
+            return;
+          }
           if (data.rebuilding && !splashEpochRef.current && currentEpoch) {
             splashEpochRef.current = currentEpoch;
           }
@@ -2750,6 +2790,7 @@ function App(): JSX.Element {
       reason={rebuilding ? 'rebuilding' : 'starting'}
       epochStalled={epochStalled}
       stallEscape={stallEscape}
+      rebuildFailure={rebuilding ? rebuildFailure : null}
       onContinue={continuePastStall}
     />);
   }

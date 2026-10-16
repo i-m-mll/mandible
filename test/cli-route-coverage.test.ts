@@ -56,6 +56,8 @@ const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
   "cli/auth-clearance.sh:76 GET /api/auth/clearances/:param",
   "cli/auth-clearance.sh:81 POST /api/auth/clearances/:param/revoke",
   "cli/auth-clearance.sh:86 POST /api/auth/request/:param/clearance/execute",
+  // Issue a09b4d2 — operator retirement of a failed runtime handoff lock.
+  "cli/auth-handoff.sh:39 POST /api/runtime-handoff/retire",
 ] as const;
 
 describe("CLI API route coverage", () => {

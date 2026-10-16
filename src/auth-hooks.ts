@@ -30,6 +30,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from "./runtime-handoff-proof.js";
+import { readRuntimeHandoffLock, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
@@ -72,7 +73,11 @@ export interface RuntimeHandoffClient {
   completeRuntimeHandoffRecovery?(journal: RuntimeHandoffJournal): Promise<RuntimeHandoffJournal>;
   runtimeHandoffDrainIdentity?(journal: RuntimeHandoffJournal): string | null;
   acknowledgeRuntimeHandoff(binding: RuntimePublicationBinding): Promise<unknown>;
+  retireFailedRuntimeHandoff?(home: string, input: { bindingDigest: string; actor: unknown; reason: string }): unknown;
 }
+
+/** The required hook whose runtime handoff self-updates this installation. */
+export const MANDIBLE_REBUILD_HOOK_ID = "builtin-mandible-rebuild";
 
 // Most hooks should finish quickly. The built-in Mandible hook may perform a
 // cold Rust/Tauri release build after native changes, so it gets a deliberate
@@ -276,6 +281,26 @@ export class AuthHookManager {
 
   private hasRuntimeHandoff(run: AuthHookRun): boolean {
     return run.hook_id === "builtin-mandible-rebuild" && (fs.existsSync(this.handoffPath(run)) || run.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(run.output) || run.state === "complete" && /MANDIBLE_RUNTIME_(?:HANDOFF|RECOVERY)_ACCEPTED:[0-9a-f]{64}/.test(run.output));
+  }
+
+  /** Whether merging this repo self-updates the running installation. */
+  selfUpdatesRuntime(repo: string | null | undefined): boolean {
+    if (!repo) return false;
+    try {
+      return this.findMatchingHooks(repo, "merge").some(hook => hook.id === MANDIBLE_REBUILD_HOOK_ID);
+    } catch {
+      return false;
+    }
+  }
+
+  runtimeHandoffLock(): RuntimeHandoffLock | null {
+    return readRuntimeHandoffLock(getMandibleHome());
+  }
+
+  async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {
+    const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
+    if (!runtime.retireFailedRuntimeHandoff) throw new Error('Runtime handoff retirement is unavailable.');
+    return runtime.retireFailedRuntimeHandoff(getMandibleHome(), { ...input, actor });
   }
 
   runtimeHandoffOwnsRequest(requestId: string): boolean {

@@ -113,6 +113,9 @@ export interface HealthResponse {
   // The UI health poll uses this to avoid reloading prematurely while the
   // daemon is still alive but in the process of shutting down.
   rebuilding?: boolean;
+  // Issue a09b4d2 — the last announced rebuild that ended without restarting
+  // the daemon, with the hook's reason. Present only while it is current.
+  rebuild_failure?: { request_id: string; reason: string; failed_at: number };
   // Bug: 645f8a8 — lifecycle-owned readiness. true only once the daemon has
   // finished the critical startup work that makes normal dashboard mutations
   // (auth approve/reject, etc.) safe — NOT merely "the HTTP listener is alive".

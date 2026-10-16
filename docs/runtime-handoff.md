@@ -35,6 +35,28 @@ visibly. Helper crash recovery has six attempts and a 30-minute deadline.
 Failure preserves the journal and reports the failed phase as **merged, not
 live**. It does not restore the old dependency graph or replay publication.
 
+## Handoff lock
+
+`MANDIBLE_HOME/config/local-sessions/handoff-active.json` names the one handoff
+that owns the installation. A failed handoff keeps it until verification-only
+recovery succeeds or the operator retires it. While it is held, admission of any
+other handoff refuses, and so do the merge check, submission and every approval
+path for a runtime self-update request. Each refusal names the lock, its
+request, phase and error.
+
+`mandible auth handoff status` shows the lock.
+`mandible auth handoff retire --binding-digest <digest> --reason <text>` retires
+a lock whose journal phase is `failed`. It is operator-only through the
+protected operator gate. It boots out the exact idle helper job if one is still
+loaded, then moves the lock beside the journal as `retired-active.json` with a
+`retirement.json` record. The journal, staged material and logs stay in place.
+Retirement neither restores the old runner nor makes the failed delivery live.
+
+When a rebuild window closes without an admitted handoff, the daemon clears the
+active restart-availability window, broadcasts `mandible:rebuild-failed` with
+the hook's reason, and reports `rebuild_failure` in health. The dashboard splash
+then says the rebuild failed.
+
 ## Focused verification
 
 The explicit macOS fixture uses the deployed legacy interpreter with a private

@@ -53,9 +53,22 @@ import {
   type CanonicalChangeMessageFields,
 } from "./auth-change-message.js";
 import type { AuthHook } from "./types.js";
-import { AuthHookManager } from "./auth-hooks.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
+import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import {
+  candidateAcceptanceRefusal,
+  failInterruptedCandidateAcceptances,
+  finishCandidateAcceptanceRecord,
+  latestCandidateAcceptance,
+  runCandidateAcceptance,
+  startCandidateAcceptanceRecord,
+  type CandidateAcceptanceExecutor,
+  type CandidateAcceptanceRecord,
+} from "./candidate-acceptance.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { getMandibleHome, getUserHome } from "./platform-paths.js";
+import { resolveCheckoutPath } from "./ledger/project-registry.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
@@ -390,6 +403,13 @@ export interface CodexArchiveReplayResult {
   }>;
 }
 
+/** Issue a09b4d2 — an announced rebuild that ended without a daemon restart. */
+export interface RebuildFailure {
+  request_id: string;
+  reason: string;
+  failed_at: number;
+}
+
 export interface AuthQueueOptions {
   db?: InstanceType<typeof SqliteDatabase>;
   now?: () => number;
@@ -408,6 +428,8 @@ export interface AuthQueueOptions {
   restartFn?: () => void;
   // Issue ff784d8 — local, DB-independent self-merge availability receipt.
   restartAvailability?: RestartAvailabilityLifecycle;
+  // Issue a09b4d2 — runs candidate acceptance of an exact retained candidate.
+  candidateAcceptanceExecutor?: CandidateAcceptanceExecutor;
   // Background recovery is disabled for database copies used by previews.
   backgroundMaintenance?: boolean;
   // Preview copies may edit their own auth rows, but must not inspect or change
@@ -603,6 +625,12 @@ export class AuthQueue {
   // any new execution (reverts it to pending) instead of starting a merge that
   // the imminent process.exit would kill mid-flight.
   private _rebuilding = false;
+  // Issue a09b4d2 — the self-update request whose rebuild window is open, and
+  // the last rebuild that ended without an admitted runtime handoff.
+  private rebuildWindowRequestId: string | null = null;
+  private _rebuildFailure: RebuildFailure | null = null;
+  private readonly candidateAcceptanceExecutor: CandidateAcceptanceExecutor;
+  private readonly candidateAcceptanceRuns = new Map<string, Promise<void>>();
   // Bug: 681739e — durable marker (meta key) recording when a self-merge
   // scheduled the restart. On the next startup, requests approved before this
   // instant that never recorded a result are recovered immediately instead of
@@ -634,6 +662,7 @@ export class AuthQueue {
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
+    this.candidateAcceptanceExecutor = options.candidateAcceptanceExecutor ?? runCandidateAcceptance;
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
@@ -700,6 +729,173 @@ export class AuthQueue {
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
   get isRebuilding(): boolean {
     return this._rebuilding;
+  }
+
+  /** Issue a09b4d2 — the last announced rebuild that will not restart the daemon. */
+  get rebuildFailure(): RebuildFailure | null {
+    return this._rebuildFailure;
+  }
+
+  // --- Issue a09b4d2: runtime self-update gates -------------------------------
+
+  /** Whether merging this repo runs the runtime handoff that self-updates Mandible. */
+  private selfUpdatesRuntime(repo: string | null | undefined): boolean {
+    return typeof this.hookManager.selfUpdatesRuntime === "function" && this.hookManager.selfUpdatesRuntime(repo);
+  }
+
+  /** The installation's runtime handoff lock, or null when it is free. */
+  runtimeHandoffLock(): RuntimeHandoffLock | null {
+    return typeof this.hookManager.runtimeHandoffLock === "function" ? this.hookManager.runtimeHandoffLock() : null;
+  }
+
+  private runtimeHandoffLockRefusalFor(repo: string | null | undefined): string | null {
+    if (!this.selfUpdatesRuntime(repo)) return null;
+    const lock = this.runtimeHandoffLock();
+    return lock ? runtimeHandoffLockRefusal(lock) : null;
+  }
+
+  /** A held handoff lock blocks every rebuild, so self-update approval must not proceed. */
+  private enforceRuntimeHandoffLock(request: AuthRequest): void {
+    if (!isAuthMergeCommand(request)) return;
+    const refusal = this.runtimeHandoffLockRefusalFor(request.repo);
+    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+  }
+
+  /** Approval requires a passing acceptance of exactly the current candidate. */
+  private enforceCandidateAcceptance(request: AuthRequest): void {
+    if (!isAuthMergeCommand(request) || !this.selfUpdatesRuntime(request.repo)) return;
+    this.reconcileInterruptedCandidateAcceptances();
+    const refusal = candidateAcceptanceRefusal(latestCandidateAcceptance(this.db, request.id), {
+      tree_sha: request.merge_candidate_tree_sha ?? undefined,
+      base_sha: request.merge_preflight_base_sha ?? undefined,
+      head_sha: request.merge_head_sha ?? undefined,
+    }, request.id);
+    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+  }
+
+  private reconcileInterruptedCandidateAcceptances(): void {
+    failInterruptedCandidateAcceptances(this.db, new Set(this.candidateAcceptanceRuns.keys()), this.now());
+  }
+
+  candidateAcceptance(id: string): CandidateAcceptanceRecord | null {
+    const request = this.getRequestReference(id);
+    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+    this.reconcileInterruptedCandidateAcceptances();
+    return latestCandidateAcceptance(this.db, request.id);
+  }
+
+  /**
+   * Start one daemon-run acceptance of the request's exact retained candidate.
+   * Runs are serialized; the record is durable and returned immediately.
+   */
+  startCandidateAcceptance(id: string): CandidateAcceptanceRecord {
+    this.requireExternalEffects("Candidate acceptance");
+    const request = this.getRequestReference(id);
+    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+    if (request.status !== "pending" || !isAuthMergeCommand(request)) {
+      throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending merge request.");
+    }
+    if (!this.selfUpdatesRuntime(request.repo)) {
+      throw new AuthQueueError("invalid_command", "Candidate acceptance applies only to runtime self-update requests.");
+    }
+    this.reconcileInterruptedCandidateAcceptances();
+    if (this.candidateAcceptanceRuns.size > 0) {
+      const active = this.db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running' LIMIT 1").get() as { auth_request_id?: string } | undefined;
+      throw new AuthQueueError("invalid_status", `Another candidate acceptance is running${active?.auth_request_id ? ` for request ${active.auth_request_id.slice(0, 8)}` : ""}; run this one after it finishes.`);
+    }
+    if (!this.mergeCandidateExact(request) || !request.merge_candidate_tree_sha || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.cwd) {
+      throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, then run acceptance on the new candidate.");
+    }
+    const resolvedHead = request.head_branch ? this.resolveBranchHeadForCheck(request.cwd, request.head_branch) : null;
+    if (resolvedHead !== request.merge_head_sha) {
+      throw new AuthQueueError("merge_check_failed", "The head branch moved since review; resubmit before running acceptance.");
+    }
+    const projectRef = request.repo ? resolveProjectRef(this.db, request.repo) : null;
+    const project = projectRef?.ok && projectRef.project && !projectRef.ambiguous ? projectRef.project : resolveCheckoutPath(this.db, request.cwd);
+    const workUnitId = request.custody_work_unit_id ?? this.deliveryWorkUnitForBranch(request.head_branch);
+    if (!project || !workUnitId) {
+      throw new AuthQueueError("invalid_command", "Candidate acceptance requires a registered project checkout and exactly one open delivery work unit for the head branch.");
+    }
+    const record = startCandidateAcceptanceRecord(this.db, request.id, {
+      pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha,
+      base_sha: request.merge_preflight_base_sha, head_sha: request.merge_head_sha,
+    }, this.now());
+    const home = getUserHome();
+    const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
+    for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
+    env.HOME = home;
+    const run = this.candidateAcceptanceExecutor({
+      repoRoot: request.cwd, pinSha: record.pin_sha, projectId: project.id, workUnitId, env,
+    }).catch((error: unknown) => ({ status: "failed" as const, result: null, error: errorMessage(error) ?? String(error) }))
+      .then((outcome) => {
+        if (this.disposed || !this.isDbOpen()) return;
+        finishCandidateAcceptanceRecord(this.db, record.id, outcome, this.now());
+        authLog(outcome.status === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
+          subsystem: "auth", auth_request_id: request.id, status: outcome.status, error: outcome.error,
+        });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
+      })
+      .finally(() => { this.candidateAcceptanceRuns.delete(record.id); });
+    this.candidateAcceptanceRuns.set(record.id, run);
+    return record;
+  }
+
+  /** The single open work unit delivering an unbound request's head branch. */
+  private deliveryWorkUnitForBranch(branch: string | null | undefined): string | null {
+    if (!branch) return null;
+    const rows = this.db.prepare(
+      "SELECT id FROM work_units WHERE branch = ? AND state = 'committed' AND resolved_at IS NULL LIMIT 2",
+    ).all(branch) as Array<{ id: string }>;
+    return rows.length === 1 ? rows[0]!.id : null;
+  }
+
+  /** Test and shutdown seam: wait for in-process acceptance runs. */
+  async drainCandidateAcceptances(): Promise<void> {
+    await Promise.allSettled([...this.candidateAcceptanceRuns.values()]);
+  }
+
+  /** Operator retirement of a failed runtime handoff lock (issue a09b4d2). */
+  async retireRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: AuthLifecycleActor): Promise<unknown> {
+    this.requireExternalEffects("Runtime handoff retirement");
+    if (typeof this.hookManager.retireFailedRuntimeHandoff !== "function") throw new AuthQueueError("invalid_command", "Runtime handoff retirement is unavailable.");
+    try {
+      const retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
+      authLog("warn", "auth_runtime_handoff_retired", { subsystem: "auth", binding_digest: input.bindingDigest, user_id: actor.user_id });
+      return retirement;
+    } catch (error) {
+      throw new AuthQueueError("invalid_status", errorMessage(error) ?? String(error));
+    }
+  }
+
+  /** Open the rebuild window that the UI splash and restart-availability track. */
+  private beginRebuildWindow(requestId: string): void {
+    this._rebuilding = true;
+    this.rebuildWindowRequestId = requestId;
+    this._rebuildFailure = null;
+    this.restartAvailability?.markRebuildStarted(requestId);
+  }
+
+  /**
+   * A rebuild window closed without an admitted runtime handoff, so no restart
+   * will follow. Say so, with the hook's reason, and clear the stale window.
+   */
+  private failRebuild(request: AuthRequest, convergence: AuthConvergence): void {
+    this.rebuildWindowRequestId = null;
+    let reason = "The rebuild hook did not admit a runtime handoff; the daemon was not restarted.";
+    try {
+      const run = this.hookManager.listRuns(request.id).find((candidate) => candidate.hook_id === MANDIBLE_REBUILD_HOOK_ID);
+      if (run) {
+        const lines = run.output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("[post-merge-build]"));
+        const last = lines.at(-1);
+        reason = convergence.state === "complete"
+          ? "The rebuild hook completed without admitting a runtime handoff; the daemon was not restarted."
+          : `The rebuild hook is ${run.state} after ${run.attempts} attempt${run.attempts === 1 ? "" : "s"}${run.exit_code === null ? "" : ` (exit ${run.exit_code})`}${last ? `: ${last}` : "."}`;
+      }
+    } catch { /* keep the generic reason */ }
+    this._rebuildFailure = { request_id: request.id, reason, failed_at: this.now() };
+    this.restartAvailability?.markRebuildFailed?.(request.id);
+    authLog("warn", "auth_rebuild_failed", { subsystem: "auth", auth_request_id: request.id, reason });
+    this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED, data: { ...this._rebuildFailure } });
   }
 
   /** Whether this instance may touch host resources or run execution work. */
@@ -2192,6 +2388,8 @@ export class AuthQueue {
       const readiness = validateRuntimeSource(this.db, process.env.MANDIBLE_PRODUCTION_ROOT, context.targetRepoRoot);
       if (!readiness.ok) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: readiness.reason };
     }
+    const handoffLock = this.runtimeHandoffLockRefusalFor(repo);
+    if (handoffLock) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: handoffLock };
     const worktreeReady = this.checkMergeWorktreeReady(cwd);
     if (worktreeReady.status === "error") {
       return {
@@ -3073,6 +3271,7 @@ export class AuthQueue {
     if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
+    this.enforceRuntimeHandoffLock(request);
     this.enforceCanonicalMergeCommand(request);
     const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
     if (contextUpdate) request = this.recordApprovalContextUpdate(request, contextUpdate, this.now());
@@ -3082,6 +3281,7 @@ export class AuthQueue {
       if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
+    this.enforceCandidateAcceptance(request);
     if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || this.hasNativeMergeHooks(request.cwd))) {
       throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
     }
@@ -3131,6 +3331,7 @@ export class AuthQueue {
     }
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
+    this.enforceRuntimeHandoffLock(request);
 
     // Bug: 58d93ee — guard against null/empty command before spawning execution
     if (!request.command || !request.command.trim()) {
@@ -3204,6 +3405,7 @@ export class AuthQueue {
       request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
+    this.enforceCandidateAcceptance(request);
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
     // already refused every non-canonical (including hierarchical-shaped)
     // merge command earlier in this same synchronous approval.
@@ -3289,6 +3491,7 @@ export class AuthQueue {
     }
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
+    this.enforceRuntimeHandoffLock(request);
     if (!request.command?.trim()) {
       throw new AuthQueueError("invalid_command", "Auth request has no command set.");
     }
@@ -3311,6 +3514,7 @@ export class AuthQueue {
       request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
+    this.enforceCandidateAcceptance(request);
     const requestId = request.id;
     let consumed: ClearanceConsumption;
     try {
@@ -5072,8 +5276,7 @@ export class AuthQueue {
     if (mergedRequest.repo === "mandible") {
       // Issue ff784d8 — the full blocked/splash window begins before
       // post-merge hooks, at the same boundary that closes admission.
-      this.restartAvailability?.markRebuildStarted(request.id);
-      this._rebuilding = true;
+      this.beginRebuildWindow(request.id);
       this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILDING, data: {} });
     }
     try {
@@ -5252,7 +5455,7 @@ export class AuthQueue {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(id);
       if (!request || request.status !== "completed" || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request)) continue;
-      if (request.repo === 'mandible') { this._rebuilding = true; this.restartAvailability?.markRebuildStarted(request.id); }
+      if (request.repo === 'mandible') this.beginRebuildWindow(request.id);
       try {
         const results = await this.hookManager.runPending(request, (hookLabel, text) => {
           this.handleOutput({
@@ -5313,10 +5516,7 @@ export class AuthQueue {
       await this.finalizerQueue.drain();
       return this.afterConvergenceHook(this.requireRequest(request.id));
     }
-    if (request.repo === 'mandible') {
-      this._rebuilding = true;
-      this.restartAvailability?.markRebuildStarted(request.id);
-    }
+    if (request.repo === 'mandible') this.beginRebuildWindow(request.id);
     this.hookManager.grantRetry(request.id, hookId);
     await this.hookManager.runPending(request, (hookLabel, text) => {
       this.handleOutput({
@@ -5349,11 +5549,16 @@ export class AuthQueue {
     if (request.status !== 'completed' || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request) || request.repo !== 'mandible') return convergence;
     const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
     const key = admitted;
-    if (!key) { if (!this.activeConvergenceDrain) this._rebuilding = false; return convergence; }
+    if (!key) {
+      if (!this.activeConvergenceDrain) this._rebuilding = false;
+      if (this.rebuildWindowRequestId === request.id) this.failRebuild(request, convergence);
+      return convergence;
+    }
     if (this.scheduledConvergenceDrains.has(key)) return convergence;
     if (this.activeConvergenceDrain && this.activeConvergenceDrain !== key) return convergence;
     this.scheduledConvergenceDrains.add(key);
     this.activeConvergenceDrain = key;
+    if (this.rebuildWindowRequestId === request.id) this.rebuildWindowRequestId = null;
     this._rebuilding = true;
     this.recordSelfMergeShutdown(this.now());
     authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, delay_ms: 2000, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });

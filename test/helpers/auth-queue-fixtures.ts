@@ -27,7 +27,7 @@
  */
 import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -564,9 +564,23 @@ export function insertWorkUnit(
   );
 }
 
+/**
+ * Issue a09b4d2 — record that the request's current exact candidate passed
+ * acceptance. Tests about later delivery stages state this precondition; the
+ * acceptance gate itself is covered by test/runtime-self-update-gates.test.ts.
+ */
+export function recordPassingCandidateAcceptance(db: Db, requestId: string): void {
+  const request = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(requestId) as Record<string, string | null>;
+  if (!request.merge_candidate_tree_sha || !request.merge_candidate_pin_sha || !request.merge_head_sha) return;
+  const base = request.merge_preflight_base_sha ?? git(request.cwd!, ["rev-parse", request.base_branch!]);
+  db.prepare(`INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'passed', ?, ?)`).run(randomUUID(), requestId, request.merge_candidate_pin_sha, request.merge_candidate_tree_sha, base, request.merge_head_sha, Date.now(), Date.now());
+}
+
 /** Obtain genuine operator proof in a private fixture repository. */
 export async function approveFixtureRequest(queue: AuthQueue, id: string): Promise<ReturnType<AuthQueue['approve']>> {
   const db = (queue as unknown as { db: Db }).db;
+  recordPassingCandidateAcceptance(db, id);
   let request = queue.getRequest(id)!;
   // Command-state tests need a real signing context even when their command
   // has no repository semantics. Set it through the normal pending edit API.
