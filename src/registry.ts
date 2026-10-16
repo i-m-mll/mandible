@@ -660,7 +660,16 @@ export class SessionRegistry {
     );
     const navExtra = input.nav_extra ? JSON.stringify(input.nav_extra) : existingRow?.nav_extra ?? null;
 
-    if (existing) {
+    if (existingRow) {
+      // Issue f52d4dd — a re-registration restates only the facts its caller
+      // knows. An omitted field keeps the stored value and an explicit null
+      // clears it, matching the nav fields above. The MCP channel server
+      // re-registers a session its launcher already registered and never knows
+      // the launcher's pid or terminal; replacing them with null erased them.
+      const stated = <K extends keyof SessionInput & keyof SessionRow>(key: K): SessionRow[K] =>
+        input[key] === undefined ? existingRow[key] : (input[key] ?? null) as SessionRow[K];
+      // pid and pid_start identify one process together, so they move as a pair.
+      const pidStated = input.pid !== undefined || input.pid_start !== undefined;
       this.db
         .prepare(
           `UPDATE sessions SET
@@ -694,12 +703,12 @@ export class SessionRegistry {
         )
         .run(
           input.app,
-          input.pid ?? null,
-          pidStart,
-          input.cwd ?? null,
-          input.branch ?? null,
-          input.worktree ?? null,
-          input.terminal ?? null,
+          pidStated ? input.pid ?? null : existingRow.pid,
+          pidStated ? pidStart : existingRow.pid_start,
+          stated("cwd"),
+          stated("branch"),
+          stated("worktree"),
+          stated("terminal"),
           multiplexer,
           navSession,
           navState.navTab,
@@ -712,9 +721,9 @@ export class SessionRegistry {
           navState.nextRetryAt,
           input.task ?? null,
           status,
-          input.parent_id ?? null,
-          input.agent_type ?? null,
-          input.description ?? null,
+          stated("parent_id"),
+          stated("agent_type"),
+          stated("description"),
           input.conversation_id ?? null,
           now,
           status === "active" ? null : now,

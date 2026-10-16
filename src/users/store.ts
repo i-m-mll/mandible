@@ -766,7 +766,7 @@ const AGENT_SETUP_MANIFEST = [
     slug: "claude-code",
     display_name: "Claude Code",
     provider: "claude",
-    app_names: ["claude", "claude-code", "claude-channel"],
+    app_names: ["claude", "claude-code"],
   },
   {
     slug: "codex",

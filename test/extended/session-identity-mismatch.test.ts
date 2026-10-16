@@ -74,7 +74,7 @@ function register(credential: string | null, id = "channel-session") {
   return router.invoke({
     method: "POST",
     url: "/api/sessions/register",
-    body: { id, app: "claude-channel", status: "active" },
+    body: { id, app: "claude", status: "active" },
     credential,
     transport: "http",
   });
@@ -113,8 +113,8 @@ beforeEach(() => {
   });
   agentId = agent.id;
   agentToken = authenticator.mintApiToken(agent.id, { label: "claude-code-agent" }).token;
-  // The binding that makes a `claude-channel` session resolve to the agent user.
-  addBinding(db, agent.id, { binding_type: "app_name", value: "claude-channel" });
+  // The binding that makes a `claude` session resolve to the agent user.
+  addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
 
   router = new Router({ clientAuth: authenticator });
   registerSessionRoutes(router, new SessionRegistry(db));
@@ -258,7 +258,7 @@ describe("session identity mismatch detection", () => {
     expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
     const binding = db
       .prepare("SELECT id FROM user_bindings WHERE user_id = ? AND value = ?")
-      .get(agentId, "claude-channel") as { id: string };
+      .get(agentId, "claude") as { id: string };
     removeBinding(db, binding.id);
 
     const response = await register(operatorToken);

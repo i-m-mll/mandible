@@ -50,7 +50,6 @@ export function registerTools(
         }
         const registration = await client.registerSession({
           id: sessionId,
-          app: "claude-channel",
           status: "active",
           cwd,
           branch,

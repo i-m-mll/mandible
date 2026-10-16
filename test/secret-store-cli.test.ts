@@ -970,7 +970,7 @@ describe("user token mint --store", () => {
   it("stores an agent token under the shortest app_name binding and prints no token", async () => {
     const requests: string[] = [];
     const port = await startUserServer(
-      { slug: "claude-code", kind: "agent", appNames: ["claude-channel", "claude-code", "claude"] },
+      { slug: "claude-code", kind: "agent", appNames: ["claude-code", "claude"] },
       requests,
     );
 

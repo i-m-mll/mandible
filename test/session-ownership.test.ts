@@ -52,7 +52,6 @@ describe("session and work-unit ownership", () => {
     )).toEqual([
       "app_name:claude",
       "app_name:claude-code",
-      "app_name:claude-channel",
       "provider_session_env:CLAUDE_CODE_SESSION_ID",
       "provider_session_env:CLAUDE_SESSION_ID",
     ]);
@@ -81,7 +80,7 @@ describe("session and work-unit ownership", () => {
     const gemini = getUserBySlug(db, "gemini")!;
 
     registry.registerSession({ id: "registry-codex", app: "codex" });
-    registry.registerSession({ id: "channel-claude", app: "claude-channel" });
+    registry.registerSession({ id: "channel-claude", app: "claude" });
     registry.registerSession({ id: "discovered-gemini", app: "gemini" });
     expect(owner("sessions", "registry-codex")).toBe(codex.id);
     expect(owner("sessions", "channel-claude")).toBe(claude.id);
