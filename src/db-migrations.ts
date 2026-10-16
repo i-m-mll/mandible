@@ -1763,6 +1763,13 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
   { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
   { version: 192, name: "compile_dotfiles_instructions_without_home_repair", statements: DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL },
+  // Issue f52d4dd — the MCP channel server used to re-register its Claude
+  // session as `claude-channel`, which broke the session's managed `claude`
+  // claim. Only Claude Code runs the channel server, so those rows are Claude
+  // sessions; channel attachment stays recorded in `channel_connected_at`.
+  { version: 193, name: "unify_channel_session_app", statements: [
+    "UPDATE sessions SET app = 'claude' WHERE app = 'claude-channel'",
+  ] },
 ];
 
 /**

@@ -441,8 +441,8 @@ cmd_token() {
 #   kind human -> mandible-operator          (the local operator credential)
 #   kind agent -> mandible-agent-<app>, where <app> is the shortest active
 #                 app_name binding, ties broken alphabetically. Shortest is the
-#                 primary app name: user claude-code binds claude, claude-code
-#                 and claude-channel, and the item cli/wrap.sh already reads for
+#                 primary app name: user claude-code binds claude and
+#                 claude-code, and the item cli/wrap.sh already reads for
 #                 a `claude` session is mandible-agent-claude. An agent with no
 #                 active app_name binding has no default.
 #   any other kind (system, external, …) -> no default. Those identities have no

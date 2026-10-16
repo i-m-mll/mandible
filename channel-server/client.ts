@@ -23,6 +23,13 @@ import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
 const TIMEOUT_MS = 10_000;
 
+/** The app the session's launcher (`mandible wrap`, the Console SDK
+ * transport) assigned, or null when this Claude process is not managed. */
+function launcherApp(): string | null {
+  const app = process.env.MANDIBLE_MANAGED_APP;
+  return app && /^[A-Za-z0-9._-]+$/.test(app) ? app : null;
+}
+
 export function ambientHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "X-Mandible-Managed-Client": "1" };
   const codeId = process.env.CLAUDE_CODE_SESSION_ID;
@@ -32,10 +39,9 @@ export function ambientHeaders(): Record<string, string> {
     headers["X-Mandible-Ambient-Provider"] = "claude";
     headers["X-Mandible-Ambient-Provider-Session-Id"] = providerId;
   }
-  const managedApp = process.env.MANDIBLE_MANAGED_APP;
+  const managedApp = launcherApp();
   const managedSessionId = process.env.MANDIBLE_SESSION_ID;
-  if (managedApp && /^[A-Za-z0-9._-]+$/.test(managedApp)
-      && managedSessionId && !/[\x00-\x1f\x7f]/.test(managedSessionId)) {
+  if (managedApp && managedSessionId && !/[\x00-\x1f\x7f]/.test(managedSessionId)) {
     headers["X-Mandible-Managed-App"] = managedApp;
     headers["X-Mandible-Managed-Session-Id"] = managedSessionId;
   }
@@ -326,10 +332,17 @@ export async function submitAuth(payload: {
 
 // --- Sessions ---
 
-/** Bug: 0b454df — register a channel-connected session with Mandible. */
+/**
+ * Bug: 0b454df — register a channel-connected session with Mandible.
+ *
+ * Issue f52d4dd — the channel server is a component of the Claude session its
+ * launcher registered, not a separate app, so it registers under the
+ * launcher's app (`claude` when unmanaged). Channel attachment is recorded
+ * separately as `channel_connected_at`. A distinct label would relabel the
+ * session and break the managed-app claim every CLI call in it presents.
+ */
 export async function registerSession(payload: {
   id: string;
-  app: string;
   status?: string;
   cwd?: string | null;
   branch?: string | null;
@@ -339,7 +352,7 @@ export async function registerSession(payload: {
   return request<SessionUpdateResponse>(
     "POST",
     "/api/sessions/register",
-    payload,
+    { ...payload, app: launcherApp() ?? "claude" },
   );
 }
 

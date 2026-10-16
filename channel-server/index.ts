@@ -99,7 +99,6 @@ async function main(): Promise<void> {
     try {
       const registration = await client.registerSession({
         id: sessionId,
-        app: "claude-channel",
         status: "active",
         cwd,
         branch,

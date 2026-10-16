@@ -72,12 +72,12 @@ describe("conversation external navigation", () => {
       nav_extra: { iterm_session_id: "w0t1p0:STALE" },
       conversation_id: "ended-provider-id",
     });
+    // What the channel server registers for a Console SDK session: a live
+    // Claude row with no terminal attachment.
     registry.registerSession({
       id: "channel-id",
-      app: "claude-channel",
+      app: "claude",
       status: "active",
-      terminal: "iterm",
-      nav_extra: { iterm_session_id: "w0t1p0:CHANNEL" },
       conversation_id: "channel-provider-id",
     });
 
