@@ -539,7 +539,11 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
   });
 });
 
-function listenForCleanup(options: { canonicalProject?: boolean; trashPartialFailure?: boolean } = {}): Promise<{
+function listenForCleanup(options: {
+  canonicalProject?: boolean;
+  trashPartialFailure?: boolean;
+  workUnits?: Array<Record<string, unknown>>;
+} = {}): Promise<{
   port: number;
   requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
 }> {
@@ -587,7 +591,9 @@ function listenForCleanup(options: { canonicalProject?: boolean; trashPartialFai
           },
         }));
       } else if (req.method === "GET" && req.url?.startsWith("/api/work-units?")) {
-        res.end(JSON.stringify({ work_units: [{ branch: "feature/sibling" }] }));
+        res.end(JSON.stringify({ work_units: options.workUnits ?? [{ branch: "feature/sibling" }] }));
+      } else if (req.method === "POST" && req.url === "/api/work-units/release") {
+        res.end(JSON.stringify({ ok: true, released: 1, unchanged: false }));
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: "not found" }));
@@ -720,6 +726,32 @@ describe("auth merge reversible cleanup", () => {
       request.url?.includes("repo_id=canonical-mandible")
       && request.url.includes("issue_id=abc123")
     ))).toBe(true);
+  });
+
+  it("releases the exact work unit of a merged worktree with its observed generation", async () => {
+    const branch = "feature/released";
+    const { port, requests } = await listenForCleanup({
+      workUnits: [{ id: "wu-released", branch, state: "committed", custody_generation: 3, auth_request_id: null }],
+    });
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "released.txt", "released\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+    fs.appendFileSync(path.join(tempDir, ".git", "info", "exclude"), ".issue\n", "utf8");
+    fs.writeFileSync(path.join(worktree, ".issue"), "cd64f1a\n", "utf8");
+
+    const result = await runCleanupHelperAsync(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
+      tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
+    );
+    expect(result.status).toBe(0);
+    expect(requests.some((request) => (
+      request.method === "GET" && request.url?.includes(`branch=${encodeURIComponent(branch)}`)
+    ))).toBe(true);
+    expect(requests.filter((request) => request.url === "/api/work-units/release").map((request) => request.body))
+      .toEqual([{ id: "wu-released", expected_generation: 3 }]);
+    expect(result.stderr).toContain("note: released work unit for feature/released");
+    expect(fs.existsSync(worktree)).toBe(false);
   });
 
   it("preserves sibling candidates when canonical project identity cannot be resolved", async () => {
