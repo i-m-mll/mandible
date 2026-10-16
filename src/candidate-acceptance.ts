@@ -174,7 +174,11 @@ export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input)
   if (await git(checkout, ["rev-parse", "HEAD"], input.env) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
   const { stdout: runtimeOut } = await execFileAsync("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS });
   const runtime = runtimeOut.trim();
-  const env = { ...input.env, PATH: `${path.dirname(runtime)}${path.delimiter}${input.env.PATH ?? ""}` };
+  // The candidate's own canonical runtime PATH: pinned runtime and checkout
+  // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
+  // then Cargo and the inherited hook PATH.
+  const { stdout: runtimePath } = await execFileAsync(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, encoding: "utf8", timeout: 30_000 });
+  const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
   await execFileAsync(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
   const run = await collect(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId], { cwd: checkout, env, timeout: ACCEPTANCE_TIMEOUT_MS });
   const parse = (text: string): Record<string, unknown> | null => {
