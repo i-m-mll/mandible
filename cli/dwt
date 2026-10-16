@@ -140,28 +140,38 @@ if [[ -f "$wt_dir/.issue" ]]; then
   fi
 
   if (( ! has_unique_commits )); then
-    dwt_repo_id=$(basename "$repo_root" | sed 's/^\.*//')
-    # Issue 70dffb8 — release through the shared ledger client instead of a
-    # hand-rolled curl against a hardcoded base URL. ledger-client.sh resolves
-    # MANDIBLE_BASE/MANDIBLE_PORT, injects the client-auth bearer token, and
-    # supports the file:// transport, so unattended releases (auth-merge.sh
-    # post-merge cleanup) no longer silently no-op against preview daemons.
+    # Issue cd64f1a — release the branch's exact work unit with its observed
+    # custody generation, through the shared ledger client (issue 70dffb8).
+    # The client is sourced lazily with the caller's shell options restored,
+    # because it turns on `set -u`.
     #
-    # It is sourced lazily and with the caller's shell options restored: the
-    # helper turns on `set -u`, which dwt's argument handling above does not
-    # assume. Release stays advisory — graceful mode plus `|| true` keeps a
-    # ledger failure from aborting the worktree removal.
+    # Release is advisory: a failed lookup or release prints a visible warning
+    # and the worktree is still removed, so auth-merge.sh post-merge cleanup is
+    # never aborted by the ledger. A unit bound to an auth request belongs to
+    # the merge pipeline, which resolves it; dwt leaves it alone.
     dwt_prev_shell_opts="$(set +o)"
     # shellcheck source=./ledger-client.sh
     source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client.sh"
     eval "$dwt_prev_shell_opts"
-    while IFS= read -r line; do
-      line="${line## }"; line="${line%% }"
-      [[ -n "$line" && "$line" != "#"* ]] || continue
-      mandible_work_unit_release --issue "$line" --repo "${dwt_repo_id:-unknown}" --graceful \
-        >/dev/null 2>&1 || true
-    done < "$wt_dir/.issue"
-    printf '%s\n' "note: released work unit(s) (no unique commits on branch)" >&2
+    dwt_active='[.work_units[]? | select(.state == "open" or .state == "committed")]'
+    if ! dwt_units=$(mandible_work_unit_find --repo "$repo_root" --branch "$branch") ||
+       ! dwt_count=$(printf '%s' "$dwt_units" | jq -e "$dwt_active | length" 2>/dev/null); then
+      printf '%s\n' "warning: could not read the work unit for $branch; it was not released" >&2
+    elif (( dwt_count > 1 )); then
+      printf '%s\n' "warning: multiple active work units for $branch; none was released" >&2
+    elif (( dwt_count == 1 )); then
+      dwt_unit=$(printf '%s' "$dwt_units" | jq -c "$dwt_active | .[0]")
+      dwt_auth=$(printf '%s' "$dwt_unit" | jq -r '.auth_request_id // empty')
+      if [[ -n "$dwt_auth" ]]; then
+        printf '%s\n' "note: work unit for $branch is bound to auth request $dwt_auth; left for the merge pipeline" >&2
+      elif mandible_work_unit_release \
+             --id "$(printf '%s' "$dwt_unit" | jq -r '.id')" \
+             --expected-generation "$(printf '%s' "$dwt_unit" | jq -r '.custody_generation')" >/dev/null; then
+        printf '%s\n' "note: released work unit for $branch (no unique commits on branch)" >&2
+      else
+        printf '%s\n' "warning: work-unit release failed for $branch; it was not released" >&2
+      fi
+    fi
   fi
 fi
 
