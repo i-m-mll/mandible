@@ -83,23 +83,9 @@ the scrolling body.
 
 ## Production runtime gate
 
-A merge request for this repository updates the running Mandible daemon and
-desktop app, so approving it requires a passing candidate acceptance of its
-exact retained candidate. The daemon runs acceptance automatically: when the
-request is submitted or superseded, when its candidate is re-pinned onto a
-moved base, and at daemon startup for pending requests. A newer candidate
-cancels the older run. See [candidate acceptance](docs/candidate-acceptance.md).
+Approving a merge request for this repository requires a passing candidate
+acceptance of its exact candidate, which the daemon runs automatically and the
+request view shows. No development or preview build substitutes for it. See
+[candidate acceptance](docs/candidate-acceptance.md) and
+[runtime handoff](docs/runtime-handoff.md).
 
-Acceptance builds the production daemon and packaged desktop app from the exact
-candidate and launches them together in an isolated home, with the app window
-hidden. It probes startup completion and health, exercises one representative
-interaction, then inspects the logs captured from that launch for crash or
-restart loops, repeated-event storms, database or foreign-key errors, and
-event-loop stalls or starvation. Any unexplained occurrence fails the gate. No
-development or preview build substitutes for it.
-
-The request view shows the acceptance state. A failed run states its reason
-there and in `mandible auth acceptance show <request>`. After fixing a cause
-outside the candidate, such as the environment, rerun it with
-`mandible auth acceptance run <request>`; a fix inside the candidate is a new
-candidate and runs on its own.

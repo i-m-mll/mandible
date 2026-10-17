@@ -66,16 +66,12 @@ import {
   daemonCommitChanged,
   daemonIsReadyAfterEpoch,
   daemonIsWarm,
-  daemonRebuildFailure,
-  rebuildFailureMessage,
-  rebuildFailureNotice,
   daemonStartupEpoch,
   daemonStartupCommit,
   shouldEnterSplashOnBackgroundProbe,
   splashRequiresNewCommit,
   stallEscapeReady,
   type DaemonHealthSnapshot,
-  type RebuildFailureNotice,
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
@@ -602,8 +598,8 @@ function RebuildingSplash({
 }: {
   reason?: 'rebuilding' | 'starting';
   epochStalled?: boolean;
-  // Issue a09b4d2 — the daemon reported that this rebuild will not restart it.
-  rebuildFailure?: RebuildFailureNotice | null;
+  // Issue a09b4d2 — the merge landed but Mandible did not update.
+  rebuildFailure?: string | null;
   // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
   // same commit past the bounded window) the splash must offer an explicit exit
   // so a healthy daemon can never be permanently stranded behind it.
@@ -612,12 +608,10 @@ function RebuildingSplash({
 }): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
   if (rebuildFailure) {
-    const message = rebuildFailureMessage(rebuildFailure);
     return (
       <div className="rebuilding-splash" role="alert">
         <div className="rebuilding-splash__content">
-          <div className="rebuilding-splash__title">{message.title}</div>
-          <div className="rebuilding-splash__subtitle">{message.detail}</div>
+          <div className="rebuilding-splash__subtitle">{rebuildFailure}</div>
           {onContinue ? (
             <button type="button" className="rebuilding-splash__continue" onClick={onContinue}>
               Continue
@@ -778,7 +772,7 @@ function App(): JSX.Element {
   // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
   // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
   const [stallEscape, setStallEscape] = useState(false);
-  const [rebuildFailure, setRebuildFailure] = useState<RebuildFailureNotice | null>(null);
+  const [rebuildFailure, setRebuildFailure] = useState<string | null>(null);
   const splashEpochRef = useRef<string | null>(null);
   const splashCommitRef = useRef<string | null>(null);
   const requireNewEpochRef = useRef(false);
@@ -1686,9 +1680,9 @@ function App(): JSX.Element {
       setRebuilding(true);
     };
 
-    // Issue a09b4d2 — the announced rebuild will not restart the daemon.
+    // Issue a09b4d2 — the merge landed but Mandible did not update.
     const rebuildFailedHandler = (payload: SSEPayload) => {
-      setRebuildFailure(rebuildFailureNotice(payload.data));
+      setRebuildFailure((payload.data as { message: string }).message);
     };
 
     const graphRefreshHandler = () => {
@@ -1953,7 +1947,7 @@ function App(): JSX.Element {
           const currentCommit = daemonStartupCommit(data);
           // Issue a09b4d2 — a rebuild that will not restart the daemon is a
           // failure to report, not a stall to wait out.
-          const failure = requireNewCommitRef.current && daemonRebuildFailure(data) ? rebuildFailureNotice(data.rebuild_failure) : null;
+          const failure = requireNewCommitRef.current ? data.rebuild_failure?.message : undefined;
           if (failure) {
             stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
             stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
@@ -2797,11 +2791,11 @@ function App(): JSX.Element {
 
   return renderAppShell(
     <>
-      {rebuildFailure?.kind === 'handoff_failed' && (
-        // Issue 54a0b88 — a handoff can fail after this build is already
-        // serving; report it without taking over the working view.
+      {rebuildFailure && (
+        // Issue 54a0b88 — outside the rebuild splash, for example when a
+        // handoff fails after this build is serving, report it in place.
         <div className="daemon-toast daemon-toast--failure" role="alert">
-          <span>{rebuildFailureMessage(rebuildFailure).detail}</span>
+          <span>{rebuildFailure}</span>
           <button
             type="button"
             className="daemon-toast__dismiss"

@@ -102,7 +102,7 @@ describe("auth queue", () => {
         db,
         hookManager: follower
           ? ({
-              reclaimAllInterruptedRuns: () => 0,
+              ...createNoopHookManager(),
               executeHooks: async () => {
                 order.push("recovery-hook-start");
                 await new Promise((resolve) => setTimeout(resolve, 50));

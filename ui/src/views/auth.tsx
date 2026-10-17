@@ -400,41 +400,14 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
   return hooks ? `${heading}\n\n${hooks}` : heading;
 }
 
-type AcceptanceStatus = {
-  label: string;
-  pillClass: string;
-  /** Present when the state carries a reason the request view shows. */
-  problem: string | null;
-  reason: string | null;
+/** Issue 7d83fe5 — label and pill class of a pending runtime self-update's acceptance, which approval requires. */
+const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, string]> = {
+  none: ['Acceptance not run', 'status-pill--dismissed'],
+  running: ['Acceptance running', 'status-pill--pending'],
+  passed: ['Acceptance passed', 'status-pill--success'],
+  failed: ['Acceptance failed', 'status-pill--failed'],
+  stale: ['Acceptance stale', 'status-pill--expired'],
 };
-
-/**
- * Issue 7d83fe5 — a pending runtime self-update shows whether its exact
- * candidate passed acceptance, which approval requires.
- */
-function getAcceptanceStatus(request: AuthRequest): AcceptanceStatus | null {
-  const acceptance = request.candidate_acceptance;
-  if (!acceptance || getAuthStatus(request) !== 'pending') return null;
-  const reason = acceptance.reason;
-  switch (acceptance.state) {
-    case 'none':
-      return { label: 'Acceptance not run', pillClass: 'status-pill--dismissed', problem: null, reason };
-    case 'queued':
-      return { label: 'Acceptance queued', pillClass: 'status-pill--pending', problem: null, reason };
-    case 'running':
-      return { label: 'Acceptance running', pillClass: 'status-pill--pending', problem: null, reason };
-    case 'passed':
-      return { label: 'Acceptance passed', pillClass: 'status-pill--success', problem: null, reason };
-    case 'failed':
-      return { label: 'Acceptance failed', pillClass: 'status-pill--failed', problem: 'Acceptance failed', reason };
-    case 'unavailable':
-      return { label: 'Acceptance unavailable', pillClass: 'status-pill--failed', problem: 'Acceptance unavailable', reason };
-    case 'cancelled':
-      return { label: 'Acceptance cancelled', pillClass: 'status-pill--expired', problem: 'Acceptance cancelled', reason };
-    case 'stale':
-      return { label: 'Acceptance stale', pillClass: 'status-pill--expired', problem: 'Acceptance stale', reason };
-  }
-}
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
@@ -863,7 +836,8 @@ function AuthRequestDetail({
     ? getConvergence(request)
     : null;
   const statusClass = getStatusClass(request);
-  const acceptanceStatus = getAcceptanceStatus(request);
+  const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
+  const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showFailure = failedLike;
@@ -1079,12 +1053,9 @@ function AuthRequestDetail({
               >
                 {statusLabel}
               </span>
-              {acceptanceStatus && (
-                <span
-                  className={`status-pill ${acceptanceStatus.pillClass}`}
-                  title={acceptanceStatus.reason ?? undefined}
-                >
-                  {acceptanceStatus.label}
+              {acceptance && (
+                <span className={`status-pill ${acceptancePill}`} title={acceptance.reason ?? undefined}>
+                  {acceptanceLabel}
                 </span>
               )}
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
@@ -1213,14 +1184,12 @@ function AuthRequestDetail({
           </div>
         )}
 
-        {acceptanceStatus?.problem && (
-          <div className={`auth-failure${acceptanceStatus.pillClass === 'status-pill--failed' ? '' : ' auth-failure--expired'}`}>
+        {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
+          <div className={`auth-failure${acceptance.state === 'failed' ? '' : ' auth-failure--expired'}`}>
             <div className="auth-failure__header">
-              <span className="auth-failure__title">{acceptanceStatus.problem}</span>
+              <span className="auth-failure__title">{acceptanceLabel}</span>
             </div>
-            {acceptanceStatus.reason && (
-              <p className="auth-failure__summary">{acceptanceStatus.reason}</p>
-            )}
+            {acceptance.reason && <p className="auth-failure__summary">{acceptance.reason}</p>}
           </div>
         )}
 

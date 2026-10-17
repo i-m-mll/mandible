@@ -7,9 +7,6 @@
  * base and head) and records the outcome bound to that candidate. Approval
  * accepts only a passing record whose tree, base and head equal the request's
  * current candidate, so any base or head movement makes a result stale.
- *
- * Runs are queued and executed one at a time by `CandidateAcceptanceScheduler`;
- * the auth queue decides when a candidate needs one.
  */
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
@@ -17,28 +14,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { CandidateAcceptanceProjection } from "./contracts.js";
+import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
 
 const execFileAsync = promisify(execFile);
 
-export type CandidateAcceptanceStatus = "queued" | "running" | "passed" | "failed" | "unavailable" | "cancelled";
-export type CandidateAcceptanceOpenStatus = "queued" | "running";
-export type CandidateAcceptanceFinalStatus = Exclude<CandidateAcceptanceStatus, CandidateAcceptanceOpenStatus>;
-
-export interface CandidateAcceptanceRecord {
-  id: string;
-  auth_request_id: string;
-  pin_sha: string;
-  tree_sha: string;
-  base_sha: string;
-  head_sha: string;
-  status: CandidateAcceptanceStatus;
-  started_at: number;
-  finished_at: number | null;
-  result: unknown;
-  error: string | null;
-}
+export type CandidateAcceptanceStatus = "running" | "passed" | "failed";
 
 export interface CandidateAcceptanceCandidate {
   pin_sha: string;
@@ -47,251 +29,163 @@ export interface CandidateAcceptanceCandidate {
   head_sha: string;
 }
 
-export interface CandidateAcceptanceRunInput {
+export interface CandidateAcceptanceRecord extends CandidateAcceptanceCandidate {
+  status: CandidateAcceptanceStatus;
+  started_at: number;
+  finished_at: number | null;
+  error: string | null;
+}
+
+export interface CandidateAcceptanceInput {
   repoRoot: string;
   pinSha: string;
   projectId: string;
   workUnitId: string;
   env: NodeJS.ProcessEnv;
-}
-
-export interface CandidateAcceptanceInput extends CandidateAcceptanceRunInput {
-  /** Aborted when the run is cancelled; the executor stops its owned processes. */
+  /** Aborted when the run is stopped; the executor stops its owned processes. */
   signal: AbortSignal;
 }
 
 export interface CandidateAcceptanceOutcome {
-  status: CandidateAcceptanceFinalStatus;
+  status: "passed" | "failed";
   result: unknown;
   error: string | null;
 }
 
 export type CandidateAcceptanceExecutor = (input: CandidateAcceptanceInput) => Promise<CandidateAcceptanceOutcome>;
 
-const OPEN_STATUSES_SQL = "('queued', 'running')";
 const MAX_RESULT_CHARS = 64 * 1024;
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const ACCEPTANCE_TIMEOUT_MS = 30 * 60 * 1000;
 
-function mapRow(row: Record<string, unknown>): CandidateAcceptanceRecord {
-  return {
-    id: String(row.id),
-    auth_request_id: String(row.auth_request_id),
-    pin_sha: String(row.pin_sha),
-    tree_sha: String(row.tree_sha),
-    base_sha: String(row.base_sha),
-    head_sha: String(row.head_sha),
-    status: row.status as CandidateAcceptanceStatus,
-    started_at: Number(row.started_at),
-    finished_at: row.finished_at == null ? null : Number(row.finished_at),
-    result: typeof row.result_json === "string" ? JSON.parse(row.result_json) : null,
-    error: row.error == null ? null : String(row.error),
-  };
-}
-
-export function isOpenCandidateAcceptance(record: CandidateAcceptanceRecord | null): boolean {
-  return record?.status === "queued" || record?.status === "running";
-}
-
-export function candidateAcceptanceMatches(record: CandidateAcceptanceRecord, candidate: Partial<CandidateAcceptanceCandidate>): boolean {
-  return record.tree_sha === candidate.tree_sha && record.base_sha === candidate.base_sha && record.head_sha === candidate.head_sha;
-}
-
 export function latestCandidateAcceptance(db: Db, requestId: string): CandidateAcceptanceRecord | null {
-  const row = db.prepare(
-    "SELECT * FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
-  ).get(requestId) as Record<string, unknown> | undefined;
-  return row ? mapRow(row) : null;
-}
-
-function readCandidateAcceptance(db: Db, id: string): CandidateAcceptanceRecord | null {
-  const row = db.prepare("SELECT * FROM auth_candidate_acceptances WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-  return row ? mapRow(row) : null;
-}
-
-function insertCandidateAcceptance(
-  db: Db,
-  requestId: string,
-  candidate: CandidateAcceptanceCandidate,
-  at: number,
-  outcome: CandidateAcceptanceOutcome | null,
-): CandidateAcceptanceRecord {
-  const id = randomUUID();
-  db.prepare(
-    `INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, requestId, candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha,
-    outcome?.status ?? "queued", at, outcome ? at : null, outcome?.error ?? null);
-  return readCandidateAcceptance(db, id)!;
-}
-
-/** Close an open record with its final outcome. A record already closed is left unchanged. */
-function closeCandidateAcceptance(db: Db, id: string, outcome: CandidateAcceptanceOutcome, at: number): boolean {
-  let result = outcome.result === undefined ? null : JSON.stringify(outcome.result);
-  if (result && result.length > MAX_RESULT_CHARS) {
-    const value = outcome.result as Record<string, unknown>;
-    result = JSON.stringify({ truncated: true, status: value?.status ?? null, candidate: value?.candidate ?? null, error: value?.error ?? null, receipt: value?.receipt ?? null });
-  }
   return db.prepare(
-    `UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status IN ${OPEN_STATUSES_SQL}`,
-  ).run(outcome.status, at, result, outcome.error, id).changes === 1;
+    `SELECT pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, error FROM auth_candidate_acceptances
+     WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+  ).get(requestId) as CandidateAcceptanceRecord | undefined ?? null;
 }
 
-/** Null when the record passes for exactly this candidate; otherwise the refusal. */
-export function candidateAcceptanceRefusal(record: CandidateAcceptanceRecord | null, candidate: Partial<CandidateAcceptanceCandidate>, requestId: string): string | null {
-  const run = `\`mandible auth acceptance run ${requestId.slice(0, 8)}\``;
-  if (!candidate.tree_sha || !candidate.base_sha || !candidate.head_sha) {
-    return "Runtime self-update approval requires an exact retained merge candidate, and this request has none. Resubmit it.";
-  }
-  if (!record) return `Runtime self-update approval requires a passing candidate acceptance of the exact candidate merge, and none has run. The daemon starts one when the candidate is current; ${run} starts it now.`;
-  if (!candidateAcceptanceMatches(record, candidate)) {
-    return `The recorded candidate acceptance (${record.status}) was for a different candidate (tree ${record.tree_sha.slice(0, 12)}, base ${record.base_sha.slice(0, 12)}, head ${record.head_sha.slice(0, 12)}); the base or head has moved since. Run ${run} for the current candidate.`;
-  }
-  if (record.status === "queued") return "Candidate acceptance of this exact candidate is queued. Approve after it passes.";
-  if (record.status === "running") return "Candidate acceptance of this exact candidate is still running. Approve after it passes.";
-  if (record.status !== "passed") {
-    const verdict = record.status === "unavailable" ? "was unavailable" : record.status === "cancelled" ? "was cancelled" : "failed";
-    return `Candidate acceptance of this exact candidate ${verdict}${record.error ? `: ${record.error}` : ""}. Fix the cause and run ${run} again.`;
-  }
-  return null;
-}
-
-/** The request view's acceptance state for one request's current candidate. */
+/** The request view's acceptance state for one request's current candidate. `open` means a run of it is waiting or running. */
 export function candidateAcceptanceProjection(
   record: CandidateAcceptanceRecord | null,
-  candidate: Partial<CandidateAcceptanceCandidate>,
-  pending: boolean,
+  candidate: CandidateAcceptanceCandidate | null,
+  open: boolean,
 ): CandidateAcceptanceProjection {
+  const current = record && candidate && record.tree_sha === candidate.tree_sha
+    && record.base_sha === candidate.base_sha && record.head_sha === candidate.head_sha ? record : null;
+  if (open) return { state: "running", reason: null, started_at: current?.status === "running" ? current.started_at : null, finished_at: null };
   if (!record) return { state: "none", reason: null, started_at: null, finished_at: null };
-  const stale = pending && !candidateAcceptanceMatches(record, candidate);
-  return {
-    state: stale ? "stale" : record.status,
-    reason: stale ? `Ran for base ${record.base_sha.slice(0, 12)} and head ${record.head_sha.slice(0, 12)}, not the current candidate.` : record.error,
-    started_at: record.started_at,
-    finished_at: record.finished_at,
-  };
+  if (!current) {
+    return { state: "stale", reason: `It ran for base ${record.base_sha.slice(0, 12)} and head ${record.head_sha.slice(0, 12)}, not the current candidate.`,
+      started_at: record.started_at, finished_at: record.finished_at };
+  }
+  return { state: current.status, reason: current.error, started_at: current.started_at, finished_at: current.finished_at };
 }
 
-export interface CandidateAcceptanceSchedulerOptions {
-  db: Db;
-  executor: CandidateAcceptanceExecutor;
-  now: () => number;
-  /** False once the owning queue is disposed or its database closed. */
-  live: () => boolean;
-  /** Whether a queued record still matches its request's current pending candidate. */
-  current: (record: CandidateAcceptanceRecord) => boolean;
-  /** Called after any record of the request changes state. */
-  changed: (record: CandidateAcceptanceRecord) => void;
+/** Null when the current candidate passed; otherwise why approval refuses. */
+export function candidateAcceptanceRefusal(acceptance: CandidateAcceptanceProjection, requestId: string): string | null {
+  const run = `\`mandible auth acceptance run ${requestId.slice(0, 8)}\``;
+  switch (acceptance.state) {
+    case "passed": return null;
+    case "running": return "Candidate acceptance of this exact candidate is still running. Approve after it passes.";
+    case "failed": return `Candidate acceptance of this exact candidate failed: ${acceptance.reason}. Fix the cause and run ${run} again.`;
+    case "stale": return `The recorded candidate acceptance was for a different candidate. ${acceptance.reason} Run ${run} for the current candidate.`;
+    case "none": return `Runtime self-update approval requires a passing candidate acceptance of the exact candidate merge, and none has run. Run ${run}.`;
+  }
 }
 
 /**
- * The single owner of acceptance execution in a daemon. Records are durable;
- * run inputs live only in this process, so open records it does not own were
- * interrupted by a restart. One run executes at a time because every run uses
- * the same persistent acceptance checkout.
+ * Runs acceptance one at a time, because every run uses the same checkout.
+ * Runs wait in memory; a durable row exists only once a run starts. Rows still
+ * running when this daemon starts were interrupted by a restart.
  */
-export class CandidateAcceptanceScheduler {
-  private readonly inputs = new Map<string, CandidateAcceptanceRunInput>();
-  private active: { id: string; controller: AbortController; done: Promise<void> } | null = null;
+export class CandidateAcceptanceRuns {
+  private chain: Promise<void> = Promise.resolve();
+  private readonly waiting = new Map<string, { candidate: CandidateAcceptanceCandidate; input: () => Omit<CandidateAcceptanceInput, "signal"> }>();
+  private active: { requestId: string; pinSha: string; recordId: string; controller: AbortController } | null = null;
+  private stopped = false;
 
-  constructor(private readonly options: CandidateAcceptanceSchedulerOptions) {
-    this.cancelOrphans("Interrupted by a daemon restart.");
+  constructor(
+    private readonly db: Db,
+    private readonly executor: CandidateAcceptanceExecutor,
+    private readonly now: () => number,
+    private readonly changed: (requestId: string) => void,
+  ) {
+    db.prepare("UPDATE auth_candidate_acceptances SET status = 'failed', finished_at = ?, error = ? WHERE status = 'running'")
+      .run(now(), "Interrupted by a daemon restart.");
   }
 
-  /** Queue a run of `candidate`, cancelling every other open run of the request. */
-  enqueue(requestId: string, candidate: CandidateAcceptanceCandidate, input: CandidateAcceptanceRunInput): CandidateAcceptanceRecord {
-    this.cancelOpen(requestId, "Replaced by a run of a newer candidate.");
-    const record = insertCandidateAcceptance(this.options.db, requestId, candidate, this.options.now(), null);
-    this.inputs.set(record.id, input);
-    this.options.changed(record);
-    this.pump();
-    return readCandidateAcceptance(this.options.db, record.id)!;
+  /** Whether a run of exactly this pin is waiting or running for the request. */
+  isOpen(requestId: string, pinSha: string): boolean {
+    return this.waiting.get(requestId)?.candidate.pin_sha === pinSha || (this.active?.requestId === requestId && this.active.pinSha === pinSha);
   }
 
-  /** Record an outcome decided before any run could start, such as a missing prerequisite. */
-  record(requestId: string, candidate: CandidateAcceptanceCandidate, outcome: CandidateAcceptanceOutcome): CandidateAcceptanceRecord {
-    this.cancelOpen(requestId, "Replaced by a newer candidate.");
-    const record = insertCandidateAcceptance(this.options.db, requestId, candidate, this.options.now(), outcome);
-    this.options.changed(record);
-    return record;
+  /**
+   * Run acceptance of the request's candidate after any earlier run, replacing
+   * the request's previous run. `input` is resolved when the run starts; if it
+   * throws, the run fails with that reason.
+   */
+  enqueue(requestId: string, candidate: CandidateAcceptanceCandidate, input: () => Omit<CandidateAcceptanceInput, "signal">): void {
+    this.abort(requestId, "Replaced by a run of a newer candidate.");
+    this.waiting.set(requestId, { candidate, input });
+    this.chain = this.chain.then(() => this.next(requestId)).catch((error: unknown) => {
+      getDaemonLogger()("error", "auth_candidate_acceptance_crashed", { subsystem: "auth", auth_request_id: requestId, error: String(error) });
+    });
   }
 
-  /** Cancel the request's open runs, stopping one that is executing. */
-  cancelOpen(requestId: string, reason: string): void {
-    const rows = this.options.db.prepare(
-      `SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? AND status IN ${OPEN_STATUSES_SQL}`,
-    ).all(requestId) as Array<{ id: string }>;
-    for (const { id } of rows) this.cancel(id, reason);
+  /** Drop the request's waiting run and fail its running one with `reason`. */
+  abort(requestId: string, reason: string): void {
+    this.waiting.delete(requestId);
+    const active = this.active;
+    if (active?.requestId !== requestId) return;
+    this.active = null;
+    active.controller.abort();
+    this.finish(requestId, active.recordId, { status: "failed", result: null, error: reason });
   }
 
-  /** Cancel every open run, for example before the daemon restarts. */
-  cancelAll(reason: string): void {
-    const rows = this.options.db.prepare(
-      `SELECT id FROM auth_candidate_acceptances WHERE status IN ${OPEN_STATUSES_SQL}`,
-    ).all() as Array<{ id: string }>;
-    for (const { id } of rows) this.cancel(id, reason);
-  }
-
-  /** Stop the executing run without recording; the next daemon start records it as interrupted. */
-  abort(): void {
+  /** Stop without recording; the next daemon start records the interrupted run. Settles when it has stopped. */
+  stop(): Promise<void> {
+    this.stopped = true;
+    this.waiting.clear();
     this.active?.controller.abort();
+    return this.chain;
   }
 
-  /** Settles when the executing run, if any, has stopped. */
-  async drain(): Promise<void> {
-    while (this.active) await this.active.done;
+  /** Settles when every run enqueued so far has finished. */
+  idle(): Promise<void> {
+    return this.chain;
   }
 
-  private cancel(id: string, reason: string): void {
-    this.inputs.delete(id);
-    if (!closeCandidateAcceptance(this.options.db, id, { status: "cancelled", result: null, error: reason }, this.options.now())) return;
-    if (this.active?.id === id) this.active.controller.abort();
-    this.options.changed(readCandidateAcceptance(this.options.db, id)!);
-  }
-
-  private cancelOrphans(reason: string): void {
-    const rows = this.options.db.prepare(
-      `SELECT id FROM auth_candidate_acceptances WHERE status IN ${OPEN_STATUSES_SQL}`,
-    ).all() as Array<{ id: string }>;
-    for (const { id } of rows) {
-      if (this.inputs.has(id) || this.active?.id === id) continue;
-      this.cancel(id, reason);
-    }
-  }
-
-  private pump(): void {
-    if (this.active || !this.options.live()) return;
-    const rows = this.options.db.prepare(
-      "SELECT * FROM auth_candidate_acceptances WHERE status = 'queued' ORDER BY started_at, rowid",
-    ).all() as Array<Record<string, unknown>>;
-    for (const row of rows) {
-      const record = mapRow(row);
-      const input = this.inputs.get(record.id);
-      if (!input) { this.cancel(record.id, "Interrupted before it started."); continue; }
-      if (!this.options.current(record)) { this.cancel(record.id, "The request or its candidate changed before the run started."); continue; }
-      this.start(record, input);
-      return;
-    }
-  }
-
-  private start(record: CandidateAcceptanceRecord, input: CandidateAcceptanceRunInput): void {
-    const { db, executor, now, live, changed } = this.options;
-    db.prepare("UPDATE auth_candidate_acceptances SET status = 'running' WHERE id = ? AND status = 'queued'").run(record.id);
-    changed(readCandidateAcceptance(db, record.id)!);
+  private async next(requestId: string): Promise<void> {
+    const job = this.waiting.get(requestId);
+    if (!job || this.stopped) return;
+    this.waiting.delete(requestId);
+    const { candidate } = job;
+    const recordId = randomUUID();
+    this.db.prepare(
+      `INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+    ).run(recordId, requestId, candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha, this.now());
     const controller = new AbortController();
-    const done = Promise.resolve()
-      .then(() => executor({ ...input, signal: controller.signal }))
-      .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }))
-      .then((outcome) => {
-        if (!live()) return;
-        if (closeCandidateAcceptance(db, record.id, outcome, now())) changed(readCandidateAcceptance(db, record.id)!);
-      })
-      .finally(() => {
-        this.inputs.delete(record.id);
-        this.active = null;
-        this.pump();
-      });
-    this.active = { id: record.id, controller, done };
+    this.active = { requestId, pinSha: candidate.pin_sha, recordId, controller };
+    this.changed(requestId);
+    const outcome = await Promise.resolve().then(() => this.executor({ ...job.input(), signal: controller.signal }))
+      .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
+    this.active = null;
+    this.finish(requestId, recordId, outcome);
+  }
+
+  private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome): void {
+    if (this.stopped) return;
+    let result = outcome.result == null ? null : JSON.stringify(outcome.result);
+    if (result && result.length > MAX_RESULT_CHARS) {
+      const value = outcome.result as Record<string, unknown>;
+      result = JSON.stringify({ truncated: true, status: value?.status ?? null, candidate: value?.candidate ?? null, error: value?.error ?? null, receipt: value?.receipt ?? null });
+    }
+    const closed = this.db.prepare(
+      "UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status = 'running'",
+    ).run(outcome.status, this.now(), result, outcome.error, recordId).changes === 1;
+    if (closed) this.changed(requestId);
   }
 }
 
@@ -359,5 +253,5 @@ export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input)
   const reason = (typeof result?.error === "string" && result.error) || (typeof result?.cleanup_error === "string" && result.cleanup_error)
     || (result?.status === "passed" ? "Acceptance passed for a different candidate revision." : null)
     || run.stderr.trim().split("\n").slice(-5).join("\n") || `Acceptance exited with ${run.code}.`;
-  return { status: result?.status === "unavailable" ? "unavailable" : "failed", result, error: reason };
+  return { status: "failed", result, error: result?.status === "unavailable" ? `Acceptance was unavailable: ${reason}` : reason };
 };

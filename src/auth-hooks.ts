@@ -74,7 +74,7 @@ export interface RuntimeHandoffClient {
   completeRuntimeHandoffRecovery?(journal: RuntimeHandoffJournal): Promise<RuntimeHandoffJournal>;
   runtimeHandoffDrainIdentity?(journal: RuntimeHandoffJournal): string | null;
   acknowledgeRuntimeHandoff(binding: RuntimePublicationBinding): Promise<unknown>;
-  retireFailedRuntimeHandoff?(home: string, input: { bindingDigest: string; actor: unknown; reason: string }): unknown;
+  retireFailedRuntimeHandoff(home: string, input: { bindingDigest: string; actor: unknown; reason: string }): unknown;
 }
 
 /** The required hook whose runtime handoff self-updates this installation. */
@@ -286,12 +286,7 @@ export class AuthHookManager {
 
   /** Whether merging this repo self-updates the running installation. */
   selfUpdatesRuntime(repo: string | null | undefined): boolean {
-    if (!repo) return false;
-    try {
-      return this.findMatchingHooks(repo, "merge").some(hook => hook.id === MANDIBLE_REBUILD_HOOK_ID);
-    } catch {
-      return false;
-    }
+    return Boolean(repo) && this.findMatchingHooks(repo!, "merge").some(hook => hook.id === MANDIBLE_REBUILD_HOOK_ID);
   }
 
   runtimeHandoffLock(): RuntimeHandoffLock | null {
@@ -300,7 +295,6 @@ export class AuthHookManager {
 
   async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {
     const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
-    if (!runtime.retireFailedRuntimeHandoff) throw new Error('Runtime handoff retirement is unavailable.');
     return runtime.retireFailedRuntimeHandoff(getMandibleHome(), { ...input, actor });
   }
 
@@ -356,7 +350,7 @@ export class AuthHookManager {
   /** External handoff observations never consume an attempt or start another hook. */
   async reconcileRuntimeHandoffs(
     adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void,
-    onFailed?: (requestId: string, handoffError: string) => void,
+    onFailed: (requestId: string, handoffError: string) => void,
   ): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
     const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE hook_id = 'builtin-mandible-rebuild'").all() as Array<{ auth_request_id: string }>;
@@ -403,7 +397,7 @@ export class AuthHookManager {
         const refused = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
           truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
         );
-        if (Number(refused.changes) > 0) onFailed?.(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
+        if (Number(refused.changes) > 0) onFailed(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
       }
     }
     return [...new Set(accepted)];

@@ -10,16 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import type { CandidateAcceptanceInput, CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
+import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
-import { RestartAvailabilityStore } from "../src/restart-availability.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
-import { daemonRebuildFailure } from "../ui/src/daemon-readiness.js";
 import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
@@ -50,7 +48,7 @@ function holdHandoffLock(phase = "failed") {
   return { digest: journal.bindingDigest, journalPath, lockPath, dir };
 }
 
-/** One acceptance run the test decides; a cancelled run settles when its signal aborts. */
+/** One acceptance run the test decides; an aborted run settles when its signal aborts. */
 interface AcceptanceRun { input: CandidateAcceptanceInput; settle: (outcome: CandidateAcceptanceOutcome) => void }
 
 /** Submit a self-update with durable custody of its delivery work unit, which names the acceptance owner. */
@@ -68,6 +66,13 @@ function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput>
 
 function acceptanceOf(id: string) {
   return queue.candidateAcceptanceForRequest(queue.getRequest(id)!);
+}
+
+function acceptanceExecutor(input: CandidateAcceptanceInput) {
+  return new Promise<CandidateAcceptanceOutcome>((settle) => {
+    runs.push({ input, settle });
+    input.signal.addEventListener("abort", () => settle({ status: "failed", result: null, error: "stopped" }));
+  });
 }
 
 beforeEach(() => {
@@ -88,11 +93,7 @@ beforeEach(() => {
   issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
   runs = [];
   queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
-    executor: async () => new Promise(() => {}),
-    candidateAcceptanceExecutor: (input) => new Promise((settle) => {
-      runs.push({ input, settle });
-      input.signal.addEventListener("abort", () => settle({ status: "failed", result: null, error: "stopped" }));
-    }) });
+    executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
 afterEach(() => {
@@ -125,11 +126,11 @@ describe("candidate acceptance gate", () => {
     await vi.waitFor(() => expect(runs).toHaveLength(1));
     const current = queue.getRequest(request.id)!;
     expect(runs[0]!.input).toMatchObject({ repoRoot: repo, pinSha: current.merge_candidate_pin_sha, workUnitId: "wu-feature/self-update", projectId });
-    const record = queue.candidateAcceptance(request.id)!;
-    expect(record).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha, tree_sha: current.merge_candidate_tree_sha,
-      base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha,
+      tree_sha: current.merge_candidate_tree_sha, base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
     // The manual command joins the open run instead of starting a second one.
-    expect(queue.startCandidateAcceptance(request.id.slice(0, 8)).id).toBe(record.id);
+    expect(queue.startCandidateAcceptance(request.id.slice(0, 8))).toMatchObject({ state: "running" });
+    expect(runs).toHaveLength(1);
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/still running/);
 
     runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
@@ -147,7 +148,7 @@ describe("candidate acceptance gate", () => {
     expect(queue.getRequest(request.id)?.status).toBe("executing");
   });
 
-  it("cancels the superseded request's run and runs the replacement's candidate", async () => {
+  it("aborts the superseded request's run and runs the replacement's candidate", async () => {
     const original = submit();
     await vi.waitFor(() => expect(runs).toHaveLength(1));
     git(repo, ["checkout", "feature/self-update"]);
@@ -157,9 +158,9 @@ describe("candidate acceptance gate", () => {
     const replacement = submit("feature/self-update", { supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 });
 
     expect(runs[0]!.input.signal.aborted).toBe(true);
-    expect(queue.candidateAcceptance(original.id)).toMatchObject({ status: "cancelled", error: "The request is superseded." });
+    expect(latestCandidateAcceptance(db, original.id)).toMatchObject({ status: "failed", error: "The request is superseded." });
     await vi.waitFor(() => expect(runs).toHaveLength(2));
-    const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status IN ('queued', 'running')").all();
+    const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running'").all();
     expect(open).toEqual([{ auth_request_id: replacement.id }]);
     expect(runs[1]!.input.pinSha).toBe(queue.getRequest(replacement.id)!.merge_candidate_pin_sha);
   });
@@ -184,13 +185,15 @@ describe("candidate acceptance gate", () => {
     expect(queue.getRequest(request.id)?.status).toBe("executing");
   });
 
-  it("records runs a restart interrupted as cancelled", () => {
+  it("runs a run a restart interrupted again at startup", async () => {
     const request = submit();
-    expect(queue.candidateAcceptance(request.id)?.status).toMatch(/queued|running/);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
     queue.dispose();
-    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
-      candidateAcceptanceExecutor: async () => ({ status: "passed", result: null, error: null }) });
-    expect(acceptanceOf(request.id)).toMatchObject({ state: "cancelled", reason: "Interrupted by a daemon restart." });
+    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
+    expect(db.prepare("SELECT status, error FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at, rowid").all(request.id))
+      .toEqual([{ status: "failed", error: "Interrupted by a daemon restart." }, { status: "running", error: null }]);
   });
 });
 
@@ -213,31 +216,12 @@ describe("rebuild failure", () => {
     await waitForStatus(queue, request.id, "completed");
     await vi.waitFor(() => expect(events.some((event) => event.event === "mandible:rebuild-failed")).toBe(true));
     const event = events.find((candidate) => candidate.event === "mandible:rebuild-failed")!;
-    expect(event.data).toMatchObject({ request_id: request.id, reason: expect.stringContaining("Another handoff owns this installation") });
+    expect(event.data).toMatchObject({ request_id: request.id, message: "The merge landed, but Mandible did not update: its rebuild hook exited 1." });
     expect(events.findIndex((candidate) => candidate.event === "mandible:rebuilding")).toBeLessThan(events.indexOf(event));
     expect(queue.isRebuilding).toBe(false);
     expect(queue.rebuildFailure).toMatchObject({ request_id: request.id });
     expect(failed).toEqual([request.id]);
     expect(restart).not.toHaveBeenCalled();
-  });
-
-  it("lets the splash report the failure only once the daemon stops rebuilding", () => {
-    const failure = { request_id: "r", reason: "Another handoff owns this installation." };
-    expect(daemonRebuildFailure({ ready: true, rebuilding: true, rebuild_failure: failure })).toBeNull();
-    expect(daemonRebuildFailure({ ready: true, rebuild_failure: failure })).toBe("Another handoff owns this installation.");
-    expect(daemonRebuildFailure({ ready: true })).toBeNull();
-  });
-
-  it("retires the blocking availability window without recording a sample", () => {
-    let now = 1_000;
-    const store = new RestartAvailabilityStore({ instanceKey: "http://127.0.0.1:1", filePath: path.join(home, "restart-availability.json"), now: () => now });
-    store.markRebuildStarted("request-1");
-    expect(store.currentNotice()).toMatchObject({ phase: "rebuilding" });
-    now += 500;
-    expect(store.markRebuildFailed("other")).toBe(false);
-    expect(store.markRebuildFailed("request-1")).toBe(true);
-    expect(store.currentNotice()).toBeNull();
-    expect(store.read()).toMatchObject({ active: null, blocked_window: { sample_count: 0 } });
   });
 });
 

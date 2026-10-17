@@ -83,9 +83,9 @@ export async function acceptBootstrapDelivery(api: Api, requestId: string, timeo
   await jsonRequest(api, route, 'POST', {});
   const end = Date.now() + timeoutMs;
   for (;;) {
-    const { acceptance } = await jsonRequest(api, route) as { acceptance: { status: string; error: string | null } | null };
-    if (acceptance?.status === 'passed') return;
-    assert.notEqual(acceptance?.status, 'failed', `Candidate acceptance failed: ${acceptance?.error}`);
+    const { acceptance } = await jsonRequest(api, route) as { acceptance: { state: string; reason: string | null } | null };
+    if (acceptance?.state === 'passed') return;
+    assert.notEqual(acceptance?.state, 'failed', `Candidate acceptance failed: ${acceptance?.reason}`);
     assert.ok(Date.now() < end, `Candidate acceptance did not finish within ${timeoutMs}ms`);
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
