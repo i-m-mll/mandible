@@ -19,11 +19,13 @@ import { ConversationControlStore } from "./store.js";
 import { AttachmentValidationError, ChatAttachmentStore } from "./attachment-store.js";
 import type { ChatAttachment } from "./attachments.js";
 import { chatItemIdentityKey, emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
+import { probeProviderSessionProcesses, type ProviderSessionProcessProbe } from "./provider-process-probe.js";
 import type {
   AcceptedConversationSubmission,
   ConversationControlError,
   ConversationControlReconciliationReport,
   ConversationControlSnapshot,
+  ConversationOwnershipReconciliationReport,
   ConversationSubmitRequest,
   ProviderAdapterEvent,
   ProviderDeliveryReceipt,
@@ -66,6 +68,8 @@ export class ConversationControlService {
   }) => Promise<{ status: string }>) | undefined;
   private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
+  private readonly probeProviderProcesses: ProviderSessionProcessProbe;
+  private ownershipReconciliation: Promise<ConversationOwnershipReconciliationReport> | null = null;
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
@@ -73,6 +77,7 @@ export class ConversationControlService {
     onProviderEvent?: (event: ProviderAdapterEvent) => void;
     onTerminalTurn?: (input: { conversation_id: string; provider_session_id: string; turn_id: string }) => Promise<{ status: string }>;
     onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
+    probeProviderProcesses?: ProviderSessionProcessProbe;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.attachments = new ChatAttachmentStore(db);
@@ -80,6 +85,7 @@ export class ConversationControlService {
     this.onProviderEvent = options.onProviderEvent;
     this.onTerminalTurn = options.onTerminalTurn;
     this.onReconciliationDiagnostic = options.onReconciliationDiagnostic;
+    this.probeProviderProcesses = options.probeProviderProcesses ?? probeProviderSessionProcesses;
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -617,7 +623,50 @@ export class ConversationControlService {
         if (reset.ok) record(await this.dispatch(item.id));
       }
     }
-    return { claims_checked: claims.length, deliveries_checked: deliveries.length, errors };
+    const ownership = await this.reconcileUnresolvedOwnership();
+    errors.push(...ownership.errors);
+    return { claims_checked: claims.length, deliveries_checked: deliveries.length, ownership, errors };
+  }
+
+  /**
+   * Unknown ownership is a question, not a terminal state. Re-ask it from one
+   * process snapshot: a session no process drives is released to free, and one
+   * a live process drives is external until that process exits.
+   */
+  reconcileUnresolvedOwnership(): Promise<ConversationOwnershipReconciliationReport> {
+    this.ownershipReconciliation ??= this.runOwnershipReconciliation()
+      .finally(() => { this.ownershipReconciliation = null; });
+    return this.ownershipReconciliation;
+  }
+
+  private async runOwnershipReconciliation(): Promise<ConversationOwnershipReconciliationReport> {
+    const report: ConversationOwnershipReconciliationReport = { checked: 0, released: 0, external: 0, unresolvable: 0, probe_error: null, errors: [] };
+    const rows = this.store.unresolvedOwnershipRows();
+    const probeable = rows.filter((row): row is typeof row & { provider_session_id: string } => Boolean(row.provider_session_id));
+    report.unresolvable = rows.length - probeable.length;
+    if (probeable.length === 0) return report;
+    let evidence: Awaited<ReturnType<ProviderSessionProcessProbe>>;
+    try {
+      evidence = await this.probeProviderProcesses(probeable.map((row) => ({
+        provider_session_id: row.provider_session_id,
+        transcript_path: row.transcript_path,
+      })));
+    } catch (error) {
+      report.probe_error = error instanceof Error ? error.message : String(error);
+      return report;
+    }
+    for (const row of probeable) {
+      const observed = evidence.get(row.provider_session_id);
+      if (!observed) continue;
+      report.checked += 1;
+      const resolved = this.store.resolveUnresolvedOwnership(row.conversation_id, row.revision, observed);
+      if (!resolved.ok) { report.errors.push(resolved.error); continue; }
+      if (!resolved.value) continue;
+      if (observed.kind === "absent") report.released += 1;
+      else report.external += 1;
+      this.notify(row.conversation_id);
+    }
+    return report;
   }
 
   async stop(conversationId: string, generation: number): Promise<Result<void, ConversationControlError>> {

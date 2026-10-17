@@ -632,6 +632,49 @@ export class ConversationControlStore {
     return this.observeExternal(conversationId, evidence);
   }
 
+  /**
+   * Claims no live Mandible controller can answer for: unknown ownership, and
+   * external ownership whose only evidence is a live provider process.
+   */
+  unresolvedOwnershipRows(): Array<{ conversation_id: string; revision: number; owner_kind: "unknown" | "external"; provider_session_id: string | null; transcript_path: string | null }> {
+    return this.db.prepare(`SELECT s.conversation_id, s.revision, s.owner_kind,
+        COALESCE(s.provider_session_id, NULLIF(c.session_id, '')) AS provider_session_id, c.source_path AS transcript_path
+      FROM conversation_control_state s JOIN conversations c ON c.id = s.conversation_id
+      WHERE s.owner_kind = 'unknown'
+         OR (s.owner_kind = 'external' AND json_extract(s.owner_detail_json, '$.kind') = 'registered-process')
+      ORDER BY s.conversation_id
+    `).all() as Array<{ conversation_id: string; revision: number; owner_kind: "unknown" | "external"; provider_session_id: string | null; transcript_path: string | null }>;
+  }
+
+  /** Resolve an unproven claim from one process snapshot taken at `expectedRevision`. */
+  resolveUnresolvedOwnership(
+    conversationId: string,
+    expectedRevision: number,
+    evidence: { kind: "absent" } | { kind: "present"; pid: number },
+  ): Result<boolean, ConversationControlError> {
+    const transaction = this.db.transaction((): Result<boolean, ConversationControlError> => {
+      const row = this.row(conversationId);
+      if (!row || row.revision !== expectedRevision || (row.owner_kind !== "unknown" && row.owner_kind !== "external")) {
+        return { ok: true, value: false };
+      }
+      if (evidence.kind === "present") {
+        if (row.owner_kind === "external") return { ok: true, value: false };
+        const observed = this.observeExternal(conversationId, { kind: "registered-process", reference: `pid:${evidence.pid}` });
+        return observed.ok ? { ok: true, value: true } : observed;
+      }
+      const revision = row.revision + 1;
+      const now = this.now();
+      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, owner_kind = 'none',
+        controller_state = 'stopped', controller_instance_id = NULL, adapter_id = NULL,
+        owner_detail_json = '{}', last_authoritative_signal = NULL, updated_at = ?
+        WHERE conversation_id = ? AND revision = ?
+      `).run(revision, now, conversationId, expectedRevision);
+      this.journal(conversationId, revision, row.generation, "controller-released", { reason: "provider-process-absent", prior_owner: row.owner_kind }, now);
+      return { ok: true, value: true };
+    });
+    return transaction.immediate();
+  }
+
   activeOwnedRows(): Array<{ conversation_id: string; generation: number; adapter_id: string; provider_session_id: string; controller_instance_id: string }> {
     return this.db.prepare(`SELECT conversation_id, generation, adapter_id, provider_session_id, controller_instance_id
       FROM conversation_control_state WHERE owner_kind = 'mandible' AND controller_state != 'stopped'
