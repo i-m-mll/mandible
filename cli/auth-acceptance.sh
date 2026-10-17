@@ -29,6 +29,7 @@ else
     if .acceptance == null then "Candidate acceptance does not apply to \(.request_id[0:8])."
     else .acceptance as $a |
       "Candidate acceptance for \(.request_id[0:8]): \($a.state)",
+      (if $a.started_at then "  started \($a.started_at / 1000 | strflocaltime("%Y-%m-%d %H:%M:%S")) local time" else empty end),
       (if $a.reason then "  \($a.reason)" else empty end),
       (if $a.state == "running" then "  check again with: mandible auth acceptance show \(.request_id[0:8])" else empty end)
     end'

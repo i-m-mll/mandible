@@ -92,9 +92,9 @@ function explain(refusal: RecomputeRefusal, context: RecomputeRefusalContext): s
       return explainBaseTransition(detail, context);
     case "recomputed_preflight_unavailable":
       return (
-        `The recomputed merge preflight did not complete (status: ${text(detail.status) ?? "unknown"}), so ` +
-        "the candidate could not be re-attested. Retry the approval; if it keeps failing, check repo and " +
-        "daemon health."
+        `The recomputed merge preflight did not complete (status: ${text(detail.status) ?? "unknown"}` +
+        `${text(detail.reason) ? `: ${text(detail.reason)}` : ""}), so the candidate could not be re-attested. ` +
+        "Retry once that clears; if it keeps failing, check repo and daemon health."
       );
     case "base_moved_again":
       return (

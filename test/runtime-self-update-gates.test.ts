@@ -27,6 +27,7 @@ let repo: string;
 let home: string;
 let db: ReturnType<typeof createMigratedDb>;
 let queue: AuthQueue;
+let hooks: AuthHookManager;
 let operatorId: string;
 let projectId: string;
 let credentialId: string;
@@ -92,7 +93,8 @@ beforeEach(() => {
   credentialId = addCredential(db, operatorId, { type: "api_token", fingerprint: `self-update-${randomUUID()}` }).id;
   issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
   runs = [];
-  queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
+  hooks = new AuthHookManager(db);
+  queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false,
     executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
@@ -128,7 +130,7 @@ describe("candidate acceptance gate", () => {
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha,
       tree_sha: current.merge_candidate_tree_sha, base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
     // The manual command joins the open run instead of starting a second one.
-    expect(queue.ensureCandidateAcceptance(queue.getRequestReference(request.id.slice(0, 8))!)).toMatchObject({ state: "running" });
+    expect(await queue.runCandidateAcceptance(queue.getRequestReference(request.id.slice(0, 8))!)).toMatchObject({ state: "running" });
     expect(runs).toHaveLength(1);
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
 
@@ -137,7 +139,7 @@ describe("candidate acceptance gate", () => {
     expect(acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
 
-    queue.ensureCandidateAcceptance(queue.getRequest(request.id)!);
+    await queue.runCandidateAcceptance(queue.getRequest(request.id)!);
     await vi.waitFor(() => expect(runs).toHaveLength(2));
     runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
@@ -164,24 +166,31 @@ describe("candidate acceptance gate", () => {
     expect(runs[1]!.input.pinSha).toBe(queue.getRequest(replacement.id)!.merge_candidate_pin_sha);
   });
 
-  it("re-runs acceptance when approval re-pins the candidate onto a moved base", async () => {
+  it("re-pins a candidate the handoff lock left stale and runs its acceptance once the lock is released, with no approval", async () => {
     commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
     const request = submit();
     await vi.waitFor(() => expect(runs).toHaveLength(1));
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
 
+    // A self-update merge moves main and its handoff holds the lock through the
+    // finalizer's sibling pass and the restarted daemon's first ticks.
+    const lock = holdHandoffLock("complete");
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
-    // The re-pinned candidate needs its own pass; the earlier one is stale.
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
+    const finalizer = queue as unknown as { revalidatePendingMergeRequestsSerialized(request: unknown): Promise<void> };
+    await finalizer.revalidatePendingMergeRequestsSerialized(queue.getRequest("merge-sibling"));
+    await queue.resumeHookConvergence();
+    expect(queue.getRequest(request.id)!.merge_candidate_pin_sha).toBe(runs[0]!.input.pinSha);
+    expect(runs).toHaveLength(1);
+
+    // A later tick accepts the handoff, which releases the lock.
+    vi.spyOn(hooks, "reconcileRuntimeHandoffs").mockImplementation(async () => { fs.unlinkSync(lock.lockPath); return []; });
+    await queue.resumeHookConvergence();
     const repinned = queue.getRequest(request.id)!;
-    expect(repinned.merge_candidate_pin_sha).not.toBe(runs[0]!.input.pinSha);
+    expect(repinned).toMatchObject({ status: "pending", merge_preflight_base_sha: git(repo, ["rev-parse", "main"]) });
     expect(runs).toHaveLength(2);
     expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
-    runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
-    await queue.drainCandidateAcceptances();
-    await queue.approveWithOperatorProof(request.id, operatorId);
-    expect(queue.getRequest(request.id)?.status).toBe("executing");
+    expect(acceptanceOf(request.id)).toMatchObject({ state: "running" });
   });
 
   it("runs a run a restart interrupted again at startup", async () => {
