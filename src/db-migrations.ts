@@ -15,7 +15,7 @@ import {
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { createHash } from "node:crypto";
-import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_SPAWN_SCHEMA_V2_SQL,
@@ -1764,16 +1764,13 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
   { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
   { version: 192, name: "compile_dotfiles_instructions_without_home_repair", statements: DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL },
-  // Issue f52d4dd — the MCP channel server used to re-register its Claude
-  // session as `claude-channel`, which broke the session's managed `claude`
-  // claim. Only Claude Code runs the channel server, so those rows are Claude
-  // sessions; channel attachment stays recorded in `channel_connected_at`.
   { version: 193, name: "unify_channel_session_app", statements: [
     "UPDATE sessions SET app = 'claude' WHERE app = 'claude-channel'",
   ] },
   // Issue a09b4d2 — runtime self-update approval requires a passing candidate
   // acceptance bound to the exact retained candidate.
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
+  { version: 195, name: "known_conversation_ownership", statements: [...CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL] },
 ];
 
 /**

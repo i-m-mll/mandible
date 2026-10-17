@@ -29,7 +29,7 @@ it('uses batched start-time evidence for new and reused PIDs and preserves sessi
     getWorktreeInventory: async () => ({ known: true, worktrees: [{ path: root, branch: 'topic/slash' }] }),
   } as unknown as WorkScanner;
   const log = vi.fn();
-  const discovery = new SessionDiscovery(db, registry, scanner, log);
+  const discovery = new SessionDiscovery(registry, scanner, log);
   const previousPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
   const firstStart = 'Mon Oct  5 10:00:00 2026';
@@ -65,7 +65,7 @@ it('aborts and drains an in-flight process scan before the database closes', asy
   process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
   const db = createMigratedDb();
   const scanner = { getReposAsync: async () => [] } as unknown as WorkScanner;
-  const discovery = new SessionDiscovery(db, new SessionRegistry(db), scanner, () => {});
+  const discovery = new SessionDiscovery(new SessionRegistry(db), scanner, () => {});
   const timer = new ReaperTimer(discovery, () => {});
   try {
     const scanning = discovery.discoverSessions().then(() => null, error => error);

@@ -1,40 +1,13 @@
 #!/usr/bin/env bash
 
 set -o pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-if ! command -v jq >/dev/null 2>&1; then
-  exit 0
-fi
-
-construct_output_path() {
-  local uid
-  local cwd_sanitized
-  local agent_id
-
-  uid=$(id -u)
-  cwd_sanitized=$(echo "$1" | sed 's|^/||' | tr '/ ' '-')
-  agent_id="$2"
-  echo "/private/tmp/claude-${uid}/${cwd_sanitized}/tasks/${agent_id}.output"
-}
-
-INPUT=$(cat)
-
-parent_id=$(echo "$INPUT" | jq -r '.parent_session_id // .parent_id // .session_id // .parent.id // empty')
-child_id=$(echo "$INPUT" | jq -r '.child_id // .id // .agent_id // empty')
-agent_id=$(echo "$INPUT" | jq -r '.agent_id // .child_id // .id // empty')
+agent_id=$(echo "$INPUT" | jq -r '.agent_id // empty')
 cwd=$(echo "$INPUT" | jq -r '.cwd // empty')
+[[ -n "$agent_id" ]] || { printf 'Mandible hook: no agent id in the SubagentStop payload.\n' >&2; exit 1; }
 
-if [[ -z "$parent_id" || -z "$child_id" ]]; then
-  exit 0
-fi
-
-MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-
-payload=$(jq -n '{ status: "ended" }')
-
-curl -sS --max-time 5 -X PATCH "http://127.0.0.1:${MANDIBLE_PORT}/api/sessions/${parent_id}/children/${child_id}" \
-  -H "Content-Type: application/json" \
-  -d "$payload" >/dev/null 2>&1 || true
+api_send PATCH "/api/sessions/$(urlencode "$session_id")/children/$(urlencode "$agent_id")" '{"status":"ended"}' >/dev/null || exit 1
 
 # Write a sentinel file so agent-viewer knows the subagent has finished
 # and exits promptly (the Zellij pane has close_on_exit set).

@@ -1,39 +1,15 @@
 #!/usr/bin/env bash
 
 set -o pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-if ! command -v jq >/dev/null 2>&1; then
-  exit 0
-fi
-
-construct_output_path() {
-  local uid
-  local cwd_sanitized
-  local agent_id
-
-  uid=$(id -u)
-  cwd_sanitized=$(echo "$1" | sed 's|^/||' | tr '/ ' '-')
-  agent_id="$2"
-  echo "/private/tmp/claude-${uid}/${cwd_sanitized}/tasks/${agent_id}.output"
-}
-
-INPUT=$(cat)
-
-parent_id=$(echo "$INPUT" | jq -r '.parent_session_id // .parent_id // .session_id // .parent.id // empty')
-child_id=$(echo "$INPUT" | jq -r '.child_id // .id // .agent_id // empty')
-agent_id=$(echo "$INPUT" | jq -r '.agent_id // .child_id // .id // empty')
-agent_type=$(echo "$INPUT" | jq -r '.agent_type // .type // empty')
+agent_id=$(echo "$INPUT" | jq -r '.agent_id // empty')
+agent_type=$(echo "$INPUT" | jq -r '.agent_type // empty')
 description=$(echo "$INPUT" | jq -r '.description // .task // empty')
 cwd=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-if [[ -z "$parent_id" ]]; then
-  exit 0
-fi
-
-MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-
 payload=$(jq -n \
-  --arg id "$child_id" \
+  --arg id "$agent_id" \
   --arg agent_type "$agent_type" \
   --arg description "$description" \
   '{
@@ -42,12 +18,10 @@ payload=$(jq -n \
     description: (if $description == "" then null else $description end)
   }')
 
-curl -sS --max-time 5 -X POST "http://127.0.0.1:${MANDIBLE_PORT}/api/sessions/${parent_id}/children" \
-  -H "Content-Type: application/json" \
-  -d "$payload" >/dev/null 2>&1 || exit 0
+api_send POST "/api/sessions/$(urlencode "$session_id")/children" "$payload" >/dev/null || exit 1
 
 # Check if subagent panes are enabled via Mandible setting
-subagent_panes_enabled=$(curl -s --max-time 2 "http://127.0.0.1:${MANDIBLE_PORT}/api/settings/subagent_panes_enabled" 2>/dev/null | jq -r '.value // "false"' 2>/dev/null)
+subagent_panes_enabled=$(api_get /api/settings/subagent_panes_enabled | jq -r '.value // "false"') || exit 1
 if [[ "$subagent_panes_enabled" != "true" ]]; then
   # Still registered the child session above, just skip pane spawning
   exit 0

@@ -333,13 +333,8 @@ export async function submitAuth(payload: {
 // --- Sessions ---
 
 /**
- * Bug: 0b454df — register a channel-connected session with Mandible.
- *
- * Issue f52d4dd — the channel server is a component of the Claude session its
- * launcher registered, not a separate app, so it registers under the
- * launcher's app (`claude` when unmanaged). Channel attachment is recorded
- * separately as `channel_connected_at`. A distinct label would relabel the
- * session and break the managed-app claim every CLI call in it presents.
+ * Register a channel-connected session under its launcher's app, which is
+ * `claude` when unmanaged: the channel server is part of that Claude session.
  */
 export async function registerSession(payload: {
   id: string;

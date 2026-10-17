@@ -36,14 +36,8 @@ export function conversationControlPresentation(
           key: `${key}:${capability.evidence_kind}`,
           severity: 'warning',
           title: 'Another process is using this chat.',
-          detail: capability.evidence_kind === 'registered-process' ? 'Sending becomes available when it exits.' : '',
+          detail: 'Sending becomes available when it exits.',
         },
-      };
-    case 'blocked-ownership-unknown':
-      return {
-        sendable: false,
-        submitLabel,
-        blocker: { key, severity: 'warning', title: 'Mandible could not check whether this chat is in use.', detail: '' },
       };
     case 'unavailable':
       if (capability.reason === 'unsupported-provider') {

@@ -25,7 +25,7 @@ function createDiscovery(): {
   // worktree scan resolves to nothing, so the pass exercises the async reaping
   // path without touching on-disk state.
   const workScanner = new WorkScanner({ db, repo_roots: [] });
-  const discovery = new SessionDiscovery(db, registry, workScanner, noopLogger);
+  const discovery = new SessionDiscovery(registry, workScanner, noopLogger);
   return { discovery, registry, db };
 }
 

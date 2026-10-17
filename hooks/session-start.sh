@@ -1,23 +1,7 @@
 #!/usr/bin/env bash
 
 set -o pipefail
-
-if ! command -v jq >/dev/null 2>&1; then
-  exit 0
-fi
-
-INPUT=$(cat)
-
-session_id="${MANDIBLE_SESSION_ID:-}"
-if [[ -z "$session_id" ]]; then
-  session_id=$(echo "$INPUT" | jq -r '.session_id // .id // .session.id // empty')
-fi
-if [[ -z "$session_id" ]]; then
-  exit 0
-fi
-
-MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-health_url="http://127.0.0.1:${MANDIBLE_PORT}/api/health"
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 app=$(echo "$INPUT" | jq -r '.app // empty')
 if [[ -z "$app" ]]; then
@@ -28,11 +12,6 @@ if [[ -z "$app" ]]; then
   else
     app="claude"
   fi
-fi
-
-pid=$(echo "$INPUT" | jq -r '.pid // .process_id // empty')
-if [[ -n "$pid" && "$pid" == "null" ]]; then
-  pid=""
 fi
 
 cwd=$(echo "$INPUT" | jq -r '.cwd // .workspace // empty')
@@ -49,14 +28,6 @@ fi
 
 if [[ -z "$worktree" ]] && git -C "$cwd" rev-parse --show-toplevel >/dev/null 2>&1; then
   worktree=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
-fi
-
-pid_start=""
-if [[ -n "$pid" ]]; then
-  pid_start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//')
-  if [[ -z "$pid_start" ]]; then
-    pid_start=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')
-  fi
 fi
 
 terminal=""
@@ -142,28 +113,11 @@ nav_extra=$(jq -n \
     zellij_tab_status: $zellij_tab_status
   } | with_entries(select(.value != ""))')
 
-if ! curl -fsS --max-time 0.5 "$health_url" >/dev/null 2>&1; then
-  script_dir=$(cd "$(dirname "$0")" && pwd)
-  root_dir=$(cd "$script_dir/.." && pwd)
-  entry_path="${MANDIBLE_ENTRY:-$root_dir/dist/index.js}"
-  if [[ -f "$entry_path" ]]; then
-    MANDIBLE_PORT="$MANDIBLE_PORT" nohup node "$entry_path" >/dev/null 2>&1 &
-    attempts=0
-    while [[ $attempts -lt 15 ]]; do
-      if curl -fsS --max-time 0.5 "$health_url" >/dev/null 2>&1; then
-        break
-      fi
-      attempts=$((attempts + 1))
-      sleep 0.2
-    done
-  fi
-fi
-
 payload=$(jq -n \
   --arg id "$session_id" \
+  --arg conversation_id "$provider_session_id" \
   --arg app "$app" \
-  --arg pid "$pid" \
-  --arg pid_start "$pid_start" \
+  --arg pid "$CLAUDE_PID" \
   --arg cwd "$cwd" \
   --arg branch "$branch" \
   --arg worktree "$worktree" \
@@ -175,9 +129,9 @@ payload=$(jq -n \
   --argjson nav_extra "$nav_extra" \
   '{
     id: $id,
+    conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     app: $app,
-    pid: (if $pid == "" then null else ($pid | tonumber) end),
-    pid_start: (if $pid_start == "" then null else $pid_start end),
+    pid: ($pid | tonumber),
     cwd: (if $cwd == "" then null else $cwd end),
     branch: (if $branch == "" then null else $branch end),
     worktree: (if $worktree == "" then null else $worktree end),
@@ -189,19 +143,16 @@ payload=$(jq -n \
     nav_extra: $nav_extra
   }')
 
-curl -sS --max-time 5 -X POST "http://127.0.0.1:${MANDIBLE_PORT}/api/sessions/register" \
-  -H "Content-Type: application/json" \
-  -d "$payload" >/dev/null 2>&1 || exit 0
+api_send POST /api/sessions/register "$payload" >/dev/null || exit 1
 
-# Check inbox for pending items (non-fatal).
+# Check inbox for pending items.
 # Bug: 4e32923 — surface a single-line summary of *escalated* (tier 2/3) and
 # legacy (tier 0) auth results plus continuations and work units. Owner
 # (tier-1) auth results are delivered live via the MCP channel server and
 # must not be re-surfaced at session start; otherwise every session would
 # re-see results that are already in the agent's context. Nothing prints if
 # there is nothing to show.
-inbox_url="http://127.0.0.1:${MANDIBLE_PORT}/api/inbox/global?session_id=${session_id}"
-inbox_json=$(curl -sS --max-time 5 "$inbox_url" 2>/dev/null || true)
+inbox_json=$(api_get "/api/inbox/global?session_id=$(urlencode "$session_id")") || exit 1
 if [[ -n "$inbox_json" ]]; then
   summary=$(printf '%s' "$inbox_json" | jq -r '
     # Tier 1 is delivered via the channel server; surface only escalated /

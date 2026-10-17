@@ -1369,7 +1369,7 @@ describe('compact detail pane shell', () => {
         ...defaultControl,
         revision: 2,
         ownership: { kind: 'external', generation: 1, evidence: { kind: 'registered-process', reference: 'external-live' }, last_authoritative_signal: 2 },
-        controller: { kind: 'unknown', since: 2, reason: 'probe-ambiguous' },
+        controller: { kind: 'stopped', at: 2 },
         turn: { kind: 'unknown', turn_id: null, since: 2, reason: 'probe-ambiguous' },
         capability: { kind: 'blocked-external', revision: 2, evidence_kind: 'registered-process' },
       } satisfies ConversationControlSnapshot,
@@ -1410,8 +1410,7 @@ describe('compact detail pane shell', () => {
       expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);
       expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
       const blocker = await screen.findByTestId('chat-send-blocker');
-      expect(blocker.textContent).toContain('Another process is using this chat.');
-      expect(document.querySelector('.conv-compose')?.textContent).not.toContain('Another process is using this chat.');
+      expect(document.querySelector('.conv-compose')?.contains(blocker)).toBe(false);
       expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(false);
     }
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));

@@ -12,8 +12,7 @@ export type ControllerState =
   | { kind: "running"; since: number }
   | { kind: "waiting"; since: number }
   | { kind: "stopping"; since: number }
-  | { kind: "failed"; at: number; error: ConversationControlError }
-  | { kind: "unknown"; since: number; reason: ReconciliationUnknownReason };
+  | { kind: "failed"; at: number; error: ConversationControlError };
 
 export type TurnState =
   | { kind: "none" }
@@ -24,10 +23,10 @@ export type TurnState =
   | { kind: "completed"; turn_id: string; at: number }
   | { kind: "failed"; turn_id: string; at: number; error: ConversationControlError }
   | { kind: "cancelled"; turn_id: string; at: number }
-  | { kind: "unknown"; turn_id: string | null; since: number; reason: ReconciliationUnknownReason };
+  | { kind: "unknown"; turn_id: string | null; since: number; reason: "probe-ambiguous" };
 
 export type ExternalControllerEvidence = {
-  kind: "registered-channel" | "registered-process" | "provider-controller";
+  kind: "registered-process";
   reference: string;
 };
 
@@ -46,27 +45,14 @@ export type ControllerOwnership =
       generation: number;
       evidence: ExternalControllerEvidence;
       last_authoritative_signal: number;
-    }
-  | {
-      kind: "unknown";
-      generation: number;
-      prior_owner: "mandible" | "external" | "unknown";
-      reason: ReconciliationUnknownReason;
     };
-
-export type ReconciliationUnknownReason =
-  | "daemon-restarted"
-  | "adapter-unavailable"
-  | "probe-ambiguous"
-  | "authoritative-signal-expired"
-  | "provider-identity-changed";
 
 export type ConversationControlError =
   | { kind: "conversation-not-found"; conversation_id: string }
   | { kind: "invalid-request"; field: string; message: string }
   | { kind: "capability-drift"; expected_revision: number; actual_revision: number }
   | { kind: "unsupported-operation"; operation: ConversationControlOperation | "stop"; capability: ConversationContinuationCapability }
-  | { kind: "ownership-conflict"; owner: "external" | "unknown"; capability: ConversationContinuationCapability }
+  | { kind: "ownership-conflict"; owner: "external"; capability: ConversationContinuationCapability }
   | { kind: "stale-generation"; expected_generation: number; actual_generation: number }
   | { kind: "adapter-unavailable"; adapter_id: string | null; provider: string }
   | { kind: "adapter-failure"; adapter_id: string; code: string; message: string; retryable: boolean }
@@ -80,7 +66,6 @@ export type ConversationContinuationCapability =
   | { kind: "provider-session-resume"; revision: number; generation: number; adapter_id: string; provider_session_id: string }
   | { kind: "message-anchor-resume"; revision: number; generation: number; adapter_id: string; provider_session_id: string }
   | { kind: "blocked-external"; revision: number; evidence_kind: ExternalControllerEvidence["kind"] }
-  | { kind: "blocked-ownership-unknown"; revision: number; reason: ReconciliationUnknownReason }
   | {
       kind: "unavailable";
       revision: number;
@@ -283,15 +268,15 @@ export type ConversationLifecycleEvent =
   | { kind: "controller-stopping"; at: number }
   | { kind: "controller-failed"; at: number; error: ConversationControlError }
   | { kind: "controller-released"; at: number }
-  | { kind: "ownership-unknown"; at: number; reason: ReconciliationUnknownReason }
   | { kind: "provider-session-bound"; at: number; provider_session_id: string }
+  | { kind: "controller-process"; at: number; pid: number }
   | { kind: "turn-started"; at: number; turn_id: string }
   | { kind: "turn-waiting-user"; at: number; turn_id: string }
   | { kind: "turn-waiting-permission"; at: number; turn_id: string }
   | { kind: "turn-completed"; at: number; turn_id: string }
   | { kind: "turn-failed"; at: number; turn_id: string; error: ConversationControlError }
   | { kind: "turn-cancelled"; at: number; turn_id: string }
-  | { kind: "turn-unknown"; at: number; turn_id: string | null; reason: ReconciliationUnknownReason };
+  | { kind: "turn-unknown"; at: number; turn_id: string | null; reason: "probe-ambiguous" };
 
 export type OutboxDeliveryState = "pending" | "delivering" | "delivered" | "failed" | "uncertain";
 
@@ -311,21 +296,4 @@ export type ConversationOutboxItem = {
   state: OutboxDeliveryState;
   attempts: number;
   provider_receipt_id: string | null;
-};
-
-export type ConversationOwnershipReconciliationReport = {
-  checked: number;
-  released: number;
-  external: number;
-  /** Unresolved claims with no provider session identity to probe. */
-  unresolvable: number;
-  probe_error: string | null;
-  errors: ConversationControlError[];
-};
-
-export type ConversationControlReconciliationReport = {
-  claims_checked: number;
-  deliveries_checked: number;
-  ownership: ConversationOwnershipReconciliationReport;
-  errors: ConversationControlError[];
 };

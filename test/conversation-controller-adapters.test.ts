@@ -119,7 +119,7 @@ describe("structured conversation controller adapters", () => {
     expect(events.filter((event) => event.kind === "turn-started").map((event) => "turn_id" in event ? event.turn_id : null))
       .toEqual(["turn-1"]);
     expect(events.filter((event) => event.kind === "turn-completed" && event.turn_id === "turn-1")).toHaveLength(1);
-    expect(events.some((event) => event.kind === "ownership-unknown")).toBe(false);
+    expect(events.some((event) => event.kind === "controller-released")).toBe(false);
   });
 
 

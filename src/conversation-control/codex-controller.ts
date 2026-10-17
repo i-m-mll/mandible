@@ -169,7 +169,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       };
       this.attach(controller);
       this.controllers.set(input.conversation_id, controller);
-      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: providerSessionId } };
+      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: providerSessionId, pid: client.pid } };
     } catch (thrown) {
       if (client) await client.close();
       return { ok: false, error: adapterFailure(this.id,
@@ -287,27 +287,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         state: controller.state,
       } };
     }
-    if (input.provider_session_id === null) return { ok: true, value: { kind: "released" } };
-    let client: CodexAppServerClient | null = null;
-    try {
-      client = await this.connectedClient();
-      const result = await client.request("thread/read", { threadId: input.provider_session_id, includeTurns: false });
-      const status = threadStatus(responseThread(result));
-      if (status === "idle") return { ok: true, value: { kind: "released" } };
-      if (status === "active") {
-        return { ok: true, value: { kind: "external", evidence: "provider-controller", reference: input.provider_session_id } };
-      }
-      return { ok: true, value: { kind: "unknown", reason: "probe-ambiguous" } };
-    } catch (thrown) {
-      return { ok: false, error: adapterFailure(this.id, "probe-failed", thrown, { retryable: true }) };
-    } finally {
-      if (client) await client.close();
-    }
-  }
-
-  async probeDelivery(item: ConversationOutboxItem): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>> {
-    const controller = this.controllers.get(item.conversation_id);
-    return { ok: true, value: controller?.delivered.has(item.id) ? "delivered" : "unknown" };
+    return { ok: true, value: { kind: "released" } };
   }
 
   async stop(input: Parameters<ConversationControllerAdapter["stop"]>[0]): Promise<Result<void, ConversationControlError>> {
@@ -886,7 +866,6 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       controller.activeNativeTurnId = null;
       controller.state = "waiting";
     } else {
-      this.lifecycle.emit(this.event(controller, { kind: "ownership-unknown", at: Date.now(), reason: "probe-ambiguous" }));
       void this.abandon(controller);
     }
   }
@@ -922,7 +901,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     return { ...event, conversation_id: controller.conversationId, generation: controller.generation };
   }
 
+  /** Stop a controller whose protocol Mandible can no longer trust, and give up its claim. */
   private async abandon(controller: CodexController): Promise<void> {
+    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
     controller.intentionalStop = true;
     this.controllers.delete(controller.conversationId);
     await controller.client.close();

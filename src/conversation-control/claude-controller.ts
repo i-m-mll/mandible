@@ -109,7 +109,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       this.controllers.set(input.conversation_id, controller);
       processOwner.onRecord((record) => this.acceptRecord(controller, record));
       processOwner.onExit((exit) => this.processExited(controller, exit));
-      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: controller.nativeIdentityBound ? controller.providerSessionId : null } };
+      return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: controller.nativeIdentityBound ? controller.providerSessionId : null, pid: processOwner.pid } };
     } catch (thrown) {
       if (processOwner) await processOwner.close();
       return { ok: false, error: adapterFailure(this.id, "startup-failed", thrown, { retryable: true }) };
@@ -152,6 +152,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
         const replacement = new ClaudeSdkTransport(acquisition, sdk);
         await replacement.start();
+        if (replacement.pid) this.lifecycle.emit(this.event(owned, { kind: "controller-process", at: Date.now(), pid: replacement.pid }));
         owned.process = replacement;
         owned.providerSessionId = replacement.reservedSessionId;
         owned.nativeIdentityBound = replacement.providerSessionId !== null;
@@ -210,11 +211,6 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       provider_session_id: controller.nativeIdentityBound ? controller.providerSessionId : null,
       state: controller.state,
     } };
-  }
-
-  async probeDelivery(item: ConversationOutboxItem): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>> {
-    const controller = this.controllers.get(item.conversation_id);
-    return { ok: true, value: controller?.delivered.has(item.id) ? "delivered" : "unknown" };
   }
 
   async stop(input: Parameters<ConversationControllerAdapter["stop"]>[0]): Promise<Result<void, ConversationControlError>> {
@@ -282,7 +278,6 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     }
     const sessionId = typeof record.session_id === "string" ? record.session_id : null;
     if (sessionId && sessionId !== controller.providerSessionId) {
-      this.lifecycle.emit(this.event(controller, { kind: "ownership-unknown", at: Date.now(), reason: "provider-identity-changed" }));
       void this.abandon(controller);
       return;
     }
@@ -697,7 +692,6 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       }));
       controller.activeTurnId = null;
     } else {
-      this.lifecycle.emit(this.event(controller, { kind: "ownership-unknown", at: Date.now(), reason: "probe-ambiguous" }));
       void this.abandon(controller);
     }
   }
@@ -740,7 +734,12 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     controller.pending = null;
   }
 
+  /** Stop a controller whose protocol Mandible can no longer trust, and give up its claim. */
   private async abandon(controller: ClaudeController): Promise<void> {
+    if (controller.activeTurnId) {
+      this.lifecycle.emit(this.event(controller, { kind: "turn-unknown", turn_id: controller.activeTurnId, at: Date.now(), reason: "probe-ambiguous" }));
+    }
+    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
     controller.intentionalStop = true;
     this.controllers.delete(controller.conversationId);
     this.rejectPending(controller, adapterFailure(this.id, "ambiguous-protocol", "Claude emitted an ambiguous protocol record"));
