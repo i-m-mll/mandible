@@ -96,6 +96,10 @@ export class StructuredJsonProcess {
     return !this.exited;
   }
 
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
   onRecord(listener: (record: unknown) => void): void {
     this.recordListener = listener;
     for (const record of this.records.splice(0)) listener(record);

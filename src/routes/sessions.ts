@@ -797,7 +797,6 @@ export function registerSessionRoutes(
       if (!dbSessions.some((d) => d.id === live.session_id)) {
         combined.push({
           id: live.session_id,
-          // Only Claude Code runs the channel server (issue f52d4dd).
           app: "claude",
           status: "active",
           branch: live.branch,

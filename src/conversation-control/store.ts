@@ -50,8 +50,17 @@ type StoredDetail = {
   controller_error?: ConversationControlError;
   turn_error?: ConversationControlError;
   unknown_reason?: ReconciliationUnknownReason;
-  unknown_prior_owner?: "mandible" | "external" | "unknown";
 };
+
+/** The provider process a Mandible controller drives, identified across pid reuse by its start time. */
+export type ControllerProcess = { pid: number; pid_start: string | null };
+
+function ownerDetail(providerSessionId: string | null, process: ControllerProcess | null): string {
+  return JSON.stringify({
+    ...(providerSessionId ? {} : { native_identity_pending: true }),
+    ...(process ? { controller_process: process } : {}),
+  });
+}
 
 type PreparedSubmission = Omit<AcceptedConversationSubmission, "provider_receipt"> & {
   acquisition_required: boolean;
@@ -110,7 +119,7 @@ function turnState(row: ControlRow, detail: StoredDetail): TurnState {
   }
 }
 
-function ownership(row: ControlRow, detail: StoredDetail): ControllerOwnership {
+function ownership(row: ControlRow): ControllerOwnership {
   switch (row.owner_kind) {
     case "none": return { kind: "none", generation: row.generation };
     case "mandible":
@@ -128,13 +137,6 @@ function ownership(row: ControlRow, detail: StoredDetail): ControllerOwnership {
         generation: row.generation,
         evidence: parseObject<ExternalControllerEvidence>(row.owner_detail_json),
         last_authoritative_signal: row.last_authoritative_signal!,
-      };
-    case "unknown":
-      return {
-        kind: "unknown",
-        generation: row.generation,
-        prior_owner: detail.unknown_prior_owner ?? "unknown",
-        reason: detail.unknown_reason ?? "probe-ambiguous",
       };
   }
 }
@@ -277,8 +279,8 @@ export class ConversationControlStore {
       }
       const snapshot = this.toSnapshot(row, boundary, capabilities, adapterId);
       if (!this.operationMatches(request.operation, snapshot.capability.kind)) {
-        if (snapshot.capability.kind === "blocked-external" || snapshot.capability.kind === "blocked-ownership-unknown") {
-          return { ok: false, error: { kind: "ownership-conflict", owner: snapshot.capability.kind === "blocked-external" ? "external" : "unknown", capability: snapshot.capability } };
+        if (snapshot.capability.kind === "blocked-external") {
+          return { ok: false, error: { kind: "ownership-conflict", owner: "external", capability: snapshot.capability } };
         }
         return { ok: false, error: { kind: "unsupported-operation", operation: request.operation, capability: snapshot.capability } };
       }
@@ -306,7 +308,7 @@ export class ConversationControlStore {
           controller_instance_id = ?, adapter_id = ?, owner_detail_json = ?,
           last_authoritative_signal = ?, state_detail_json = '{}', updated_at = ?
           WHERE conversation_id = ? AND revision = ?
-        `).run(revision, generation, controllerInstanceId, adapterId, boundary.session_id ? "{}" : JSON.stringify({ native_identity_pending: true }), now, now, request.conversation_id, row.revision);
+        `).run(revision, generation, controllerInstanceId, adapterId, ownerDetail(boundary.session_id, null), now, now, request.conversation_id, row.revision);
         this.journal(request.conversation_id, revision, generation, "controller-acquired", { adapter_id: adapterId, controller_instance_id: controllerInstanceId }, now);
       }
       revision += 1;
@@ -352,14 +354,14 @@ export class ConversationControlStore {
     return transaction.immediate();
   }
 
-  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string | null): Result<void, ConversationControlError> {
+  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string | null, process: ControllerProcess | null): Result<void, ConversationControlError> {
     return this.mutateOwned(conversationId, generation, "controller-ready", (row, revision, now) => {
       const invalid = this.controllerTransitionError(row.controller_state, "ready");
       if (invalid) return invalid;
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, controller_state = 'ready',
         controller_instance_id = ?, provider_session_id = ?, owner_detail_json = ?, last_authoritative_signal = ?, updated_at = ?
         WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
-      `).run(revision, controllerInstanceId, providerSessionId, providerSessionId ? "{}" : JSON.stringify({ native_identity_pending: true }), now, now, conversationId, generation);
+      `).run(revision, controllerInstanceId, providerSessionId, ownerDetail(providerSessionId, process), now, now, conversationId, generation);
       return null;
     });
   }
@@ -370,6 +372,7 @@ export class ConversationControlStore {
     adapterId: string,
     controllerInstanceId: string,
     providerSessionId: string | null,
+    process: ControllerProcess | null,
   ): Result<void, ConversationControlError> {
     const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
       const ensured = this.ensure(conversationId);
@@ -403,7 +406,7 @@ export class ConversationControlStore {
         controllerInstanceId,
         adapterId,
         providerSessionId,
-        providerSessionId === null ? JSON.stringify({ native_identity_pending: true }) : "{}",
+        ownerDetail(providerSessionId, process),
         now,
         now,
         conversationId,
@@ -476,7 +479,6 @@ export class ConversationControlStore {
             const invalid = this.currentTurnError(row, event.turn_id, ["queued", "running", "waiting-user", "waiting-permission", "unknown"]); if (invalid) return invalid;
           }
           turn = "unknown"; turnId = event.turn_id; detail.unknown_reason = event.reason; break;
-        case "ownership-unknown":
         case "controller-released":
         case "provider-session-bound":
           throw new Error(`${event.kind} requires its dedicated store transition`);
@@ -496,7 +498,7 @@ export class ConversationControlStore {
       if (!providerSessionId.trim() || row.provider_session_id && row.provider_session_id !== providerSessionId) {
         return { kind: "adapter-contract-violation", adapter_id: row.adapter_id!, message: "The controller native identity is already bound" };
       }
-      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, provider_session_id = ?, owner_detail_json = '{}',
+      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, provider_session_id = ?, owner_detail_json = json_remove(owner_detail_json, '$.native_identity_pending'),
         last_authoritative_signal = ?, updated_at = ? WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'`)
         .run(revision, providerSessionId, now, now, conversationId, generation);
       this.db.prepare("UPDATE conversations SET session_id = ? WHERE id = ? AND (session_id IS NULL OR session_id = '')").run(providerSessionId, conversationId);
@@ -514,21 +516,10 @@ export class ConversationControlStore {
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, owner_kind = 'none',
         controller_state = 'stopped', controller_instance_id = NULL, adapter_id = NULL,
         owner_detail_json = '{}', last_authoritative_signal = NULL, updated_at = ?
-        WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
+        WHERE conversation_id = ? AND generation = ?
       `).run(revision, now, conversationId, generation);
       return null;
-    });
-  }
-
-  recoverUnsentDraft(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
-    const row = this.row(conversationId);
-    const boundary = this.getBoundary(conversationId);
-    if (!boundary.ok) return boundary;
-    if (!row || row.owner_kind !== "mandible" || row.generation !== generation || row.provider_session_id || !boundary.value.local_draft || row.turn_state !== "none") return { ok: true, value: false };
-    const attempted = this.db.prepare("SELECT 1 FROM conversation_control_outbox WHERE conversation_id = ? LIMIT 1").get(conversationId);
-    if (attempted) return { ok: true, value: false };
-    const released = this.release(conversationId, generation);
-    return released.ok ? { ok: true, value: true } : released;
+    }, {}, ["mandible", "external"]);
   }
 
   recoverFailedAcquisition(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
@@ -572,38 +563,6 @@ export class ConversationControlStore {
     }
   }
 
-  markUnknown(conversationId: string, generation: number, reason: ReconciliationUnknownReason): Result<void, ConversationControlError> {
-    const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
-      const ensured = this.ensure(conversationId);
-      if (!ensured.ok) return ensured;
-      const row = ensured.value;
-      if (row.owner_kind === "none") return { ok: true, value: undefined };
-      if (row.generation !== generation) {
-        return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: row.generation } };
-      }
-      if (row.owner_kind !== "mandible") {
-        return { ok: false, error: { kind: "invalid-request", field: "ownership", message: "Only the current Mandible controller can publish unknown ownership" } };
-      }
-      const revision = row.revision + 1;
-      const now = this.now();
-      const prior = "mandible" as const;
-      const detail = parseObject<StoredDetail>(row.state_detail_json);
-      detail.unknown_reason = reason;
-      detail.unknown_prior_owner = prior;
-      const turnState = ["queued", "running", "waiting-user", "waiting-permission"].includes(row.turn_state)
-        ? "unknown"
-        : row.turn_state;
-      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, owner_kind = 'unknown',
-        controller_state = 'unknown', controller_instance_id = NULL, adapter_id = NULL,
-        owner_detail_json = '{}', last_authoritative_signal = NULL, turn_state = ?,
-        state_detail_json = ?, updated_at = ? WHERE conversation_id = ?
-      `).run(revision, turnState, JSON.stringify(detail), now, conversationId);
-      this.journal(conversationId, revision, row.generation, "ownership-unknown", { reason, prior_owner: prior }, now);
-      return { ok: true, value: undefined };
-    });
-    return transaction.immediate();
-  }
-
   observeExternal(conversationId: string, evidence: ExternalControllerEvidence): Result<void, ConversationControlError> {
     const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
       const ensured = this.ensure(conversationId);
@@ -633,52 +592,32 @@ export class ConversationControlStore {
   }
 
   /**
-   * Claims no live Mandible controller can answer for: unknown ownership, and
-   * external ownership whose only evidence is a live provider process.
+   * The session registry decides external ownership: a provider session with a
+   * live registered process is external, and frees again once none remains.
+   * Mandible-owned and provider-attested claims are left alone.
    */
-  unresolvedOwnershipRows(): Array<{ conversation_id: string; revision: number; owner_kind: "unknown" | "external"; provider_session_id: string | null; transcript_path: string | null }> {
-    return this.db.prepare(`SELECT s.conversation_id, s.revision, s.owner_kind,
-        COALESCE(s.provider_session_id, NULLIF(c.session_id, '')) AS provider_session_id, c.source_path AS transcript_path
-      FROM conversation_control_state s JOIN conversations c ON c.id = s.conversation_id
-      WHERE s.owner_kind = 'unknown'
-         OR (s.owner_kind = 'external' AND json_extract(s.owner_detail_json, '$.kind') = 'registered-process')
-      ORDER BY s.conversation_id
-    `).all() as Array<{ conversation_id: string; revision: number; owner_kind: "unknown" | "external"; provider_session_id: string | null; transcript_path: string | null }>;
+  syncRegisteredOwnership(providerSessionId: string | null): string[] {
+    const rows = this.db.prepare(`SELECT * FROM (
+        SELECT c.id AS conversation_id, s.owner_kind, s.generation,
+          json_extract(s.owner_detail_json, '$.kind') AS evidence_kind,
+          (SELECT r.id FROM sessions r WHERE r.status = 'active' AND r.pid IS NOT NULL
+            AND (r.conversation_id = c.session_id OR r.id = c.session_id) ORDER BY r.updated_at DESC LIMIT 1) AS live_session_id
+        FROM conversations c LEFT JOIN conversation_control_state s ON s.conversation_id = c.id
+        WHERE NULLIF(c.session_id, '') IS NOT NULL AND c.parent_conversation_id IS NULL AND (? IS NULL OR c.session_id = ?))
+      WHERE (live_session_id IS NOT NULL AND COALESCE(owner_kind, 'none') = 'none')
+         OR (live_session_id IS NULL AND owner_kind = 'external' AND evidence_kind = 'registered-process')
+    `).all(providerSessionId, providerSessionId) as Array<{ conversation_id: string; generation: number | null; live_session_id: string | null }>;
+    return rows.filter((row) => (row.live_session_id
+      ? this.observeExternal(row.conversation_id, { kind: "registered-process", reference: row.live_session_id })
+      : this.release(row.conversation_id, row.generation!)).ok).map((row) => row.conversation_id);
   }
 
-  /** Resolve an unproven claim from one process snapshot taken at `expectedRevision`. */
-  resolveUnresolvedOwnership(
-    conversationId: string,
-    expectedRevision: number,
-    evidence: { kind: "absent" } | { kind: "present"; pid: number },
-  ): Result<boolean, ConversationControlError> {
-    const transaction = this.db.transaction((): Result<boolean, ConversationControlError> => {
-      const row = this.row(conversationId);
-      if (!row || row.revision !== expectedRevision || (row.owner_kind !== "unknown" && row.owner_kind !== "external")) {
-        return { ok: true, value: false };
-      }
-      if (evidence.kind === "present") {
-        if (row.owner_kind === "external") return { ok: true, value: false };
-        const observed = this.observeExternal(conversationId, { kind: "registered-process", reference: `pid:${evidence.pid}` });
-        return observed.ok ? { ok: true, value: true } : observed;
-      }
-      const revision = row.revision + 1;
-      const now = this.now();
-      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, owner_kind = 'none',
-        controller_state = 'stopped', controller_instance_id = NULL, adapter_id = NULL,
-        owner_detail_json = '{}', last_authoritative_signal = NULL, updated_at = ?
-        WHERE conversation_id = ? AND revision = ?
-      `).run(revision, now, conversationId, expectedRevision);
-      this.journal(conversationId, revision, row.generation, "controller-released", { reason: "provider-process-absent", prior_owner: row.owner_kind }, now);
-      return { ok: true, value: true };
-    });
-    return transaction.immediate();
-  }
-
-  activeOwnedRows(): Array<{ conversation_id: string; generation: number; adapter_id: string; provider_session_id: string; controller_instance_id: string }> {
-    return this.db.prepare(`SELECT conversation_id, generation, adapter_id, provider_session_id, controller_instance_id
-      FROM conversation_control_state WHERE owner_kind = 'mandible' AND controller_state != 'stopped'
-    `).all() as Array<{ conversation_id: string; generation: number; adapter_id: string; provider_session_id: string; controller_instance_id: string }>;
+  activeOwnedRows(conversationId: string | null = null): Array<{ conversation_id: string; generation: number; adapter_id: string; provider_session_id: string | null; controller_instance_id: string; controller_process: ControllerProcess | null }> {
+    return (this.db.prepare(`SELECT conversation_id, generation, adapter_id, provider_session_id, controller_instance_id,
+        json_extract(owner_detail_json, '$.controller_process') AS controller_process
+      FROM conversation_control_state WHERE owner_kind = 'mandible' AND (? IS NULL OR conversation_id = ?)
+    `).all(conversationId, conversationId) as Array<{ conversation_id: string; generation: number; adapter_id: string; provider_session_id: string | null; controller_instance_id: string; controller_process: string | null }>)
+      .map((row) => ({ ...row, controller_process: row.controller_process ? JSON.parse(row.controller_process) as ControllerProcess : null }));
   }
 
   pendingOutbox(): ConversationOutboxItem[] {
@@ -746,26 +685,13 @@ export class ConversationControlStore {
     return { ok: true, value: undefined };
   }
 
-  resolveUncertainDelivery(deliveryId: string, generation: number, delivered: boolean, providerReceiptId: string | null = null): Result<void, ConversationControlError> {
-    const item = this.db.prepare("SELECT conversation_id FROM conversation_control_outbox WHERE id = ?").get(deliveryId) as { conversation_id: string } | undefined;
-    if (!item) return { ok: false, error: { kind: "invalid-request", field: "delivery_id", message: "Unknown delivery" } };
-    const control = this.row(item.conversation_id)!;
-    if (control.owner_kind !== "mandible" || control.generation !== generation) {
-      return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: control.generation } };
-    }
-    this.db.prepare(`UPDATE conversation_control_outbox SET state = ?, provider_receipt_id = ?, updated_at = ?
-      WHERE id = ? AND state IN ('delivering','uncertain')
-    `).run(delivered ? "delivered" : "pending", providerReceiptId, this.now(), deliveryId);
-    return { ok: true, value: undefined };
-  }
-
   private row(conversationId: string): ControlRow | null {
     return this.db.prepare("SELECT * FROM conversation_control_state WHERE conversation_id = ?").get(conversationId) as ControlRow | undefined ?? null;
   }
 
   private toSnapshot(row: ControlRow, boundary: ConversationBoundary, capabilities: ControllerAdapterCapabilities | null, adapterId: string | null): ConversationControlSnapshot {
     const detail = parseObject<StoredDetail>(row.state_detail_json);
-    const owner = ownership(row, detail);
+    const owner = ownership(row);
     const controller = controllerState(row, detail);
     const turn = turnState(row, detail);
     const revision = row.revision;
@@ -773,7 +699,6 @@ export class ConversationControlStore {
     if (boundary.parent_conversation_id) capability = unavailable(revision, "subagent");
     else if (!boundary.session_id && owner.kind !== "mandible" && !(boundary.local_draft && owner.kind === "none")) capability = unavailable(revision, "no-provider-session");
     else if (owner.kind === "external") capability = { kind: "blocked-external", revision, evidence_kind: owner.evidence.kind };
-    else if (owner.kind === "unknown") capability = { kind: "blocked-ownership-unknown", revision, reason: owner.reason };
     else if (!capabilities || !adapterId) capability = unavailable(revision, "unsupported-provider");
     else if (owner.kind === "none" && boundary.local_draft && !boundary.session_id) {
       capability = capabilities.send ? { kind: "live-send", revision, generation: owner.generation } : unavailable(revision, "unsupported-provider");
@@ -827,11 +752,12 @@ export class ConversationControlStore {
     kind: string,
     mutate: (row: ControlRow, revision: number, now: number) => ConversationControlError | null,
     payload: object = {},
+    owners: readonly ControllerOwnership["kind"][] = ["mandible"],
   ): Result<void, ConversationControlError> {
     const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
       const row = this.row(conversationId);
       if (!row) return { ok: false, error: { kind: "conversation-not-found", conversation_id: conversationId } };
-      if (row.owner_kind !== "mandible" || row.generation !== generation) {
+      if (!owners.includes(row.owner_kind) || row.generation !== generation) {
         return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: row.generation } };
       }
       const revision = row.revision + 1;
@@ -847,13 +773,13 @@ export class ConversationControlStore {
   private controllerTransitionError(from: ControllerState["kind"], to: ControllerState["kind"]): ConversationControlError | null {
     const allowed: Record<ControllerState["kind"], readonly ControllerState["kind"][]> = {
       stopped: [],
-      starting: ["starting", "ready", "running", "stopping", "failed", "unknown"],
-      ready: ["ready", "running", "waiting", "stopping", "failed", "unknown"],
-      running: ["running", "waiting", "stopping", "failed", "unknown"],
-      waiting: ["waiting", "running", "stopping", "failed", "unknown"],
-      stopping: ["stopping", "failed", "unknown"],
-      failed: ["failed", "stopping", "unknown"],
-      unknown: ["unknown"],
+      starting: ["starting", "ready", "running", "stopping", "failed"],
+      ready: ["ready", "running", "waiting", "stopping", "failed"],
+      running: ["running", "waiting", "stopping", "failed"],
+      waiting: ["waiting", "running", "stopping", "failed"],
+      stopping: ["stopping", "failed"],
+      failed: ["failed", "stopping"],
+      unknown: [],
     };
     if (!allowed[from].includes(to)) {
       return { kind: "invalid-request", field: "controller_state", message: `Invalid controller lifecycle transition ${from} -> ${to}` };

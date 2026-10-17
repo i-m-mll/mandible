@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -41,6 +42,8 @@ export class ClaudeSdkTransport {
   private readonly allowedTools = new Set<string>();
   private nativeSessionId: string | null = null;
   private reservedId = "";
+  private processId: number | undefined;
+  private stderrTail = "";
   private drain: Promise<void> | null = null;
 
   constructor(private readonly inputRequest: ControllerAcquisitionRequest, private readonly sdk: ClaudeSdk) {
@@ -50,6 +53,7 @@ export class ClaudeSdkTransport {
   get alive(): boolean { return !this.closed && this.query !== null; }
   get providerSessionId(): string | null { return this.nativeSessionId; }
   get reservedSessionId(): string { return this.reservedId; }
+  get pid(): number | undefined { return this.processId; }
 
   async start(): Promise<void> {
     const request = this.inputRequest;
@@ -88,6 +92,12 @@ export class ClaudeSdkTransport {
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
       hooks: { SessionStart: [{ hooks: [async (event) => { bind(event.session_id); return {}; }] }] },
+      spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }) => {
+        const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+        child.stderr.on("data", (chunk: Buffer) => { this.stderrTail = `${this.stderrTail}${chunk.toString("utf8")}`.slice(-8_192); });
+        this.processId = child.pid;
+        return child;
+      },
       canUseTool: async (tool, input, context) => {
         if (this.allowedTools.has(tool)) return { behavior: "allow", updatedInput: input };
         const id = randomUUID();
@@ -152,7 +162,7 @@ export class ClaudeSdkTransport {
     } catch (error) {
       if (!this.closed) {
         this.closed = true;
-        this.exitListener?.({ code: 1, signal: null, stderr: String(error) });
+        this.exitListener?.({ code: 1, signal: null, stderr: [String(error), this.stderrTail.trim()].filter(Boolean).join("\n") });
       }
     } finally {
       this.input.close();

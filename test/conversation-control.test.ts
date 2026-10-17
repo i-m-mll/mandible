@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,7 @@ import type {
   Result,
 } from "../src/conversation-control/types.js";
 import { migrate, openDb, type Db } from "../src/db.js";
+import { SessionRegistry } from "../src/registry.js";
 
 const capabilities: ControllerAdapterCapabilities = {
   mode: "app-server-managed",
@@ -56,8 +58,8 @@ class FakeAdapter implements ConversationControllerAdapter {
   lastAcquisition: ControllerAcquisitionRequest | null = null;
   invalidateOnAcquire = false;
   invalidLeaseOnAcquire = false;
+  pid: number | undefined;
   delivered = new Set<string>();
-  deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
   probeResult: AdapterProbe = {
     kind: "owned",
     controller_instance_id: "controller-1",
@@ -67,15 +69,15 @@ class FakeAdapter implements ConversationControllerAdapter {
   private listeners = new Set<(event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>>();
   private providerListeners = new Set<(event: import("../src/conversation-control/types.js").ProviderAdapterEvent) => void>();
 
-  async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
+  async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string; pid?: number }, ConversationControlError>> {
     this.acquisitions += 1;
     this.lastAcquisition = input;
     if (this.invalidateOnAcquire) {
       this.emit({
         conversation_id: input.conversation_id,
         generation: input.generation,
-        kind: "ownership-unknown",
-        reason: "probe-ambiguous",
+        kind: "controller-failed",
+        error: { kind: "adapter-failure", adapter_id: this.id, code: "lost", message: "lost", retryable: true },
         at: Date.now(),
       });
     }
@@ -84,6 +86,7 @@ class FakeAdapter implements ConversationControllerAdapter {
       value: {
         controller_instance_id: this.invalidLeaseOnAcquire ? "wrong-controller" : input.controller_instance_id,
         provider_session_id: input.kind === "start" ? "provider-1" : input.provider_session_id,
+        pid: this.pid,
       },
     };
   }
@@ -101,10 +104,6 @@ class FakeAdapter implements ConversationControllerAdapter {
 
   async probe(): Promise<Result<AdapterProbe, ConversationControlError>> {
     return { ok: true, value: this.probeResult };
-  }
-
-  async probeDelivery(): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>> {
-    return { ok: true, value: this.deliveryProbe };
   }
 
   async stop(): Promise<Result<void, ConversationControlError>> {
@@ -384,8 +383,7 @@ describe("authoritative conversation control", () => {
       code: "startup-failed", message: "paginated_threads is not supported yet", retryable: true };
     expect(store.publishLifecycle("conversation-1", generation, { kind: "controller-failed", at: Date.now(), error }).ok).toBe(true);
 
-    const reconciled = await service.reconcileAfterRestart();
-    expect(reconciled.errors).toEqual([]);
+    expect(await service.reconcileAfterRestart()).toEqual([]);
     const recovered = service.getSnapshot("conversation-1");
     expect(recovered.ok && recovered.value).toMatchObject({
       ownership: { kind: "none", generation: 1 }, capability: { kind: "provider-session-resume" },
@@ -605,88 +603,41 @@ describe("authoritative conversation control", () => {
     expect(new ConversationControlStore(db).release("conversation-1", firstGeneration)).toEqual(stale);
   });
 
-  it("reconciles an unprovable restart claim to unknown instead of free", async () => {
+  it("ends an orphaned controller after a restart and frees its chat", async () => {
+    const orphan = spawn("/bin/sleep", ["30"]);
+    await new Promise<void>((resolve, reject) => { orphan.once("spawn", resolve); orphan.once("error", reject); });
+    const exited = new Promise((resolve) => orphan.once("exit", resolve));
     const running = new ConversationControlService(db);
-    running.registerAdapter(new FakeAdapter());
+    const before = new FakeAdapter();
+    before.pid = orphan.pid;
+    running.registerAdapter(before);
     expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
 
-    const restarted = new ConversationControlService(db, {
-      probeProviderProcesses: async () => { throw new Error("process table unavailable"); },
-    });
-    const reconciled = await restarted.reconcileAfterRestart();
-    expect(reconciled.ownership.probe_error).toBe("process table unavailable");
-    const snapshot = restarted.getSnapshot("conversation-1");
-    expect(snapshot.ok && snapshot.value.ownership).toMatchObject({
-      kind: "unknown",
-      prior_owner: "mandible",
-      reason: "adapter-unavailable",
-    });
-    expect(snapshot.ok && snapshot.value.capability.kind).toBe("blocked-ownership-unknown");
-  });
-
-  it("converges unknown ownership from provider process evidence", async () => {
-    const running = new ConversationControlService(db);
-    running.registerAdapter(new FakeAdapter());
-    expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
-
-    let evidence: { kind: "absent" } | { kind: "present"; pid: number } = { kind: "present", pid: 4242 };
-    const probed: string[] = [];
-    const restarted = new ConversationControlService(db, {
-      probeProviderProcesses: async (queries) => {
-        probed.push(...queries.map((query) => query.provider_session_id));
-        return new Map(queries.map((query) => [query.provider_session_id, evidence]));
-      },
-    });
-    const adapter = new FakeAdapter();
-    adapter.probeResult = { kind: "unknown", reason: "probe-ambiguous" };
-    restarted.registerAdapter(adapter);
-
-    await restarted.reconcileAfterRestart();
-    const held = restarted.getSnapshot("conversation-1");
-    expect(held.ok && held.value.ownership).toMatchObject({ kind: "external", evidence: { kind: "registered-process", reference: "pid:4242" } });
-    expect(held.ok && held.value.capability.kind).toBe("blocked-external");
-
-    evidence = { kind: "absent" };
-    expect(await restarted.reconcileUnresolvedOwnership()).toMatchObject({ released: 1, errors: [] });
-    const freed = restarted.getSnapshot("conversation-1");
-    expect(freed.ok && freed.value.ownership.kind).toBe("none");
-    expect(freed.ok && freed.value.capability.kind).toBe("provider-session-resume");
-    expect(probed).toEqual(["provider-1", "provider-1"]);
-    expect(await restarted.reconcileUnresolvedOwnership()).toMatchObject({ checked: 0, released: 0 });
-  });
-
-  it("uses the adapter delivery probe before resolving an in-flight restart", async () => {
-    const store = new ConversationControlStore(db);
-    const prepared = store.prepareSubmission(request(0, "request-a"), capabilities, "fake-codex");
-    expect(prepared.ok).toBe(true);
-    if (!prepared.ok) return;
-    const generation = prepared.value.snapshot.ownership.generation;
-    expect(store.publishAcquired("conversation-1", generation, "controller-1", "provider-1").ok).toBe(true);
-    expect(store.beginDelivery(prepared.value.delivery_id).ok).toBe(true);
-
-    const adapter = new FakeAdapter();
-    adapter.deliveryProbe = "delivered";
     const restarted = new ConversationControlService(db);
-    restarted.registerAdapter(adapter);
-    await restarted.reconcileAfterRestart();
+    const after = new FakeAdapter();
+    after.probeResult = { kind: "unknown", reason: "probe-ambiguous" };
+    restarted.registerAdapter(after);
+    expect(await restarted.reconcileAfterRestart()).toEqual([]);
 
-    expect(adapter.deliveries).toBe(0);
-    expect(db.prepare("SELECT state FROM conversation_control_outbox WHERE id = ?").get(prepared.value.delivery_id))
-      .toEqual({ state: "delivered" });
+    await exited;
+    const snapshot = restarted.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value.ownership.kind).toBe("none");
+    expect(snapshot.ok && snapshot.value.capability.kind).toBe("provider-session-resume");
   });
 
-  it("blocks external ownership without exposing transcript-derived escape paths", () => {
+  it("follows the session registry for external ownership", () => {
     const service = new ConversationControlService(db);
     service.registerAdapter(new FakeAdapter());
-    expect(service.recordExternalOwnership("conversation-1", {
-      kind: "registered-channel",
-      reference: "channel-registration-1",
-    }).ok).toBe(true);
-    const snapshot = service.getSnapshot("conversation-1");
-    expect(snapshot.ok && snapshot.value.capability).toMatchObject({
-      kind: "blocked-external",
-      evidence_kind: "registered-channel",
-    });
+    const registry = new SessionRegistry(db);
+    registry.onLifecycle((session) => service.syncRegisteredOwnership(session.conversation_id ?? session.id));
+
+    registry.registerSession({ id: "terminal-1", app: "claude", pid: process.pid, conversation_id: "provider-1" });
+    const held = service.getSnapshot("conversation-1");
+    expect(held.ok && held.value.capability).toMatchObject({ kind: "blocked-external", evidence_kind: "registered-process" });
+
+    registry.endSession("terminal-1");
+    const freed = service.getSnapshot("conversation-1");
+    expect(freed.ok && freed.value.capability.kind).toBe("provider-session-resume");
   });
 
   it("rolls back an acquired process when claim publication loses authority", async () => {
@@ -701,7 +652,7 @@ describe("authoritative conversation control", () => {
     expect(adapter.acquisitions).toBe(1);
     expect(adapter.stops).toBe(1);
     const snapshot = service.getSnapshot("conversation-1");
-    expect(snapshot.ok && snapshot.value.ownership.kind).toBe("unknown");
+    expect(snapshot.ok && snapshot.value.controller.kind).toBe("failed");
   });
 
   it("keeps an ambiguous native turn blocked", async () => {
@@ -897,24 +848,23 @@ it("resumes without a message and persists settings independently of delivery re
   await service.close();
 });
 
-it("keeps initialized Claude identity pending, binds once, and only recovers an unsent local draft", () => {
+it("keeps initialized Claude identity pending and binds it once", () => {
   db.prepare("UPDATE conversations SET source = 'claude_code', session_id = '' WHERE id = 'conversation-1'").run();
   const store = new ConversationControlStore(db);
   const claude = { ...capabilities, steer:false };
-  expect(store.adoptNewController('conversation-1',1,'claude-agent-sdk-v1','controller',null).ok).toBe(true);
+  expect(store.adoptNewController('conversation-1',1,'claude-agent-sdk-v1','controller',null,null).ok).toBe(true);
   expect(store.snapshot('conversation-1',claude,'claude-agent-sdk-v1')).toMatchObject({ok:true,value:{provider_session_id:null,controller:{kind:'ready'},capability:{kind:'live-send'}}});
   // Persist the local creation receipt without claiming a native session.
   db.prepare(`INSERT INTO conversation_spawn_requests (id,schema_version,idempotency_key,request_digest,request_json,provider,topology_kind,state,attempt_count,native_session_id,created_at,updated_at)
     VALUES ('conversation-1','mandible-conversation-spawn-request@3','draft',?,'{}','claude_code','top-level','ready',1,'controller',1,1)`).run('0'.repeat(64));
-  expect(store.recoverUnsentDraft('conversation-1',1)).toEqual({ok:true,value:true});
+  expect(store.release('conversation-1',1)).toEqual({ok:true,value:undefined});
   const draft = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
   expect(draft).toMatchObject({ok:true,value:{ownership:{kind:'none',generation:1},capability:{kind:'live-send'}}});
-  expect(store.adoptNewController('conversation-1',2,'claude-agent-sdk-v1','replacement',null).ok).toBe(true);
+  expect(store.adoptNewController('conversation-1',2,'claude-agent-sdk-v1','replacement',null,null).ok).toBe(true);
   expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
   const before = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
   expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
   expect(store.snapshot('conversation-1',claude,'claude-agent-sdk-v1')).toEqual(before);
   expect(store.bindProviderSession('conversation-1',2,'different').ok).toBe(false);
-  expect(store.recoverUnsentDraft('conversation-1',2)).toEqual({ok:true,value:false});
   expect(db.prepare("SELECT session_id FROM conversations WHERE id = 'conversation-1'").get()).toEqual({session_id:'native'});
 });

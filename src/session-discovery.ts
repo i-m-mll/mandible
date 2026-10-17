@@ -3,10 +3,9 @@ import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { promisify } from "node:util";
-import { SessionRegistry, normalizePidStart, cachePidStartTimes } from "./registry.js";
+import { SessionRegistry, cachePidStartTimes, parsePsPidStart } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { WorkScanner } from "./work-scanner.js";
-import type { Db } from "./db.js";
 import type { Logger } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -38,7 +37,6 @@ const AGENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; app: string }> = [
  * and reaps dead sessions whose PIDs are no longer alive.
  */
 export class SessionDiscovery {
-  private readonly db: Db;
   private readonly registry: SessionRegistry;
   private readonly workScanner: WorkScanner;
   private readonly log: Logger;
@@ -47,12 +45,10 @@ export class SessionDiscovery {
   private activeDiscovery: Promise<DiscoveryResult> | null = null;
 
   constructor(
-    db: Db,
     registry: SessionRegistry,
     workScanner: WorkScanner,
     logger: Logger,
   ) {
-    this.db = db;
     this.registry = registry;
     this.workScanner = workScanner;
     this.log = logger;
@@ -149,36 +145,10 @@ export class SessionDiscovery {
     return result;
   }
 
-  /** Mark active sessions whose PIDs are no longer alive as dead. */
+  /** Apply registry liveness to every active session; the registry announces each one it ends. */
   reapDeadSessions(): number {
     if (this.stopped) return 0;
-    const activeSessions = this.db
-      .prepare(
-        "SELECT id, pid FROM sessions WHERE status = 'active' AND pid IS NOT NULL",
-      )
-      .all() as Array<{ id: string; pid: number }>;
-
-    let count = 0;
-    for (const session of activeSessions) {
-      // Only proven death reaps. An unprovable probe leaves the session
-      // active and logs; a wrongly-reaped live session is the worse error.
-      if (this.probeProcess(session.pid) === "dead") {
-        const now = new Date().toISOString();
-        this.db
-          .prepare(
-            "UPDATE sessions SET status = 'dead', ended_at = ?, updated_at = ? WHERE id = ?",
-          )
-          .run(now, now, session.id);
-        count++;
-
-        this.log("info", "session_reaped", {
-          session_id: session.id,
-          pid: session.pid,
-        });
-      }
-    }
-
-    return count;
+    return this.registry.listSessions({ status: "active" }).filter((session) => session.status !== "active").length;
   }
 
   /** Reuse the scanner's bounded inventory path and exact branch parser. */
@@ -216,33 +186,10 @@ export class SessionDiscovery {
       throw error;
     }
 
-    const lines = psOutput.split("\n");
     const candidates: Array<{ pid: number; app: string; pid_start: string }> = [];
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const match = trimmed.match(/^(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
-      if (!match) throw new Error("Unrecognized ps process identity record");
-      const pid = Number.parseInt(match[1], 10);
-      const pidStart = normalizePidStart(match[2]);
-      const comm = match[3].toLowerCase();
-      if (!Number.isInteger(pid) || pid <= 0 || !pidStart) throw new Error("Invalid ps process identity record");
-
-      // Skip our own process
-      if (pid === process.pid) {
-        continue;
-      }
-
-      for (const pattern of AGENT_PATTERNS) {
-        if (pattern.pattern.test(comm)) {
-          candidates.push({ pid, app: pattern.app, pid_start: pidStart });
-          break;
-        }
-      }
+    for (const [pid, { pid_start, rest }] of parsePsPidStart(psOutput)) {
+      const app = pid === process.pid ? undefined : AGENT_PATTERNS.find(({ pattern }) => pattern.test(rest.toLowerCase()))?.app;
+      if (app) candidates.push({ pid, app, pid_start });
     }
 
     // Resolve every candidate cwd in a single batched lsof invocation.
@@ -303,34 +250,6 @@ export class SessionDiscovery {
       }
     }
     return cwdByPid;
-  }
-
-  /**
-   * Three states, because `process.kill(pid, 0)` has three outcomes and only
-   * one of them means the process is gone.
-   *
-   * ESRCH is the only proof of death. EPERM means the process is alive but
-   * owned by another uid — which is the normal case for a session started
-   * under a different user — and every other errno (EINVAL, EAGAIN under
-   * process exhaustion) is not evidence either way. Collapsing all three to
-   * `false` reaped live sessions as `dead`. `delegated-signing-resource.ts`
-   * already made exactly this distinction for signer liveness.
-   */
-  private probeProcess(pid: number): "alive" | "dead" | "unprovable" {
-    try {
-      process.kill(pid, 0);
-      return "alive";
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ESRCH") return "dead";
-      if (code === "EPERM") return "alive";
-      this.log("warn", "session_liveness_unprovable", {
-        pid,
-        code: code ?? null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return "unprovable";
-    }
   }
 }
 

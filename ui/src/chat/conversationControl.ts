@@ -39,12 +39,6 @@ export function conversationControlPresentation(
           detail: capability.evidence_kind === 'registered-process' ? 'Sending becomes available when it exits.' : '',
         },
       };
-    case 'blocked-ownership-unknown':
-      return {
-        sendable: false,
-        submitLabel,
-        blocker: { key, severity: 'warning', title: 'Mandible could not check whether this chat is in use.', detail: '' },
-      };
     case 'unavailable':
       if (capability.reason === 'unsupported-provider') {
         return { sendable: false, submitLabel, blocker: { key, severity: 'info', title: 'This provider cannot be continued from Mandible.', detail: '' } };

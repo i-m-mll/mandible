@@ -105,6 +105,10 @@ export class CodexAppServerClient {
     return this.processOwner.alive;
   }
 
+  get pid(): number | undefined {
+    return this.processOwner.pid;
+  }
+
   request<M extends keyof CodexRequestParams>(method: M, params: CodexRequestParams[M]): Promise<unknown> {
     if (!this.alive) return Promise.reject(new Error("Codex App Server is not running"));
     const id = this.nextRequestId++;

@@ -3,6 +3,7 @@ import type {
   ConversationLifecycleEvent,
   ConversationOutboxItem,
   ConversationRuntimeOptions,
+  ExternalControllerEvidence,
   ManagedPermissionRequest,
   ProviderAdapterCapabilities,
   ProviderAdapterEvent,
@@ -16,6 +17,8 @@ export type ControllerAdapterCapabilities = ProviderAdapterCapabilities;
 export type ControllerLease = {
   controller_instance_id: string;
   provider_session_id: string | null;
+  /** The provider process this lease drives, so a later daemon can end it if it outlives its controller. */
+  pid?: number;
 };
 
 export type ControllerAcquisitionRequest =
@@ -26,7 +29,7 @@ export type ControllerAcquisitionRequest =
 export type AdapterProbe =
   | { kind: "owned"; controller_instance_id: string; provider_session_id: string | null; state: "ready" | "running" | "waiting" | "stopping" }
   | { kind: "released" }
-  | { kind: "external"; evidence: "registered-channel" | "registered-process" | "provider-controller"; reference: string }
+  | { kind: "external"; evidence: ExternalControllerEvidence["kind"]; reference: string }
   | { kind: "unknown"; reason: "probe-ambiguous" | "provider-identity-changed" };
 
 export interface ConversationControllerAdapter {
@@ -42,7 +45,6 @@ export interface ConversationControllerAdapter {
     controller_instance_id: string;
     generation: number;
   }): Promise<Result<AdapterProbe, ConversationControlError>>;
-  probeDelivery(input: ConversationOutboxItem): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>>;
   stop(input: {
     conversation_id: string;
     provider_session_id: string | null;

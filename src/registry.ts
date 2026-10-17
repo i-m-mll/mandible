@@ -76,32 +76,27 @@ export function primePidStartTimes(pids: number[]): void {
     return;
   }
   try {
-    const output = execSync(`ps -p ${unique.join(",")} -o pid=,lstart=`, {
+    const records = parsePsPidStart(execSync(`ps -p ${unique.join(",")} -o pid=,lstart=`, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-    });
-    const seen = new Set<number>();
-    for (const line of output.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-      const match = trimmed.match(/^(\d+)\s+(.+)$/);
-      if (!match) {
-        continue;
-      }
-      const pid = Number(match[1]);
-      setCachedPidStart(pid, normalizePidStart(match[2].trim()));
-      seen.add(pid);
-    }
-    for (const pid of unique) {
-      if (!seen.has(pid)) {
-        setCachedPidStart(pid, null);
-      }
-    }
+    }));
+    for (const pid of unique) setCachedPidStart(pid, records.get(pid)?.pid_start ?? null);
   } catch {
     // Best-effort: leave the cache untouched; per-session reads still work.
   }
+}
+
+/** Parse `ps -o pid=,lstart=[,…]` rows in any locale's day/month order; what follows the start time is `rest`. */
+export function parsePsPidStart(output: string): Map<number, { pid_start: string; rest: string }> {
+  const records = new Map<number, { pid_start: string; rest: string }>();
+  for (const line of output.split("\n")) {
+    if (!line.trim()) continue;
+    const match = line.trim().match(/^(\d+)\s+(\S+\s+\S+\s+\S+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*(.*)$/);
+    const pidStart = match ? normalizePidStart(match[2]) : null;
+    if (!match || !pidStart) throw new Error("Unrecognized ps process identity record");
+    records.set(Number(match[1]), { pid_start: pidStart, rest: match[3] });
+  }
+  return records;
 }
 
 export interface SessionInput {
@@ -384,8 +379,17 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as { code?: string }).code === "EPERM";
+    return (err as { code?: string }).code !== "ESRCH";
   }
+}
+
+/** Whether `pid` still names the process that started at `pidStart`; "unverified" when no start time can be compared. */
+export function processLiveness(pid: number, pidStart: string | null): "alive" | "dead" | "unverified" {
+  if (!isPidAlive(pid)) return "dead";
+  const expected = normalizePidStart(pidStart);
+  const current = expected ? readPidStartTime(pid) : null;
+  if (!expected || !current) return "unverified";
+  return expected === current ? "alive" : "dead";
 }
 
 export function checkLiveness(session: Session): "alive" | "dead" {
@@ -409,17 +413,7 @@ export function checkLiveness(session: Session): "alive" | "dead" {
     const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
     return ageMs > STALE_THRESHOLD_MS ? "dead" : "alive";
   }
-  if (!isPidAlive(session.pid)) {
-    return "dead";
-  }
-  if (session.pid_start) {
-    const expected = normalizePidStart(session.pid_start);
-    const current = readPidStartTime(session.pid);
-    if (expected && current && expected !== current) {
-      return "dead";
-    }
-  }
-  return "alive";
+  return processLiveness(session.pid, session.pid_start) === "dead" ? "dead" : "alive";
 }
 
 function normalizeText(value: string | null | undefined): string | null {
@@ -622,11 +616,22 @@ export function syncPinnedPanesTsv(paneId: string, pinned: boolean): void {
 export class SessionRegistry {
   private db: SqliteDatabase;
   private logger: Logger;
+  private readonly lifecycleListeners = new Set<(session: Session) => void>();
 
   constructor(db: SqliteDatabase, logger: Logger = () => undefined) {
     this.db = db;
     this.logger = logger;
     ensureSessionSchema(db);
+  }
+
+  /** Observe every registration and every end; the session's status says which. */
+  onLifecycle(listener: (session: Session) => void): () => void {
+    this.lifecycleListeners.add(listener);
+    return () => this.lifecycleListeners.delete(listener);
+  }
+
+  private announce(session: Session): void {
+    for (const listener of this.lifecycleListeners) listener(session);
   }
 
   registerSession(input: SessionInput): Session {
@@ -661,11 +666,7 @@ export class SessionRegistry {
     const navExtra = input.nav_extra ? JSON.stringify(input.nav_extra) : existingRow?.nav_extra ?? null;
 
     if (existingRow) {
-      // Issue f52d4dd — a re-registration restates only the facts its caller
-      // knows. An omitted field keeps the stored value and an explicit null
-      // clears it, matching the nav fields above. The MCP channel server
-      // re-registers a session its launcher already registered and never knows
-      // the launcher's pid or terminal; replacing them with null erased them.
+      // An omitted field keeps the stored value; an explicit null clears it.
       const stated = <K extends keyof SessionInput & keyof SessionRow>(key: K): SessionRow[K] =>
         input[key] === undefined ? existingRow[key] : (input[key] ?? null) as SessionRow[K];
       // pid and pid_start identify one process together, so they move as a pair.
@@ -732,6 +733,7 @@ export class SessionRegistry {
       const session = this.getSession(input.id);
       if (session) {
         broadcast(DOMAIN_EVENTS.SESSION_UPDATED, session);
+        this.announce(session);
         return session;
       }
     }
@@ -801,6 +803,7 @@ export class SessionRegistry {
     }
 
     broadcast(DOMAIN_EVENTS.SESSION_REGISTERED, session);
+    this.announce(session);
     return session;
   }
 
@@ -837,6 +840,7 @@ export class SessionRegistry {
         // Bug: cbbb3d9 — transfer continuation to work unit on session end
         this.transferContinuationToWorkUnit(updated);
         broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
+        this.announce(updated);
       } else {
         broadcast(DOMAIN_EVENTS.SESSION_UPDATED, updated);
       }
@@ -1246,6 +1250,7 @@ export class SessionRegistry {
     // Bug: cbbb3d9 — transfer continuation to work unit on session death
     this.transferContinuationToWorkUnit(updated);
     broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
+    this.announce(updated);
     return updated;
   }
 }

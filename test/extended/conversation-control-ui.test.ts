@@ -52,19 +52,13 @@ describe("shared conversation control presentation", () => {
     expect(conversationControlPresentation(snapshot).submitLabel).toBe(label);
   });
 
-  it("keeps external and unknown ownership blocked", () => {
+  it("keeps external ownership blocked", () => {
     const external: ConversationControlSnapshot = {
       ...base,
       ownership: { kind: "external", generation: 2, evidence: { kind: "registered-process", reference: "session-2" }, last_authoritative_signal: 2 },
       capability: { kind: "blocked-external", revision: 2, evidence_kind: "registered-process" },
     };
-    const unknown: ConversationControlSnapshot = {
-      ...base,
-      ownership: { kind: "unknown", generation: 3, prior_owner: "external", reason: "probe-ambiguous" },
-      capability: { kind: "blocked-ownership-unknown", revision: 3, reason: "probe-ambiguous" },
-    };
     expect(conversationControlPresentation(external)).toMatchObject({ sendable: false, blocker: { severity: "warning" } });
-    expect(conversationControlPresentation(unknown)).toMatchObject({ sendable: false, blocker: { severity: "warning" } });
   });
 
   it("submits the exact operation selected by the server capability", async () => {

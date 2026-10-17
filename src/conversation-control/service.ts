@@ -2,7 +2,9 @@ import { providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Db } from "../db.js";
+import { processLiveness, readPidStartTime } from "../registry.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
   getConversationStructureCache,
@@ -15,18 +17,16 @@ import {
   type ControllerLease,
   type ConversationControllerAdapter,
 } from "./adapter.js";
-import { ConversationControlStore } from "./store.js";
+import { ConversationControlStore, type ControllerProcess } from "./store.js";
 import { AttachmentValidationError, ChatAttachmentStore } from "./attachment-store.js";
 import type { ChatAttachment } from "./attachments.js";
 import { chatItemIdentityKey, emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
-import { probeProviderSessionProcesses, type ProviderSessionProcessProbe } from "./provider-process-probe.js";
 import type {
   AcceptedConversationSubmission,
   ConversationControlError,
-  ConversationControlReconciliationReport,
   ConversationControlSnapshot,
-  ConversationOwnershipReconciliationReport,
   ConversationSubmitRequest,
+  ExternalControllerEvidence,
   ProviderAdapterEvent,
   ProviderDeliveryReceipt,
   ProviderLiveProjection,
@@ -46,6 +46,21 @@ export type NewConversationControllerRequest = {
 };
 
 export type NewConversationControllerLease = ControllerLease & { adapter_id: string };
+
+function controllerProcess(lease: ControllerLease): ControllerProcess | null {
+  return lease.pid ? { pid: lease.pid, pid_start: readPidStartTime(lease.pid) } : null;
+}
+
+/** End a provider process that outlived the controller driving it; nothing can write to its stdin any more. */
+async function endControllerProcess({ pid, pid_start }: ControllerProcess): Promise<void> {
+  const signal = (name: NodeJS.Signals): void => {
+    try { process.kill(pid, name); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  if (processLiveness(pid, pid_start) !== "alive") return;
+  signal("SIGTERM");
+  for (let waited = 0; waited < 2_000 && processLiveness(pid, pid_start) === "alive"; waited += 50) await delay(50);
+  if (processLiveness(pid, pid_start) === "alive") signal("SIGKILL");
+}
 
 function isActiveTurn(turn: TurnState): turn is ActiveTurn {
   return turn.kind === "queued"
@@ -68,8 +83,6 @@ export class ConversationControlService {
   }) => Promise<{ status: string }>) | undefined;
   private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
-  private readonly probeProviderProcesses: ProviderSessionProcessProbe;
-  private ownershipReconciliation: Promise<ConversationOwnershipReconciliationReport> | null = null;
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
@@ -77,7 +90,6 @@ export class ConversationControlService {
     onProviderEvent?: (event: ProviderAdapterEvent) => void;
     onTerminalTurn?: (input: { conversation_id: string; provider_session_id: string; turn_id: string }) => Promise<{ status: string }>;
     onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
-    probeProviderProcesses?: ProviderSessionProcessProbe;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.attachments = new ChatAttachmentStore(db);
@@ -85,7 +97,6 @@ export class ConversationControlService {
     this.onProviderEvent = options.onProviderEvent;
     this.onTerminalTurn = options.onTerminalTurn;
     this.onReconciliationDiagnostic = options.onReconciliationDiagnostic;
-    this.probeProviderProcesses = options.probeProviderProcesses ?? probeProviderSessionProcesses;
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -94,11 +105,9 @@ export class ConversationControlService {
       const { conversation_id, generation, ...lifecycle } = event;
       const result = lifecycle.kind === "controller-released"
         ? this.store.release(conversation_id, generation)
-        : lifecycle.kind === "ownership-unknown"
-          ? this.store.markUnknown(conversation_id, generation, lifecycle.reason)
-          : lifecycle.kind === "provider-session-bound"
-            ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
-            : this.store.publishLifecycle(conversation_id, generation, lifecycle);
+        : lifecycle.kind === "provider-session-bound"
+          ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
+          : this.store.publishLifecycle(conversation_id, generation, lifecycle);
       if (result.ok) this.notify(conversation_id);
       if (result.ok && lifecycle.kind === "controller-released") {
         this.retireProviderTransients(conversation_id, generation, "provider-disconnected");
@@ -258,7 +267,7 @@ export class ConversationControlService {
       if (!released.ok) return released;
       return { ok: false, error: { kind: "adapter-contract-violation", adapter_id: adapter.id, message: "Resume did not establish the requested native identity" } };
     }
-    const published = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id);
+    const published = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id, controllerProcess(acquired.value));
     if (!published.ok) {
       const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
       return stopped.ok ? published : stopped;
@@ -328,6 +337,7 @@ export class ConversationControlService {
           adapter.id,
           lease.controller_instance_id,
           lease.provider_session_id,
+          controllerProcess(lease),
         );
         if (!adopted.ok) throw new Error(JSON.stringify(adopted.error));
       }).immediate();
@@ -446,6 +456,7 @@ export class ConversationControlService {
         prepared.value.snapshot.ownership.generation,
         acquired.value.controller_instance_id,
         acquired.value.provider_session_id,
+        controllerProcess(acquired.value),
       );
       if (!published.ok) {
         const rolledBack = await trapAdapterCall(adapter.id, () => adapter.stop({
@@ -517,156 +528,60 @@ export class ConversationControlService {
     return delivered;
   }
 
-  async reconcileAfterRestart(): Promise<ConversationControlReconciliationReport> {
-    const claims = this.store.activeOwnedRows();
-    const errors: ConversationControlError[] = [];
-    const record = (result: Result<unknown, ConversationControlError>): void => {
-      if (!result.ok) errors.push(result.error);
-    };
-    const recordControl = (conversationId: string, result: Result<unknown, ConversationControlError>): void => {
-      record(result);
-      if (result.ok) this.notify(conversationId);
-    };
-    for (const claim of claims) {
-      const recovered = this.store.recoverFailedAcquisition(claim.conversation_id, claim.generation);
-      if (!recovered.ok) {
-        record(recovered);
-        continue;
-      }
-      if (recovered.value) {
-        this.notify(claim.conversation_id);
-        continue;
-      }
-      const adapter = this.adapters.byAdapterId(claim.adapter_id);
-      if (!adapter) {
-        recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "adapter-unavailable"));
-        continue;
-      }
-      const probed = await trapAdapterCall(adapter.id, () => adapter.probe(claim));
-      if (!probed.ok) {
-        recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "probe-ambiguous"));
-        continue;
-      }
-      if (probed.value.kind === "unknown" && probed.value.reason === "probe-ambiguous") {
-        const unsent = this.store.recoverUnsentDraft(claim.conversation_id, claim.generation);
-        if (!unsent.ok) { record(unsent); continue; }
-        if (unsent.value) { this.notify(claim.conversation_id); continue; }
-      }
-      if (probed.value.kind === "unknown") {
-        recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, probed.value.reason));
-        continue;
-      }
-      if (probed.value.kind === "released") {
-        const snapshot = this.getSnapshot(claim.conversation_id);
-        if (snapshot.ok && isActiveTurn(snapshot.value.turn)) {
-          recordControl(claim.conversation_id, this.store.publishLifecycle(claim.conversation_id, claim.generation, {
-            kind: "turn-unknown",
-            at: Date.now(),
-            turn_id: snapshot.value.turn.turn_id,
-            reason: "probe-ambiguous",
-          }));
-        }
-        recordControl(claim.conversation_id, this.store.release(claim.conversation_id, claim.generation));
-        continue;
-      }
-      if (probed.value.kind === "external") {
-        recordControl(claim.conversation_id, this.store.replaceWithExternal(claim.conversation_id, claim.generation, {
-          kind: probed.value.evidence,
-          reference: probed.value.reference,
-        }));
-        continue;
-      }
-      if (
-        probed.value.controller_instance_id !== claim.controller_instance_id
-        || probed.value.provider_session_id !== claim.provider_session_id
-      ) {
-        recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "provider-identity-changed"));
-        continue;
-      }
-      recordControl(claim.conversation_id, this.store.publishLifecycle(claim.conversation_id, claim.generation, {
-        kind: probed.value.state === "ready"
-          ? "controller-ready"
-          : probed.value.state === "running"
-            ? "controller-running"
-            : probed.value.state === "waiting"
-              ? "controller-waiting"
-              : "controller-stopping",
-        at: Date.now(),
-      }));
-    }
-
-    const deliveries = this.store.pendingOutbox();
-    for (const item of deliveries) {
-      if (item.state === "pending") {
-        record(await this.dispatch(item.id));
-        continue;
-      }
-      this.notify(item.conversation_id);
-      const snapshot = this.getSnapshot(item.conversation_id);
-      if (!snapshot.ok || snapshot.value.ownership.kind !== "mandible") {
-        record(this.store.markDeliveryUncertain(item.id, item.generation));
-        continue;
-      }
-      const adapter = this.adapters.byAdapterId(snapshot.value.ownership.adapter_id);
-      if (!adapter) {
-        record(this.store.markDeliveryUncertain(item.id, item.generation));
-        continue;
-      }
-      const probed = await trapAdapterCall(adapter.id, () => adapter.probeDelivery(item));
-      if (!probed.ok || probed.value === "unknown") {
-        record(this.store.markDeliveryUncertain(item.id, item.generation));
-      } else if (probed.value === "delivered") {
-        record(this.store.resolveUncertainDelivery(item.id, item.generation, true));
-      } else {
-        const reset = this.store.resolveUncertainDelivery(item.id, item.generation, false);
-        record(reset);
-        if (reset.ok) record(await this.dispatch(item.id));
-      }
-    }
-    const ownership = await this.reconcileUnresolvedOwnership();
-    errors.push(...ownership.errors);
-    return { claims_checked: claims.length, deliveries_checked: deliveries.length, ownership, errors };
-  }
-
   /**
-   * Unknown ownership is a question, not a terminal state. Re-ask it from one
-   * process snapshot: a session no process drives is released to free, and one
-   * a live process drives is external until that process exits.
+   * No controller survives a daemon restart, so every Mandible claim is ended:
+   * a provider process that outlived the old daemon is stopped, and only the
+   * provider itself can attest that another controller now drives the session.
    */
-  reconcileUnresolvedOwnership(): Promise<ConversationOwnershipReconciliationReport> {
-    this.ownershipReconciliation ??= this.runOwnershipReconciliation()
-      .finally(() => { this.ownershipReconciliation = null; });
-    return this.ownershipReconciliation;
+  async reconcileAfterRestart(): Promise<ConversationControlError[]> {
+    const errors: ConversationControlError[] = [];
+    for (const claim of this.store.activeOwnedRows()) {
+      const recovered = this.store.recoverFailedAcquisition(claim.conversation_id, claim.generation);
+      if (!recovered.ok) { errors.push(recovered.error); continue; }
+      if (!recovered.value) {
+        if (claim.controller_process) await endControllerProcess(claim.controller_process);
+        const adapter = this.adapters.byAdapterId(claim.adapter_id);
+        const probed = adapter && claim.provider_session_id
+          ? await trapAdapterCall(adapter.id, () => adapter.probe(claim))
+          : null;
+        const external = probed?.ok && probed.value.kind === "external"
+          ? { kind: probed.value.evidence, reference: probed.value.reference }
+          : null;
+        const ended = this.relinquish(claim.conversation_id, claim.generation, claim.adapter_id, "turn-unknown", external);
+        if (!ended.ok) { errors.push(ended.error); continue; }
+      }
+      this.notify(claim.conversation_id);
+    }
+    return errors;
   }
 
-  private async runOwnershipReconciliation(): Promise<ConversationOwnershipReconciliationReport> {
-    const report: ConversationOwnershipReconciliationReport = { checked: 0, released: 0, external: 0, unresolvable: 0, probe_error: null, errors: [] };
-    const rows = this.store.unresolvedOwnershipRows();
-    const probeable = rows.filter((row): row is typeof row & { provider_session_id: string } => Boolean(row.provider_session_id));
-    report.unresolvable = rows.length - probeable.length;
-    if (probeable.length === 0) return report;
-    let evidence: Awaited<ReturnType<ProviderSessionProcessProbe>>;
-    try {
-      evidence = await this.probeProviderProcesses(probeable.map((row) => ({
-        provider_session_id: row.provider_session_id,
-        transcript_path: row.transcript_path,
-      })));
-    } catch (error) {
-      report.probe_error = error instanceof Error ? error.message : String(error);
-      return report;
+  /** Settle a claim whose controller is gone: its deliveries, its active turn, then its ownership. */
+  private relinquish(
+    conversationId: string,
+    generation: number,
+    adapterId: string,
+    turnOutcome: "turn-cancelled" | "turn-unknown",
+    external: ExternalControllerEvidence | null,
+  ): Result<void, ConversationControlError> {
+    const lost: ConversationControlError = { kind: "adapter-failure", adapter_id: adapterId, code: "controller-lost",
+      message: "The controller ended before this message was sent", retryable: true };
+    for (const item of this.store.pendingOutbox()) {
+      if (item.conversation_id !== conversationId || item.generation !== generation) continue;
+      const settled = item.state === "pending"
+        ? this.store.finishDelivery(item.id, { ok: false, error: lost })
+        : this.store.markDeliveryUncertain(item.id, generation);
+      if (!settled.ok) return settled;
     }
-    for (const row of probeable) {
-      const observed = evidence.get(row.provider_session_id);
-      if (!observed) continue;
-      report.checked += 1;
-      const resolved = this.store.resolveUnresolvedOwnership(row.conversation_id, row.revision, observed);
-      if (!resolved.ok) { report.errors.push(resolved.error); continue; }
-      if (!resolved.value) continue;
-      if (observed.kind === "absent") report.released += 1;
-      else report.external += 1;
-      this.notify(row.conversation_id);
+    const snapshot = this.getSnapshot(conversationId);
+    if (snapshot.ok && isActiveTurn(snapshot.value.turn)) {
+      const turn = this.store.publishLifecycle(conversationId, generation, turnOutcome === "turn-cancelled"
+        ? { kind: turnOutcome, at: Date.now(), turn_id: snapshot.value.turn.turn_id }
+        : { kind: turnOutcome, at: Date.now(), turn_id: snapshot.value.turn.turn_id, reason: "probe-ambiguous" });
+      if (!turn.ok) return turn;
     }
-    return report;
+    return external
+      ? this.store.replaceWithExternal(conversationId, generation, external)
+      : this.store.release(conversationId, generation);
   }
 
   async stop(conversationId: string, generation: number): Promise<Result<void, ConversationControlError>> {
@@ -689,28 +604,16 @@ export class ConversationControlService {
       controller_instance_id: ownership.controller_instance_id,
       generation,
     }));
-    if (!stopped.ok) {
-      const unknown = this.store.markUnknown(conversationId, generation, "probe-ambiguous");
-      if (unknown.ok) this.notify(conversationId);
-      return unknown.ok ? stopped : unknown;
-    }
-    if (isActiveTurn(snapshot.value.turn)) {
-      const cancelled = this.store.publishLifecycle(conversationId, generation, {
-        kind: "turn-cancelled",
-        at: Date.now(),
-        turn_id: snapshot.value.turn.turn_id,
-      });
-      if (!cancelled.ok) return cancelled;
-    }
-    const released = this.store.release(conversationId, generation);
+    const controller = this.store.activeOwnedRows(conversationId)[0]?.controller_process;
+    if (controller) await endControllerProcess(controller);
+    const released = this.relinquish(conversationId, generation, adapter.id, stopped.ok ? "turn-cancelled" : "turn-unknown", null);
     if (released.ok) this.notify(conversationId);
-    return released;
+    return released.ok ? stopped : released;
   }
 
-  recordExternalOwnership(conversationId: string, evidence: Parameters<ConversationControlStore["observeExternal"]>[1]): Result<void, ConversationControlError> {
-    const result = this.store.observeExternal(conversationId, evidence);
-    if (result.ok) this.notify(conversationId);
-    return result;
+  /** Follow the session registry for every provider session, or for one. */
+  syncRegisteredOwnership(providerSessionId: string | null = null): void {
+    for (const conversationId of this.store.syncRegisteredOwnership(providerSessionId)) this.notify(conversationId);
   }
 
   getLiveProjection(conversationId: string): Result<ProviderLiveProjection, ConversationControlError> {

@@ -1764,16 +1764,22 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
   { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
   { version: 192, name: "compile_dotfiles_instructions_without_home_repair", statements: DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL },
-  // Issue f52d4dd — the MCP channel server used to re-register its Claude
-  // session as `claude-channel`, which broke the session's managed `claude`
-  // claim. Only Claude Code runs the channel server, so those rows are Claude
-  // sessions; channel attachment stays recorded in `channel_connected_at`.
   { version: 193, name: "unify_channel_session_app", statements: [
     "UPDATE sessions SET app = 'claude' WHERE app = 'claude-channel'",
   ] },
   // Issue a09b4d2 — runtime self-update approval requires a passing candidate
   // acceptance bound to the exact retained candidate.
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
+  // Ownership is never unknown: a claim nothing can answer for is free.
+  { version: 195, name: "release_unknown_conversation_ownership", statements: [
+    `INSERT INTO conversation_control_journal (id, conversation_id, revision, generation, event_kind, event_json, created_at)
+      SELECT lower(hex(randomblob(16))), conversation_id, revision + 1, generation, 'controller-released',
+        '{"prior_owner":"unknown"}', CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      FROM conversation_control_state WHERE owner_kind = 'unknown'`,
+    `UPDATE conversation_control_state SET revision = revision + 1, owner_kind = 'none', controller_state = 'stopped',
+      owner_detail_json = '{}', last_authoritative_signal = NULL, updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      WHERE owner_kind = 'unknown'`,
+  ] },
 ];
 
 /**

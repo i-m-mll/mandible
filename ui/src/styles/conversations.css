@@ -297,7 +297,6 @@
 }
 
 .conv-attach-badge--blocked-external,
-.conv-attach-badge--blocked-ownership-unknown,
 .conv-attach-badge--unavailable {
   color: var(--accent-red);
   border-color: color-mix(in srgb, var(--accent-red) 42%, transparent);

@@ -131,5 +131,5 @@ it("accepts an initialized controller with native identity pending and never ack
   await new Promise(resolve => setTimeout(resolve,1));
   expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
   native.emit({ type:"system", subtype:"init", session_id:"different-native" });
-  await until(() => events.includes("ownership-unknown"));
+  await until(() => events.includes("controller-released"));
 });
