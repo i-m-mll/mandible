@@ -333,16 +333,51 @@ export async function startHandoffDefinitions(binding) {
     const started = runLaunchctl(['kickstart', `${DOMAIN}/${label}`]);
     if (started.status !== 0) throw new Error(`Could not start candidate service ${label}: ${started.stderr.trim()}`);
   }
-  return verifyHandoffDefinitions(binding);
+  // A freshly started daemon cannot be ready yet. Readiness is awaited by a
+  // separate bounded verification, so a start never reports a false failure.
+  return { started: [BACKEND_LABEL, GATEWAY_LABEL] };
 }
 
-export async function verifyHandoffDefinitions(binding) {
+/**
+ * A handoff probe waits for the daemon's actual answer until the caller's
+ * deadline. A slow answer is still the daemon's state; only the deadline, never
+ * a fixed per-request timeout, turns waiting into failure.
+ */
+export function handoffProbeTimeout(until, now = Date.now()) {
+  return Math.max(HEALTH_TIMEOUT_MS, until - now);
+}
+
+/** One answered inspection of the candidate front door, with the reason it is not ready. */
+export function handoffFrontDoorError(inspection, mergeCommit) {
+  if (!inspection.status.dashboard_ready) return inspection.status.detail || `Runtime state is ${inspection.status.state}.`;
+  if (inspection.main.backend_generation !== mergeCommit) return `The registered generation ${inspection.main.backend_generation} is not the merge ${mergeCommit}.`;
+  return null;
+}
+
+/**
+ * Await readiness after a start: inspect until the front door answers ready at
+ * the exact merge generation or the deadline passes. Each inspection waits for
+ * the daemon's answer; the short pause only paces refused or not-ready answers.
+ */
+export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pauseMs = 200, now = Date.now } = {}) {
+  for (;;) {
+    const inspection = await inspect(handoffProbeTimeout(until, now()));
+    const error = handoffFrontDoorError(inspection, mergeCommit);
+    if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error };
+    await new Promise(resolve => setTimeout(resolve, Math.min(pauseMs, Math.max(0, until - now()))));
+  }
+}
+
+export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
   const backend = handoffService(BACKEND_LABEL);
   const gateway = handoffService(GATEWAY_LABEL);
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
-  const status = await inspectRuntime({ launchMode: binding.priorBackend.launchMode });
-  if (!status.status.dashboard_ready || status.main.backend_generation !== binding.mergeCommit) throw new Error('Candidate production front door is not ready at the exact merge generation.');
+  const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
+  const { inspection: status, error } = awaitReady
+    ? await awaitHandoffReadiness(binding.mergeCommit, until, inspect)
+    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection, error: handoffFrontDoorError(inspection, binding.mergeCommit) }));
+  if (error) throw new Error(`Candidate production front door is not ready at the exact merge generation: ${error}`);
   const job = inspectJob(BACKEND_LABEL);
   const startedAt = processStart(job.pid);
   const installed = locateLaunchAgent(BACKEND_LABEL);
@@ -402,14 +437,14 @@ export function classifyRuntimeStatus({ backend, gateway, backendPortOpen, gatew
   };
 }
 
-async function inspectRuntime({ launchMode = "on_demand" } = {}) {
+async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   const production = readProductionRecord();
   const main = readMainInstance(production.root);
   const expected = { installationId: main.installation_id, publicOrigin: PRODUCTION_ORIGIN, generation: main.backend_generation };
   const backendJob = inspectJob(BACKEND_LABEL);
   const gatewayJob = inspectJob(GATEWAY_LABEL);
   const [backendResponse, trusted, gatewayPortOpen, backendPortOpen] = await Promise.all([
-    probeJson(healthEndpointUrl(main.backend_origin)),
+    probeJson(healthEndpointUrl(main.backend_origin), { timeoutMs: probeTimeoutMs }),
     Promise.resolve().then(() => readTrustedRoot()).catch((error) => ({ ca: null, error: error.message })),
     portOpen(main.publicUrl),
     portOpen(main.backendUrl),
@@ -418,7 +453,7 @@ async function inspectRuntime({ launchMode = "on_demand" } = {}) {
   const backend = backendError ? { ok: false, error: backendError } : { ok: true, document: backendResponse.document };
   let gateway = { ok: false, error: trusted.error };
   if (!trusted.error) {
-    const gatewayResponse = await probeJson(healthEndpointUrl(PRODUCTION_ORIGIN), { ca: trusted.ca });
+    const gatewayResponse = await probeJson(healthEndpointUrl(PRODUCTION_ORIGIN), { ca: trusted.ca, timeoutMs: probeTimeoutMs });
     const gatewayError = gatewayResponse.ok ? healthDocumentError(gatewayResponse.document, expected) : gatewayResponse.error;
     gateway = gatewayError ? { ok: false, error: gatewayError } : { ok: true, document: gatewayResponse.document };
   }
@@ -941,8 +976,12 @@ async function main() {
   if (command === 'handoff-remove' || command === 'handoff-start' || command === 'handoff-verify') {
     const acceptedProbe = command === 'handoff-verify' && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
     if (!directHandoff && !acceptedProbe) throw new Error('Runtime handoff command requires its exact active journal.');
+    const untilIndex = args.indexOf('--until');
+    const until = untilIndex >= 0 ? Number(args[untilIndex + 1]) : Date.now();
+    if (!Number.isFinite(until)) throw new Error('Runtime handoff verification requires a numeric --until deadline.');
     const result = command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
-      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding) : await verifyHandoffDefinitions(journal.binding);
+      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding)
+        : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready') });
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;
   }

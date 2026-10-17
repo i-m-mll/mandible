@@ -1,0 +1,93 @@
+// @vitest-environment node
+// Issue 54a0b88 — a runtime handoff awaits the started daemon's actual answers
+// within its deadline, and a rebuild hook that exited 75 belongs to its handoff:
+// it is pending, never a failed rebuild, until that handoff actually fails.
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
+
+vi.mock("../src/runtime-handoff-proof.js", async (original) => ({
+  ...await original<typeof import("../src/runtime-handoff-proof.js")>(),
+  // The fixture has no signed publication; the proof has its own tests.
+  verifyRuntimeHandoffPublication: () => ({}),
+}));
+
+import { awaitHandoffReadiness, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
+import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
+import type { SseEvent } from "../src/types.js";
+import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
+
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
+
+function inspection(ready: boolean, generation = "merge") {
+  return {
+    status: { dashboard_ready: ready, state: ready ? "running" : "starting", detail: ready ? null : "Backend: The service responded, but Mandible is not ready yet." },
+    main: { backend_generation: generation },
+  };
+}
+
+it("waits for a busy daemon's answer and for readiness, bounded by the handoff deadline", async () => {
+  // Busy for longer than the 900 ms status probe, as a blocked event loop is.
+  const server = http.createServer((_request, response) => { setTimeout(() => response.end('{"status":"ok"}'), 1500); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/health`;
+  await expect(probeJson(url, { timeoutMs: handoffProbeTimeout(Date.now() + 5000) })).resolves.toMatchObject({ ok: true });
+
+  const answers = [inspection(false), inspection(false), inspection(true)];
+  const inspect = vi.fn(async (_timeoutMs: number) => answers.shift()!);
+  await expect(awaitHandoffReadiness("merge", Date.now() + 5000, inspect, { pauseMs: 1 })).resolves.toMatchObject({ error: null });
+  expect(inspect).toHaveBeenCalledTimes(3);
+  expect(inspect.mock.calls.every(([timeoutMs]) => timeoutMs > 900)).toBe(true);
+
+  // Past the deadline the last actual answer is the reason, not a generic one.
+  const stuck = await awaitHandoffReadiness("merge", Date.now() + 30, async () => inspection(true, "older"), { pauseMs: 5 });
+  expect(stuck.error).toContain("older");
+});
+
+it("reports a pending handoff's rebuild as failed only once its journal fails", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-pending-"));
+  cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+  vi.stubEnv("MANDIBLE_HOME", home);
+  const db = createMigratedDb();
+  const now = Date.now();
+  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
+    VALUES ('self-update', 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(now, now, now + 60_000);
+  db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
+    VALUES ('rebuild-run', 'self-update', 'builtin-mandible-rebuild', 'rebuild', ?, 'pending', 1, 75, ?, ?, ?)`).run("c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}`, now, now);
+  // The new daemon is not the drained process, so it has no admitted drain identity.
+  const journal = {
+    schema: "mandible-runtime-handoff@1", bindingDigest: "a".repeat(64), phase: "starting",
+    binding: { requestId: "self-update", executionId: "rebuild-run", hookId: "builtin-mandible-rebuild", commandDigest: "c".repeat(64) },
+  } as unknown as RuntimeHandoffJournal;
+  const hooks = new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoff: () => journal,
+    verifyRuntimeHandoffReceipt: async () => { throw new Error("no receipt"); },
+    acknowledgeRuntimeHandoff: async () => { throw new Error("no receipt"); },
+  } });
+  const events: SseEvent[] = [];
+  const queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, broadcast: (event) => { events.push(event); },
+    executor: async () => { throw new Error("no command runs"); } });
+  cleanups.push(() => { queue.dispose(); db.close(); });
+  // The fixture has no signed merge evidence; this lane is about convergence only.
+  vi.spyOn(queue as unknown as { successfulMergeEvidenceFailure: () => string | null }, "successfulMergeEvidenceFailure").mockReturnValue(null);
+  const failures = () => events.filter((event) => event.event === DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED);
+
+  await queue.resumeHookConvergence();
+  expect(failures()).toHaveLength(0);
+  expect(queue.rebuildFailure).toBeNull();
+  expect(queue.isRebuilding).toBe(false);
+  expect(hooks.getRun("self-update", "builtin-mandible-rebuild")).toMatchObject({ state: "pending", exit_code: 75 });
+
+  Object.assign(journal, { phase: "failed", error: "Candidate production front door is not ready at the exact merge generation: Health check exceeded its 900 ms deadline." });
+  await queue.resumeHookConvergence();
+  await queue.resumeHookConvergence();
+  expect(failures()).toHaveLength(1);
+  expect(queue.rebuildFailure?.reason).toContain("Health check exceeded its 900 ms deadline");
+  expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
+});

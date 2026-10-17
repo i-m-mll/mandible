@@ -18,10 +18,18 @@ desktop installation and instruction export, and loads the candidate service
 definitions. Desktop installation cannot start the backend during this
 transition. A changed owned gateway definition is reloaded explicitly.
 
+Starting the candidate services only starts them. The helper then awaits the
+started daemon's readiness: it inspects the front door until it answers ready
+and warm at the exact merge generation, bounded by the handoff deadline. Every
+handoff health probe waits for the daemon's actual answer until that deadline
+(or one observation window for a recovery that outlived it); a slow answer is
+the daemon's state, not a failure. A refusal names the daemon's last answer.
+
 Completion requires the pinned executable in loaded launchd arguments, the
 exact applied merge generation through the production front door, matching
 installed desktop provenance, and a full 31-second daemon health/log
-observation. The candidate hook manager verifies this receipt and publication
+observation. Each observation sample must answer from the same process and
+definitions, ready at that generation, without event-loop or memory warnings. The candidate hook manager verifies this receipt and publication
 proof before settling convergence or releasing deferred delivery actions.
 Acknowledgment removes only this helper's scoped job and regenerated files;
 the compact journal and receipt remain. Interrupted cleanup is retried without
@@ -45,6 +53,10 @@ path for a runtime self-update request. Each refusal names the lock, its
 request, phase and error.
 
 `mandible auth handoff status` shows the lock.
+`mandible auth handoff recover <request>` runs verification-only recovery (see
+below) for a failed handoff whose exact merge generation is already live. It
+requires the request's delivery work-unit credential, or the configured operator
+with `--operator-recovery`.
 `mandible auth handoff retire --binding-digest <digest> --reason <text>` retires
 a lock whose journal phase is `failed`. It is operator-only through the
 protected operator gate. It boots out the exact idle helper job if one is still
@@ -52,10 +64,14 @@ loaded, then moves the lock beside the journal as `retired-active.json` with a
 `retirement.json` record. The journal, staged material and logs stay in place.
 Retirement neither restores the old runner nor makes the failed delivery live.
 
-When a rebuild window closes without an admitted handoff, the daemon clears the
-active restart-availability window, broadcasts `mandible:rebuild-failed` with
-the hook's reason, and reports `rebuild_failure` in health. The dashboard splash
-then says the rebuild failed.
+When a rebuild window closes without an admitted handoff, or the handoff that
+owns a rebuild fails, the daemon clears the active restart-availability window,
+broadcasts `mandible:rebuild-failed` with the hook's reason, and reports
+`rebuild_failure` in health. The dashboard splash then says the rebuild failed.
+A rebuild hook that exited 75 belongs to its handoff: it is pending, never a
+failure, and convergence sweeps do not open a rebuild window for it. Its
+failure is reported once, when the handoff's journal fails. Completed
+convergence for that request withdraws its rebuild failure.
 
 ## Focused verification
 
@@ -169,7 +185,8 @@ The original failure and hook attempt history remain available.
 
 The protected retry route accepts `mode: "verify-current"` and requires an
 active durable credential with project write access and exact delivery custody
-(or configured operator recovery). Public routes accept ambiguity-safe short
+(or configured operator recovery). `mandible auth handoff recover <request>
+[--operator-recovery]` calls it. Public routes accept ambiguity-safe short
 request references. When the deployed daemon predates this capability, the
 candidate-owned `scripts/verify-current-convergence.ts` is a finite one-shot:
 pass the full exact request ID and optionally `--operator-recovery`, with the

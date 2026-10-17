@@ -694,7 +694,14 @@ export class AuthQueue {
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
-    const ids = await this.hookManager.reconcileRuntimeHandoffs((binding, proof) => this.adoptRuntimePublication(binding, proof));
+    const ids = await this.hookManager.reconcileRuntimeHandoffs(
+      (binding, proof) => this.adoptRuntimePublication(binding, proof),
+      (id) => {
+        // The independent handoff that owned this rebuild has now failed.
+        const request = this.getRequestById(id);
+        if (request?.repo === "mandible") this.failRebuild(request, this.settleConvergence(request));
+      },
+    );
     for (const id of ids) {
       const request = this.getRequestById(id);
       if (request && !this.successfulMergeEvidenceFailure(request)) {
@@ -876,8 +883,9 @@ export class AuthQueue {
   }
 
   /**
-   * A rebuild window closed without an admitted runtime handoff, so no restart
-   * will follow. Say so, with the hook's reason, and clear the stale window.
+   * A rebuild failed: its window closed without an admitted runtime handoff, or
+   * the handoff that owned it failed. Say so, with the hook's reason, and clear
+   * the stale window.
    */
   private failRebuild(request: AuthRequest, convergence: AuthConvergence): void {
     this.rebuildWindowRequestId = null;
@@ -5551,7 +5559,13 @@ export class AuthQueue {
     const key = admitted;
     if (!key) {
       if (!this.activeConvergenceDrain) this._rebuilding = false;
-      if (this.rebuildWindowRequestId === request.id) this.failRebuild(request, convergence);
+      if (this.rebuildWindowRequestId === request.id) {
+        // Issue 54a0b88 — a pending rebuild owned by an independent runtime
+        // handoff will converge or fail in that handoff; it has not failed.
+        if (convergence.state === "pending" && this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) this.rebuildWindowRequestId = null;
+        else this.failRebuild(request, convergence);
+      }
+      if (convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
       return convergence;
     }
     if (this.scheduledConvergenceDrains.has(key)) return convergence;

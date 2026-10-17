@@ -58,6 +58,7 @@ export interface RuntimeHandoffJournal {
   binding: RuntimePublicationBinding;
   bindingDigest: string;
   phase: string;
+  error?: string;
   receipt?: unknown;
   acknowledgedAt?: number;
   bridgeInstalled?: boolean;
@@ -353,7 +354,10 @@ export class AuthHookManager {
   }
 
   /** External handoff observations never consume an attempt or start another hook. */
-  async reconcileRuntimeHandoffs(adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void): Promise<string[]> {
+  async reconcileRuntimeHandoffs(
+    adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void,
+    onFailed?: (requestId: string) => void,
+  ): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
     const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE hook_id = 'builtin-mandible-rebuild'").all() as Array<{ auth_request_id: string }>;
     const accepted: string[] = [];
@@ -367,7 +371,7 @@ export class AuthHookManager {
         const binding = journal.binding as RuntimePublicationBinding;
         if (journal.schema !== "mandible-runtime-handoff@1" || binding.requestId !== run.auth_request_id || binding.executionId !== run.id || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest) throw new Error("Runtime handoff journal differs from the retained hook");
         verifyRuntimeHandoffPublication(this.db, binding);
-        if (journal.phase === "failed") throw new Error("Independent runtime handoff failed; inspect its retained journal and logs before repair");
+        if (journal.phase === "failed") throw new Error(`Independent runtime handoff failed${journal.error ? `: ${journal.error.trim()}` : ""}; inspect its retained journal and logs before repair`);
         if (journal.phase !== "complete") continue;
         await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
         // A crash after the DB transaction and before helper acknowledgment
@@ -389,10 +393,13 @@ export class AuthHookManager {
         accepted.push(run.auth_request_id);
         await runtime.acknowledgeRuntimeHandoff(journal.binding);
       } catch (error) {
+        // Record the refusal once: the row's first transition to failed is the
+        // moment this handoff's rebuild failed, and the caller reports it then.
         const now = Date.now();
-        this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state != 'complete'").run(
+        const refused = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
           truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
         );
+        if (Number(refused.changes) > 0) onFailed?.(run.auth_request_id);
       }
     }
     return [...new Set(accepted)];
@@ -508,13 +515,19 @@ export class AuthHookManager {
     if (!this.hasDurableTables()) return [];
     const rows = this.db
       .prepare(
-        `SELECT DISTINCT auth_request_id FROM auth_hook_executions
+        `SELECT * FROM auth_hook_executions
          WHERE state = 'pending'
-         ORDER BY updated_at ASC
-         LIMIT ?`,
+         ORDER BY updated_at ASC`,
       )
-      .all(limit) as Array<{ auth_request_id: string }>;
-    return rows.map((row) => String(row.auth_request_id));
+      .all() as Record<string, unknown>[];
+    // A pending rebuild owned by a runtime handoff is not runnable here: its
+    // independent helper converges it, and runPending never spawns it again.
+    const ids = new Set<string>();
+    for (const run of rows.map(mapRunRow)) {
+      if (ids.size >= limit) break;
+      if (!this.hasRuntimeHandoff(run)) ids.add(run.auth_request_id);
+    }
+    return [...ids];
   }
 
   /**

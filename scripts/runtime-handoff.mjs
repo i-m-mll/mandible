@@ -71,17 +71,26 @@ function save(journal, changes) {
   Object.assign(journal, changes, { updatedAt: Date.now() });
   atomic(journalFile(journal.binding), journal);
 }
-async function controller(journal, command, currentVerifier = false) {
+const OBSERVATION_MS = 31000;
+/**
+ * How long a verification waits for the daemon's actual answer: the handoff
+ * deadline, or one observation window for a recovery that outlived it.
+ */
+function handoffAnswerDeadline(journal, now = Date.now()) {
+  return Math.max(journal.deadline ?? 0, now + OBSERVATION_MS);
+}
+async function controller(journal, command, currentVerifier = false, { until = handoffAnswerDeadline(journal), awaitReady = false } = {}) {
   const binding = journal.binding;
   const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding), GIT_OPTIONAL_LOCKS: '0' };
   const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
   const script = currentVerifier ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'local-runtime.mjs') : installedController ? path.join(binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
   if (installedController) delete env.MANDIBLE_RUNTIME_HANDOFF_STORAGE;
+  const args = [script, command, '--root', binding.root, ...(command === 'handoff-verify' ? ['--until', String(until), ...(awaitReady ? ['--await-ready'] : [])] : [])];
   // Recovery runs inside the daemon that answers these health requests.
   // Keep its event loop available while the bounded controller probes it.
   try {
-    const result = await execFileAsync(binding.runtime.path, [script, command, '--root', binding.root], {
-      cwd: binding.root, env, timeout: 30000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
+    const result = await execFileAsync(binding.runtime.path, args, {
+      cwd: binding.root, env, timeout: Math.max(0, until - Date.now()) + 30000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
     });
     return result.stdout.trim();
   } catch (error) {
@@ -275,7 +284,7 @@ export async function observeRuntimeHandoff(journal, { currentVerifier = false }
   if (JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(path.join(resources, 'build-revision.json'))))) throw new Error('Installed desktop differs from the handoff build.');
   const files = Object.fromEntries([marker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app'), evidence.backend.file, evidence.gateway.file].map(file => [file, fileHash(file)]));
   const initialLog = evidence.daemonLog;
-  const observedUntil = Date.now() + 31000;
+  const observedUntil = Date.now() + OBSERVATION_MS;
   while (Date.now() < observedUntil) {
     await sleep(1000);
     evidence = JSON.parse(await controller(journal, 'handoff-verify', currentVerifier));
@@ -456,14 +465,10 @@ async function worker(file) {
       save(journal, { stages: { ...journal.stages, [stage]: { completedAt: Date.now(), logDigest: fileHash(log) } } });
     }
     save(journal, { phase: 'starting' });
-    const deadline = Math.min(journal.deadline, Date.now() + 60000);
-    let evidence;
-    // Start once; readiness polling does not repeatedly restart the daemon.
-    try { await controller(journal, 'handoff-start'); } catch (error) { journal.startObservation = error.message; }
-    while (Date.now() < deadline) {
-      try { evidence = JSON.parse(await controller(journal, 'handoff-verify')); break; } catch { await sleep(200); }
-    }
-    if (!evidence) throw new Error(`Candidate runtime readiness failed: ${journal.startObservation || 'health deadline'}`);
+    // Start once, then await the started daemon's actual readiness within the
+    // handoff deadline. The wait never restarts the daemon.
+    await controller(journal, 'handoff-start');
+    await controller(journal, 'handoff-verify', false, { until: journal.deadline, awaitReady: true });
     if (b.desktopWasRunning && !journal.stages.desktopRelaunch) {
       run('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], { cwd: b.root, env, timeout: 15000, log });
       save(journal, { stages: { ...journal.stages, desktopRelaunch: { completedAt: Date.now() } } });
