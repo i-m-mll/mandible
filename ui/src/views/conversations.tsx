@@ -2524,11 +2524,8 @@ export function ConversationDetail({
 
   const renderRunOptionFields = (compact = false) => <ManagedConversationControlFields state={managedControlState} compact={compact} includeActions={false} />;
 
-  const composerOverlay = isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
-          <span>Read-only subagent transcript</span>
-        </div>
-      ) : (
+  // A read-only child transcript has no composer at all.
+  const composerOverlay = isReadOnlyChild ? null : (
       <div className="conv-compose" data-detail-pane-overlay-visual>
         {draftAttachments.length > 0 && (
           <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">

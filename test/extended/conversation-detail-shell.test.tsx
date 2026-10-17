@@ -201,8 +201,9 @@ function domRect(left: number, top: number, width: number, height: number): DOMR
 function mockConversationDetail(
   control: ConversationControlSnapshot,
   blocks: ConversationBlock[] = [transcriptBlock],
+  overrides: Partial<Conversation> = {},
 ): Conversation {
-  const scopedConversation = { ...conversation, block_count: blocks.length };
+  const scopedConversation = { ...conversation, ...overrides, block_count: blocks.length };
   vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [scopedConversation], total: 1 });
   vi.spyOn(api, 'getConversationControl').mockResolvedValue(control);
   vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
@@ -1417,6 +1418,18 @@ describe('compact detail pane shell', () => {
     expect(screen.getByRole('menuitem', { name: 'View metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Copy markdown' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Open markdown' })).toBeTruthy();
+  });
+
+  it('renders no composer for a read-only child transcript', async () => {
+    const child = mockConversationDetail({
+      ...defaultControl,
+      capability: { kind: 'unavailable', revision: 0, reason: 'subagent' },
+    }, [transcriptBlock], { is_sidechain: true });
+    renderConversationDetail(child);
+
+    await screen.findByRole('heading', { name: conversation.title! });
+    expect(document.querySelector('.conv-compose')).toBeNull();
+    expect(document.querySelector('.detail-pane-shell__overlay-control')).toBeNull();
   });
 
   it('keeps exact-anchor loading last-request-wins', async () => {

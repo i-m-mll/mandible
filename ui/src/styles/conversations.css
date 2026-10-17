@@ -950,14 +950,6 @@
   padding: 10px;
 }
 
-.conv-compose--readonly {
-  min-height: 42px;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 /* Sub-agents list in detail view */
 .conv-subagents {
   background: var(--bg-card);
