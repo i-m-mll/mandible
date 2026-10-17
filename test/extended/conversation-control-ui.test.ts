@@ -63,8 +63,8 @@ describe("shared conversation control presentation", () => {
       ownership: { kind: "unknown", generation: 3, prior_owner: "external", reason: "probe-ambiguous" },
       capability: { kind: "blocked-ownership-unknown", revision: 3, reason: "probe-ambiguous" },
     };
-    expect(conversationControlPresentation(external)).toMatchObject({ status: "External", composer: "disabled" });
-    expect(conversationControlPresentation(unknown)).toMatchObject({ status: "Unknown", composer: "disabled" });
+    expect(conversationControlPresentation(external)).toMatchObject({ sendable: false, blocker: { severity: "warning" } });
+    expect(conversationControlPresentation(unknown)).toMatchObject({ sendable: false, blocker: { severity: "warning" } });
   });
 
   it("submits the exact operation selected by the server capability", async () => {

@@ -610,8 +610,11 @@ describe("authoritative conversation control", () => {
     running.registerAdapter(new FakeAdapter());
     expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
 
-    const restarted = new ConversationControlService(db);
-    await restarted.reconcileAfterRestart();
+    const restarted = new ConversationControlService(db, {
+      probeProviderProcesses: async () => { throw new Error("process table unavailable"); },
+    });
+    const reconciled = await restarted.reconcileAfterRestart();
+    expect(reconciled.ownership.probe_error).toBe("process table unavailable");
     const snapshot = restarted.getSnapshot("conversation-1");
     expect(snapshot.ok && snapshot.value.ownership).toMatchObject({
       kind: "unknown",
@@ -619,6 +622,37 @@ describe("authoritative conversation control", () => {
       reason: "adapter-unavailable",
     });
     expect(snapshot.ok && snapshot.value.capability.kind).toBe("blocked-ownership-unknown");
+  });
+
+  it("converges unknown ownership from provider process evidence", async () => {
+    const running = new ConversationControlService(db);
+    running.registerAdapter(new FakeAdapter());
+    expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
+
+    let evidence: { kind: "absent" } | { kind: "present"; pid: number } = { kind: "present", pid: 4242 };
+    const probed: string[] = [];
+    const restarted = new ConversationControlService(db, {
+      probeProviderProcesses: async (queries) => {
+        probed.push(...queries.map((query) => query.provider_session_id));
+        return new Map(queries.map((query) => [query.provider_session_id, evidence]));
+      },
+    });
+    const adapter = new FakeAdapter();
+    adapter.probeResult = { kind: "unknown", reason: "probe-ambiguous" };
+    restarted.registerAdapter(adapter);
+
+    await restarted.reconcileAfterRestart();
+    const held = restarted.getSnapshot("conversation-1");
+    expect(held.ok && held.value.ownership).toMatchObject({ kind: "external", evidence: { kind: "registered-process", reference: "pid:4242" } });
+    expect(held.ok && held.value.capability.kind).toBe("blocked-external");
+
+    evidence = { kind: "absent" };
+    expect(await restarted.reconcileUnresolvedOwnership()).toMatchObject({ released: 1, errors: [] });
+    const freed = restarted.getSnapshot("conversation-1");
+    expect(freed.ok && freed.value.ownership.kind).toBe("none");
+    expect(freed.ok && freed.value.capability.kind).toBe("provider-session-resume");
+    expect(probed).toEqual(["provider-1", "provider-1"]);
+    expect(await restarted.reconcileUnresolvedOwnership()).toMatchObject({ checked: 0, released: 0 });
   });
 
   it("uses the adapter delivery probe before resolving an in-flight restart", async () => {

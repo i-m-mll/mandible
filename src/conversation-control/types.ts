@@ -313,8 +313,19 @@ export type ConversationOutboxItem = {
   provider_receipt_id: string | null;
 };
 
+export type ConversationOwnershipReconciliationReport = {
+  checked: number;
+  released: number;
+  external: number;
+  /** Unresolved claims with no provider session identity to probe. */
+  unresolvable: number;
+  probe_error: string | null;
+  errors: ConversationControlError[];
+};
+
 export type ConversationControlReconciliationReport = {
   claims_checked: number;
   deliveries_checked: number;
+  ownership: ConversationOwnershipReconciliationReport;
   errors: ConversationControlError[];
 };

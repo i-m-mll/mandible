@@ -483,18 +483,6 @@
   position: relative;
 }
 
-.conv-compose__status {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.conv-compose__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .conv-compose__details {
   color: var(--text-muted);
   font-size: 12px;
@@ -960,14 +948,6 @@
   color: var(--text-muted);
   font-size: 13px;
   padding: 10px;
-}
-
-.conv-compose--readonly {
-  min-height: 42px;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 13px;
 }
 
 /* Sub-agents list in detail view */

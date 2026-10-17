@@ -511,11 +511,30 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   } catch (error) {
     logger("warn", "session_manager_init_failed", { error: String(error) });
   }
+  // Unknown ownership must converge: re-probe unresolved claims until process
+  // evidence frees them or attributes them to a live provider process.
+  let ownershipProbeError: string | null = null;
+  const reportOwnershipReconciliation = (ownership: import("./conversation-control/types.js").ConversationOwnershipReconciliationReport) => {
+    if (ownership.probe_error !== ownershipProbeError) {
+      ownershipProbeError = ownership.probe_error;
+      if (ownership.probe_error) logger("warn", "conversation_ownership_probe_failed", { error: ownership.probe_error });
+    }
+    if (ownership.released > 0 || ownership.external > 0) logger("info", "conversation_ownership_reconciled", ownership);
+  };
+  let ownershipReconcileTimer: ReturnType<typeof setInterval> | null = null;
   if (operationalMutationsAllowed) {
     const reconciliation = await conversationControl.reconcileAfterRestart();
     if (reconciliation.errors.length > 0) {
       logger("warn", "conversation_control_reconciliation_errors", reconciliation);
     }
+    reportOwnershipReconciliation(reconciliation.ownership);
+    ownershipReconcileTimer = setInterval(() => {
+      void conversationControl.reconcileUnresolvedOwnership().then((ownership) => {
+        if (ownership.errors.length > 0) logger("warn", "conversation_ownership_reconciliation_errors", ownership);
+        reportOwnershipReconciliation(ownership);
+      }, (error: unknown) => logger("warn", "conversation_ownership_reconciliation_failed", { error: String(error) }));
+    }, 60_000);
+    if (typeof ownershipReconcileTimer === "object" && "unref" in ownershipReconcileTimer) ownershipReconcileTimer.unref();
   }
 
   // Self-health-check: periodically verify the server is still accepting
@@ -735,6 +754,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
 
     try { sessionManager.close(); } catch { /* best effort */ }
+    if (ownershipReconcileTimer) clearInterval(ownershipReconcileTimer);
     try {
       await conversationControl.close();
     } catch (error) {

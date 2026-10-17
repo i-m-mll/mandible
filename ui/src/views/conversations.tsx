@@ -1379,6 +1379,8 @@ export function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
+  const [controlLoadError, setControlLoadError] = useState<string | null>(null);
+  const [dismissedBlockerKey, setDismissedBlockerKey] = useState<string | null>(null);
   const [submitIntent, setSubmitIntent] = useState<DraftSubmitIntent | null>(() => getPendingSubmitIntent(conversationId));
   const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
@@ -1730,13 +1732,18 @@ export function ConversationDetail({
   const refreshControl = useCallback(() => {
     let active = true;
     void getConversationControl(conversationId)
-      .then((snapshot) => { if (active) setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId)); })
-      .catch(() => {});
+      .then((snapshot) => {
+        if (!active) return;
+        setControlLoadError(null);
+        setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId));
+      })
+      .catch((error: unknown) => { if (active) setControlLoadError(error instanceof Error ? error.message : String(error)); });
     return () => { active = false; };
   }, [conversationId]);
 
   useEffect(() => {
     setControl(null);
+    setControlLoadError(null);
     setLiveProjection(null);
     pendingDurableReconciliationsRef.current = [];
     setSubmitIntent(getPendingSubmitIntent(conversationId));
@@ -2088,17 +2095,15 @@ export function ConversationDetail({
     return null;
   }, [blocks]);
 
-  const continueDisabledReason = useMemo(() => {
-    if (!conversation) return null;
-    if (creationReceipt?.state === 'starting') return null;
-    if (creationReceipt?.state === 'failed') return 'The provider could not start.';
-    if (!controlPresentation) return 'Control state unavailable.';
-    if (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid) {
-      return 'The required message anchor is unavailable.';
-    }
-    if (controlPresentation.composer === 'enabled') return null;
-    return controlPresentation.title;
-  }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
+  // Sending is blocked without composer text: failures and persistent blockers
+  // are reported once in the Chat header; transient transitions report nothing.
+  const sendBlocked = Boolean(conversation)
+    && creationReceipt?.state !== 'starting'
+    && (creationReceipt?.state === 'failed'
+      || !controlPresentation
+      || !controlPresentation.sendable
+      || (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid));
+  const sendBlocker = controlPresentation?.blocker ?? null;
 
   const { active: chatViewActive } = useAppShell();
   const canEditDraft = !isReadOnlyChild && !continueBusy
@@ -2121,7 +2126,7 @@ export function ConversationDetail({
         ? 'Message delivery is uncertain. Resolve it before adding attachments.'
         : submitIntent?.state === 'submitting' || continueBusy
           ? 'Wait for the message to finish sending before adding attachments.'
-          : continueDisabledReason ?? 'Attachments are unavailable in this chat.');
+          : 'Attachments are unavailable in this chat.');
       return;
     }
     const targetConversationId = conversationId;
@@ -2141,7 +2146,7 @@ export function ConversationDetail({
       }
     };
     attachmentImportQueueRef.current = attachmentImportQueueRef.current.then(runBatch, runBatch);
-  }, [canImportAttachments, continueBusy, continueDisabledReason, conversationId, submitIntent?.state]);
+  }, [canImportAttachments, continueBusy, conversationId, submitIntent?.state]);
 
   const handleFileDragOver = useCallback((event: JSX.TargetedDragEvent<HTMLElement>) => {
     if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
@@ -2280,8 +2285,8 @@ export function ConversationDetail({
     const prompt = continueDraft.trim();
     if ((!prompt && !draftAttachments.length)
       || (submitIntent && !['failed', 'uncertain'].includes(submitIntent.state))) return;
-    if (continueDisabledReason && creationReceipt?.state !== 'starting') {
-      setContinueError(continueDisabledReason);
+    if (sendBlocked) {
+      setDismissedBlockerKey(null);
       return;
     }
     const runtimeOptions: ConversationRuntimeOptions = submitIntent?.state === 'uncertain'
@@ -2312,7 +2317,7 @@ export function ConversationDetail({
     setControlFailure(null);
     projectPendingIntent(intent);
     setSubmitIntent(intent);
-  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId, managedControlState.draft]);
+  }, [sendBlocked, continueDraft, draftAttachments, control?.capability.kind, latestDagUuid, projectPendingIntent, submitIntent, conversationId, managedControlState.draft]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2519,11 +2524,8 @@ export function ConversationDetail({
 
   const renderRunOptionFields = (compact = false) => <ManagedConversationControlFields state={managedControlState} compact={compact} includeActions={false} />;
 
-  const composerOverlay = isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
-          <span>Read-only subagent transcript</span>
-        </div>
-      ) : (
+  // A read-only child transcript has no composer at all.
+  const composerOverlay = isReadOnlyChild ? null : (
       <div className="conv-compose" data-detail-pane-overlay-visual>
         {draftAttachments.length > 0 && (
           <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
@@ -2553,20 +2555,6 @@ export function ConversationDetail({
             rows={3}
           />
         </form>
-        {(control?.capability.kind === 'blocked-external'
-          || control?.capability.kind === 'blocked-ownership-unknown') && (
-          <div className="conv-compose__actions">
-            {conversation.external_navigation && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => { void handleOpenExternally(); }}
-              >
-                {conversation.external_navigation.label}
-              </button>
-            )}
-          </div>
-        )}
         <div className="conv-compose__controls">
           <input ref={attachmentPickerRef} type="file" multiple hidden
             accept="text/*,image/png,image/jpeg,image/webp,image/gif,.js,.jsx,.ts,.tsx,.json,.yaml,.yml,.toml,.py,.rs,.go,.sh,.sql,.md,.txt"
@@ -2613,7 +2601,7 @@ export function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="chat-circle-action conv-compose__send"
-                disabled={continueBusy || attachmentBusy || Boolean(submitIntent && !['failed', 'uncertain'].includes(submitIntent.state)) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
+                disabled={continueBusy || attachmentBusy || Boolean(submitIntent && !['failed', 'uncertain'].includes(submitIntent.state)) || sendBlocked || (!continueDraft.trim() && !draftAttachments.length)}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
@@ -2634,11 +2622,6 @@ export function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {continueDisabledReason && creationReceipt?.state !== 'starting' && !providerFailed && !controlFailure && (
-          <div className="conv-compose__status">
-            {continueDisabledReason}
-          </div>
-        )}
         <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
           titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
           closeLabel="Close attachment preview" className="conv-compose__preview-modal" panelClassName="conv-compose__preview">
@@ -2652,7 +2635,7 @@ export function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
-      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' && !continueDisabledReason
+      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' && !sendBlocked
         ? () => document.getElementById(`conversation-compose-${conversationId}`)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
         : undefined}
       onDismiss={() => setControlFailure(null)}
@@ -2665,6 +2648,36 @@ export function ConversationDetail({
       onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
     />
   ) : undefined;
+
+  const controlLoadNotice = controlLoadError && !control ? (
+    <DetailPaneNotice
+      severity="error"
+      density="compact"
+      title="Chat control state could not be loaded."
+      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { refreshControl(); }}>Retry</button>}
+    >
+      {controlLoadError}
+    </DetailPaneNotice>
+  ) : null;
+
+  const blockerNotice = sendBlocker && sendBlocker.key !== dismissedBlockerKey && !providerFailed && !controlFailure ? (
+    <DetailPaneNotice
+      severity={sendBlocker.severity}
+      density="compact"
+      title={sendBlocker.title}
+      testId="chat-send-blocker"
+      actions={<>
+        {sendBlocker.severity === 'warning' && conversation.external_navigation ? (
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void handleOpenExternally(); }}>
+            {conversation.external_navigation.label}
+          </button>
+        ) : null}
+        <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss notice" title="Dismiss notice" onClick={() => setDismissedBlockerKey(sendBlocker.key)}>×</button>
+      </>}
+    >
+      {sendBlocker.detail ? <span>{sendBlocker.detail}</span> : null}
+    </DetailPaneNotice>
+  ) : null;
 
   const actionErrorNotice = toast?.type === 'error' || continueError ? (
     <DetailPaneNotice
@@ -2728,6 +2741,8 @@ export function ConversationDetail({
         <ManagedConversationControlActions state={managedControlState} />
         {controlFailureNotice}
         {creationNotice}
+        {controlLoadNotice}
+        {blockerNotice}
         {actionErrorNotice}
         {externalNotice}
         {loadErrorNotice}

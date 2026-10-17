@@ -1,9 +1,17 @@
 import type { ConversationControlSnapshot } from '../api';
 
-export type ConversationControlPresentation = {
-  status: string;
+/** A state that keeps Send blocked until something outside the composer changes. */
+export type ConversationControlBlocker = {
+  key: string;
+  severity: 'info' | 'warning';
   title: string;
-  composer: 'enabled' | 'disabled' | 'hidden';
+  detail: string;
+};
+
+export type ConversationControlPresentation = {
+  sendable: boolean;
+  /** Reported once in the Chat header; transient transitions have none. */
+  blocker: ConversationControlBlocker | null;
   submitLabel: 'Send' | 'Steer now' | 'Queue after this turn' | 'Resume';
 };
 
@@ -11,11 +19,6 @@ export function conversationControlPresentation(
   snapshot: ConversationControlSnapshot,
 ): ConversationControlPresentation {
   const capability = snapshot.capability;
-  const composer = capability.kind === 'unavailable'
-    ? 'hidden' as const
-    : capability.kind === 'blocked-external' || capability.kind === 'blocked-ownership-unknown'
-      ? 'disabled' as const
-      : 'enabled' as const;
   const submitLabel = capability.kind === 'live-steer'
     ? 'Steer now' as const
     : capability.kind === 'owned-queue'
@@ -23,54 +26,34 @@ export function conversationControlPresentation(
       : capability.kind === 'provider-session-resume' || capability.kind === 'message-anchor-resume'
         ? 'Resume' as const
         : 'Send' as const;
-
-  if (snapshot.ownership.kind === 'external') {
-    return { status: 'External', title: 'Another controller owns this provider session.', composer, submitLabel };
+  const key = `${snapshot.conversation_id}:${capability.kind}:${'reason' in capability ? capability.reason : ''}`;
+  switch (capability.kind) {
+    case 'blocked-external':
+      return {
+        sendable: false,
+        submitLabel,
+        blocker: {
+          key: `${key}:${capability.evidence_kind}`,
+          severity: 'warning',
+          title: 'Another process is using this chat.',
+          detail: capability.evidence_kind === 'registered-process' ? 'Sending becomes available when it exits.' : '',
+        },
+      };
+    case 'blocked-ownership-unknown':
+      return {
+        sendable: false,
+        submitLabel,
+        blocker: { key, severity: 'warning', title: 'Mandible could not check whether this chat is in use.', detail: '' },
+      };
+    case 'unavailable':
+      if (capability.reason === 'unsupported-provider') {
+        return { sendable: false, submitLabel, blocker: { key, severity: 'info', title: 'This provider cannot be continued from Mandible.', detail: '' } };
+      }
+      if (capability.reason === 'no-provider-session') {
+        return { sendable: false, submitLabel, blocker: { key, severity: 'info', title: 'This chat has no provider session to continue.', detail: '' } };
+      }
+      return { sendable: false, submitLabel, blocker: null };
+    default:
+      return { sendable: true, submitLabel, blocker: null };
   }
-  if (snapshot.ownership.kind === 'unknown') {
-    return { status: 'Unknown', title: 'Mandible cannot prove that this session is free.', composer, submitLabel };
-  }
-  if (snapshot.ownership.kind === 'none' && capability.kind === 'unavailable') {
-    return { status: 'Unavailable', title: `Continuation unavailable: ${capability.reason}.`, composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'queued') {
-    return { status: 'Queued', title: 'A Mandible-owned message is queued.', composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'running') {
-    return { status: 'Running', title: 'The Mandible-owned turn is running.', composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'waiting-user' || snapshot.turn.kind === 'waiting-permission') {
-    return { status: 'Waiting', title: 'The Mandible-owned turn is waiting.', composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'completed') {
-    return { status: 'Completed', title: 'The latest Mandible-owned turn completed.', composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'failed') {
-    return { status: 'Failed', title: 'The latest Mandible-owned turn failed.', composer, submitLabel };
-  }
-  if (snapshot.turn.kind === 'cancelled') {
-    return { status: 'Stopped', title: 'The latest Mandible-owned turn was stopped.', composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'starting') {
-    return { status: 'Starting', title: 'Mandible is starting the controller.', composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'running') {
-    return { status: 'Running', title: 'The Mandible-owned controller is running.', composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'waiting') {
-    return { status: 'Waiting', title: 'The Mandible-owned controller is waiting.', composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'failed') {
-    return { status: 'Failed', title: 'The Mandible-owned controller failed.', composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'stopping') {
-    return { status: 'Stopped', title: 'The Mandible-owned controller is stopping.', composer, submitLabel };
-  }
-  if (capability.kind === 'unavailable') {
-    return { status: 'Unavailable', title: `Continuation unavailable: ${capability.reason}.`, composer, submitLabel };
-  }
-  if (snapshot.controller.kind === 'stopped') {
-    return { status: 'Stopped', title: 'The controller is stopped.', composer, submitLabel };
-  }
-  return { status: 'Ready', title: 'Mandible owns this provider session.', composer, submitLabel };
 }
