@@ -269,6 +269,7 @@ export type ConversationLifecycleEvent =
   | { kind: "controller-failed"; at: number; error: ConversationControlError }
   | { kind: "controller-released"; at: number }
   | { kind: "provider-session-bound"; at: number; provider_session_id: string }
+  | { kind: "controller-process"; at: number; pid: number }
   | { kind: "turn-started"; at: number; turn_id: string }
   | { kind: "turn-waiting-user"; at: number; turn_id: string }
   | { kind: "turn-waiting-permission"; at: number; turn_id: string }

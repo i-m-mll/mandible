@@ -54,11 +54,8 @@ type StoredDetail = {
 /** The provider process a Mandible controller drives, identified across pid reuse by its start time. */
 export type ControllerProcess = { pid: number; pid_start: string | null };
 
-function ownerDetail(providerSessionId: string | null, process: ControllerProcess | null): string {
-  return JSON.stringify({
-    ...(providerSessionId ? {} : { native_identity_pending: true }),
-    ...(process ? { controller_process: process } : {}),
-  });
+function ownerDetail(providerSessionId: string | null): string {
+  return providerSessionId ? "{}" : JSON.stringify({ native_identity_pending: true });
 }
 
 type PreparedSubmission = Omit<AcceptedConversationSubmission, "provider_receipt"> & {
@@ -306,7 +303,7 @@ export class ConversationControlStore {
           controller_instance_id = ?, adapter_id = ?, owner_detail_json = ?,
           last_authoritative_signal = ?, state_detail_json = '{}', updated_at = ?
           WHERE conversation_id = ? AND revision = ?
-        `).run(revision, generation, controllerInstanceId, adapterId, ownerDetail(boundary.session_id, null), now, now, request.conversation_id, row.revision);
+        `).run(revision, generation, controllerInstanceId, adapterId, ownerDetail(boundary.session_id), now, now, request.conversation_id, row.revision);
         this.journal(request.conversation_id, revision, generation, "controller-acquired", { adapter_id: adapterId, controller_instance_id: controllerInstanceId }, now);
       }
       revision += 1;
@@ -352,14 +349,14 @@ export class ConversationControlStore {
     return transaction.immediate();
   }
 
-  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string | null, process: ControllerProcess | null): Result<void, ConversationControlError> {
+  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string | null): Result<void, ConversationControlError> {
     return this.mutateOwned(conversationId, generation, "controller-ready", (row, revision, now) => {
       const invalid = this.controllerTransitionError(row.controller_state, "ready");
       if (invalid) return invalid;
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, controller_state = 'ready',
         controller_instance_id = ?, provider_session_id = ?, owner_detail_json = ?, last_authoritative_signal = ?, updated_at = ?
         WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
-      `).run(revision, controllerInstanceId, providerSessionId, ownerDetail(providerSessionId, process), now, now, conversationId, generation);
+      `).run(revision, controllerInstanceId, providerSessionId, ownerDetail(providerSessionId), now, now, conversationId, generation);
       return null;
     });
   }
@@ -370,7 +367,6 @@ export class ConversationControlStore {
     adapterId: string,
     controllerInstanceId: string,
     providerSessionId: string | null,
-    process: ControllerProcess | null,
   ): Result<void, ConversationControlError> {
     const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
       const ensured = this.ensure(conversationId);
@@ -404,7 +400,7 @@ export class ConversationControlStore {
         controllerInstanceId,
         adapterId,
         providerSessionId,
-        ownerDetail(providerSessionId, process),
+        ownerDetail(providerSessionId),
         now,
         now,
         conversationId,
@@ -479,6 +475,7 @@ export class ConversationControlStore {
           turn = "unknown"; turnId = event.turn_id; detail.unknown_reason = event.reason; break;
         case "controller-released":
         case "provider-session-bound":
+        case "controller-process":
           throw new Error(`${event.kind} requires its dedicated store transition`);
       }
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, controller_state = ?,
@@ -504,6 +501,15 @@ export class ConversationControlStore {
         .run(providerSessionId, now, conversationId, generation);
       return null;
     }, { provider_session_id: providerSessionId });
+  }
+
+  /** Remember the provider process a Mandible controller drives, so a later daemon can end it. */
+  recordControllerProcess(conversationId: string, generation: number, process: ControllerProcess): Result<void, ConversationControlError> {
+    const updated = this.db.prepare(`UPDATE conversation_control_state
+      SET owner_detail_json = json_set(owner_detail_json, '$.controller_process', json(?))
+      WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'`).run(JSON.stringify(process), conversationId, generation);
+    return updated.changes === 1 ? { ok: true, value: undefined }
+      : { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: this.row(conversationId)?.generation ?? 0 } };
   }
 
   release(conversationId: string, generation: number): Result<void, ConversationControlError> {

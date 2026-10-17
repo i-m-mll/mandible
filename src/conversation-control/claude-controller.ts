@@ -152,6 +152,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
         const replacement = new ClaudeSdkTransport(acquisition, sdk);
         await replacement.start();
+        if (replacement.pid) this.lifecycle.emit(this.event(owned, { kind: "controller-process", at: Date.now(), pid: replacement.pid }));
         owned.process = replacement;
         owned.providerSessionId = replacement.reservedSessionId;
         owned.nativeIdentityBound = replacement.providerSessionId !== null;

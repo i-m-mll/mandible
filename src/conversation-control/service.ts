@@ -47,10 +47,6 @@ export type NewConversationControllerRequest = {
 
 export type NewConversationControllerLease = ControllerLease & { adapter_id: string };
 
-function controllerProcess(lease: ControllerLease): ControllerProcess | null {
-  return lease.pid ? { pid: lease.pid, pid_start: readPidStartTime(lease.pid) } : null;
-}
-
 /**
  * End a provider process that outlived the controller driving it; nothing can
  * write to its stdin any more. "unverified" means a process holds the pid but
@@ -117,7 +113,9 @@ export class ConversationControlService {
         ? this.store.release(conversation_id, generation)
         : lifecycle.kind === "provider-session-bound"
           ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
-          : this.store.publishLifecycle(conversation_id, generation, lifecycle);
+          : lifecycle.kind === "controller-process"
+            ? this.recordControllerProcess(conversation_id, generation, lifecycle.pid)
+            : this.store.publishLifecycle(conversation_id, generation, lifecycle);
       if (result.ok) this.notify(conversation_id);
       if (result.ok && lifecycle.kind === "controller-released") {
         this.retireProviderTransients(conversation_id, generation, "provider-disconnected");
@@ -277,7 +275,8 @@ export class ConversationControlService {
       if (!released.ok) return released;
       return { ok: false, error: { kind: "adapter-contract-violation", adapter_id: adapter.id, message: "Resume did not establish the requested native identity" } };
     }
-    const published = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id, controllerProcess(acquired.value));
+    const acquiredIdentity = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id);
+    const published = acquiredIdentity.ok ? this.recordControllerProcess(input.conversation_id, claimed.value.generation, acquired.value.pid) : acquiredIdentity;
     if (!published.ok) {
       const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
       return stopped.ok ? published : stopped;
@@ -347,9 +346,9 @@ export class ConversationControlService {
           adapter.id,
           lease.controller_instance_id,
           lease.provider_session_id,
-          controllerProcess(lease),
         );
-        if (!adopted.ok) throw new Error(JSON.stringify(adopted.error));
+        const recorded = adopted.ok ? this.recordControllerProcess(request.conversation_id, request.generation, lease.pid) : adopted;
+        if (!recorded.ok) throw new Error(JSON.stringify(recorded.error));
       }).immediate();
     } catch (thrown) {
       await stopAcquired();
@@ -461,13 +460,15 @@ export class ConversationControlService {
         this.notify(request.conversation_id);
         return acquired;
       }
-      const published = this.store.publishAcquired(
+      const acquiredIdentity = this.store.publishAcquired(
         request.conversation_id,
         prepared.value.snapshot.ownership.generation,
         acquired.value.controller_instance_id,
         acquired.value.provider_session_id,
-        controllerProcess(acquired.value),
       );
+      const published = acquiredIdentity.ok
+        ? this.recordControllerProcess(request.conversation_id, prepared.value.snapshot.ownership.generation, acquired.value.pid)
+        : acquiredIdentity;
       if (!published.ok) {
         const rolledBack = await trapAdapterCall(adapter.id, () => adapter.stop({
           conversation_id: request.conversation_id,
@@ -536,6 +537,13 @@ export class ConversationControlService {
       this.notify(begun.value.conversation_id);
     }
     return delivered;
+  }
+
+  /** The one path that records a controller's process, whether it was spawned at acquisition or later. */
+  private recordControllerProcess(conversationId: string, generation: number, pid: number | undefined): Result<void, ConversationControlError> {
+    return pid
+      ? this.store.recordControllerProcess(conversationId, generation, { pid, pid_start: readPidStartTime(pid) })
+      : { ok: true, value: undefined };
   }
 
   /** No controller survives a daemon restart, so every Mandible claim is ended and released. */

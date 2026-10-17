@@ -607,15 +607,23 @@ describe("authoritative conversation control", () => {
     expect(new ConversationControlStore(db).release("conversation-1", firstGeneration)).toEqual(stale);
   });
 
-  it("ends an orphaned controller after a restart and frees its chat", async () => {
-    const orphan = spawn("/bin/sleep", ["30"]);
-    await new Promise<void>((resolve, reject) => { orphan.once("spawn", resolve); orphan.once("error", reject); });
-    const exited = new Promise((resolve) => orphan.once("exit", resolve));
+  it("ends the latest controller process after a restart and frees its chat", async () => {
+    const started = async () => {
+      const child = spawn("/bin/sleep", ["30"]);
+      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      return child;
+    };
+    const [first, replacement] = [await started(), await started()];
+    const exited = new Promise((resolve) => replacement.once("exit", resolve));
     const running = new ConversationControlService(db);
     const before = new FakeAdapter();
-    before.pid = orphan.pid;
+    before.pid = first.pid;
     running.registerAdapter(before);
-    expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
+    const submitted = await running.submit(request(0, "request-a"));
+    if (!submitted.ok) throw new Error("submission failed");
+    first.kill();
+    expect(before.emit({ conversation_id: "conversation-1", generation: submitted.value.snapshot.ownership.generation,
+      kind: "controller-process", pid: replacement.pid!, at: Date.now() })).toEqual([{ ok: true, value: undefined }]);
 
     const restarted = new ConversationControlService(db);
     const after = new FakeAdapter();
@@ -886,7 +894,7 @@ it("keeps initialized Claude identity pending and binds it once", () => {
   db.prepare("UPDATE conversations SET source = 'claude_code', session_id = '' WHERE id = 'conversation-1'").run();
   const store = new ConversationControlStore(db);
   const claude = { ...capabilities, steer:false };
-  expect(store.adoptNewController('conversation-1',1,'claude-agent-sdk-v1','controller',null,null).ok).toBe(true);
+  expect(store.adoptNewController('conversation-1',1,'claude-agent-sdk-v1','controller',null).ok).toBe(true);
   expect(store.snapshot('conversation-1',claude,'claude-agent-sdk-v1')).toMatchObject({ok:true,value:{provider_session_id:null,controller:{kind:'ready'},capability:{kind:'live-send'}}});
   // Persist the local creation receipt without claiming a native session.
   db.prepare(`INSERT INTO conversation_spawn_requests (id,schema_version,idempotency_key,request_digest,request_json,provider,topology_kind,state,attempt_count,native_session_id,created_at,updated_at)
@@ -894,7 +902,7 @@ it("keeps initialized Claude identity pending and binds it once", () => {
   expect(store.release('conversation-1',1)).toEqual({ok:true,value:undefined});
   const draft = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
   expect(draft).toMatchObject({ok:true,value:{ownership:{kind:'none',generation:1},capability:{kind:'live-send'}}});
-  expect(store.adoptNewController('conversation-1',2,'claude-agent-sdk-v1','replacement',null,null).ok).toBe(true);
+  expect(store.adoptNewController('conversation-1',2,'claude-agent-sdk-v1','replacement',null).ok).toBe(true);
   expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
   const before = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
   expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
