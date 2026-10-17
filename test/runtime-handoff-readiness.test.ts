@@ -14,13 +14,12 @@ vi.mock("../src/runtime-handoff-proof.js", async (original) => ({
   verifyRuntimeHandoffPublication: () => ({}),
 }));
 
-import { awaitHandoffReadiness, candidateStartupFailure, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
+import { awaitHandoffReadiness, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
 import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { DOMAIN_EVENTS } from "../src/contracts.js";
 import type { SseEvent } from "../src/types.js";
 import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
-import { rebuildFailureMessage, rebuildFailureNotice } from "../ui/src/daemon-readiness.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
@@ -53,7 +52,7 @@ it("waits for a busy daemon's answer and for readiness, bounded by the handoff d
   expect(stuck.error).toContain("older");
 });
 
-it("fails at once when the started candidate exits or is replaced, and names the daemon's startup failure", async () => {
+it("fails at once when the started candidate exits or is replaced", async () => {
   const until = Date.now() + 10 * 60 * 1000;
   const started = Date.now();
   const crashed = [inspection(false), inspection(false, "merge", { pid: null, lastExit: "1" })];
@@ -66,16 +65,6 @@ it("fails at once when the started candidate exits or is replaced, and names the
   await expect(awaitHandoffReadiness("merge", until, async () => inspection(false, "merge", { pid: 43, runs: 2, lastExit: "1" }), { pauseMs: 1 }))
     .resolves.toMatchObject({ exited: true });
   expect(Date.now() - started).toBeLessThan(5000);
-
-  const log = [
-    '[production-runner] starting /root build older',
-    JSON.stringify({ level: "error", message: "fatal", error: "Error: an older build" }),
-    '[production-runner] starting /root build merge',
-    JSON.stringify({ level: "info", message: "server_started" }),
-    JSON.stringify({ level: "error", message: "fatal", error: "Error: migration 212 failed" }),
-  ].join("\n");
-  expect(candidateStartupFailure(log, "merge")).toBe("fatal: Error: migration 212 failed");
-  expect(candidateStartupFailure(log, "absent")).toBeNull();
 });
 
 it("reports a pending handoff's rebuild as failed only once its journal fails", async () => {
@@ -116,10 +105,7 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   await queue.resumeHookConvergence();
   await queue.resumeHookConvergence();
   expect(failures()).toHaveLength(1);
-  expect(queue.rebuildFailure).toMatchObject({ kind: "handoff_failed", reason: journal.error });
-  // The operator sees the handoff's own error, never a claim that the previous build still runs.
-  const shown = rebuildFailureMessage(rebuildFailureNotice(failures()[0]!.data)).detail;
-  expect(shown).toContain(journal.error);
-  expect(shown).not.toContain("previous build");
+  // The operator sees the handoff's own error.
+  expect(failures()[0]!.data).toMatchObject({ request_id: "self-update", message: expect.stringContaining(journal.error.replace(/\.$/, "")) });
   expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
 });

@@ -51,6 +51,7 @@ import {
   isAuthDependencyReady,
   type AuthChangeReport,
   type AuthDependencyProjection,
+  type CandidateAcceptanceProjection,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 
@@ -135,6 +136,8 @@ export type AuthRequest = {
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
   merge_signature?: MergeSignatureClaim;
+  // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
+  candidate_acceptance?: CandidateAcceptanceProjection | null;
   action_count?: number;
   actions?: AuthRequestAction[];
   [key: string]: unknown;
@@ -396,6 +399,15 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
       : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
   return hooks ? `${heading}\n\n${hooks}` : heading;
 }
+
+/** Issue 7d83fe5 — label and pill class of a pending runtime self-update's acceptance, which approval requires. */
+const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, string]> = {
+  none: ['Acceptance not run', 'status-pill--dismissed'],
+  running: ['Acceptance running', 'status-pill--pending'],
+  passed: ['Acceptance passed', 'status-pill--success'],
+  failed: ['Acceptance failed', 'status-pill--failed'],
+  stale: ['Acceptance stale', 'status-pill--expired'],
+};
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
@@ -824,6 +836,8 @@ function AuthRequestDetail({
     ? getConvergence(request)
     : null;
   const statusClass = getStatusClass(request);
+  const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
+  const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showFailure = failedLike;
@@ -1039,6 +1053,11 @@ function AuthRequestDetail({
               >
                 {statusLabel}
               </span>
+              {acceptance && (
+                <span className={`status-pill ${acceptancePill}`} title={acceptance.reason ?? undefined}>
+                  {acceptanceLabel}
+                </span>
+              )}
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             </>
           )}
@@ -1162,6 +1181,15 @@ function AuthRequestDetail({
                     ? 'Another auth merge changed the target branch; rebase and retry this request.'
                     : 'No output captured.')}
             </p>
+          </div>
+        )}
+
+        {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
+          <div className={`auth-failure${acceptance.state === 'failed' ? '' : ' auth-failure--expired'}`}>
+            <div className="auth-failure__header">
+              <span className="auth-failure__title">{acceptanceLabel}</span>
+            </div>
+            {acceptance.reason && <p className="auth-failure__summary">{acceptance.reason}</p>}
           </div>
         )}
 

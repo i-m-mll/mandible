@@ -46,32 +46,22 @@ live**. It does not restore the old dependency graph or replay publication.
 ## Handoff lock
 
 `MANDIBLE_HOME/config/local-sessions/handoff-active.json` names the one handoff
-that owns the installation. A failed handoff keeps it until verification-only
-recovery succeeds or the operator retires it. While it is held, admission of any
-other handoff refuses, and so do the merge check, submission and every approval
-path for a runtime self-update request. Each refusal names the lock, its
-request, phase and error.
+that owns the installation. While it is held, no other handoff is admitted, and
+the merge check, submission and every approval path for a runtime self-update
+refuse, naming the lock, its request, phase and error. A failed handoff keeps
+the lock until `mandible auth handoff recover <request>` (verification-only
+recovery, below) succeeds or the operator retires it with
+`mandible auth handoff retire --binding-digest <digest> --reason <text>`.
+Retirement boots out the exact idle helper job if one is still loaded and moves
+the lock beside the journal as `retired-active.json` with a `retirement.json`
+record. The journal, staged material and logs stay in place, and the failed
+delivery stays failed.
 
-`mandible auth handoff status` shows the lock.
-`mandible auth handoff recover <request>` runs verification-only recovery (see
-below) for a failed handoff whose exact merge generation is already live. It
-requires the request's delivery work-unit credential, or the configured operator
-with `--operator-recovery`.
-`mandible auth handoff retire --binding-digest <digest> --reason <text>` retires
-a lock whose journal phase is `failed`. It is operator-only through the
-protected operator gate. It boots out the exact idle helper job if one is still
-loaded, then moves the lock beside the journal as `retired-active.json` with a
-`retirement.json` record. The journal, staged material and logs stay in place.
-Retirement neither restores the old runner nor makes the failed delivery live.
-
-When a rebuild window closes without an admitted handoff, or the handoff that
-owns a rebuild fails, the daemon clears the active restart-availability window,
-broadcasts `mandible:rebuild-failed` with the hook's reason, and reports
-`rebuild_failure` in health. The dashboard splash then says the rebuild failed.
-A rebuild hook that exited 75 belongs to its handoff: it is pending, never a
-failure, and convergence sweeps do not open a rebuild window for it. Its
-failure is reported once, when the handoff's journal fails. Completed
-convergence for that request withdraws its rebuild failure.
+A rebuild that ends without an admitted handoff, or whose handoff fails, is
+reported once as `rebuild_failure` in health and as `mandible:rebuild-failed`,
+with the message "The merge landed, but Mandible did not update: <reason>." A
+rebuild hook that exited 75 belongs to its handoff and is pending, never a
+failure, until that handoff's journal fails.
 
 ## Focused verification
 

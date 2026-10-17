@@ -291,6 +291,8 @@ export function registerAuthRoutes(
       signature_verification: authQueue.getSignatureVerification(request.id),
       // Issue 27241e6 — merged/convergence-complete vs pending vs failed.
       convergence: authQueue.convergenceForRequest(request.id),
+      // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
+      candidate_acceptance: authQueue.candidateAcceptanceForRequest(request),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
@@ -516,7 +518,7 @@ export function registerAuthRoutes(
       const requester = resolveAuthRequester(req, { command: "candidate-acceptance", title: "candidate-acceptance" });
       if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
       if (!enforceAuthProjectWrite(req, res, request.repo)) return;
-      res.status(202).json({ request_id: request.id, acceptance: authQueue.startCandidateAcceptance(request.id) });
+      res.status(202).json({ request_id: request.id, acceptance: authQueue.ensureCandidateAcceptance(request) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -526,7 +528,7 @@ export function registerAuthRoutes(
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
-      res.json({ request_id: request.id, acceptance: authQueue.candidateAcceptance(request.id) });
+      res.json({ request_id: request.id, acceptance: authQueue.candidateAcceptanceForRequest(request) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -584,6 +586,7 @@ export function registerAuthRoutes(
         action_count: authQueue.countActions(r.id),
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
+        candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         ...authAttributionReadFields(attributionResolver, r),
       };
     });
@@ -618,6 +621,7 @@ export function registerAuthRoutes(
         // Issue 27241e6 — history is where "was it actually delivered?" is
         // asked after the fact, so it carries convergence too.
         convergence: authQueue.convergenceForRequest(r.id),
+        candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         ...authAttributionReadFields(attributionResolver, r),
       })),
     });

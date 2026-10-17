@@ -52,23 +52,22 @@ import {
   validateCanonicalChangeMessage,
   type CanonicalChangeMessageFields,
 } from "./auth-change-message.js";
-import type { AuthHook } from "./types.js";
+import type { AuthHook, RebuildFailure } from "./types.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import {
+  CandidateAcceptanceRuns,
+  candidateAcceptanceProjection,
   candidateAcceptanceRefusal,
-  failInterruptedCandidateAcceptances,
-  finishCandidateAcceptanceRecord,
   latestCandidateAcceptance,
-  runCandidateAcceptance,
-  startCandidateAcceptanceRecord,
+  type CandidateAcceptanceCandidate,
   type CandidateAcceptanceExecutor,
-  type CandidateAcceptanceRecord,
+  type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
+import type { CandidateAcceptanceProjection } from "./contracts.js";
 import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
-import { resolveCheckoutPath } from "./ledger/project-registry.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
@@ -403,13 +402,7 @@ export interface CodexArchiveReplayResult {
   }>;
 }
 
-/** Issue a09b4d2 — an announced rebuild that ended without a daemon restart, or (54a0b88) a failed runtime handoff. */
-export interface RebuildFailure {
-  request_id: string;
-  reason: string;
-  failed_at: number;
-  kind: import("./types.js").RebuildFailureKind;
-}
+type CandidateRef = Pick<AuthRequest, "merge_candidate_pin_sha" | "merge_candidate_tree_sha" | "merge_preflight_base_sha" | "merge_head_sha">;
 
 export interface AuthQueueOptions {
   db?: InstanceType<typeof SqliteDatabase>;
@@ -430,7 +423,8 @@ export interface AuthQueueOptions {
   // Issue ff784d8 — local, DB-independent self-merge availability receipt.
   restartAvailability?: RestartAvailabilityLifecycle;
   // Issue a09b4d2 — runs candidate acceptance of an exact retained candidate.
-  candidateAcceptanceExecutor?: CandidateAcceptanceExecutor;
+  // Only the daemon that owns acceptance supplies one.
+  candidateAcceptanceExecutor?: CandidateAcceptanceExecutor | null;
   // Background recovery is disabled for database copies used by previews.
   backgroundMaintenance?: boolean;
   // Preview copies may edit their own auth rows, but must not inspect or change
@@ -630,8 +624,7 @@ export class AuthQueue {
   // the last rebuild that ended without an admitted runtime handoff.
   private rebuildWindowRequestId: string | null = null;
   private _rebuildFailure: RebuildFailure | null = null;
-  private readonly candidateAcceptanceExecutor: CandidateAcceptanceExecutor;
-  private readonly candidateAcceptanceRuns = new Map<string, Promise<void>>();
+  private readonly acceptanceRuns: CandidateAcceptanceRuns | null;
   // Bug: 681739e — durable marker (meta key) recording when a self-merge
   // scheduled the restart. On the next startup, requests approved before this
   // instant that never recorded a result are recovered immediately instead of
@@ -653,7 +646,15 @@ export class AuthQueue {
     this.allowExternalEffects = options.allowExternalEffects !== false;
     this.backgroundMaintenance = options.backgroundMaintenance !== false && this.allowExternalEffects;
     const broadcast = options.broadcast ?? defaultBroadcast;
-    this.broadcast = (event) => broadcast(projectAuthAttributionEvent(this.db, event));
+    this.broadcast = (event) => {
+      broadcast(projectAuthAttributionEvent(this.db, event));
+      // Issue 7d83fe5 — every resolution path broadcasts here, so this is
+      // where a request that left pending gives up its acceptance run.
+      if (event.event === DOMAIN_EVENTS.AUTH_RESOLVED) {
+        const { request_id, status } = event.data as { request_id: string; status: string };
+        this.acceptanceRuns?.abort(request_id, `The request is ${status.replace(/_/g, " ")}.`);
+      }
+    };
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
@@ -663,7 +664,11 @@ export class AuthQueue {
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
-    this.candidateAcceptanceExecutor = options.candidateAcceptanceExecutor ?? runCandidateAcceptance;
+    this.acceptanceRuns = options.candidateAcceptanceExecutor
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId))
+      : null;
+    // Before anything can start a run: rows a previous daemon left running were interrupted.
+    this.acceptanceRuns?.start();
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
@@ -690,6 +695,7 @@ export class AuthQueue {
     this.recoverStuckRequests();
     this.hookManager.reclaimAllInterruptedRuns();
     await this.resumeHookConvergence();
+    this.resumeCandidateAcceptances();
     this.startExpiryTimer();
   }
 
@@ -700,7 +706,9 @@ export class AuthQueue {
       (id, handoffError) => {
         // The independent handoff that owned this rebuild has now failed.
         const request = this.getRequestById(id);
-        if (request?.repo === "mandible") this.failRebuild(request, this.settleConvergence(request), handoffError);
+        if (request?.repo !== "mandible") return;
+        this.settleConvergence(request);
+        this.failRebuild(request, handoffError);
       },
     );
     for (const id of ids) {
@@ -739,133 +747,119 @@ export class AuthQueue {
     return this._rebuilding;
   }
 
-  /** Issue a09b4d2 — the last announced rebuild that will not restart the daemon. */
+  /** Issue a09b4d2 — the last merged self-update whose rebuild or runtime handoff failed. */
   get rebuildFailure(): RebuildFailure | null {
     return this._rebuildFailure;
   }
 
   // --- Issue a09b4d2: runtime self-update gates -------------------------------
 
-  /** Whether merging this repo runs the runtime handoff that self-updates Mandible. */
-  private selfUpdatesRuntime(repo: string | null | undefined): boolean {
-    return typeof this.hookManager.selfUpdatesRuntime === "function" && this.hookManager.selfUpdatesRuntime(repo);
-  }
-
   /** The installation's runtime handoff lock, or null when it is free. */
   runtimeHandoffLock(): RuntimeHandoffLock | null {
-    return typeof this.hookManager.runtimeHandoffLock === "function" ? this.hookManager.runtimeHandoffLock() : null;
+    return this.hookManager.runtimeHandoffLock();
   }
 
-  private runtimeHandoffLockRefusalFor(repo: string | null | undefined): string | null {
-    if (!this.selfUpdatesRuntime(repo)) return null;
+  /** A held handoff lock blocks every rebuild, so nothing may start a self-update of this repo. */
+  private selfUpdateBlock(repo: string | null | undefined): string | null {
+    if (!this.hookManager.selfUpdatesRuntime(repo)) return null;
     const lock = this.runtimeHandoffLock();
     return lock ? runtimeHandoffLockRefusal(lock) : null;
   }
 
-  /** A held handoff lock blocks every rebuild, so self-update approval must not proceed. */
-  private enforceRuntimeHandoffLock(request: AuthRequest): void {
-    if (!isAuthMergeCommand(request)) return;
-    const refusal = this.runtimeHandoffLockRefusalFor(request.repo);
-    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+  private candidateAcceptanceApplies(request: Pick<AuthRequest, "type" | "command" | "repo">): boolean {
+    return isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo);
   }
 
-  /** Approval requires a passing acceptance of exactly the current candidate. */
-  private enforceCandidateAcceptance(request: AuthRequest): void {
-    if (!isAuthMergeCommand(request) || !this.selfUpdatesRuntime(request.repo)) return;
-    this.reconcileInterruptedCandidateAcceptances();
-    const refusal = candidateAcceptanceRefusal(latestCandidateAcceptance(this.db, request.id), {
-      tree_sha: request.merge_candidate_tree_sha ?? undefined,
-      base_sha: request.merge_preflight_base_sha ?? undefined,
-      head_sha: request.merge_head_sha ?? undefined,
-    }, request.id);
-    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+  /** The request's current retained candidate as acceptance binds it, or null when it has none. */
+  private acceptanceCandidate(request: CandidateRef): CandidateAcceptanceCandidate | null {
+    const { merge_candidate_pin_sha: pin, merge_candidate_tree_sha: tree, merge_preflight_base_sha: base, merge_head_sha: head } = request;
+    return pin && tree && base && head ? { pin_sha: pin, tree_sha: tree, base_sha: base, head_sha: head } : null;
   }
 
-  private reconcileInterruptedCandidateAcceptances(): void {
-    failInterruptedCandidateAcceptances(this.db, new Set(this.candidateAcceptanceRuns.keys()), this.now());
-  }
-
-  candidateAcceptance(id: string): CandidateAcceptanceRecord | null {
-    const request = this.getRequestReference(id);
-    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-    this.reconcileInterruptedCandidateAcceptances();
-    return latestCandidateAcceptance(this.db, request.id);
+  /** Issue 7d83fe5 — acceptance of the request's current candidate; null when acceptance does not apply. */
+  candidateAcceptanceForRequest(request: CandidateRef & Pick<AuthRequest, "id" | "type" | "command" | "repo">): CandidateAcceptanceProjection | null {
+    if (!this.candidateAcceptanceApplies(request)) return null;
+    const candidate = this.acceptanceCandidate(request);
+    const open = Boolean(candidate && this.acceptanceRuns?.isOpen(request.id, candidate.pin_sha));
+    return candidateAcceptanceProjection(latestCandidateAcceptance(this.db, request.id), candidate, open);
   }
 
   /**
-   * Start one daemon-run acceptance of the request's exact retained candidate.
-   * Runs are serialized; the record is durable and returned immediately.
+   * Issue 7d83fe5 — the single path that starts candidate acceptance. The
+   * daemon calls it when a self-update request is submitted or superseded, when
+   * its candidate is re-pinned onto a moved base, and at startup; the CLI calls
+   * it through its route. A run of the current candidate that is open or passed
+   * is kept; otherwise a new run starts. Null when acceptance does not apply.
    */
-  startCandidateAcceptance(id: string): CandidateAcceptanceRecord {
-    this.requireExternalEffects("Candidate acceptance");
-    const request = this.getRequestReference(id);
-    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-    if (request.status !== "pending" || !isAuthMergeCommand(request)) {
-      throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending merge request.");
+  ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection | null {
+    if (!this.candidateAcceptanceApplies(request)) return null;
+    const runs = this.acceptanceRuns;
+    if (!runs) throw new AuthQueueError("invalid_command", "This daemon does not run candidate acceptance.");
+    if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending request.");
+    const candidate = this.acceptanceCandidate(request);
+    if (!candidate || !this.mergeCandidateExact(request)) {
+      throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, which starts acceptance of the new candidate.");
     }
-    if (!this.selfUpdatesRuntime(request.repo)) {
-      throw new AuthQueueError("invalid_command", "Candidate acceptance applies only to runtime self-update requests.");
-    }
-    this.reconcileInterruptedCandidateAcceptances();
-    if (this.candidateAcceptanceRuns.size > 0) {
-      const active = this.db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running' LIMIT 1").get() as { auth_request_id?: string } | undefined;
-      throw new AuthQueueError("invalid_status", `Another candidate acceptance is running${active?.auth_request_id ? ` for request ${active.auth_request_id.slice(0, 8)}` : ""}; run this one after it finishes.`);
-    }
-    if (!this.mergeCandidateExact(request) || !request.merge_candidate_tree_sha || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.cwd) {
-      throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, then run acceptance on the new candidate.");
-    }
-    const resolvedHead = request.head_branch ? this.resolveBranchHeadForCheck(request.cwd, request.head_branch) : null;
-    if (resolvedHead !== request.merge_head_sha) {
+    if (this.resolveBranchHeadForCheck(request.cwd!, request.head_branch!) !== request.merge_head_sha) {
       throw new AuthQueueError("merge_check_failed", "The head branch moved since review; resubmit before running acceptance.");
     }
-    const projectRef = request.repo ? resolveProjectRef(this.db, request.repo) : null;
-    const project = projectRef?.ok && projectRef.project && !projectRef.ambiguous ? projectRef.project : resolveCheckoutPath(this.db, request.cwd);
-    const workUnitId = request.custody_work_unit_id ?? this.deliveryWorkUnitForBranch(request.head_branch);
-    if (!project || !workUnitId) {
-      throw new AuthQueueError("invalid_command", "Candidate acceptance requires a registered project checkout and exactly one open delivery work unit for the head branch.");
-    }
-    const record = startCandidateAcceptanceRecord(this.db, request.id, {
-      pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha,
-      base_sha: request.merge_preflight_base_sha, head_sha: request.merge_head_sha,
-    }, this.now());
+    const acceptance = this.candidateAcceptanceForRequest(request)!;
+    if (acceptance.state === "running" || acceptance.state === "passed") return acceptance;
+    authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
+    runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
+    return this.candidateAcceptanceForRequest(request)!;
+  }
+
+  /** Where and as whom the run executes; a missing project or custody fails the run with the reason. */
+  private acceptanceInput(request: AuthRequest, pinSha: string): Omit<CandidateAcceptanceInput, "signal"> {
+    const project = request.repo ? resolveProjectRef(this.db, request.repo) : null;
+    if (!project?.ok || !project.project || project.ambiguous) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
+    if (!request.custody_work_unit_id) throw new Error("The request has no delivery work unit in custody.");
     const home = getUserHome();
     const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
-    const run = this.candidateAcceptanceExecutor({
-      repoRoot: request.cwd, pinSha: record.pin_sha, projectId: project.id, workUnitId, env,
-    }).catch((error: unknown) => ({ status: "failed" as const, result: null, error: errorMessage(error) ?? String(error) }))
-      .then((outcome) => {
-        if (this.disposed || !this.isDbOpen()) return;
-        finishCandidateAcceptanceRecord(this.db, record.id, outcome, this.now());
-        authLog(outcome.status === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
-          subsystem: "auth", auth_request_id: request.id, status: outcome.status, error: outcome.error,
-        });
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
-      })
-      .finally(() => { this.candidateAcceptanceRuns.delete(record.id); });
-    this.candidateAcceptanceRuns.set(record.id, run);
-    return record;
+    return { repoRoot: request.cwd!, pinSha, projectId: project.project.id, workUnitId: request.custody_work_unit_id, env };
   }
 
-  /** The single open work unit delivering an unbound request's head branch. */
-  private deliveryWorkUnitForBranch(branch: string | null | undefined): string | null {
-    if (!branch) return null;
-    const rows = this.db.prepare(
-      "SELECT id FROM work_units WHERE branch = ? AND state = 'committed' AND resolved_at IS NULL LIMIT 2",
-    ).all(branch) as Array<{ id: string }>;
-    return rows.length === 1 ? rows[0]!.id : null;
+  private candidateAcceptanceChanged(requestId: string): void {
+    const request = this.readRequestByExactId(requestId);
+    if (!request) return;
+    const acceptance = this.candidateAcceptanceForRequest(request);
+    if (acceptance?.state === "passed" || acceptance?.state === "failed") {
+      authLog(acceptance.state === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
+        subsystem: "auth", auth_request_id: requestId, state: acceptance.state, reason: acceptance.reason,
+      });
+    }
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, candidate_acceptance: acceptance } } });
   }
 
-  /** Test and shutdown seam: wait for in-process acceptance runs. */
+  /** Startup: start acceptance for every pending self-update request whose current candidate needs it. */
+  private resumeCandidateAcceptances(): void {
+    if (!this.acceptanceRuns) return;
+    const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
+    for (const { id } of rows) this.startCandidateAcceptanceAutomatically(id);
+  }
+
+  /** Automatic triggers never fail the operation that caused them; a refusal is logged. */
+  private startCandidateAcceptanceAutomatically(requestId: string): void {
+    const request = this.readRequestByExactId(requestId);
+    if (!this.acceptanceRuns || !request) return;
+    try {
+      this.ensureCandidateAcceptance(request);
+    } catch (error) {
+      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: errorMessage(error) });
+    }
+  }
+
+  /** Test and shutdown seam: settles when every enqueued acceptance run has finished. */
   async drainCandidateAcceptances(): Promise<void> {
-    await Promise.allSettled([...this.candidateAcceptanceRuns.values()]);
+    await this.acceptanceRuns?.idle();
   }
 
   /** Operator retirement of a failed runtime handoff lock (issue a09b4d2). */
   async retireRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: AuthLifecycleActor): Promise<unknown> {
     this.requireExternalEffects("Runtime handoff retirement");
-    if (typeof this.hookManager.retireFailedRuntimeHandoff !== "function") throw new AuthQueueError("invalid_command", "Runtime handoff retirement is unavailable.");
     try {
       const retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
       authLog("warn", "auth_runtime_handoff_retired", { subsystem: "auth", binding_digest: input.bindingDigest, user_id: actor.user_id });
@@ -883,27 +877,13 @@ export class AuthQueue {
     this.restartAvailability?.markRebuildStarted(requestId);
   }
 
-  /**
-   * A rebuild failed: its window closed without an admitted runtime handoff, or
-   * the handoff that owned it failed with `handoffError`. Say so, with the
-   * reason, and clear the stale window.
-   */
-  private failRebuild(request: AuthRequest, convergence: AuthConvergence, handoffError?: string): void {
+  /** The merge landed but Mandible did not update: report why, and close the rebuild window. */
+  private failRebuild(request: AuthRequest, reason: string): void {
     this.rebuildWindowRequestId = null;
-    let reason = handoffError ?? "The rebuild hook did not admit a runtime handoff; the daemon was not restarted.";
-    if (handoffError === undefined) try {
-      const run = this.hookManager.listRuns(request.id).find((candidate) => candidate.hook_id === MANDIBLE_REBUILD_HOOK_ID);
-      if (run) {
-        const lines = run.output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("[post-merge-build]"));
-        const last = lines.at(-1);
-        reason = convergence.state === "complete"
-          ? "The rebuild hook completed without admitting a runtime handoff; the daemon was not restarted."
-          : `The rebuild hook is ${run.state} after ${run.attempts} attempt${run.attempts === 1 ? "" : "s"}${run.exit_code === null ? "" : ` (exit ${run.exit_code})`}${last ? `: ${last}` : "."}`;
-      }
-    } catch { /* keep the generic reason */ }
-    this._rebuildFailure = { request_id: request.id, reason, failed_at: this.now(), kind: handoffError === undefined ? "not_restarted" : "handoff_failed" };
-    this.restartAvailability?.markRebuildFailed?.(request.id);
-    authLog("warn", "auth_rebuild_failed", { subsystem: "auth", auth_request_id: request.id, reason });
+    const message = `The merge landed, but Mandible did not update: ${reason.trim().replace(/\.+$/, "")}.`;
+    this._rebuildFailure = { request_id: request.id, message, failed_at: this.now() };
+    this.restartAvailability?.markRebuildFailed(request.id);
+    authLog("warn", "auth_rebuild_failed", { subsystem: "auth", auth_request_id: request.id, message });
     this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED, data: { ...this._rebuildFailure } });
   }
 
@@ -952,6 +932,7 @@ export class AuthQueue {
 
   dispose(): void {
     this.disposed = true;
+    void this.acceptanceRuns?.stop();
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
@@ -1235,7 +1216,7 @@ export class AuthQueue {
 
     for (const row of rows) {
       const request = mapRow(row);
-      if (this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) continue;
+      if (this.hookManager.runtimeHandoffOwnsRequest(request.id)) continue;
       if (excludeInFlight && this.inFlight.has(request.id)) {
         continue;
       }
@@ -1979,6 +1960,7 @@ export class AuthQueue {
         request_id: predecessor.id, lifecycle: "superseded", related_request_id: request.id,
       } });
     }
+    this.startCandidateAcceptanceAutomatically(request.id);
 
     return request;
   }
@@ -2397,7 +2379,7 @@ export class AuthQueue {
       const readiness = validateRuntimeSource(this.db, process.env.MANDIBLE_PRODUCTION_ROOT, context.targetRepoRoot);
       if (!readiness.ok) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: readiness.reason };
     }
-    const handoffLock = this.runtimeHandoffLockRefusalFor(repo);
+    const handoffLock = this.selfUpdateBlock(repo);
     if (handoffLock) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: handoffLock };
     const worktreeReady = this.checkMergeWorktreeReady(cwd);
     if (worktreeReady.status === "error") {
@@ -3065,7 +3047,7 @@ export class AuthQueue {
       );
     }
 
-    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) {
+    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
       throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
     }
     const now = this.now();
@@ -3108,7 +3090,7 @@ export class AuthQueue {
       );
     }
 
-    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) {
+    if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
       throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
     }
     const now = this.now();
@@ -3264,6 +3246,44 @@ export class AuthQueue {
     catch (error) { throw new AuthQueueError("merge_check_failed", error instanceof Error ? error.message : String(error)); }
   }
 
+  /**
+   * The checks every approval path shares, in order. Returns the request as it
+   * will be approved: its execution context recorded, a merge's candidate
+   * exact for the current base (recomputed when `recompute` allows), and,
+   * for a runtime self-update, the handoff lock free and acceptance of exactly
+   * that candidate passed.
+   */
+  private prepareMergeApproval(request: AuthRequest, recompute: boolean): AuthRequest {
+    this.assertPublication(request);
+    this.enforceDependencyReadiness(request);
+    const selfUpdateBlock = isAuthMergeCommand(request) ? this.selfUpdateBlock(request.repo) : null;
+    if (selfUpdateBlock) throw new AuthQueueError("merge_check_failed", `${selfUpdateBlock} No protected state changed.`);
+    // Bug: 58d93ee — guard against null/empty command before spawning execution
+    if (!request.command?.trim()) {
+      throw new AuthQueueError("invalid_command", "Auth request has no command set — update the request with a valid command before approving");
+    }
+    // Issue 08a5f04 (review F2) — the stored command must byte-equal the
+    // canonical form derived from the reviewed structured fields before any
+    // other approval work happens. No non-canonical byte sequence is executable.
+    this.enforceCanonicalMergeCommand(request);
+    const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
+    if (contextUpdate) request = this.recordApprovalContextUpdate(request, contextUpdate, this.now());
+    if (isAuthMergeCommand(request) && !this.mergeCandidateExact(request)) {
+      // Issue 08a5f04 — when only the base advanced, the reviewed content is
+      // unchanged, so the candidate is recomputed against the current base
+      // within this approval. Issue 2205073 — the refusal names the guard that
+      // declined.
+      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
+      request = (recompute ? this.recomputeStaleCandidateForApproval(request, refusalSink) : null) ?? request;
+      if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
+    }
+    request = this.ensureOriginalMergeRangeForApproval(request);
+    const acceptance = this.candidateAcceptanceForRequest(request);
+    const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
+    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+    return request;
+  }
+
   private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; credentialId: string; userId: string; expiresAt: number }>();
   private readonly operatorProofInFlight = new Map<string, AbortController>();
 
@@ -3278,19 +3298,7 @@ export class AuthQueue {
     let request = this.requireRequest(id);
     if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
     if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
-    this.assertPublication(request);
-    this.enforceDependencyReadiness(request);
-    this.enforceRuntimeHandoffLock(request);
-    this.enforceCanonicalMergeCommand(request);
-    const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
-    if (contextUpdate) request = this.recordApprovalContextUpdate(request, contextUpdate, this.now());
-    if (isAuthMergeCommand(request) && !this.mergeCandidateExact(request)) {
-      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
-      request = this.recomputeStaleCandidateForApproval(request, refusalSink) ?? request;
-      if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
-    }
-    request = this.ensureOriginalMergeRangeForApproval(request);
-    this.enforceCandidateAcceptance(request);
+    request = this.prepareMergeApproval(request, true);
     if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || this.hasNativeMergeHooks(request.cwd))) {
       throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
     }
@@ -3338,27 +3346,7 @@ export class AuthQueue {
       operatorProof.digest !== this.approvalDigest(request))) {
       throw new AuthQueueError("invalid_status", "Fresh action-bound operator signing proof is required before approval.");
     }
-    this.assertPublication(request);
-    this.enforceDependencyReadiness(request);
-    this.enforceRuntimeHandoffLock(request);
-
-    // Bug: 58d93ee — guard against null/empty command before spawning execution
-    if (!request.command || !request.command.trim()) {
-      throw new AuthQueueError(
-        "invalid_command",
-        "Auth request has no command set — update the request with a valid command before approving"
-      );
-    }
-
-    // Issue 08a5f04 (review F2) — the stored command must byte-equal the
-    // canonical form derived from the reviewed structured fields before any
-    // other approval work happens. This closes the mutated-command hole for
-    // pinned and unpinned requests alike, and kills shell-expansion evasion:
-    // no non-canonical byte sequence is executable.
-    this.enforceCanonicalMergeCommand(request);
-
     const now = this.now();
-    const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
     // Manual approval is always the direct interactive signing path. Automated
     // callers pass their delegated approval context explicitly.
     const effectiveApproval = approval;
@@ -3387,41 +3375,15 @@ export class AuthQueue {
         "Delegated approval lease has no active authorized signing credential.",
       );
     }
-    let candidateExact = this.mergeCandidateExact(request);
-    if (request.merge_candidate_pin_sha && !candidateExact) {
-      // Issue 08a5f04 — base drift vs head drift: when the head branch still
-      // points at the reviewed commit and only the base advanced (e.g. a
-      // sibling merge landed), the reviewed content — the branch's own diff —
-      // is unchanged, so the candidate is recomputed against the current base
-      // within this same approval action. Head drift and every other
-      // staleness cause keep the strict blocking behavior below.
-      // Issue 2205073 — the refusal sink carries the specific guard that
-      // declined out to the approver instead of leaving it in daemon_log.
-      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
-      const recomputed = operatorProof ? null : this.recomputeStaleCandidateForApproval(request, refusalSink);
-      if (recomputed) {
-        request = recomputed;
-        candidateExact = this.mergeCandidateExact(request);
-      }
-      if (request.merge_candidate_pin_sha && !candidateExact) {
-        throw new AuthQueueError(
-          "merge_check_failed",
-          this.describeRecomputeRefusal(refusalSink.refusal),
-        );
-      }
-    }
-    if (executionContextUpdate) {
-      request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
-    }
-    request = this.ensureOriginalMergeRangeForApproval(request);
-    this.enforceCandidateAcceptance(request);
+    // An operator proof signed the candidate as approveWithOperatorProof
+    // prepared it, so this approval must not recompute it.
+    request = this.prepareMergeApproval(request, !operatorProof);
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
     // already refused every non-canonical (including hierarchical-shaped)
     // merge command earlier in this same synchronous approval.
     const atomicEnabled = Boolean(
       request.execution_mode !== "remote" &&
       isAuthMergeCommand(request) &&
-      candidateExact &&
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
@@ -3498,32 +3460,8 @@ export class AuthQueue {
     if (request.status !== "pending") {
       throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
     }
-    this.assertPublication(request);
-    this.enforceDependencyReadiness(request);
-    this.enforceRuntimeHandoffLock(request);
-    if (!request.command?.trim()) {
-      throw new AuthQueueError("invalid_command", "Auth request has no command set.");
-    }
-    this.enforceCanonicalMergeCommand(request);
+    request = this.prepareMergeApproval(request, true);
     const now = this.now();
-    const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
-    let candidateExact = this.mergeCandidateExact(request);
-    if (request.merge_candidate_pin_sha && !candidateExact) {
-      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
-      const recomputed = this.recomputeStaleCandidateForApproval(request, refusalSink);
-      if (recomputed) {
-        request = recomputed;
-        candidateExact = this.mergeCandidateExact(request);
-      }
-      if (request.merge_candidate_pin_sha && !candidateExact) {
-        throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
-      }
-    }
-    if (executionContextUpdate) {
-      request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
-    }
-    request = this.ensureOriginalMergeRangeForApproval(request);
-    this.enforceCandidateAcceptance(request);
     const requestId = request.id;
     let consumed: ClearanceConsumption;
     try {
@@ -3541,7 +3479,7 @@ export class AuthQueue {
           throw new AuthQueueError("invalid_command", "Clearance has no active authorized signing credential.");
         }
         const atomicEnabled = Boolean(
-          request.execution_mode !== "remote" && isAuthMergeCommand(request) && candidateExact &&
+          request.execution_mode !== "remote" && isAuthMergeCommand(request) &&
           !this.hasNativeMergeHooks(request.cwd) && signerLines.length > 0
         );
         if (!atomicEnabled) throw new AuthQueueError("merge_check_failed", "Clearance execution requires an exact local signed candidate without unsupported native hooks.");
@@ -4516,6 +4454,8 @@ export class AuthQueue {
       return fail(errorMessage(error) ?? "candidate_snapshot_write_failed");
     }
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "revised" } });
+    // Issue 7d83fe5 — the re-pinned candidate needs its own acceptance.
+    this.startCandidateAcceptanceAutomatically(request.id);
     return this.readRequestByExactId(request.id);
   }
 
@@ -5563,8 +5503,13 @@ export class AuthQueue {
       if (this.rebuildWindowRequestId === request.id) {
         // Issue 54a0b88 — a pending rebuild owned by an independent runtime
         // handoff will converge or fail in that handoff; it has not failed.
-        if (convergence.state === "pending" && this.hookManager.runtimeHandoffOwnsRequest?.(request.id)) this.rebuildWindowRequestId = null;
-        else this.failRebuild(request, convergence);
+        if (convergence.state === "pending" && this.hookManager.runtimeHandoffOwnsRequest(request.id)) this.rebuildWindowRequestId = null;
+        else {
+          const run = this.hookManager.getRun(request.id, MANDIBLE_REBUILD_HOOK_ID);
+          this.failRebuild(request, !run ? "its rebuild hook did not run"
+            : run.state === "complete" ? "its rebuild hook completed without a runtime handoff"
+            : run.exit_code === null ? `its rebuild hook is ${run.state}` : `its rebuild hook exited ${run.exit_code}`);
+        }
       }
       if (convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
       return convergence;
@@ -5596,7 +5541,9 @@ export class AuthQueue {
     // same drain cap so in-flight Stage 3 work is not killed by the exit. The
     // durable merge_finalized_at IS NULL marker plus the startup sweep is the
     // backstop for anything still running when the cap is hit.
-    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain()];
+    // Issue 7d83fe5 — an acceptance run cannot survive the restart; stop it so
+    // it cleans up its owned processes. Startup records it as interrupted and runs it again.
+    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain(), ...(this.acceptanceRuns ? [this.acceptanceRuns.stop()] : [])];
     if (drainTargets.length > 0) {
       await Promise.race([
         Promise.allSettled(drainTargets),

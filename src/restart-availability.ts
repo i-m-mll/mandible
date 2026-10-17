@@ -63,7 +63,7 @@ export interface RestartAvailabilityLifecycle {
   markRebuildStarted(generationId?: string): string | null;
   markShutdownStarted(generationId: string): boolean;
   /** Issue a09b4d2 — retire an active window whose rebuild will not restart. */
-  markRebuildFailed?(generationId: string): boolean;
+  markRebuildFailed(generationId: string): boolean;
 }
 
 export interface RestartAvailabilityStoreOptions {

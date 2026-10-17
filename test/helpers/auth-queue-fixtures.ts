@@ -484,6 +484,9 @@ export function createNoopHookManager(): AuthHookManager {
   return {
     executeHooks: async () => [],
     reclaimAllInterruptedRuns: () => 0,
+    selfUpdatesRuntime: () => false,
+    runtimeHandoffLock: () => null,
+    runtimeHandoffOwnsRequest: () => false,
   } as unknown as AuthHookManager;
 }
 

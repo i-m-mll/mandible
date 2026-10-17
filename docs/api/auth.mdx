@@ -485,34 +485,25 @@ is why it needs no fresh merge authorization.
 ### Runtime self-update gates
 
 A merge request whose repository matches the enabled `builtin-mandible-rebuild`
-hook self-updates the running installation. Two gates apply to such requests.
-
-While the installation's runtime handoff lock
-(`MANDIBLE_HOME/config/local-sessions/handoff-active.json`) is held, the merge
-check, submission, and every approval path refuse. The refusal names the lock,
-its owning request, phase, and error, and the recovery path.
-
-Approval also requires a passing candidate acceptance of the request's exact
-retained candidate. The result is bound to the candidate tree, reviewed base and
-reviewed head, so a moved base or head makes it stale and approval refuses until
-acceptance runs again.
+hook self-updates the running installation. Its merge check, submission and
+approval refuse while the runtime handoff lock is held
+(`docs/runtime-handoff.md`), and approval requires a passing candidate
+acceptance of its exact current candidate (`docs/candidate-acceptance.md`).
+Queue, detail and history payloads and `auth:updated` carry
+`candidate_acceptance`: `{ state, reason, started_at, finished_at }`, where
+`state` is `none`, `running`, `passed`, `failed` or `stale`. It is `null` when
+acceptance does not apply.
 
 #### POST /api/auth/request/:id/candidate-acceptance
 
-Start one daemon-run acceptance of the exact retained candidate. The daemon
-checks out the pin commit in its detached acceptance checkout
-(`~/.cache/mandible/acceptance/checkout`), runs a frozen dependency install, then
-the candidate's own `scripts/candidate-acceptance.mjs`. Runs are serialized.
-Requires project write access.
+Start acceptance of the current candidate unless a run of it is open or has
+passed. Requires project write access.
 
-**Response:** `202 Accepted` with `{ "request_id": "…", "acceptance": { "status": "running", … } }`
+**Response:** `202 Accepted` with `{ "request_id": "…", "acceptance": { "state": "running", … } }`
 
 #### GET /api/auth/request/:id/candidate-acceptance
 
-Return the latest acceptance record: `status` (`running`, `passed`, `failed`,
-`unavailable`), the bound `pin_sha`, `tree_sha`, `base_sha` and `head_sha`, the
-compact `result`, and any `error`. A run interrupted by a daemon restart reads
-`failed`.
+Return `{ "request_id": "…", "acceptance": … }` with the same shape.
 
 #### GET /api/runtime-handoff/lock
 
@@ -521,19 +512,12 @@ Return `{ "lock": null }` or the held lock with its `journalPath`,
 
 #### POST /api/runtime-handoff/retire
 
-Operator only. Retire a failed handoff lock.
+Operator only. Retire a held lock whose journal phase is `failed`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `binding_digest` | string | yes | The held lock's exact binding digest. |
 | `reason` | string | yes | Why the failed handoff is retired. |
-
-Only a lock whose journal phase is `failed` can be retired. The exact helper
-job is booted out if it is still loaded but idle. The lock moves into the
-journal directory as `retired-active.json`, and `retirement.json` records the
-actor, reason, failure, and journal digest. The journal itself is unchanged.
-Retirement does not make the failed delivery live; its convergence stays
-failed.
 
 ### Convergence alerts
 

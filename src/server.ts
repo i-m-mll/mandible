@@ -827,7 +827,7 @@ export interface ServerOptions {
   // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
   // doesn't reload while the daemon is still alive but about to restart.
   isRebuilding?: () => boolean;
-  // Issue a09b4d2 — an announced rebuild that will not restart the daemon.
+  // Issue a09b4d2 — a merged self-update whose rebuild or runtime handoff failed.
   getRebuildFailure?: () => NonNullable<HealthResponse["rebuild_failure"]> | null;
   // Bug: 645f8a8 — lifecycle-owned readiness source. When omitted the daemon
   // is reported ready (back-compat for servers created without a lifecycle,

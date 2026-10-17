@@ -77,7 +77,7 @@ data: {"type":"auth:resolved","data":{"request_id":"...","status":"completed"},"
 | `conversation:updated` | Conversation metadata changed |
 | `daemon:reloaded` | Daemon restarted (includes recent auth results) |
 | `mandible:rebuilding` | Daemon is about to restart for a rebuild |
-| `mandible:rebuild-failed` | The announced rebuild will not restart the daemon; carries the hook's reason |
+| `mandible:rebuild-failed` | The merge landed, but Mandible did not update; carries the message |
 
 ```bash
 curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \

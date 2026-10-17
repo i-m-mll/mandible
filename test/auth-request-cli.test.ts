@@ -497,6 +497,39 @@ describe("auth requester withdrawal CLI", () => {
   });
 });
 
+describe("candidate acceptance CLI", () => {
+  // Issue 7d83fe5 — the request id is the command's positional argument.
+  it("binds the request id for run and show", async () => {
+    const seen: string[] = [];
+    const acceptance = { state: "running", reason: null, started_at: 1, finished_at: null };
+    const server = http.createServer((req, res) => {
+      res.writeHead(req.url === "/api/auth/request/request123/candidate-acceptance" || req.url === "/api/instance" ? 200 : 404, { "Content-Type": "application/json" });
+      if (req.url === "/api/instance") { res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE)); return; }
+      seen.push(`${req.method} ${req.url}`);
+      req.resume();
+      req.on("end", () => res.end(JSON.stringify({ request_id: "request123-full", acceptance })));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    const env = { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` };
+    try {
+      const run = await runAsync(["auth", "acceptance", "run", "request123"], tempDir, env);
+      expect(run).toMatchObject({ status: 0 });
+      expect(run.stdout).toContain("Candidate acceptance for request1: running");
+      const show = await runAsync(["auth", "acceptance", "show", "request123", "--json"], tempDir, env);
+      expect(show.status).toBe(0);
+      expect(JSON.parse(show.stdout)).toMatchObject({ acceptance: { state: "running" } });
+      expect(seen).toEqual([
+        "POST /api/auth/request/request123/candidate-acceptance",
+        "GET /api/auth/request/request123/candidate-acceptance",
+      ]);
+      expect((await runAsync(["auth", "acceptance", "show"], tempDir, env)).status).toBe(2);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("auth request specification authoring", () => {
   const multilineSpec = [
     "# Intent",

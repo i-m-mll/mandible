@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run or show daemon-run candidate acceptance of one runtime self-update request.
+# Rerun or show daemon-run candidate acceptance of one runtime self-update
+# request. The daemon also runs acceptance automatically (issue 7d83fe5).
 set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
@@ -11,7 +12,7 @@ action="${1:-}"
 shift
 request=""
 json=0
-binding=$(mandible_bind_main_arguments "auth.acceptance.${action}" '{"json":{"option":"json","constant":"1"}}' "$request" "$@") || exit $?
+binding=$(mandible_bind_main_arguments "auth.acceptance.${action}" '{"request":{"position":0},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 eval "$binding"
 [[ -n "$request" ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' 'Error: jq is required.' >&2; exit 1; }
@@ -25,11 +26,10 @@ if [[ "$json" == 1 ]]; then
   printf '%s\n' "$response" | jq .
 else
   printf '%s\n' "$response" | jq -r '
-    if .acceptance == null then "No candidate acceptance has run for \(.request_id[0:8])."
+    if .acceptance == null then "Candidate acceptance does not apply to \(.request_id[0:8])."
     else .acceptance as $a |
-      "Candidate acceptance for \($a.auth_request_id[0:8]): \($a.status)",
-      "  candidate pin \($a.pin_sha[0:12]) tree \($a.tree_sha[0:12]) base \($a.base_sha[0:12]) head \($a.head_sha[0:12])",
-      (if $a.error then "  error: \($a.error)" else empty end),
-      (if $a.status == "running" then "  check again with: mandible auth acceptance show \($a.auth_request_id[0:8])" else empty end)
+      "Candidate acceptance for \(.request_id[0:8]): \($a.state)",
+      (if $a.reason then "  \($a.reason)" else empty end),
+      (if $a.state == "running" then "  check again with: mandible auth acceptance show \(.request_id[0:8])" else empty end)
     end'
 fi

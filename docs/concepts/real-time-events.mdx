@@ -135,7 +135,7 @@ exist.
 | Event | Description | Data |
 |---|---|---|
 | `mandible:rebuilding` | Daemon rebuild triggered | `{}` |
-| `mandible:rebuild-failed` | The announced rebuild ended without an admitted runtime handoff, so the daemon will not restart | `{ request_id, reason, failed_at }` |
+| `mandible:rebuild-failed` | The merge landed, but its rebuild or runtime handoff failed, so Mandible did not update | `{ request_id, message, failed_at }` |
 
 ## The heartbeat
 

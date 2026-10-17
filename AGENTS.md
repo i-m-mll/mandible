@@ -83,12 +83,9 @@ the scrolling body.
 
 ## Production runtime gate
 
-For a candidate that can affect Mandible daemon or desktop runtime behavior,
-the late pre-auth integration bar must launch the production daemon and
-packaged desktop app together from the exact candidate revision, not use a
-development or preview substitute. Probe startup completion and health,
-exercise one representative interaction, then inspect logs captured from that
-launch for crash or restart loops, repeated-event storms, database or
-foreign-key errors, and event-loop stalls or starvation. Any unexplained
-occurrence fails the gate. Run this once after the candidate stabilizes, and
-rerun it only when a later change can affect the result.
+Approving a merge request for this repository requires a passing candidate
+acceptance of its exact candidate, which the daemon runs automatically and the
+request view shows. No development or preview build substitutes for it. See
+[candidate acceptance](docs/candidate-acceptance.md) and
+[runtime handoff](docs/runtime-handoff.md).
+

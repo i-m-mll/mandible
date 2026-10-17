@@ -34,7 +34,7 @@ describe("copied auth preview isolation", () => {
       now: () => 10_000,
       allowExternalEffects: false,
       executor: executor as ConstructorParameters<typeof AuthQueue>[0]["executor"],
-      hookManager: { grantRetry: vi.fn(), runPending: vi.fn() } as unknown as AuthHookManager,
+      hookManager: { grantRetry: vi.fn(), runPending: vi.fn(), selfUpdatesRuntime: () => false, runtimeHandoffLock: () => null } as unknown as AuthHookManager,
     });
     const router = new Router();
     registerAuthRoutes(router, preview, {} as AuthAutoApproveManager, {} as AuthClearanceManager);

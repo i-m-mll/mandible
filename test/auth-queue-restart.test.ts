@@ -222,6 +222,7 @@ describe("auth queue", () => {
               lifecycleEvents.push(`shutdown:${generationId}`);
               return true;
             },
+            markRebuildFailed: () => true,
           },
           restartFn: () => lifecycleEvents.push("restart"),
           executor: async (options) => publishFixtureExecution(queue!, options)

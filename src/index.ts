@@ -24,6 +24,7 @@ import { AuthAutoApproveManager } from "./auth-auto-approve.js";
 import { AuthClearanceManager } from "./auth-clearance.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { AuthQueue } from "./auth-queue.js";
+import { runCandidateAcceptance } from "./candidate-acceptance.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
@@ -271,6 +272,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     backgroundMaintenance: operationalMutationsAllowed,
     allowExternalEffects: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
+    // Issue 7d83fe5 — the main daemon owns candidate acceptance of runtime
+    // self-update requests and runs it automatically.
+    candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
   const workScanner = registerWorkRoutes(router, new WorkScanner({

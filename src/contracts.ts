@@ -283,6 +283,17 @@ export const AUTH_REQUEST_TYPES = [
 ] as const;
 export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
 
+/**
+ * Issue 7d83fe5 — candidate acceptance of a runtime self-update request's
+ * current candidate. `stale`: the latest run was for a different candidate.
+ */
+export interface CandidateAcceptanceProjection {
+  state: "none" | "running" | "passed" | "failed" | "stale";
+  reason: string | null;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
 export const AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE = [
   "fixtures_data",
   "tests",
