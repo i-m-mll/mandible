@@ -518,7 +518,7 @@ export function registerAuthRoutes(
       const requester = resolveAuthRequester(req, { command: "candidate-acceptance", title: "candidate-acceptance" });
       if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
       if (!enforceAuthProjectWrite(req, res, request.repo)) return;
-      res.status(202).json({ request_id: request.id, acceptance: authQueue.startCandidateAcceptance(request.id) });
+      res.status(202).json({ request_id: request.id, acceptance: authQueue.ensureCandidateAcceptance(request) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -528,7 +528,7 @@ export function registerAuthRoutes(
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
-      res.json({ request_id: request.id, acceptance: authQueue.candidateAcceptance(request.id) });
+      res.json({ request_id: request.id, acceptance: authQueue.candidateAcceptanceForRequest(request) });
     } catch (error) {
       handleQueueError(error, res);
     }

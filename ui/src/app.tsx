@@ -593,13 +593,10 @@ function RebuildingSplash({
   reason = 'rebuilding',
   epochStalled = false,
   stallEscape = false,
-  rebuildFailure = null,
   onContinue,
 }: {
   reason?: 'rebuilding' | 'starting';
   epochStalled?: boolean;
-  // Issue a09b4d2 — the merge landed but Mandible did not update.
-  rebuildFailure?: string | null;
   // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
   // same commit past the bounded window) the splash must offer an explicit exit
   // so a healthy daemon can never be permanently stranded behind it.
@@ -607,20 +604,6 @@ function RebuildingSplash({
   onContinue?: () => void;
 }): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
-  if (rebuildFailure) {
-    return (
-      <div className="rebuilding-splash" role="alert">
-        <div className="rebuilding-splash__content">
-          <div className="rebuilding-splash__subtitle">{rebuildFailure}</div>
-          {onContinue ? (
-            <button type="button" className="rebuilding-splash__continue" onClick={onContinue}>
-              Continue
-            </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
   return (
     <div className="rebuilding-splash">
       <div className="rebuilding-splash__content">
@@ -1946,12 +1929,14 @@ function App(): JSX.Element {
           const currentEpoch = daemonStartupEpoch(data);
           const currentCommit = daemonStartupCommit(data);
           // Issue a09b4d2 — a rebuild that will not restart the daemon is a
-          // failure to report, not a stall to wait out.
+          // failure to report, not a stall to wait out: end the splash on the
+          // serving daemon and let the toast carry the message.
           const failure = requireNewCommitRef.current ? data.rebuild_failure?.message : undefined;
           if (failure) {
-            stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
-            stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
+            if (currentEpoch) setLastSeenStartupEpoch(currentEpoch);
+            if (currentCommit) setLastSeenCommit(currentCommit);
             setRebuildFailure(failure);
+            setRebuilding(false);
             return;
           }
           if (data.rebuilding && !splashEpochRef.current && currentEpoch) {
@@ -2784,7 +2769,6 @@ function App(): JSX.Element {
       reason={rebuilding ? 'rebuilding' : 'starting'}
       epochStalled={epochStalled}
       stallEscape={stallEscape}
-      rebuildFailure={rebuilding ? rebuildFailure : null}
       onContinue={continuePastStall}
     />);
   }
@@ -2792,8 +2776,7 @@ function App(): JSX.Element {
   return renderAppShell(
     <>
       {rebuildFailure && (
-        // Issue 54a0b88 — outside the rebuild splash, for example when a
-        // handoff fails after this build is serving, report it in place.
+        // Issue 54a0b88 — report a failed self-update without taking over the view.
         <div className="daemon-toast daemon-toast--failure" role="alert">
           <span>{rebuildFailure}</span>
           <button

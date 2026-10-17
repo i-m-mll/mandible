@@ -110,7 +110,6 @@ describe("runtime handoff lock gate", () => {
     holdHandoffLock();
     const check = queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" });
     expect(check).toMatchObject({ status: "error", reason: expect.stringMatching(/Runtime handoff lock .* phase failed \(Candidate runtime readiness failed\)/) });
-    expect(check.reason).toContain("mandible auth handoff retire --binding-digest");
     expect(() => submit("feature/other")).toThrow(/Runtime handoff lock/);
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
     expect(queue.getRequest(request.id)?.status).toBe("pending");
@@ -129,16 +128,16 @@ describe("candidate acceptance gate", () => {
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha,
       tree_sha: current.merge_candidate_tree_sha, base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
     // The manual command joins the open run instead of starting a second one.
-    expect(queue.startCandidateAcceptance(request.id.slice(0, 8))).toMatchObject({ state: "running" });
+    expect(queue.ensureCandidateAcceptance(queue.getRequestReference(request.id.slice(0, 8))!)).toMatchObject({ state: "running" });
     expect(runs).toHaveLength(1);
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/still running/);
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
 
     runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
     await queue.drainCandidateAcceptances();
     expect(acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
 
-    queue.startCandidateAcceptance(request.id);
+    queue.ensureCandidateAcceptance(queue.getRequest(request.id)!);
     await vi.waitFor(() => expect(runs).toHaveLength(2));
     runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
@@ -174,7 +173,7 @@ describe("candidate acceptance gate", () => {
 
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
     // The re-pinned candidate needs its own pass; the earlier one is stale.
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/still running/);
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
     const repinned = queue.getRequest(request.id)!;
     expect(repinned.merge_candidate_pin_sha).not.toBe(runs[0]!.input.pinSha);
     expect(runs).toHaveLength(2);

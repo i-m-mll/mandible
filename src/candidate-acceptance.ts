@@ -9,7 +9,7 @@
  * current candidate, so any base or head movement makes a result stale.
  */
 import { randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -87,7 +87,7 @@ export function candidateAcceptanceRefusal(acceptance: CandidateAcceptanceProjec
   const run = `\`mandible auth acceptance run ${requestId.slice(0, 8)}\``;
   switch (acceptance.state) {
     case "passed": return null;
-    case "running": return "Candidate acceptance of this exact candidate is still running. Approve after it passes.";
+    case "running": return "Candidate acceptance of this exact candidate is in progress. Approve after it passes.";
     case "failed": return `Candidate acceptance of this exact candidate failed: ${acceptance.reason}. Fix the cause and run ${run} again.`;
     case "stale": return `The recorded candidate acceptance was for a different candidate. ${acceptance.reason} Run ${run} for the current candidate.`;
     case "none": return `Runtime self-update approval requires a passing candidate acceptance of the exact candidate merge, and none has run. Run ${run}.`;
@@ -96,8 +96,7 @@ export function candidateAcceptanceRefusal(acceptance: CandidateAcceptanceProjec
 
 /**
  * Runs acceptance one at a time, because every run uses the same checkout.
- * Runs wait in memory; a durable row exists only once a run starts. Rows still
- * running when this daemon starts were interrupted by a restart.
+ * Runs wait in memory; a durable row exists only once a run starts.
  */
 export class CandidateAcceptanceRuns {
   private chain: Promise<void> = Promise.resolve();
@@ -110,9 +109,12 @@ export class CandidateAcceptanceRuns {
     private readonly executor: CandidateAcceptanceExecutor,
     private readonly now: () => number,
     private readonly changed: (requestId: string) => void,
-  ) {
-    db.prepare("UPDATE auth_candidate_acceptances SET status = 'failed', finished_at = ?, error = ? WHERE status = 'running'")
-      .run(now(), "Interrupted by a daemon restart.");
+  ) {}
+
+  /** Fail the rows a previous daemon left running; a restart interrupted them. */
+  start(): void {
+    this.db.prepare("UPDATE auth_candidate_acceptances SET status = 'failed', finished_at = ?, error = ? WHERE status = 'running'")
+      .run(this.now(), "Interrupted by a daemon restart.");
   }
 
   /** Whether a run of exactly this pin is waiting or running for the request. */
@@ -198,25 +200,6 @@ async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: 
   return stdout.trim();
 }
 
-function collect(binary: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; signal: AbortSignal }): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    // Not detached: stopping the daemon's service stops an in-flight run too.
-    const child = spawn(binary, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const bound = (current: string, chunk: Buffer) => (current + chunk.toString("utf8")).slice(-4 * 1024 * 1024);
-    child.stdout.on("data", (chunk: Buffer) => { stdout = bound(stdout, chunk); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = bound(stderr, chunk); });
-    // The acceptance command stops its owned daemon, gateway and app on SIGTERM.
-    const stop = () => { child.kill("SIGTERM"); };
-    const timer = setTimeout(stop, options.timeout);
-    options.signal.addEventListener("abort", stop, { once: true });
-    const settle = () => { clearTimeout(timer); options.signal.removeEventListener("abort", stop); };
-    child.on("error", (error) => { settle(); reject(error); });
-    child.on("close", (code) => { settle(); resolve({ code, stdout, stderr }); });
-  });
-}
-
 /**
  * Production executor. The persistent detached acceptance checkout keeps Rust
  * and dependency builds incremental; it is owned by this daemon and is reset to
@@ -244,7 +227,12 @@ export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input)
   const { stdout: runtimePath } = await execFileAsync(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, encoding: "utf8", timeout: 30_000, signal });
   const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
   await execFileAsync(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, signal });
-  const run = await collect(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId], { cwd: checkout, env, timeout: ACCEPTANCE_TIMEOUT_MS, signal });
+  // Not detached: stopping the daemon's service stops an in-flight run too. The
+  // acceptance command stops its owned daemon, gateway and app on SIGTERM.
+  const run = await execFileAsync(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
+    { cwd: checkout, env, encoding: "utf8", timeout: ACCEPTANCE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, killSignal: "SIGTERM", signal })
+    .then(({ stdout, stderr }) => ({ code: 0 as number | null, stdout, stderr }))
+    .catch((error: { code?: unknown; stdout?: string; stderr?: string }) => ({ code: typeof error.code === "number" ? error.code : null, stdout: error.stdout ?? "", stderr: error.stderr ?? "" }));
   const parse = (text: string): Record<string, unknown> | null => {
     try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
   };

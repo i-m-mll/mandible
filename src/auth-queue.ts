@@ -667,6 +667,8 @@ export class AuthQueue {
     this.acceptanceRuns = options.candidateAcceptanceExecutor
       ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId))
       : null;
+    // Before anything can start a run: rows a previous daemon left running were interrupted.
+    this.acceptanceRuns?.start();
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
@@ -782,32 +784,18 @@ export class AuthQueue {
     return candidateAcceptanceProjection(latestCandidateAcceptance(this.db, request.id), candidate, open);
   }
 
-  /** Operator or agent request to run acceptance of the current candidate now. */
-  startCandidateAcceptance(id: string): CandidateAcceptanceProjection {
-    const request = this.getRequestReference(id);
-    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-    return this.ensureCandidateAcceptance(request);
-  }
-
-  candidateAcceptance(id: string): CandidateAcceptanceProjection | null {
-    const request = this.getRequestReference(id);
-    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-    return this.candidateAcceptanceForRequest(request);
-  }
-
   /**
    * Issue 7d83fe5 — the single path that starts candidate acceptance. The
    * daemon calls it when a self-update request is submitted or superseded, when
    * its candidate is re-pinned onto a moved base, and at startup; the CLI calls
-   * it through `startCandidateAcceptance`. A run of the current candidate that
-   * is open or passed is kept; otherwise a new run starts.
+   * it through its route. A run of the current candidate that is open or passed
+   * is kept; otherwise a new run starts. Null when acceptance does not apply.
    */
-  private ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection {
+  ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection | null {
+    if (!this.candidateAcceptanceApplies(request)) return null;
     const runs = this.acceptanceRuns;
     if (!runs) throw new AuthQueueError("invalid_command", "This daemon does not run candidate acceptance.");
-    if (request.status !== "pending" || !this.candidateAcceptanceApplies(request)) {
-      throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending runtime self-update merge request.");
-    }
+    if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending request.");
     const candidate = this.acceptanceCandidate(request);
     if (!candidate || !this.mergeCandidateExact(request)) {
       throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, which starts acceptance of the new candidate.");
@@ -856,7 +844,7 @@ export class AuthQueue {
   /** Automatic triggers never fail the operation that caused them; a refusal is logged. */
   private startCandidateAcceptanceAutomatically(requestId: string): void {
     const request = this.readRequestByExactId(requestId);
-    if (!this.acceptanceRuns || !request || request.status !== "pending" || !this.candidateAcceptanceApplies(request)) return;
+    if (!this.acceptanceRuns || !request) return;
     try {
       this.ensureCandidateAcceptance(request);
     } catch (error) {
