@@ -29,7 +29,7 @@ import {
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
-import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
+import { CANDIDATE_ACCEPTANCE_QUEUE_MIGRATION_SQL, CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -1774,6 +1774,9 @@ export const MIGRATIONS: readonly Migration[] = [
   // Issue a09b4d2 — runtime self-update approval requires a passing candidate
   // acceptance bound to the exact retained candidate.
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
+  // Issue 7d83fe5 — the daemon queues acceptance automatically and cancels a
+  // run its candidate no longer matches.
+  { version: 195, name: "auth_candidate_acceptance_queue", statements: [...CANDIDATE_ACCEPTANCE_QUEUE_MIGRATION_SQL] },
 ];
 
 /**

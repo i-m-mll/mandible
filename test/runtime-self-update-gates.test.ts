@@ -2,6 +2,7 @@
 // Issue a09b4d2 — a stale runtime handoff lock let approvals proceed while it
 // blocked every rebuild, and the failure looked like a manual restart. These
 // tests pin the gates that now fail visibly instead.
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,14 +14,14 @@ import type { CandidateAcceptanceInput, CandidateAcceptanceOutcome } from "../sr
 import { setDb } from "../src/db.js";
 import { RestartAvailabilityStore } from "../src/restart-availability.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
-import type { SseEvent } from "../src/types.js";
-import { createUser, getOperator } from "../src/users/store.js";
+import type { AuthRequestInput, SseEvent } from "../src/types.js";
+import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { daemonRebuildFailure } from "../ui/src/daemon-readiness.js";
 import {
-  approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
+  advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
 
@@ -30,8 +31,9 @@ let db: ReturnType<typeof createMigratedDb>;
 let queue: AuthQueue;
 let operatorId: string;
 let projectId: string;
-let acceptanceRuns: CandidateAcceptanceInput[];
-let acceptanceOutcome: CandidateAcceptanceOutcome;
+let credentialId: string;
+let issue: ReturnType<typeof createLedgerIssue>;
+let runs: AcceptanceRun[];
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
 function holdHandoffLock(phase = "failed") {
@@ -48,18 +50,24 @@ function holdHandoffLock(phase = "failed") {
   return { digest: journal.bindingDigest, journalPath, lockPath, dir };
 }
 
-/** The open delivery work unit for the head branch names the acceptance owner. */
-function deliveryWorkUnit(): string {
-  const issue = createLedgerIssue(db, projectId, "self-update");
-  db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at)
-    VALUES ('wu-self-update', ?, ?, ?, 'feature/self-update', 'solo', 'committed', ?)`).run(issue.id, issue.id, path.basename(repo), Date.now());
-  return "wu-self-update";
-}
+/** One acceptance run the test decides; a cancelled run settles when its signal aborts. */
+interface AcceptanceRun { input: CandidateAcceptanceInput; settle: (outcome: CandidateAcceptanceOutcome) => void }
 
-function submit(branch = "feature/self-update") {
+/** Submit a self-update with durable custody of its delivery work unit, which names the acceptance owner. */
+function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput> = {}) {
+  if (!patch.supersedes_request_id) {
+    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
+      VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, credentialId);
+  }
   return queue.submit({ type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
     repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch,
-    merge_head_sha: git(repo, ["rev-parse", branch]), execution_mode: "local" });
+    merge_head_sha: git(repo, ["rev-parse", branch]), execution_mode: "local",
+    requester_evidence_method: "api_token", requester_credential_id: credentialId, require_delivery_custody: true,
+    issue_references: ["5e1f0d0"], ...patch }, operatorId);
+}
+
+function acceptanceOf(id: string) {
+  return queue.candidateAcceptanceForRequest(queue.getRequest(id)!);
 }
 
 beforeEach(() => {
@@ -76,11 +84,15 @@ beforeEach(() => {
   git(repo, ["config", "core.hooksPath", ".git/hooks"]);
   // This repository self-updates the installation, as `mandible` does.
   db.prepare("UPDATE auth_hooks SET repo_pattern = ? WHERE id = 'builtin-mandible-rebuild'").run(path.basename(repo));
-  acceptanceRuns = [];
-  acceptanceOutcome = { status: "passed", result: { status: "passed" }, error: null };
+  credentialId = addCredential(db, operatorId, { type: "api_token", fingerprint: `self-update-${randomUUID()}` }).id;
+  issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
+  runs = [];
   queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
     executor: async () => new Promise(() => {}),
-    candidateAcceptanceExecutor: async (input) => { acceptanceRuns.push(input); return acceptanceOutcome; } });
+    candidateAcceptanceExecutor: (input) => new Promise((settle) => {
+      runs.push({ input, settle });
+      input.signal.addEventListener("abort", () => settle({ status: "failed", result: null, error: "stopped" }));
+    }) });
 });
 
 afterEach(() => {
@@ -108,42 +120,77 @@ describe("runtime handoff lock gate", () => {
 });
 
 describe("candidate acceptance gate", () => {
-  it("approves a self-update only with a passing acceptance of the exact current candidate", async () => {
+  it("runs acceptance on submission and approves only after the exact current candidate passes", async () => {
     const request = submit();
-    const workUnitId = deliveryWorkUnit();
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/none has run/);
-
-    acceptanceOutcome = { status: "failed", result: null, error: "Daemon readiness timed out" };
-    queue.startCandidateAcceptance(request.id);
-    await queue.drainCandidateAcceptances();
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
-
-    acceptanceOutcome = { status: "passed", result: { status: "passed" }, error: null };
-    const record = queue.startCandidateAcceptance(request.id);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
     const current = queue.getRequest(request.id)!;
+    expect(runs[0]!.input).toMatchObject({ repoRoot: repo, pinSha: current.merge_candidate_pin_sha, workUnitId: "wu-feature/self-update", projectId });
+    const record = queue.candidateAcceptance(request.id)!;
     expect(record).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha, tree_sha: current.merge_candidate_tree_sha,
       base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
-    expect(() => queue.startCandidateAcceptance(request.id)).toThrow(/Another candidate acceptance is running/);
+    // The manual command joins the open run instead of starting a second one.
+    expect(queue.startCandidateAcceptance(request.id.slice(0, 8)).id).toBe(record.id);
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/still running/);
-    await queue.drainCandidateAcceptances();
-    expect(acceptanceRuns.at(-1)).toMatchObject({ repoRoot: current.cwd, pinSha: current.merge_candidate_pin_sha, workUnitId, projectId });
-    expect(queue.candidateAcceptance(request.id.slice(0, 8))?.status).toBe("passed");
 
-    // A result recorded for another base is stale for this candidate.
-    const realBase = current.merge_preflight_base_sha!;
-    db.prepare("UPDATE auth_candidate_acceptances SET base_sha = ? WHERE id = ?").run("0".repeat(40), record.id);
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/different candidate/);
-    db.prepare("UPDATE auth_candidate_acceptances SET base_sha = ? WHERE id = ?").run(realBase, record.id);
+    runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
+    await queue.drainCandidateAcceptances();
+    expect(acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
+
+    queue.startCandidateAcceptance(request.id);
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(acceptanceOf(request.id)).toMatchObject({ state: "passed" });
 
     await queue.approveWithOperatorProof(request.id, operatorId);
     expect(queue.getRequest(request.id)?.status).toBe("executing");
   });
 
-  it("records a run interrupted by a daemon restart as failed", () => {
+  it("cancels the superseded request's run and runs the replacement's candidate", async () => {
+    const original = submit();
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    git(repo, ["checkout", "feature/self-update"]);
+    fs.writeFileSync(path.join(repo, "runtime.txt"), "revised\n");
+    git(repo, ["commit", "-am", "revise candidate"]);
+    git(repo, ["checkout", "main"]);
+    const replacement = submit("feature/self-update", { supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 });
+
+    expect(runs[0]!.input.signal.aborted).toBe(true);
+    expect(queue.candidateAcceptance(original.id)).toMatchObject({ status: "cancelled", error: "The request is superseded." });
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status IN ('queued', 'running')").all();
+    expect(open).toEqual([{ auth_request_id: replacement.id }]);
+    expect(runs[1]!.input.pinSha).toBe(queue.getRequest(replacement.id)!.merge_candidate_pin_sha);
+  });
+
+  it("re-runs acceptance when approval re-pins the candidate onto a moved base", async () => {
+    commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
     const request = submit();
-    db.prepare(`INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at)
-      VALUES ('orphan', ?, 'p', 't', 'b', 'h', 'running', 1)`).run(request.id);
-    expect(queue.candidateAcceptance(request.id)).toMatchObject({ status: "failed", error: expect.stringContaining("Interrupted") });
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+
+    advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
+    // The re-pinned candidate needs its own pass; the earlier one is stale.
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/still running/);
+    const repinned = queue.getRequest(request.id)!;
+    expect(repinned.merge_candidate_pin_sha).not.toBe(runs[0]!.input.pinSha);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
+    runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    await queue.approveWithOperatorProof(request.id, operatorId);
+    expect(queue.getRequest(request.id)?.status).toBe("executing");
+  });
+
+  it("records runs a restart interrupted as cancelled", () => {
+    const request = submit();
+    expect(queue.candidateAcceptance(request.id)?.status).toMatch(/queued|running/);
+    queue.dispose();
+    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
+      candidateAcceptanceExecutor: async () => ({ status: "passed", result: null, error: null }) });
+    expect(acceptanceOf(request.id)).toMatchObject({ state: "cancelled", reason: "Interrupted by a daemon restart." });
   });
 });
 

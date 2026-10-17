@@ -495,24 +495,34 @@ its owning request, phase, and error, and the recovery path.
 Approval also requires a passing candidate acceptance of the request's exact
 retained candidate. The result is bound to the candidate tree, reviewed base and
 reviewed head, so a moved base or head makes it stale and approval refuses until
-acceptance runs again.
+acceptance of the current candidate passes.
+
+The main daemon queues acceptance automatically when a self-update request is
+submitted or superseded, when its candidate is re-pinned onto a moved base, and
+at startup. A newer candidate, a resolution of the request, or a daemon restart
+cancels an open run. Queue, detail and history request payloads carry
+`candidate_acceptance`: `{ state, reason, started_at, finished_at }`, where
+`state` is `none`, `stale`, or the latest run's status, and is `null` for
+requests acceptance does not apply to. Changes broadcast `auth:updated` with the
+same field.
 
 #### POST /api/auth/request/:id/candidate-acceptance
 
-Start one daemon-run acceptance of the exact retained candidate. The daemon
-checks out the pin commit in its detached acceptance checkout
+Rerun acceptance of the exact retained candidate through the same daemon path.
+If a run of the current candidate is queued or running, it is returned instead.
+Each run checks out the pin commit in the daemon's detached acceptance checkout
 (`~/.cache/mandible/acceptance/checkout`), runs a frozen dependency install, then
-the candidate's own `scripts/candidate-acceptance.mjs`. Runs are serialized.
-Requires project write access.
+the candidate's own `scripts/candidate-acceptance.mjs`. Runs execute one at a
+time. Requires project write access.
 
-**Response:** `202 Accepted` with `{ "request_id": "…", "acceptance": { "status": "running", … } }`
+**Response:** `202 Accepted` with `{ "request_id": "…", "acceptance": { "status": "queued", … } }`
 
 #### GET /api/auth/request/:id/candidate-acceptance
 
-Return the latest acceptance record: `status` (`running`, `passed`, `failed`,
-`unavailable`), the bound `pin_sha`, `tree_sha`, `base_sha` and `head_sha`, the
-compact `result`, and any `error`. A run interrupted by a daemon restart reads
-`failed`.
+Return the latest acceptance record: `status` (`queued`, `running`, `passed`,
+`failed`, `unavailable`, `cancelled`), the bound `pin_sha`, `tree_sha`,
+`base_sha` and `head_sha`, the compact `result`, and any `error`. A cancelled
+record's `error` says why it stopped.
 
 #### GET /api/runtime-handoff/lock
 

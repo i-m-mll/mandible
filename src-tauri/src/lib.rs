@@ -740,6 +740,10 @@ pub fn run() {
         for window in &mut context.config_mut().app.windows {
             window.incognito = true;
             window.url = tauri::WebviewUrl::External(tauri::Url::parse(&config.origin).unwrap());
+            // Issue 7d83fe5 — the daemon runs acceptance unattended; its window
+            // is never shown and never takes focus on the operator's desktop.
+            window.visible = false;
+            window.focus = false;
         }
     }
     #[cfg(target_os = "macos")]
@@ -764,7 +768,9 @@ pub fn run() {
             }
         }
     }
-    tauri::Builder::default()
+    let unattended = acceptance.is_some();
+    #[allow(unused_mut)]
+    let mut app = tauri::Builder::default()
         .manage(NativeWindowCapabilityState::default())
         .on_page_load(|webview, payload| {
             note_dashboard_page_load(webview.label(), payload.url(), payload.event());
@@ -853,8 +859,16 @@ pub fn run() {
             native_window_capabilities,
             acceptance::candidate_acceptance_report
         ])
-        .run(context)
-        .expect("error while running Mandible app");
+        .build(context)
+        .expect("error while building Mandible app");
+    // Issue 7d83fe5 — an acceptance app may not activate: no Dock icon, no menu
+    // bar, and no focus taken at launch. The policy must be set before the
+    // event loop launches, because launch activates the app.
+    #[cfg(target_os = "macos")]
+    if unattended {
+        app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+    }
+    app.run(|_, _| {});
 }
 
 #[cfg(target_os = "macos")]

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run or show daemon-run candidate acceptance of one runtime self-update request.
+# Rerun or show daemon-run candidate acceptance of one runtime self-update
+# request. The daemon also queues acceptance automatically (issue 7d83fe5).
 set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
@@ -30,6 +31,6 @@ else
       "Candidate acceptance for \($a.auth_request_id[0:8]): \($a.status)",
       "  candidate pin \($a.pin_sha[0:12]) tree \($a.tree_sha[0:12]) base \($a.base_sha[0:12]) head \($a.head_sha[0:12])",
       (if $a.error then "  error: \($a.error)" else empty end),
-      (if $a.status == "running" then "  check again with: mandible auth acceptance show \($a.auth_request_id[0:8])" else empty end)
+      (if $a.status == "queued" or $a.status == "running" then "  check again with: mandible auth acceptance show \($a.auth_request_id[0:8])" else empty end)
     end'
 fi

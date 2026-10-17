@@ -283,6 +283,21 @@ export const AUTH_REQUEST_TYPES = [
 ] as const;
 export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
 
+/**
+ * Issue 7d83fe5 — the request view's candidate acceptance state for a runtime
+ * self-update request. `none`: no run exists; `stale`: the latest run was for a
+ * different candidate than the current one; otherwise the latest run's status.
+ */
+export type CandidateAcceptanceState =
+  | "none" | "stale" | "queued" | "running" | "passed" | "failed" | "unavailable" | "cancelled";
+
+export interface CandidateAcceptanceProjection {
+  state: CandidateAcceptanceState;
+  reason: string | null;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
 export const AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE = [
   "fixtures_data",
   "tests",

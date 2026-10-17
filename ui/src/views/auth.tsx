@@ -51,6 +51,7 @@ import {
   isAuthDependencyReady,
   type AuthChangeReport,
   type AuthDependencyProjection,
+  type CandidateAcceptanceProjection,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 
@@ -135,6 +136,8 @@ export type AuthRequest = {
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
   merge_signature?: MergeSignatureClaim;
+  // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
+  candidate_acceptance?: CandidateAcceptanceProjection | null;
   action_count?: number;
   actions?: AuthRequestAction[];
   [key: string]: unknown;
@@ -395,6 +398,42 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
       ? 'Merged. A registered post-merge hook has not finished yet, so this machine is not live.'
       : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
   return hooks ? `${heading}\n\n${hooks}` : heading;
+}
+
+type AcceptanceStatus = {
+  label: string;
+  pillClass: string;
+  /** Present when the state carries a reason the request view shows. */
+  problem: string | null;
+  reason: string | null;
+};
+
+/**
+ * Issue 7d83fe5 — a pending runtime self-update shows whether its exact
+ * candidate passed acceptance, which approval requires.
+ */
+function getAcceptanceStatus(request: AuthRequest): AcceptanceStatus | null {
+  const acceptance = request.candidate_acceptance;
+  if (!acceptance || getAuthStatus(request) !== 'pending') return null;
+  const reason = acceptance.reason;
+  switch (acceptance.state) {
+    case 'none':
+      return { label: 'Acceptance not run', pillClass: 'status-pill--dismissed', problem: null, reason };
+    case 'queued':
+      return { label: 'Acceptance queued', pillClass: 'status-pill--pending', problem: null, reason };
+    case 'running':
+      return { label: 'Acceptance running', pillClass: 'status-pill--pending', problem: null, reason };
+    case 'passed':
+      return { label: 'Acceptance passed', pillClass: 'status-pill--success', problem: null, reason };
+    case 'failed':
+      return { label: 'Acceptance failed', pillClass: 'status-pill--failed', problem: 'Acceptance failed', reason };
+    case 'unavailable':
+      return { label: 'Acceptance unavailable', pillClass: 'status-pill--failed', problem: 'Acceptance unavailable', reason };
+    case 'cancelled':
+      return { label: 'Acceptance cancelled', pillClass: 'status-pill--expired', problem: 'Acceptance cancelled', reason };
+    case 'stale':
+      return { label: 'Acceptance stale', pillClass: 'status-pill--expired', problem: 'Acceptance stale', reason };
+  }
 }
 
 function getStatusClass(request: AuthRequest): string {
@@ -824,6 +863,7 @@ function AuthRequestDetail({
     ? getConvergence(request)
     : null;
   const statusClass = getStatusClass(request);
+  const acceptanceStatus = getAcceptanceStatus(request);
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showFailure = failedLike;
@@ -1039,6 +1079,14 @@ function AuthRequestDetail({
               >
                 {statusLabel}
               </span>
+              {acceptanceStatus && (
+                <span
+                  className={`status-pill ${acceptanceStatus.pillClass}`}
+                  title={acceptanceStatus.reason ?? undefined}
+                >
+                  {acceptanceStatus.label}
+                </span>
+              )}
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             </>
           )}
@@ -1162,6 +1210,17 @@ function AuthRequestDetail({
                     ? 'Another auth merge changed the target branch; rebase and retry this request.'
                     : 'No output captured.')}
             </p>
+          </div>
+        )}
+
+        {acceptanceStatus?.problem && (
+          <div className={`auth-failure${acceptanceStatus.pillClass === 'status-pill--failed' ? '' : ' auth-failure--expired'}`}>
+            <div className="auth-failure__header">
+              <span className="auth-failure__title">{acceptanceStatus.problem}</span>
+            </div>
+            {acceptanceStatus.reason && (
+              <p className="auth-failure__summary">{acceptanceStatus.reason}</p>
+            )}
           </div>
         )}
 

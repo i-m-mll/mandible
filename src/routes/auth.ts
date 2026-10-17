@@ -291,6 +291,8 @@ export function registerAuthRoutes(
       signature_verification: authQueue.getSignatureVerification(request.id),
       // Issue 27241e6 — merged/convergence-complete vs pending vs failed.
       convergence: authQueue.convergenceForRequest(request.id),
+      // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
+      candidate_acceptance: authQueue.candidateAcceptanceForRequest(request),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
@@ -584,6 +586,7 @@ export function registerAuthRoutes(
         action_count: authQueue.countActions(r.id),
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
+        candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         ...authAttributionReadFields(attributionResolver, r),
       };
     });
@@ -618,6 +621,7 @@ export function registerAuthRoutes(
         // Issue 27241e6 — history is where "was it actually delivered?" is
         // asked after the fact, so it carries convergence too.
         convergence: authQueue.convergenceForRequest(r.id),
+        candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         ...authAttributionReadFields(attributionResolver, r),
       })),
     });

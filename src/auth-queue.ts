@@ -57,15 +57,17 @@ import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import {
+  CandidateAcceptanceScheduler,
+  candidateAcceptanceMatches,
+  candidateAcceptanceProjection,
   candidateAcceptanceRefusal,
-  failInterruptedCandidateAcceptances,
-  finishCandidateAcceptanceRecord,
+  isOpenCandidateAcceptance,
   latestCandidateAcceptance,
-  runCandidateAcceptance,
-  startCandidateAcceptanceRecord,
+  type CandidateAcceptanceCandidate,
   type CandidateAcceptanceExecutor,
   type CandidateAcceptanceRecord,
 } from "./candidate-acceptance.js";
+import type { CandidateAcceptanceProjection } from "./contracts.js";
 import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import { resolveCheckoutPath } from "./ledger/project-registry.js";
@@ -430,7 +432,9 @@ export interface AuthQueueOptions {
   // Issue ff784d8 — local, DB-independent self-merge availability receipt.
   restartAvailability?: RestartAvailabilityLifecycle;
   // Issue a09b4d2 — runs candidate acceptance of an exact retained candidate.
-  candidateAcceptanceExecutor?: CandidateAcceptanceExecutor;
+  // Issue 7d83fe5 — only the daemon that owns acceptance supplies one; without
+  // it this queue neither queues nor runs acceptance.
+  candidateAcceptanceExecutor?: CandidateAcceptanceExecutor | null;
   // Background recovery is disabled for database copies used by previews.
   backgroundMaintenance?: boolean;
   // Preview copies may edit their own auth rows, but must not inspect or change
@@ -630,8 +634,7 @@ export class AuthQueue {
   // the last rebuild that ended without an admitted runtime handoff.
   private rebuildWindowRequestId: string | null = null;
   private _rebuildFailure: RebuildFailure | null = null;
-  private readonly candidateAcceptanceExecutor: CandidateAcceptanceExecutor;
-  private readonly candidateAcceptanceRuns = new Map<string, Promise<void>>();
+  private readonly candidateAcceptanceScheduler: CandidateAcceptanceScheduler | null;
   // Bug: 681739e — durable marker (meta key) recording when a self-merge
   // scheduled the restart. On the next startup, requests approved before this
   // instant that never recorded a result are recovered immediately instead of
@@ -653,7 +656,12 @@ export class AuthQueue {
     this.allowExternalEffects = options.allowExternalEffects !== false;
     this.backgroundMaintenance = options.backgroundMaintenance !== false && this.allowExternalEffects;
     const broadcast = options.broadcast ?? defaultBroadcast;
-    this.broadcast = (event) => broadcast(projectAuthAttributionEvent(this.db, event));
+    this.broadcast = (event) => {
+      broadcast(projectAuthAttributionEvent(this.db, event));
+      // Issue 7d83fe5 — every resolution path broadcasts here, so this is
+      // where a request that left pending gives up its acceptance run.
+      if (event.event === DOMAIN_EVENTS.AUTH_RESOLVED) this.cancelCandidateAcceptanceOnResolution(event.data);
+    };
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
@@ -663,7 +671,17 @@ export class AuthQueue {
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
-    this.candidateAcceptanceExecutor = options.candidateAcceptanceExecutor ?? runCandidateAcceptance;
+    const acceptanceExecutor = options.candidateAcceptanceExecutor ?? null;
+    this.candidateAcceptanceScheduler = acceptanceExecutor && this.allowExternalEffects
+      ? new CandidateAcceptanceScheduler({
+          db: this.db,
+          executor: acceptanceExecutor,
+          now: this.now,
+          live: () => !this.disposed && this.isDbOpen(),
+          current: (record) => this.candidateAcceptanceCurrent(record),
+          changed: (record) => this.candidateAcceptanceChanged(record),
+        })
+      : null;
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
@@ -690,6 +708,7 @@ export class AuthQueue {
     this.recoverStuckRequests();
     this.hookManager.reclaimAllInterruptedRuns();
     await this.resumeHookConvergence();
+    this.resumeCandidateAcceptances();
     this.startExpiryTimer();
   }
 
@@ -769,83 +788,143 @@ export class AuthQueue {
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
   }
 
-  /** Approval requires a passing acceptance of exactly the current candidate. */
-  private enforceCandidateAcceptance(request: AuthRequest): void {
-    if (!isAuthMergeCommand(request) || !this.selfUpdatesRuntime(request.repo)) return;
-    this.reconcileInterruptedCandidateAcceptances();
-    const refusal = candidateAcceptanceRefusal(latestCandidateAcceptance(this.db, request.id), {
+  /** The request's current retained candidate as acceptance binds it. */
+  private acceptanceCandidate(request: Pick<AuthRequest, "merge_candidate_pin_sha" | "merge_candidate_tree_sha" | "merge_preflight_base_sha" | "merge_head_sha">): Partial<CandidateAcceptanceCandidate> {
+    return {
+      pin_sha: request.merge_candidate_pin_sha ?? undefined,
       tree_sha: request.merge_candidate_tree_sha ?? undefined,
       base_sha: request.merge_preflight_base_sha ?? undefined,
       head_sha: request.merge_head_sha ?? undefined,
-    }, request.id);
-    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+    };
   }
 
-  private reconcileInterruptedCandidateAcceptances(): void {
-    failInterruptedCandidateAcceptances(this.db, new Set(this.candidateAcceptanceRuns.keys()), this.now());
+  /** Approval requires a passing acceptance of exactly the current candidate. */
+  private enforceCandidateAcceptance(request: AuthRequest): void {
+    if (!isAuthMergeCommand(request) || !this.selfUpdatesRuntime(request.repo)) return;
+    const refusal = candidateAcceptanceRefusal(latestCandidateAcceptance(this.db, request.id), this.acceptanceCandidate(request), request.id);
+    if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
   }
 
   candidateAcceptance(id: string): CandidateAcceptanceRecord | null {
     const request = this.getRequestReference(id);
     if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-    this.reconcileInterruptedCandidateAcceptances();
     return latestCandidateAcceptance(this.db, request.id);
   }
 
-  /**
-   * Start one daemon-run acceptance of the request's exact retained candidate.
-   * Runs are serialized; the record is durable and returned immediately.
-   */
+  /** Issue 7d83fe5 — the request view's acceptance state; null when acceptance does not apply. */
+  candidateAcceptanceForRequest(request: Pick<AuthRequest, "id" | "type" | "command" | "repo" | "status" | "merge_candidate_pin_sha" | "merge_candidate_tree_sha" | "merge_preflight_base_sha" | "merge_head_sha">): CandidateAcceptanceProjection | null {
+    if (!isAuthMergeCommand(request) || !this.selfUpdatesRuntime(request.repo) || !this.tableExists("auth_candidate_acceptances")) return null;
+    return candidateAcceptanceProjection(latestCandidateAcceptance(this.db, request.id), this.acceptanceCandidate(request), request.status === "pending");
+  }
+
+  /** Operator or agent request to run acceptance of the current candidate now. */
   startCandidateAcceptance(id: string): CandidateAcceptanceRecord {
-    this.requireExternalEffects("Candidate acceptance");
     const request = this.getRequestReference(id);
     if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+    return this.ensureCandidateAcceptance(request.id, "manual")!;
+  }
+
+  /**
+   * Issue 7d83fe5 — the single path that starts candidate acceptance. The
+   * daemon calls it when a self-update request is submitted or superseded, when
+   * its candidate is re-pinned onto a moved base, and at startup; the CLI calls
+   * it through `startCandidateAcceptance`.
+   *
+   * An automatic call queues a run only when the latest record is not already
+   * for this exact candidate, or was cancelled; it never repeats a verdict and
+   * quietly declines what it cannot run (the request view shows why). A manual
+   * call reruns unless a run of this candidate is already open, and refuses
+   * with the reason when it cannot run.
+   */
+  private ensureCandidateAcceptance(requestId: string, trigger: "manual" | "automatic"): CandidateAcceptanceRecord | null {
+    const manual = trigger === "manual";
+    const decline = (code: AuthQueueError["code"], message: string): null => {
+      if (manual) throw new AuthQueueError(code, message);
+      return null;
+    };
+    if (!this.allowExternalEffects) return decline("invalid_command", "Candidate acceptance is unavailable in a copied auth preview.");
+    const scheduler = this.candidateAcceptanceScheduler;
+    if (!scheduler) return decline("invalid_command", "This daemon has no candidate acceptance executor.");
+    const request = this.readRequestByExactId(requestId);
+    if (!request) return decline("not_found", "Auth request not found.");
     if (request.status !== "pending" || !isAuthMergeCommand(request)) {
-      throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending merge request.");
+      return decline("invalid_status", "Candidate acceptance applies only to a pending merge request.");
     }
     if (!this.selfUpdatesRuntime(request.repo)) {
-      throw new AuthQueueError("invalid_command", "Candidate acceptance applies only to runtime self-update requests.");
+      return decline("invalid_command", "Candidate acceptance applies only to runtime self-update requests.");
     }
-    this.reconcileInterruptedCandidateAcceptances();
-    if (this.candidateAcceptanceRuns.size > 0) {
-      const active = this.db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running' LIMIT 1").get() as { auth_request_id?: string } | undefined;
-      throw new AuthQueueError("invalid_status", `Another candidate acceptance is running${active?.auth_request_id ? ` for request ${active.auth_request_id.slice(0, 8)}` : ""}; run this one after it finishes.`);
-    }
-    if (!this.mergeCandidateExact(request) || !request.merge_candidate_tree_sha || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.cwd) {
-      throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, then run acceptance on the new candidate.");
+    const candidate = this.acceptanceCandidate(request);
+    if (!candidate.pin_sha || !candidate.tree_sha || !candidate.base_sha || !candidate.head_sha || !request.cwd || !this.mergeCandidateExact(request)) {
+      return decline("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, which starts acceptance of the new candidate.");
     }
     const resolvedHead = request.head_branch ? this.resolveBranchHeadForCheck(request.cwd, request.head_branch) : null;
     if (resolvedHead !== request.merge_head_sha) {
-      throw new AuthQueueError("merge_check_failed", "The head branch moved since review; resubmit before running acceptance.");
+      return decline("merge_check_failed", "The head branch moved since review; resubmit before running acceptance.");
+    }
+    const exact = candidate as CandidateAcceptanceCandidate;
+    const latest = latestCandidateAcceptance(this.db, request.id);
+    if (latest && candidateAcceptanceMatches(latest, exact)) {
+      if (isOpenCandidateAcceptance(latest)) return latest;
+      if (!manual && latest.status !== "cancelled") return latest;
     }
     const projectRef = request.repo ? resolveProjectRef(this.db, request.repo) : null;
     const project = projectRef?.ok && projectRef.project && !projectRef.ambiguous ? projectRef.project : resolveCheckoutPath(this.db, request.cwd);
     const workUnitId = request.custody_work_unit_id ?? this.deliveryWorkUnitForBranch(request.head_branch);
     if (!project || !workUnitId) {
-      throw new AuthQueueError("invalid_command", "Candidate acceptance requires a registered project checkout and exactly one open delivery work unit for the head branch.");
+      const error = "Candidate acceptance requires a registered project checkout and exactly one open delivery work unit for the head branch.";
+      if (manual) throw new AuthQueueError("invalid_command", error);
+      return scheduler.record(request.id, exact, { status: "unavailable", result: null, error });
     }
-    const record = startCandidateAcceptanceRecord(this.db, request.id, {
-      pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha,
-      base_sha: request.merge_preflight_base_sha, head_sha: request.merge_head_sha,
-    }, this.now());
     const home = getUserHome();
     const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
-    const run = this.candidateAcceptanceExecutor({
-      repoRoot: request.cwd, pinSha: record.pin_sha, projectId: project.id, workUnitId, env,
-    }).catch((error: unknown) => ({ status: "failed" as const, result: null, error: errorMessage(error) ?? String(error) }))
-      .then((outcome) => {
-        if (this.disposed || !this.isDbOpen()) return;
-        finishCandidateAcceptanceRecord(this.db, record.id, outcome, this.now());
-        authLog(outcome.status === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
-          subsystem: "auth", auth_request_id: request.id, status: outcome.status, error: outcome.error,
-        });
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
-      })
-      .finally(() => { this.candidateAcceptanceRuns.delete(record.id); });
-    this.candidateAcceptanceRuns.set(record.id, run);
-    return record;
+    authLog("info", "auth_candidate_acceptance_queued", { subsystem: "auth", auth_request_id: request.id, trigger, pin_sha: exact.pin_sha });
+    return scheduler.enqueue(request.id, exact, { repoRoot: request.cwd, pinSha: exact.pin_sha, projectId: project.id, workUnitId, env });
+  }
+
+  /** A queued run starts only while its request is pending on the same candidate. */
+  private candidateAcceptanceCurrent(record: CandidateAcceptanceRecord): boolean {
+    const request = this.readRequestByExactId(record.auth_request_id);
+    return Boolean(request && request.status === "pending" && request.merge_candidate_pin_sha === record.pin_sha
+      && candidateAcceptanceMatches(record, this.acceptanceCandidate(request)));
+  }
+
+  private candidateAcceptanceChanged(record: CandidateAcceptanceRecord): void {
+    if (record.status !== "queued" && record.status !== "running") {
+      authLog(record.status === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
+        subsystem: "auth", auth_request_id: record.auth_request_id, status: record.status, error: record.error,
+      });
+    }
+    const request = this.readRequestByExactId(record.auth_request_id);
+    if (!request) return;
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, candidate_acceptance: this.candidateAcceptanceForRequest(request) } } });
+  }
+
+  /** A request that left pending no longer needs its open acceptance run. */
+  private cancelCandidateAcceptanceOnResolution(data: unknown): void {
+    const requestId = (data as { request_id?: unknown } | null)?.request_id;
+    if (!this.candidateAcceptanceScheduler || typeof requestId !== "string") return;
+    const request = this.readRequestByExactId(requestId);
+    if (!request || request.status === "pending") return;
+    this.candidateAcceptanceScheduler.cancelOpen(request.id, `The request is ${request.status.replace(/_/g, " ")}.`);
+  }
+
+  /** Startup: queue acceptance for every pending self-update request whose current candidate needs it. */
+  private resumeCandidateAcceptances(): void {
+    if (!this.candidateAcceptanceScheduler) return;
+    const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
+    for (const { id } of rows) this.startCandidateAcceptanceAutomatically(id);
+  }
+
+  /** Automatic triggers never fail the operation that caused them; a refusal is logged. */
+  private startCandidateAcceptanceAutomatically(requestId: string): void {
+    if (!this.candidateAcceptanceScheduler) return;
+    try {
+      this.ensureCandidateAcceptance(requestId, "automatic");
+    } catch (error) {
+      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: errorMessage(error) });
+    }
   }
 
   /** The single open work unit delivering an unbound request's head branch. */
@@ -857,9 +936,9 @@ export class AuthQueue {
     return rows.length === 1 ? rows[0]!.id : null;
   }
 
-  /** Test and shutdown seam: wait for in-process acceptance runs. */
+  /** Test and shutdown seam: wait for the executing acceptance run, if any. */
   async drainCandidateAcceptances(): Promise<void> {
-    await Promise.allSettled([...this.candidateAcceptanceRuns.values()]);
+    await this.candidateAcceptanceScheduler?.drain();
   }
 
   /** Operator retirement of a failed runtime handoff lock (issue a09b4d2). */
@@ -952,6 +1031,7 @@ export class AuthQueue {
 
   dispose(): void {
     this.disposed = true;
+    this.candidateAcceptanceScheduler?.abort();
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
@@ -1979,6 +2059,7 @@ export class AuthQueue {
         request_id: predecessor.id, lifecycle: "superseded", related_request_id: request.id,
       } });
     }
+    this.startCandidateAcceptanceAutomatically(request.id);
 
     return request;
   }
@@ -4516,6 +4597,8 @@ export class AuthQueue {
       return fail(errorMessage(error) ?? "candidate_snapshot_write_failed");
     }
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "revised" } });
+    // Issue 7d83fe5 — the re-pinned candidate needs its own acceptance.
+    this.startCandidateAcceptanceAutomatically(request.id);
     return this.readRequestByExactId(request.id);
   }
 
@@ -5596,7 +5679,10 @@ export class AuthQueue {
     // same drain cap so in-flight Stage 3 work is not killed by the exit. The
     // durable merge_finalized_at IS NULL marker plus the startup sweep is the
     // backstop for anything still running when the cap is hit.
-    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain()];
+    // Issue 7d83fe5 — an acceptance run cannot survive the restart; stop it so
+    // it cleans up its owned processes, and record why. Startup queues it again.
+    this.candidateAcceptanceScheduler?.cancelAll("Interrupted by a Mandible self-update restart.");
+    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain(), this.drainCandidateAcceptances()];
     if (drainTargets.length > 0) {
       await Promise.race([
         Promise.allSettled(drainTargets),
