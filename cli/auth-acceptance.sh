@@ -12,7 +12,7 @@ action="${1:-}"
 shift
 request=""
 json=0
-binding=$(mandible_bind_main_arguments "auth.acceptance.${action}" '{"json":{"option":"json","constant":"1"}}' "$request" "$@") || exit $?
+binding=$(mandible_bind_main_arguments "auth.acceptance.${action}" '{"request":{"position":0},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 eval "$binding"
 [[ -n "$request" ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' 'Error: jq is required.' >&2; exit 1; }
