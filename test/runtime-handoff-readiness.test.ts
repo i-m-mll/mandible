@@ -14,20 +14,23 @@ vi.mock("../src/runtime-handoff-proof.js", async (original) => ({
   verifyRuntimeHandoffPublication: () => ({}),
 }));
 
-import { awaitHandoffReadiness, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
+import { awaitHandoffReadiness, candidateStartupFailure, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
 import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { DOMAIN_EVENTS } from "../src/contracts.js";
 import type { SseEvent } from "../src/types.js";
 import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
+import { rebuildFailureMessage, rebuildFailureNotice } from "../ui/src/daemon-readiness.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
 
-function inspection(ready: boolean, generation = "merge") {
+function inspection(ready: boolean, generation = "merge", backend: { pid: number | null; runs?: number; lastExit?: string } = { pid: 41 }) {
   return {
     status: { dashboard_ready: ready, state: ready ? "running" : "starting", detail: ready ? null : "Backend: The service responded, but Mandible is not ready yet." },
     main: { backend_generation: generation },
+    backendJob: { loaded: true, runs: 1, lastExit: "(never exited)", ...backend },
+    gatewayJob: { loaded: true, pid: 7, runs: 3, lastExit: "0" },
   };
 }
 
@@ -48,6 +51,31 @@ it("waits for a busy daemon's answer and for readiness, bounded by the handoff d
   // Past the deadline the last actual answer is the reason, not a generic one.
   const stuck = await awaitHandoffReadiness("merge", Date.now() + 30, async () => inspection(true, "older"), { pauseMs: 5 });
   expect(stuck.error).toContain("older");
+});
+
+it("fails at once when the started candidate exits or is replaced, and names the daemon's startup failure", async () => {
+  const until = Date.now() + 10 * 60 * 1000;
+  const started = Date.now();
+  const crashed = [inspection(false), inspection(false, "merge", { pid: null, lastExit: "1" })];
+  await expect(awaitHandoffReadiness("merge", until, async () => crashed.shift()!, { pauseMs: 1 }))
+    .resolves.toMatchObject({ exited: true, error: "The candidate backend process exited (last exit code 1)." });
+  const replaced = [inspection(false), inspection(false, "merge", { pid: 42, runs: 2, lastExit: "1" })];
+  await expect(awaitHandoffReadiness("merge", until, async () => replaced.shift()!, { pauseMs: 1 }))
+    .resolves.toMatchObject({ exited: true, error: expect.stringContaining("process 41 exited and launchd started 42") });
+  // A crash that launchd already restarted before the first inspection.
+  await expect(awaitHandoffReadiness("merge", until, async () => inspection(false, "merge", { pid: 43, runs: 2, lastExit: "1" }), { pauseMs: 1 }))
+    .resolves.toMatchObject({ exited: true });
+  expect(Date.now() - started).toBeLessThan(5000);
+
+  const log = [
+    '[production-runner] starting /root build older',
+    JSON.stringify({ level: "error", message: "fatal", error: "Error: an older build" }),
+    '[production-runner] starting /root build merge',
+    JSON.stringify({ level: "info", message: "server_started" }),
+    JSON.stringify({ level: "error", message: "fatal", error: "Error: migration 212 failed" }),
+  ].join("\n");
+  expect(candidateStartupFailure(log, "merge")).toBe("fatal: Error: migration 212 failed");
+  expect(candidateStartupFailure(log, "absent")).toBeNull();
 });
 
 it("reports a pending handoff's rebuild as failed only once its journal fails", async () => {
@@ -88,6 +116,10 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   await queue.resumeHookConvergence();
   await queue.resumeHookConvergence();
   expect(failures()).toHaveLength(1);
-  expect(queue.rebuildFailure?.reason).toContain("Health check exceeded its 900 ms deadline");
+  expect(queue.rebuildFailure).toMatchObject({ kind: "handoff_failed", reason: journal.error });
+  // The operator sees the handoff's own error, never a claim that the previous build still runs.
+  const shown = rebuildFailureMessage(rebuildFailureNotice(failures()[0]!.data)).detail;
+  expect(shown).toContain(journal.error);
+  expect(shown).not.toContain("previous build");
   expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
 });

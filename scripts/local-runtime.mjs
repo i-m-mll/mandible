@@ -227,7 +227,9 @@ function inspectJob(label) {
   const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
   const loaded = result.status === 0;
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
-  return { loaded, pid, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
+  const runs = loaded ? Number(result.stdout.match(/\bruns = (\d+)/)?.[1] ?? 0) : 0;
+  const lastExit = loaded ? result.stdout.match(/\blast exit code = ([^\n]+)/)?.[1]?.trim() ?? null : null;
+  return { loaded, pid, runs, lastExit, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
 }
 
 function processStart(pid) {
@@ -354,18 +356,73 @@ export function handoffFrontDoorError(inspection, mergeCommit) {
   return null;
 }
 
+const NEVER_EXITED = '(never exited)';
+
+/**
+ * Why a started candidate service is no longer the process that was started,
+ * or null while it still is. A freshly bootstrapped backend job has never
+ * exited; any exit, replacement or unload means its startup failed.
+ */
+export function handoffServiceExit(started, inspection) {
+  for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
+    const exit = job.lastExit && job.lastExit !== NEVER_EXITED ? ` (last exit code ${job.lastExit})` : '';
+    if (!job.loaded) return `The candidate ${name} service was unloaded.`;
+    if (!job.pid) return `The candidate ${name} process exited${exit}.`;
+    const first = started?.[name];
+    if (first && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
+  }
+  const backend = inspection.backendJob;
+  if (!started && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
+  return null;
+}
+
 /**
  * Await readiness after a start: inspect until the front door answers ready at
- * the exact merge generation or the deadline passes. Each inspection waits for
- * the daemon's answer; the short pause only paces refused or not-ready answers.
+ * the exact merge generation. The handoff deadline bounds only a daemon that is
+ * alive but slow: an exited or replaced service process fails at once. Each
+ * inspection waits for the daemon's answer; the short pause only paces
+ * refused or not-ready answers.
  */
 export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pauseMs = 200, now = Date.now } = {}) {
+  let started = null;
   for (;;) {
     const inspection = await inspect(handoffProbeTimeout(until, now()));
+    const exited = handoffServiceExit(started, inspection);
+    if (exited) return { inspection, error: exited, exited: true };
+    started ??= Object.fromEntries([['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]].map(([name, job]) => [name, { pid: job.pid, runs: job.runs }]));
     const error = handoffFrontDoorError(inspection, mergeCommit);
-    if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error };
+    if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error, exited: false };
     await new Promise(resolve => setTimeout(resolve, Math.min(pauseMs, Math.max(0, until - now()))));
   }
+}
+
+/**
+ * The daemon's own startup failure for this build: the last error-level line
+ * logged after a runner start marker for the merge generation, from the tail
+ * of its log. Only this handoff starts that generation in this installation.
+ */
+export function candidateStartupFailure(logText, mergeCommit) {
+  const lines = logText.split('\n');
+  const start = lines.findIndex(line => line.startsWith('[production-runner] starting ') && line.trimEnd().endsWith(` build ${mergeCommit}`));
+  if (start < 0) return null;
+  let failure = null;
+  for (const line of lines.slice(start + 1)) {
+    try {
+      const row = JSON.parse(line);
+      if (row?.level === 'error') failure = [row.message || row.event, row.error].filter(Boolean).join(': ');
+    } catch { /* runner and tool output lines carry no level */ }
+  }
+  return failure;
+}
+
+function readLogTail(file, limit = 1024 * 1024) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const bytes = Buffer.alloc(Math.min(size, limit));
+    fs.readSync(fd, bytes, 0, bytes.length, size - bytes.length);
+    return bytes.toString('utf8');
+  } finally { fs.closeSync(fd); }
 }
 
 export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
@@ -374,9 +431,15 @@ export async function verifyHandoffDefinitions(binding, { until = Date.now(), aw
   const gateway = handoffService(GATEWAY_LABEL);
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
   const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
-  const { inspection: status, error } = awaitReady
+  const { inspection: status, error, exited } = awaitReady
     ? await awaitHandoffReadiness(binding.mergeCommit, until, inspect)
-    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection, error: handoffFrontDoorError(inspection, binding.mergeCommit) }));
+    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection, error: handoffFrontDoorError(inspection, binding.mergeCommit), exited: false }));
+  if (exited) {
+    const logPath = locateLaunchAgent(BACKEND_LABEL)?.record.StandardErrorPath;
+    let startup = null;
+    try { startup = logPath ? candidateStartupFailure(readLogTail(logPath), binding.mergeCommit) : null; } catch { /* the exit itself is the reported failure */ }
+    throw new Error(`Candidate runtime failed to start: ${error}${startup ? ` Daemon reported: ${startup}` : ''}`);
+  }
   if (error) throw new Error(`Candidate production front door is not ready at the exact merge generation: ${error}`);
   const job = inspectJob(BACKEND_LABEL);
   const startedAt = processStart(job.pid);

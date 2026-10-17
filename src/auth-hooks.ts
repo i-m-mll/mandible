@@ -356,13 +356,14 @@ export class AuthHookManager {
   /** External handoff observations never consume an attempt or start another hook. */
   async reconcileRuntimeHandoffs(
     adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void,
-    onFailed?: (requestId: string) => void,
+    onFailed?: (requestId: string, handoffError: string) => void,
   ): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
     const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE hook_id = 'builtin-mandible-rebuild'").all() as Array<{ auth_request_id: string }>;
     const accepted: string[] = [];
     for (const row of rows) for (const run of this.listRuns(row.auth_request_id)) {
       if (!this.hasRuntimeHandoff(run)) continue;
+      let handoffError: string | undefined;
       try {
         const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
         const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(moduleUrl);
@@ -371,7 +372,10 @@ export class AuthHookManager {
         const binding = journal.binding as RuntimePublicationBinding;
         if (journal.schema !== "mandible-runtime-handoff@1" || binding.requestId !== run.auth_request_id || binding.executionId !== run.id || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest) throw new Error("Runtime handoff journal differs from the retained hook");
         verifyRuntimeHandoffPublication(this.db, binding);
-        if (journal.phase === "failed") throw new Error(`Independent runtime handoff failed${journal.error ? `: ${journal.error.trim()}` : ""}; inspect its retained journal and logs before repair`);
+        if (journal.phase === "failed") {
+          handoffError = journal.error?.trim() || "The runtime handoff failed without a recorded reason.";
+          throw new Error(`Independent runtime handoff failed: ${handoffError}; inspect its retained journal and logs before repair`);
+        }
         if (journal.phase !== "complete") continue;
         await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
         // A crash after the DB transaction and before helper acknowledgment
@@ -399,7 +403,7 @@ export class AuthHookManager {
         const refused = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
           truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
         );
-        if (Number(refused.changes) > 0) onFailed?.(run.auth_request_id);
+        if (Number(refused.changes) > 0) onFailed?.(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
       }
     }
     return [...new Set(accepted)];

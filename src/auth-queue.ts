@@ -403,11 +403,12 @@ export interface CodexArchiveReplayResult {
   }>;
 }
 
-/** Issue a09b4d2 — an announced rebuild that ended without a daemon restart. */
+/** Issue a09b4d2 — an announced rebuild that ended without a daemon restart, or (54a0b88) a failed runtime handoff. */
 export interface RebuildFailure {
   request_id: string;
   reason: string;
   failed_at: number;
+  kind: import("./types.js").RebuildFailureKind;
 }
 
 export interface AuthQueueOptions {
@@ -696,10 +697,10 @@ export class AuthQueue {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
     const ids = await this.hookManager.reconcileRuntimeHandoffs(
       (binding, proof) => this.adoptRuntimePublication(binding, proof),
-      (id) => {
+      (id, handoffError) => {
         // The independent handoff that owned this rebuild has now failed.
         const request = this.getRequestById(id);
-        if (request?.repo === "mandible") this.failRebuild(request, this.settleConvergence(request));
+        if (request?.repo === "mandible") this.failRebuild(request, this.settleConvergence(request), handoffError);
       },
     );
     for (const id of ids) {
@@ -884,13 +885,13 @@ export class AuthQueue {
 
   /**
    * A rebuild failed: its window closed without an admitted runtime handoff, or
-   * the handoff that owned it failed. Say so, with the hook's reason, and clear
-   * the stale window.
+   * the handoff that owned it failed with `handoffError`. Say so, with the
+   * reason, and clear the stale window.
    */
-  private failRebuild(request: AuthRequest, convergence: AuthConvergence): void {
+  private failRebuild(request: AuthRequest, convergence: AuthConvergence, handoffError?: string): void {
     this.rebuildWindowRequestId = null;
-    let reason = "The rebuild hook did not admit a runtime handoff; the daemon was not restarted.";
-    try {
+    let reason = handoffError ?? "The rebuild hook did not admit a runtime handoff; the daemon was not restarted.";
+    if (handoffError === undefined) try {
       const run = this.hookManager.listRuns(request.id).find((candidate) => candidate.hook_id === MANDIBLE_REBUILD_HOOK_ID);
       if (run) {
         const lines = run.output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("[post-merge-build]"));
@@ -900,7 +901,7 @@ export class AuthQueue {
           : `The rebuild hook is ${run.state} after ${run.attempts} attempt${run.attempts === 1 ? "" : "s"}${run.exit_code === null ? "" : ` (exit ${run.exit_code})`}${last ? `: ${last}` : "."}`;
       }
     } catch { /* keep the generic reason */ }
-    this._rebuildFailure = { request_id: request.id, reason, failed_at: this.now() };
+    this._rebuildFailure = { request_id: request.id, reason, failed_at: this.now(), kind: handoffError === undefined ? "not_restarted" : "handoff_failed" };
     this.restartAvailability?.markRebuildFailed?.(request.id);
     authLog("warn", "auth_rebuild_failed", { subsystem: "auth", auth_request_id: request.id, reason });
     this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED, data: { ...this._rebuildFailure } });

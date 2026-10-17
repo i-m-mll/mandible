@@ -94,7 +94,7 @@ async function controller(journal, command, currentVerifier = false, { until = h
     });
     return result.stdout.trim();
   } catch (error) {
-    throw new Error(`${binding.runtime.path} ${script} failed: ${error.stderr || error.message}`);
+    throw new Error(`Runtime handoff ${command} failed: ${String(error.stderr || error.message).trim()}`);
   }
 }
 

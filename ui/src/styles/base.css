@@ -860,6 +860,13 @@ a {
   backdrop-filter: blur(8px);
 }
 
+.daemon-toast--failure {
+  max-width: min(720px, calc(100vw - 32px));
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 35%, transparent);
+  color: var(--accent-red);
+}
+
 .daemon-toast__dismiss {
   background: none;
   border: none;
