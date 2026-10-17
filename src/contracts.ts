@@ -79,6 +79,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   DAEMON_RELOADED: "daemon:reloaded",
   HEARTBEAT: "heartbeat",
   MANDIBLE_REBUILDING: "mandible:rebuilding",
+  MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
   PUSH_AUTH_PENDING: "push:auth:pending",
   PUSH_COMPLETE: "push:complete",

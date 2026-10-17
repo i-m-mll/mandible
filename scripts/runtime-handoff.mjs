@@ -10,6 +10,7 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { assessLogs } from './runtime-log-assessment.mjs';
 import { runtimeEnvironment } from './runtime-environment.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
 
 const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -115,8 +116,9 @@ export async function armRuntimeHandoff(root) {
     if (existing.phase === 'armed' && !existing.bridgeInstalled) return finishAdmission(existing);
     return existing;
   }
-  const activeFile = path.join(homeDirectory(home), 'handoff-active.json');
-  if (fs.existsSync(activeFile)) throw new Error('Another handoff owns this installation; preserving it.');
+  const activeFile = runtimeHandoffLockFile(home);
+  const lock = readRuntimeHandoffLock(home);
+  if (lock) throw new Error(`Another handoff owns this installation; preserving it. ${runtimeHandoffLockRefusal(lock)}`);
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
   const dir = handoffDirectory(home, requestId, executionId);
   fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
@@ -167,7 +169,7 @@ async function finishAdmission(journal) {
   const binding = journal.binding;
   const { home, requestId, executionId } = binding;
   const dir = path.dirname(journalFile(binding));
-  const active = path.join(homeDirectory(home), 'handoff-active.json');
+  const active = runtimeHandoffLockFile(home);
   if (!fs.existsSync(active)) atomic(active, { journal: journalFile(binding), bindingDigest: journal.bindingDigest });
   if (JSON.parse(fs.readFileSync(active, 'utf8')).bindingDigest !== journal.bindingDigest) throw new Error('Another handoff owns this installation.');
   for (const [name, expected] of Object.entries(binding.stagedFiles)) if (fileHash(path.join(dir, name)) !== expected) throw new Error(`Staged handoff bytes changed: ${name}`);
@@ -202,7 +204,7 @@ async function finishAdmission(journal) {
 
 export function runtimeHandoffDrainIdentity(journal) {
   validateJournal(journal);
-  const active = path.join(homeDirectory(journal.binding.home), 'handoff-active.json');
+  const active = runtimeHandoffLockFile(journal.binding.home);
   if (journal.phase !== 'armed' || !journal.acknowledgedAt || !journal.bridgeInstalled || !fs.existsSync(active)) return null;
   const owner = JSON.parse(fs.readFileSync(active, 'utf8'));
   const old = journal.binding.oldProcess;
@@ -212,7 +214,7 @@ export function runtimeHandoffDrainIdentity(journal) {
 }
 
 function exactActiveOwner(journal) {
-  const active = JSON.parse(fs.readFileSync(path.join(homeDirectory(journal.binding.home), 'handoff-active.json'), 'utf8'));
+  const active = JSON.parse(fs.readFileSync(runtimeHandoffLockFile(journal.binding.home), 'utf8'));
   if (active.journal !== journalFile(journal.binding) || active.bindingDigest !== journal.bindingDigest) throw new Error('Active runtime handoff owner changed.');
 }
 
@@ -373,12 +375,55 @@ export async function acknowledgeRuntimeHandoff(binding) {
       fs.unlinkSync(file);
     }
   }
-  const active = path.join(homeDirectory(binding.home), 'handoff-active.json');
+  const active = runtimeHandoffLockFile(binding.home);
   if (fs.existsSync(active)) {
     if (JSON.parse(fs.readFileSync(active, 'utf8')).bindingDigest !== journal.bindingDigest) throw new Error('Active handoff changed during acknowledgment.');
     fs.unlinkSync(active);
   }
   save(journal, { phase: 'acknowledged', acceptedAt: Date.now() });
+}
+
+/**
+ * Operator retirement of a failed handoff lock. Only the exact failed owner is
+ * released; its journal, staged material and logs stay in place as evidence,
+ * and the lock itself moves beside them with a retirement record.
+ */
+export function retireFailedRuntimeHandoff(home, { bindingDigest: expected, actor, reason }) {
+  if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) throw new Error('Retirement requires the exact lock binding digest.');
+  if (typeof reason !== 'string' || !reason.trim()) throw new Error('Retirement requires a reason.');
+  home = path.resolve(home);
+  const file = runtimeHandoffLockFile(home);
+  const lock = readRuntimeHandoffLock(home);
+  if (!lock) throw new Error('No runtime handoff lock is held.');
+  if (lock.bindingDigest !== expected) throw new Error('The held lock has a different binding digest; preserving it.');
+  const handoffs = path.join(homeDirectory(home), 'handoff');
+  const journalPath = lock.journalPath ? path.resolve(lock.journalPath) : null;
+  if (!journalPath || path.dirname(path.dirname(journalPath)) !== handoffs || path.basename(journalPath) !== 'journal.json') throw new Error('The lock does not name a journal of this installation; preserving it.');
+  const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+  if (journal?.schema !== 'mandible-runtime-handoff@1' || bindingDigest(journal.binding) !== journal.bindingDigest || journal.bindingDigest !== expected
+      || path.resolve(journalFile(journal.binding)) !== journalPath) throw new Error('The owning journal is malformed or differs from the lock; preserving it.');
+  if (journal.phase !== 'failed') throw new Error(`Only a failed handoff can be retired; this handoff is in phase ${journal.phase}.`);
+  const dir = path.dirname(journalPath);
+  for (const name of ['retirement.json', 'retired-active.json']) if (fs.existsSync(path.join(dir, name))) throw new Error(`Retirement evidence already exists: ${name}; preserving it.`);
+  // The helper is an exact independently owned job; never bootout a domain.
+  const target = `${journal.binding.domain}/${journal.helperLabel}`;
+  const loaded = journal.binding.domain && journal.helperLabel ? spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 }) : { status: 1 };
+  if (loaded.status === 0) {
+    if (!loaded.stdout.includes(path.join(dir, 'helper.mjs'))) throw new Error('Helper service definition changed; preserving it.');
+    if (/\bpid = \d+/.test(loaded.stdout)) throw new Error('The handoff helper is still running; preserving the lock.');
+    launchctl(['bootout', target]);
+  }
+  const retirement = { schema: 'mandible-runtime-handoff-retirement@1', bindingDigest: expected,
+    requestId: journal.binding.requestId, executionId: journal.binding.executionId,
+    failure: { phase: journal.phase, error: journal.error ?? null, attempts: journal.attempts, updatedAt: journal.updatedAt },
+    journalSha256: fileHash(journalPath), helperBootedOut: loaded.status === 0, actor, reason: reason.trim(), retiredAt: Date.now() };
+  atomic(path.join(dir, 'retirement.json'), retirement);
+  fs.renameSync(file, path.join(dir, 'retired-active.json'));
+  for (const directory of [path.dirname(file), dir]) {
+    const fd = fs.openSync(directory, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
+  return retirement;
 }
 
 async function worker(file) {

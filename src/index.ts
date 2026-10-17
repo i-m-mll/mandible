@@ -401,6 +401,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     startupEpoch,
     getStartupInfo: () => startupInfo,
     isRebuilding: () => authQueue.isRebuilding,
+    getRebuildFailure: () => authQueue.rebuildFailure,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
     isWarm: () => isDaemonWarm(),

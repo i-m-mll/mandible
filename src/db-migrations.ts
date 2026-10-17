@@ -29,6 +29,7 @@ import {
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
+import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -1770,6 +1771,9 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 193, name: "unify_channel_session_app", statements: [
     "UPDATE sessions SET app = 'claude' WHERE app = 'claude-channel'",
   ] },
+  // Issue a09b4d2 — runtime self-update approval requires a passing candidate
+  // acceptance bound to the exact retained candidate.
+  { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
 ];
 
 /**

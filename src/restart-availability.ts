@@ -62,6 +62,8 @@ export interface RestartAvailabilityNotice {
 export interface RestartAvailabilityLifecycle {
   markRebuildStarted(generationId?: string): string | null;
   markShutdownStarted(generationId: string): boolean;
+  /** Issue a09b4d2 — retire an active window whose rebuild will not restart. */
+  markRebuildFailed?(generationId: string): boolean;
 }
 
 export interface RestartAvailabilityStoreOptions {
@@ -134,6 +136,18 @@ export class RestartAvailabilityStore implements RestartAvailabilityLifecycle {
       ...(expected === undefined ? {} : { expected_ready_at_ms: expected }),
     };
     record.updated_at_ms = now;
+    return this.write(record);
+  }
+
+  /**
+   * Issue a09b4d2 — a rebuild that will not restart the daemon leaves no
+   * blocking window behind. No timing sample is recorded for it.
+   */
+  markRebuildFailed(generationId: string): boolean {
+    const record = this.read();
+    if (!record?.active || record.active.generation_id !== generationId) return false;
+    record.active = null;
+    record.updated_at_ms = this.now();
     return this.write(record);
   }
 

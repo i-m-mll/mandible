@@ -507,6 +507,54 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/retry-convergence", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
+  // Issue a09b4d2 — daemon-run candidate acceptance of the exact retained
+  // candidate. Approval of a runtime self-update requires a passing record.
+  app.post("/api/auth/request/:id/candidate-acceptance", (req, res) => {
+    try {
+      const request = authQueue.getRequestReference(req.params.id);
+      if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const requester = resolveAuthRequester(req, { command: "candidate-acceptance", title: "candidate-acceptance" });
+      if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
+      if (!enforceAuthProjectWrite(req, res, request.repo)) return;
+      res.status(202).json({ request_id: request.id, acceptance: authQueue.startCandidateAcceptance(request.id) });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { operation: { id: "post:/api/auth/request/:id/candidate-acceptance", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+
+  app.get("/api/auth/request/:id/candidate-acceptance", (req, res) => {
+    try {
+      const request = authQueue.getRequestReference(req.params.id);
+      if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
+      res.json({ request_id: request.id, acceptance: authQueue.candidateAcceptance(request.id) });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { operation: { id: "get:/api/auth/request/:id/candidate-acceptance", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  // Issue a09b4d2 — the installation runtime handoff lock, and operator
+  // retirement of a failed one. Retirement preserves the journal as evidence.
+  app.get("/api/runtime-handoff/lock", (_req, res) => {
+    res.json({ lock: authQueue.runtimeHandoffLock() });
+  }, { operation: { id: "get:/api/runtime-handoff/lock", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.post("/api/runtime-handoff/retire", async (req, res) => {
+    try {
+      const operator = requireOperator(getDb(), req);
+      const body = readBody<Record<string, unknown>>(req);
+      if (typeof body.binding_digest !== "string" || typeof body.reason !== "string" || !body.reason.trim()) {
+        res.status(400).json({ error: "binding_digest and reason are required." });
+        return;
+      }
+      const retirement = await authQueue.retireRuntimeHandoff({ bindingDigest: body.binding_digest, reason: body.reason }, {
+        user_id: operator.user_id, evidence_method: operator.method, credential_id: operator.credential_id ?? null, authority_path: "operator_recovery",
+      });
+      res.json({ retirement });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { operation: { id: "post:/api/runtime-handoff/retire", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
   app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
       if (rejectTokenlessSocketExecution(req, res)) return;

@@ -827,6 +827,8 @@ export interface ServerOptions {
   // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
   // doesn't reload while the daemon is still alive but about to restart.
   isRebuilding?: () => boolean;
+  // Issue a09b4d2 — an announced rebuild that will not restart the daemon.
+  getRebuildFailure?: () => { request_id: string; reason: string; failed_at: number } | null;
   // Bug: 645f8a8 — lifecycle-owned readiness source. When omitted the daemon
   // is reported ready (back-compat for servers created without a lifecycle,
   // e.g. unit tests). The real daemon wires this to the lifecycle readiness
@@ -875,6 +877,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       ready,
       warm,
       ...(rebuilding ? { rebuilding: true } : {}),
+      ...(!rebuilding && options.getRebuildFailure?.() ? { rebuild_failure: options.getRebuildFailure()! } : {}),
       ...(options.getMemoryDiagnostics ? { memory: options.getMemoryDiagnostics() } : {}),
       ...(options.getEventLoopDiagnostics ? { eventLoop: options.getEventLoopDiagnostics() } : {}),
       // Issue 708dc4c — surface client-auth mode and the unattributed-write

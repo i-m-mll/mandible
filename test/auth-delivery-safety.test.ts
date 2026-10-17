@@ -10,7 +10,7 @@ import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { getAttributionEvidence } from "../src/users/store.js";
 import {
   commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue,
-  createLedgerProject, createMigratedDb, createNoopHookManager, git, registerWorkRepo,
+  createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
 
@@ -41,8 +41,10 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
 
 function submitMerge(issueClosures: string[] = []) {
-  return queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
+  const request = queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
     repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures });
+  recordPassingCandidateAcceptance(db, request.id);
+  return request;
 }
 
 function protectedState() {

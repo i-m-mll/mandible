@@ -117,7 +117,7 @@ it('replays accepted recovery with the qualified controller and still rejects a 
   const { home, dir, binding, journal } = fixture();
   const repo = createAuthCheckRepo(); roots.push(repo);
   const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
-  for (const name of ['runtime-handoff.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
+  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
     fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
   }
   const legacyMarker = path.join(home, 'legacy-controller-used');

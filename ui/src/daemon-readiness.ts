@@ -19,6 +19,8 @@
 export interface DaemonHealthSnapshot {
   /** Old daemon is shutting down for a self-merge rebuild. */
   rebuilding?: boolean;
+  /** Issue a09b4d2 — an announced rebuild ended without restarting the daemon. */
+  rebuild_failure?: { request_id?: string; reason?: string };
   /**
    * Lifecycle-owned readiness. true only once critical startup work is done and
    * normal dashboard mutations are safe. An older daemon may omit this; a
@@ -166,6 +168,17 @@ export function shouldEnterSplashOnBackgroundProbe(
  */
 export function splashRequiresNewCommit(announcedRebuild: boolean): boolean {
   return announcedRebuild === true;
+}
+
+/**
+ * Issue a09b4d2 — the reason an announced rebuild will not restart the daemon,
+ * or null. Only meaningful while the daemon no longer reports `rebuilding`: the
+ * old daemon keeps serving its previous build, so the splash must say the
+ * rebuild failed instead of waiting for a new commit that will never come.
+ */
+export function daemonRebuildFailure(health: DaemonHealthSnapshot | null | undefined): string | null {
+  if (!health || health.rebuilding === true || !health.rebuild_failure) return null;
+  return health.rebuild_failure.reason?.trim() || 'The rebuild did not complete.';
 }
 
 /**
