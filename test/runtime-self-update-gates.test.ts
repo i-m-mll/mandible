@@ -27,7 +27,6 @@ let repo: string;
 let home: string;
 let db: ReturnType<typeof createMigratedDb>;
 let queue: AuthQueue;
-let hooks: AuthHookManager;
 let operatorId: string;
 let projectId: string;
 let credentialId: string;
@@ -93,8 +92,7 @@ beforeEach(() => {
   credentialId = addCredential(db, operatorId, { type: "api_token", fingerprint: `self-update-${randomUUID()}` }).id;
   issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
   runs = [];
-  hooks = new AuthHookManager(db);
-  queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false,
+  queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
     executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
@@ -173,22 +171,22 @@ describe("candidate acceptance gate", () => {
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
 
-    // A self-update merge moves main and its handoff holds the lock through the
-    // finalizer's sibling pass and the restarted daemon's first ticks.
+    // A self-update merge moves main while its handoff holds the lock through the
+    // finalizer's sibling pass and the idle ticks.
     const lock = holdHandoffLock("complete");
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
     const finalizer = queue as unknown as { revalidatePendingMergeRequestsSerialized(request: unknown): Promise<void> };
     await finalizer.revalidatePendingMergeRequestsSerialized(queue.getRequest("merge-sibling"));
-    await queue.resumeHookConvergence();
+    await queue.refreshPendingCandidates();
     expect(queue.getRequest(request.id)!.merge_candidate_pin_sha).toBe(runs[0]!.input.pinSha);
     expect(runs).toHaveLength(1);
 
-    // A later tick accepts the handoff, which releases the lock.
-    vi.spyOn(hooks, "reconcileRuntimeHandoffs").mockImplementation(async () => { fs.unlinkSync(lock.lockPath); return []; });
-    await queue.resumeHookConvergence();
+    // The first idle tick after the lock is released brings the candidate current.
+    fs.unlinkSync(lock.lockPath);
+    await queue.refreshPendingCandidates();
     const repinned = queue.getRequest(request.id)!;
     expect(repinned).toMatchObject({ status: "pending", merge_preflight_base_sha: git(repo, ["rev-parse", "main"]) });
-    expect(runs).toHaveLength(2);
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
     expect(acceptanceOf(request.id)).toMatchObject({ state: "running" });
   });

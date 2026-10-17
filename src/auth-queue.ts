@@ -695,13 +695,13 @@ export class AuthQueue {
     this.recoverStuckRequests();
     this.hookManager.reclaimAllInterruptedRuns();
     await this.resumeHookConvergence();
-    await this.refreshPendingCandidates();
     this.startExpiryTimer();
+    await this.refreshPendingCandidates(true);
   }
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
-    const ids = await this.releasingHandoffLock(() => this.hookManager.reconcileRuntimeHandoffs(
+    const ids = await this.hookManager.reconcileRuntimeHandoffs(
       (binding, proof) => this.adoptRuntimePublication(binding, proof),
       (id, handoffError) => {
         // The independent handoff that owned this rebuild has now failed.
@@ -710,7 +710,7 @@ export class AuthQueue {
         this.settleConvergence(request);
         this.failRebuild(request, handoffError);
       },
-    ));
+    );
     for (const id of ids) {
       const request = this.getRequestById(id);
       if (request && !this.successfulMergeEvidenceFailure(request)) {
@@ -787,11 +787,12 @@ export class AuthQueue {
   /**
    * Issue 7d83fe5 — the single path that starts candidate acceptance. The
    * daemon calls it when a self-update request is submitted or superseded, when
-   * its candidate is re-pinned onto a moved base, at startup and when the
-   * runtime handoff lock is released; the CLI calls it through its route. A
-   * candidate the base moved past is re-pinned first, which starts its run. A
-   * run of the current candidate that is open or passed is kept; otherwise a
-   * new run starts. Null when acceptance does not apply.
+   * its candidate is re-pinned onto a moved base, and from
+   * refreshPendingCandidates; `mandible auth acceptance run` calls it through
+   * runCandidateAcceptance. A candidate the base moved past is re-pinned
+   * first, which starts its run. A run of the current candidate that is open
+   * or passed is kept; otherwise a new run starts. Null when acceptance does
+   * not apply.
    */
   private ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection | null {
     if (!this.candidateAcceptanceApplies(request)) return null;
@@ -836,16 +837,19 @@ export class AuthQueue {
   }
 
   /**
-   * Startup and handoff-lock release: bring every pending self-update
-   * request's candidate and acceptance current, each once merges on its
-   * repository have settled.
+   * Issue 7d83fe5 — on the idle tick, re-pin each pending self-update request
+   * whose candidate the base moved past, which starts its acceptance. At
+   * startup, also start acceptance of exact candidates without a passing or
+   * running result, since a restart interrupts runs; the tick never repeats a
+   * failed verdict. Nothing happens while the runtime handoff lock is held.
+   * Each request is handled once merges on its repository have settled.
    */
-  private async refreshPendingCandidates(): Promise<void> {
-    if (!this.acceptanceRuns) return;
+  async refreshPendingCandidates(startup = false): Promise<void> {
+    if (!this.acceptanceRuns || this.runtimeHandoffLock()) return;
     const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
     for (const { id } of rows) {
       const request = this.readRequestByExactId(id);
-      if (!request || !this.candidateAcceptanceApplies(request)) continue;
+      if (!request || !this.candidateAcceptanceApplies(request) || (!startup && this.mergeCandidateExact(request))) continue;
       await this.repoChainSettled(request);
       this.startCandidateAcceptanceAutomatically(id);
     }
@@ -857,13 +861,8 @@ export class AuthQueue {
     return this.ensureCandidateAcceptance(this.requireRequest(request.id));
   }
 
-  /** Issue 7d83fe5 — a release of the runtime handoff lock refreshes the candidates it held stale. */
-  private async releasingHandoffLock<T>(release: () => Promise<T>): Promise<T> {
-    const held = this.runtimeHandoffLock() !== null;
-    const result = await release();
-    if (held && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
-    return result;
-  }
+  /** The last logged refusal per request, so the idle tick logs a persistent refusal once. */
+  private readonly acceptanceRefusals = new Map<string, string>();
 
   /** Automatic triggers never fail the operation that caused them; a refusal is logged. */
   private startCandidateAcceptanceAutomatically(requestId: string): void {
@@ -871,8 +870,12 @@ export class AuthQueue {
     if (!this.acceptanceRuns || !request) return;
     try {
       this.ensureCandidateAcceptance(request);
+      this.acceptanceRefusals.delete(requestId);
     } catch (error) {
-      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: errorMessage(error) });
+      const reason = errorMessage(error) ?? String(error);
+      if (this.acceptanceRefusals.get(requestId) === reason) return;
+      this.acceptanceRefusals.set(requestId, reason);
+      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: reason });
     }
   }
 
@@ -885,7 +888,7 @@ export class AuthQueue {
   async retireRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: AuthLifecycleActor): Promise<unknown> {
     this.requireExternalEffects("Runtime handoff retirement");
     try {
-      const retirement = await this.releasingHandoffLock(() => this.hookManager.retireFailedRuntimeHandoff(input, actor));
+      const retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
       authLog("warn", "auth_runtime_handoff_retired", { subsystem: "auth", binding_digest: input.bindingDigest, user_id: actor.user_id });
       return retirement;
     } catch (error) {
@@ -941,7 +944,9 @@ export class AuthQueue {
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
               // Issue 27241e6 — same backstop for unfinished hook convergence.
-          void this.resumeHookConvergence().catch(() => undefined);
+          // Issue 7d83fe5 — then bring pending candidates current once no
+          // runtime handoff lock is held.
+          void this.resumeHookConvergence().then(() => this.refreshPendingCandidates()).catch(() => undefined);
         }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
@@ -4023,7 +4028,7 @@ export class AuthQueue {
    * idle and the preflight runs here.
    */
   private recomputeStaleCandidate(request: AuthRequest, trigger: string, preflight?: AuthMergeCheckReport): AuthRequest {
-    const refuse = (reason: string, detail?: Record<string, unknown>): never => {
+    const refuse: (reason: string, detail?: Record<string, unknown>) => never = (reason, detail) => {
       throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal({ reason, ...(detail ? { detail } : {}) }));
     };
     if (this.strictPinRequested(request)) refuse("strict_pin_requested");
@@ -4037,7 +4042,7 @@ export class AuthQueue {
         .filter((field) => !request[field]),
     ].filter((entry): entry is string => Boolean(entry));
     const { cwd, base_branch: baseBranch, head_branch: headBranch } = request;
-    if (missing.length || !cwd || !baseBranch || !headBranch) return refuse("not_recomputable_request", { missing });
+    if (missing.length || !cwd || !baseBranch || !headBranch) refuse("not_recomputable_request", { missing });
     // Review F5 — recompute rescues *pure base drift* only: the retained pin
     // must still be exactly the reviewed candidate. A deleted, corrupted, or
     // re-pointed pin is tamper evidence, not drift.
@@ -4049,7 +4054,7 @@ export class AuthQueue {
     // Never run a preflight against a repo whose execution chain is busy.
     if (!preflight && this.executionChains.has(this.chainKeyForRequest(request))) refuse("execution_chain_busy");
     const currentBase = this.resolveBranchHeadForCheck(cwd, baseBranch);
-    if (!currentBase) return refuse("base_head_unresolvable", { base_branch: baseBranch, cwd });
+    if (!currentBase) refuse("base_head_unresolvable", { base_branch: baseBranch, cwd });
     if (currentBase === request.merge_preflight_base_sha) refuse("base_unchanged", { base_sha: currentBase });
     // Review F1 — the base transition must be fully accounted for by
     // signature-verified, queue-recorded merges before any recompute.
@@ -4389,7 +4394,7 @@ export class AuthQueue {
    */
   private async repoChainSettled(request: AuthRequest): Promise<void> {
     const key = this.chainKeyForRequest(request);
-    for (let chain = this.executionChains.get(key); chain; chain = this.executionChains.get(key)) await chain;
+    for (let chain = this.executionChains.get(key); chain; chain = this.executionChains.get(key)) await chain.catch(() => undefined);
   }
 
   /**
@@ -5392,7 +5397,7 @@ export class AuthQueue {
         const owner = this.requestCustodyForActor(current, recovery.actor);
         if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
       };
-      await this.releasingHandoffLock(() => this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard));
+      await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
       // Recovery settles this request only. Existing merge finalizers retain
       // their normal daemon lifecycle; a one-shot must not enqueue global work.
       await this.finalizerQueue.drain();
