@@ -21,7 +21,7 @@
 #   auth candidate-repair inspect|apply <id> [opts]
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth acceptance run|show <id>    Run or show candidate acceptance of a self-update
-#   auth handoff status|retire       Inspect or retire the runtime handoff lock
+#   auth handoff status|recover|retire  Inspect, recover or retire the runtime handoff
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect source logs and retained daemon telemetry
 #   conversations <subcommand>       Inspect DB-backed conversations

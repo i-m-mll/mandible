@@ -315,6 +315,17 @@
         ]
       }
     },
+    "auth.handoff.recover": {
+      "route": ["auth", "handoff", "recover"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--operator-recovery"],"values": []}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
     "auth.handoff.retire": {
       "route": ["auth", "handoff", "retire"],
       "grammar": {

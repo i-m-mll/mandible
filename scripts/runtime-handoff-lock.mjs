@@ -37,7 +37,7 @@ export function runtimeHandoffLockRefusal(lock) {
   const owner = lock.requestId ? `request ${lock.requestId.slice(0, 8)}` : 'an unknown request';
   const state = `${owner} is in phase ${lock.phase ?? 'unknown'}${lock.error ? ` (${lock.error})` : ''}`;
   const next = lock.phase === 'failed'
-    ? `Recover it with verify-current convergence for that request, or retire it with \`mandible auth handoff retire --binding-digest ${lock.bindingDigest ?? '<digest>'} --reason <text>\`.`
+    ? `If its exact merge generation is live, recover it with \`mandible auth handoff recover ${lock.requestId ?? '<request>'}\`; otherwise retire it with \`mandible auth handoff retire --binding-digest ${lock.bindingDigest ?? '<digest>'} --reason <text>\`.`
     : 'Wait for that handoff to converge and be acknowledged, or inspect it with `mandible auth handoff status`.';
   return `Runtime handoff lock ${lock.file} is not acknowledged: ${state}. A Mandible self-update cannot go live while it is held. ${next}`;
 }

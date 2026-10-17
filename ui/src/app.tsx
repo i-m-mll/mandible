@@ -67,12 +67,15 @@ import {
   daemonIsReadyAfterEpoch,
   daemonIsWarm,
   daemonRebuildFailure,
+  rebuildFailureMessage,
+  rebuildFailureNotice,
   daemonStartupEpoch,
   daemonStartupCommit,
   shouldEnterSplashOnBackgroundProbe,
   splashRequiresNewCommit,
   stallEscapeReady,
   type DaemonHealthSnapshot,
+  type RebuildFailureNotice,
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
@@ -600,7 +603,7 @@ function RebuildingSplash({
   reason?: 'rebuilding' | 'starting';
   epochStalled?: boolean;
   // Issue a09b4d2 — the daemon reported that this rebuild will not restart it.
-  rebuildFailure?: string | null;
+  rebuildFailure?: RebuildFailureNotice | null;
   // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
   // same commit past the bounded window) the splash must offer an explicit exit
   // so a healthy daemon can never be permanently stranded behind it.
@@ -609,13 +612,12 @@ function RebuildingSplash({
 }): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
   if (rebuildFailure) {
+    const message = rebuildFailureMessage(rebuildFailure);
     return (
       <div className="rebuilding-splash" role="alert">
         <div className="rebuilding-splash__content">
-          <div className="rebuilding-splash__title">Rebuild failed</div>
-          <div className="rebuilding-splash__subtitle">
-            {`The merge landed, but Mandible was not rebuilt, so it is not live. ${rebuildFailure} Mandible is still running its previous build.`}
-          </div>
+          <div className="rebuilding-splash__title">{message.title}</div>
+          <div className="rebuilding-splash__subtitle">{message.detail}</div>
           {onContinue ? (
             <button type="button" className="rebuilding-splash__continue" onClick={onContinue}>
               Continue
@@ -776,7 +778,7 @@ function App(): JSX.Element {
   // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
   // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
   const [stallEscape, setStallEscape] = useState(false);
-  const [rebuildFailure, setRebuildFailure] = useState<string | null>(null);
+  const [rebuildFailure, setRebuildFailure] = useState<RebuildFailureNotice | null>(null);
   const splashEpochRef = useRef<string | null>(null);
   const splashCommitRef = useRef<string | null>(null);
   const requireNewEpochRef = useRef(false);
@@ -1686,9 +1688,7 @@ function App(): JSX.Element {
 
     // Issue a09b4d2 — the announced rebuild will not restart the daemon.
     const rebuildFailedHandler = (payload: SSEPayload) => {
-      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data as { reason?: unknown } : {};
-      const reason = typeof data.reason === 'string' && data.reason.trim() ? data.reason.trim() : 'The rebuild did not complete.';
-      setRebuildFailure(reason);
+      setRebuildFailure(rebuildFailureNotice(payload.data));
     };
 
     const graphRefreshHandler = () => {
@@ -1953,7 +1953,7 @@ function App(): JSX.Element {
           const currentCommit = daemonStartupCommit(data);
           // Issue a09b4d2 — a rebuild that will not restart the daemon is a
           // failure to report, not a stall to wait out.
-          const failure = requireNewCommitRef.current ? daemonRebuildFailure(data) : null;
+          const failure = requireNewCommitRef.current && daemonRebuildFailure(data) ? rebuildFailureNotice(data.rebuild_failure) : null;
           if (failure) {
             stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
             stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
@@ -2797,6 +2797,21 @@ function App(): JSX.Element {
 
   return renderAppShell(
     <>
+      {rebuildFailure?.kind === 'handoff_failed' && (
+        // Issue 54a0b88 — a handoff can fail after this build is already
+        // serving; report it without taking over the working view.
+        <div className="daemon-toast daemon-toast--failure" role="alert">
+          <span>{rebuildFailureMessage(rebuildFailure).detail}</span>
+          <button
+            type="button"
+            className="daemon-toast__dismiss"
+            onClick={() => setRebuildFailure(null)}
+            aria-label="Dismiss update failure"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…

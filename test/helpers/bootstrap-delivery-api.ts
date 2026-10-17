@@ -74,6 +74,23 @@ export async function readBootstrapDelivery(api: Api, requestId: string): Promis
   return await jsonRequest(api, `/api/auth/request/${encodeURIComponent(requestId)}`) as BootstrapDeliveryDetail;
 }
 
+/**
+ * Runtime self-update approval requires a passing daemon-run acceptance of the
+ * exact candidate. Run (or join) it through the real route and await its result.
+ */
+export async function acceptBootstrapDelivery(api: Api, requestId: string, timeoutMs = 15 * 60 * 1000): Promise<void> {
+  const route = `/api/auth/request/${encodeURIComponent(requestId)}/candidate-acceptance`;
+  await jsonRequest(api, route, 'POST', {});
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const { acceptance } = await jsonRequest(api, route) as { acceptance: { status: string; error: string | null } | null };
+    if (acceptance?.status === 'passed') return;
+    assert.notEqual(acceptance?.status, 'failed', `Candidate acceptance failed: ${acceptance?.error}`);
+    assert.ok(Date.now() < end, `Candidate acceptance did not finish within ${timeoutMs}ms`);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+}
+
 /** Real operator route: no manual flags, clearance, injected approval environment, or row writes. */
 export async function approveBootstrapDelivery(api: Api, requestId: string): Promise<void> {
   const result = await jsonRequest(api, `/api/auth/request/${encodeURIComponent(requestId)}/approve`, 'POST', {}) as { request_id: string };

@@ -22,7 +22,7 @@ import { addGrant } from '../../src/permissions/store.js';
 import { loadOrCreatePepper } from '../../src/client-auth/secret-store.js';
 import { mintApiToken } from '../../src/client-auth/tokens.js';
 import { setSetting } from '../../src/client-auth/settings-kv.js';
-import { activateBootstrapWorkUnit, submitBootstrapDelivery, approveBootstrapDelivery, readBootstrapDelivery, assertBootstrapOperatorProof } from '../helpers/bootstrap-delivery-api.js';
+import { activateBootstrapWorkUnit, submitBootstrapDelivery, acceptBootstrapDelivery, approveBootstrapDelivery, readBootstrapDelivery, assertBootstrapOperatorProof } from '../helpers/bootstrap-delivery-api.js';
 import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
 
 const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
@@ -265,6 +265,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     requestId = request.id;
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${installedUpdate ? repo : candidateRoot}/bin`);
+    await acceptBootstrapDelivery(agentApi, request.id);
     await approveBootstrapDelivery(operatorApi, request.id);
     await until(() => {
       const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
