@@ -43,7 +43,6 @@ export class ClaudeSdkTransport {
   private nativeSessionId: string | null = null;
   private reservedId = "";
   private processId: number | undefined;
-  private stderrTail = "";
   private drain: Promise<void> | null = null;
 
   constructor(private readonly inputRequest: ControllerAcquisitionRequest, private readonly sdk: ClaudeSdk) {
@@ -93,8 +92,7 @@ export class ClaudeSdkTransport {
       } },
       hooks: { SessionStart: [{ hooks: [async (event) => { bind(event.session_id); return {}; }] }] },
       spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }) => {
-        const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-        child.stderr.on("data", (chunk: Buffer) => { this.stderrTail = `${this.stderrTail}${chunk.toString("utf8")}`.slice(-8_192); });
+        const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
         this.processId = child.pid;
         return child;
       },
@@ -162,7 +160,7 @@ export class ClaudeSdkTransport {
     } catch (error) {
       if (!this.closed) {
         this.closed = true;
-        this.exitListener?.({ code: 1, signal: null, stderr: [String(error), this.stderrTail.trim()].filter(Boolean).join("\n") });
+        this.exitListener?.({ code: 1, signal: null, stderr: String(error) });
       }
     } finally {
       this.input.close();

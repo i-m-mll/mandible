@@ -14,9 +14,6 @@ if [[ -z "$app" ]]; then
   fi
 fi
 
-pid=$(echo "$INPUT" | jq -r '.pid // .process_id // empty')
-pid="${pid:-${CLAUDE_PID:-}}"
-
 cwd=$(echo "$INPUT" | jq -r '.cwd // .workspace // empty')
 if [[ -z "$cwd" ]]; then
   cwd="$PWD"
@@ -31,14 +28,6 @@ fi
 
 if [[ -z "$worktree" ]] && git -C "$cwd" rev-parse --show-toplevel >/dev/null 2>&1; then
   worktree=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
-fi
-
-pid_start=""
-if [[ -n "$pid" ]]; then
-  pid_start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//')
-  if [[ -z "$pid_start" ]]; then
-    pid_start=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')
-  fi
 fi
 
 terminal=""
@@ -128,8 +117,7 @@ payload=$(jq -n \
   --arg id "$session_id" \
   --arg conversation_id "$provider_session_id" \
   --arg app "$app" \
-  --arg pid "$pid" \
-  --arg pid_start "$pid_start" \
+  --arg pid "$CLAUDE_PID" \
   --arg cwd "$cwd" \
   --arg branch "$branch" \
   --arg worktree "$worktree" \
@@ -143,6 +131,7 @@ payload=$(jq -n \
     id: $id,
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     app: $app,
+    pid: ($pid | tonumber),
     cwd: (if $cwd == "" then null else $cwd end),
     branch: (if $branch == "" then null else $branch end),
     worktree: (if $worktree == "" then null else $worktree end),
@@ -152,8 +141,7 @@ payload=$(jq -n \
     nav_tab: (if $nav_tab == "" then null else $nav_tab end),
     nav_pane_id: (if $nav_pane_id == "" then null else $nav_pane_id end),
     nav_extra: $nav_extra
-  }
-  + (if $pid == "" then {} else { pid: ($pid | tonumber), pid_start: (if $pid_start == "" then null else $pid_start end) } end)')
+  }')
 
 api_send POST /api/sessions/register "$payload" >/dev/null || exit 1
 

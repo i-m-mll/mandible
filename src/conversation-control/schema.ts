@@ -1,12 +1,12 @@
-const conversationControlSchemaSql = (includeRuntimeOptions: boolean, allowPendingNativeIdentity = false): readonly string[] => [
+const conversationControlSchemaSql = (includeRuntimeOptions: boolean, allowPendingNativeIdentity = false, knownOwnership = false): readonly string[] => [
   `CREATE TABLE conversation_control_state (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE RESTRICT,
     provider TEXT NOT NULL,
     provider_session_id TEXT,
     revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
     generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
-    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('none','mandible','external','unknown')),
-    controller_state TEXT NOT NULL CHECK(controller_state IN ('starting','ready','running','waiting','stopping','stopped','failed','unknown')),
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN (${knownOwnership ? "'none','mandible','external'" : "'none','mandible','external','unknown'"})),
+    controller_state TEXT NOT NULL CHECK(controller_state IN (${knownOwnership ? "'starting','ready','running','waiting','stopping','stopped','failed'" : "'starting','ready','running','waiting','stopping','stopped','failed','unknown'"})),
     controller_instance_id TEXT,
     adapter_id TEXT,
     owner_detail_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(owner_detail_json) AND json_type(owner_detail_json) = 'object'),
@@ -19,8 +19,8 @@ const conversationControlSchemaSql = (includeRuntimeOptions: boolean, allowPendi
     CHECK (
       (owner_kind = 'none' AND controller_state = 'stopped' AND controller_instance_id IS NULL AND adapter_id IS NULL AND owner_detail_json = '{}')
       OR (owner_kind = 'mandible' AND controller_state != 'stopped' AND controller_instance_id IS NOT NULL AND adapter_id IS NOT NULL AND ${allowPendingNativeIdentity ? "(provider_session_id IS NOT NULL OR (provider = 'claude_code' AND json_extract(owner_detail_json, '$.native_identity_pending') = 1))" : 'provider_session_id IS NOT NULL'} AND last_authoritative_signal IS NOT NULL)
-      OR (owner_kind = 'external' AND controller_state = 'unknown' AND controller_instance_id IS NULL AND adapter_id IS NULL AND last_authoritative_signal IS NOT NULL)
-      OR (owner_kind = 'unknown' AND controller_state = 'unknown' AND controller_instance_id IS NULL AND adapter_id IS NULL)
+      OR (owner_kind = 'external' AND controller_state = ${knownOwnership ? "'stopped'" : "'unknown'"} AND controller_instance_id IS NULL AND adapter_id IS NULL AND last_authoritative_signal IS NOT NULL)
+      ${knownOwnership ? "" : "OR (owner_kind = 'unknown' AND controller_state = 'unknown' AND controller_instance_id IS NULL AND adapter_id IS NULL)"}
     ),
     CHECK (
       (turn_state = 'none' AND turn_id IS NULL AND delivery_id IS NULL)
@@ -83,11 +83,54 @@ const conversationControlSchemaSql = (includeRuntimeOptions: boolean, allowPendi
 export const CONVERSATION_CONTROL_SCHEMA_V163_SQL = conversationControlSchemaSql(false);
 
 /** Current head shape used by fresh databases. */
-export const CONVERSATION_CONTROL_SCHEMA_SQL = conversationControlSchemaSql(true, true);
+export const CONVERSATION_CONTROL_SCHEMA_SQL = conversationControlSchemaSql(true, true, true);
 
 export const CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL = [
-  CONVERSATION_CONTROL_SCHEMA_SQL[0].replace('CREATE TABLE conversation_control_state', 'CREATE TABLE conversation_control_state_v189'),
+  conversationControlSchemaSql(true, true)[0].replace('CREATE TABLE conversation_control_state', 'CREATE TABLE conversation_control_state_v189'),
   'INSERT INTO conversation_control_state_v189 SELECT * FROM conversation_control_state',
   'DROP TABLE conversation_control_state',
   'ALTER TABLE conversation_control_state_v189 RENAME TO conversation_control_state',
+] as const;
+
+const freed = `owner_kind = 'unknown' OR (owner_kind = 'external' AND json_extract(owner_detail_json, '$.kind') = 'provider-controller')`;
+const now = "CAST(strftime('%s', 'now') AS INTEGER) * 1000";
+const lost = (state: string) => `json_object('kind', 'adapter-failure', 'adapter_id',
+  CASE ${state}.provider WHEN 'codex' THEN 'codex-app-server-v2' ELSE 'claude-agent-sdk-v1' END,
+  'code', 'controller-lost', 'message', 'The controller ended before this message was sent', 'retryable', json('true'))`;
+
+/**
+ * Ownership is never unknown and an external controller has no controller
+ * state of its own. Claims nothing can answer for are freed, with their
+ * unsent deliveries failed and in-flight ones marked uncertain.
+ */
+export const CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL = [
+  `INSERT INTO conversation_control_journal (id, conversation_id, revision, generation, event_kind, event_json, created_at)
+    SELECT lower(hex(randomblob(16))), o.conversation_id, s.revision,
+      o.generation, CASE o.state WHEN 'pending' THEN 'delivery-failed' ELSE 'delivery-uncertain' END,
+      json_object('delivery_id', o.id), ${now}
+    FROM conversation_control_outbox o JOIN conversation_control_state s ON s.conversation_id = o.conversation_id
+    WHERE o.state IN ('pending','delivering') AND (${freed})`,
+  `UPDATE conversation_control_outbox SET
+      state = CASE state WHEN 'pending' THEN 'failed' ELSE 'uncertain' END,
+      error_json = CASE state WHEN 'pending' THEN (SELECT ${lost("s")} FROM conversation_control_state s WHERE s.conversation_id = conversation_control_outbox.conversation_id) ELSE error_json END,
+      updated_at = ${now}
+    WHERE state IN ('pending','delivering')
+      AND conversation_id IN (SELECT conversation_id FROM conversation_control_state WHERE ${freed})`,
+  `INSERT INTO conversation_control_journal (id, conversation_id, revision, generation, event_kind, event_json, created_at)
+    SELECT lower(hex(randomblob(16))), conversation_id, revision + 1, generation, 'controller-released',
+      json_object('prior_owner', owner_kind), ${now}
+    FROM conversation_control_state WHERE ${freed}`,
+  CONVERSATION_CONTROL_SCHEMA_SQL[0].replace('CREATE TABLE conversation_control_state', 'CREATE TABLE conversation_control_state_v195'),
+  `INSERT INTO conversation_control_state_v195 SELECT conversation_id, provider, provider_session_id,
+      CASE WHEN ${freed} THEN revision + 1 ELSE revision END, generation,
+      CASE WHEN ${freed} THEN 'none' ELSE owner_kind END,
+      CASE WHEN ${freed} OR owner_kind = 'external' THEN 'stopped' ELSE controller_state END,
+      controller_instance_id, adapter_id,
+      CASE WHEN ${freed} THEN '{}' ELSE owner_detail_json END,
+      CASE WHEN ${freed} THEN NULL ELSE last_authoritative_signal END,
+      turn_state, turn_id, delivery_id, state_detail_json,
+      CASE WHEN ${freed} THEN ${now} ELSE updated_at END
+    FROM conversation_control_state`,
+  'DROP TABLE conversation_control_state',
+  'ALTER TABLE conversation_control_state_v195 RENAME TO conversation_control_state',
 ] as const;

@@ -104,7 +104,7 @@ describe('owner-only local API socket', () => {
     expect(await request('GET', '/api/read', headers)).toMatchObject({ status: 200,
       body: { identity: { user_id: agent.id, method: 'local_socket' } } });
   });
-  it('authenticates a Claude lifecycle hook as the Claude agent without clearing the stored pid', async () => {
+  it('authenticates a Claude lifecycle hook as the Claude agent and forwards its pid', async () => {
     const agent = createUser(db, { slug: 'claude-hooks', kind: 'agent', display_name: 'Claude Hooks' });
     addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CLAUDE_CODE_SESSION_ID' });
     const seen: Array<{ identity: unknown; body: Record<string, unknown> }> = [];
@@ -114,14 +114,14 @@ describe('owner-only local API socket', () => {
       operation('hook.register', ['process:external']));
     router.get('/api/inbox/global', (_req, res) => res.json({}), operation('hook.inbox', ['ledger:read']));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(MANDIBLE_|CLAUDE|CODEX_)/.test(key)));
-    const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...env, MANDIBLE_SOCKET: socketPath } });
+    const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...env, MANDIBLE_SOCKET: socketPath,
+      CLAUDE_CODE_SESSION_ID: 'claude-session-1', CLAUDE_PID: String(process.pid) } });
     let stderr = ''; hook.stderr.on('data', (chunk) => { stderr += chunk; });
     hook.stdin.end(JSON.stringify({ session_id: 'claude-session-1', cwd: root }));
     expect(await new Promise((resolve) => hook.once('close', resolve)), stderr).toBe(0);
     expect(seen).toHaveLength(1);
     expect(seen[0].identity).toMatchObject({ user_id: agent.id, method: 'local_socket' });
-    expect(seen[0].body).toMatchObject({ id: 'claude-session-1', conversation_id: 'claude-session-1', app: 'claude' });
-    expect(Object.keys(seen[0].body)).not.toContain('pid');
+    expect(seen[0].body).toMatchObject({ id: 'claude-session-1', conversation_id: 'claude-session-1', app: 'claude', pid: process.pid });
   });
   it('rejects unknown, malformed, human-bound, and conflicting managed app claims', async () => {
     const codex = createUser(db, { slug: 'codex-agent', kind: 'agent', display_name: 'Codex Agent' });

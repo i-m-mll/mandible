@@ -1369,7 +1369,7 @@ describe('compact detail pane shell', () => {
         ...defaultControl,
         revision: 2,
         ownership: { kind: 'external', generation: 1, evidence: { kind: 'registered-process', reference: 'external-live' }, last_authoritative_signal: 2 },
-        controller: { kind: 'unknown', since: 2, reason: 'probe-ambiguous' },
+        controller: { kind: 'stopped', at: 2 },
         turn: { kind: 'unknown', turn_id: null, since: 2, reason: 'probe-ambiguous' },
         capability: { kind: 'blocked-external', revision: 2, evidence_kind: 'registered-process' },
       } satisfies ConversationControlSnapshot,

@@ -17,6 +17,10 @@ import {
   mergeProviderLiveProjection,
 } from "../src/conversation-control/provider-live.js";
 import { ConversationControlStore } from "../src/conversation-control/store.js";
+import {
+  CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL,
+  CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL,
+} from "../src/conversation-control/schema.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
@@ -625,11 +629,41 @@ describe("authoritative conversation control", () => {
     expect(snapshot.ok && snapshot.value.capability.kind).toBe("provider-session-resume");
   });
 
+  it("migrates legacy unresolved claims to free and settles their deliveries", () => {
+    for (const statement of CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL) db.exec(statement);
+    for (const [id, owner] of [["conversation-1", "unknown"], ["conversation-2", "provider-controller"], ["conversation-3", "registered-process"]]) {
+      if (id !== "conversation-1") {
+        db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
+          VALUES (?, 'codex', ?, 'hash', 1, 'Test', '2026-01-01T00:00:00Z', 0, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run(id, `/tmp/${id}.jsonl`, `provider-${id}`);
+      }
+      db.prepare(`INSERT INTO conversation_control_state (conversation_id, provider, provider_session_id, revision, generation, owner_kind,
+          controller_state, owner_detail_json, last_authoritative_signal, turn_state, turn_id, state_detail_json, updated_at)
+        VALUES (?, 'codex', ?, 3, 2, ?, 'unknown', ?, 1, 'unknown', 'turn-1', '{}', 1)`)
+        .run(id, `provider-${id}`, owner === "unknown" ? "unknown" : "external", owner === "unknown" ? "{}" : JSON.stringify({ kind: owner, reference: "x" }));
+    }
+    for (const [id, state] of [["pending-1", "pending"], ["delivering-1", "delivering"]]) {
+      db.prepare(`INSERT INTO conversation_control_outbox (id, conversation_id, generation, turn_id, operation, message, idempotency_key, state, created_at, updated_at)
+        VALUES (?, 'conversation-1', 2, ?, 'send', 'hello', ?, ?, 1, 1)`).run(id, `turn-${id}`, id, state);
+    }
+
+    for (const statement of CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL) db.exec(statement);
+
+    expect(db.prepare("SELECT conversation_id, owner_kind, controller_state FROM conversation_control_state ORDER BY conversation_id").all()).toEqual([
+      { conversation_id: "conversation-1", owner_kind: "none", controller_state: "stopped" },
+      { conversation_id: "conversation-2", owner_kind: "none", controller_state: "stopped" },
+      { conversation_id: "conversation-3", owner_kind: "external", controller_state: "stopped" },
+    ]);
+    expect(db.prepare("SELECT id, state, json_extract(error_json, '$.code') AS code FROM conversation_control_outbox ORDER BY id").all()).toEqual([
+      { id: "delivering-1", state: "uncertain", code: null },
+      { id: "pending-1", state: "failed", code: "controller-lost" },
+    ]);
+  });
+
   it("follows the session registry for external ownership", () => {
     const service = new ConversationControlService(db);
     service.registerAdapter(new FakeAdapter());
     const registry = new SessionRegistry(db);
-    registry.onLifecycle((session) => service.syncRegisteredOwnership(session.conversation_id ?? session.id));
+    registry.onLifecycle((session) => service.syncRegisteredOwnership(session));
 
     registry.registerSession({ id: "terminal-1", app: "claude", pid: process.pid, conversation_id: "provider-1" });
     const held = service.getSnapshot("conversation-1");
@@ -689,7 +723,7 @@ describe("authoritative conversation control", () => {
     const service = new ConversationControlService(db, {
       onTerminalTurn: async () => ({ status: "ingested:fresh" }),
       onProviderEvent: (event) => emitted.push(event),
-      onReconciliationDiagnostic: (details) => diagnostics.push(details),
+      logger: (_level, _message, details) => diagnostics.push(details!),
     });
     const adapter = new FakeAdapter();
     service.registerAdapter(adapter);
@@ -746,7 +780,7 @@ describe("authoritative conversation control", () => {
     const service = new ConversationControlService(db, {
       onTerminalTurn: async () => ({ status: "ingested:fresh" }),
       onProviderEvent: (event) => emitted.push(event),
-      onReconciliationDiagnostic: (details) => diagnostics.push(details),
+      logger: (_level, _message, details) => diagnostics.push(details!),
     });
     const adapter = new FakeAdapter();
     service.registerAdapter(adapter);

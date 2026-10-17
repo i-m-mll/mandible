@@ -337,7 +337,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
         return { status: `${result.status}:${code}` };
       }
     },
-    onReconciliationDiagnostic: (details) => logger("info", "conversation_terminal_reconciliation", details),
+    logger,
   });
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
@@ -514,8 +514,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   if (operationalMutationsAllowed) {
     const errors = await conversationControl.reconcileAfterRestart();
     if (errors.length > 0) logger("warn", "conversation_control_reconciliation_errors", { errors });
-    sessionRegistry.onLifecycle((session) => conversationControl.syncRegisteredOwnership(session.conversation_id ?? session.id));
-    sessionRegistry.listSessions({ status: "active" }); // ends sessions whose process is gone before the registry is trusted
+    sessionRegistry.onLifecycle((session) => conversationControl.syncRegisteredOwnership(session));
+    sessionRegistry.reapDead();
     conversationControl.syncRegisteredOwnership();
   }
 

@@ -145,10 +145,8 @@ export class SessionDiscovery {
     return result;
   }
 
-  /** Apply registry liveness to every active session; the registry announces each one it ends. */
   reapDeadSessions(): number {
-    if (this.stopped) return 0;
-    return this.registry.listSessions({ status: "active" }).filter((session) => session.status !== "active").length;
+    return this.stopped ? 0 : this.registry.reapDead().length;
   }
 
   /** Reuse the scanner's bounded inventory path and exact branch parser. */

@@ -12,8 +12,7 @@ export type ControllerState =
   | { kind: "running"; since: number }
   | { kind: "waiting"; since: number }
   | { kind: "stopping"; since: number }
-  | { kind: "failed"; at: number; error: ConversationControlError }
-  | { kind: "unknown"; since: number; reason: ReconciliationUnknownReason };
+  | { kind: "failed"; at: number; error: ConversationControlError };
 
 export type TurnState =
   | { kind: "none" }
@@ -24,10 +23,10 @@ export type TurnState =
   | { kind: "completed"; turn_id: string; at: number }
   | { kind: "failed"; turn_id: string; at: number; error: ConversationControlError }
   | { kind: "cancelled"; turn_id: string; at: number }
-  | { kind: "unknown"; turn_id: string | null; since: number; reason: ReconciliationUnknownReason };
+  | { kind: "unknown"; turn_id: string | null; since: number; reason: "probe-ambiguous" };
 
 export type ExternalControllerEvidence = {
-  kind: "registered-process" | "provider-controller";
+  kind: "registered-process";
   reference: string;
 };
 
@@ -47,8 +46,6 @@ export type ControllerOwnership =
       evidence: ExternalControllerEvidence;
       last_authoritative_signal: number;
     };
-
-export type ReconciliationUnknownReason = "probe-ambiguous";
 
 export type ConversationControlError =
   | { kind: "conversation-not-found"; conversation_id: string }
@@ -278,7 +275,7 @@ export type ConversationLifecycleEvent =
   | { kind: "turn-completed"; at: number; turn_id: string }
   | { kind: "turn-failed"; at: number; turn_id: string; error: ConversationControlError }
   | { kind: "turn-cancelled"; at: number; turn_id: string }
-  | { kind: "turn-unknown"; at: number; turn_id: string | null; reason: ReconciliationUnknownReason };
+  | { kind: "turn-unknown"; at: number; turn_id: string | null; reason: "probe-ambiguous" };
 
 export type OutboxDeliveryState = "pending" | "delivering" | "delivered" | "failed" | "uncertain";
 

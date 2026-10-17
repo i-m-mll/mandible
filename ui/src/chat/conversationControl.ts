@@ -36,7 +36,7 @@ export function conversationControlPresentation(
           key: `${key}:${capability.evidence_kind}`,
           severity: 'warning',
           title: 'Another process is using this chat.',
-          detail: capability.evidence_kind === 'registered-process' ? 'Sending becomes available when it exits.' : '',
+          detail: 'Sending becomes available when it exits.',
         },
       };
     case 'unavailable':

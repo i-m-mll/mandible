@@ -287,22 +287,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         state: controller.state,
       } };
     }
-    if (input.provider_session_id === null) return { ok: true, value: { kind: "released" } };
-    let client: CodexAppServerClient | null = null;
-    try {
-      client = await this.connectedClient();
-      const result = await client.request("thread/read", { threadId: input.provider_session_id, includeTurns: false });
-      const status = threadStatus(responseThread(result));
-      if (status === "idle") return { ok: true, value: { kind: "released" } };
-      if (status === "active") {
-        return { ok: true, value: { kind: "external", evidence: "provider-controller", reference: input.provider_session_id } };
-      }
-      return { ok: true, value: { kind: "unknown", reason: "probe-ambiguous" } };
-    } catch (thrown) {
-      return { ok: false, error: adapterFailure(this.id, "probe-failed", thrown, { retryable: true }) };
-    } finally {
-      if (client) await client.close();
-    }
+    return { ok: true, value: { kind: "released" } };
   }
 
   async stop(input: Parameters<ConversationControllerAdapter["stop"]>[0]): Promise<Result<void, ConversationControlError>> {

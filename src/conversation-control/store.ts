@@ -13,7 +13,6 @@ import type {
   ControllerOwnership,
   ControllerState,
   ExternalControllerEvidence,
-  ReconciliationUnknownReason,
   Result,
   TurnState,
 } from "./types.js";
@@ -49,7 +48,7 @@ type ControlRow = {
 type StoredDetail = {
   controller_error?: ConversationControlError;
   turn_error?: ConversationControlError;
-  unknown_reason?: ReconciliationUnknownReason;
+  unknown_reason?: "probe-ambiguous";
 };
 
 /** The provider process a Mandible controller drives, identified across pid reuse by its start time. */
@@ -98,7 +97,6 @@ function controllerState(row: ControlRow, detail: StoredDetail): ControllerState
     case "failed":
       if (!detail.controller_error) throw new Error("Persisted failed controller has no error");
       return { kind: "failed", at, error: detail.controller_error };
-    case "unknown": return { kind: "unknown", since: at, reason: detail.unknown_reason ?? "probe-ambiguous" };
   }
 }
 
@@ -572,7 +570,7 @@ export class ConversationControlStore {
       const revision = row.revision + 1;
       const now = this.now();
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, generation = ?, owner_kind = 'external',
-        controller_state = 'unknown', controller_instance_id = NULL, adapter_id = NULL,
+        controller_state = 'stopped', controller_instance_id = NULL, adapter_id = NULL,
         owner_detail_json = ?, last_authoritative_signal = ?, turn_state = 'unknown', turn_id = NULL,
         delivery_id = NULL, state_detail_json = ?, updated_at = ? WHERE conversation_id = ?
       `).run(revision, generation, JSON.stringify(evidence), now, JSON.stringify({ unknown_reason: "probe-ambiguous" }), now, conversationId);
@@ -582,19 +580,10 @@ export class ConversationControlStore {
     return transaction.immediate();
   }
 
-  replaceWithExternal(conversationId: string, generation: number, evidence: ExternalControllerEvidence): Result<void, ConversationControlError> {
-    const row = this.row(conversationId);
-    if (!row) return { ok: false, error: { kind: "conversation-not-found", conversation_id: conversationId } };
-    if (row.owner_kind !== "mandible" || row.generation !== generation) {
-      return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: row.generation } };
-    }
-    return this.observeExternal(conversationId, evidence);
-  }
-
   /**
    * The session registry decides external ownership: a provider session with a
    * live registered process is external, and frees again once none remains.
-   * Mandible-owned and provider-attested claims are left alone.
+   * Mandible-owned claims are left alone.
    */
   syncRegisteredOwnership(providerSessionId: string | null): string[] {
     const rows = this.db.prepare(`SELECT * FROM (
@@ -708,7 +697,7 @@ export class ConversationControlStore {
         : capabilities.resume_provider_session
           ? { kind: "provider-session-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id! }
           : unavailable(revision, "unsupported-provider");
-    } else if (["starting", "stopping", "failed", "unknown"].includes(controller.kind)) {
+    } else if (["starting", "stopping", "failed"].includes(controller.kind)) {
       capability = unavailable(revision, "controller-transition");
     } else if (["queued", "unknown"].includes(turn.kind)) {
       capability = unavailable(revision, "turn-transition");
@@ -779,7 +768,6 @@ export class ConversationControlStore {
       waiting: ["waiting", "running", "stopping", "failed"],
       stopping: ["stopping", "failed"],
       failed: ["failed", "stopping"],
-      unknown: [],
     };
     if (!allowed[from].includes(to)) {
       return { kind: "invalid-request", field: "controller_state", message: `Invalid controller lifecycle transition ${from} -> ${to}` };

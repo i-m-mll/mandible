@@ -630,13 +630,18 @@ export class SessionRegistry {
     return () => this.lifecycleListeners.delete(listener);
   }
 
+  /** End every active session whose process is gone; the ended sessions are announced and returned. */
+  reapDead(): Session[] {
+    return this.listSessions({ status: "active" }).filter((session) => session.status !== "active");
+  }
+
   private announce(session: Session): void {
     for (const listener of this.lifecycleListeners) listener(session);
   }
 
   registerSession(input: SessionInput): Session {
     const now = new Date().toISOString();
-    const pidStart = normalizePidStart(input.pid_start);
+    const pidStart = normalizePidStart(input.pid_start) ?? (input.pid ? readPidStartTime(input.pid) : null);
     const status = input.status ?? "active";
     const existingRow = this.db
       .prepare("SELECT * FROM sessions WHERE id = ?")

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Db } from "../db.js";
+import type { Logger, Session } from "../types.js";
 import { processLiveness, readPidStartTime } from "../registry.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
@@ -26,7 +27,6 @@ import type {
   ConversationControlError,
   ConversationControlSnapshot,
   ConversationSubmitRequest,
-  ExternalControllerEvidence,
   ProviderAdapterEvent,
   ProviderDeliveryReceipt,
   ProviderLiveProjection,
@@ -51,15 +51,25 @@ function controllerProcess(lease: ControllerLease): ControllerProcess | null {
   return lease.pid ? { pid: lease.pid, pid_start: readPidStartTime(lease.pid) } : null;
 }
 
-/** End a provider process that outlived the controller driving it; nothing can write to its stdin any more. */
-async function endControllerProcess({ pid, pid_start }: ControllerProcess): Promise<void> {
-  const signal = (name: NodeJS.Signals): void => {
-    try { process.kill(pid, name); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+/**
+ * End a provider process that outlived the controller driving it; nothing can
+ * write to its stdin any more. "unverified" means a process holds the pid but
+ * its start time cannot be compared, so it is left running.
+ */
+async function endControllerProcess({ pid, pid_start }: ControllerProcess, adapterId: string): Promise<Result<"ended" | "unverified", ConversationControlError>> {
+  const signal = (name: NodeJS.Signals): ConversationControlError | null => {
+    try { process.kill(pid, name); return null; } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH" ? null
+        : { kind: "adapter-failure", adapter_id: adapterId, code: "orphan-signal-failed", message: `${name} to pid ${pid}: ${String(error)}`, retryable: false };
+    }
   };
-  if (processLiveness(pid, pid_start) !== "alive") return;
-  signal("SIGTERM");
+  const liveness = processLiveness(pid, pid_start);
+  if (liveness !== "alive") return { ok: true, value: liveness === "dead" ? "ended" : "unverified" };
+  const terminated = signal("SIGTERM");
+  if (terminated) return { ok: false, error: terminated };
   for (let waited = 0; waited < 2_000 && processLiveness(pid, pid_start) === "alive"; waited += 50) await delay(50);
-  if (processLiveness(pid, pid_start) === "alive") signal("SIGKILL");
+  const killed = processLiveness(pid, pid_start) === "alive" ? signal("SIGKILL") : null;
+  return killed ? { ok: false, error: killed } : { ok: true, value: "ended" };
 }
 
 function isActiveTurn(turn: TurnState): turn is ActiveTurn {
@@ -81,22 +91,22 @@ export class ConversationControlService {
     provider_session_id: string;
     turn_id: string;
   }) => Promise<{ status: string }>) | undefined;
-  private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
+  private readonly logger: Logger;
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
     onChange?: (snapshot: ConversationControlSnapshot) => void;
     onProviderEvent?: (event: ProviderAdapterEvent) => void;
     onTerminalTurn?: (input: { conversation_id: string; provider_session_id: string; turn_id: string }) => Promise<{ status: string }>;
-    onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
+    logger?: Logger;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.attachments = new ChatAttachmentStore(db);
     this.onChange = options.onChange;
     this.onProviderEvent = options.onProviderEvent;
     this.onTerminalTurn = options.onTerminalTurn;
-    this.onReconciliationDiagnostic = options.onReconciliationDiagnostic;
+    this.logger = options.logger ?? (() => undefined);
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -528,41 +538,34 @@ export class ConversationControlService {
     return delivered;
   }
 
-  /**
-   * No controller survives a daemon restart, so every Mandible claim is ended:
-   * a provider process that outlived the old daemon is stopped, and only the
-   * provider itself can attest that another controller now drives the session.
-   */
+  /** No controller survives a daemon restart, so every Mandible claim is ended and released. */
   async reconcileAfterRestart(): Promise<ConversationControlError[]> {
     const errors: ConversationControlError[] = [];
     for (const claim of this.store.activeOwnedRows()) {
       const recovered = this.store.recoverFailedAcquisition(claim.conversation_id, claim.generation);
-      if (!recovered.ok) { errors.push(recovered.error); continue; }
-      if (!recovered.value) {
-        if (claim.controller_process) await endControllerProcess(claim.controller_process);
-        const adapter = this.adapters.byAdapterId(claim.adapter_id);
-        const probed = adapter && claim.provider_session_id
-          ? await trapAdapterCall(adapter.id, () => adapter.probe(claim))
-          : null;
-        const external = probed?.ok && probed.value.kind === "external"
-          ? { kind: probed.value.evidence, reference: probed.value.reference }
-          : null;
-        const ended = this.relinquish(claim.conversation_id, claim.generation, claim.adapter_id, "turn-unknown", external);
-        if (!ended.ok) { errors.push(ended.error); continue; }
-      }
-      this.notify(claim.conversation_id);
+      const ended = !recovered.ok || recovered.value ? recovered
+        : await this.relinquish(claim.conversation_id, claim.generation, claim.adapter_id, "turn-unknown");
+      if (ended.ok) this.notify(claim.conversation_id);
+      else errors.push(ended.error);
     }
     return errors;
   }
 
-  /** Settle a claim whose controller is gone: its deliveries, its active turn, then its ownership. */
-  private relinquish(
+  /** End a claim whose controller is gone: its orphaned process, its deliveries, its active turn, then its ownership. */
+  private async relinquish(
     conversationId: string,
     generation: number,
     adapterId: string,
     turnOutcome: "turn-cancelled" | "turn-unknown",
-    external: ExternalControllerEvidence | null,
-  ): Result<void, ConversationControlError> {
+  ): Promise<Result<void, ConversationControlError>> {
+    const controller = this.store.activeOwnedRows(conversationId)[0]?.controller_process;
+    if (controller) {
+      const ended = await endControllerProcess(controller, adapterId);
+      if (!ended.ok) return ended;
+      if (ended.value === "unverified") {
+        this.logger("warn", "conversation_controller_unverified", { conversation_id: conversationId, ...controller });
+      }
+    }
     const lost: ConversationControlError = { kind: "adapter-failure", adapter_id: adapterId, code: "controller-lost",
       message: "The controller ended before this message was sent", retryable: true };
     for (const item of this.store.pendingOutbox()) {
@@ -579,9 +582,7 @@ export class ConversationControlService {
         : { kind: turnOutcome, at: Date.now(), turn_id: snapshot.value.turn.turn_id, reason: "probe-ambiguous" });
       if (!turn.ok) return turn;
     }
-    return external
-      ? this.store.replaceWithExternal(conversationId, generation, external)
-      : this.store.release(conversationId, generation);
+    return this.store.release(conversationId, generation);
   }
 
   async stop(conversationId: string, generation: number): Promise<Result<void, ConversationControlError>> {
@@ -604,15 +605,14 @@ export class ConversationControlService {
       controller_instance_id: ownership.controller_instance_id,
       generation,
     }));
-    const controller = this.store.activeOwnedRows(conversationId)[0]?.controller_process;
-    if (controller) await endControllerProcess(controller);
-    const released = this.relinquish(conversationId, generation, adapter.id, stopped.ok ? "turn-cancelled" : "turn-unknown", null);
+    const released = await this.relinquish(conversationId, generation, adapter.id, stopped.ok ? "turn-cancelled" : "turn-unknown");
     if (released.ok) this.notify(conversationId);
     return released.ok ? stopped : released;
   }
 
-  /** Follow the session registry for every provider session, or for one. */
-  syncRegisteredOwnership(providerSessionId: string | null = null): void {
+  /** Follow the session registry for every provider session, or for the one a registered session drives. */
+  syncRegisteredOwnership(session?: Pick<Session, "id" | "conversation_id">): void {
+    const providerSessionId = session ? session.conversation_id ?? session.id : null;
     for (const conversationId of this.store.syncRegisteredOwnership(providerSessionId)) this.notify(conversationId);
   }
 
@@ -822,7 +822,7 @@ export class ConversationControlService {
     } catch {
       status = `${status}:projection_error`;
     }
-    this.onReconciliationDiagnostic?.({
+    this.logger("info", "conversation_terminal_reconciliation", {
       conversation_id: conversationId,
       provider_session_id: providerSessionId,
       turn_id: turnId,

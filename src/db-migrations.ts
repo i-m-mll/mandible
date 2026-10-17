@@ -15,7 +15,7 @@ import {
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { createHash } from "node:crypto";
-import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_SPAWN_SCHEMA_V2_SQL,
@@ -1770,16 +1770,7 @@ export const MIGRATIONS: readonly Migration[] = [
   // Issue a09b4d2 — runtime self-update approval requires a passing candidate
   // acceptance bound to the exact retained candidate.
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
-  // Ownership is never unknown: a claim nothing can answer for is free.
-  { version: 195, name: "release_unknown_conversation_ownership", statements: [
-    `INSERT INTO conversation_control_journal (id, conversation_id, revision, generation, event_kind, event_json, created_at)
-      SELECT lower(hex(randomblob(16))), conversation_id, revision + 1, generation, 'controller-released',
-        '{"prior_owner":"unknown"}', CAST(strftime('%s', 'now') AS INTEGER) * 1000
-      FROM conversation_control_state WHERE owner_kind = 'unknown'`,
-    `UPDATE conversation_control_state SET revision = revision + 1, owner_kind = 'none', controller_state = 'stopped',
-      owner_detail_json = '{}', last_authoritative_signal = NULL, updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
-      WHERE owner_kind = 'unknown'`,
-  ] },
+  { version: 195, name: "known_conversation_ownership", statements: [...CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL] },
 ];
 
 /**
