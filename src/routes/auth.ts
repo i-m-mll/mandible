@@ -511,14 +511,14 @@ export function registerAuthRoutes(
 
   // Issue a09b4d2 — daemon-run candidate acceptance of the exact retained
   // candidate. Approval of a runtime self-update requires a passing record.
-  app.post("/api/auth/request/:id/candidate-acceptance", (req, res) => {
+  app.post("/api/auth/request/:id/candidate-acceptance", async (req, res) => {
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
       const requester = resolveAuthRequester(req, { command: "candidate-acceptance", title: "candidate-acceptance" });
       if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
       if (!enforceAuthProjectWrite(req, res, request.repo)) return;
-      res.status(202).json({ request_id: request.id, acceptance: authQueue.ensureCandidateAcceptance(request) });
+      res.status(202).json({ request_id: request.id, acceptance: await authQueue.runCandidateAcceptance(request) });
     } catch (error) {
       handleQueueError(error, res);
     }

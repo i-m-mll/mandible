@@ -445,10 +445,10 @@ describe("auth queue", () => {
         git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${request.id}`]);
         const repin = (queue as unknown as {
           repinMergeCandidate: (
-            r: unknown, sha: string, fp: string | null, o: { failClosed: boolean },
+            r: unknown, sha: string, fp: string | null,
           ) => unknown;
         }).repinMergeCandidate.bind(queue);
-        expect(() => repin(queue.getRequest(request.id), newBase, null, { failClosed: true }))
+        expect(() => repin(queue.getRequest(request.id), newBase, null))
           .toThrow(STRICT_MESSAGE);
         // Recorded pin state is untouched (still the original, now-strict pin).
         const after = queue.getRequest(request.id)!;
@@ -492,10 +492,10 @@ describe("auth queue", () => {
         try {
           const repin = (queue as unknown as {
             repinMergeCandidate: (
-              r: unknown, sha: string, fp: string | null, o: { failClosed: boolean },
+              r: unknown, sha: string, fp: string | null,
             ) => unknown;
           }).repinMergeCandidate.bind(queue);
-          expect(() => repin(queue.getRequest(request.id), newBase, null, { failClosed: true }))
+          expect(() => repin(queue.getRequest(request.id), newBase, null))
             .toThrow(/injected DB failure after CAS/);
         } finally {
           rawDb.prepare = realPrepare;

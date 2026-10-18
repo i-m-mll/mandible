@@ -695,8 +695,8 @@ export class AuthQueue {
     this.recoverStuckRequests();
     this.hookManager.reclaimAllInterruptedRuns();
     await this.resumeHookConvergence();
-    this.resumeCandidateAcceptances();
     this.startExpiryTimer();
+    await this.refreshPendingCandidates(true);
   }
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
@@ -787,19 +787,21 @@ export class AuthQueue {
   /**
    * Issue 7d83fe5 — the single path that starts candidate acceptance. The
    * daemon calls it when a self-update request is submitted or superseded, when
-   * its candidate is re-pinned onto a moved base, and at startup; the CLI calls
-   * it through its route. A run of the current candidate that is open or passed
-   * is kept; otherwise a new run starts. Null when acceptance does not apply.
+   * its candidate is re-pinned onto a moved base, and from
+   * refreshPendingCandidates; `mandible auth acceptance run` calls it through
+   * runCandidateAcceptance. A candidate the base moved past is re-pinned
+   * first, which starts its run. A run of the current candidate that is open
+   * or passed is kept; otherwise a new run starts. Null when acceptance does
+   * not apply.
    */
-  ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection | null {
+  private ensureCandidateAcceptance(request: AuthRequest): CandidateAcceptanceProjection | null {
     if (!this.candidateAcceptanceApplies(request)) return null;
     const runs = this.acceptanceRuns;
     if (!runs) throw new AuthQueueError("invalid_command", "This daemon does not run candidate acceptance.");
     if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Candidate acceptance applies only to a pending request.");
+    if (!this.mergeCandidateExact(request)) request = this.recomputeStaleCandidate(request, "acceptance");
     const candidate = this.acceptanceCandidate(request);
-    if (!candidate || !this.mergeCandidateExact(request)) {
-      throw new AuthQueueError("merge_check_failed", "The retained merge candidate is not exact for the current base; approval recomputes it, which starts acceptance of the new candidate.");
-    }
+    if (!candidate) throw new AuthQueueError("merge_check_failed", "The request has no retained merge candidate.");
     if (this.resolveBranchHeadForCheck(request.cwd!, request.head_branch!) !== request.merge_head_sha) {
       throw new AuthQueueError("merge_check_failed", "The head branch moved since review; resubmit before running acceptance.");
     }
@@ -834,12 +836,33 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, candidate_acceptance: acceptance } } });
   }
 
-  /** Startup: start acceptance for every pending self-update request whose current candidate needs it. */
-  private resumeCandidateAcceptances(): void {
-    if (!this.acceptanceRuns) return;
+  /**
+   * Issue 7d83fe5 — on the idle tick, re-pin each pending self-update request
+   * whose candidate the base moved past, which starts its acceptance. At
+   * startup, also start acceptance of exact candidates without a passing or
+   * running result, since a restart interrupts runs; the tick never repeats a
+   * failed verdict. Nothing happens while the runtime handoff lock is held.
+   * Each request is handled once merges on its repository have settled.
+   */
+  async refreshPendingCandidates(startup = false): Promise<void> {
+    if (!this.acceptanceRuns || this.runtimeHandoffLock()) return;
     const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
-    for (const { id } of rows) this.startCandidateAcceptanceAutomatically(id);
+    for (const { id } of rows) {
+      const request = this.readRequestByExactId(id);
+      if (!request || !this.candidateAcceptanceApplies(request) || (!startup && this.mergeCandidateExact(request))) continue;
+      await this.repoChainSettled(request);
+      this.startCandidateAcceptanceAutomatically(id);
+    }
   }
+
+  /** `mandible auth acceptance run`: ensure acceptance once merges on the request's repository have settled. */
+  async runCandidateAcceptance(request: AuthRequest): Promise<CandidateAcceptanceProjection | null> {
+    await this.repoChainSettled(request);
+    return this.ensureCandidateAcceptance(this.requireRequest(request.id));
+  }
+
+  /** The last logged refusal per request, so the idle tick logs a persistent refusal once. */
+  private readonly acceptanceRefusals = new Map<string, string>();
 
   /** Automatic triggers never fail the operation that caused them; a refusal is logged. */
   private startCandidateAcceptanceAutomatically(requestId: string): void {
@@ -847,8 +870,12 @@ export class AuthQueue {
     if (!this.acceptanceRuns || !request) return;
     try {
       this.ensureCandidateAcceptance(request);
+      this.acceptanceRefusals.delete(requestId);
     } catch (error) {
-      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: errorMessage(error) });
+      const reason = errorMessage(error) ?? String(error);
+      if (this.acceptanceRefusals.get(requestId) === reason) return;
+      this.acceptanceRefusals.set(requestId, reason);
+      authLog("warn", "auth_candidate_acceptance_not_started", { subsystem: "auth", auth_request_id: requestId, error: reason });
     }
   }
 
@@ -917,7 +944,9 @@ export class AuthQueue {
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
               // Issue 27241e6 — same backstop for unfinished hook convergence.
-          void this.resumeHookConvergence().catch(() => undefined);
+          // Issue 7d83fe5 — then bring pending candidates current once no
+          // runtime handoff lock is held.
+          void this.resumeHookConvergence().then(() => this.refreshPendingCandidates()).catch(() => undefined);
         }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
@@ -3271,11 +3300,9 @@ export class AuthQueue {
     if (isAuthMergeCommand(request) && !this.mergeCandidateExact(request)) {
       // Issue 08a5f04 — when only the base advanced, the reviewed content is
       // unchanged, so the candidate is recomputed against the current base
-      // within this approval. Issue 2205073 — the refusal names the guard that
-      // declined.
-      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
-      request = (recompute ? this.recomputeStaleCandidateForApproval(request, refusalSink) : null) ?? request;
-      if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
+      // within this approval.
+      if (!recompute) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(null));
+      request = this.recomputeStaleCandidate(request, "approve");
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
     const acceptance = this.candidateAcceptanceForRequest(request);
@@ -3990,115 +4017,55 @@ export class AuthQueue {
   }
 
   /**
-   * Issue 08a5f04 — approve-time recompute for pure base drift. Returns the
-   * refreshed request after a clean re-preflight and re-pin; returns null when
-   * the request is ineligible (head drift, unaccounted base transition,
-   * corrupted retained pin, remote mode, busy repo
-   * execution chain, strict pin, or a non-clean-non-conflict preflight) so the
-   * caller falls back to the strict blocking error; throws merge_check_failed
-   * with conflict context when the recomputed candidate no longer merges
-   * cleanly, and with the strict requeue message when a fresh pin cannot be
-   * obtained (review F4 — never proceed unpinned).
+   * Issue 08a5f04 — re-pin a pending merge's candidate onto the current base
+   * when only the base moved, and return the refreshed request. Every other
+   * case refuses with merge_check_failed naming the guard (issue 2205073):
+   * head drift, an unaccounted base transition, a corrupted retained pin,
+   * remote mode, a strict pin, a busy repo execution chain, a conflicting or
+   * unavailable preflight, or a failed re-pin (review F4 — never proceed
+   * unpinned). `preflight` is the independence report of a caller already
+   * serialized on the repo's execution chain; without one the chain must be
+   * idle and the preflight runs here.
    */
-  private recomputeStaleCandidateForApproval(
-    request: AuthRequest,
-    refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null },
-  ): AuthRequest | null {
-    // Issue 2205073 — every decline records why. The approval error the
-    // operator reads is built from exactly this reason.
-    const refuse = (reason: string, detail?: Record<string, unknown>): null => {
-      refusalSink.refusal = { reason, ...(detail ? { detail } : {}) };
-      return null;
+  private recomputeStaleCandidate(request: AuthRequest, trigger: string, preflight?: AuthMergeCheckReport): AuthRequest {
+    const refuse: (reason: string, detail?: Record<string, unknown>) => never = (reason, detail) => {
+      throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal({ reason, ...(detail ? { detail } : {}) }));
     };
-    if (this.strictPinRequested(request)) return refuse("strict_pin_requested");
-    // Issue 060c9c8 — no hierarchical-shape check here: this recompute runs
-    // only from approve(), strictly after enforceCanonicalMergeCommand refused
-    // every non-canonical (including hierarchical-shaped) merge command in the
-    // same synchronous call.
-    const missing: string[] = [];
-    if (request.execution_mode === "remote") missing.push("execution_mode=remote");
-    if (!isAuthMergeCommand(request)) missing.push("not an auth merge command");
-    if (!request.cwd) missing.push("cwd");
-    if (!request.base_branch) missing.push("base_branch");
-    if (!request.head_branch) missing.push("head_branch");
-    if (!request.merge_head_sha) missing.push("merge_head_sha");
-    if (!request.merge_preflight_base_sha) missing.push("merge_preflight_base_sha");
-    if (!request.merge_candidate_pin_sha) missing.push("merge_candidate_pin_sha");
-    if (
-      request.execution_mode === "remote" ||
-      !isAuthMergeCommand(request) ||
-      !request.cwd ||
-      !request.base_branch ||
-      !request.head_branch ||
-      !request.merge_head_sha ||
-      !request.merge_preflight_base_sha ||
-      !request.merge_candidate_pin_sha
-    ) {
-      return refuse("not_recomputable_request", { missing });
-    }
+    if (this.strictPinRequested(request)) refuse("strict_pin_requested");
+    // Issue 060c9c8 — hierarchical merges are refused at approval, but the
+    // background callers have no canonical enforcement on their path.
+    const missing = [
+      request.execution_mode === "remote" && "execution_mode=remote",
+      !isAuthMergeCommand(request) && "not an auth merge command",
+      HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) && "hierarchical merge command",
+      ...(["cwd", "base_branch", "head_branch", "merge_head_sha", "merge_preflight_base_sha", "merge_candidate_pin_sha"] as const)
+        .filter((field) => !request[field]),
+    ].filter((entry): entry is string => Boolean(entry));
+    const { cwd, base_branch: baseBranch, head_branch: headBranch } = request;
+    if (missing.length || !cwd || !baseBranch || !headBranch) refuse("not_recomputable_request", { missing });
     // Review F5 — recompute rescues *pure base drift* only: the retained pin
-    // must still be exactly the reviewed candidate (intact commit, tree, both
-    // parents, and candidate ref). A deleted, corrupted, or re-pointed pin is
-    // tamper evidence, not drift, and stays strictly blocked even when the
-    // base also moved.
-    if (!this.mergeCandidatePinIsValid(request)) {
-      return refuse("retained_candidate_invalid", {
-        pin_sha: request.merge_candidate_pin_sha,
-      });
-    }
-    // Head drift stays strict: recompute applies only while the head branch
-    // still points at the reviewed commit. Daemon-mode merges already blocked
-    // head drift in resolveExecutionContextBeforeApproval; this re-check keeps
-    // the guarantee independent of that path.
-    // Issue 2205073 — in practice resolveExecutionContextBeforeApproval refuses
-    // head drift with its own specific message before approval reaches here,
-    // so this reason is defense in depth for any path that skips it.
-    const currentHead = this.resolveBranchHeadForCheck(request.cwd, request.head_branch);
+    // must still be exactly the reviewed candidate. A deleted, corrupted, or
+    // re-pointed pin is tamper evidence, not drift.
+    if (!this.mergeCandidatePinIsValid(request)) refuse("retained_candidate_invalid", { pin_sha: request.merge_candidate_pin_sha });
+    const currentHead = this.resolveBranchHeadForCheck(cwd, headBranch);
     if (currentHead !== request.merge_head_sha) {
-      return refuse("head_branch_moved", {
-        head_branch: request.head_branch,
-        reviewed_head: request.merge_head_sha,
-        current_head: currentHead,
-      });
+      refuse("head_branch_moved", { head_branch: headBranch, reviewed_head: request.merge_head_sha, current_head: currentHead });
     }
-    // Re-entrancy guard: never run a preflight against a repo whose execution
-    // chain is busy (a merge executing, or a revalidation pass in flight).
-    if (this.executionChains.has(this.chainKeyForRequest(request))) {
-      return refuse("execution_chain_busy");
-    }
+    // Never run a preflight against a repo whose execution chain is busy.
+    if (!preflight && this.executionChains.has(this.chainKeyForRequest(request))) refuse("execution_chain_busy");
+    const currentBase = this.resolveBranchHeadForCheck(cwd, baseBranch);
+    if (!currentBase) refuse("base_head_unresolvable", { base_branch: baseBranch, cwd });
+    if (currentBase === request.merge_preflight_base_sha) refuse("base_unchanged", { base_sha: currentBase });
     // Review F1 — the base transition must be fully accounted for by
     // signature-verified, queue-recorded merges before any recompute.
-    const currentBase = this.resolveBranchHeadForCheck(request.cwd, request.base_branch);
-    if (!currentBase) {
-      return refuse("base_head_unresolvable", {
-        base_branch: request.base_branch,
-        cwd: request.cwd,
-      });
-    }
-    if (currentBase === request.merge_preflight_base_sha) {
-      // Defense in depth: a valid pin at an unmoved base is by definition an
-      // exact candidate, so approve() would not have entered recompute at all.
-      return refuse("base_unchanged", { base_sha: currentBase });
-    }
-    const transition = this.baseTransitionAccountedFor(
-      request,
-      request.merge_preflight_base_sha,
-      currentBase,
-    );
+    const transition = this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha!, currentBase);
     if (!transition.accounted) {
-      return refuse("base_transition_unaccounted", {
-        old_base: request.merge_preflight_base_sha,
-        new_base: currentBase,
-        transition_reason: transition.reason,
-        ...transition.detail,
+      refuse("base_transition_unaccounted", {
+        old_base: request.merge_preflight_base_sha, new_base: currentBase, transition_reason: transition.reason, ...transition.detail,
       });
     }
-    const report = this.checkMergeIndependence({
-      request_id: request.id,
-      repo: request.repo ?? null,
-      base_branch: request.base_branch,
-      head_branch: request.head_branch,
-      cwd: request.cwd,
+    const report = preflight ?? this.checkMergeIndependence({
+      request_id: request.id, repo: request.repo ?? null, base_branch: baseBranch, head_branch: headBranch, cwd,
     });
     if (report.status === "conflict") {
       const conflict = report.conflicts[0];
@@ -4110,30 +4077,14 @@ export class AuthQueue {
         report,
       );
     }
-    if (report.status !== "clean" || !report.target_head_sha) {
-      return refuse("recomputed_preflight_unavailable", { status: report.status });
-    }
+    if (report.status !== "clean") refuse("recomputed_preflight_unavailable", { status: report.status, reason: report.reason });
     // Review F1/F6 — the preflight must have run against exactly the base
-    // whose transition provenance was just verified; a ref that moved again
-    // in between falls back to the strict error.
-    if (report.target_head_sha !== currentBase) {
-      return refuse("base_moved_again", {
-        verified_base: currentBase,
-        preflight_base: report.target_head_sha,
-      });
-    }
-    const refreshed = this.repinMergeCandidate(request, currentBase, report.queue_fingerprint ?? null, {
-      failClosed: true,
+    // whose transition provenance was just verified.
+    if (report.target_head_sha !== currentBase) refuse("base_moved_again", { verified_base: currentBase, preflight_base: report.target_head_sha });
+    const refreshed = this.repinMergeCandidate(request, currentBase, report.queue_fingerprint ?? null);
+    authLog("info", "auth_merge_candidate_recomputed", {
+      subsystem: "auth", auth_request_id: request.id, trigger, base_sha: currentBase, pin_sha: refreshed.merge_candidate_pin_sha,
     });
-    if (refreshed) {
-      authLog("info", "auth_merge_candidate_recomputed", {
-        subsystem: "auth",
-        auth_request_id: request.id,
-        trigger: "approve",
-        base_sha: currentBase,
-        pin_sha: refreshed.merge_candidate_pin_sha,
-      });
-    }
     return refreshed;
   }
 
@@ -4350,36 +4301,14 @@ export class AuthQueue {
    * *before* any recorded state changes, the retained candidate ref is then
    * swapped old → new with a compare-and-swap, and only then are the preflight
    * fields and pin updated in a single statement. Any failure leaves the
-   * previous (strictly blocking) pin state fully intact. With
-   * `failClosed: true` a failure throws the strict requeue error so a
-   * previously-pinned request can never proceed unpinned; with
-   * `failClosed: false` (background sibling refresh) a failure returns null
-   * and the stale pin keeps blocking approval.
+   * previous (strictly blocking) pin state fully intact, and throws the
+   * strict requeue error naming the pin failure, so a previously-pinned
+   * request can never proceed unpinned.
    */
-  private repinMergeCandidate(
-    request: AuthRequest,
-    targetHeadSha: string,
-    queueFingerprint: string | null,
-    options: { failClosed: boolean },
-  ): AuthRequest | null {
-    const fail = (reason: string): null => {
-      authLog("warn", "auth_merge_candidate_repin_failed", {
-        subsystem: "auth",
-        auth_request_id: request.id,
-        base_sha: targetHeadSha,
-        reason,
-      });
-      if (options.failClosed) {
-        // Issue 2205073 — name the pin failure instead of the generic sentence.
-        throw new AuthQueueError(
-          "merge_check_failed",
-          this.describeRecomputeRefusal({
-            reason: "repin_failed",
-            detail: { repin_reason: reason },
-          }),
-        );
-      }
-      return null;
+  private repinMergeCandidate(request: AuthRequest, targetHeadSha: string, queueFingerprint: string | null): AuthRequest {
+    const fail = (reason: string): never => {
+      authLog("warn", "auth_merge_candidate_repin_failed", { subsystem: "auth", auth_request_id: request.id, base_sha: targetHeadSha, reason });
+      throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal({ reason: "repin_failed", detail: { repin_reason: reason } }));
     };
     if (!request.cwd || !request.merge_head_sha || !request.merge_candidate_pin_sha) {
       return fail("missing_repin_inputs");
@@ -4456,7 +4385,16 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "revised" } });
     // Issue 7d83fe5 — the re-pinned candidate needs its own acceptance.
     this.startCandidateAcceptanceAutomatically(request.id);
-    return this.readRequestByExactId(request.id);
+    return this.requireRequest(request.id);
+  }
+
+  /**
+   * Resolves once nothing runs on the request's repo chain. Synchronous work
+   * right after it cannot interleave with a merge execution or revalidation.
+   */
+  private async repoChainSettled(request: AuthRequest): Promise<void> {
+    const key = this.chainKeyForRequest(request);
+    for (let chain = this.executionChains.get(key); chain; chain = this.executionChains.get(key)) await chain.catch(() => undefined);
   }
 
   /**
@@ -6295,84 +6233,21 @@ export class AuthQueue {
         }
         continue;
       }
-      if (report.status !== "clean" || !report.target_head_sha) {
-        continue;
-      }
       // Issue 08a5f04 — clean against the advanced base: refresh the retained
       // candidate so the dashboard shows a warm, truthful preflight and the
-      // next approval takes the exact-candidate fast path.
-      const refreshed = this.refreshCleanCandidateAfterSibling(current, report);
-      if (refreshed) {
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: refreshed } });
+      // next approval takes the exact-candidate fast path. Issue 7d83fe5 — a
+      // request that cannot be refreshed now (a held handoff lock makes the
+      // report an error) says why; the lock's release refreshes it.
+      const skip = (reason: string | null | undefined) =>
+        authLog("info", "auth_merge_candidate_refresh_skipped", { subsystem: "auth", auth_request_id: current.id, status: report.status, reason });
+      if (report.status !== "clean") { skip(report.reason); continue; }
+      if (report.target_head_sha === current.merge_preflight_base_sha) continue;
+      try {
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.recomputeStaleCandidate(current, "sibling_merge", report) } });
+      } catch (error) {
+        skip(errorMessage(error));
       }
     }
-  }
-
-  /**
-   * Issue 08a5f04 — proactive re-pin of a still-pending sibling after a
-   * successful merge advanced the base. Head drift stays strict: a candidate
-   * whose reviewed content changed is never re-attested here. Returns the
-   * refreshed request when anything changed, null otherwise.
-   */
-  private refreshCleanCandidateAfterSibling(
-    request: AuthRequest,
-    report: AuthMergeCheckReport,
-  ): AuthRequest | null {
-    if (this.strictPinRequested(request)) return null;
-    if (
-      request.execution_mode === "remote" ||
-      !isAuthMergeCommand(request) ||
-      // Issue 060c9c8 — hierarchical merge support is removed and such
-      // commands are refused at approval, but this pass runs outside
-      // approve() with no canonical enforcement on its path, so a
-      // hierarchical-shaped pending row stored by a raw submitter must still
-      // never be re-attested here.
-      HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) ||
-      !request.cwd ||
-      !request.head_branch ||
-      !request.merge_head_sha ||
-      !report.target_head_sha ||
-      !request.merge_preflight_base_sha ||
-      !request.merge_candidate_pin_sha
-    ) {
-      return null;
-    }
-    if (this.resolveBranchHeadForCheck(request.cwd, request.head_branch) !== request.merge_head_sha) {
-      return null;
-    }
-    // Review F5 — same pure-base-drift rule as the approve-time recompute: a
-    // deleted/corrupted/re-pointed retained pin is never silently repaired.
-    if (!this.mergeCandidatePinIsValid(request)) {
-      return null;
-    }
-    const queueFingerprint = report.queue_fingerprint ?? null;
-    if (request.merge_preflight_base_sha === report.target_head_sha) {
-      // Base unmoved: the retained pin is still exact. A stale queue
-      // fingerprint alone only disables shell preflight reuse, which is safe.
-      return null;
-    }
-    // Review F1 — the base advance must be fully accounted for by authorized
-    // queue merges (the sibling merge that triggered this pass, in the normal
-    // case) before the candidate is proactively re-attested.
-    if (
-      !this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, report.target_head_sha)
-        .accounted
-    ) {
-      return null;
-    }
-    const refreshed = this.repinMergeCandidate(request, report.target_head_sha, queueFingerprint, {
-      failClosed: false,
-    });
-    if (refreshed) {
-      authLog("info", "auth_merge_candidate_recomputed", {
-        subsystem: "auth",
-        auth_request_id: request.id,
-        trigger: "sibling_merge",
-        base_sha: report.target_head_sha,
-        pin_sha: refreshed.merge_candidate_pin_sha,
-      });
-    }
-    return refreshed;
   }
 
   private syncLedgerLinksForRequest(request: AuthRequest, recordEvent: boolean): void {
