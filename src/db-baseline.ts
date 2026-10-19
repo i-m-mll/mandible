@@ -6,6 +6,7 @@ import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
+import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
@@ -22,7 +23,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 195;
+export const BASELINE_SCHEMA_VERSION = 196;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -724,6 +725,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...ARTIFACT_SOURCE_SCHEMA_SQL,
   ...ARTIFACT_CUSTODY_TRIGGERS_SQL,
   ...CANDIDATE_ACCEPTANCE_SCHEMA_SQL,
+  ...ISSUE_SEARCH_SCHEMA_SQL,
 ];
 
 const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
