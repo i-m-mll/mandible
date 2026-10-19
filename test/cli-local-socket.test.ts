@@ -46,7 +46,7 @@ describe("CLI private local transport", () => {
       const env = { ...process.env, HOME: root, API_HELPER: api,
         MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket,
         MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: manifest, MANDIBLE_TOKEN: "stale-token",
-        CODEX_THREAD_ID: "task-123", CODEX_SESSION_ID: "task-123", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "" };
+        CODEX_THREAD_ID: "task-123", CODEX_SESSION_ID: "task-123" };
       const read = await runShell('source "$API_HELPER"; out=$(api_temp_file); api_http_exchange GET /api/health "" "$out"', env);
       expect(read.code, read.stderr).toBe(0);
       expect(read.stdout).toBe("200");
@@ -56,8 +56,11 @@ describe("CLI private local transport", () => {
       expect(gated.code, gated.stderr).toBe(0);
       expect(gated.stdout).toBe("200");
       expect(seen[1]?.auth).toBe("Bearer durable-token");
+      const missing = await runShell('source "$API_HELPER"; secret_account_for_service() { return 1; }; out=$(api_temp_file); api_http_exchange POST /api/auth/request "{}" "$out"', env);
+      expect(missing.stdout, missing.stderr).toBe("401");
+      expect(seen).toHaveLength(2);
       const bootstrap = await runShell('source "$API_HELPER"; api_keychain_operator_token() { :; }; out=$(api_temp_file); api_http_exchange POST /api/users/setup "{}" "$out"', {
-        ...env, CODEX_THREAD_ID: "", MANDIBLE_MANAGED_CLIENT: "", CODEX_SESSION_ID: "",
+        ...env, CODEX_THREAD_ID: "", CODEX_SESSION_ID: "",
       });
       expect(bootstrap.code, bootstrap.stderr).toBe(0);
       expect(bootstrap.stdout).toBe("200");
