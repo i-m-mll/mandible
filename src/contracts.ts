@@ -294,6 +294,33 @@ export interface CandidateAcceptanceProjection {
   finished_at: number | null;
 }
 
+/** Issue 117ba80 — one protected-base commit that is neither a recorded Mandible merge nor operator-signed. */
+export interface ProtectedBaseAuditCommit {
+  sha: string;
+  subject: string;
+  /** SSH fingerprint of the signing key; null when the commit is unsigned. */
+  signer: string | null;
+  reason: "unsigned" | "other_signer" | "invalid_signature";
+}
+
+/**
+ * Issue 117ba80 — audit of a merge request's protected base: the first-parent
+ * commits since the newest recorded Mandible merge on that history.
+ * `missing_merges` are recorded Mandible merges newer than that baseline that
+ * the base no longer contains, which means its history was rewritten.
+ */
+export interface ProtectedBaseAudit {
+  status: "clean" | "unexpected" | "no_baseline" | "error";
+  base_sha: string;
+  baseline_sha: string | null;
+  checked_commits: number;
+  truncated: boolean;
+  unexpected: ProtectedBaseAuditCommit[];
+  missing_merges: string[];
+  error: string | null;
+  checked_at: number;
+}
+
 export const AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE = [
   "fixtures_data",
   "tests",

@@ -79,6 +79,7 @@ case "${1:-}" in
     case "${1:-}" in
       ""|-h|--help|help) auth_usage ;;
       list)    shift; exec "$MANDIBLE_CLI_DIR/auth-list.sh" "$@" ;;
+      show)    shift; exec "$MANDIBLE_CLI_DIR/auth-show.sh" "$@" ;;
       action)  shift; exec "$MANDIBLE_CLI_DIR/auth-action.sh" "$@" ;;
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
