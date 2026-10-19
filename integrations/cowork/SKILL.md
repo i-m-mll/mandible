@@ -117,7 +117,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - `mandible issue label add|rm <id> <label>` - Mirror portable issue facts such as mandible:status:<value> labels.
 - `mandible auth list [--repo <repo>] [--head <branch>] [--base <branch>] [--status <status>] [--json]` - Find existing auth requests before submitting duplicates.
 - `mandible auth check [--branch <branch>] [--repo <repo>] [--target <branch>] [--json]` - Report whether a merge is clean against the target and queued pairwise-independent requests.
-- `mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--spec <text>] [--no-watch]` - Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure.
+- `mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] (--message <text> | --message-file <file>) --verification <text> [--spec <text>] [--no-watch]` - Submit protected-branch auth work. The change message and verification text are required. Use --issue for reference context and --closes-issue only for intended closure.
 - `mandible instructions install [--target <file>] [--worktree <path>] [--force]` - Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit.
 - `mandible instructions targets list|add|rm <path> [--mode managed-block|standalone]` - Configure where the generated Mandible instruction fragment is written.
 - `mandible instructions post-export get|set|clear <command>` - Configure an optional command to run after instruction targets refresh, such as a module compiler.

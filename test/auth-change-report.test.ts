@@ -10,6 +10,7 @@ import {
   collectAuthMergeReview,
 } from "../src/auth-change-report.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
@@ -280,7 +281,8 @@ describe("auth change reports", () => {
     }
   });
 
-  it("ignores caller-supplied counts and returns the server-captured headline", async () => {
+  /** The real authenticated submission route with committed delivery custody for feature/report. */
+  function authenticatedRoute() {
     const db = createMigratedDb();
     setDb(db);
     const operator = setupOperator(db, { slug: "report-route", display_name: "Report Route" });
@@ -298,12 +300,76 @@ describe("auth change reports", () => {
     const queue = new AuthQueue({ db, backgroundMaintenance: false, broadcast: () => {} });
     const router = new Router({ clientAuth: authenticator });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    const submit = (body: Record<string, unknown>) => router.invoke({
+      method: "POST",
+      url: "/api/auth/request",
+      body: {
+        type: "merge",
+        command: "mandible auth merge feature/report --into main",
+        title: "Capture report",
+        cwd: repo,
+        repo: project.project.project_key,
+        base_branch: "main",
+        head_branch: "feature/report",
+        issue_references: ["d5edbb9"],
+        ...body,
+      },
+      credential: token,
+      transport: "http",
+    });
+    return { db, queue, router, token, project, submit };
+  }
+
+  it("refuses merge requests and supersessions without a change message or verification (issue 4720024)", async () => {
+    const { db, queue, router, token, submit } = authenticatedRoute();
+    try {
+      const { verification: _verification, ...withoutVerification } = MERGE_CHANGE_MESSAGE;
+      for (const [body, missing] of [
+        [{}, "--message <text> or --message-file <file>"],
+        [{ commit_message: MERGE_CHANGE_MESSAGE.commit_message }, "--message <text> or --message-file <file>"],
+        [withoutVerification, "--verification <text>"],
+      ] as const) {
+        const refused = await submit(body);
+        expect(refused.status).toBe(400);
+        expect(refused.body).toMatchObject({ code: "change_message_required" });
+        expect(String((refused.body as { error: string }).error)).toContain(missing);
+      }
+      expect(queue.listActive()).toHaveLength(0);
+
+      const accepted = await submit(MERGE_CHANGE_MESSAGE);
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+      const refusedSuccessor = await submit({
+        supersedes_request_id: (accepted.body as { request_id: string }).request_id,
+        expected_revision: 1,
+        expected_custody_generation: 1,
+      });
+      expect(refusedSuccessor.status).toBe(400);
+      expect(refusedSuccessor.body).toMatchObject({ code: "change_message_required" });
+
+      const demoted = await router.invoke({
+        method: "PUT",
+        url: `/api/auth/request/${(accepted.body as { request_id: string }).request_id}`,
+        body: { canonical_message: false, expected_revision: 1, expected_custody_generation: 1 },
+        credential: token,
+        transport: "http",
+      });
+      expect(demoted.status, JSON.stringify(demoted.body)).toBe(400);
+      expect(demoted.body).toMatchObject({ code: "change_message_required" });
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
+  it("ignores caller-supplied counts and returns the server-captured headline", async () => {
+    const { db, queue, router, token, project } = authenticatedRoute();
 
     try {
       const response = await withEnvironment(ambientGitOverrides(), () => router.invoke({
         method: "POST",
         url: "/api/auth/request",
         body: {
+          ...MERGE_CHANGE_MESSAGE,
           type: "merge",
           command: "mandible auth merge feature/report --into main",
           title: "Capture report",
@@ -347,6 +413,7 @@ describe("auth change reports", () => {
         method: "POST",
         url: "/api/auth/request",
         body: {
+          ...MERGE_CHANGE_MESSAGE,
           type: "merge",
           command: "mandible auth merge feature/report --into main",
           title: "Capture replacement report",

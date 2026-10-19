@@ -98,6 +98,32 @@ export function verificationLines(verification: string): string[] {
   return lines;
 }
 
+export interface MergeChangeMessageFields {
+  canonical_message?: boolean;
+  commit_message?: string | null;
+  verification?: string | null;
+}
+
+/**
+ * Issue 4720024 — a protected merge request must carry a canonical change
+ * message and its verification text, just as a commit needs a message. The
+ * daemon's submission and revision routes refuse merge requests without them,
+ * so no client can bypass the rule. Returns the refusal text, or null.
+ */
+export function mergeChangeMessageRequirement(fields: MergeChangeMessageFields): string | null {
+  const message = typeof fields.commit_message === "string" ? fields.commit_message.trim() : "";
+  if (fields.canonical_message !== true || message === "") {
+    return "Merge requests require a canonical change message: pass --message <text> or --message-file <file> " +
+      "(API: canonical_message=true with commit_message). It becomes the reviewed merge commit message: " +
+      "an outcome line, then a short Why paragraph.";
+  }
+  if (typeof fields.verification !== "string" || fields.verification.trim() === "") {
+    return "Merge requests require --verification <text> (API: verification): the checks you ran and their results. " +
+      "It becomes the merge commit's Verification section.";
+  }
+  return null;
+}
+
 /** Issue refs are single tokens; whitespace is not part of an issue identity. */
 export function validateIssueRefTokens(refs: readonly unknown[] | null | undefined): string | null {
   for (const ref of refs ?? []) {

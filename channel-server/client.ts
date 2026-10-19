@@ -316,7 +316,9 @@ export async function submitAuth(payload: {
   title: string;
   cwd?: string | null;
   diff_summary?: string | null;
+  canonical_message?: boolean;
   commit_message?: string | null;
+  verification?: string | null;
   spec_content?: string | null;
   repo?: string;
   base_branch?: string;

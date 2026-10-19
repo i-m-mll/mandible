@@ -31,17 +31,18 @@ describe("one CLI grammar", () => {
   it("binds retained aliases, repeated options, multi-value flags, and literal shell bytes safely", () => {
     const options = { issue: { option: ["issue", "issue-id"] }, refs: { option: "issue", array: true },
       message: { option: "message" }, group: { option: "promote-briefing", valueIndex: 0 } };
+    const changeMessage = ["--message", "m", "--verification", "v"];
     expect(syntax.bindEntry("work-unit.claim", { issue: options.issue }, ["--issue-id", "i", "--repo-id", "r"]))
       .toBe("issue='i'");
     expect(syntax.bindEntry("@auth request", { refs: options.refs, group: options.group },
-      ["feature/x", "--title", "t", "--issue", "one", "--issue", "two", "--promote-briefing", "g", "b", "p"]))
+      ["feature/x", "--title", "t", "--issue", "one", "--issue", "two", "--promote-briefing", "g", "b", "p", ...changeMessage]))
       .toBe("refs=('one' 'two')\ngroup='g'");
     expect(syntax.bindEntry("@auth request", { publication: { option: "space-publication" } },
-      ["feature/x", "--title", "t", "--issue", "one", "--space-publication", "frozen-row"]))
+      ["feature/x", "--title", "t", "--issue", "one", "--space-publication", "frozen-row", ...changeMessage]))
       .toBe("publication='frozen-row'");
     expect(() => syntax.parse(["auth", "request", "feature/x", "--title", "t", "--issue", "one", "--space-publication"]))
       .toThrow();
-    expect(syntax.parse(["auth", "request", "feature/x", "--title", "t", "--closes-issue", "one"]).options["closes-issue"])
+    expect(syntax.parse(["auth", "request", "feature/x", "--title", "t", "--closes-issue", "one", ...changeMessage]).options["closes-issue"])
       .toBe("one");
     expect(syntax.bindEntry("auth.withdraw", { request: { position: 0 } },
       ["abc/def", "--reason", "abandoned", "--expected-revision", "4", "--expected-custody-generation", "2"]))

@@ -28,6 +28,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { MERGE_CHANGE_MESSAGE_FLAGS } from "./helpers/auth-delivery-fixtures.js";
 import { createLedgerIssue, createLedgerProject } from "./helpers/auth-queue-fixtures.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -231,7 +232,7 @@ describe("auth review diff range", () => {
           const child = spawn(
             CLI,
             ["auth", "request", "feature/small", "--title", "Merge feature/small",
-             "--issue", "1512471", "--no-watch"],
+             "--issue", "1512471", ...MERGE_CHANGE_MESSAGE_FLAGS, "--no-watch"],
             {
               cwd: repoDir,
               env: {
