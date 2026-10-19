@@ -1212,7 +1212,7 @@ function AuthRequestDetail({
             ) : (
               <>
                 <p className="auth-failure__summary">
-                  These commits on the base are neither recorded Mandible merges nor signed with an operator key.
+                  These commits on the base are neither recorded Mandible merges nor signed with an operator hardware key.
                 </p>
                 {baseAudit.unexpected.map((commit) => (
                   <p key={commit.sha} className="auth-failure__summary">

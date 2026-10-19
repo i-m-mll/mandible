@@ -3293,9 +3293,11 @@ export class AuthQueue {
    * will be approved: its execution context recorded, a merge's candidate
    * exact for the current base (recomputed when `recompute` allows), and,
    * for a runtime self-update, the handoff lock free and acceptance of exactly
-   * that candidate passed.
+   * that candidate passed. `unattended` marks an approval no human reviewed
+   * (a clearance or a delegated lease), which the base audit holds to a
+   * stricter bar.
    */
-  private prepareMergeApproval(request: AuthRequest, recompute: boolean): AuthRequest {
+  private prepareMergeApproval(request: AuthRequest, recompute: boolean, unattended: boolean): AuthRequest {
     const shownBaseAudit = loadProtectedBaseAudit(this.db, request.id);
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
@@ -3319,7 +3321,8 @@ export class AuthQueue {
       request = this.recomputeStaleCandidate(request, "approve");
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
-    this.assertBaseAuditShown(request, shownBaseAudit);
+    if (unattended) this.assertBaseAuditClean(request, shownBaseAudit);
+    else this.assertBaseAuditShown(request, shownBaseAudit);
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
@@ -3340,7 +3343,7 @@ export class AuthQueue {
     let request = this.requireRequest(id);
     if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
     if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
-    request = this.prepareMergeApproval(request, true);
+    request = this.prepareMergeApproval(request, true, false);
     if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || this.hasNativeMergeHooks(request.cwd))) {
       throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
     }
@@ -3419,7 +3422,7 @@ export class AuthQueue {
     }
     // An operator proof signed the candidate as approveWithOperatorProof
     // prepared it, so this approval must not recompute it.
-    request = this.prepareMergeApproval(request, !operatorProof);
+    request = this.prepareMergeApproval(request, !operatorProof, Boolean(effectiveApproval));
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
     // already refused every non-canonical (including hierarchical-shaped)
     // merge command earlier in this same synchronous approval.
@@ -3502,7 +3505,7 @@ export class AuthQueue {
     if (request.status !== "pending") {
       throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
     }
-    request = this.prepareMergeApproval(request, true);
+    request = this.prepareMergeApproval(request, true, true);
     const now = this.now();
     const requestId = request.id;
     let consumed: ClearanceConsumption;
@@ -4327,10 +4330,40 @@ export class AuthQueue {
     if (unseen.unexpected.length === 0 && unseen.missing_merges.length === 0) return;
     throw new AuthQueueError(
       "merge_check_failed",
-      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator key, ` +
+      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator hardware key, ` +
         `and this approval had not shown it:\n${describeBaseAuditFindings(unseen)}\n` +
         "It is now listed on the request. Review it and approve again to proceed. No protected state changed.",
     );
+  }
+
+  /**
+   * Issue 117ba80 — an approval no human reviewed (a clearance or a delegated
+   * lease) never merges onto a base whose audit is not clean: nobody saw the
+   * findings, so a warning on the request protects nothing. It refuses when
+   * the audit lists unexpected commits or rewritten history, and when the
+   * audit could not run. A stored audit is reused only when it ran and covers
+   * the base this approval merges onto; otherwise the base is audited now.
+   */
+  private assertBaseAuditClean(request: AuthRequest, shown: ProtectedBaseAudit | null): void {
+    const audit = shown && shown.status !== "error" && shown.base_sha === request.merge_preflight_base_sha
+      ? shown
+      : this.refreshBaseAudit(request);
+    if (!audit) return;
+    if (audit.status === "error") {
+      throw new AuthQueueError(
+        "merge_check_failed",
+        `The protected ${request.base_branch} history check could not run (${audit.error}), and an approval without a human ` +
+          "reviewer cannot proceed without it. Approve it yourself to proceed. No protected state changed.",
+      );
+    }
+    if (audit.status === "unexpected") {
+      throw new AuthQueueError(
+        "merge_check_failed",
+        `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator hardware key, ` +
+          `and an approval without a human reviewer cannot accept it:\n${describeBaseAuditFindings(audit)}\n` +
+          "It is listed on the request. Review it and approve it yourself to proceed. No protected state changed.",
+      );
+    }
   }
 
   /**

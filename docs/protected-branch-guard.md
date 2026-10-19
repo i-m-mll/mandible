@@ -18,10 +18,17 @@ applied per repository. Repositories Mandible does not know are never checked.
 A protected branch may point only at a commit signed by an active signing
 credential of the configured operator: `ssh_key` (the operator's hardware keys)
 or `delegated_ssh_key` (the operator-owned key Mandible's delegated and
-clearance merges sign with). Agent users hold neither. The rule lives in
-`operatorProtectedSigningCredentials` and `verifyOperatorProtectedCommit` in
-`src/auth-signature-verification.ts`; daemon-side checks of protected history
-use the same functions.
+clearance merges sign with). Agent users hold neither. The hook accepts the
+delegated key because it sees a ref update before Mandible records the merge.
+
+The rule lives in
+[`src/protected-branch-signers.ts`](../src/protected-branch-signers.ts), the one
+implementation shared with the protected-base history audit. The audit differs
+deliberately: it has Mandible's record of its merges, so a recorded merge
+passes whatever key signed it, while a commit Mandible did not record passes
+only with an operator `ssh_key`. A delegated-key signature on an unrecorded
+commit means that key was used outside a Mandible merge, and the audit lists
+it.
 
 ## Hook decisions
 

@@ -4,7 +4,8 @@
  * Issue 117ba80 — protected-base history audit. Every first-parent commit on
  * a merge request's protected base since the newest recorded Mandible merge
  * must be signed with an operator `ssh_key` credential; anything else is
- * listed on the request, and approval refuses only findings it had not shown.
+ * listed on the request. A human approval refuses only findings it had not
+ * shown; an approval with no human reviewer refuses any finding.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -22,6 +23,7 @@ import {
   createMigratedDb,
   createNoopHookManager,
   git,
+  registerTestDelegatedLease,
   registerWorkRepo,
   writeFile,
 } from "./helpers/auth-queue-fixtures.js";
@@ -139,6 +141,27 @@ describe("protected-base history audit", () => {
     }
   });
 
+  it("refuses a delegated approval onto a base with unexpected history even though the request showed it", () => {
+    const f = fixture();
+    try {
+      commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });
+      commitOnBranch(f.repo, "feature/topic", { "topic.txt": "topic\n" });
+      advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/landed", "merge-landed");
+      const unsigned = directCommit(f.repo, "unsigned.txt", "Unsigned direct commit", "none");
+      const request = f.submit("feature/topic");
+      expect(f.queue.baseAuditForRequest(request.id)?.status).toBe("unexpected");
+      const operatorId = registerTestDelegatedLease(f.db, "lease-unattended");
+
+      expect(() => f.queue.approve(request.id, {
+        source: "auto_lease", leaseId: "lease-unattended", approverUserId: operatorId, env: {},
+      })).toThrow(new RegExp(`without a human reviewer[\\s\\S]*${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
+      expect(f.queue.getRequest(request.id)?.status).toBe("pending");
+      expect(f.calls).toHaveLength(0);
+    } finally {
+      f.cleanup();
+    }
+  });
+
   it("reports a recorded Mandible merge that the protected branch no longer contains", () => {
     const f = fixture();
     try {
@@ -159,7 +182,10 @@ describe("protected-base history audit", () => {
     }
   });
 
-  it("counts only the operator's ssh_key credentials, not a delegated signing key", () => {
+  // The Git hook accepts the delegated key, but the audit has Mandible's merge
+  // record: a delegated signature on an unrecorded commit means the key was
+  // used outside a Mandible merge.
+  it("lists an unrecorded commit signed with the operator's delegated key", () => {
     const f = fixture();
     try {
       commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });

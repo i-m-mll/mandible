@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Db } from "./db.js";
-import { getOperatorId } from "./users/store.js";
 
 export interface SigningCredentialRow {
   credential_id: string;
@@ -163,51 +162,12 @@ export function verifyMergeCommitSignature(
   cwd: string | null,
   commitSha: string | null,
 ): MergeSignatureVerification {
-  return verifyCommitAgainstCredentials(activeSigningCredentials(db), cwd, commitSha);
-}
-
-/**
- * The protected-branch signer rule (umbrella 0cda998): a protected branch may
- * point only at a commit signed by one of the configured operator's active
- * signing credentials. `ssh_key` covers the operator's own hardware keys;
- * `delegated_ssh_key` is the operator-owned key Mandible's delegated and
- * clearance merges sign with. Agent users hold neither.
- *
- * The Git reference-transaction guard reads this set through its generated
- * allowed-signers projection; daemon-side checks call
- * `verifyOperatorProtectedCommit`.
- */
-export function operatorProtectedSigningCredentials(db: Db): SigningCredentialRow[] {
-  const operatorId = getOperatorId(db);
-  if (!operatorId) return [];
-  return activeSigningCredentials(db).filter((credential) => credential.user_id === operatorId);
-}
-
-export function operatorProtectedSignerLines(db: Db): string[] {
-  return operatorProtectedSigningCredentials(db).flatMap((credential) => {
-    const line = allowedSignerLine(credential);
-    return line ? [line] : [];
-  });
-}
-
-export function verifyOperatorProtectedCommit(
-  db: Db,
-  cwd: string | null,
-  commitSha: string | null,
-): MergeSignatureVerification {
-  return verifyCommitAgainstCredentials(operatorProtectedSigningCredentials(db), cwd, commitSha);
-}
-
-function verifyCommitAgainstCredentials(
-  credentials: SigningCredentialRow[],
-  cwd: string | null,
-  commitSha: string | null,
-): MergeSignatureVerification {
   if (!cwd) return unverified(commitSha, "missing_repository_path");
   if (!commitSha) return unverified(null, "missing_merge_commit_sha");
   const sshKeygenPath = trustedSshKeygenPath();
   if (!sshKeygenPath) return unverified(commitSha, "trusted_ssh_keygen_unavailable");
 
+  const credentials = activeSigningCredentials(db);
   const allowed = credentials.flatMap((credential) => {
     const line = allowedSignerLine(credential);
     return line ? [line] : [];

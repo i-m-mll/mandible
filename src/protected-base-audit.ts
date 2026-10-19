@@ -5,9 +5,12 @@
  * (submission, candidate refresh, and approval just before execution). It
  * walks the base's first-parent history back to the newest recorded Mandible
  * merge into that repo and branch, the last tip Mandible knows, so it is
- * incremental and needs no state of its own beyond the stored result. Every
- * commit above that tip must satisfy the protected-branch signing rule
- * (src/protected-branch-signers.ts); anything else is listed on the request.
+ * incremental and needs no state of its own beyond the stored result.
+ * Recorded merges therefore pass whatever key signed them. Every commit above
+ * that tip is one Mandible did not record, and must be signed with an operator
+ * `ssh_key` (the `unrecorded_commit` rule in src/protected-branch-signers.ts);
+ * anything else, including a delegated-key signature, is listed on the
+ * request.
  */
 
 import { execFileSync } from "node:child_process";
@@ -63,7 +66,7 @@ export function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): Prot
     audit.truncated = !audit.baseline_sha && above.length > PROTECTED_BASE_AUDIT_LIMIT;
     const checked = above.slice(0, PROTECTED_BASE_AUDIT_LIMIT);
     audit.checked_commits = checked.length;
-    audit.unexpected = readCommitSignatures(db, input.cwd, checked).flatMap((commit): ProtectedBaseAuditCommit[] =>
+    audit.unexpected = readCommitSignatures(db, input.cwd, checked, "unrecorded_commit").flatMap((commit): ProtectedBaseAuditCommit[] =>
       commit.status === "operator" ? [] : [{
         sha: commit.sha,
         subject: commit.subject,
@@ -121,7 +124,7 @@ export function unseenBaseAuditFindings(
 export function describeBaseAuditFindings(findings: Pick<ProtectedBaseAudit, "unexpected" | "missing_merges">): string {
   return [
     ...findings.unexpected.map((commit) =>
-      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator key` : "unsigned"})`),
+      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator hardware key` : "unsigned"})`),
     ...findings.missing_merges.map((sha) => `${sha.slice(0, 10)} recorded Mandible merge is no longer in the branch history`),
   ].join("\n");
 }

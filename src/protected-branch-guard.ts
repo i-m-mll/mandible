@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { operatorProtectedSignerLines } from "./auth-signature-verification.js";
 import type { Db } from "./db.js";
 import { getMandibleHomePath } from "./platform-paths.js";
+import { operatorAllowedSignerLines } from "./protected-branch-signers.js";
 import { protectedBranchNames } from "./protected-branches.js";
 import { onProtectionInputsChanged } from "./protection-inputs.js";
 import type { Logger } from "./types.js";
@@ -21,8 +21,9 @@ import type { Logger } from "./types.js";
  *   two reads; then one `<git common dir>\t<refs/heads/name>` line per
  *   protected branch of each registered repository. Keying by the resolved Git
  *   common directory makes every worktree of a repository match.
- * - `allowed_signers`: the operator's protected-branch signing keys in
- *   ssh-keygen allowed-signers format.
+ * - `allowed_signers`: the operator credentials the `ref_update` signing rule
+ *   counts (src/protected-branch-signers.ts) in ssh-keygen allowed-signers
+ *   format.
  *
  * Both are derived from the protection config and the user registry; they are
  * never edited by hand and are not a second source of truth.
@@ -86,7 +87,7 @@ export function buildProtectedBranchGuardProjection(db: Db): ProtectedBranchGuar
   }
   return {
     protectedRefs: [...refs].sort().map((line) => line.split("\t") as [string, string]),
-    allowedSigners: operatorProtectedSignerLines(db),
+    allowedSigners: operatorAllowedSignerLines(db, "ref_update"),
   };
 }
 
