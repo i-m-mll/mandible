@@ -1067,6 +1067,33 @@ describe("issue CLI body revisions", () => {
     }
   });
 
+  it("prints the server's singleton-kind refusal text and exits non-zero", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-new-singleton-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const message = "cannot create another open maintenance issue: a project may have at most one open "
+      + "maintenance issue, and this project already has one: b4e2937. Comment on the existing maintenance issue instead.";
+    const responder = startFileRpcResponder(spoolDir, () => ({
+      status: 409,
+      body: { error: message, code: "singleton_kind_open", kind: "maintenance", existing_issue_ids: ["b4e2937"] },
+    }));
+
+    try {
+      const result = await run([
+        "issue", "new", "-t", "Repo maintenance", "-m", "Body", "--kind", "maintenance", "--project", "mandible",
+      ], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Failed to create issue");
+      expect(result.stderr).toContain(message);
+      expect(result.stderr).not.toContain("Created issue");
+    } finally {
+      responder.stop();
+    }
+  });
+
   it("rejects issue creation without a concrete kind", async () => {
     const result = await run(["issue", "new", "-t", "Experiment", "-m", "Body"], 0, process.cwd(), {
       MANDIBLE_BASE: "file:///nonexistent-mandible-test-spool",

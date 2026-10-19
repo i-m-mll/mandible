@@ -28,16 +28,16 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command issue.link}} - Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests.
 - {{command issue.unlink}} - Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests.
 - {{command issue.close}} - Close an issue with one explicit resolution. The optional --commit link is accepted only for delivered; reopening clears the resolution.
-- {{command issue.open}} - Reopen a closed issue and clear its resolution.
+- {{command issue.open}} - Reopen a closed issue and clear its resolution. Reopening a `maintenance` issue is refused while its project has another open maintenance issue; the same applies to `comment add --reopen`.
 - {{command issue.comment.add}} - Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments.
 - {{command issue.comment.edit}} - Edit a comment body with optional stale-base checks; comment-ref accepts a raw comment id, <issue-ref>#<ordinal>, or <issue-ref>#last. Conflicts with a stale base return exit code 3.
 - {{command issue.comment.show}}, {{command issue.comment.history}} - Print a comment's current body, or its immutable revision history; --with-body includes each snapshot.
 - {{command issue.description.edit}} - Edit issue descriptions while preserving body revision history.
 - {{command issue.description.show}}, {{command issue.description.history}} - Print the current issue description, or its immutable revision history; --with-body includes each snapshot.
 - {{command issue.revision.show}}, {{command issue.revision.diff}} - Print one text revision, or diff two revisions of the same description, comment, or working notes; --force allows different entities.
-- {{command issue.new}} - Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; labels remain independent metadata.
+- {{command issue.new}} - Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; labels remain independent metadata. A project may have at most one open `maintenance` issue: creating a second one is refused with the existing issue's ID, so comment there instead.
 - {{command issue.work-notes.show}}, {{command issue.work-notes.edit}}, {{command issue.work-notes.clear}}, {{command issue.work-notes.history}} - Read, replace, clear, or inspect immutable history for the issue's current working notes. Edits and clears use the issue PATCH API with an optional expected working-notes revision.
-- {{command issue.kind.set}} - Set the canonical issue kind through the existing issue PATCH API; kind is independent from labels.
+- {{command issue.kind.set}} - Set the canonical issue kind through the existing issue PATCH API; kind is independent from labels. Changing an open issue to `maintenance` is refused when its project already has an open maintenance issue.
 - {{command issue.label.add}} / {{command issue.label.rm}} - Add or remove one free-form label; labels never mirror or mutate canonical issue metadata.
 - {{command auth.list}} - Find existing auth requests before submitting duplicates.
 - {{command auth.check}} - Report whether a merge is clean against the target and queued pairwise-independent requests.
