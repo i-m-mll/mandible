@@ -2,6 +2,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setDb, type Db } from "../src/db.js";
+import { createAuthCheckRepo, git } from "./helpers/auth-queue-fixtures.js";
 import type { Logger } from "../src/types.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow } from "../src/work-unit-utils.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
@@ -49,7 +50,7 @@ afterEach(() => {
 });
 
 describe("work unit reconciler", () => {
-  it("runs a reconciliation sweep immediately on start", () => {
+  it("runs a reconciliation sweep immediately on start", async () => {
     db.prepare("INSERT INTO sessions (id, status) VALUES ('session-1', 'dead')").run();
     db.prepare(
       "INSERT INTO work_units (id, state, assigned_session_id) VALUES ('wu-1', 'open', 'session-1')",
@@ -57,20 +58,20 @@ describe("work unit reconciler", () => {
 
     const activeReconciler = reconciler();
     activeReconciler.start();
-    activeReconciler.stop();
+    await activeReconciler.stop();
 
     const row = db.prepare("SELECT assigned_session_id FROM work_units WHERE id = 'wu-1'")
       .get() as { assigned_session_id: string | null };
     expect(row.assigned_session_id).toBeNull();
   });
 
-  it("clears dead session assignments without changing the work unit state", () => {
+  it("clears dead session assignments without changing the work unit state", async () => {
     db.prepare("INSERT INTO sessions (id, status) VALUES (?, ?)").run("sess-dead", "dead");
     db.prepare(
       "INSERT INTO work_units (id, state, assigned_session_id) VALUES (?, ?, ?)",
     ).run("wu-open", "open", "sess-dead");
 
-    reconciler().reconcile();
+    await reconciler().reconcile();
 
     expect(db.prepare("SELECT state, assigned_session_id FROM work_units WHERE id = ?").get("wu-open"))
       .toEqual({
@@ -84,7 +85,7 @@ describe("work unit reconciler", () => {
     });
   });
 
-  it("rolls back a whole dead-session pass if one row fails", () => {
+  it("rolls back a whole dead-session pass if one row fails", async () => {
     db.prepare("INSERT INTO sessions (id, status) VALUES ('session-1', 'dead')").run();
     db.prepare(
       "INSERT INTO work_units (id, state, assigned_session_id) VALUES ('wu-1', 'open', 'session-1')",
@@ -101,7 +102,7 @@ describe("work unit reconciler", () => {
       END;
     `);
 
-    reconciler().reconcile();
+    await reconciler().reconcile();
 
     const rows = db.prepare(
       "SELECT id, assigned_session_id FROM work_units ORDER BY id",
@@ -112,25 +113,29 @@ describe("work unit reconciler", () => {
     ]);
   });
 
-  it("marks committed work abandoned only when it is not in the auth pipeline", () => {
-    db.prepare(
-      "INSERT INTO work_units (id, state, branch, repo_id, auth_request_id) VALUES (?, ?, ?, ?, ?)",
-    ).run("wu-stale", "committed", "feature/deleted", "repo", null);
-    db.prepare(
-      "INSERT INTO work_units (id, state, branch, repo_id, auth_request_id) VALUES (?, ?, ?, ?, ?)",
-    ).run("wu-auth", "committed", "feature/auth", "repo", "auth-1");
+  it("abandons committed work only when Git confirms its branch is gone", async () => {
+    const repo = createAuthCheckRepo();
+    git(repo, ["branch", "feature/not-yet-scanned"]);
+    const insert = db.prepare(
+      "INSERT INTO work_units (id, state, branch, repo_id, auth_request_id) VALUES (?, 'committed', ?, ?, ?)",
+    );
+    insert.run("wu-gone", "feature/deleted", repo, null);
+    insert.run("wu-uncached", "feature/not-yet-scanned", repo, null);
+    insert.run("wu-auth", "feature/deleted", repo, "auth-1");
+    insert.run("wu-unresolvable", "feature/deleted", "no-such-repo", null);
 
-    reconciler().reconcile();
+    await reconciler().reconcile();
 
-    expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-stale")).toEqual({
-      state: "abandoned",
-    });
-    expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-auth")).toEqual({
-      state: "committed",
-    });
+    expect(db.prepare("SELECT id, state FROM work_units ORDER BY id").all()).toEqual([
+      { id: "wu-auth", state: "committed" },
+      { id: "wu-gone", state: "abandoned" },
+      { id: "wu-uncached", state: "committed" },
+      { id: "wu-unresolvable", state: "committed" },
+    ]);
   });
 
-  it("does not abandon a missing branch while its exact provider task is live", () => {
+  it("does not abandon a deleted branch while its exact provider task is live", async () => {
+    const repo = createAuthCheckRepo();
     db.prepare(
       `INSERT INTO work_units (
         id, state, branch, repo_id, provider, provider_session_id, worker_provider_session_id
@@ -138,14 +143,14 @@ describe("work unit reconciler", () => {
     ).run(
       "wu-live-provider",
       "committed",
-      "feature/not-yet-scanned",
-      "repo",
+      "feature/deleted",
+      repo,
       "codex",
       "desktop-task",
       "desktop-task",
     );
 
-    new WorkUnitReconciler(() => undefined, {
+    await new WorkUnitReconciler(() => undefined, {
       sessionIsLive: (_database, id) => id === "desktop-task",
     }).reconcile();
 
@@ -186,7 +191,8 @@ describe("work unit reconciler", () => {
     });
   });
 
-  it("resolves a deleted branch from a successful same-project auth alias instead of abandoning it", () => {
+  it("resolves a deleted branch from a successful same-project auth alias instead of abandoning it", async () => {
+    const repo = createAuthCheckRepo();
     db.exec(`
       CREATE TABLE ledger_projects (
         id TEXT PRIMARY KEY, project_key TEXT NOT NULL, display_name TEXT NOT NULL,
@@ -213,7 +219,7 @@ describe("work unit reconciler", () => {
         'remote', 1, 1
       );
       INSERT INTO ledger_project_checkouts VALUES (
-        'checkout-dotfiles', 'project-dotfiles', '.dotfiles', '/registered/dotfiles',
+        'checkout-dotfiles', 'project-dotfiles', '.dotfiles', '${repo}',
         '.dotfiles', 'main', '', 1, 1
       );
       INSERT INTO work_units (
@@ -223,11 +229,11 @@ describe("work unit reconciler", () => {
       );
       INSERT INTO auth_requests VALUES (
         'auth-dotfiles', 'merge', 'feature/dot123', '.dotfiles',
-        '/registered/dotfiles', '/registered/dotfiles', 'completed', 0, 20, 30, 40
+        '${repo}', '${repo}', 'completed', 0, 20, 30, 40
       );
     `);
 
-    reconciler().reconcile();
+    await reconciler().reconcile();
 
     expect(db.prepare(
       "SELECT state, auth_request_id, resolved_at FROM work_units WHERE id = 'wu-delivered'",
@@ -238,21 +244,18 @@ describe("work unit reconciler", () => {
     });
   });
 
-  it("keeps same-named branches in different repositories independent", () => {
+  it("auto-commits only the repository whose same-named branch is ahead", async () => {
     db.prepare("INSERT INTO branches (repo_root, branch, ahead_default) VALUES ('repo-b', 'feature/shared', 2)").run();
-    const insert = db.prepare("INSERT INTO work_units (id, repo_id, branch, state) VALUES (?, ?, 'feature/shared', ?)");
-    insert.run('missing-a', 'repo-a', 'committed');
-    insert.run('exists-b', 'repo-b', 'committed');
-    insert.run('open-a', 'repo-a', 'open');
-    insert.run('open-b', 'repo-b', 'open');
-    reconciler().reconcile();
+    const insert = db.prepare("INSERT INTO work_units (id, repo_id, branch, state) VALUES (?, ?, 'feature/shared', 'open')");
+    insert.run('open-a', 'repo-a');
+    insert.run('open-b', 'repo-b');
+    await reconciler().reconcile();
     expect(db.prepare("SELECT id, state FROM work_units ORDER BY id").all()).toEqual([
-      { id: 'exists-b', state: 'committed' }, { id: 'missing-a', state: 'abandoned' },
       { id: 'open-a', state: 'open' }, { id: 'open-b', state: 'committed' },
     ]);
   });
 
-  it("auto-commits open work units whose branch is ahead of default", () => {
+  it("auto-commits open work units whose branch is ahead of default", async () => {
     db.prepare("INSERT INTO branches (branch, ahead_default) VALUES (?, ?)").run("feature/ahead", 2);
     db.prepare("INSERT INTO branches (branch, ahead_default) VALUES (?, ?)").run("feature/even", 0);
     db.prepare(
@@ -262,7 +265,7 @@ describe("work unit reconciler", () => {
       "INSERT INTO work_units (id, state, branch) VALUES (?, ?, ?)",
     ).run("wu-even", "open", "feature/even");
 
-    reconciler().reconcile();
+    await reconciler().reconcile();
 
     expect(db.prepare("SELECT state, activated_at FROM work_units WHERE id = ?").get("wu-ahead"))
       .toEqual({
@@ -276,10 +279,10 @@ describe("work unit reconciler", () => {
       });
   });
 
-  it("logs and swallows reconciliation failures", () => {
+  it("logs and swallows reconciliation failures", async () => {
     db.prepare("DROP TABLE work_units").run();
 
-    expect(() => reconciler().reconcile()).not.toThrow();
+    await expect(reconciler().reconcile()).resolves.toBeUndefined();
     expect(logs[0]).toMatchObject({
       level: "warn",
       event: "work_unit_reconcile_failed",

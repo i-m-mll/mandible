@@ -174,7 +174,7 @@ When a session dies (PID vanishes) or ends normally, the reconciler clears `assi
 
 ### Pass 2: Abandoned branch detection
 
-If a work unit is in the `committed` state but its branch has been deleted from the repository, the reconciler moves it to `abandoned`. This catches cases where a branch was cleaned up without going through the normal merge flow.
+If a work unit is in the `committed` state and Git confirms its branch is gone from every registered checkout of its repository, the reconciler moves it to `abandoned`. This catches cases where a branch was cleaned up without going through the normal merge flow. The scanner's branch cache is never evidence of deletion, and a repository Mandible cannot resolve or read leaves the unit unchanged.
 
 ### Pass 3: Auto-commit detection
 

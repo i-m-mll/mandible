@@ -602,6 +602,15 @@ async function runGit(
   }
 }
 
+/** Local branch names in `repoRoot`, read from Git itself; throws when Git cannot answer. */
+export async function listLocalBranches(repoRoot: string, signal?: AbortSignal): Promise<string[]> {
+  const output = await runGit(["for-each-ref", "--format=%(refname)", "refs/heads"], { cwd: repoRoot, signal });
+  return (output ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith("refs/heads/"))
+    .map((line) => line.slice("refs/heads/".length));
+}
+
 function parseCommitRecord(
   record: string,
   classify: (hash: string) => WorkCommitClassification,
@@ -1691,7 +1700,7 @@ export class WorkScanner {
       }
     }
 
-    const branches = await this.listBranches(repoRoot);
+    const branches = await listLocalBranches(repoRoot, this.scanAbort.signal);
     const canonicalDefaultBranch = this.getCanonicalCheckoutDefaultBranch(repoRoot);
     const defaultBranch = canonicalDefaultBranch.branch || await this.detectDefaultBranch(repoRoot);
     const defaultBranchKnown = canonicalDefaultBranch.known && Boolean(await runGit(
@@ -1907,21 +1916,6 @@ export class WorkScanner {
     }
 
     return { updated, removed };
-  }
-
-  private async listBranches(repoRoot: string): Promise<string[]> {
-    const output = await runGit(["for-each-ref", "--format=%(refname)", "refs/heads"], {
-      cwd: repoRoot,
-      signal: this.scanAbort.signal,
-
-    });
-    if (!output) {
-      return [];
-    }
-    return output
-      .split("\n")
-      .filter((line) => line.startsWith("refs/heads/"))
-      .map((line) => line.slice("refs/heads/".length));
   }
 
   private async listWorktrees(repoRoot: string, signal?: AbortSignal): Promise<{ worktrees: WorktreeInfo[]; known: boolean }> {

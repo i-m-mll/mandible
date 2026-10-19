@@ -1,8 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import { canonicalRepoKeysForRef } from "./repo-identity.js";
+import { canonicalRepoKeysForRef, checkoutRootsForRef } from "./repo-identity.js";
 import { isSessionAliasLive } from "./session-liveness.js";
 import type { Logger } from "./types.js";
+import { listLocalBranches } from "./work-scanner.js";
 
 /**
  * Result of looking for an auth request that explains a missing branch.
@@ -17,7 +20,7 @@ type AuthPipelineMatch =
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
 // Runs every 60s and performs three reconciliation passes:
 // 1. Dead session cleanup: clear assigned_session_id when session is dead
-// 2. Abandoned branch detection: committed → abandoned when branch deleted
+// 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
 // 3. Auto-commit detection: open → committed when branch has commits
 
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -26,6 +29,8 @@ export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
   private readonly sessionIsLive: (db: Db, sessionId: string) => boolean;
+  private readonly abort = new AbortController();
+  private pass: Promise<void> | null = null;
 
   constructor(
     logger: Logger,
@@ -37,25 +42,33 @@ export class WorkUnitReconciler {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => this.reconcile(), RECONCILE_INTERVAL_MS);
+    this.timer = setInterval(() => void this.reconcile(), RECONCILE_INTERVAL_MS);
     if (typeof this.timer === "object" && "unref" in this.timer) {
       this.timer.unref();
     }
-    this.reconcile();
+    void this.reconcile();
   }
 
-  stop(): void {
+  /** Stop the timer, cancel in-flight Git reads, and wait for the current pass. */
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.abort.abort();
+    await this.pass;
   }
 
-  /** Run all reconciliation passes. Safe to call manually for testing. */
-  reconcile(): void {
+  /** Run all reconciliation passes; a call during a running pass joins it. */
+  reconcile(): Promise<void> {
+    this.pass ??= this.runPasses().finally(() => { this.pass = null; });
+    return this.pass;
+  }
+
+  private async runPasses(): Promise<void> {
     try {
       const deadCleared = this.reconcileDeadSessions();
-      const abandoned = this.reconcileAbandonedBranches();
+      const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = this.reconcileAutoCommit();
 
       if (deadCleared > 0 || abandoned > 0 || autoCommitted > 0) {
@@ -107,91 +120,110 @@ export class WorkUnitReconciler {
   }
 
   /**
-   * Pass 2: Mark committed work units as abandoned when their branch no longer exists.
-   * Uses the branches table from the work scanner to check branch existence.
+   * Pass 2: Mark committed work units as abandoned when Git confirms their
+   * branch is gone. The scanner's `branches` table is a cache refreshed only
+   * on scans, so a miss there proves nothing; only Git's own refs do.
    */
-  private reconcileAbandonedBranches(): number {
+  private async reconcileAbandonedBranches(): Promise<number> {
     const db = getDb();
+    // Bug: f3dbb3e — skip work units in the auth pipeline (auth_request_id IS NOT NULL).
+    // Their branch may be temporarily missing (just merged and cleaned up).
+    const committed = db
+      .prepare(
+        `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at,
+                wu.assigned_session_id, wu.worker_provider_session_id, wu.provider_session_id
+           FROM work_units wu
+         WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
+           AND wu.auth_request_id IS NULL
+         ORDER BY wu.id`
+      )
+      .all() as Array<{
+        id: string;
+        branch: string;
+        repo_id: string;
+        created_at: number;
+        assigned_session_id: string | null;
+        worker_provider_session_id: string | null;
+        provider_session_id: string | null;
+      }>;
 
-    const run = db.transaction(() => {
-      // Find committed work units with branches that don't exist in the branches table
-      // A branch that was merged and deleted will not appear in the branches table.
-      // Bug: f3dbb3e — skip work units in the auth pipeline (auth_request_id IS NOT NULL).
-      // Their branch may be temporarily missing (just merged and cleaned up).
-      const committed = db
-        .prepare(
-          `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at,
-                  wu.assigned_session_id, wu.worker_provider_session_id, wu.provider_session_id
-             FROM work_units wu
-           WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
-             AND wu.auth_request_id IS NULL
-           ORDER BY wu.id`
-        )
-        .all() as Array<{
-          id: string;
-          branch: string;
-          repo_id: string;
-          created_at: number;
-          assigned_session_id: string | null;
-          worker_provider_session_id: string | null;
-          provider_session_id: string | null;
-        }>;
+    const branchesByRoot = new Map<string, Promise<Set<string> | null>>();
+    const gone: typeof committed = [];
+    for (const row of committed) {
+      if (await this.branchIsGone(db, row, branchesByRoot)) gone.push(row);
+    }
+    if (gone.length === 0) return 0;
 
-      if (committed.length === 0) return 0;
+    const abandonStmt = db.prepare(
+      "UPDATE work_units SET state = 'abandoned' WHERE id = ? AND state = 'committed' AND auth_request_id IS NULL"
+    );
+    const resolveStmt = db.prepare(
+      `UPDATE work_units
+       SET state = 'resolved', resolved_at = COALESCE(resolved_at, ?),
+           auth_request_id = COALESCE(auth_request_id, ?)
+       WHERE id = ? AND state = 'committed'`
+    );
 
-      const checkBranch = db.prepare(
-        "SELECT repo_root FROM branches WHERE branch = ?"
-      );
-
-      const abandonStmt = db.prepare(
-        "UPDATE work_units SET state = 'abandoned' WHERE id = ?"
-      );
-      const resolveStmt = db.prepare(
-        `UPDATE work_units
-         SET state = 'resolved', resolved_at = COALESCE(resolved_at, ?),
-             auth_request_id = COALESCE(auth_request_id, ?)
-         WHERE id = ? AND state = 'committed'`
-      );
-
+    return db.transaction(() => {
       let count = 0;
-      for (const row of committed) {
-        const workUnitKeys = canonicalRepoKeysForRef(db, row.repo_id);
-        const exists = (checkBranch.all(row.branch) as Array<{ repo_root: string }>).some(branch =>
-          branch.repo_root === row.repo_id || [...canonicalRepoKeysForRef(db, branch.repo_root)]
-            .some(key => workUnitKeys.has(key)));
-        if (!exists) {
-          const sessionId = row.assigned_session_id
-            ?? row.worker_provider_session_id
-            ?? row.provider_session_id;
-          // A scanner miss is not proof that a live task abandoned its work.
-          // The same canonical provider-session authority used by parent-role
-          // and work-unit reads gets first refusal over this destructive state
-          // transition; once the task stops, ordinary branch/auth proof applies.
-          if (sessionId && this.sessionIsLive(db, sessionId)) continue;
-          // A branch may be deleted by auth-merge before the successful result
-          // reaches Stage 2. Keep it committed while a same-repo request is
-          // active, or resolve it here once that request proves success.
-          const authRequest = this.matchingAuthPipelineRequest(row);
-          if (authRequest.status === "unknown") {
-            // No evidence either way. Leave it committed for the next pass
-            // rather than abandoning on a failed lookup.
-            continue;
-          }
-          if (authRequest.status === "matched") {
-            if (authRequest.completed) {
-              resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
-            }
-            continue;
-          }
-          abandonStmt.run(row.id);
-          count++;
+      for (const row of gone) {
+        const sessionId = row.assigned_session_id
+          ?? row.worker_provider_session_id
+          ?? row.provider_session_id;
+        // The same canonical provider-session authority used by parent-role
+        // and work-unit reads gets first refusal over this destructive state
+        // transition; once the task stops, ordinary branch/auth proof applies.
+        if (sessionId && this.sessionIsLive(db, sessionId)) continue;
+        // A branch may be deleted by auth-merge before the successful result
+        // reaches Stage 2. Keep it committed while a same-repo request is
+        // active, or resolve it here once that request proves success.
+        const authRequest = this.matchingAuthPipelineRequest(row);
+        if (authRequest.status === "unknown") {
+          // No evidence either way. Leave it committed for the next pass
+          // rather than abandoning on a failed lookup.
+          continue;
         }
+        if (authRequest.status === "matched") {
+          if (authRequest.completed) {
+            resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+          }
+          continue;
+        }
+        count += Number(abandonStmt.run(row.id).changes);
       }
-
       return count;
-    });
+    })();
+  }
 
-    return run();
+  /**
+   * True only when Git answers for every existing checkout of the unit's repo
+   * and none of them has the branch. An unresolvable repo or a failed Git read
+   * is not evidence of absence.
+   */
+  private async branchIsGone(
+    db: Db,
+    row: { branch: string; repo_id: string },
+    branchesByRoot: Map<string, Promise<Set<string> | null>>,
+  ): Promise<boolean> {
+    const roots = checkoutRootsForRef(db, row.repo_id)
+      .filter((root) => path.isAbsolute(root) && fs.existsSync(root));
+    if (roots.length === 0) return false;
+    for (const root of roots) {
+      if (!branchesByRoot.has(root)) {
+        branchesByRoot.set(root, listLocalBranches(root, this.abort.signal).then(
+          (branches) => new Set(branches),
+          (error) => {
+            if (!this.abort.signal.aborted) {
+              this.logger("warn", "work_unit_branch_read_failed", { repo_root: root, error: String(error) });
+            }
+            return null;
+          },
+        ));
+      }
+      const branches = await branchesByRoot.get(root);
+      if (!branches || branches.has(row.branch)) return false;
+    }
+    return true;
   }
 
   /**
