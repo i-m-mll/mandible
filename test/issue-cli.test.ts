@@ -89,9 +89,7 @@ function run(
       env: {
         ...process.env,
         MANDIBLE_PORT: String(port),
-        // Pin base to the test stub so a leaked dev-shell MANDIBLE_BASE
-        // (e.g. the live daemon at :19420) can never route this subprocess.
-        // Placed before extraEnv so explicit per-call overrides (file:// RPC)
+        // Default to the test stub; per-call extraEnv overrides (file:// RPC)
         // still win.
         MANDIBLE_BASE: `http://127.0.0.1:${port}`,
         ...extraEnv,
@@ -118,15 +116,11 @@ function runBash(
   cwd = process.cwd(),
   extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  // Drop any leaked dev-shell MANDIBLE_BASE so it cannot route the CLI invoked
-  // by the bash script to a real daemon; call sites supply an explicit
-  // MANDIBLE_BASE via extraEnv when they need a test stub.
-  const { MANDIBLE_BASE: _leakedBase, ...baseEnv } = process.env;
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", script], {
       cwd,
       env: {
-        ...baseEnv,
+        ...process.env,
         ...extraEnv,
       },
     });
