@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import type { Db } from "./db.js";
+import { protectedBranchNames } from "./protected-branches.js";
 import { resolveProjectRef, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 import { parseJsonObject } from "./row-coerce.js";
@@ -194,15 +195,6 @@ function validateBranch(repoRoot: string, branch: string): string {
   }
   git(repoRoot, ["check-ref-format", "--branch", value]);
   return value;
-}
-
-function protectedBranches(db: Db, defaultBranch: string): Set<string> {
-  const setting = db.prepare("SELECT value FROM settings WHERE key = 'protected_branches'").get() as
-    | { value: string }
-    | undefined;
-  const values = (setting?.value ?? "main,develop").split(",").map((value) => value.trim()).filter(Boolean);
-  values.push(defaultBranch);
-  return new Set(values);
 }
 
 function resolveProject(db: Db, ref: string): RegistryProject {
@@ -467,7 +459,7 @@ export function createTrashEntry(
   const project = resolveProject(db, input.project);
   const checkout = chooseCheckout(project, input.branch.trim(), input.checkout_root);
   const branch = validateBranch(checkout.root, input.branch);
-  if (protectedBranches(db, checkout.default_branch).has(branch)) {
+  if (protectedBranchNames(db, checkout.default_branch).has(branch)) {
     throw new TrashServiceError(`refusing to trash protected/default branch: ${branch}`, "protected_branch", 409);
   }
   const originalOid = branchOid(checkout.root, branch);

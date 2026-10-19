@@ -8,6 +8,7 @@ import { promisify } from "util";
 import { parse as parseToml } from "smol-toml";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
+import { DEFAULT_PROTECTED_BRANCHES_SETTING, parseProtectedBranchSetting, readProtectedBranchSetting } from "./protected-branches.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
 import { canonicalizeCheckoutWorkRepoId } from "./ledger/projects.js";
@@ -870,16 +871,10 @@ export class WorkScanner {
       )
       .all(repoRoot) as Array<Record<string, unknown>>;
 
-    let configuredProtected = ["main", "develop"];
+    let configuredProtected = parseProtectedBranchSetting(DEFAULT_PROTECTED_BRANCHES_SETTING);
     let projectIds: string[] = [];
     try {
-      const setting = this.db.prepare("SELECT value FROM settings WHERE key = 'protected_branches'").get() as
-        | { value: string }
-        | undefined;
-      configuredProtected = (setting?.value ?? "main,develop")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
+      configuredProtected = readProtectedBranchSetting(this.db);
       projectIds = (this.db.prepare(
         "SELECT DISTINCT project_id FROM ledger_project_checkouts WHERE root = ? ORDER BY project_id",
       ).all(repoRoot) as Array<{ project_id: string }>).map((row) => row.project_id);

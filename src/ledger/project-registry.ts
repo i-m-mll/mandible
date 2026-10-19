@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Db } from "../db.js";
+import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { deriveProjectKeyBase, dedupeProjectKey, slugifyProjectKey } from "./project-key.js";
@@ -576,6 +577,9 @@ export function addOrUpdateCheckout(
       now,
       existing.id,
     );
+    if ((input.default_branch ?? existing.default_branch) !== existing.default_branch) {
+      notifyProtectionInputsChanged("checkout:default_branch");
+    }
   } else {
     const id = createLedgerId("chk", { now });
     db.prepare(
@@ -593,6 +597,7 @@ export function addOrUpdateCheckout(
       now,
       now,
     );
+    notifyProtectionInputsChanged("checkout:add");
   }
   const checkout = db
     .prepare(
