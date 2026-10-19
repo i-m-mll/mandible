@@ -41,9 +41,51 @@ export function parseAuthoredReferences(
   return references;
 }
 
+/**
+ * Target of an `[issue:...]` ref: `<id>`, `<project>/<id>`, or either form
+ * followed by `#<n>`, where `<n>` is a comment ordinal with the same meaning as
+ * `mandible issue comment show <issue>#<n>`. Ordinal 0 addresses the issue
+ * description, matching the issue detail view.
+ */
+export interface IssueRefTarget {
+  project?: string;
+  issue: string;
+  ordinal?: number;
+}
+
+/** Target of a legacy `[comment:<issue>#<comment>]` ref; `<comment>` is opaque. */
+export interface CommentRefTarget {
+  project?: string;
+  issue: string;
+  comment: string;
+}
+
+const ISSUE_REF_TARGET = /^(?:([^/#]+)\/)?([^/#]+)(?:#(\d+))?$/;
+const COMMENT_REF_TARGET = /^(?:([^/#]+)\/)?([^/#]+)#([^/#]+)$/;
+
+export function parseIssueRefTarget(target: string): IssueRefTarget | null {
+  const match = ISSUE_REF_TARGET.exec(target);
+  if (!match) return null;
+  return {
+    ...(match[1] ? { project: match[1] } : {}),
+    issue: match[2],
+    ...(match[3] !== undefined ? { ordinal: Number(match[3]) } : {}),
+  };
+}
+
+export function parseCommentRefTarget(target: string): CommentRefTarget | null {
+  const match = COMMENT_REF_TARGET.exec(target);
+  if (!match) return null;
+  return {
+    ...(match[1] ? { project: match[1] } : {}),
+    issue: match[2],
+    comment: match[3],
+  };
+}
+
 function isValidTarget(kind: AuthoredReferenceKind, target: string): boolean {
-  if (kind === "issue") return /^(?:[^\/#]+\/)?[^\/#]+$/.test(target);
-  if (kind === "comment") return /^(?:[^\/#]+\/)?[^\/#]+#[^\/#]+$/.test(target);
+  if (kind === "issue") return parseIssueRefTarget(target) !== null;
+  if (kind === "comment") return parseCommentRefTarget(target) !== null;
   if (kind === "artifact") return !/^sha256:/i.test(target);
   // Auth request ids are global, so there is no project-qualified form.
   if (kind === "auth") return /^[^\/#]+$/.test(target);

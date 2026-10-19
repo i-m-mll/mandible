@@ -75,7 +75,7 @@ describe('LedgerIssueDetail', () => {
     const detail = issueDetailProjection({
       displayId: 'fbx1234',
       title: 'Feedbax rendered refs',
-      body: 'See [issue:def456] and [comment:#com_1].',
+      body: 'See [issue:def456], [comment:#com_1], [issue:def456#3], [issue:other/def456#0], and [issue:def456#last].',
       projectKey: 'feedbax',
       repoId: '20-widgets-widgets',
       repoName: 'Feedbax',
@@ -95,6 +95,15 @@ describe('LedgerIssueDetail', () => {
       text: 'fbx1234#com_1',
       href: '#/issues?repo=feedbax&issue=fbx1234&comment=com_1',
     });
+    expect(issueLinks).toContainEqual({
+      text: 'def456#3',
+      href: '#/issues?repo=feedbax&issue=def456&comment=3',
+    });
+    expect(issueLinks).toContainEqual({
+      text: 'other/def456#0',
+      href: '#/issues?repo=other&issue=def456&comment=0',
+    });
+    expect(issueLinks.some((link) => link.text?.includes('last'))).toBe(false);
     expect(issueLinks.some((link) => link.href?.includes('20-widgets-widgets'))).toBe(false);
   });
 

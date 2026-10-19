@@ -22,7 +22,7 @@ describe("Mandible instructions fragment", () => {
     expect(fragment).toContain("Commit messages have no issue-linking or closure semantics.");
     expect(fragment).toContain("## Authored Markdown References");
     expect(fragment).toContain("Authored ledger Markdown issue refs use `[issue:<id>]`");
-    expect(fragment).toContain("Authored ledger Markdown comment refs use `[comment:<issue>#<comment>]`");
+    expect(fragment).toContain("Authored ledger Markdown comment refs use `[issue:<id>#<n>]`");
     expect(fragment).toContain("Do not write `[references:<id>]`, `[closes:<id>]`");
     expect(fragment).toContain("`[artifact:<short-id>]` names a logical artifact");
     expect(fragment).toContain("`mandible artifact format <ref> --as markdown`");

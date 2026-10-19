@@ -559,6 +559,7 @@ describe("ledger store", () => {
   it("parses explicit typed issue references only", () => {
     const refs = parseIssueReferences([
       "See [issue:abc1234], [issue:mandible/def4567], and [comment:mandible/ghi7890#com_1].",
+      "Comment ordinals: [issue:abc1234#3], [issue:mandible/def4567#0]; not [issue:abc1234#last].",
       "Ignore #feedbee, bare feedbee1, and issue_legacy_alias in normal text.",
       "Inline `020a65b` and commit `7714da1` are plain code/text.",
       "Current commit is f026c06, superseding the earlier 7714da1.",
@@ -570,7 +571,39 @@ describe("ledger store", () => {
         ["issue", "", "abc1234", ""],
         ["issue", "mandible", "def4567", ""],
         ["comment", "mandible", "ghi7890", "com_1"],
+        ["comment", "", "abc1234", "3"],
+        ["issue", "mandible", "def4567", ""],
       ]);
+  });
+
+  it("records comment-ordinal issue refs on the same references relationship", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const target = createIssue(store, project.project.id, "Target");
+    const source = createIssue(store, project.project.id, "Source");
+    const targetRef = target.short_id;
+    store.addComment(source.id, {
+      ...SYSTEM_ACTOR,
+      body: `See [issue:${targetRef}], [issue:${targetRef}#2], and [issue:${targetRef}#0].`,
+    });
+
+    const relationships = db.prepare(
+      `SELECT id FROM ledger_issue_relationships
+       WHERE source_issue_id = ? AND target_issue_id = ? AND relationship_type = 'references'
+         AND deleted_at IS NULL`,
+    ).all(source.id, target.id) as Array<{ id: string }>;
+    expect(relationships).toHaveLength(1);
+    const sources = db.prepare(
+      `SELECT ref_kind, normalized_ref, json_extract(metadata_json, '$.comment_ref') AS comment_ref
+       FROM ledger_issue_relationship_sources
+       WHERE relationship_id = ? AND deleted_at IS NULL
+       ORDER BY normalized_ref`,
+    ).all(relationships[0].id);
+    expect(sources).toEqual([
+      { ref_kind: "issue", normalized_ref: targetRef, comment_ref: null },
+      { ref_kind: "issue", normalized_ref: `${targetRef}#0`, comment_ref: null },
+      { ref_kind: "comment", normalized_ref: `${targetRef}#2`, comment_ref: "2" },
+    ]);
   });
 
   it("reconciles text issue references with source-level provenance", () => {
