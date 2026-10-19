@@ -643,10 +643,10 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
       </div>
 
       <datalist id="logs-subsystems">
-        {(facets?.subsystems || []).map((facet) => <option key={facet.value} value={facet.value} />)}
+        {(facets?.subsystems || []).map((value) => <option key={value} value={value} />)}
       </datalist>
       <datalist id="logs-events">
-        {(facets?.events || []).map((facet) => <option key={facet.value} value={facet.value} />)}
+        {(facets?.events || []).map((value) => <option key={value} value={value} />)}
       </datalist>
       <datalist id="logs-related">
         {(facets?.entity_refs || []).map((facet) => <option key={`${facet.type}:${facet.value}`} value={facetLabel(facet)} />)}

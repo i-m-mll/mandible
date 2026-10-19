@@ -52,8 +52,8 @@ describe('LogsView', () => {
       exists: true,
       source: 'daemon_log',
       facets: {
-        subsystems: [{ value: 'auth', count: 1 }],
-        events: [{ value: 'auth_failure', count: 1 }],
+        subsystems: ['auth'],
+        events: ['auth_failure'],
         entity_refs: [
           { type: 'issue', value: 'issue-1', count: 1 },
           { type: 'auth_request', value: 'auth-1', count: 1 },

@@ -601,8 +601,8 @@ describe("system log route daemon_log source", () => {
     const payload = res.payload as {
       entries: Array<Record<string, unknown>>;
       facets: {
-        subsystems: Array<{ value: string; count: number }>;
-        events: Array<{ value: string; count: number }>;
+        subsystems: string[];
+        events: string[];
         entity_refs: Array<{ type: string; value: string; count: number }>;
       };
     };
@@ -612,8 +612,8 @@ describe("system log route daemon_log source", () => {
       auth_request_id: "auth-1",
       issue_id: "issue-1",
     });
-    expect(payload.facets.subsystems).toEqual([{ value: "auth", count: 1 }]);
-    expect(payload.facets.events).toEqual([{ value: "auth_failure", count: 1 }]);
+    expect(payload.facets.subsystems).toEqual(["auth", "http"]);
+    expect(payload.facets.events).toEqual(["auth_failure", "auth_warning", "http_request"]);
     expect(payload.facets.entity_refs).toContainEqual({ type: "auth_request", value: "auth-1", count: 1 });
     expect(payload.facets.entity_refs).toContainEqual({ type: "issue", value: "issue-1", count: 1 });
   });

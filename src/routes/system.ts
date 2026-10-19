@@ -39,8 +39,8 @@ type LogEntityFacetValue = LogFacetValue & {
 };
 
 type LogFacets = {
-  subsystems: LogFacetValue[];
-  events: LogFacetValue[];
+  subsystems: string[];
+  events: string[];
   entity_refs: LogEntityFacetValue[];
   latest_ts: string | null;
 };
@@ -371,7 +371,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     log_file: daemonStderrLogPath(),
     exists: true,
     source: "daemon_log",
-    facets: logFacets(matches),
+    facets: logFacets(db, matches),
     older_cursor: boundary ? encodeLogCursor(boundary) : null,
     has_older: boundary !== undefined,
   };
@@ -495,17 +495,31 @@ function conjunction(clauses: SqlClause[]): SqlClause {
   };
 }
 
-function logFacets(matches: LogWindowRow[]): LogFacets {
+function logFacets(db: Db, matches: LogWindowRow[]): LogFacets {
   const entityRefs = ENTITY_COLUMNS.flatMap(([type, column]) =>
     topValues(matches.map((row) => row[column]), 20).map((facet) => ({ type, ...facet })));
   return {
-    subsystems: topValues(matches.map((row) => row.subsystem), 50),
-    events: topValues(matches.map((row) => row.event), 80),
+    subsystems: distinctValues(db, "subsystem"),
+    events: distinctValues(db, "event"),
     entity_refs: entityRefs
       .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type) || a.value.localeCompare(b.value))
       .slice(0, 80),
     latest_ts: matches.length > 0 ? new Date(matches[0].ts).toISOString() : null,
   };
+}
+
+/** Every distinct value by skip-scan: one `(column, ts)` index seek per value. */
+function distinctValues(db: Db, column: "subsystem" | "event"): string[] {
+  return (db
+    .prepare(
+      `WITH found(value) AS (
+         SELECT MIN(${column}) FROM daemon_log
+         UNION ALL
+         SELECT (SELECT MIN(${column}) FROM daemon_log WHERE ${column} > value) FROM found
+         WHERE value IS NOT NULL LIMIT 500
+       ) SELECT value FROM found WHERE value IS NOT NULL`,
+    )
+    .all() as Array<{ value: string }>).map((row) => row.value);
 }
 
 function topValues(values: Array<string | null>, limit: number): LogFacetValue[] {

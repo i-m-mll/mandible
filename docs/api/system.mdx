@@ -95,8 +95,9 @@ log database is available.
 
 Each request examines at most the newest 10,000 candidate rows before `before`.
 The candidates come from the first keyed filter (`related`, then `event`, then
-`subsystem`) within `since` and `until`. Other filters and the facets apply
-inside that window. When the window is full, `older_cursor` continues from its
+`subsystem`) within `since` and `until`. Other filters, `entity_refs`, and
+`latest_ts` apply inside that window; `subsystems` and `events` list every
+distinct value. When the window is full, `older_cursor` continues from its
 boundary, so a page can be short or empty while `has_older` is true.
 
 **Query params:**

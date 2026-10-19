@@ -2663,8 +2663,8 @@ export type LogEntityFacetValue = LogFacetValue & {
 };
 
 export type LogFacets = {
-  subsystems: LogFacetValue[];
-  events: LogFacetValue[];
+  subsystems: string[];
+  events: string[];
   entity_refs: LogEntityFacetValue[];
   latest_ts: string | null;
 };
