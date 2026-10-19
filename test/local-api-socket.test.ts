@@ -113,8 +113,7 @@ describe('owner-only local API socket', () => {
     router.post('/api/sessions/register', (req, res) => { seen.push({ identity: req.client_identity, body: req.body as Record<string, unknown> }); res.json({}); },
       operation('hook.register', ['process:external']));
     router.get('/api/inbox/global', (_req, res) => res.json({}), operation('hook.inbox', ['ledger:read']));
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(MANDIBLE_|CLAUDE|CODEX_)/.test(key)));
-    const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...env, MANDIBLE_SOCKET: socketPath,
+    const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
       CLAUDE_CODE_SESSION_ID: 'claude-session-1', CLAUDE_PID: String(process.pid) } });
     let stderr = ''; hook.stderr.on('data', (chunk) => { stderr += chunk; });
     hook.stdin.end(JSON.stringify({ session_id: 'claude-session-1', cwd: root }));

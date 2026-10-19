@@ -164,6 +164,14 @@ it('uses the registered file source and project gate independently of version ki
 });
 
 
+it('takes a selected project as the owner of a non-repository file and still refuses a different repository',()=>{
+  const a=repo('a'), b=repo('b');const file=path.join(dir,'loose.txt');fs.writeFileSync(file,'loose');
+  const plan=ok(planArtifactVersion(db,{source_kind:'local_only',path:file,custody_mode:'managed',project:'b'}));
+  expect(plan.required_project_ids).toEqual([b.project]);
+  expect(resolveArtifactProject(db,identity(ok(commitArtifactVersion(db,plan)).series.id))).toEqual({ok:true,project_id:b.project});
+  expect(planArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,project:'b'})).toMatchObject({ok:false,error:{code:'source_mismatch'}});
+});
+
 it('requires registered project access for files in checkouts without Git metadata',()=>{
   const root=path.join(dir,'registered-folder');fs.mkdirSync(root);const file=path.join(root,'notes.txt');fs.writeFileSync(file,'private');
   const project=insertRawLedgerProject(db,{name:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});

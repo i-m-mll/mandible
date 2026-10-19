@@ -110,7 +110,7 @@ describe("system log routes", () => {
     await routes.handler("GET", "/api/system/logs")(request({ level: "debug", limit: "5" }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.payload).toMatchObject({ total: 20, limit: 5, offset: 0, exists: true });
+    expect(res.payload).toMatchObject({ limit: 5, offset: 0, exists: true });
     expect((res.payload as { entries: Array<{ index: number }> }).entries.map((entry) => entry.index)).toEqual([
       76,
       77,

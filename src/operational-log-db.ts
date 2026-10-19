@@ -53,8 +53,11 @@ const OPERATIONAL_LOG_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_daemon_log_ts
     ON daemon_log(ts DESC);
-  CREATE INDEX IF NOT EXISTS idx_daemon_log_facets
-    ON daemon_log(subsystem, level, event, ts DESC);
+  DROP INDEX IF EXISTS idx_daemon_log_facets;
+  CREATE INDEX IF NOT EXISTS idx_daemon_log_subsystem
+    ON daemon_log(subsystem, ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_daemon_log_event
+    ON daemon_log(event, ts DESC);
   CREATE INDEX IF NOT EXISTS idx_daemon_log_issue
     ON daemon_log(issue_id, ts DESC) WHERE issue_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_daemon_log_auth_request

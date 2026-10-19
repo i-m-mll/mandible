@@ -30,6 +30,7 @@ import {
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
+import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -1771,6 +1772,7 @@ export const MIGRATIONS: readonly Migration[] = [
   // acceptance bound to the exact retained candidate.
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
   { version: 195, name: "known_conversation_ownership", statements: [...CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL] },
+  { version: 196, name: "issue_search", statements: [...ISSUE_SEARCH_SCHEMA_SQL] },
 ];
 
 /**

@@ -553,16 +553,18 @@ artifact_version_payload_for_path() {
 }
 
 artifact_version_payload_for_upload() {
-  local payload="$1" issue_id_value="$2"
+  local payload="$1" issue_id_value="$2" project="$3"
   printf '%s' "$payload" | jq \
     --arg issue "$issue_id_value" \
+    --arg project "$project" \
     '{source_kind:"managed",
       source:(if .metadata.git.tracked == true and (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
         then {kind:"repo", project_id:.metadata.git.repo_id, path:.metadata.git.relative_path}
         else {kind:"local", path:.metadata.source_path} end),
       logical_name, role, media_type, custody_mode,
       title:(.metadata.title // null)}
-      + (if $issue != "" then {issue:$issue} else {} end)'
+      + (if $issue != "" then {issue:$issue} else {} end)
+      + (if $project != "" then {project:$project} else {} end)'
 }
 
 cmd_ingest_like() {
@@ -586,9 +588,10 @@ cmd_ingest_like() {
       mode="managed"
     fi
   fi
-  if [[ -n "$commit" || -n "$project" ]] && { (( upload || blob_only )) || api_is_file_rpc; }; then
-    die "--project/--commit ingestion requires daemon-visible repository paths over HTTP" 2
+  if [[ -n "$commit" ]] && { (( upload || blob_only )) || api_is_file_rpc; }; then
+    die "--commit ingestion requires daemon-visible repository paths over HTTP" 2
   fi
+  [[ -z "$project" ]] || (( ! blob_only )) || die "--blob-only stores bytes without a logical artifact, so it takes no --project" 2
   if (( ! upload && ! blob_only )) && ! api_is_file_rpc; then
     local batch_payload batch_result
     batch_payload="$(python3 - "$PWD" "$commit" "$project" "$artifact_target" "$mode" "$role" "$issue" "$dry_run" "$allow_local" "$allow_dirty" "${paths[@]}" <<'PYBATCH'
@@ -630,7 +633,7 @@ PYBATCH
       elif (( ! blob_only )); then
         abs="$(python_path abs "$path_arg")"
         if (( upload )) || api_is_file_rpc; then
-          version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}")"
+          version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}" "$project")"
           version_payload="$(printf '%s' "$version_payload" | jq --arg id "$artifact_target" 'if $id == "" then . else . + {artifact_id:$id} end')"
           resp_tmp="$(mktemp)"
           resp_status="$(api_send_content POST "/api/artifacts/versions" "$version_payload" "path" "$abs" "$resp_tmp")"

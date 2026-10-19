@@ -739,6 +739,7 @@ export class SessionRegistry {
       if (session) {
         broadcast(DOMAIN_EVENTS.SESSION_UPDATED, session);
         this.announce(session);
+        this.endOtherClaims(session);
         return session;
       }
     }
@@ -809,7 +810,17 @@ export class SessionRegistry {
 
     broadcast(DOMAIN_EVENTS.SESSION_REGISTERED, session);
     this.announce(session);
+    this.endOtherClaims(session);
     return session;
+  }
+
+  /** A process runs one session: the latest row to claim its pid ends every other active claim. */
+  private endOtherClaims(session: Session): void {
+    if (!session.pid || session.status !== "active") return;
+    const others = this.db
+      .prepare("SELECT id FROM sessions WHERE pid = ? AND id != ? AND status = 'active'")
+      .all(session.pid, session.id) as Array<{ id: string }>;
+    for (const other of others) this.endSession(other.id);
   }
 
   updateSession(id: string, update: SessionUpdate): Session | null {

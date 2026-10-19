@@ -148,7 +148,8 @@ export function runReadOnlyQuery(
     }
     return { columns, rows, truncated };
   } catch (error) {
-    throw new Error(`Read-only query refused: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Read-only query refused: ${detail}${/function: like$/i.test(detail) ? "; use instr(lower(column), 'term') or GLOB instead of LIKE" : ""}`, { cause: error });
   } finally {
     ledger.db.setAuthorizer(null);
   }

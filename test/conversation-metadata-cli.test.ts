@@ -13,9 +13,6 @@ function run(args: string[], env: Record<string, string>): Promise<{ status: num
   return new Promise((resolve) => {
     const child = spawn(CLI, args, { cwd: os.tmpdir(), env: {
       ...process.env,
-      CODEX_THREAD_ID: "", CODEX_SESSION_ID: "",
-      CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "",
-      GEMINI_SESSION_ID: "", MANDIBLE_MANAGED_APP: "", MANDIBLE_SESSION_ID: "",
       ...env,
     } });
     let stdout = "";

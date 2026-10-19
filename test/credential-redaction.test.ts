@@ -522,10 +522,11 @@ describe("ingest-time credential redaction", () => {
     // src/routes/conversations.ts); there is no FTS shadow table that could
     // retain the plaintext after the block is masked. Assert that structural
     // fact so a future FTS index cannot be added without revisiting redaction.
+    // The only index is over issue text, which is never masked in place.
     const virtualTables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL%'")
       .all() as Array<{ name: string }>;
-    expect(virtualTables).toEqual([]);
+    expect(virtualTables).toEqual([{ name: "issue_search" }]);
   });
 });
 

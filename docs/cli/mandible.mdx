@@ -112,6 +112,7 @@ mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
 mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [--stale-days N] [--limit N] [--json]
+mandible issue search <words>... [--repo <project>] [--status open|closed|all] [--limit N] [--json]
 mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
 mandible issue description show <issue-ref> [--json]
@@ -140,6 +141,7 @@ mandible issue label rm <id> <label>
 | `show` | Show issue details |
 | `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
 | `triage` | Filter issues by canonical status, resolution, kind, priority, free-form label, stale age, and limit for deterministic review queues. |
+| `search` | Keyword search over titles, bodies, and comments across all readable projects, best match first, with a matched excerpt. |
 | `link` | Create deliberate structured issue/comment relationship edges without fabricating comments. |
 | `unlink` | Tombstone deliberate structured issue/comment relationship edges and record removal events. |
 | `close` | Close an issue with an explicit `delivered`, `duplicate`, or `wontfix` resolution. An optional `--commit <sha>` link is supported only for `delivered`; that resolution adds a ledger comment, git note, and Mandible API resolution record. |

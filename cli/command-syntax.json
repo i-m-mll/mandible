@@ -2381,6 +2381,19 @@
         ]
       }
     },
+    "issue.search": {
+      "route": ["issue", "search"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "repeat","item": {"kind": "argument","name": "words","value": {"type": "string"}},"min": 1},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--status"],"values": [{"kind": "argument","name": "open|closed|all","value": {"type": "enum","values": ["open","closed","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "issue.changed": {
       "route": ["issue", "changed"],
       "grammar": {

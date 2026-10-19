@@ -753,7 +753,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
     await daemonLogRetention.stop();
-    workUnitReconciler.stop();
+    await workUnitReconciler.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
     await closeLocalSocket();
