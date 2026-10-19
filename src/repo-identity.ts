@@ -108,79 +108,51 @@ function computeCanonicalKey(inputPath: string): string | null {
 }
 
 /**
- * All canonical keys reachable from a free-form repo ref. Tries, in order:
- *   (a) the ref as a checkout path,
- *   (b) `work_repos` rows matching id | name | root,
- *   (c) `ledger_projects` rows matching project_key | display_name, joined to
- *       their `ledger_project_checkouts.root`.
- * Missing tables/columns are silently skipped, so registry-less DBs simply
- * yield the path-based attempt (usually empty for bare strings).
+ * Every checkout path a free-form repo ref may name: the ref itself, then
+ * `work_repos` roots matching id | name | root, then the checkout roots of
+ * `ledger_projects` matching project_key or display_name. Missing tables or
+ * columns are skipped, so registry-less DBs yield only the ref itself.
+ */
+export function checkoutRootsForRef(db: Db, ref: string): string[] {
+  const roots = new Set<string>([ref]);
+  const queries = [
+    ["SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?", 3],
+    [`SELECT c.root FROM ledger_project_checkouts c
+      JOIN ledger_projects p ON p.id = c.project_id
+      WHERE p.project_key = ?`, 1],
+    [`SELECT c.root FROM ledger_project_checkouts c
+      JOIN ledger_projects p ON p.id = c.project_id
+      WHERE p.display_name = ?`, 1],
+  ] as const;
+  for (const [sql, arity] of queries) {
+    try {
+      const rows = db.prepare(sql).all(...Array(arity).fill(ref)) as Array<{ root: string }>;
+      for (const row of rows) roots.add(row.root);
+    } catch {
+      // Registry table or column absent in lightweight or older DBs.
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * All canonical keys reachable from a free-form repo ref: the project registry
+ * identity plus the Git common dir of every {@link checkoutRootsForRef} path.
  */
 export function canonicalRepoKeysForRef(db: Db, ref: string | null | undefined): Set<string> {
   const keys = new Set<string>();
   if (!ref) {
     return keys;
   }
-  const add = (key: string | null): void => {
-    if (key) {
-      keys.add(key);
-    }
-  };
-
   // The project registry is the durable semantic identity. Prefix it so it
   // cannot collide with a physical common-dir path key.
   const projectRepoId = canonicalProjectRepoId(db, ref);
   if (projectRepoId) {
     keys.add(`project:${projectRepoId}`);
   }
-
-  // (a) ref as a path.
-  add(canonicalRepoKeyForPath(ref));
-
-  // (b) work_repos by id | name | root.
-  try {
-    const rows = db
-      .prepare("SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?")
-      .all(ref, ref, ref) as Array<{ root: string }>;
-    for (const row of rows) {
-      add(canonicalRepoKeyForPath(row.root));
-    }
-  } catch {
-    // work_repos absent in lightweight DBs.
+  for (const root of checkoutRootsForRef(db, ref)) {
+    const key = canonicalRepoKeyForPath(root);
+    if (key) keys.add(key);
   }
-
-  // (c) ledger_projects.project_key -> checkout roots.
-  try {
-    const rows = db
-      .prepare(
-        `SELECT c.root FROM ledger_project_checkouts c
-         JOIN ledger_projects p ON p.id = c.project_id
-         WHERE p.project_key = ?`
-      )
-      .all(ref) as Array<{ root: string }>;
-    for (const row of rows) {
-      add(canonicalRepoKeyForPath(row.root));
-    }
-  } catch {
-    // ledger tables absent, or project_key column absent in older schemas.
-  }
-
-  // (c') ledger_projects.display_name -> checkout roots (separate query so a
-  // missing project_key column does not also skip display_name matching).
-  try {
-    const rows = db
-      .prepare(
-        `SELECT c.root FROM ledger_project_checkouts c
-         JOIN ledger_projects p ON p.id = c.project_id
-         WHERE p.display_name = ?`
-      )
-      .all(ref) as Array<{ root: string }>;
-    for (const row of rows) {
-      add(canonicalRepoKeyForPath(row.root));
-    }
-  } catch {
-    // ledger tables absent.
-  }
-
   return keys;
 }

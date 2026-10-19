@@ -22,6 +22,8 @@ interface AgentProcess {
   app: string;
   cwd: string;
   pid_start: string;
+  /** The registry row the process's launcher named in MANDIBLE_SESSION_ID. */
+  session_id: string | null;
 }
 
 /** Known agent process patterns to scan for. */
@@ -87,8 +89,12 @@ export class SessionDiscovery {
     // Only successful process evidence is cached; failure never becomes death.
     cachePidStartTimes(new Map(processes.map(proc => [proc.pid, proc.pid_start])));
 
-    // 3. Match processes to worktrees and register unknown sessions
+    // 3. Attach processes to the rows they name; register unknown processes in worktrees
     for (const proc of processes) {
+      if (this.attachToNamedSession(proc)) {
+        alreadyTracked++;
+        continue;
+      }
       const matchingWorktree = worktrees.find(
         (wt) => proc.cwd === wt.path || proc.cwd.startsWith(wt.path + "/"),
       );
@@ -145,6 +151,25 @@ export class SessionDiscovery {
     return result;
   }
 
+  /**
+   * Give a process's pid to the registry row it names, so the row's liveness
+   * follows the process. The name is an inherited environment variable, so a
+   * process that started after the row was registered (a nested agent) is not
+   * its owner. Only the reaper's verdict is revisited: ended and idle rows keep
+   * their state.
+   */
+  private attachToNamedSession(proc: AgentProcess): boolean {
+    const named = proc.session_id ? this.registry.getSession(proc.session_id) : null;
+    if (named?.status !== "active" && named?.status !== "dead") return false;
+    if (named.pid !== null && named.pid !== proc.pid) return false;
+    if (Date.parse(named.created_at) < Date.parse(proc.pid_start)) return false;
+    if (named.pid !== proc.pid || named.status === "dead") {
+      this.registry.registerSession({ id: named.id, app: named.app, pid: proc.pid, pid_start: proc.pid_start, status: "active" });
+      this.log("info", "session_process_attached", { session_id: named.id, pid: proc.pid });
+    }
+    return true;
+  }
+
   reapDeadSessions(): number {
     return this.stopped ? 0 : this.registry.reapDead().length;
   }
@@ -190,16 +215,51 @@ export class SessionDiscovery {
       if (app) candidates.push({ pid, app, pid_start });
     }
 
-    // Resolve every candidate cwd in a single batched lsof invocation.
-    const cwdByPid = await this.resolveProcessCwds(candidates.map((c) => c.pid));
+    // Resolve every candidate cwd and launcher identity in one batched call each.
+    const pids = candidates.map((c) => c.pid);
+    const [cwdByPid, sessionIdByPid] = await Promise.all([
+      this.resolveProcessCwds(pids),
+      this.resolveLauncherSessionIds(pids),
+    ]);
     for (const candidate of candidates) {
       const cwd = cwdByPid.get(candidate.pid);
       if (cwd) {
-        results.push({ ...candidate, cwd });
+        results.push({ ...candidate, cwd, session_id: sessionIdByPid.get(candidate.pid) ?? null });
       }
     }
 
     return results;
+  }
+
+  /**
+   * Run a tool over a batch of pids. Status 1 means some requested processes
+   * exited, and the survivors' output still counts. A timeout, abort or other
+   * tool failure is not a successful partial discovery pass.
+   */
+  private async readPerPid(file: string, args: string[], failureEvent: string, pids: number[]): Promise<string> {
+    if (pids.length === 0) return "";
+    try {
+      return (await execFileAsync(file, args, {
+        encoding: "utf8", timeout: 10000, killSignal: "SIGKILL", signal: this.abort.signal, maxBuffer: 16 * 1024 * 1024,
+      })).stdout;
+    } catch (error) {
+      const failure = error as { stdout?: string; code?: string | number; killed?: boolean; signal?: string };
+      if (failure.code === 1 && !failure.killed && !failure.signal) return failure.stdout ?? "";
+      if (!this.stopped) this.log("warn", failureEvent, { pid_count: pids.length, error: String(error) });
+      throw error;
+    }
+  }
+
+  /** Read MANDIBLE_SESSION_ID from each process's environment (`ps -E`) in one call. */
+  private async resolveLauncherSessionIds(pids: number[]): Promise<Map<number, string>> {
+    const sessionIdByPid = new Map<number, string>();
+    const output = await this.readPerPid("ps", ["-E", "-ww", "-o", "pid=,command=", "-p", pids.join(",")], "session_discovery_env_failed", pids);
+    for (const line of output.split("\n")) {
+      const pid = Number.parseInt(line, 10);
+      const sessionId = [...line.matchAll(/(?:^|\s)MANDIBLE_SESSION_ID=(\S+)/g)].at(-1)?.[1];
+      if (Number.isInteger(pid) && sessionId) sessionIdByPid.set(pid, sessionId);
+    }
+    return sessionIdByPid;
   }
 
   /**
@@ -211,30 +271,7 @@ export class SessionDiscovery {
    */
   private async resolveProcessCwds(pids: number[]): Promise<Map<number, string>> {
     const cwdByPid = new Map<number, string>();
-    if (pids.length === 0) {
-      return cwdByPid;
-    }
-
-    let output = "";
-    try {
-      const result = await execFileAsync(
-        "/usr/sbin/lsof",
-        ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"],
-        { encoding: "utf8", timeout: 10000, killSignal: "SIGKILL", signal: this.abort.signal, maxBuffer: 16 * 1024 * 1024 },
-      );
-      output = result.stdout;
-    } catch (error) {
-      const failure = error as { stdout?: string; code?: string | number; killed?: boolean; signal?: string };
-      // lsof status1 means some requested processes may have exited. A timeout,
-      // abort or other tool failure is not a successful partial discovery pass.
-      if (failure.code === 1 && !failure.killed && !failure.signal) {
-        output = failure.stdout ?? "";
-      } else {
-        if (!this.stopped) this.log("warn", "session_discovery_lsof_failed", { pid_count: pids.length, error: String(error) });
-        throw error;
-      }
-    }
-
+    const output = await this.readPerPid("/usr/sbin/lsof", ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"], "session_discovery_lsof_failed", pids);
     let currentPid: number | null = null;
     for (const line of output.split("\n")) {
       if (line.startsWith("p")) {
