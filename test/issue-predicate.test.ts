@@ -34,7 +34,7 @@ function issueRow(overrides: Partial<IssueRow> & { id: string }): IssueRow {
     worker_status: "none",
     resolution: null,
     kind: overrides.kind ?? "feature",
-    priority: "unknown",
+    priority: "normal",
     author_actor_id: null,
     author_actor_type: "agent",
     author_display: "test",

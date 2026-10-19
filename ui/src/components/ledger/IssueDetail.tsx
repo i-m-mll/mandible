@@ -202,7 +202,7 @@ export function LedgerIssueDetail({
     detail.source !== 'mandible' ||
     detail.author.type !== 'mandible_user' ||
     detail.kind !== 'feature' ||
-    detail.priority !== 'unknown' ||
+    detail.priority !== 'normal' ||
     detail.aliases.length > 0 ||
     detail.checkpoints.length > 0,
   );

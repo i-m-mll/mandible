@@ -1052,7 +1052,7 @@ describe("issue CLI body revisions", () => {
 
     try {
       const result = await run([
-        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "tracker", "--project", "mandible",
+        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "tracker", "--priority", "high", "--project", "mandible",
       ], 0, process.cwd(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -1061,7 +1061,7 @@ describe("issue CLI body revisions", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("Created issue new-1");
       expect(seen).toHaveLength(1);
-      expect(seen[0].body).toMatchObject({ kind: "tracker", title: "Coordination", body: "Body" });
+      expect(seen[0].body).toMatchObject({ kind: "tracker", priority: "high", title: "Coordination", body: "Body" });
     } finally {
       responder.stop();
     }
@@ -1810,6 +1810,24 @@ describe("issue CLI body revisions", () => {
       method: "PATCH",
       body: { kind: "experiment" },
     });
+  });
+
+  it("sets issue priority through the issue PATCH API and refuses the retired unknown value", async () => {
+    const port = await listen();
+    const result = await run(["issue", "priority", "set", "abc", "urgent"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { priority: "urgent" },
+    });
+
+    const retired = await run(["issue", "priority", "set", "abc", "unknown"], 0, process.cwd(), {
+      MANDIBLE_BASE: "file:///nonexistent-mandible-test-spool",
+    });
+    expect(retired.status).toBe(2);
+    expect(retired.stderr).toContain("Arguments do not match: mandible issue priority set");
   });
 
   it("rejects retired issue kinds instead of treating labels as kind aliases", async () => {

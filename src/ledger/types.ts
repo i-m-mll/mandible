@@ -42,7 +42,7 @@ export const LEDGER_CONCRETE_ISSUE_KINDS = [
 ] as const;
 export type LedgerConcreteIssueKind = (typeof LEDGER_CONCRETE_ISSUE_KINDS)[number];
 
-export const LEDGER_PRIORITIES = ["low", "normal", "high", "urgent", "unknown"] as const;
+export const LEDGER_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 export type LedgerPriority = (typeof LEDGER_PRIORITIES)[number];
 
 export const LEDGER_ACTOR_TYPES = [

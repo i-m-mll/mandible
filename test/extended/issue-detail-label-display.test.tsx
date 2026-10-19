@@ -29,7 +29,7 @@ function detail(labels: string[]): LedgerIssueDetailProjection {
     status: 'open',
     resolution: null,
     kind: 'feature',
-    priority: 'unknown',
+    priority: 'normal',
     source: 'mandible',
     author: { id: null, type: 'mandible_user', display: 'Mandible', legacy_display: 'Mandible', attribution: null },
     created_at: 1,
@@ -85,12 +85,12 @@ describe('issue detail label presentation', () => {
       {
         id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child', link_type: 'parent_child', note: null,
         provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
-        related_issue: { id: 'child', display_id: 'child-1', project_id: 'project-1', kind: 'feature', priority: 'unknown', labels: [], title: 'Child issue', status: 'open', resolution: null },
+        related_issue: { id: 'child', display_id: 'child-1', project_id: 'project-1', kind: 'feature', priority: 'normal', labels: [], title: 'Child issue', status: 'open', resolution: null },
       },
       {
         id: 'reference-edge', direction: 'outgoing', relationship_type: 'references', link_type: 'references', note: null,
         provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
-        related_issue: { id: 'reference', display_id: 'ref-1', project_id: 'project-1', kind: 'feature', priority: 'unknown', labels: [], title: 'Referenced issue', status: 'open', resolution: null },
+        related_issue: { id: 'reference', display_id: 'ref-1', project_id: 'project-1', kind: 'feature', priority: 'normal', labels: [], title: 'Referenced issue', status: 'open', resolution: null },
       },
     ];
     projection.associated_artifacts = [{

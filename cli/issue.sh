@@ -45,8 +45,8 @@ ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker unknown)
 CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker)
 ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, tracker, unknown"
 ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment, tracker"
-ISSUE_PRIORITIES=(low normal high urgent unknown)
-ACCEPTED_ISSUE_PRIORITIES="low, normal, high, urgent, unknown"
+ISSUE_PRIORITIES=(low normal high urgent)
+ACCEPTED_ISSUE_PRIORITIES="low, normal, high, urgent"
 ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
 ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
 
@@ -225,7 +225,7 @@ print_issue_detail() {
   api_jq_human '
     "\(.display_id) [\(.status)] \(.title)",
     "kind: \(.kind // "unknown")",
-    "priority: \(.priority // "unknown")",
+    "priority: \(.priority)",
     "resolution: \(.resolution // "none")",
     (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
     (if ((.dependencies // []) | length) > 0 then
@@ -504,7 +504,7 @@ cmd_triage() {
       | sort_by(.updated_at // "")
       | .[0:$limit]
       | if $json then .
-        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority // "unknown")\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority)\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
 }
@@ -1020,11 +1020,12 @@ cmd_new() {
   local title=""
   local body=""
   local kind=""
+  local priority=""
   local -a labels=()
   local project_ref=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.new" '{"title":{"option":["t","title"]},"body":{"option":["m","message"]},"kind":{"option":"kind"},"labels":{"option":"label","array":true},"project_ref":{"option":"project"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.new" '{"title":{"option":["t","title"]},"body":{"option":["m","message"]},"kind":{"option":"kind"},"priority":{"option":"priority"},"labels":{"option":"label","array":true},"project_ref":{"option":"project"}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
@@ -1041,16 +1042,18 @@ cmd_new() {
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" \
       --argjson labels "$label_json" --arg project "$project_ref" \
-      --arg kind "$kind" \
+      --arg kind "$kind" --arg priority "$priority" \
       '{title:$title, body:$body, root:$root, labels:$labels, project:$project}
-       + (if $kind == "" then {} else {kind:$kind} end)')
+       + (if $kind == "" then {} else {kind:$kind} end)
+       + (if $priority == "" then {} else {priority:$priority} end)')
   else
     repo=$(basename "$root")
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
-      --arg kind "$kind" \
+      --arg kind "$kind" --arg priority "$priority" \
       '{title:$title, body:$body, root:$root, labels:$labels}
-       + (if $kind == "" then {} else {kind:$kind} end)')
+       + (if $kind == "" then {} else {kind:$kind} end)
+       + (if $priority == "" then {} else {priority:$priority} end)')
   fi
   id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
     || die "${RED}Failed to create issue${RESET}" 1
@@ -1491,6 +1494,31 @@ KIND_USAGE
   err "${GREEN}Set kind for ${issue_ref} to ${kind}${RESET}"
 }
 
+cmd_priority() {
+  local action="${1:-}"
+  shift || true
+  if [[ "$action" != set ]]; then
+    if [[ -z "$action" || "$action" == -h || "$action" == --help ]]; then
+      cat <<'PRIORITY_USAGE' | mandible_render_commands
+Usage:
+  {{command issue.priority.set}}
+PRIORITY_USAGE
+      return 0
+    fi
+    die "Unknown priority action: $action (expected set)" 2
+  fi
+
+  local issue_ref="" priority="" binding
+  binding=$(mandible_bind_arguments "issue.priority.set" '{"issue_ref":{"position":0},"priority":{"position":1}}' "$@") || return $?
+  eval "$binding"
+  require_tools
+  local payload
+  payload=$(jq -n --arg priority "$priority" '{priority:$priority}')
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to set priority for issue ${issue_ref}${RESET}" 1
+  err "${GREEN}Set priority for ${issue_ref} to ${priority}${RESET}"
+}
+
 resolve_comment_ref() {
   local comment_ref="$1"
 
@@ -1812,6 +1840,7 @@ case "$subcmd" in
   description) cmd_description "$@" ;;
   work-notes) cmd_work_notes "$@" ;;
   kind)    cmd_kind "$@" ;;
+  priority) cmd_priority "$@" ;;
   comment) cmd_comment "$@" ;;
   body-history) cmd_description_history "$@" ;;
   comment-history) cmd_comment_history "$@" ;;

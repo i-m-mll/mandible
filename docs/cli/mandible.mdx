@@ -107,7 +107,7 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 Issue management wrapper around the Mandible ledger.
 
 ```
-mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--priority low|normal|high|urgent] [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
@@ -123,6 +123,7 @@ mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
 mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
 mandible issue work-notes history <issue-ref> [--json] [--with-body]
 mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
+mandible issue priority set <issue-ref> low|normal|high|urgent
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
 mandible issue comment history <comment-ref> [--json] [--with-body]
@@ -136,7 +137,7 @@ mandible issue label rm <id> <label>
 
 | Command | Description |
 |---|---|
-| `new` | Create a new issue with title, body, a required concrete kind, and optional labels |
+| `new` | Create a new issue with title, body, a required concrete kind, an optional priority (default `normal`), and optional labels |
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
 | `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
@@ -154,6 +155,7 @@ mandible issue label rm <id> <label>
 | `work-notes clear` | Clear working notes through the issue PATCH API, preserving the immutable clear event. |
 | `work-notes history` | Show read-only working-notes revision history. |
 | `kind set` | Set the canonical issue kind; labels remain independent presentation metadata. |
+| `priority set` | Set the issue priority to `low`, `normal`, `high`, or `urgent`. |
 | `comment add` | Add a comment to an issue. Compatibility alias: `mandible issue comment <issue-ref> -m <text>`. |
 | `comment show` | Show one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
 | `comment history` | Show read-only text revision history for one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |

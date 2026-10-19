@@ -193,7 +193,7 @@ function readOnlyDetail(): LedgerIssueDetailProjection {
     status: 'open',
     resolution: null,
     kind: 'feature',
-    priority: 'unknown',
+    priority: 'normal',
     source: 'mandible',
     created_at: 0,
     updated_at: 0,
