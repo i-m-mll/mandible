@@ -1082,6 +1082,23 @@ cmd_list() {
   api_get "/api/issues?${query}" | api_jq_human '.[] as $repo | $repo.issues[] | "\(mandible_display_id)\t\(.status)\t\($repo.repo_name)\t\(.title)"'
 }
 
+cmd_search() {
+  local status="all" repo="" limit=20 json=0
+  local words=()
+  local binding
+  binding=$(mandible_bind_arguments "issue.search" '{"status":{"option":"status"},"repo":{"option":"repo"},"limit":{"option":"limit"},"json":{"option":"json","constant":"1"},"words":{"rest":0}}' "$@") || return $?
+  eval "$binding"
+
+  require_tools
+  local query="q=$(urlencode "${words[*]}")&status=$(urlencode "$status")&limit=$(urlencode "$limit")"
+  if [[ -n "$repo" ]]; then query="${query}&repo=$(urlencode "$repo")"; fi
+  if (( json )); then
+    api_get "/api/issues/search?${query}" | jq .
+  else
+    api_get "/api/issues/search?${query}" | api_jq_human '.[] | "\(mandible_display_id)\t\(.status)\t\(.project)\t\(.title)\t\(.excerpt | gsub("\\s+"; " "))"'
+  fi
+}
+
 cmd_parent_role() {
   local action="${1:-}"
   shift || true
@@ -1781,6 +1798,7 @@ case "$subcmd" in
   title)   mandible_issue_title "$@" ;;
   report)  cmd_report "$@" ;;
   triage)  cmd_triage "$@" ;;
+  search)  cmd_search "$@" ;;
   heads)   cmd_heads "$@" ;;
   changed) cmd_changed "$@" ;;
   checkpoint) cmd_checkpoint "$@" ;;

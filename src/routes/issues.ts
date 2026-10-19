@@ -60,6 +60,7 @@ import {
   listLedgerIssueSummaries,
   resolveLedgerIssueIdForRoute,
 } from "../ledger/issue-projection.js";
+import { issueSearchExpression, searchLedgerIssues } from "../ledger/issue-search.js";
 import {
   linkCommitToLedgerIssue,
   resolveOperationalIssueRef,
@@ -1156,6 +1157,30 @@ export function registerIssueRoutes(
 
     sendJson(res, 200, summaries);
   }, { operation: { id: "get:/api/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.get("/api/issues/search", (req, res) => {
+    const expression = issueSearchExpression(getQueryParam(req, "q") ?? "");
+    const status = getQueryParam(req, "status") ?? "all";
+    const limit = Number(getQueryParam(req, "limit") ?? 20);
+    if (!expression) return sendJson(res, 400, { error: "q must contain at least one word" });
+    if (status !== "all" && !(LEDGER_ISSUE_STATUSES as readonly string[]).includes(status)) {
+      return sendJson(res, 400, { error: "status must be open, closed, or all" });
+    }
+    if (!Number.isInteger(limit) || limit < 1) return sendJson(res, 400, { error: "limit must be a positive integer" });
+    const db = getDb();
+    const repo = getQueryParam(req, "repo");
+    let projectIds = (db.prepare("SELECT id FROM ledger_projects").all() as Array<{ id: string }>).map((row) => row.id);
+    if (repo) {
+      const resolved = resolveProjectRef(db, repo);
+      if (resolved.ambiguous) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
+      if (!resolved.project) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
+      projectIds = [resolved.project.id];
+    }
+    projectIds = projectIds.filter((project_id) => evaluateProjectAccess(db, {
+      identity: req.client_identity ?? null, project_id, required_role: "read",
+    }).allowed);
+    sendJson(res, 200, searchLedgerIssues(db, { expression, projectIds, status: status as LedgerIssueStatus | "all", limit }));
+  }, { operation: { id: "get:/api/issues/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
   server.get("/api/ledger/issues/:issueId", (req, res) => {

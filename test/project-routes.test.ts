@@ -378,3 +378,35 @@ describe("canonical project_key round-trip", () => {
     expect(retired.status).toBe(400);
   });
 });
+
+describe("issue search route", () => {
+  it("ranks title, body, and comment matches across projects and keeps the index current", async () => {
+    const store = new LedgerStore(db);
+    const author = { actor_type: "agent" as const, author_display: "Test", attribution: systemAction() };
+    const project = (key: string) => addProject(db, { project_key: key, remote_identity: `git@github.com:mll/${key}.git` }).id;
+    const issue = (project_id: string, title: string, body: string) =>
+      store.createIssue({ project_id, title, body, ...author });
+    const [alpha, beta] = [project("alpha"), project("beta")];
+    const titled = issue(alpha, "Zebrafish dashboard", "layout");
+    const bodied = issue(alpha, "Daemon stalls", "the loop blocks on zebrafish parsing");
+    const commented = issue(beta, "Unrelated", "nothing here");
+    store.addComment(commented.id, { body: "a zebrafish shows up here too", ...author });
+    issue(beta, "Other", "no match");
+    registerIssueRoutes(router, fakeScanner);
+    const search = async (query: string) => {
+      const res = await router.invoke({ method: "GET", url: `/api/issues/search?${query}` });
+      expect(res.status).toBe(200);
+      return res.body as Array<{ id: string; project: string; excerpt: string }>;
+    };
+
+    const all = await search("q=zebra");
+    expect(all[0].id).toBe(titled.id);
+    expect(all.map(hit => hit.id).sort()).toEqual([titled.id, bodied.id, commented.id].sort());
+    expect(all.find(hit => hit.id === commented.id)).toMatchObject({ project: "beta", excerpt: expect.stringContaining("zebrafish shows up") });
+    expect(all.find(hit => hit.id === bodied.id)?.excerpt).toContain("zebrafish parsing");
+
+    expect((await search("q=zebra&repo=beta")).map(hit => hit.id)).toEqual([commented.id]);
+    store.updateIssue(bodied.id, { body: "fixed" }, author);
+    expect((await search("q=zebrafish+parsing")).map(hit => hit.id)).toEqual([]);
+  });
+});
