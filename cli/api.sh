@@ -883,13 +883,16 @@ api_http_exchange() {
           token="$(secret_get "$service" "$account")" || token=""
         fi
       elif ! api_managed_client_markers_present; then
+        service="mandible-operator"
         token="$(api_keychain_operator_token)"
       fi
       if [[ -z "$token" && "$optional_gate" == 0 ]]; then
-        printf 'Mandible durable credential required for %s %s; no matching Keychain credential was found.\n' "$method" "$request_path" >&2
+        printf 'Mandible durable credential required for %s %s; no Keychain item%s was found, so nothing was sent. The operator can store one with: mandible user token mint <user> --store\n' \
+          "$method" "$request_path" "${service:+ for service $service}" >&2
         (( token_traced == 0 )) || set -x
         rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
-        printf '000'
+        jq -n '{error:"cli_durable_credential_missing", request_sent:false}' > "$output_file"
+        printf '401'
         return 0
       fi
     fi
@@ -962,8 +965,9 @@ api_http_exchange() {
   printf '%s' "$http_status"
 }
 
+# Total, unlike api_agent_provider: callers assign it under errexit.
 api_ambient_provider() {
-  api_agent_provider
+  api_agent_provider || :
 }
 
 api_ambient_session_id() {

@@ -5137,10 +5137,6 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     if (input.custody_mode === 'git' && (!commit || !projectId || !repoPath)) return artifactFailure('invalid_input', 'Git custody requires exact committed bytes; commit the file or use managed custody');
     const valid = validateArtifactSource(db, source);
     if (!valid.ok) return valid;
-    if (input.project) {
-      const project = resolveCanonicalArtifactRepoRef(db, input.project);
-      if (!project.ok || source.kind !== 'repo' || source.project_id !== project.project_id) return artifactFailure('source_mismatch', 'Selected project differs from source repository');
-    }
     const lineage = committed ? artifactSourceLineage(db, source) : [];
     if (committed && explicit && !lineage.includes(explicit.id)) return artifactFailure('source_mismatch', 'Historical target has no source lineage for this path');
     if (committed && !explicit && lineage.length > 1) return artifactFailure('ambiguous_source', 'Historical path belongs to multiple artifacts; select --artifact');
@@ -5156,11 +5152,15 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     if (!committed && state?.source && sourceKey(state.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Artifact source differs; use an explicit guarded source move');
     if (lookup.value && target && lookup.value.artifact_id !== target.id) return artifactFailure('source_mismatch', 'Source is registered to another artifact');
     let ownerProject: string | null = null;
-    if (input.repo_id) {
-      const owner = resolveCanonicalArtifactRepoRef(db, input.repo_id);
-      if (!owner.ok) return artifactFailure('invalid_source', 'Artifact project is unknown or ambiguous');
+    for (const ref of [input.repo_id, input.project]) {
+      if (!ref) continue;
+      const owner = resolveCanonicalArtifactRepoRef(db, ref);
+      if (!owner.ok) return artifactFailure('invalid_source', `Artifact project ${ref} is unknown or ambiguous`);
       ownerProject = owner.project_id;
     }
+    // A selected project names the artifact's project; a repository file's project is its repository.
+    if (input.project && source.kind === 'repo' && source.project_id !== ownerProject) return artifactFailure('source_mismatch', 'Selected project differs from source repository');
+    if (input.project && source.kind !== 'repo' && target && target.source_project_id !== ownerProject) return artifactFailure('source_mismatch', 'Selected project differs from the existing artifact\'s project; omit --project, or use mandible artifact associate');
     if (target) ownerProject = target.source_project_id;
     else ownerProject ??= projectId ?? (source.kind === 'repo' ? source.project_id : null);
     const required = artifactRequiredProjects(db, target?.id ?? null, state?.source ?? null, source);

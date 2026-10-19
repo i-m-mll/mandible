@@ -29,6 +29,10 @@ const isolatedValues: Record<string, string | undefined> = {
   MANDIBLE_SOCKET: undefined,
   MANDIBLE_DB: undefined,
 };
+// Tests state their own caller: the agent session running the suite must not
+// leak its attribution or daemon selection into them.
+const ambientCaller = /^(CLAUDE|CODEX_|GEMINI_|MANDIBLE_(MANAGED_|SESSION_|TOKEN$|BASE$|TRANSPORT$|CLI_DIR$))/;
+for (const key of Object.keys(process.env)) if (ambientCaller.test(key) && !(key in isolatedValues)) isolatedValues[key] = undefined;
 const previous = new Map(Object.keys(isolatedValues).map((key) => [key, process.env[key]]));
 for (const [key, value] of Object.entries(isolatedValues)) {
   if (value === undefined) delete process.env[key];
