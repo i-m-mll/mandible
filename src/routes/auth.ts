@@ -1,6 +1,7 @@
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
+import { mergeChangeMessageRequirement } from "../auth-change-message.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
 import { DelegatedSigningResource } from "../delegated-signing-resource.js";
@@ -103,6 +104,14 @@ export function registerAuthRoutes(
     }
 
     if (isAuthMerge) {
+      // Issue 4720024 — creation and atomic supersession of a merge request
+      // both arrive here, before any Git work, and neither proceeds without a
+      // canonical change message and its verification text.
+      const missingMessage = mergeChangeMessageRequirement(payload);
+      if (missingMessage) {
+        res.status(400).json({ error: missingMessage, code: "change_message_required" });
+        return;
+      }
       try {
         // Issue 08a5f04 — legacy submitters (MCP channel server, raw API
         // clients) omit base_branch entirely; `mandible auth merge <branch>`
@@ -400,6 +409,21 @@ export function registerAuthRoutes(
       }
       const control = authMutationControl(req, res, current, body, true);
       if (!control) return;
+      // Issue 4720024 — a revision that touches a merge request's message must
+      // leave a canonical change message with its verification text. Requests
+      // submitted before the rule keep every other revision path.
+      const touchesMessage = result.payload.commit_message !== undefined || result.payload.canonical_message !== undefined;
+      if (touchesMessage && isAuthMergeCommand({ command: result.payload.command ?? current.command })) {
+        const missingMessage = mergeChangeMessageRequirement({
+          canonical_message: result.payload.canonical_message ?? current.commit_message_digest != null,
+          commit_message: result.payload.commit_message !== undefined ? result.payload.commit_message : current.commit_message,
+          verification: result.payload.verification,
+        });
+        if (missingMessage) {
+          res.status(400).json({ error: missingMessage, code: "change_message_required" });
+          return;
+        }
+      }
       const updated = authQueue.update(req.params.id, result.payload, control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(200).json({ request_id: updated.id, ...updated });
@@ -1372,6 +1396,11 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
       res.status(422).json({ error: error.message, code: error.code });
       return;
     }
+  } else if (isHttpError(error)) {
+    // The queue's validation refusals (for example a malformed canonical
+    // change message) carry their own status and actionable text.
+    res.status(error.status).json({ error: error.message });
+    return;
   }
 
   res.status(500).json({ error: "Unexpected auth queue error." });

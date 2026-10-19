@@ -9,12 +9,13 @@
 #   <branch>                Source branch (merge requests only)
 #   --title <text>          Dashboard title
 #
-# Canonical change message (issue 7d64d8f):
+# Canonical change message (issues 7d64d8f, 4720024), required for merges:
 #   --message <text>        Agent-authored change message (mutually exclusive with
-#                           --message-file and --commit-message)
+#                           --message-file)
 #   --message-file <file>   Read the agent-authored change message from a file
 #                           ('-' reads stdin)
-#   --verification <text>   Verification section text (default: "Not recorded")
+#   --verification <text>   Verification section text: the checks run and their
+#                           results
 #
 #   The agent authors only prose. Its first non-empty line is the <outcome>;
 #   the CLI prefixes it with "Merge <branch>: " so the subject stays
@@ -28,7 +29,7 @@
 #       <one short agent-authored paragraph>
 #
 #       Verification:
-#       <--verification text, or "Not recorded">
+#       <--verification text>
 #
 #       Caveats:
 #       <agent-authored; omitted when empty>
@@ -38,12 +39,10 @@
 #   Issue associations and closures are carried only in structured fields.
 #   Authoring a "Verification:" heading or a "#"-leading line is an error.
 #
-#   With no message flag, no change message is submitted and the merge keeps
-#   git's own default merge message.
+#   The daemon refuses a merge request, including a supersession, that lacks
+#   the message or the verification text.
 #
 # Options:
-#   --commit-message <text> Legacy free-form review text stored on the request.
-#                           Not used as the merge commit message.
 #   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
 #   --spec <text>           Inline spec/review Markdown
 #   --spec-file <file>      Read spec/review Markdown from a file ('-' reads stdin)
@@ -149,7 +148,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"commit_message":{"option":"commit-message"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 
 if [[ -z "$title" ]]; then
@@ -188,14 +187,6 @@ if [[ $spec_file_set -eq 1 ]]; then
   fi
   spec_content="${spec_content%$'\034'}"
 fi
-if [[ $change_message_set -eq 1 && -n "$commit_message" ]]; then
-  echo "Error: --commit-message cannot be combined with --message/--message-file" >&2
-  exit 2
-fi
-if [[ $change_message_set -eq 0 && -n "$verification_text" ]]; then
-  echo "Error: --verification requires --message or --message-file" >&2
-  exit 2
-fi
 if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
   echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
   exit 2
@@ -225,7 +216,7 @@ if [[ "$auth_type" == "merge" ]]; then
     exit 2
   fi
 else
-  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || $change_message_set -eq 1 || -n "$commit_message" || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
+  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || $change_message_set -eq 1 || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
     echo "Error: branches, merge messages, closure, handoff, and protected-root options require --type merge" >&2
     exit 2
   fi

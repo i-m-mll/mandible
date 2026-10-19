@@ -3,6 +3,7 @@ const path = require('node:path');
 
 function validateNode(node) {
   if (!node || typeof node !== 'object') return false;
+  if (node.hint !== undefined && (typeof node.hint !== 'string' || node.hint.length === 0)) return false;
   switch (node.kind) {
     case 'sequence': case 'choice': return Array.isArray(node.items) && node.items.every(validateNode);
     case 'optional': return validateNode(node.item);
@@ -65,6 +66,16 @@ function walk(node, fn) {
   fn(node);
   if (node.items) node.items.forEach(item => walk(item, fn));
   if (node.item) walk(node.item, fn);
+}
+function hasArgument(node) {
+  let found = false;
+  walk(node, item => { if (item.kind === 'argument') found = true; });
+  return found;
+}
+function optionNames(node) {
+  const names = [];
+  walk(node, item => { if (item.kind === 'option') names.push(...item.names); });
+  return names;
 }
 function validValue(spec, value) {
   if (value === undefined) return false;
@@ -152,9 +163,23 @@ function parseEntry(key, argv, commands = loadCommands()) {
       default: return [];
     }
   }
-  const state = match(entry.grammar, initial).find(s => s.index === positional.length
-    && [...options].every(([name, values]) => s.used[name] === values.length));
-  if (!state) throw new Error(`Arguments do not match: ${commandSyntax(key, commands)}`);
+  const complete = s => s.index === positional.length
+    && [...options].every(([name, values]) => s.used[name] === values.length);
+  const state = match(entry.grammar, initial).find(complete);
+  if (!state) {
+    // When the arguments would match once the absent required options were
+    // supplied, name exactly those options (and their hint) instead of only
+    // repeating the synopsis.
+    const relaxable = item => item.kind !== 'optional' && !hasArgument(item) && !optionNames(item).some(name => options.has(name));
+    const missing = entry.grammar.kind === 'sequence' ? entry.grammar.items.filter(relaxable) : [];
+    const relaxed = { ...entry.grammar, items: entry.grammar.items?.map(item => missing.includes(item) ? { kind: 'optional', item } : item) };
+    if (missing.length && match(relaxed, initial).some(complete)) {
+      throw Object.assign(new Error(`Arguments do not match: ${commandSyntax(key, commands)}\n`
+        + `Missing required option${missing.length > 1 ? 's' : ''}:\n`
+        + missing.map(item => `  ${renderNode(item)}${item.hint ? `: ${item.hint}` : ''}`).join('\n')), { missingRequired: true });
+    }
+    throw new Error(`Arguments do not match: ${commandSyntax(key, commands)}`);
+  }
   const parsedOptions = Object.fromEntries([...options].map(([name, values]) => [name.replace(/^-+/, ''),
     values.length > 1 ? values.map(v => v.length === 0 ? true : v.length === 1 ? v[0] : v)
       : values[0].length === 0 ? true : values[0].length === 1 ? values[0][0] : values[0]]));
@@ -166,9 +191,11 @@ function parse(argv, commands = loadCommands()) {
   const errors = [];
   for (const [key, entry] of candidates.filter(([, c]) => c.route.length === length)) {
     try { return parseEntry(key, argv.slice(entry.route.length), commands); }
-    catch (error) { errors.push(error.message); }
+    catch (error) { errors.push(error); }
   }
-  throw new Error(errors.join('\n') || `Unknown command: ${argv.join(' ')}`);
+  // A form that only lacks required options is the one the caller meant.
+  const missing = errors.filter(error => error.missingRequired);
+  throw new Error((missing.length ? missing : errors).map(error => error.message).join('\n') || `Unknown command: ${argv.join(' ')}`);
 }
 
 function shellQuote(value) { return "'" + String(value).replaceAll("'", "'\\''") + "'"; }

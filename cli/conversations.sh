@@ -438,8 +438,8 @@ if [[ "${1:-}" == "scan-credentials" ]]; then
 fi
 
 # Exact reads always traverse the daemon's shared resolver/freshness barrier,
-# including the normal local transport. The Python/SQLite code below remains
-# list-only compatibility machinery and cannot bypass catch-up.
+# including the normal local transport. The Python/SQLite code below serves
+# only `list` and cannot bypass catch-up.
 case "${1:-}" in
   show) shift; file_rpc_show "$@"; exit $? ;;
   blocks) shift; file_rpc_blocks "$@"; exit $? ;;
@@ -464,16 +464,14 @@ esac
 
 export MANDIBLE_PARSED_COMMAND
 MANDIBLE_PARSED_COMMAND=$(mandible_parse_command conversations "$@") || exit $?
-exec python3 - "$MANDIBLE_DB" "$@" <<'PY'
+exec python3 - "$MANDIBLE_DB" <<'PY'
 from __future__ import annotations
 
-from types import SimpleNamespace
 import datetime as dt
-import gzip
 import json
+import os
 import sqlite3
 import sys
-import zlib
 from typing import Any
 
 
@@ -490,25 +488,6 @@ def parse_since(value: str | None) -> str | None:
     return value
 
 
-def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    item = {key: row[key] for key in row.keys()}
-    if "tags" in item:
-        item["tags"] = json.loads(item["tags"])
-    return item
-
-
-def decompress(content: bytes | str, compressed: int) -> str:
-    if not compressed:
-        return content.decode("utf-8", errors="replace") if isinstance(content, bytes) else str(content)
-    data = content.encode("latin-1") if isinstance(content, str) else content
-    for fn in (gzip.decompress, lambda b: zlib.decompress(b, zlib.MAX_WBITS | 16), zlib.decompress):
-        try:
-            return fn(data).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-    return "<decompression failed>"
-
-
 def connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -517,155 +496,48 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
-def resolve_conversation(conn: sqlite3.Connection, ident: str) -> sqlite3.Row:
-    row = conn.execute(
-        """
-        SELECT * FROM conversations
-        WHERE id = ? OR session_id = ? OR id LIKE ?
-        ORDER BY started_at DESC
-        LIMIT 1
-        """,
-        (ident, ident, f"{ident}%"),
-    ).fetchone()
-    if row is None:
-        raise SystemExit(f"conversation not found: {ident}")
-    return row
-
-
-def list_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
+def main() -> int:
+    parsed = json.loads(os.environ["MANDIBLE_PARSED_COMMAND"])
+    if parsed["command"] != "conversations.list":
+        raise SystemExit(f"Unsupported conversations command: {parsed['command']}")
+    options = parsed["options"]
     params: list[Any] = []
     where = ["1=1"]
-    source = map_provider(args.provider)
+    source = map_provider(options.get("provider", "all"))
     if source:
         where.append("source = ?")
         params.append(source)
-    if args.tag:
+    if options.get("tag"):
         where.append("EXISTS (SELECT 1 FROM json_each(conversations.tags) WHERE json_each.value = ?)")
-        params.append(args.tag)
-    since = parse_since(args.since)
+        params.append(options["tag"])
+    since = parse_since(options.get("since"))
     if since:
         where.append("started_at >= ?")
         params.append(since)
-    params.append(args.limit)
-    rows = conn.execute(
-        f"""
-        SELECT id, source, title, started_at, updated_at, block_count, session_id, cwd, branch, model, source_path, tags
-        FROM conversations
-        WHERE {' AND '.join(where)}
-        ORDER BY started_at DESC
-        LIMIT ?
-        """,
-        params,
-    ).fetchall()
-    data = [row_to_dict(row) for row in rows]
-    if args.json:
+    params.append(int(options.get("limit", 20)))
+    conn = connect(sys.argv[1])
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, source, title, started_at, updated_at, block_count, session_id, cwd, branch, model, source_path, tags
+            FROM conversations
+            WHERE {' AND '.join(where)}
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    data = [{key: row[key] for key in row.keys()} for row in rows]
+    for item in data:
+        item["tags"] = json.loads(item["tags"])
+    if options.get("json"):
         print(json.dumps(data, indent=2))
     else:
         for row in data:
             print(f"{row['id'][:8]}\t{row['source']}\t{row['started_at']}\t{row['block_count']}\t{row['title']}")
     return 0
-
-
-def blocks_for(conn: sqlite3.Connection, conversation_id: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json
-        FROM conversation_blocks
-        WHERE conversation_id = ?
-        ORDER BY position ASC
-        """,
-        (conversation_id,),
-    ).fetchall()
-    out = []
-    for row in rows:
-        item = row_to_dict(row)
-        item["content"] = decompress(row["content"], row["compressed"])
-        del item["compressed"]
-        out.append(item)
-    return out
-
-
-def show_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
-    conv = row_to_dict(resolve_conversation(conn, args.ident))
-    payload: dict[str, Any] = {"conversation": conv}
-    if args.blocks:
-        payload["blocks"] = blocks_for(conn, conv["id"])
-    if args.json:
-        print(json.dumps(payload, indent=2))
-    else:
-        print(f"{conv['id']} [{conv['source']}] {conv['title']}")
-        print(f"session: {conv['session_id']}")
-        print(f"started: {conv['started_at']}")
-        print(f"blocks: {conv['block_count']}")
-        print(f"cwd: {conv['cwd'] or '-'}")
-        print(f"source_path: {conv['source_path']}")
-        if args.blocks:
-            for block in payload["blocks"][:20]:
-                text = " ".join(block["content"].split())
-                if len(text) > 160:
-                    text = text[:157] + "..."
-                print(f"- {block['position']} {block['type']} {block['role']}: {text}")
-    return 0
-
-
-def blocks_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
-    conv = row_to_dict(resolve_conversation(conn, args.ident))
-    blocks = blocks_for(conn, conv["id"])
-    if args.type:
-        blocks = [block for block in blocks if block["type"] == args.type]
-    blocks = blocks[: args.limit]
-    if args.json:
-        print(json.dumps(blocks, indent=2))
-    else:
-        for block in blocks:
-            text = " ".join(block["content"].split())
-            if len(text) > 220:
-                text = text[:217] + "..."
-            print(f"{block['position']}\t{block['type']}\t{block['role']}\t{text}")
-    return 0
-
-
-def export_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
-    conv = row_to_dict(resolve_conversation(conn, args.ident))
-    blocks = blocks_for(conn, conv["id"])
-    if args.format == "json":
-        print(json.dumps({"conversation": conv, "blocks": blocks}, indent=2))
-    else:
-        print(f"# {conv['title']}\n")
-        print(f"Source: {conv['source']}  ")
-        print(f"Started: {conv['started_at']}  ")
-        print(f"Session: {conv['session_id']}\n")
-        for block in blocks:
-            role = block["role"] or block["type"]
-            print(f"## {role} ({block['type']})\n")
-            print(block["content"])
-            print()
-    return 0
-
-
-def main() -> int:
-    db_path = sys.argv[1]
-    parsed = json.loads(os.environ["MANDIBLE_PARSED_COMMAND"])
-    values = {'provider': 'all', 'since': None, 'tag': None, 'limit': 20, 'json': False, 'blocks': False, 'format': 'markdown', 'head': 20, 'parse': False, 'role': None, 'type': None, 'tool': None, 'tool_kind': None, 'until': None, 'content': None, 'offset': 0}
-    values.update({key.replace("-", "_"): value for key, value in parsed["options"].items()})
-    for key in ("limit", "head", "offset"):
-        values[key] = int(values[key])
-    values["command"] = parsed["command"].split(".")[-1]
-    positions = parsed["positionals"]
-    values["ident"] = positions[0] if positions else None
-    values["target"] = positions[0] if positions else None
-    args = SimpleNamespace(**values)
-    conn = connect(db_path)
-    try:
-        if args.command == "list":
-            return list_cmd(conn, args)
-        if args.command == "show":
-            return show_cmd(conn, args)
-        if args.command == "export":
-            return export_cmd(conn, args)
-        raise ValueError(f"Unsupported parsed command: {args.command}")
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

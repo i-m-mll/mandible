@@ -157,6 +157,52 @@ describe("generic issue metadata upgrade", () => {
   });
 });
 
+describe("issue priority upgrade", () => {
+  it("v197 converts unknown priority to normal, keeps search rows, records events, and rejects unknown afterwards", () => {
+    const dbPath = path.join(tempDir, "priority-v196.db");
+    createFloorDatabase(dbPath);
+    const db = new SqliteDatabase(dbPath);
+    try {
+      db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+        crypto.createHash("sha256").update(String(value)).digest("hex"));
+      migrateFixtureThrough(db, 196);
+      insertRawLedgerProject(db, { id: "priority-project", name: "Priority" });
+      insertRawLedgerIssue(db, { id: "issue-gap", projectId: "priority-project", priority: "unknown" });
+      insertRawLedgerIssue(db, { id: "issue-unknown", projectId: "priority-project", title: "Quokka unknown", priority: "unknown" });
+      insertRawLedgerIssue(db, { id: "issue-high", projectId: "priority-project", title: "Wombat high", priority: "high" });
+      db.prepare("DELETE FROM ledger_issues WHERE id = 'issue-gap'").run();
+      const rowidsBefore = db.prepare("SELECT id, rowid FROM ledger_issues ORDER BY id").all();
+
+      migrate(db);
+
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(db.prepare("SELECT id, priority, updated_at FROM ledger_issues ORDER BY id").all()).toEqual([
+        { id: "issue-high", priority: "high", updated_at: 1 },
+        { id: "issue-unknown", priority: "normal", updated_at: 1 },
+      ]);
+      expect(db.prepare("SELECT id, rowid FROM ledger_issues ORDER BY id").all()).toEqual(rowidsBefore);
+      expect(db.prepare(`SELECT i.id FROM issue_search JOIN ledger_issues i ON i.rowid = issue_search.rowid
+        WHERE issue_search MATCH 'quokka'`).all()).toEqual([{ id: "issue-unknown" }]);
+      expect(db.prepare(`SELECT e.entity_id, json_extract(e.payload_json, '$.patch.priority') AS priority, l.sequence
+        FROM ledger_events e JOIN ledger_change_log l ON l.event_id = e.id
+        WHERE e.actor_id = 'schema-migration-v197'`).all())
+        .toEqual([{ entity_id: "issue-unknown", priority: "normal", sequence: 1 }]);
+      expect(db.prepare("SELECT next_sequence FROM ledger_change_feed_state WHERE project_id = 'priority-project'").get())
+        .toEqual({ next_sequence: 2 });
+
+      insertRawLedgerIssue(db, { id: "issue-default", projectId: "priority-project", title: "Default" });
+      expect(db.prepare("SELECT priority FROM ledger_issues WHERE id = 'issue-default'").get())
+        .toEqual({ priority: "normal" });
+      expect(db.prepare("SELECT 1 FROM issue_search WHERE issue_search MATCH 'default'").all()).toHaveLength(1);
+      expect(() => db.prepare("UPDATE ledger_issues SET priority = 'unknown' WHERE id = 'issue-high'").run())
+        .toThrow(/CHECK constraint failed/);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 function seedBriefingLineage(db: SqliteDatabase, mixed: boolean): { rounds: unknown[] } {
   for (const [suffix, hash] of [["a", "a".repeat(64)], ["b", "b".repeat(64)]] as const) {
     db.prepare(`INSERT INTO artifact_blob

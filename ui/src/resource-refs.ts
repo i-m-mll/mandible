@@ -9,8 +9,8 @@
 //   - artifact-version:<id-or-prefix>
 //   - artifact-blob:<hash-or-prefix>
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
-//   - issue:<id>                    (Mandible issue refs)
-//   - comment:<issue>#<comment>     (Mandible comment refs)
+//   - issue:<id>[#<n>]              (Mandible issue refs; #<n> is a comment ordinal)
+//   - comment:<issue>#<comment>     (legacy Mandible comment refs)
 //   - auth:<id-or-prefix>           (Mandible auth request refs)
 //   - mandible://<repo>/issue/<id>  (app-route entity refs)
 //
@@ -24,6 +24,7 @@
 // owns only the resource-ref grammar, not directive nodes.
 
 import type { ResolverRefKind, ResolverResult } from '../../src/contracts';
+import { parseCommentRefTarget, parseIssueRefTarget } from '../../src/ledger/authored-references';
 
 // --- ref grammar -------------------------------------------------------------
 
@@ -45,6 +46,7 @@ export type PreviewableResourceRef =
       kind: 'issue';
       ref: string;
       repoId?: string;
+      comment?: string;
       href: string;
       label: string;
     }
@@ -258,10 +260,11 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
-  const issue = issueAuthorityFromResourceRef(ref);
+  const issue = issueAuthorityFromResourceRef(ref) ?? commentAuthorityFromResourceRef(ref);
   if (issue) {
     const params = new URLSearchParams({ issue: issue.ref });
     if (issue.repoId) params.set('repo', issue.repoId);
+    if (issue.comment) params.set('comment', issue.comment);
     return `#/issues?${params.toString()}`;
   }
   const auth = AUTH_REF.exec(ref.trim());
@@ -285,17 +288,33 @@ export function resourceRefHref(ref: string): string {
   return `#/artifacts?ref=${encodeURIComponent(ref)}`;
 }
 
-function issueParts(value: string): { ref: string; repoId?: string } | null {
-  const authority = value.trim().replace(/^issue:/i, '');
-  if (!authority) return null;
-  const slash = authority.indexOf('/');
-  return slash > 0 && slash < authority.length - 1
-    ? { repoId: authority.slice(0, slash), ref: authority.slice(slash + 1) }
-    : { ref: authority };
+type IssueAuthority = { ref: string; repoId?: string; comment?: string };
+
+function issueParts(value: string): IssueAuthority | null {
+  const target = parseIssueRefTarget(value.trim().replace(/^issue:/i, ''));
+  if (!target) return null;
+  return {
+    ref: target.issue,
+    ...(target.project ? { repoId: target.project } : {}),
+    ...(target.ordinal !== undefined ? { comment: String(target.ordinal) } : {}),
+  };
+}
+
+/** Issue route authority for a legacy `comment:<issue>#<comment>` ref. */
+function commentAuthorityFromResourceRef(value: string): IssueAuthority | null {
+  const parsed = parseResourceRef(value);
+  if (parsed?.kind !== 'comment') return null;
+  const target = parseCommentRefTarget(parsed.canonical.replace(/^comment:/i, ''));
+  if (!target) return null;
+  return {
+    ref: target.issue,
+    ...(target.project ? { repoId: target.project } : {}),
+    comment: target.comment,
+  };
 }
 
 /** Resolve every canonical issue resource form through the shared grammar. */
-export function issueAuthorityFromResourceRef(value: string): { ref: string; repoId?: string } | null {
+export function issueAuthorityFromResourceRef(value: string): IssueAuthority | null {
   const parsed = parseResourceRef(value);
   if (!parsed) return null;
   if (parsed.kind === 'issue') return issueParts(parsed.canonical);

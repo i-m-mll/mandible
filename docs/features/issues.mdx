@@ -16,7 +16,7 @@ The view is split into a resizable sidebar (issue list) and a detail panel.
 - **Search filter** — free-text search across issue titles and IDs.
 - **Repo filter** — autocomplete dropdown to narrow to a single repository. Mandible scans all repos registered in your `repos.toml` and any repo that has had a session.
 - **Status pills** — toggle between All, Open, and Closed. A closed issue carries one canonical resolution: `delivered`, `duplicate`, or `wontfix`.
-- **Typed filters** — filter by canonical kind (`bug`, `feature`, `umbrella`, `maintenance`, `experiment`, `tracker`, or `unknown`) and priority (`low`, `normal`, `high`, `urgent`, or `unknown`). These fields are independent from labels.
+- **Typed filters** — filter by canonical kind (`bug`, `feature`, `umbrella`, `maintenance`, `experiment`, `tracker`, or `unknown`) and priority (`low`, `normal`, `high`, or `urgent`; new issues default to `normal`). These fields are independent from labels.
 - **Labels** — display and filter free-form labels exactly as stored. Labels never stand in for kind, priority, status, resolution, parentage, or branch metadata.
 - **Children** — when an issue has outgoing `parent_child` relationships, the "Show children" button narrows the list to those actual child edges. The affordance is based on relationships, not on the issue kind or a label.
 

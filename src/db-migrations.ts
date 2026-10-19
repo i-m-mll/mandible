@@ -1773,6 +1773,112 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 194, name: "auth_candidate_acceptances", statements: [...CANDIDATE_ACCEPTANCE_SCHEMA_SQL] },
   { version: 195, name: "known_conversation_ownership", statements: [...CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL] },
   { version: 196, name: "issue_search", statements: [...ISSUE_SEARCH_SCHEMA_SQL] },
+  // Issue 4ebef51 — every issue has a real priority: `normal` is the default
+  // and `unknown` is no longer a value. The rebuild keeps each issue's rowid,
+  // which keys its issue_search document, and records one ledger event per
+  // converted issue so issue heads and the change feed see the change.
+  {
+    version: 197,
+    name: "issue_priority_normal_default",
+    requires_foreign_keys_off: true,
+    statements: [
+      `CREATE TEMP TABLE ledger_priority_migration (
+        issue_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        occurred_at INTEGER NOT NULL
+      )`,
+      `INSERT INTO ledger_priority_migration (issue_id, project_id, event_id, occurred_at)
+       SELECT id, project_id, lower(hex(randomblob(32))), CAST(strftime('%s', 'now') AS INTEGER) * 1000
+       FROM ledger_issues
+       WHERE priority = 'unknown'`,
+      `CREATE TEMP TABLE ledger_issues_v196 AS
+       SELECT rowid AS issue_rowid, id, short_id, project_id, title, body, work_notes, status, resolution,
+         kind, priority, author_actor_id, author_actor_type, author_display, source, created_at,
+         updated_at, closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+       FROM ledger_issues`,
+      "DROP TABLE ledger_issues",
+      `CREATE TABLE ledger_issues (
+        id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        work_notes TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('open','closed')),
+        resolution TEXT CHECK(resolution IN ('delivered','duplicate','wontfix') OR resolution IS NULL),
+        kind TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(kind IN ('bug','feature','maintenance','experiment','tracker','umbrella','unknown')),
+        priority TEXT NOT NULL DEFAULT 'normal'
+          CHECK(priority IN ('low','normal','high','urgent')),
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'
+          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mandible'
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        deleted_at INTEGER
+      , worker_status TEXT NOT NULL DEFAULT 'none'
+        CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed')), author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,
+        CHECK((status = 'open' AND resolution IS NULL) OR (status = 'closed' AND resolution IS NOT NULL)))`,
+      `INSERT INTO ledger_issues (
+        rowid, id, short_id, project_id, title, body, work_notes, status, resolution, kind, priority,
+        author_actor_id, author_actor_type, author_display, source, created_at, updated_at,
+        closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+      )
+      SELECT issue_rowid, id, short_id, project_id, title, body, work_notes, status, resolution, kind,
+        CASE WHEN priority = 'unknown' THEN 'normal' ELSE priority END,
+        author_actor_id, author_actor_type, author_display, source, created_at, updated_at,
+        closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+      FROM ledger_issues_v196
+      ORDER BY issue_rowid`,
+      "DROP TABLE ledger_issues_v196",
+      "CREATE INDEX idx_ledger_issues_author_user ON ledger_issues(author_user_id) WHERE author_user_id IS NOT NULL",
+      "CREATE INDEX idx_ledger_issues_kind ON ledger_issues(kind)",
+      "CREATE UNIQUE INDEX idx_ledger_issues_project_short_id ON ledger_issues(project_id, short_id) WHERE short_id != ''",
+      "CREATE INDEX idx_ledger_issues_project_status_updated ON ledger_issues(project_id, status, updated_at DESC)",
+      ...ISSUE_SEARCH_SCHEMA_SQL.filter((sql) => sql.startsWith("CREATE TRIGGER") && sql.includes(" ON ledger_issues ")),
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type, source,
+        payload_json, occurred_at, observed_at, actor_user_id, evidence_method, evidence_id
+      )
+      SELECT event_id, 'issue', issue_id, 'issue.updated', 'schema-migration-v197', 'system', 'system',
+        json_object(
+          'issue_id', issue_id,
+          'patch', json_object('priority', 'normal'),
+          'previous_priority', 'unknown',
+          'priority', 'normal',
+          'migration', 'priority_unknown_retirement'
+        ),
+        occurred_at, occurred_at, NULL, NULL, NULL
+      FROM ledger_priority_migration`,
+      `INSERT INTO ledger_change_feed_state (project_id, next_sequence, retained_from_sequence, updated_at)
+       SELECT project_id, 1, 1, MAX(occurred_at)
+       FROM ledger_priority_migration
+       GROUP BY project_id
+       ON CONFLICT(project_id) DO NOTHING`,
+      `INSERT INTO ledger_change_log (project_id, sequence, event_id, recorded_at)
+       SELECT m.project_id,
+         s.next_sequence + ROW_NUMBER() OVER (PARTITION BY m.project_id ORDER BY m.issue_id) - 1,
+         m.event_id, m.occurred_at
+       FROM ledger_priority_migration m
+       JOIN ledger_change_feed_state s ON s.project_id = m.project_id`,
+      `UPDATE ledger_change_feed_state
+       SET next_sequence = next_sequence + (
+         SELECT COUNT(*) FROM ledger_priority_migration m
+         WHERE m.project_id = ledger_change_feed_state.project_id
+       ),
+       updated_at = (
+         SELECT MAX(m.occurred_at) FROM ledger_priority_migration m
+         WHERE m.project_id = ledger_change_feed_state.project_id
+       )
+       WHERE project_id IN (SELECT project_id FROM ledger_priority_migration)`,
+      "DROP TABLE ledger_priority_migration",
+    ],
+  },
 ];
 
 /**

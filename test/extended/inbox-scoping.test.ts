@@ -33,6 +33,7 @@ import type { SseEvent } from "../../src/types.js";
 import { addBinding, addCredential, createUser, setupOperator } from "../../src/users/store.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { createLedgerIssue, createLedgerProject } from "../helpers/ledger-fixtures.js";
+import { MERGE_CHANGE_MESSAGE } from "../helpers/auth-delivery-fixtures.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -1323,8 +1324,8 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
       // dump as a stand-in merge message; absent an agent-authored
       // canonical change message the request carries none.
-      expect(request?.commit_message).toBeNull();
-      expect(request?.commit_message_digest).toBeNull();
+      // The daemon stores the submitted change message and synthesizes none.
+      expect(request?.commit_message).toBe(MERGE_CHANGE_MESSAGE.commit_message);
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1365,8 +1366,8 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
       // dump as a stand-in merge message; absent an agent-authored
       // canonical change message the request carries none.
-      expect(request?.commit_message).toBeNull();
-      expect(request?.commit_message_digest).toBeNull();
+      // The daemon stores the submitted change message and synthesizes none.
+      expect(request?.commit_message).toBe(MERGE_CHANGE_MESSAGE.commit_message);
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1395,7 +1396,6 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           additions: 8,
           deletions: 7,
           diff_summary: "client diff",
-          commit_message: "client commit",
         },
       });
 
@@ -1406,7 +1406,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.additions).toBe(1);
       expect(request?.deletions).toBe(0);
       expect(request?.diff_summary).toContain("README.md");
-      expect(request?.commit_message).toBe("client commit");
+      expect(request?.commit_message).toBe(MERGE_CHANGE_MESSAGE.commit_message);
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1435,7 +1435,6 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           additions: 8,
           deletions: 7,
           diff_summary: "client diff",
-          commit_message: "client commit",
         },
       });
 
@@ -1446,7 +1445,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.additions).toBe(1);
       expect(request?.deletions).toBe(0);
       expect(request?.diff_summary).toContain("README.md");
-      expect(request?.commit_message).toBe("client commit");
+      expect(request?.commit_message).toBe(MERGE_CHANGE_MESSAGE.commit_message);
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1486,8 +1485,8 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
       // dump as a stand-in merge message; absent an agent-authored
       // canonical change message the request carries none.
-      expect(request?.commit_message).toBeNull();
-      expect(request?.commit_message_digest).toBeNull();
+      // The daemon stores the submitted change message and synthesizes none.
+      expect(request?.commit_message).toBe(MERGE_CHANGE_MESSAGE.commit_message);
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1783,7 +1782,10 @@ class TestRouteRegistrar implements RouteRegistrar {
       url: routePath,
       params: request.params ?? {},
       query: {},
-      body: request.body,
+      // Issue 4720024 — every merge submission carries a change message.
+      body: method === "POST" && routePath === "/api/auth/request"
+        ? { ...MERGE_CHANGE_MESSAGE, ...(request.body as Record<string, unknown>) }
+        : request.body,
       client_identity: Object.hasOwn(request, "client_identity") ? request.client_identity : {
         user_id: testRequesterUserId,
         slug: "inbox-auth-test",

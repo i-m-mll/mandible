@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MERGE_CHANGE_MESSAGE_FLAGS } from "./helpers/auth-delivery-fixtures.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -12,12 +13,24 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let tempDir = "";
 let homeDir = "";
 
+/**
+ * Issue 4720024 — every merge request needs a canonical change message and
+ * verification text. Supply them for merge-request cases that do not exercise
+ * the message themselves.
+ */
+function withChangeMessage(args: string[]): string[] {
+  const typeIndex = args.indexOf("--type");
+  if (args[0] !== "auth" || args[1] !== "request" || (typeIndex >= 0 && args[typeIndex + 1] !== "merge")) return args;
+  if (["--message", "--message-file", "--verification"].some((flag) => args.includes(flag))) return args;
+  return [...args, ...MERGE_CHANGE_MESSAGE_FLAGS];
+}
+
 function run(
   args: string[],
   cwd = tempDir,
   extraEnv: Record<string, string> = {},
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(CLI, args, {
+  const result = spawnSync(CLI, withChangeMessage(args), {
     cwd,
     encoding: "utf8",
     env: {
@@ -41,7 +54,7 @@ function runAsync(
   stdin = "",
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(CLI, args, {
+    const child = spawn(CLI, withChangeMessage(args), {
       cwd,
       env: {
         ...process.env,
@@ -427,7 +440,7 @@ describe("auth request staged close action sugar", () => {
     const result = run([
       "auth", "request", "feature/demo", "--title", "Not a merge", "--issue", "policy123",
       "--type", "config-change", "--promote-briefing", "group123", "base123", "proposal123",
-      "--no-watch",
+      "--message", "m", "--verification", "v", "--no-watch",
     ]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("--promote-briefing requires --type merge");

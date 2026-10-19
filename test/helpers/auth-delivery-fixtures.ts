@@ -32,3 +32,16 @@ export function publishTestCandidate(repo: string, request: AuthRequest): { merg
   const result = `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: mergeSha, repo_id: request.repo, declared_issues: request.issue_closures ?? [] })}`;
   return { mergeSha, output: `${prepared}\n${applied}\n${result}\n` };
 }
+
+/**
+ * Issue 4720024 — the canonical change message every merge request must carry,
+ * as route payload fields and as the equivalent `mandible auth request` flags.
+ */
+export const MERGE_CHANGE_MESSAGE = {
+  canonical_message: true,
+  commit_message: "Fixture outcome\n\nWhy:\nFixture.\n\nVerification:\nFixture checks pass.\n",
+  verification: "Fixture checks pass.",
+} as const;
+export const MERGE_CHANGE_MESSAGE_FLAGS: readonly string[] = [
+  "--message", "Fixture outcome\n\nWhy:\nFixture.", "--verification", "Fixture checks pass.",
+];

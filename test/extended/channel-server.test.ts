@@ -388,8 +388,14 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
       branch: "feature/x",
       title: "Merge feature/x",
       cwd: repo,
+      message: "Ship x\n\nVerification:\nTests pass.\n",
+      verification: "Tests pass.",
     });
     expect(body.command).toBe("mandible auth merge feature/x --into main");
+    // Issue 4720024 — the tool always submits a canonical change message.
+    expect(body.canonical_message).toBe(true);
+    expect(body.commit_message).toBe("Ship x\n\nVerification:\nTests pass.\n");
+    expect(body.verification).toBe("Tests pass.");
     expect(body.base_branch).toBe("main");
     expect(body.head_branch).toBe("feature/x");
     expect(body.cwd).toBe(repo);

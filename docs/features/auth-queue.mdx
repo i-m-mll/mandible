@@ -68,6 +68,13 @@ Key optional fields:
 - `commit_message` — The proposed merge commit message. Its prose does not establish issue links or closure intent.
 - `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon validates the machine-owned envelope (a `Verification:` section matching the `verification` field, no `#`-leading lines), canonicalizes the bytes, stores them back, and records the SHA-256 of those exact bytes in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Both are immutable once the request leaves `pending`; an explicit `canonical_message: false` demotes the message back to free-form review text while still pending.
 - `verification` — The `Verification:` section text. Required whenever `canonical_message` is true.
+
+Merge requests, including supersessions, require `canonical_message: true`
+with a non-empty `commit_message` and `verification`; the submission route
+refuses them otherwise with code `change_message_required`. A revision that
+edits a merge request's message must leave a canonical message with its
+verification text. Requests submitted before this rule keep their other
+revision, approval, and execution paths.
 - `spec_content` — A specification explaining the intent and design decisions.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.

@@ -198,6 +198,7 @@
           {"kind": "option","names": ["-t","--title"],"values": [{"kind": "argument","name": "title","value": {"type": "string"}}]},
           {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "body","value": {"type": "string"}}]},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "enum","values": ["bug","feature","umbrella","maintenance","experiment","tracker"]}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--priority"],"values": [{"kind": "argument","name": "low|normal|high|urgent","value": {"type": "enum","values": ["low","normal","high","urgent"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "label","value": {"type": "string"}}]}]}},
           {"kind": "repeat","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}]},"min": 0}
         ]
@@ -210,6 +211,16 @@
         "items": [
           {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
           {"kind": "argument","name": "bug|feature|umbrella|maintenance|experiment|tracker|unknown","value": {"type": "enum","values": ["bug","feature","umbrella","maintenance","experiment","tracker","unknown"]}}
+        ]
+      }
+    },
+    "issue.priority.set": {
+      "route": ["issue", "priority", "set"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
+          {"kind": "argument","name": "low|normal|high|urgent","value": {"type": "enum","values": ["low","normal","high","urgent"]}}
         ]
       }
     },
@@ -253,14 +264,13 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--supersedes"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]},{"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},{"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--drop-superseded-action"],"values": [{"kind": "argument","name": "ordinal:reason","value": {"type": "string"}}]}}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--promote-briefing"],"values": [{"kind": "argument","name": "group","value": {"type": "string"}},{"kind": "argument","name": "expected-base","value": {"type": "string"}},{"kind": "argument","name": "proposal","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]},{"kind": "sequence","items": [{"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--verification"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
+          {"kind": "choice","hint": "the canonical change message: an outcome line, then a short Why paragraph; it becomes the reviewed merge commit message","items": [{"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},{"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]},
+          {"kind": "option","hint": "the checks you ran and their results; it becomes the merge commit's Verification section","names": ["--verification"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
           {"kind": "optional","item": {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--spec"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]},{"kind": "sequence","items": [{"kind": "option","names": ["--spec-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--command"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--commit-message"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--diff-summary"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--handoff"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--dirty-policy"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
@@ -1195,7 +1205,6 @@
           {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--issue","--ref-issue","--references-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--spec"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]},{"kind": "sequence","items": [{"kind": "option","names": ["--spec-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--commit-message"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--verification"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},

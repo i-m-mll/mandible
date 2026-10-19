@@ -493,6 +493,10 @@ function migrateIssueFilter(value: string): { filter: string; notice: string | n
       migrated.push('status:closed', 'resolution:delivered');
     } else if (/^priority:important$/i.test(token)) {
       migrated.push('priority:high');
+    } else if (/^priority:(?:.*,)?unknown(?:,.*)?$/i.test(token)) {
+      const priorities = token.slice('priority:'.length).split(',')
+        .map((priority) => priority.trim().toLowerCase() === 'unknown' ? 'normal' : priority);
+      migrated.push(`priority:${[...new Set(priorities)].join(',')}`);
     } else if (/^priority:user-action-required$/i.test(token)) {
       notices.push('The priority:user-action-required filter is obsolete; choose a canonical priority instead.');
     } else {

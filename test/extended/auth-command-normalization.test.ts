@@ -16,6 +16,7 @@ import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { Router } from "../../src/server.js";
 import { createLedgerIssue, createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
 import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
+import { MERGE_CHANGE_MESSAGE } from "../helpers/auth-delivery-fixtures.js";
 import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
 import { addCredential } from "../../src/users/store.js";
 
@@ -219,6 +220,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
         method: "POST",
         url: "/api/auth/request",
         body: {
+          ...MERGE_CHANGE_MESSAGE,
           command: "mandible auth merge feature/channel-legacy",
           title: "Merge feature/channel-legacy",
           head_branch: "feature/channel-legacy",
@@ -257,6 +259,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
         method: "POST",
         url: "/api/auth/request",
         body: {
+          ...MERGE_CHANGE_MESSAGE,
           command: "mandible auth merge feature/channel-canonical --into main",
           title: "Merge feature/channel-canonical",
           head_branch: "feature/channel-canonical",
@@ -293,6 +296,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
         method: "POST",
         url: "/api/auth/request",
         body: {
+          ...MERGE_CHANGE_MESSAGE,
           command: mutant,
           title: "Merge feature/channel-mutant",
           head_branch: "feature/channel-mutant",

@@ -1,6 +1,7 @@
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
 import { getDb, resolvePrefix, type Db } from "../db.js";
+import { parseCommentRefTarget, parseIssueRefTarget } from "../ledger/authored-references.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -336,7 +337,12 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
 }
 
 function resolveIssueRef(store: LedgerStore, refValue: string, ref: string): ResolverResult {
-  const resolved = store.resolveIssueRef(refValue.trim());
+  // `issue:<id>#<n>` addresses comment ordinal n; `#0` is the description.
+  const target = parseIssueRefTarget(refValue.trim());
+  const issueRef = target
+    ? `${target.project ? `${target.project}/` : ""}${target.issue}`
+    : refValue.trim();
+  const resolved = store.resolveIssueRef(issueRef);
   if (!resolved.ok) {
     return {
       ref,
@@ -349,12 +355,20 @@ function resolveIssueRef(store: LedgerStore, refValue: string, ref: string): Res
         : {}),
     };
   }
+  if (target?.ordinal) return resolveCommentOrdinal(store, resolved.id, String(target.ordinal), ref);
   try {
     const issue = store.getIssue(resolved.id);
     return { ref, kind: "issue", resolved: true, entity: issue as unknown as Record<string, unknown> };
   } catch (error) {
     return { ref, kind: "issue", resolved: false, entity: null, error: String(error) };
   }
+}
+
+function resolveCommentOrdinal(store: LedgerStore, issueId: string, selector: string, ref: string): ResolverResult {
+  const comment = /^\d+$/.test(selector) ? store.findCommentByOrdinal(issueId, Number(selector)) : null;
+  return comment
+    ? { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> }
+    : { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
 }
 
 function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string): ResolverResult {
@@ -388,6 +402,12 @@ function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string)
 
 function resolveCommentRef(db: Db, refValue: string, ref: string): ResolverResult {
   const store = new LedgerStore(db);
+  const target = parseCommentRefTarget(refValue.trim());
+  if (target && /^\d+$/.test(target.comment)) {
+    const issue = store.resolveIssueRef(`${target.project ? `${target.project}/` : ""}${target.issue}`);
+    if (!issue.ok) return { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
+    return resolveCommentOrdinal(store, issue.id, target.comment, ref);
+  }
   try {
     const comment = store.getComment(refValue.trim());
     return { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> };

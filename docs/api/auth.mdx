@@ -62,9 +62,9 @@ Submit a new auth request.
 | `additions` | number | no | Lines added; computed server-side for merges |
 | `deletions` | number | no | Lines deleted; computed server-side for merges |
 | `diff_summary` | string | no | Unified diff content; replaced by the server-captured diff for merges |
-| `commit_message` | string | no | Merge commit message (canonical change message when `canonical_message` is true) |
-| `canonical_message` | boolean | no | Declare `commit_message` as the agent-authored canonical change message; the daemon validates its envelope, canonicalizes it, and records `commit_message_digest` |
-| `verification` | string | no | Required with `canonical_message`. The machine-owned `Verification:` section text; the daemon rejects a message whose section does not match it |
+| `commit_message` | string | merge | Merge commit message (canonical change message when `canonical_message` is true) |
+| `canonical_message` | boolean | merge | Must be true for a merge request. Declare `commit_message` as the agent-authored canonical change message; the daemon validates its envelope, canonicalizes it, and records `commit_message_digest` |
+| `verification` | string | merge | Required with `canonical_message`. The machine-owned `Verification:` section text; the daemon rejects a message whose section does not match it |
 | `spec_content` | string | no | Specification or design notes |
 | `post_merge_handoff` | string | no | Handoff note for next session |
 | `issue_references` | string[] | no | Issue IDs to attach for context; not closed on merge |

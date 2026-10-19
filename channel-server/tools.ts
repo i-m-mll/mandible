@@ -190,10 +190,16 @@ export function registerTools(
         .string()
         .optional()
         .describe("Working directory (repo root or worktree)"),
-      commit_message: z
+      message: z
         .string()
-        .optional()
-        .describe("Override commit message for the merge"),
+        .describe(
+          "Required canonical change message, used verbatim as the merge commit message: an outcome subject line, " +
+            "a blank line, a short Why paragraph, then a line reading 'Verification:' followed by exactly the " +
+            "`verification` text. No line may start with '#'.",
+        ),
+      verification: z
+        .string()
+        .describe("Required single-paragraph verification text: the checks you ran and their results"),
     },
     async (args) => {
       await ensureChannelRegistered("mandible_submit_auth");
@@ -223,7 +229,11 @@ export function registerTools(
           issue_closures: args.closes_issue_ids ?? null,
           issues: args.closes_issue_ids ?? null,
           cwd,
-          commit_message: args.commit_message ?? null,
+          // Issue 4720024 — the daemon refuses merge requests without a
+          // canonical change message and its verification text.
+          canonical_message: true,
+          commit_message: args.message,
+          verification: args.verification,
           session_id: sessionId,
         });
 

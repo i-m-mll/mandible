@@ -1052,7 +1052,7 @@ describe("issue CLI body revisions", () => {
 
     try {
       const result = await run([
-        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "tracker", "--project", "mandible",
+        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "tracker", "--priority", "high", "--project", "mandible",
       ], 0, process.cwd(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -1061,7 +1061,34 @@ describe("issue CLI body revisions", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("Created issue new-1");
       expect(seen).toHaveLength(1);
-      expect(seen[0].body).toMatchObject({ kind: "tracker", title: "Coordination", body: "Body" });
+      expect(seen[0].body).toMatchObject({ kind: "tracker", priority: "high", title: "Coordination", body: "Body" });
+    } finally {
+      responder.stop();
+    }
+  });
+
+  it("prints the server's singleton-kind refusal text and exits non-zero", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-new-singleton-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const message = "cannot create another open maintenance issue: a project may have at most one open "
+      + "maintenance issue, and this project already has one: b4e2937. Comment on the existing maintenance issue instead.";
+    const responder = startFileRpcResponder(spoolDir, () => ({
+      status: 409,
+      body: { error: message, code: "singleton_kind_open", kind: "maintenance", existing_issue_ids: ["b4e2937"] },
+    }));
+
+    try {
+      const result = await run([
+        "issue", "new", "-t", "Repo maintenance", "-m", "Body", "--kind", "maintenance", "--project", "mandible",
+      ], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Failed to create issue");
+      expect(result.stderr).toContain(message);
+      expect(result.stderr).not.toContain("Created issue");
     } finally {
       responder.stop();
     }
@@ -1810,6 +1837,24 @@ describe("issue CLI body revisions", () => {
       method: "PATCH",
       body: { kind: "experiment" },
     });
+  });
+
+  it("sets issue priority through the issue PATCH API and refuses the retired unknown value", async () => {
+    const port = await listen();
+    const result = await run(["issue", "priority", "set", "abc", "urgent"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { priority: "urgent" },
+    });
+
+    const retired = await run(["issue", "priority", "set", "abc", "unknown"], 0, process.cwd(), {
+      MANDIBLE_BASE: "file:///nonexistent-mandible-test-spool",
+    });
+    expect(retired.status).toBe(2);
+    expect(retired.stderr).toContain("Arguments do not match: mandible issue priority set");
   });
 
   it("rejects retired issue kinds instead of treating labels as kind aliases", async () => {

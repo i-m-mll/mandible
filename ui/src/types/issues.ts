@@ -26,5 +26,5 @@ export function normalizeLedgerIssueKind(value: unknown): LedgerIssueKind {
 export function normalizeLedgerIssuePriority(value: unknown): LedgerIssuePriority {
   return typeof value === 'string' && (LEDGER_PRIORITIES as readonly string[]).includes(value.trim().toLowerCase())
     ? value.trim().toLowerCase() as LedgerIssuePriority
-    : 'unknown';
+    : 'normal';
 }

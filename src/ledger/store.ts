@@ -133,6 +133,56 @@ function assertLedgerIssueLifecycle(
   if (error) throw new Error(error);
 }
 
+/**
+ * Issue kinds a project may have at most one open issue of. The rule is fixed
+ * (issue 2d4f9b8): a duplicate maintenance issue splits the record the global
+ * convention keeps in one place, so the cheap create path is refused and the
+ * caller is pointed at the existing issue.
+ */
+export const SINGLETON_OPEN_ISSUE_KINDS: readonly LedgerIssueKind[] = ["maintenance"];
+
+const SINGLETON_CONFLICT_LISTED_IDS = 3;
+
+export type SingletonKindTransition = "create" | "kind_change" | "reopen";
+
+export class LedgerSingletonKindError extends Error {
+  readonly code = "singleton_kind_open";
+  constructor(
+    readonly kind: LedgerIssueKind,
+    readonly transition: SingletonKindTransition,
+    /** Ambiguity-safe short IDs of the open issues of this kind, oldest first. */
+    readonly existingIssueIds: string[],
+  ) {
+    const listed = existingIssueIds.slice(0, SINGLETON_CONFLICT_LISTED_IDS).join(", ");
+    const more = existingIssueIds.length - SINGLETON_CONFLICT_LISTED_IDS;
+    const refusal = transition === "create"
+      ? `cannot create another open ${kind} issue`
+      : transition === "kind_change"
+        ? `cannot change this open issue's kind to ${kind}`
+        : `cannot reopen this ${kind} issue`;
+    super(
+      `${refusal}: a project may have at most one open ${kind} issue, and this project already has `
+      + `${existingIssueIds.length === 1 ? "one" : existingIssueIds.length}: ${listed}`
+      + `${more > 0 ? ` (and ${more} more)` : ""}. `
+      + `Comment on the existing ${kind} issue instead.`,
+    );
+    this.name = "LedgerSingletonKindError";
+  }
+}
+
+interface IssueOpenKindState {
+  kind: LedgerIssueKind;
+  status: LedgerIssueStatus;
+}
+
+function becomesOpenSingleton(
+  before: IssueOpenKindState | null,
+  after: IssueOpenKindState,
+): boolean {
+  if (after.status !== "open" || !SINGLETON_OPEN_ISSUE_KINDS.includes(after.kind)) return false;
+  return before === null || before.status !== "open" || before.kind !== after.kind;
+}
+
 export interface UpdateLedgerCommentPatch {
   body?: string;
   author_display?: string;
@@ -290,6 +340,43 @@ export class LedgerStore {
     };
   }
 
+  /**
+   * Check, without writing, whether moving an issue to the given kind and
+   * status would break the singleton-kind rule. Callers that apply one request
+   * as several store writes use this to refuse the whole request up front; each
+   * store write still enforces the rule inside its own transaction.
+   */
+  assertIssueKindTransition(id: string, next: Partial<IssueOpenKindState>): void {
+    const existing = this.requireIssue(id);
+    this.assertSingletonKindTransition(existing.project_id, id, existing, {
+      kind: next.kind ?? existing.kind,
+      status: next.status ?? existing.status,
+    });
+  }
+
+  private assertSingletonKindTransition(
+    projectId: string,
+    issueId: string | null,
+    before: IssueOpenKindState | null,
+    after: IssueOpenKindState,
+  ): void {
+    if (!becomesOpenSingleton(before, after)) return;
+    const rows = this.db.prepare(
+      `SELECT id, short_id FROM ledger_issues
+       WHERE project_id = ? AND kind = ? AND status = 'open' AND deleted_at IS NULL AND id != ?
+       ORDER BY created_at ASC, id ASC`,
+    ).all(projectId, after.kind, issueId ?? "") as Array<{ id: string; short_id: string }>;
+    if (rows.length === 0) return;
+    const transition: SingletonKindTransition = before === null
+      ? "create"
+      : before.status !== "open" ? "reopen" : "kind_change";
+    throw new LedgerSingletonKindError(
+      after.kind,
+      transition,
+      rows.map((row) => row.short_id || row.id.slice(0, 7)),
+    );
+  }
+
   createIssue(input: CreateLedgerIssueInput): LedgerIssue {
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
@@ -311,6 +398,10 @@ export class LedgerStore {
     const shortId = this.allocateIssueShortId(input.project_id, id);
 
     const run = this.db.transaction(() => {
+      this.assertSingletonKindTransition(input.project_id, null, null, {
+        kind: input.kind ?? "unknown",
+        status: input.status ?? "open",
+      });
       this.db.prepare(
         `INSERT INTO ledger_issues (
           id, short_id, project_id, title, body, work_notes, status, resolution, kind, priority,
@@ -328,7 +419,7 @@ export class LedgerStore {
         input.status ?? "open",
         input.resolution ?? null,
         input.kind ?? "unknown",
-        input.priority ?? "unknown",
+        input.priority ?? "normal",
         actor.actor_id,
         actor.actor_type,
         input.author_display ?? "",
@@ -460,6 +551,10 @@ export class LedgerStore {
     }
 
     const run = this.db.transaction(() => {
+      this.assertSingletonKindTransition(existing.project_id, id, existing, {
+        kind: next.kind,
+        status: existing.status,
+      });
       this.db.prepare(
         `UPDATE ledger_issues
          SET title = ?, work_notes = ?, kind = ?, priority = ?, author_display = ?, updated_at = ?
@@ -601,6 +696,7 @@ export class LedgerStore {
 
     const emitted: LedgerSsePayload[] = [];
     const run = this.db.transaction(() => {
+      this.assertSingletonKindTransition(existing.project_id, id, existing, next);
       this.db.prepare(
          `UPDATE ledger_issues
          SET title = ?, work_notes = ?, kind = ?, priority = ?, author_display = ?,
@@ -731,6 +827,10 @@ export class LedgerStore {
     const normalizedActor = this.resolveActor(actor);
 
     const run = this.db.transaction(() => {
+      this.assertSingletonKindTransition(existing.project_id, id, existing, {
+        kind: existing.kind,
+        status,
+      });
       this.db.prepare(
         `UPDATE ledger_issues
          SET status = ?, resolution = ?, closed_at = ?, updated_at = ?
@@ -919,6 +1019,10 @@ export class LedgerStore {
 
     const run = this.db.transaction(() => {
       if (input.reopen && issue.status === "closed") {
+        this.assertSingletonKindTransition(issue.project_id, issueId, issue, {
+          kind: issue.kind,
+          status: "open",
+        });
         this.db.prepare(
           `UPDATE ledger_issues
            SET status = 'open', resolution = NULL, closed_at = NULL, updated_at = ?
@@ -2059,6 +2163,14 @@ export class LedgerStore {
       throw new Error(`Ledger comment not found: ${id}`);
     }
     return row;
+  }
+
+  /** The live comment with this ordinal; ordinals start at 1 and are never reused. */
+  findCommentByOrdinal(issueId: string, ordinal: number): LedgerComment | null {
+    if (!Number.isInteger(ordinal) || ordinal < 1) return null;
+    return (this.db.prepare(
+      "SELECT * FROM ledger_comments WHERE issue_id = ? AND ordinal = ? AND deleted_at IS NULL",
+    ).get(issueId, ordinal) as LedgerComment | undefined) ?? null;
   }
 
   getIssueCheckpoint(id: string): LedgerIssueCheckpoint {

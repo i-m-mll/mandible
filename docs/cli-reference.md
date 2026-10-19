@@ -2,7 +2,7 @@
 
 ```
 ## ISSUE
-mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--priority low|normal|high|urgent] [--label <label>]...
 mandible issue list [--status open|closed|all] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
 mandible issue title <id> [--json] [--graceful]
@@ -37,6 +37,7 @@ mandible issue work-notes edit <ref> -m <text> [--base-revision <rev>]
 mandible issue work-notes clear <ref> [--base-revision <rev>]
 mandible issue work-notes history <ref> [--json] [--with-body]
 mandible issue kind set <ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
+mandible issue priority set <ref> low|normal|high|urgent
 mandible issue revision show <rev-id> [--json]
 mandible issue revision diff <old-rev-id> <new-rev-id> [--force]
 mandible issue refs backfill [--dry-run] [--apply] [--repo R] [--issue I] [--since D] [--until D] [--json]
@@ -46,11 +47,11 @@ mandible issue markdown <audit|normalize|export> [opts]
 mandible auth list [--json] [--repo R] [--head B] [--base B] [--status S] [--type T]
 mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--json]
 mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue <id>]...
+  (--message T | --message-file F) --verification T
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>
   [--type merge|commit|force-push|branch-delete|config-change|data-delete]
-  [--message T | --message-file F] [--verification T]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
-  [--commit-message T] [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
+  [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
   [--timeout N] [--no-watch] [--force|-f]
