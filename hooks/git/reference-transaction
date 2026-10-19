@@ -1,0 +1,235 @@
+#!/bin/sh
+# Mandible protected-branch guard for Git's reference-transaction hook
+# (issue 5886596; contract in docs/protected-branch-guard.md).
+#
+# Git runs this for every ref transaction, so the common case must cost almost
+# nothing and this script never calls the Mandible daemon. It reads two files
+# the daemon keeps current under ${MANDIBLE_HOME:-~/.mandible}/git-guard/:
+#   protected-refs   a header line, a "names<TAB>ref<TAB>ref..." line listing every
+#                    protected ref name, then "<git common dir><TAB>refs/heads/<name>"
+#                    per protected branch of each repository
+#   allowed_signers  the operator's signing keys (ssh-keygen allowed-signers format)
+#
+# In the `prepared` state, an update of a protected branch is allowed when:
+#   1. it leaves the branch where it is (new value equals the current value);
+#   2. it is the loose-ref prune of `git pack-refs` (the same value is already packed);
+#   3. the new tip is a commit signed by an operator key; or
+#   4. it fast-forwards the branch to a commit already contained in the
+#      branch's remote-tracking upstream (syncing from the remote).
+# Deleting an existing protected branch is always refused.
+#
+# Failure behavior: without a projection Mandible is not set up, so the update
+# is allowed with a one-line warning for main/develop (the shipped default of
+# the protected_branches setting). An error while checking a protected ref
+# refuses that update. Refs and repositories that are not protected exit
+# before any check runs.
+
+[ "${1-}" = prepared ] || exit 0
+
+# A plain `git fetch` opens one transaction per updated ref, so the common
+# small transaction is read with shell builtins and costs no fork. `read`
+# consumes a pipe one byte at a time, so a large transaction (an atomic fetch
+# or a clone) hands the remainder to a single `cat`.
+nl='
+'
+tab='	'
+input=
+count=0
+while [ "$count" -lt 32 ] && IFS= read -r line; do
+  input=$input$line$nl
+  count=$((count + 1))
+done
+[ "$count" -lt 32 ] || input=$input$(cat)$nl
+case $input in
+  *" refs/heads/"*) ;;
+  *) exit 0 ;;
+esac
+set -f
+heads=
+IFS=$nl
+for line in $input; do
+  case $line in
+    *" refs/heads/"*) heads=$heads$line$nl ;;
+  esac
+done
+unset IFS
+
+guard_dir=${MANDIBLE_HOME:-$HOME/.mandible}/git-guard
+refs_file=$guard_dir/protected-refs
+signers_file=$guard_dir/allowed_signers
+ssh_keygen=/usr/bin/ssh-keygen
+
+if [ ! -f "$refs_file" ]; then
+  names=
+  IFS=$nl
+  for line in $heads; do
+    case $line in
+      *' refs/heads/main' | *' refs/heads/develop') names="$names ${line##* refs/heads/}" ;;
+    esac
+  done
+  if [ -n "$names" ]; then
+    printf 'mandible: protected-branch guard has no data at %s; allowing unchecked update of%s (start Mandible to enable the guard)\n' \
+      "$refs_file" "$names" >&2
+  fi
+  exit 0
+fi
+
+# Stage 1: keep only updates whose ref name is protected in some repository.
+# Line 2 of the projection lists every protected ref name, so this costs two
+# builtin reads.
+names_line=
+{ read -r _ && read -r names_line; } <"$refs_file"
+case $names_line in
+  "names$tab"*) ;;
+  names) exit 0 ;;
+  *)
+    printf 'mandible: protected-branch guard projection %s is malformed; allowing unchecked update (restart Mandible to rewrite it)\n' "$refs_file" >&2
+    exit 0
+    ;;
+esac
+candidates=
+IFS=$nl
+for line in $heads; do
+  case "$names_line$tab" in
+    *"$tab${line##* }$tab"*) candidates=$candidates$line$nl ;;
+  esac
+done
+unset IFS
+[ -n "$candidates" ] || exit 0
+
+protected_keys=$nl
+while IFS= read -r line; do
+  case $line in
+    /*) protected_keys=$protected_keys$line$nl ;;
+  esac
+done <"$refs_file"
+
+hint="Protected branches change only through Mandible: submit an approval request with 'mandible auth request' (see 'mandible help auth request')."
+refused=0
+
+refuse() {
+  printf 'mandible: refusing to %s\n' "$1" >&2
+  refused=1
+}
+
+is_zero() {
+  case $1 in
+    *[!0]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Git prints the common directory with symlinks resolved, matching the
+# realpath keys Mandible writes.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null </dev/null)
+if [ -z "$common" ]; then
+  printf 'mandible: refusing to update a branch protected in Mandible: cannot resolve this repository to check it.\nmandible: %s\n' "$hint" >&2
+  exit 1
+fi
+
+# Succeeds when the commit is signed by an operator key. Sets check_error when
+# the check cannot run at all.
+operator_signed() {
+  if [ ! -f "$signers_file" ]; then
+    check_error="the operator signer list $signers_file is missing"
+    return 2
+  fi
+  if [ ! -x "$ssh_keygen" ]; then
+    check_error="$ssh_keygen is not available to verify signatures"
+    return 2
+  fi
+  if ! grep -qv '^#' "$signers_file" 2>/dev/null; then
+    check_error="no operator signing key is registered with Mandible (run 'mandible user setup')"
+    return 2
+  fi
+  (
+    unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    exec git \
+      -c gpg.format=ssh \
+      -c "gpg.ssh.allowedSignersFile=$signers_file" \
+      -c "gpg.ssh.program=$ssh_keygen" \
+      -c gpg.ssh.revocationFile=/dev/null \
+      -c gpg.minTrustLevel=fully \
+      verify-commit "$1"
+  ) >/dev/null 2>&1 </dev/null && return 0
+  return 1
+}
+
+# The branch's remote-tracking upstream, from branch.<name>.remote/merge with
+# the standard refspec. Local upstreams (remote ".") never count.
+upstream_ref() {
+  remote=$(git config --get "branch.$1.remote" </dev/null) || return 1
+  merge=$(git config --get "branch.$1.merge" </dev/null) || return 1
+  [ "$remote" != . ] || return 1
+  git config --get "remote.$remote.url" >/dev/null </dev/null || return 1
+  case $merge in
+    refs/heads/*) printf 'refs/remotes/%s/%s\n' "$remote" "${merge#refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Fast-forward to a commit the upstream already contains. The upstream's tip
+# is its current value or the value this same transaction sets for it.
+synced_from_upstream() {
+  branch=$1 current=$2 new=$3
+  tracking=$(upstream_ref "$branch") || return 1
+  if [ -n "$current" ]; then
+    git merge-base --is-ancestor "$current" "$new" </dev/null 2>/dev/null || return 1
+  fi
+  tips=$(git rev-parse -q --verify "$tracking" </dev/null 2>/dev/null)
+  case $input in
+    *" $tracking$nl"*)
+      pending=${input%%" $tracking$nl"*}
+      pending=${pending##*"$nl"}
+      tips=$tips$nl${pending#* }
+      ;;
+  esac
+  for tip in $tips; do
+    is_zero "$tip" && continue
+    git merge-base --is-ancestor "$new" "$tip" </dev/null 2>/dev/null && return 0
+  done
+  return 1
+}
+
+check_update() {
+  old=$1 new=$2 ref=$3
+  branch=${ref#refs/heads/}
+  case $protected_keys in
+    *"$nl$common$tab$ref$nl"*) ;;
+    *) return 0 ;;
+  esac
+  current=$(git rev-parse -q --verify "$ref" </dev/null 2>/dev/null) || current=
+
+  if is_zero "$new"; then
+    [ -n "$current" ] || return 0
+    if ! is_zero "$old" && [ -f "$common/packed-refs" ] &&
+      grep -qxF "$old $ref" "$common/packed-refs"; then
+      return 0
+    fi
+    refuse "delete protected branch '$branch'."
+    return
+  fi
+
+  [ "$new" = "$current" ] && return 0
+  short=$(printf '%.12s' "$new")
+  check_error=
+  operator_signed "$new" && return 0
+  synced_from_upstream "$branch" "$current" "$new" && return 0
+  refuse "move protected branch '$branch' to $short: ${check_error:-the commit is not signed by an operator key}."
+}
+
+IFS=$nl
+for line in $candidates; do
+  unset IFS
+  # shellcheck disable=SC2086 # split "<old> <new> <ref>" into fields
+  set -- $line
+  check_update "$1" "$2" "$3"
+  IFS=$nl
+done
+unset IFS
+
+if [ "$refused" -ne 0 ]; then
+  printf 'mandible: %s\n' "$hint" >&2
+  exit 1
+fi
+exit 0

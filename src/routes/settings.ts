@@ -9,8 +9,8 @@ import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import type { InstanceRole } from "../types.js";
 import { readBody, sendJson } from "./http.js";
+import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 
-const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
 const INSTRUCTION_TARGETS_KEY = "instructions.targets";
 const INSTRUCTION_POST_EXPORT_KEY = "instructions.post_export";
 const INSTRUCTION_TARGET_MODES = new Set(["managed-block", "standalone"]);
@@ -170,33 +170,6 @@ function instructionDeliverySnapshot(
     export: exportResult,
     cleanup: [],
   };
-}
-
-/**
- * Parse the protected_branches setting value into a normalized array.
- * Trims whitespace, lowercases, and filters empty entries.
- */
-export function parseProtectedBranches(value: string): string[] {
-  return value
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-/**
- * Get the list of protected branches from the settings table.
- * Falls back to ['main', 'develop'] if the setting is missing or empty.
- */
-export function getProtectedBranches(): string[] {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT value FROM settings WHERE key = ?")
-    .get("protected_branches") as { value: string } | undefined;
-  if (!row || !row.value.trim()) {
-    return DEFAULT_PROTECTED_BRANCHES;
-  }
-  const parsed = parseProtectedBranches(row.value);
-  return parsed.length > 0 ? parsed : DEFAULT_PROTECTED_BRANCHES;
 }
 
 /** Get a boolean setting with fallback default. */
@@ -435,6 +408,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run(key, body.value, now);
+    if (key === "protected_branches") notifyProtectionInputsChanged("setting:protected_branches");
 
     // Dual-write tier 2 settings to dotfiles.conf
     const TIER2_MAP: Record<string, string> = {

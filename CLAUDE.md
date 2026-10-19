@@ -162,6 +162,7 @@ The auth queue is the mechanism for protected-branch merges. Full protocol is in
 - Auth results arrive in the session inbox at next session start
 - `--issue` / `--ref-issue` attach reference-only issue context for review and tracking; they do not close issues on merge
 - Use `--closes-issue <id>` only when a successful protected-branch merge should close that issue
+- The Git `reference-transaction` guard (`hooks/git/reference-transaction`) refuses local protected-branch updates whose new tip is not operator-signed; the daemon keeps its projection under `~/.mandible/git-guard/`. See [protected-branch guard](docs/protected-branch-guard.md)
 
 ### Production runtime gate
 

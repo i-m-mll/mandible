@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import type { Db } from "./db.js";
+import {
+  DEFAULT_PROTECTED_BRANCHES_SETTING,
+  parseProtectedBranchSetting,
+  readProtectedBranchSetting,
+} from "./protected-branches.js";
 import { collectAuthMergeReview } from "./auth-change-report.js";
 import type { AuthChangeReport } from "./contracts.js";
 
@@ -605,27 +610,18 @@ function validateProtectedBaseBranch(
   repo: { root: string; defaultBranch: string | null },
   baseBranch: string
 ): void {
-  const protectedBranches = new Set(
-    readProtectedBranches(db).map((branch) => branch.trim()).filter(Boolean)
-  );
-  if (repo.defaultBranch) {
-    protectedBranches.add(repo.defaultBranch);
+  let names: string[];
+  try {
+    names = readProtectedBranchSetting(db);
+  } catch {
+    names = parseProtectedBranchSetting(DEFAULT_PROTECTED_BRANCHES_SETTING);
   }
+  const protectedBranches = new Set(names);
+  if (repo.defaultBranch) protectedBranches.add(repo.defaultBranch);
   if (!protectedBranches.has(baseBranch)) {
     throw new AuthExecutionContextError(
       `Invalid 'base_branch' for auth merge execution context: ${baseBranch} is not a protected/default branch for ${repo.root}.`
     );
-  }
-}
-
-function readProtectedBranches(db: Db): string[] {
-  try {
-    const row = db
-      .prepare("SELECT value FROM settings WHERE key = 'protected_branches'")
-      .get() as { value?: string } | undefined;
-    return String(row?.value ?? "main,develop").split(",");
-  } catch {
-    return ["main", "develop"];
   }
 }
 

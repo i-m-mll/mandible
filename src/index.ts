@@ -99,6 +99,7 @@ import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
+import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
@@ -666,6 +667,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     logger("warn", "signing_credential_audit_failed", { error: String(error) });
   }
 
+  // Issue 5886596 — keep the Git reference-transaction guard's projection
+  // (protected refs per repository plus operator allowed signers) current.
+  // Only the production daemon owns the live projection; previews and copies
+  // never write it.
+  const protectedBranchGuard = instance.role === "main" && operationalMutationsAllowed
+    ? startProtectedBranchGuardProjection({ db, logger })
+    : null;
+
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
   if (operationalMutationsAllowed) {
     reaperTimer.start();
@@ -719,6 +728,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       process.exit(1);
     }
     closing = true;
+    protectedBranchGuard?.stop();
     cancelStartupIngestion();
     if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     const scannerDrain = workScanner.stop();
