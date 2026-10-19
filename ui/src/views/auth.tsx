@@ -52,6 +52,7 @@ import {
   type AuthChangeReport,
   type AuthDependencyProjection,
   type CandidateAcceptanceProjection,
+  type ProtectedBaseAudit,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 
@@ -138,6 +139,8 @@ export type AuthRequest = {
   merge_signature?: MergeSignatureClaim;
   // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
   candidate_acceptance?: CandidateAcceptanceProjection | null;
+  // Issue 117ba80 — protected-base commits that are neither Mandible merges nor operator-signed.
+  base_audit?: ProtectedBaseAudit | null;
   action_count?: number;
   actions?: AuthRequestAction[];
   [key: string]: unknown;
@@ -838,6 +841,7 @@ function AuthRequestDetail({
   const statusClass = getStatusClass(request);
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
   const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
+  const baseAudit = status === 'pending' ? request.base_audit ?? null : null;
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showFailure = failedLike;
@@ -1058,6 +1062,9 @@ function AuthRequestDetail({
                   {acceptanceLabel}
                 </span>
               )}
+              {baseAudit?.status === 'unexpected' && (
+                <span className="status-pill status-pill--expired">Unexpected base history</span>
+              )}
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             </>
           )}
@@ -1190,6 +1197,38 @@ function AuthRequestDetail({
               <span className="auth-failure__title">{acceptanceLabel}</span>
             </div>
             {acceptance.reason && <p className="auth-failure__summary">{acceptance.reason}</p>}
+          </div>
+        )}
+
+        {baseAudit && (baseAudit.status === 'unexpected' || baseAudit.status === 'error') && (
+          <div className="auth-failure auth-failure--expired">
+            <div className="auth-failure__header">
+              <span className="auth-failure__title">
+                {baseAudit.status === 'unexpected' ? `Unexpected history on ${baseBranch ?? 'the base'}` : 'Base history check failed'}
+              </span>
+            </div>
+            {baseAudit.status === 'error' ? (
+              <p className="auth-failure__summary">{baseAudit.error}</p>
+            ) : (
+              <>
+                <p className="auth-failure__summary">
+                  These commits on the base are neither recorded Mandible merges nor signed with an operator key.
+                </p>
+                {baseAudit.unexpected.map((commit) => (
+                  <p key={commit.sha} className="auth-failure__summary">
+                    {commit.sha.slice(0, 10)} {commit.subject} — {commit.signer ? `signed by ${commit.signer}` : 'unsigned'}
+                  </p>
+                ))}
+                {baseAudit.missing_merges.map((sha) => (
+                  <p key={sha} className="auth-failure__summary">
+                    {sha.slice(0, 10)} — recorded Mandible merge no longer in the branch history
+                  </p>
+                ))}
+                {baseAudit.truncated && (
+                  <p className="auth-failure__summary">Only the newest {baseAudit.checked_commits} commits were checked.</p>
+                )}
+              </>
+            )}
           </div>
         )}
 

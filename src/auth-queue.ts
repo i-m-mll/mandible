@@ -65,7 +65,7 @@ import {
   type CandidateAcceptanceExecutor,
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
-import type { CandidateAcceptanceProjection } from "./contracts.js";
+import type { CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
 import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
@@ -73,6 +73,13 @@ import {
   type RecomputeRefusal,
 } from "./auth-recompute-refusal.js";
 import { canonicalRepoKeyForPath, canonicalRepoKeysForRef } from "./repo-identity.js";
+import {
+  auditProtectedBase,
+  describeBaseAuditFindings,
+  loadProtectedBaseAudit,
+  saveProtectedBaseAudit,
+  unseenBaseAuditFindings,
+} from "./protected-base-audit.js";
 import {
   defaultCodexThreadArchiver,
   listCompletedWorkerThreadArchiveCandidates,
@@ -1972,12 +1979,13 @@ export class AuthQueue {
       this.dropMergeCandidate(request);
       throw error;
     }
+    const baseAudit = this.refreshBaseAudit(request, false);
 
     this.syncLedgerLinksForRequest(request, false);
 
     this.broadcast({
       event: DOMAIN_EVENTS.AUTH_NEW,
-      data: { request }
+      data: { request: baseAudit ? { ...request, base_audit: baseAudit } : request }
     });
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: request.id, lifecycle: "submitted", related_request_id: predecessor?.id ?? null,
@@ -3288,6 +3296,7 @@ export class AuthQueue {
    * that candidate passed.
    */
   private prepareMergeApproval(request: AuthRequest, recompute: boolean): AuthRequest {
+    const shownBaseAudit = loadProtectedBaseAudit(this.db, request.id);
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
     const selfUpdateBlock = isAuthMergeCommand(request) ? this.selfUpdateBlock(request.repo) : null;
@@ -3310,6 +3319,7 @@ export class AuthQueue {
       request = this.recomputeStaleCandidate(request, "approve");
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
+    this.assertBaseAuditShown(request, shownBaseAudit);
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
@@ -4166,33 +4176,7 @@ export class AuthQueue {
     if (chain[0] !== newBase) {
       return refuse("first_parent_chain_mismatch");
     }
-    // Recorded evidence: completed successful queue merges for this repo and
-    // base branch, keyed by the merge commit their execution recorded
-    // (recordedMergeCommitSha — structured signature evidence preferred, with
-    // the hardened output marker as legacy fallback). A merge SHA claimed by
-    // more than one completed request is reuse/forgery evidence and
-    // disqualifies that SHA entirely (review F1).
-    const completedRows = this.db.prepare(
-      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
-        "AND exit_code = 0 AND base_branch = ? AND id != ?",
-    ).all(baseBranch, request.id) as Record<string, unknown>[];
-    const repoKeys = request.repo ? canonicalRepoKeysForRef(this.db, request.repo) : null;
-    const recorded = new Map<string, AuthRequest>();
-    const reused = new Set<string>();
-    for (const row of completedRows.map((raw) => mapRow(raw))) {
-      if (request.repo) {
-        if (!this.repoRefsMatch(request.repo, repoKeys!, row.repo ?? null)) continue;
-      } else if (row.cwd !== request.cwd && row.target_repo_root !== request.cwd) {
-        continue;
-      }
-      const mergeSha = this.recordedMergeCommitSha(row);
-      if (!mergeSha) continue;
-      if (recorded.has(mergeSha)) {
-        reused.add(mergeSha);
-        continue;
-      }
-      recorded.set(mergeSha, row);
-    }
+    const { recorded, reused } = this.recordedQueueMerges(request);
     for (let index = 0; index < chain.length; index += 1) {
       const commit = chain[index]!;
       const expectedFirstParent = chain[index + 1] ?? oldBase;
@@ -4258,6 +4242,95 @@ export class AuthQueue {
       }
     }
     return { accounted: true };
+  }
+
+  /**
+   * Recorded evidence: completed successful queue merges into the request's
+   * repo and base branch, keyed by the merge commit their execution recorded
+   * (recordedMergeCommitSha — structured signature evidence preferred, with
+   * the hardened output marker as legacy fallback). A merge SHA claimed by
+   * more than one completed request is reuse/forgery evidence: it is moved to
+   * `reused` and never counts as recorded (review F1).
+   */
+  private recordedQueueMerges(request: AuthRequest): { recorded: Map<string, AuthRequest>; reused: Set<string> } {
+    const completedRows = this.db.prepare(
+      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
+        "AND exit_code = 0 AND base_branch = ? AND id != ?",
+    ).all(request.base_branch, request.id) as Record<string, unknown>[];
+    const repoKeys = request.repo ? canonicalRepoKeysForRef(this.db, request.repo) : null;
+    const recorded = new Map<string, AuthRequest>();
+    const reused = new Set<string>();
+    for (const row of completedRows.map((raw) => mapRow(raw))) {
+      if (request.repo) {
+        if (!this.repoRefsMatch(request.repo, repoKeys!, row.repo ?? null)) continue;
+      } else if (row.cwd !== request.cwd && row.target_repo_root !== request.cwd) {
+        continue;
+      }
+      const mergeSha = this.recordedMergeCommitSha(row);
+      if (!mergeSha) continue;
+      if (recorded.has(mergeSha)) {
+        reused.add(mergeSha);
+        continue;
+      }
+      recorded.set(mergeSha, row);
+    }
+    for (const sha of reused) recorded.delete(sha);
+    return { recorded, reused };
+  }
+
+  /** Issue 117ba80 — the request's latest protected-base audit, or null when none has run. */
+  baseAuditForRequest(requestId: string): ProtectedBaseAudit | null {
+    return loadProtectedBaseAudit(this.db, requestId);
+  }
+
+  /**
+   * Issue 117ba80 — audit the request's current protected base and store the
+   * result on the request. Called only where Mandible has just read that base:
+   * submission, candidate refresh, and approval. Null when the request has no
+   * local reviewed base to audit.
+   */
+  private refreshBaseAudit(request: AuthRequest, announce = true): ProtectedBaseAudit | null {
+    if (!this.allowExternalEffects || request.execution_mode === "remote" || !isAuthMergeCommand(request) ||
+      !request.cwd || !request.base_branch || !request.merge_preflight_base_sha) return null;
+    const recordedMerges = new Map(
+      [...this.recordedQueueMerges(request).recorded].map(([sha, row]) => [sha, row.resolved_at ?? 0]),
+    );
+    const audit = auditProtectedBase(this.db, {
+      cwd: request.cwd, baseSha: request.merge_preflight_base_sha, recordedMerges, now: this.now(),
+    });
+    saveProtectedBaseAudit(this.db, request.id, audit);
+    if (announce) this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, base_audit: audit } } });
+    if (audit.status === "unexpected" || audit.status === "error") {
+      authLog("warn", "auth_protected_base_audit", {
+        subsystem: "auth", auth_request_id: request.id, base_sha: audit.base_sha, status: audit.status,
+        unexpected: audit.unexpected.map((commit) => commit.sha), missing_merges: audit.missing_merges, error: audit.error,
+      });
+    }
+    return audit;
+  }
+
+  /**
+   * Issue 117ba80 — execution never relies on a base audit the approver was
+   * not shown. The reviewed candidate binds its base, and cli/auth-merge.sh
+   * refuses to merge onto any other, so a base whose audit was stored before
+   * this approval began needs no further check: its findings were on the
+   * request. When approval itself established or moved the base, the base is
+   * audited now and any finding not already shown refuses, naming each commit.
+   * The refusal stores the audit, so the operator sees the list on the request
+   * and decides by approving again.
+   */
+  private assertBaseAuditShown(request: AuthRequest, shown: ProtectedBaseAudit | null): void {
+    if (shown && shown.base_sha === request.merge_preflight_base_sha) return;
+    const current = this.refreshBaseAudit(request);
+    if (!current) return;
+    const unseen = unseenBaseAuditFindings(shown, current);
+    if (unseen.unexpected.length === 0 && unseen.missing_merges.length === 0) return;
+    throw new AuthQueueError(
+      "merge_check_failed",
+      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator key, ` +
+        `and this approval had not shown it:\n${describeBaseAuditFindings(unseen)}\n` +
+        "It is now listed on the request. Review it and approve again to proceed. No protected state changed.",
+    );
   }
 
   /**
@@ -4390,7 +4463,9 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "revised" } });
     // Issue 7d83fe5 — the re-pinned candidate needs its own acceptance.
     this.startCandidateAcceptanceAutomatically(request.id);
-    return this.requireRequest(request.id);
+    const refreshed = this.requireRequest(request.id);
+    this.refreshBaseAudit(refreshed);
+    return refreshed;
   }
 
   /**

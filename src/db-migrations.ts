@@ -30,6 +30,7 @@ import {
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
+import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
@@ -1879,6 +1880,8 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE ledger_priority_migration",
     ],
   },
+  // Issue 117ba80 — the latest protected-base history audit of each merge request.
+  { version: 198, name: "auth_base_audits", statements: [...PROTECTED_BASE_AUDIT_SCHEMA_SQL] },
 ];
 
 /**

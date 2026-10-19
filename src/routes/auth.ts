@@ -302,6 +302,8 @@ export function registerAuthRoutes(
       convergence: authQueue.convergenceForRequest(request.id),
       // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
       candidate_acceptance: authQueue.candidateAcceptanceForRequest(request),
+      // Issue 117ba80 — protected-base commits that are neither Mandible merges nor operator-signed.
+      base_audit: authQueue.baseAuditForRequest(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
@@ -611,6 +613,7 @@ export function registerAuthRoutes(
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
+        base_audit: authQueue.baseAuditForRequest(r.id),
         ...authAttributionReadFields(attributionResolver, r),
       };
     });

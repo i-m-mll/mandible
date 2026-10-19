@@ -239,6 +239,28 @@ already exist but the request ID is unknown.
 | `--status <status>` | Filter by request status |
 | `--type <type>` | Filter by auth request type |
 
+### mandible auth show
+
+Print one auth request, including its protected-base history audit.
+
+```
+mandible auth show <request> [--json]
+```
+
+Whenever Mandible reads a merge request's protected base (submission,
+candidate refresh, and approval), it walks the base's first-parent history
+back to the newest recorded Mandible merge into that repo and branch. Each
+commit above it must be signed with one of the operator's `ssh_key`
+credentials. Any other commit is listed with its short SHA, subject, and
+signer or "unsigned", as is a recorded Mandible merge that the branch no
+longer contains. The dashboard request view shows the same list.
+
+The reviewed candidate binds its base, so the operator decides by approving
+or rejecting a request that shows the list. When approval itself establishes
+or moves the base and finds commits the request had not shown, approval
+refuses, names them, and stores them on the request; approving again after
+review proceeds.
+
 ### mandible auth check
 
 Check whether a branch can merge cleanly against the target branch and the
