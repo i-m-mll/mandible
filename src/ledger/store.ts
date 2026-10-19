@@ -328,7 +328,7 @@ export class LedgerStore {
         input.status ?? "open",
         input.resolution ?? null,
         input.kind ?? "unknown",
-        input.priority ?? "unknown",
+        input.priority ?? "normal",
         actor.actor_id,
         actor.actor_type,
         input.author_display ?? "",

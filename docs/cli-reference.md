@@ -2,7 +2,7 @@
 
 ```
 ## ISSUE
-mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--priority low|normal|high|urgent] [--label <label>]...
 mandible issue list [--status open|closed|all] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
 mandible issue title <id> [--json] [--graceful]
@@ -37,6 +37,7 @@ mandible issue work-notes edit <ref> -m <text> [--base-revision <rev>]
 mandible issue work-notes clear <ref> [--base-revision <rev>]
 mandible issue work-notes history <ref> [--json] [--with-body]
 mandible issue kind set <ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
+mandible issue priority set <ref> low|normal|high|urgent
 mandible issue revision show <rev-id> [--json]
 mandible issue revision diff <old-rev-id> <new-rev-id> [--force]
 mandible issue refs backfill [--dry-run] [--apply] [--repo R] [--issue I] [--since D] [--until D] [--json]

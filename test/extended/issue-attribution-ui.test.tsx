@@ -52,7 +52,7 @@ function detail(): LedgerIssueDetailProjection {
     status: 'open',
     resolution: null,
     kind: 'feature',
-    priority: 'unknown',
+    priority: 'normal',
     source: 'mandible',
     author,
     created_at: 1,

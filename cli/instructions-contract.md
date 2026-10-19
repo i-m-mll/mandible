@@ -35,9 +35,10 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command issue.description.edit}} - Edit issue descriptions while preserving body revision history.
 - {{command issue.description.show}}, {{command issue.description.history}} - Print the current issue description, or its immutable revision history; --with-body includes each snapshot.
 - {{command issue.revision.show}}, {{command issue.revision.diff}} - Print one text revision, or diff two revisions of the same description, comment, or working notes; --force allows different entities.
-- {{command issue.new}} - Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; labels remain independent metadata.
+- {{command issue.new}} - Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; priority defaults to normal; labels remain independent metadata.
 - {{command issue.work-notes.show}}, {{command issue.work-notes.edit}}, {{command issue.work-notes.clear}}, {{command issue.work-notes.history}} - Read, replace, clear, or inspect immutable history for the issue's current working notes. Edits and clears use the issue PATCH API with an optional expected working-notes revision.
 - {{command issue.kind.set}} - Set the canonical issue kind through the existing issue PATCH API; kind is independent from labels.
+- {{command issue.priority.set}} - Set the issue priority through the existing issue PATCH API. Every issue has one of low, normal, high, or urgent.
 - {{command issue.label.add}} / {{command issue.label.rm}} - Add or remove one free-form label; labels never mirror or mutate canonical issue metadata.
 - {{command auth.list}} - Find existing auth requests before submitting duplicates.
 - {{command auth.check}} - Report whether a merge is clean against the target and queued pairwise-independent requests.

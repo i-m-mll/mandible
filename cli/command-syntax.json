@@ -198,6 +198,7 @@
           {"kind": "option","names": ["-t","--title"],"values": [{"kind": "argument","name": "title","value": {"type": "string"}}]},
           {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "body","value": {"type": "string"}}]},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "enum","values": ["bug","feature","umbrella","maintenance","experiment","tracker"]}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--priority"],"values": [{"kind": "argument","name": "low|normal|high|urgent","value": {"type": "enum","values": ["low","normal","high","urgent"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "label","value": {"type": "string"}}]}]}},
           {"kind": "repeat","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}]},"min": 0}
         ]
@@ -210,6 +211,16 @@
         "items": [
           {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
           {"kind": "argument","name": "bug|feature|umbrella|maintenance|experiment|tracker|unknown","value": {"type": "enum","values": ["bug","feature","umbrella","maintenance","experiment","tracker","unknown"]}}
+        ]
+      }
+    },
+    "issue.priority.set": {
+      "route": ["issue", "priority", "set"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
+          {"kind": "argument","name": "low|normal|high|urgent","value": {"type": "enum","values": ["low","normal","high","urgent"]}}
         ]
       }
     },

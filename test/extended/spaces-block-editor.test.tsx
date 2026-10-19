@@ -290,7 +290,7 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
 
 function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
   return {
-    kind: 'feature', priority: 'unknown', source: 'mandible', resolution: null, comments: [], checkpoints: [],
+    kind: 'feature', priority: 'normal', source: 'mandible', resolution: null, comments: [], checkpoints: [],
     detail_stage: 'full',
     work_notes: '', work_notes_revision: null, worker_status: 'none',
     issue_branches: [], dependencies: [], dependency_warning: false, timeline_partial: false,

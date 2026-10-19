@@ -33,7 +33,7 @@ function childRef(overrides: Partial<LedgerIssueSummaryRef> = {}): LedgerIssueSu
     status: "open",
     resolution: null,
     kind: "feature",
-    priority: "unknown",
+    priority: "normal",
     labels: [],
     ...overrides,
   };
@@ -79,7 +79,7 @@ function detail(overrides: Partial<LedgerIssueDetailProjection> = {}): LedgerIss
     status: "open",
     resolution: null,
     kind: "feature",
-    priority: "unknown",
+    priority: "normal",
     source: "mandible",
     author: {
       id: null,

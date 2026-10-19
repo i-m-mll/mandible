@@ -1715,6 +1715,9 @@ export function registerIssueRoutes(
     const requestedKind = body.kind === undefined
       ? undefined
       : enumValue(body.kind, LEDGER_ISSUE_KINDS);
+    const requestedPriority = body.priority === undefined
+      ? undefined
+      : enumValue(body.priority, LEDGER_PRIORITIES);
     const root = typeof body.root === "string" && body.root.trim() ? body.root.trim() : repoRef;
     if (!title || !issueBody.trim()) {
       sendJson(res, 400, { error: "title and body are required" });
@@ -1722,6 +1725,10 @@ export function registerIssueRoutes(
     }
     if (body.kind !== undefined && !requestedKind) {
       sendJson(res, 400, { error: "invalid kind" });
+      return;
+    }
+    if (body.priority !== undefined && !requestedPriority) {
+      sendJson(res, 400, { error: "invalid priority", accepted_priorities: LEDGER_PRIORITIES });
       return;
     }
 
@@ -1794,6 +1801,7 @@ export function registerIssueRoutes(
       body: issueBody,
       labels,
       kind: requestedKind ?? kindFromLabels(labels),
+      priority: requestedPriority ?? undefined,
       actor_type: "mandible_user",
       author_display: "Mandible",
       attribution: attributionForRequest(db, req),
@@ -1999,7 +2007,7 @@ export function registerIssueRoutes(
       return;
     }
     if (body.priority !== undefined && !priority) {
-      sendJson(res, 400, { error: "invalid priority" });
+      sendJson(res, 400, { error: "invalid priority", accepted_priorities: LEDGER_PRIORITIES });
       return;
     }
     if (kind) patch.kind = kind;
