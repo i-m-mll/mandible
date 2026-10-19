@@ -496,17 +496,12 @@ describe("system log route daemon_log source", () => {
         limit: "2",
       }), newest);
       const payload = newest.payload as {
-        total: number;
         entries: Array<{ id: string }>;
         older_cursor: string;
-        facets: { levels: Array<{ value: string; count: number }> };
+        facets: { entity_refs: Array<{ type: string; value: string; count: number }> };
       };
-      expect(payload.total).toBe(3);
       expect(payload.entries.map((entry) => entry.id)).toEqual(["b", "c"]);
-      expect(payload.facets.levels).toEqual([
-        { value: "warn", count: 2 },
-        { value: "error", count: 1 },
-      ]);
+      expect(payload.facets.entity_refs).toEqual([{ type: "issue", value: "issue-1", count: 3 }]);
 
       insertPrimary.run("d", 4_000, "warn", "new-d", "auth", "issue-1");
       const older = createResponse();
@@ -568,7 +563,7 @@ describe("system log route daemon_log source", () => {
     await routes.handler("GET", "/api/system/logs")(request({ level: "debug", limit: "10" }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.payload).toMatchObject({ source: "daemon_log", total: 1, exists: true });
+    expect(res.payload).toMatchObject({ source: "daemon_log", exists: true });
     expect((res.payload as { entries: Array<Record<string, unknown>> }).entries[0]).toMatchObject({
       event: "system_route_row",
       subsystem: "test",
@@ -602,15 +597,13 @@ describe("system log route daemon_log source", () => {
     }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.payload).toMatchObject({ source: "daemon_log", total: 1, exists: true });
+    expect(res.payload).toMatchObject({ source: "daemon_log", exists: true });
     const payload = res.payload as {
       entries: Array<Record<string, unknown>>;
       facets: {
-        levels: Array<{ value: string; count: number }>;
         subsystems: Array<{ value: string; count: number }>;
         events: Array<{ value: string; count: number }>;
         entity_refs: Array<{ type: string; value: string; count: number }>;
-        latest_heartbeat_ts: string | null;
       };
     };
     expect(payload.entries[0]).toMatchObject({
@@ -619,11 +612,9 @@ describe("system log route daemon_log source", () => {
       auth_request_id: "auth-1",
       issue_id: "issue-1",
     });
-    expect(payload.facets.levels).toEqual([{ value: "error", count: 1 }]);
     expect(payload.facets.subsystems).toEqual([{ value: "auth", count: 1 }]);
     expect(payload.facets.events).toEqual([{ value: "auth_failure", count: 1 }]);
     expect(payload.facets.entity_refs).toContainEqual({ type: "auth_request", value: "auth-1", count: 1 });
     expect(payload.facets.entity_refs).toContainEqual({ type: "issue", value: "issue-1", count: 1 });
-    expect(payload.facets.latest_heartbeat_ts).toBeNull();
   });
 });

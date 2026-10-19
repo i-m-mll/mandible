@@ -39,12 +39,10 @@ type LogEntityFacetValue = LogFacetValue & {
 };
 
 type LogFacets = {
-  levels: LogFacetValue[];
   subsystems: LogFacetValue[];
   events: LogFacetValue[];
   entity_refs: LogEntityFacetValue[];
   latest_ts: string | null;
-  latest_heartbeat_ts: string | null;
 };
 
 type LogFilters = {
@@ -62,6 +60,23 @@ type LogFilters = {
 };
 
 type LogCursor = { ts: number; id: string };
+
+type SqlClause = { sql: string; params: unknown[] };
+
+const ENTITY_COLUMNS = [
+  ["issue", "issue_id"],
+  ["auth_request", "auth_request_id"],
+  ["artifact", "artifact_id"],
+  ["session", "session_id"],
+  ["repo", "repo_id"],
+] as const satisfies ReadonlyArray<readonly [LogEntityFacetValue["type"], string]>;
+const ENTITY_COLUMN_NAMES = ENTITY_COLUMNS.map(([, column]) => column);
+
+type LogWindowRow = { id: string; ts: number; subsystem: string; event: string; hit: number | null }
+  & Record<(typeof ENTITY_COLUMNS)[number][1], string | null>;
+
+/** Rows one request may examine: about 20 ms of SQLite work on a warm cache. */
+export const LOG_WINDOW_ROWS = 10_000;
 
 const DEFAULT_TAIL_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_MAX_TAIL_BYTES = 64 * 1024 * 1024;
@@ -172,7 +187,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
       if (code === "ENOENT") {
-        sendJson(res, 200, { entries: [], total: 0, log_file: daemonStderrLogPath(), exists: false });
+        sendJson(res, 200, { entries: [], log_file: daemonStderrLogPath(), exists: false });
         return;
       }
       sendJson(res, 500, { error: `failed to read log file: ${String(err)}` });
@@ -212,7 +227,6 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
 
     sendJson(res, 200, {
       entries: page,
-      total,
       limit: filters.limit,
       offset: filters.offset,
       log_file: daemonStderrLogPath(),
@@ -280,9 +294,14 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
   }), { operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 }
 
+/**
+ * Reads at most LOG_WINDOW_ROWS candidates from one index-backed access path,
+ * so a request's synchronous cost is bounded by the window, not the table.
+ * Remaining filters and the facets are evaluated inside the window; a full
+ * window hands its boundary to the client as the older cursor.
+ */
 function queryDaemonLog(db: Db, filters: LogFilters): {
   entries: LogEntry[];
-  total: number;
   limit: number;
   offset: number;
   log_file: string;
@@ -292,26 +311,30 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   older_cursor: string | null;
   has_older: boolean;
 } {
-  const where = buildDaemonLogWhere(filters);
   const source = visibleDaemonLogSource(db);
-  const total = Number((db
-    .prepare(`${source.cte} SELECT COUNT(*) AS count FROM ${source.table} ${where.sql}`)
-    .get(...where.params) as { count?: number } | undefined)?.count ?? 0);
-  const pageWhere = filters.before
-    ? {
-        sql: `${where.sql ? `${where.sql} AND` : "WHERE"} (ts < ? OR (ts = ? AND id < ?))`,
-        params: [...where.params, filters.before.ts, filters.before.ts, filters.before.id],
-      }
-    : where;
-  const rows = db
+  const { access, residual } = buildDaemonLogQuery(filters);
+  const candidates = db
     .prepare(
-      `${source.cte} SELECT *
+      `${source.cte} SELECT id, ts, subsystem, event, ${ENTITY_COLUMN_NAMES.join(", ")}, ${residual.sql} AS hit
        FROM ${source.table}
-       ${pageWhere.sql}
+       WHERE ${access.sql}
        ORDER BY ts DESC, id DESC
-       LIMIT ? OFFSET ?`,
+       LIMIT ?`,
     )
-    .all(...pageWhere.params, filters.limit + 1, filters.offset) as Array<{
+    .all(...residual.params, ...access.params, LOG_WINDOW_ROWS) as LogWindowRow[];
+  const matches = candidates.filter((row) => row.hit);
+  const pageEnd = filters.offset + filters.limit;
+  const page = matches.slice(filters.offset, pageEnd);
+  const boundary = matches.length > pageEnd
+    ? page.at(-1)
+    : candidates.length === LOG_WINDOW_ROWS ? candidates.at(-1) : undefined;
+  const rows = page.length === 0 ? [] : db
+    .prepare(
+      `${source.cte} SELECT * FROM ${source.table}
+       WHERE id IN (${page.map(() => "?").join(", ")})
+       ORDER BY ts ASC, id ASC`,
+    )
+    .all(...page.map((row) => row.id)) as Array<{
       id: string;
       ts: number;
       level: string;
@@ -324,9 +347,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
       session_id: string | null;
       repo_id: string | null;
     }>;
-  const hasOlder = rows.length > filters.limit;
-  const pageRows = rows.slice(0, filters.limit);
-  const entries = [...pageRows].reverse().map((row) => {
+  const entries = rows.map((row) => {
     const fields = parseJsonObject(row.fields_json);
     return {
       ...fields,
@@ -345,17 +366,14 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   });
   return {
     entries,
-    total,
     limit: filters.limit,
     offset: filters.offset,
     log_file: daemonStderrLogPath(),
     exists: true,
     source: "daemon_log",
-    facets: queryDaemonLogFacets(db, source, where),
-    older_cursor: hasOlder && pageRows.length > 0
-      ? encodeLogCursor(pageRows[pageRows.length - 1])
-      : null,
-    has_older: hasOlder,
+    facets: logFacets(matches),
+    older_cursor: boundary ? encodeLogCursor(boundary) : null,
+    has_older: boundary !== undefined,
   };
 }
 
@@ -430,147 +448,75 @@ function parseLogTimestamp(raw: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function buildDaemonLogWhere(filters: LogFilters): { sql: string; params: unknown[] } {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  const allowedLevels = filters.levels.length > 0 ? filters.levels : levelsAtOrAbove(filters.minLevel);
-  clauses.push(`level IN (${allowedLevels.map(() => "?").join(", ")})`);
-  params.push(...allowedLevels);
-
-  if (filters.subsystem) {
-    clauses.push("subsystem = ?");
-    params.push(filters.subsystem);
-  }
-  if (filters.event) {
-    clauses.push("event = ?");
-    params.push(filters.event);
-  }
-  if (filters.sinceMs !== null) {
-    clauses.push("ts >= ?");
-    params.push(filters.sinceMs);
-  }
-  if (filters.untilMs !== null) {
-    clauses.push("ts <= ?");
-    params.push(filters.untilMs);
-  }
-  if (filters.q) {
-    const pattern = `%${escapeLike(filters.q)}%`;
-    clauses.push(
-      `(event LIKE ? ESCAPE '\\' OR subsystem LIKE ? ESCAPE '\\' OR fields_json LIKE ? ESCAPE '\\'
-        OR issue_id LIKE ? ESCAPE '\\' OR auth_request_id LIKE ? ESCAPE '\\'
-        OR artifact_id LIKE ? ESCAPE '\\' OR session_id LIKE ? ESCAPE '\\' OR repo_id LIKE ? ESCAPE '\\')`,
-    );
-    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
-  }
+/**
+ * The first keyed filter (related, then event, then subsystem) plus the time
+ * range is the access path; every key has a `(key, ts DESC)` index, so the
+ * window walks only matching rows. Other filters stay residual.
+ */
+function buildDaemonLogQuery(filters: LogFilters): { access: SqlClause; residual: SqlClause } {
+  const keyed: SqlClause[] = [];
   if (filters.related) {
     const related = parseRelatedFilter(filters.related);
-    if (related.type) {
-      clauses.push(`${related.column} = ?`);
-      params.push(related.value);
-    } else {
-      clauses.push(
-        "(issue_id = ? OR auth_request_id = ? OR artifact_id = ? OR session_id = ? OR repo_id = ?)",
-      );
-      params.push(related.value, related.value, related.value, related.value, related.value);
-    }
+    const columns = related.type ? [related.column] : ENTITY_COLUMN_NAMES;
+    keyed.push(anyColumn(columns, "= ?", related.value));
+  }
+  if (filters.event) keyed.push({ sql: "event = ?", params: [filters.event] });
+  if (filters.subsystem) keyed.push({ sql: "subsystem = ?", params: [filters.subsystem] });
+  const [keyedAccess, ...keyedResidual] = keyed;
+
+  const access = keyedAccess ? [keyedAccess] : [];
+  if (filters.sinceMs !== null) access.push({ sql: "ts >= ?", params: [filters.sinceMs] });
+  if (filters.untilMs !== null) access.push({ sql: "ts <= ?", params: [filters.untilMs] });
+  if (filters.before) {
+    const { ts, id } = filters.before;
+    access.push({ sql: "ts <= ? AND (ts < ? OR id < ?)", params: [ts, ts, id] });
   }
 
+  const levels = filters.levels.length > 0 ? filters.levels : levelsAtOrAbove(filters.minLevel);
+  const residual = [{ sql: `level IN (${levels.map(() => "?").join(", ")})`, params: levels }, ...keyedResidual];
+  if (filters.q) {
+    const columns = ["event", "subsystem", "fields_json", ...ENTITY_COLUMN_NAMES];
+    residual.push(anyColumn(columns, "LIKE ? ESCAPE '\\'", `%${escapeLike(filters.q)}%`));
+  }
+  return { access: conjunction(access), residual: conjunction(residual) };
+}
+
+function anyColumn(columns: readonly string[], predicate: string, value: unknown): SqlClause {
   return {
-    sql: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
-    params,
+    sql: `(${columns.map((column) => `${column} ${predicate}`).join(" OR ")})`,
+    params: columns.map(() => value),
   };
 }
 
-function queryDaemonLogFacets(
-  db: Db,
-  source: { cte: string; table: string },
-  where: { sql: string; params: unknown[] },
-): LogFacets {
+function conjunction(clauses: SqlClause[]): SqlClause {
   return {
-    levels: queryFacet(db, source, "level", where, 10),
-    subsystems: queryFacet(db, source, "subsystem", where, 50),
-    events: queryFacet(db, source, "event", where, 80),
-    entity_refs: queryEntityFacets(db, source, where),
-    latest_ts: isoFromMs(queryMaxTs(db, source, where.sql, where.params)),
-    latest_heartbeat_ts: isoFromMs(queryMaxTs(
-      db,
-      source,
-      `${where.sql ? `${where.sql} AND` : "WHERE"} level = 'debug'
-        AND (event LIKE '%tick%' OR event LIKE '%heartbeat%' OR event LIKE '%reconcile%' OR event LIKE '%reaper%')`,
-      where.params,
-    )),
+    sql: clauses.length > 0 ? clauses.map((clause) => clause.sql).join(" AND ") : "1",
+    params: clauses.flatMap((clause) => clause.params),
   };
 }
 
-function queryFacet(
-  db: Db,
-  source: { cte: string; table: string },
-  column: "level" | "subsystem" | "event",
-  where: { sql: string; params: unknown[] },
-  limit: number,
-): LogFacetValue[] {
-  return (db
-    .prepare(
-      `${source.cte} SELECT ${column} AS value, COUNT(*) AS count
-       FROM ${source.table}
-       ${where.sql}
-       GROUP BY ${column}
-       ORDER BY count DESC, ${column} ASC
-       LIMIT ?`,
-    )
-    .all(...where.params, limit) as Array<{ value: string; count: number }>).map((row) => ({
-      value: row.value,
-      count: Number(row.count),
-    }));
+function logFacets(matches: LogWindowRow[]): LogFacets {
+  const entityRefs = ENTITY_COLUMNS.flatMap(([type, column]) =>
+    topValues(matches.map((row) => row[column]), 20).map((facet) => ({ type, ...facet })));
+  return {
+    subsystems: topValues(matches.map((row) => row.subsystem), 50),
+    events: topValues(matches.map((row) => row.event), 80),
+    entity_refs: entityRefs
+      .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type) || a.value.localeCompare(b.value))
+      .slice(0, 80),
+    latest_ts: matches.length > 0 ? new Date(matches[0].ts).toISOString() : null,
+  };
 }
 
-function queryEntityFacets(
-  db: Db,
-  source: { cte: string; table: string },
-  where: { sql: string; params: unknown[] },
-): LogEntityFacetValue[] {
-  const specs: Array<{ type: LogEntityFacetValue["type"]; column: string }> = [
-    { type: "issue", column: "issue_id" },
-    { type: "auth_request", column: "auth_request_id" },
-    { type: "artifact", column: "artifact_id" },
-    { type: "session", column: "session_id" },
-    { type: "repo", column: "repo_id" },
-  ];
-  const values: LogEntityFacetValue[] = [];
-  for (const spec of specs) {
-    const rows = db
-      .prepare(
-        `${source.cte} SELECT ${spec.column} AS value, COUNT(*) AS count
-         FROM ${source.table}
-         ${where.sql ? `${where.sql} AND` : "WHERE"} ${spec.column} IS NOT NULL AND ${spec.column} != ''
-         GROUP BY ${spec.column}
-         ORDER BY count DESC, ${spec.column} ASC
-         LIMIT 20`,
-      )
-      .all(...where.params) as Array<{ value: string; count: number }>;
-    values.push(...rows.map((row) => ({
-      type: spec.type,
-      value: row.value,
-      count: Number(row.count),
-    })));
+function topValues(values: Array<string | null>, limit: number): LogFacetValue[] {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-  return values.sort((a, b) => b.count - a.count || a.type.localeCompare(b.type) || a.value.localeCompare(b.value)).slice(0, 80);
-}
-
-function queryMaxTs(
-  db: Db,
-  source: { cte: string; table: string },
-  whereSql: string,
-  params: unknown[],
-): number | null {
-  const row = db
-    .prepare(`${source.cte} SELECT MAX(ts) AS ts FROM ${source.table} ${whereSql}`)
-    .get(...params) as { ts?: number | null } | undefined;
-  return typeof row?.ts === "number" ? row.ts : null;
-}
-
-function isoFromMs(value: number | null): string | null {
-  return value === null ? null : new Date(value).toISOString();
+  return [...counts]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : 1))
+    .slice(0, limit);
 }
 
 function escapeLike(value: string): string {

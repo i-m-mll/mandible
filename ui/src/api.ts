@@ -2663,12 +2663,10 @@ export type LogEntityFacetValue = LogFacetValue & {
 };
 
 export type LogFacets = {
-  levels: LogFacetValue[];
   subsystems: LogFacetValue[];
   events: LogFacetValue[];
   entity_refs: LogEntityFacetValue[];
   latest_ts: string | null;
-  latest_heartbeat_ts: string | null;
 };
 
 export type LogEntry = {
@@ -2688,7 +2686,6 @@ export type LogEntry = {
 
 export type LogsResponse = {
   entries: LogEntry[];
-  total: number;
   limit: number;
   offset: number;
   log_file: string;

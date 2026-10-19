@@ -400,7 +400,12 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     setAutoScroll(false);
     setLoadingOlder(true);
     try {
-      const result = await loadLogs(filterParam(filters, olderCursor));
+      // The daemon examines a bounded window per request; keep walking older
+      // windows until one holds a match or the log is exhausted.
+      let result = await loadLogs(filterParam(filters, olderCursor));
+      while (result.entries.length === 0 && result.has_older && result.older_cursor) {
+        result = await loadLogs(filterParam(filters, result.older_cursor));
+      }
       setEntries((current) => mergeLogEntries(result.entries, current).slice(0, MAX_RENDERED_LOG_ROWS));
       setOlderCursor(result.older_cursor || null);
       setHasOlder(Boolean(result.has_older));
@@ -650,7 +655,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
       <div className="logs-summary">
         <span>{entries.length} shown</span>
         <span>{facets?.latest_ts ? `latest ${formatIsoStatus(facets.latest_ts)}` : 'latest unknown'}</span>
-        <span>{facets?.latest_heartbeat_ts ? `reconciler tick ${formatIsoStatus(facets.latest_heartbeat_ts)}` : 'no reconciler tick in filter'}</span>
       </div>
 
       {logFileExists === false && (
@@ -671,13 +675,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
           {loadingOlder && (
             <div className="logs-page-status">Loading older entries…</div>
           )}
-          {!loadingOlder && hasOlder && entries.length > 0 && (
+          {!loadingOlder && hasOlder && (
             <button type="button" className="logs-load-older" onClick={() => void fetchOlder()}>
               Load older entries
             </button>
           )}
           {entries.length === 0 && !loading && (
-            <div className="empty-state">No log entries match the current filters.</div>
+            <div className="empty-state">No log entries match the current filters{hasOlder ? ' in the newest rows' : ''}.</div>
           )}
           {entries.map((entry, i) => {
             const id = rowId(entry, i);
