@@ -282,15 +282,19 @@ provider claims are never clearance authorization.
 Submit an auth request and optionally watch for resolution.
 
 ```
-mandible auth request <branch> --title <text> [options]
+mandible auth request <branch> --title <text> --issue <id> (--message <text> | --message-file <file>) --verification <text> [options]
 ```
 
-**Required:**
+**Required for a merge request:**
 
 | Arg | Description |
 |---|---|
 | `<branch>` | Branch to merge into the protected branch |
 | `--title <text>` | Dashboard title |
+| `--issue <id>` or `--closes-issue <id>` | At least one issue (repeatable) |
+| `--message <text>` | Agent-authored canonical change message (see below) |
+| `--message-file <file>` | Alternative to `--message`: read the change message from a file (`-` for stdin) |
+| `--verification <text>` | The checks run and their results; becomes the `Verification:` section |
 
 **Options:**
 
@@ -300,10 +304,6 @@ mandible auth request <branch> --title <text> [options]
 | `--issue <id>` | Issue ID to reference for context; does not close on merge (repeatable) |
 | `--ref-issue <id>` | Alias for `--issue` |
 | `--closes-issue <id>` | Issue ID to close on successful merge (repeatable) |
-| `--message <text>` | Agent-authored canonical change message (see below) |
-| `--message-file <file>` | Read the canonical change message from a file (`-` for stdin) |
-| `--verification <text>` | Machine-owned `Verification:` section (default `Not recorded`) |
-| `--commit-message <text>` | Legacy free-form review text; not used as the merge commit message |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
 | `--spec <text>` | Inline spec/review Markdown |
 | `--spec-file <file>` | Read spec/review Markdown from a file (`-` for stdin); mutually exclusive with `--spec` |
@@ -333,17 +333,21 @@ set locally.
 the outcome, and the rest is the body where the agent writes `Why:` and an
 optional `Caveats:` section. The CLI owns the rest of the template — the
 `Merge <branch>: ` subject prefix, the `Verification:` section from
-`--verification` (default `Not recorded`). Authoring the Verification heading
+`--verification`. Authoring the Verification heading
 or a `#`-leading line is refused. Issue references and closure targets are
 separate structured fields; commit messages have no operational semantics.
+
+Every merge request, including a `--supersedes` replacement, must carry the
+message and its verification text. The daemon refuses a merge request without
+them and names the missing flag, so no client can submit one.
 
 The daemon validates canonical formatting and the Verification section.
 It then records the SHA-256 of the exact stored bytes
 and freezes both once the request leaves `pending`. `mandible auth merge`
 re-verifies that digest against the exact bytes it fetched, asserts they are
 already canonical, and commits them on every merge path, aborting rather than
-falling back. With no message flag, nothing is stored and the merge keeps git's
-own default merge message.
+falling back. A request submitted before messages were required, and therefore
+carrying none, still merges with git's own default merge message.
 
 **Review specification:**
 

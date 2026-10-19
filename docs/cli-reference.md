@@ -47,11 +47,11 @@ mandible issue markdown <audit|normalize|export> [opts]
 mandible auth list [--json] [--repo R] [--head B] [--base B] [--status S] [--type T]
 mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--json]
 mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue <id>]...
+  (--message T | --message-file F) --verification T
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>
   [--type merge|commit|force-push|branch-delete|config-change|data-delete]
-  [--message T | --message-file F] [--verification T]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
-  [--commit-message T] [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
+  [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
   [--timeout N] [--no-watch] [--force|-f]

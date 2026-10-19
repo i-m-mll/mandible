@@ -482,64 +482,20 @@ describe("auth request CLI change message composition", () => {
     }
   });
 
-  it("defaults the machine-owned verification section to Not recorded", async () => {
+  it("refuses a merge request without a change message or verification, naming the flag", async () => {
     const server = await submitServer();
     try {
-      const result = await submitAndCapture(
-        [
-          "auth",
-          "request",
-          "feature/canonical",
-          "--title",
-          "Canonical change message",
-          "--issue",
-          "7d64d8f",
-          "--message",
-          "outcome line\n\nWhy:\nBecause.",
-          "--no-watch",
-        ],
-        server.port,
-      );
+      const base = ["auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f"];
+      const noMessage = await submitAndCapture([...base, "--verification", "ok", "--no-watch"], server.port);
+      expect(noMessage.status).toBe(2);
+      expect(noMessage.stderr).toContain("(--message <text> | --message-file <file>): the canonical change message");
+      expect(noMessage.stderr).not.toContain("--verification <text>:");
 
-      expect(result.status).toBe(0);
-      const body = server.bodies[0]!;
-      expect(body.commit_message).toBe(
-        [
-          "Merge feature/canonical: outcome line",
-          "",
-          "Why:",
-          "Because.",
-          "",
-          "Verification:",
-          "Not recorded",
-        ].join("\n"),
-      );
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("submits no change message at all when no message flag is given", async () => {
-    const server = await submitServer();
-    try {
-      const result = await submitAndCapture(
-        [
-          "auth",
-          "request",
-          "feature/canonical",
-          "--title",
-          "No message",
-          "--issue",
-          "7d64d8f",
-          "--no-watch",
-        ],
-        server.port,
-      );
-
-      expect(result.status).toBe(0);
-      const body = server.bodies[0]!;
-      expect(body.commit_message).toBeNull();
-      expect(body.canonical_message).toBe(false);
+      const noVerification = await submitAndCapture(
+        [...base, "--message", "outcome\n\nWhy:\nBecause.", "--no-watch"], server.port);
+      expect(noVerification.status).toBe(2);
+      expect(noVerification.stderr).toContain("--verification <text>: the checks you ran");
+      expect(server.bodies).toHaveLength(0);
     } finally {
       await server.close();
     }
@@ -563,6 +519,8 @@ describe("auth request CLI change message composition", () => {
             "7d64d8f",
             "--message",
             offending,
+            "--verification",
+            "ok",
             "--no-watch",
           ],
           server.port,
@@ -581,22 +539,12 @@ describe("auth request CLI change message composition", () => {
       const both = await submitAndCapture(
         [
           "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
-          "--message", "a", "--message-file", "/dev/null", "--no-watch",
+          "--message", "a", "--message-file", "/dev/null", "--verification", "ok", "--no-watch",
         ],
         server.port,
       );
       expect(both.status).toBe(2);
       expect(both.stderr).toContain("Arguments do not match");
-
-      const legacy = await submitAndCapture(
-        [
-          "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
-          "--message", "a", "--commit-message", "b", "--no-watch",
-        ],
-        server.port,
-      );
-      expect(legacy.status).toBe(2);
-      expect(legacy.stderr).toContain("--commit-message cannot be combined");
     } finally {
       await server.close();
     }
@@ -630,7 +578,7 @@ describe("auth request CLI change message composition", () => {
         [
           "auth", "request", "feature/canonical", "--title", "x",
           "--issue", "7d64d8f\nMandible-Issue: deadbee",
-          "--message", "outcome\n\nWhy:\nBecause.", "--no-watch",
+          "--message", "outcome\n\nWhy:\nBecause.", "--verification", "ok", "--no-watch",
         ],
         server.port,
       );

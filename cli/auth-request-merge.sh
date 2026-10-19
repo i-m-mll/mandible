@@ -361,6 +361,45 @@ detect_protected_branch() {
   fi
 }
 
+# --- Canonical change message ---
+# Issues 7d64d8f and 4720024 — the merge commit message is authored, not
+# synthesized, and every merge request carries one. The command grammar
+# requires --message or --message-file plus --verification for a merge. It is
+# composed and validated here, before any protected-root or Git side effect.
+
+change_message_body=""
+if [[ -n "$change_message_file" ]]; then
+  if [[ "$change_message_file" == "-" ]]; then
+    change_message_body=$(cat)
+  else
+    if [[ ! -f "$change_message_file" ]]; then
+      echo "Error: --message-file '${change_message_file}' does not exist" >&2
+      exit 2
+    fi
+    change_message_body=$(cat "$change_message_file")
+  fi
+else
+  change_message_body="$change_message_text"
+fi
+
+if [[ -z "${change_message_body//[[:space:]]/}" ]]; then
+  echo "Error: the change message is empty" >&2
+  exit 2
+fi
+reject_machine_owned_lines "$change_message_body"
+
+validate_verification_text "$verification_text"
+validate_issue_ref_tokens
+verification_text=$(printf '%s\n' "$verification_text" | canonicalize_verification_text)
+
+commit_message=$(compose_change_message \
+  "$branch" "$change_message_body" "$verification_text")
+if [[ -z "$commit_message" ]]; then
+  echo "Error: the change message could not be composed" >&2
+  exit 1
+fi
+canonical_message="true"
+
 # Bug: c6bd770 — allow explicit --target override so callers can target a branch
 # other than the auto-detected protected branch (e.g., merging a CLAUDE.md update
 # into main in a repo where develop is protected).
@@ -509,52 +548,6 @@ if [[ -z "$diff_summary" ]]; then
   else
     diff_summary="$full_diff"
   fi
-fi
-
-# --- Canonical change message ---
-# Issue 7d64d8f — the merge commit message is authored, not synthesized. The
-# previous `git log --format="- %s" | head -20` bullet aggregation is gone: a
-# request either carries an agent-authored canonical change message, or carries
-# none and the merge keeps git's own default merge message.
-
-if [[ $change_message_set -eq 1 ]]; then
-  change_message_body=""
-  if [[ -n "$change_message_file" ]]; then
-    if [[ "$change_message_file" == "-" ]]; then
-      change_message_body=$(cat)
-    else
-      if [[ ! -f "$change_message_file" ]]; then
-        echo "Error: --message-file '${change_message_file}' does not exist" >&2
-        exit 2
-      fi
-      change_message_body=$(cat "$change_message_file")
-    fi
-  else
-    change_message_body="$change_message_text"
-  fi
-
-  if [[ -z "${change_message_body//[[:space:]]/}" ]]; then
-    echo "Error: the change message is empty" >&2
-    exit 2
-  fi
-  reject_machine_owned_lines "$change_message_body"
-
-  if [[ -z "$verification_text" ]]; then
-    verification_text="Not recorded"
-  fi
-  validate_verification_text "$verification_text"
-  validate_issue_ref_tokens
-  verification_text=$(printf '%s\n' "$verification_text" | canonicalize_verification_text)
-
-  commit_message=$(compose_change_message \
-    "$branch" "$change_message_body" "$verification_text")
-  if [[ -z "$commit_message" ]]; then
-    echo "Error: the change message could not be composed" >&2
-    exit 1
-  fi
-  canonical_message="true"
-else
-  echo "Warning: no canonical change message (--message-file / --message); the merge commit will get a bare 'Merge branch ...' subject. See the change-message contract." >&2
 fi
 
 # --- Build command and metadata ---
