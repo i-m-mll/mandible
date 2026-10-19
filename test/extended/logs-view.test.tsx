@@ -46,22 +46,19 @@ describe('LogsView', () => {
         repo_id: 'mandible',
         detail: { nested: 'value' },
       }],
-      total: 1,
       limit: 500,
       offset: 0,
       log_file: '',
       exists: true,
       source: 'daemon_log',
       facets: {
-        levels: [{ value: 'error', count: 1 }],
-        subsystems: [{ value: 'auth', count: 1 }],
-        events: [{ value: 'auth_failure', count: 1 }],
+        subsystems: ['auth'],
+        events: ['auth_failure'],
         entity_refs: [
           { type: 'issue', value: 'issue-1', count: 1 },
           { type: 'auth_request', value: 'auth-1', count: 1 },
         ],
         latest_ts: '2026-07-04T12:00:00.000Z',
-        latest_heartbeat_ts: null,
       },
     };
     const loadLogs = vi.fn(async () => response);
@@ -111,7 +108,6 @@ describe('LogsView', () => {
 
     resolveLoad({
       entries: [{ id: 'tail-row', level: 'info', event: 'tail', time: '2026-07-04T12:00:00.000Z' }],
-      total: 1,
       limit: 100,
       offset: 0,
       log_file: '',
@@ -143,7 +139,7 @@ describe('LogsView', () => {
             { id: 'log-1', level: 'info', event: 'one', time: '2026-07-04T12:00:01.000Z' },
             { id: 'log-2', level: 'info', event: 'two', time: '2026-07-04T12:00:02.000Z' },
           ],
-          total: 4, limit: 100, offset: 0, log_file: '', exists: true,
+          limit: 100, offset: 0, log_file: '', exists: true,
           source: 'daemon_log', older_cursor: null, has_older: false,
         };
       }
@@ -156,7 +152,7 @@ describe('LogsView', () => {
             ? [{ id: 'log-4', level: 'info', event: 'four', time: '2026-07-04T12:00:04.000Z' }]
             : []),
         ],
-        total: 4, limit: 100, offset: 0, log_file: '', exists: true,
+        limit: 100, offset: 0, log_file: '', exists: true,
         source: 'daemon_log', older_cursor: 'older-page', has_older: true,
       };
     });
