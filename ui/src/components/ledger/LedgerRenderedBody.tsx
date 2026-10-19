@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'preact/hooks';
 
+import { parseCommentRefTarget, parseIssueRefTarget } from '../../../../src/ledger/authored-references';
 import { renderMarkdown } from '../../lib/markdown';
 import { linkifyResourceRefs, attachResourceRefResolution } from '../../resource-refs';
 
@@ -146,9 +147,18 @@ function refLink(match: RegExpExecArray, detail: LedgerRenderedBodyContext): HTM
 
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
-  anchor.textContent = issueRefLabel(parsedIssue, detail);
-  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
-  anchor.title = `Open issue ${parsedIssue.issue}`;
+  if (parsedIssue.ordinal === undefined) {
+    anchor.textContent = issueRefLabel(parsedIssue, detail);
+    anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+    anchor.title = `Open issue ${parsedIssue.issue}`;
+    return anchor;
+  }
+  const comment = String(parsedIssue.ordinal);
+  anchor.textContent = commentRefLabel({ ...parsedIssue, comment }, detail);
+  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue, comment);
+  anchor.title = parsedIssue.ordinal === 0
+    ? `Open the description of issue ${parsedIssue.issue}`
+    : `Open comment #${comment} on issue ${parsedIssue.issue}`;
   return anchor;
 }
 
@@ -165,10 +175,17 @@ function commentRefLabel(
   return `${issueLabel}#${parsed.comment}`;
 }
 
-function parseIssueRef(ref: string, detail: LedgerRenderedBodyContext): { repo: string; issue: string } | null {
-  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
-  if (scoped) return { repo: scoped[1], issue: scoped[2] };
-  return { repo: currentProjectRef(detail), issue: ref.replace(/^#/, '') };
+function parseIssueRef(
+  ref: string,
+  detail: LedgerRenderedBodyContext,
+): { repo: string; issue: string; ordinal?: number } | null {
+  const target = parseIssueRefTarget(ref.replace(/^#/, ''));
+  if (!target) return null;
+  return {
+    repo: target.project ?? currentProjectRef(detail),
+    issue: target.issue,
+    ...(target.ordinal !== undefined ? { ordinal: target.ordinal } : {}),
+  };
 }
 
 function parseCommentRef(
@@ -178,13 +195,9 @@ function parseCommentRef(
   if (ref.startsWith('#')) {
     return { repo: currentProjectRef(detail), issue: detail.display_id, comment: ref.slice(1) };
   }
-  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
-  if (scoped) return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
-  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
-  if (currentProject) {
-    return { repo: currentProjectRef(detail), issue: currentProject[1], comment: currentProject[2] };
-  }
-  return null;
+  const target = parseCommentRefTarget(ref);
+  if (!target) return null;
+  return { repo: target.project ?? currentProjectRef(detail), issue: target.issue, comment: target.comment };
 }
 
 function currentProjectRef(detail: LedgerRenderedBodyContext): string {

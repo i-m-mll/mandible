@@ -2165,6 +2165,14 @@ export class LedgerStore {
     return row;
   }
 
+  /** The live comment with this ordinal; ordinals start at 1 and are never reused. */
+  findCommentByOrdinal(issueId: string, ordinal: number): LedgerComment | null {
+    if (!Number.isInteger(ordinal) || ordinal < 1) return null;
+    return (this.db.prepare(
+      "SELECT * FROM ledger_comments WHERE issue_id = ? AND ordinal = ? AND deleted_at IS NULL",
+    ).get(issueId, ordinal) as LedgerComment | undefined) ?? null;
+  }
+
   getIssueCheckpoint(id: string): LedgerIssueCheckpoint {
     const row = this.db.prepare(
       "SELECT * FROM ledger_issue_checkpoints WHERE id = ?",

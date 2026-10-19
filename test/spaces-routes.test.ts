@@ -569,6 +569,22 @@ describe("unified ref resolver", () => {
       resolved: true,
     });
 
+    type Resolution = { resolution: { kind: string; resolved: boolean; entity: { id?: string } | null } };
+    const resolve = async (ref: string) =>
+      ((await call("GET", `/api/spaces/resolve?ref=${encodeURIComponent(ref)}`)).body as Resolution).resolution;
+    expect(await resolve(`issue:${issueId}#${comment.ordinal}`)).toMatchObject({
+      kind: "comment",
+      resolved: true,
+      entity: { id: comment.id },
+    });
+    expect(await resolve(`comment:${issueId}#${comment.ordinal}`)).toMatchObject({
+      kind: "comment",
+      resolved: true,
+      entity: { id: comment.id },
+    });
+    expect(await resolve(`issue:${issueId}#0`)).toMatchObject({ kind: "issue", resolved: true, entity: { id: issueId } });
+    expect(await resolve(`issue:${issueId}#99`)).toMatchObject({ kind: "comment", resolved: false });
+
     const artifactRes = await call("GET", `/api/spaces/resolve?ref=artifact-blob:${artifactHash}`);
     expect((artifactRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
       kind: "artifact",

@@ -1,4 +1,8 @@
-import { parseAuthoredReferences } from "./authored-references.js";
+import {
+  parseAuthoredReferences,
+  parseCommentRefTarget,
+  parseIssueRefTarget,
+} from "./authored-references.js";
 
 export type IssueReferenceKind = "issue" | "comment";
 
@@ -31,39 +35,33 @@ export function parseIssueReferences(source: string): ParsedIssueReference[] {
   return refs;
 }
 
+// `[issue:<id>#<n>]` (n > 0) records the same comment-kind source that
+// `[comment:<id>#<n>]` records; `#0` addresses the issue description, so it
+// records an issue-kind source. Both feed the same issue-level `references`
+// relationship as `[issue:<id>]`.
 function parseExplicitReference(type: string, ref: string, raw: string): ParsedIssueReference | null {
   if (type === "issue") {
-    const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
-    const issueRef = scoped ? scoped[2] : ref;
+    const target = parseIssueRefTarget(ref);
+    if (!target) return null;
+    const commentOrdinal = target.ordinal !== undefined && target.ordinal > 0;
     return {
-      kind: "issue",
+      kind: commentOrdinal ? "comment" : "issue",
       raw,
       normalized: ref,
-      project: scoped?.[1],
-      issueRef,
+      project: target.project,
+      issueRef: target.issue,
+      ...(commentOrdinal ? { commentRef: String(target.ordinal) } : {}),
     };
   }
 
-  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
-  if (scoped) {
-    return {
-      kind: "comment",
-      raw,
-      normalized: ref,
-      project: scoped[1],
-      issueRef: scoped[2],
-      commentRef: scoped[3],
-    };
-  }
-  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
-  if (currentProject) {
-    return {
-      kind: "comment",
-      raw,
-      normalized: ref,
-      issueRef: currentProject[1],
-      commentRef: currentProject[2],
-    };
-  }
-  return null;
+  const target = parseCommentRefTarget(ref);
+  if (!target) return null;
+  return {
+    kind: "comment",
+    raw,
+    normalized: ref,
+    project: target.project,
+    issueRef: target.issue,
+    commentRef: target.comment,
+  };
 }

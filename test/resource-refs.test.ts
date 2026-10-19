@@ -310,7 +310,20 @@ describe('unresolved-reference UI + C2 resolver', () => {
     expect(issueLink?.textContent).toBe('issue:ceb5963');
     expect(commentLink?.textContent).toBe('comment:ceb5963#c8819b4');
     expect(issueLink?.getAttribute('href')).toBe(`#/issues?issue=${ISSUE_ID64}`);
-    expect(commentLink?.getAttribute('href')).toContain(encodeURIComponent(commentRef));
+    expect(commentLink?.getAttribute('href')).toBe(`#/issues?issue=${ISSUE_ID64}&comment=${COMMENT_ID64}`);
+  });
+
+  it('links issue comment-ordinal refs to the comment on the issue', () => {
+    expect(resourceRefHref('issue:abc1234#3')).toBe('#/issues?issue=abc1234&comment=3');
+    expect(resourceRefHref('issue:mandible/abc1234#3')).toBe('#/issues?issue=abc1234&repo=mandible&comment=3');
+    // Ordinal 0 is the issue description, the same card the issue view numbers 0.
+    expect(resourceRefHref('issue:abc1234#0')).toBe('#/issues?issue=abc1234&comment=0');
+
+    const container = document.createElement('div');
+    container.innerHTML = linkifyResourceRefs('<p>See [issue:abc1234#3].</p>');
+    const link = container.querySelector('[data-resource-ref="issue:abc1234#3"] a.resource-ref__link');
+    expect(link?.textContent).toBe('issue:abc1234#3');
+    expect(link?.getAttribute('href')).toBe('#/issues?issue=abc1234&comment=3');
   });
 });
 
