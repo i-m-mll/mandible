@@ -261,7 +261,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const verification = 'Private candidate bootstrap is ready at the retained exact source revision.';
     const request = await submitBootstrapDelivery({ ...agentApi, cwd: repo, repo: 'mandible', headBranch: 'feature/actual-upgrade', baseBranch: 'main', headSha: sourceManifest.revision, baseSha: git(repo, ['rev-parse', 'main']), issueRef: issue.id, workUnitId, requesterCredentialId: agentToken.credential.id, verification,
       commitMessage: `Merge qualified candidate bootstrap\n\nWhy: Converge the private installation on the approved canonical checkout.\n\nVerification:\n${verification}\n`,
-      spec: `convergence: hook:builtin-mandible-rebuild\noperator-gate: none\nInstalled source: ${candidateRoot}\nCanonical destination: ${repo}\nCLI SHA256: ${sourceManifest.cliSha256}\nInstalled PATH: ${installedPath}\nPoisoned inherited PATH: ${inheritedPath}` });
+      spec: `operator-gate: none\nInstalled source: ${candidateRoot}\nCanonical destination: ${repo}\nCLI SHA256: ${sourceManifest.cliSha256}\nInstalled PATH: ${installedPath}\nPoisoned inherited PATH: ${inheritedPath}` });
     requestId = request.id;
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${installedUpdate ? repo : candidateRoot}/bin`);

@@ -110,7 +110,7 @@ export const publicationRunner: PublicationRunner = {
       '--title',publication.message,'--issue',publication.issue_id,'--space-publication',publication.id,'--message',
       `${publication.message}\n\nWhy:\nPublish the selected Spaces document revision while retaining an editable managed copy.`,
       '--verification',`Frozen source ${publication.source_revision}; destination checked before writing; signed issue-linked commit ${publication.commit_sha}.`,
-      '--spec',`Publish ${publication.path} from frozen revision ${publication.source_revision}. Managed editing remains independent.\nconvergence: live-on-merge\noperator-gate: none`, '--dirty-policy','block','--no-watch']);
+      '--spec',`Publish ${publication.path} from frozen revision ${publication.source_revision}. Managed editing remains independent.\noperator-gate: none`, '--dirty-policy','block','--no-watch']);
     const submitted = await readPublicationAuth(worktree,getPublication(db,publication.space_id,publication.id));
     if (!submitted) throw new ExportError('git_failed','Submission outcome is uncertain. Inspect this publication branch in the auth queue before retrying; the signed proposal is retained.');
     return submitted;
