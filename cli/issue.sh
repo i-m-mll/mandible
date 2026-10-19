@@ -153,7 +153,14 @@ die_api_status() {
   local message="$1"
   local status="$2"
   local response="$3"
+  local detail
   err "${RED}${message}${RESET}"
+  # Lead with the server's own explanation, such as a singleton-kind refusal
+  # that names the existing issue, before the raw status and body.
+  detail=$(printf '%s' "$response" | jq -r 'if type == "object" and (.error | type) == "string" then .error else empty end' 2>/dev/null || true)
+  if [[ -n "$detail" ]]; then
+    err "$detail"
+  fi
   if [[ -n "$status" ]]; then
     err "API status ${status}: ${response}"
   elif [[ -n "$response" ]]; then
@@ -301,11 +308,14 @@ cmd_comment_add() {
   fi
 
   require_tools
-  local payload response
+  local payload response status tmp_response
   payload=$(jq -n --arg message "$message" --arg reopen "$reopen" \
     '{message:$message} + (if $reopen == "1" then {reopen:true} else {} end)')
-  response=$(api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload") \
-    || die "${RED}Failed to add comment to ${id}${RESET}" 1
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to add comment to ${id}" "$status" "$response"
   printf '%s\n' "$response" | api_jq_human '
     "comment \((((.comments // []) | sort_by(.created_at // 0) | last | .id) // "-") | mandible_short_id) issue_status=\(.status // "unknown")"
   '
@@ -1055,8 +1065,13 @@ cmd_new() {
        + (if $kind == "" then {} else {kind:$kind} end)
        + (if $priority == "" then {} else {priority:$priority} end)')
   fi
-  id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
-    || die "${RED}Failed to create issue${RESET}" 1
+  local response status tmp_response
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/issues/$(urlencode "$repo")" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to create issue" "$status" "$response"
+  id=$(printf '%s\n' "$response" | jq -r '.display_id // .id')
   err "${GREEN}Created issue ${id}${RESET}"
 }
 
@@ -1241,8 +1256,12 @@ cmd_open() {
   fi
 
   require_tools
-  api_send PATCH "/api/ledger/issues/$(urlencode "$id")" '{"status":"open","resolution":null}' >/dev/null \
-    || die "${RED}Failed to reopen issue ${id}${RESET}" 1
+  local response status tmp_response
+  tmp_response=$(mktemp)
+  status=$(api_send_capture PATCH "/api/ledger/issues/$(urlencode "$id")" '{"status":"open","resolution":null}' "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to reopen issue ${id}" "$status" "$response"
   err "${GREEN}Reopened issue ${id}${RESET}"
 }
 
@@ -1487,10 +1506,13 @@ KIND_USAGE
   binding=$(mandible_bind_arguments "issue.kind.set" '{"issue_ref":{"position":0},"kind":{"position":1}}' "$@") || return $?
   eval "$binding"
   require_tools
-  local payload
+  local payload response status tmp_response
   payload=$(jq -n --arg kind "$kind" '{kind:$kind}')
-  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
-    || die "${RED}Failed to set kind for issue ${issue_ref}${RESET}" 1
+  tmp_response=$(mktemp)
+  status=$(api_send_capture PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to set kind for issue ${issue_ref}" "$status" "$response"
   err "${GREEN}Set kind for ${issue_ref} to ${kind}${RESET}"
 }
 

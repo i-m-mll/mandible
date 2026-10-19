@@ -4,7 +4,7 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
-import { ledgerIssueLifecycleError, LedgerStore } from "../ledger/store.js";
+import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
@@ -144,6 +144,18 @@ function getStringArray(value: unknown): string[] | undefined {
 
 function isBodyRevisionConflict(error: unknown): boolean {
   return error instanceof Error && error.name === "LedgerBodyRevisionConflictError";
+}
+
+/** Answer a singleton-kind refusal with 409; returns false for any other error. */
+function sendSingletonKindConflict(res: unknown, error: unknown): boolean {
+  if (!(error instanceof LedgerSingletonKindError)) return false;
+  sendJson(res, 409, {
+    error: error.message,
+    code: error.code,
+    kind: error.kind,
+    existing_issue_ids: error.existingIssueIds,
+  });
+  return true;
 }
 
 function applyMarkdownBodyPolicy(
@@ -1795,18 +1807,24 @@ export function registerIssueRoutes(
       return;
     }
     const store = new LedgerStore(db);
-    const issue = store.createIssue({
-      project_id: project.id,
-      title,
-      body: issueBody,
-      labels,
-      kind: requestedKind ?? kindFromLabels(labels),
-      priority: requestedPriority ?? undefined,
-      actor_type: "mandible_user",
-      author_display: "Mandible",
-      attribution: attributionForRequest(db, req),
-      source: "mandible",
-    });
+    let issue;
+    try {
+      issue = store.createIssue({
+        project_id: project.id,
+        title,
+        body: issueBody,
+        labels,
+        kind: requestedKind ?? kindFromLabels(labels),
+        priority: requestedPriority ?? undefined,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+        attribution: attributionForRequest(db, req),
+        source: "mandible",
+      });
+    } catch (error) {
+      if (sendSingletonKindConflict(res, error)) return;
+      throw error;
+    }
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
   }, { operation: { id: "post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } });
 
@@ -1835,14 +1853,19 @@ export function registerIssueRoutes(
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
     if (!markdownPolicy.ok) return;
-    new LedgerStore(db).addComment(resolved.issue_id, {
-      body: message,
-      actor_type: "mandible_user",
-      author_display: "Mandible",
-      attribution: attributionForRequest(db, req),
-      source: "mandible",
-      reopen: body?.reopen === true,
-    });
+    try {
+      new LedgerStore(db).addComment(resolved.issue_id, {
+        body: message,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+        attribution: attributionForRequest(db, req),
+        source: "mandible",
+        reopen: body?.reopen === true,
+      });
+    } catch (error) {
+      if (sendSingletonKindConflict(res, error)) return;
+      throw error;
+    }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
   }, { operation: { id: "post:/api/ledger/issues/:issueId/comments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
@@ -2023,8 +2046,35 @@ export function registerIssueRoutes(
     }
 
     const store = new LedgerStore(db);
-    if (Object.keys(patch).length > 0) {
-      try {
+    let lifecycle: { status: LedgerIssueStatus; resolution: LedgerIssueResolution | null } | null = null;
+    if (body.status !== undefined || body.resolution !== undefined) {
+      const status = enumValue(body.status, LEDGER_ISSUE_STATUSES);
+      const resolution = body.resolution === null
+        ? null
+        : enumValue(body.resolution, LEDGER_ISSUE_RESOLUTIONS);
+      if (body.status !== undefined && !status) {
+        sendJson(res, 400, { error: "invalid status" });
+        return;
+      }
+      if (body.resolution !== undefined && body.resolution !== null && !resolution) {
+        sendJson(res, 400, { error: "invalid resolution" });
+        return;
+      }
+      const nextStatus = (status ?? store.getIssue(resolved.issue_id).status) as LedgerIssueStatus;
+      const nextResolution = (body.resolution === undefined ? null : resolution) as LedgerIssueResolution | null;
+      const lifecycleError = ledgerIssueLifecycleError(nextStatus, nextResolution);
+      if (lifecycleError) {
+        sendJson(res, 400, { error: lifecycleError });
+        return;
+      }
+      lifecycle = { status: nextStatus, resolution: nextResolution };
+    }
+
+    try {
+      // The content patch and the lifecycle change are separate store writes;
+      // refuse a singleton-kind violation before either one lands.
+      store.assertIssueKindTransition(resolved.issue_id, { kind: patch.kind, status: lifecycle?.status });
+      if (Object.keys(patch).length > 0) {
         store.updateIssue(resolved.issue_id, patch, {
           actor_type: "mandible_user",
           author_display: "Mandible",
@@ -2040,42 +2090,23 @@ export function registerIssueRoutes(
             : undefined,
           base_work_notes_revision_provided: hasExpectedWorkNotesRevision,
         });
-      } catch (error) {
-        if (isBodyRevisionConflict(error)) {
-          sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
-          return;
-        }
-        throw error;
       }
-    }
-    if (body.status !== undefined || body.resolution !== undefined) {
-      const status = enumValue(body.status, LEDGER_ISSUE_STATUSES);
-      const resolution = body.resolution === null
-        ? null
-        : enumValue(body.resolution, LEDGER_ISSUE_RESOLUTIONS);
-      if (body.status !== undefined && !status) {
-        sendJson(res, 400, { error: "invalid status" });
+      if (lifecycle) {
+        store.setIssueStatus(
+          resolved.issue_id,
+          lifecycle.status,
+          lifecycle.resolution,
+          { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
+          "mandible",
+        );
+      }
+    } catch (error) {
+      if (sendSingletonKindConflict(res, error)) return;
+      if (isBodyRevisionConflict(error)) {
+        sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
         return;
       }
-      if (body.resolution !== undefined && body.resolution !== null && !resolution) {
-        sendJson(res, 400, { error: "invalid resolution" });
-        return;
-      }
-      const current = store.getIssue(resolved.issue_id);
-      const nextStatus = (status ?? current.status) as LedgerIssueStatus;
-      const nextResolution = (body.resolution === undefined ? null : resolution) as LedgerIssueResolution | null;
-      const lifecycleError = ledgerIssueLifecycleError(nextStatus, nextResolution);
-      if (lifecycleError) {
-        sendJson(res, 400, { error: lifecycleError });
-        return;
-      }
-      store.setIssueStatus(
-        resolved.issue_id,
-        nextStatus,
-        nextResolution,
-        { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
-        "mandible",
-      );
+      throw error;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
   }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
