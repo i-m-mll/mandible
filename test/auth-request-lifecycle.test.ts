@@ -129,6 +129,12 @@ describe("auth request immutable lifecycle", () => {
     ).run(events[1]!.id)).toThrow();
   });
 
+  it("binds delivery custody for a request that only closes its issue", () => {
+    const { submit } = requesterFixture();
+    const request = submit({ issue_references: null, issue_closures: ["f15617a"] });
+    expect(request.custody_work_unit_id).toBeTruthy();
+  });
+
   it("treats sessions as provenance only and permits a same-credential successor", () => {
     const { queue, operator, credential, submit } = requesterFixture();
     const request = submit({ session_id: "originating-session" });

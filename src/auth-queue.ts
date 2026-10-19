@@ -2009,25 +2009,30 @@ export class AuthQueue {
       throw new AuthQueueError("custody_required", "Merge project does not resolve uniquely in the project registry.");
     }
     const issueIds = new Set<string>();
-    for (const ref of payload.issue_references ?? []) {
+    for (const ref of [...(payload.issue_references ?? []), ...(payload.issue_closures ?? payload.issues ?? [])]) {
       const resolved = resolveOperationalIssueRef(this.db, ref, payload.repo);
       if (resolved.ok) issueIds.add(resolved.issue_id);
     }
-    const rows = this.db.prepare(
+    const onBranch = (this.db.prepare(
       `SELECT * FROM work_units
-       WHERE state = 'committed' AND resolved_at IS NULL AND branch = ?
-         AND auth_request_id IS NULL AND owner_user_id = ? AND owner_credential_id = ?`,
-    ).all(payload.head_branch, actor.user_id, actor.credential_id) as WorkUnitCustody[];
-    const matches = rows.filter((row) => {
+       WHERE state = 'committed' AND resolved_at IS NULL AND branch = ? AND auth_request_id IS NULL`,
+    ).all(payload.head_branch) as WorkUnitCustody[]).filter((row) => {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
-      if (!wuProject.ok || !wuProject.project || wuProject.ambiguous || wuProject.project.id !== project.project!.id) return false;
-      return Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id));
+      return wuProject.ok && wuProject.project && !wuProject.ambiguous && wuProject.project.id === project.project!.id;
     });
+    const owned = onBranch.filter((row) => row.owner_user_id === actor.user_id && row.owner_credential_id === actor.credential_id);
+    const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));
     if (matches.length !== 1) {
-      throw new AuthQueueError(
-        "custody_required",
-        `Merge request needs exactly one committed issue-linked delivery work unit; found ${matches.length}.`,
-      );
+      const where = `branch ${payload.head_branch} of ${payload.repo}`;
+      const units = (rows: WorkUnitCustody[]) => rows.map((row) => `${row.id.slice(0, 8)} (issue ${row.issue_id})`).join(", ");
+      const reason = matches.length > 1
+        ? `${matches.length} committed work units on ${where} match the named issues: ${units(matches)}. Release all but one with \`mandible work-unit release\`.`
+        : onBranch.length === 0
+          ? `No committed, unbound delivery work unit exists on ${where}. Run \`mandible work-unit activate --issue <id> --repo ${payload.repo} --branch ${payload.head_branch}\` first.`
+          : owned.length === 0
+            ? `The committed work units on ${where} are held by another user or credential: ${units(onBranch)}. Submit with that credential, or transfer custody with \`mandible work-unit custody-assume\`.`
+            : `The request names no issue linked to a committed work unit on ${where}; the branch's units are ${units(owned)}. Pass that issue with --issue or --closes-issue.`;
+      throw new AuthQueueError("custody_required", `Merge request has no single delivery work unit. ${reason}`);
     }
     return matches[0]!;
   }
