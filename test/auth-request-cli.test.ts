@@ -545,7 +545,7 @@ describe("auth request specification authoring", () => {
     "- Preserve source bytes.",
     "",
     "```text",
-    "operator-gate: none",
+    "bun run typecheck",
     "```",
     "",
   ].join("\n");

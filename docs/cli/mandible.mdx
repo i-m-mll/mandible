@@ -386,11 +386,8 @@ remain valid unchanged. Use these sections:
   source of truth.
 - `Verification`, including limitations — executed checks and observed results
   are the source of truth; record gaps rather than predicting success.
-- `Delivery` — repository policy and the actual activation plan are the source
-  of truth. Mandible tracks going live itself through registered post-merge
-  hooks and the request's convergence state, so the specification does not
-  restate it. Record `operator-gate: none` unless a different gate truthfully
-  applies.
+- `Delivery` — if something must be done by hand after the merge, say what it
+  is and who does it.
 
 The canonical change message and review specification stay separate because
 they serve different contracts. The canonical message is concise, validated,

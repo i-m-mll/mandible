@@ -585,7 +585,7 @@ describe('AuthQueueView', () => {
       '- Reuse the Auth Markdown renderer.',
       '',
       '```text',
-      'operator-gate: none',
+      'bun run typecheck',
       '```',
       '',
       '<img src=x onerror="window.compromised = true">',
@@ -615,7 +615,7 @@ describe('AuthQueueView', () => {
     expect(rendered?.querySelector('h2')?.textContent).toBe('Scope');
     expect(rendered?.querySelectorAll('li')).toHaveLength(2);
     expect(rendered?.querySelector('strong')?.textContent).toBe('review prose');
-    expect(rendered?.querySelector('code')?.textContent).toContain('operator-gate: none');
+    expect(rendered?.querySelector('code')?.textContent).toContain('bun run typecheck');
     expect(rendered?.querySelector('img')?.getAttribute('src')).toBe('x');
     expect(rendered?.innerHTML).not.toContain('onerror');
 
