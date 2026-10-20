@@ -22,6 +22,7 @@ import {
   type UserStatus,
 } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 
 /** Fixed sentinel id for the single canonical `system` user (see migration v107). */
 export const SYSTEM_USER_ID = "00000000000000000000000000";
@@ -460,6 +461,7 @@ export function updateUser(
   params.push(now);
   params.push(user.id);
   db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+  if (patch.status !== undefined && patch.status !== user.status) notifyProtectionInputsChanged("user:status");
   return getUserById(db, user.id)!;
 }
 
@@ -521,6 +523,7 @@ export function addCredential(
     }
     throw error;
   }
+  if (isSigningCredentialType(input.type)) notifyProtectionInputsChanged("credential:add");
   return mapCredential(
     db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(id) as CredentialRow,
   );
@@ -540,6 +543,7 @@ export function revokeCredential(
     now,
     credentialId,
   );
+  if (isSigningCredentialType(row.type)) notifyProtectionInputsChanged("credential:revoke");
   return mapCredential(
     db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(credentialId) as CredentialRow,
   );
@@ -687,6 +691,11 @@ function setSetting(db: Db, key: string, value: string, now: number = Date.now()
     `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   ).run(key, value, now);
+  if (key === OPERATOR_SETTING_KEY) notifyProtectionInputsChanged("setting:operator");
+}
+
+function isSigningCredentialType(type: string): boolean {
+  return type === "ssh_key" || type === "delegated_ssh_key";
 }
 
 export function getOperatorId(db: Db): string | null {

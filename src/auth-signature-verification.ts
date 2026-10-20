@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { Db } from "./db.js";
 
-interface SigningCredentialRow {
+export interface SigningCredentialRow {
   credential_id: string;
   user_id: string;
   fingerprint: string;
@@ -70,7 +70,7 @@ export function isValidCommitSha(value: unknown): value is string {
   return typeof value === "string" && COMMIT_SHA_PATTERN.test(value);
 }
 
-function activeSigningCredentials(db: Db): SigningCredentialRow[] {
+export function activeSigningCredentials(db: Db): SigningCredentialRow[] {
   return db.prepare(
     `SELECT
        credential.id AS credential_id,
@@ -88,7 +88,7 @@ function activeSigningCredentials(db: Db): SigningCredentialRow[] {
   ).all() as SigningCredentialRow[];
 }
 
-function allowedSignerLine(credential: SigningCredentialRow): string | null {
+export function allowedSignerLine(credential: SigningCredentialRow): string | null {
   const fields = credential.public_material.trim().split(/\s+/);
   if (fields.length < 2) return null;
   return `${credential.credential_id} ${fields[0]} ${fields[1]}`;
@@ -129,7 +129,8 @@ function unverified(
   };
 }
 
-function verificationEnv(): NodeJS.ProcessEnv {
+/** Git environment for signature checks: no user, system or injected config. */
+export function verificationEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     GIT_OPTIONAL_LOCKS: "0",
@@ -148,7 +149,7 @@ function verificationEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function trustedSshKeygenPath(): string | null {
+export function trustedSshKeygenPath(): string | null {
   return TRUSTED_SSH_KEYGEN_PATHS.find((candidate) => existsSync(candidate)) ?? null;
 }
 

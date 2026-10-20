@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import type { Db } from "../db.js";
+import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 import { createLedgerId } from "./ids.js";
 import { deriveProjectKeyBase, dedupeProjectKey, slugifyProjectKey } from "./project-key.js";
 import type { LedgerNamespacePolicy, LedgerProject, LedgerProjectCheckout } from "./types.js";
@@ -276,7 +277,9 @@ export function resolveProjectForCheckout(
       checkout = db
         .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
         .get(id) as LedgerProjectCheckout;
+      notifyProtectionInputsChanged("checkout:add");
     } else {
+      const previousDefaultBranch = checkout.default_branch;
       db.prepare(
         `UPDATE ledger_project_checkouts
          SET project_id = ?, work_repo_id = ?, name = ?, default_branch = ?,
@@ -294,6 +297,7 @@ export function resolveProjectForCheckout(
       checkout = db
         .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
         .get(checkout.id) as LedgerProjectCheckout;
+      if (checkout.default_branch !== previousDefaultBranch) notifyProtectionInputsChanged("checkout:default_branch");
     }
 
     return { project, checkout };
