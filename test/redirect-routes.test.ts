@@ -107,6 +107,65 @@ describe("redirect routes", () => {
     expect(body).not.toContain("spoofed");
   });
 
+  it("routes Briefing refs through the server resolver to the canonical id", async () => {
+    const seen: string[] = [];
+    const router = new Router();
+    registerRedirectRoutes(router, {
+      resolveBriefingLink: (ref) => {
+        seen.push(ref);
+        return ref === "ambig"
+          ? { ok: false, status: 409, message: "Briefing reference 'ambig' is ambiguous." }
+          : { ok: true, briefingId: "briefing:0123456789abcdef" };
+      },
+    });
+
+    const resolved = await router.invoke({
+      method: "GET",
+      url: "/r/briefing/briefing%3A0123?agent_session=0198c0de&briefing=spoofed",
+    });
+    const ambiguous = await router.invoke({ method: "GET", url: "/r/briefing/ambig" });
+
+    expect(seen).toEqual(["briefing:0123", "ambig"]);
+    expect(String(resolved.body)).toContain(
+      "mandible:///briefing?agent_session=0198c0de&briefing=briefing%3A0123456789abcdef",
+    );
+    expect(ambiguous.status).toBe(409);
+    expect(String(ambiguous.body)).toContain("ambiguous");
+    expect(String(ambiguous.body)).not.toContain("window.location.replace");
+  });
+
+  // Issue 75153b8 — every entity's web link differs from its desktop link
+  // only by the /r prefix: the same resolver and params land on the
+  // same-origin web hash route, with extra params forwarded unchanged.
+  it("serves /<kind>/<ref> web links on the same-origin hash route", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router, {
+      resolveIssueLink: () => ({ ok: true, repoId: "mandible", issueId: "089fe42" }),
+      resolveBriefingLink: () => ({ ok: true, briefingId: "0123abcd" }),
+    });
+
+    const issue = await router.invoke({
+      method: "GET",
+      url: "/issue/089fe42?agent_session=0198c0de&sidebar=hidden&issue=spoofed",
+    });
+    const auth = await router.invoke({ method: "GET", url: "/auth/auth-1" });
+    const artifact = await router.invoke({
+      method: "GET",
+      url: "/artifact/artifact-version%3Aabcdef123456",
+    });
+    const briefing = await router.invoke({ method: "GET", url: "/briefing/0123" });
+
+    const issueBody = String(issue.body);
+    expect(issueBody).toContain(
+      "window.location.replace(\"/#/issues?agent_session=0198c0de&sidebar=hidden&repo=mandible&issue=089fe42\")",
+    );
+    expect(issueBody).not.toContain("mandible:");
+    expect(issueBody).not.toContain("spoofed");
+    expect(String(auth.body)).toContain("\"/#/auth?request=auth-1\"");
+    expect(String(artifact.body)).toContain("\"/#/artifacts?ref=artifact-version%3Aabcdef123456\"");
+    expect(String(briefing.body)).toContain("\"/#/briefing?briefing=0123abcd\"");
+  });
+
   it("URL-encodes deep-link targets and escapes fallback HTML", async () => {
     const router = new Router();
     registerRedirectRoutes(router, {
@@ -152,10 +211,12 @@ describe("redirect routes", () => {
     const router = new Router();
     registerRedirectRoutes(router);
 
-    await expect(router.invoke({ method: "GET", url: "/r/session/s1" })).resolves.toEqual({
-      status: 404,
-      body: { error: "not_found" },
-    });
+    for (const url of ["/r/session/s1", "/session/s1"]) {
+      await expect(router.invoke({ method: "GET", url })).resolves.toEqual({
+        status: 404,
+        body: { error: "not_found" },
+      });
+    }
   });
 
   it("resolves issue refs through the ledger before building issue links", () => {

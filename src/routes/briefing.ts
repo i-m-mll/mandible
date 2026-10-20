@@ -348,7 +348,7 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   };
 }
 
-function briefingReadViewer(db: Db, req: RequestLike) {
+export function briefingReadViewer(db: Db, req: RequestLike) {
   if (!localAgent(db, req)) {
     const actor = activeHuman(db, req);
     return { userId: actor.user.id, operator: actor.operator, projectScoped: false };

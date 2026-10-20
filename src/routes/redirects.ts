@@ -1,40 +1,39 @@
 import { getDb, type Db } from "../db.js";
+import { resolveBriefingId } from "../feedback/briefings.js";
 import { LedgerStore } from "../ledger/store.js";
-import type { ResponseLike, RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { briefingReadViewer } from "./briefing.js";
 
-type RedirectKind = "issue" | "auth" | "artifact";
+type RedirectKind = "issue" | "auth" | "artifact" | "briefing";
+type RedirectFailure = { ok: false; status: number; message: string };
 type IssueRedirectResolution =
   | { ok: true; repoId: string; issueId: string }
-  | { ok: false; status: 404 | 409; message: string };
+  | RedirectFailure;
+type BriefingRedirectResolution =
+  | { ok: true; briefingId: string }
+  | RedirectFailure;
+type TargetResolution = { ok: true; params: Record<string, string> } | RedirectFailure;
 
-const REDIRECT_CONFIG: Record<RedirectKind, {
-  route: string;
-  label: string;
-  targetPath: string;
-  targetParam: string;
-}> = {
-  issue: {
-    route: "/r/issue/:ref",
-    label: "issue",
-    targetPath: "issues",
-    targetParam: "issue",
-  },
-  auth: {
-    route: "/r/auth/:ref",
-    label: "auth request",
-    targetPath: "auth",
-    targetParam: "request",
-  },
-  artifact: {
-    route: "/r/artifact/:ref",
-    label: "artifact",
-    targetPath: "artifacts",
-    targetParam: "ref",
-  },
+// Each kind names its UI hash path. Every entity has two link forms that
+// differ only by the `/r` prefix: `/<kind>/<ref>` opens the same-origin web
+// hash route `/#/<path>?<query>` in the current browser, and
+// `/r/<kind>/<ref>` hands the same route to the desktop app as
+// `mandible:///<path>?<query>`. Both forms share one resolver per kind.
+const REDIRECT_CONFIG: Record<RedirectKind, { label: string; targetPath: string }> = {
+  issue: { label: "issue", targetPath: "issues" },
+  auth: { label: "auth request", targetPath: "auth" },
+  artifact: { label: "artifact", targetPath: "artifacts" },
+  briefing: { label: "Briefing", targetPath: "briefing" },
 };
+
+const LINK_FORMS = [
+  { routePrefix: "/r", targetPrefix: "mandible:///", operationPrefix: "redirect" },
+  { routePrefix: "", targetPrefix: "/#/", operationPrefix: "link" },
+] as const;
 
 export interface RedirectRouteOptions {
   resolveIssueLink?: (ref: string) => IssueRedirectResolution;
+  resolveBriefingLink?: (ref: string, req: RequestLike) => BriefingRedirectResolution;
 }
 
 export function registerRedirectRoutes(
@@ -42,46 +41,52 @@ export function registerRedirectRoutes(
   options: RedirectRouteOptions = {},
 ): void {
   const resolveIssueLink = options.resolveIssueLink ?? resolveLedgerIssueLink;
+  const resolveBriefingLink = options.resolveBriefingLink ?? resolveLedgerBriefingLink;
+  const resolveTarget = (kind: RedirectKind, ref: string, req: RequestLike): TargetResolution => {
+    switch (kind) {
+      case "issue": {
+        const resolved = resolveIssueLink(ref);
+        return resolved.ok ? { ok: true, params: { repo: resolved.repoId, issue: resolved.issueId } } : resolved;
+      }
+      case "briefing": {
+        const resolved = resolveBriefingLink(ref, req);
+        return resolved.ok ? { ok: true, params: { briefing: resolved.briefingId } } : resolved;
+      }
+      // Issue f59b5bd (review R2) — inbound refs pass through untouched:
+      // shortening happens only at emission sites, so a caller supplying a
+      // full UUID keeps its power to disambiguate 8-char collisions.
+      case "auth":
+        return { ok: true, params: { request: ref } };
+      case "artifact":
+        return { ok: true, params: { ref } };
+    }
+  };
   const entries = Object.entries(REDIRECT_CONFIG) as Array<
     [RedirectKind, typeof REDIRECT_CONFIG[RedirectKind]]
   >;
-  for (const [kind, config] of entries) {
-    router.get(config.route, (req, res) => {
-      const ref = req.params.ref?.trim();
-      if (!ref) {
-        res.status(400).json({ error: "missing_ref", kind });
-        return;
-      }
-      if (kind === "issue") {
-        const resolved = resolveIssueLink(ref);
+  for (const form of LINK_FORMS) {
+    for (const [kind, config] of entries) {
+      router.get(`${form.routePrefix}/${kind}/:ref`, (req, res) => {
+        const ref = req.params.ref?.trim();
+        if (!ref) {
+          res.status(400).json({ error: "missing_ref", kind });
+          return;
+        }
+        const resolved = resolveTarget(kind, ref, req);
         if (!resolved.ok) {
           sendMessagePage(res.status(resolved.status), {
-            title: "Mandible issue link",
+            title: `Mandible ${config.label} link`,
             message: resolved.message,
           });
           return;
         }
-        const query = buildTargetQuery(req.query, {
-          repo: resolved.repoId,
-          issue: resolved.issueId,
-        });
+        const query = buildTargetQuery(req.query ?? {}, resolved.params);
         sendRedirectPage(res, {
           label: config.label,
-          target: `mandible:///issues?${query.toString()}`,
+          target: `${form.targetPrefix}${config.targetPath}?${query.toString()}`,
         });
-        return;
-      }
-      sendRedirectPage(res, {
-        label: config.label,
-        target: buildMandibleTarget(config.targetPath, config.targetParam, {
-          // Issue f59b5bd (review R2) — inbound refs pass through untouched:
-          // shortening happens only at emission sites, so a caller supplying a
-          // full UUID keeps its power to disambiguate 8-char collisions.
-          ref,
-          extraQuery: req.query,
-        }),
-      });
-    }, { operation: { id: `redirect.${kind}`, effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+      }, { operation: { id: `${form.operationPrefix}.${kind}`, effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    }
   }
 }
 
@@ -90,11 +95,11 @@ export function registerRedirectRoutes(
 // through into the deep-link target, but the params the redirect itself owns
 // always win.
 function buildTargetQuery(
-  extraQuery: Record<string, string> | undefined,
+  extraQuery: Record<string, string>,
   ownParams: Record<string, string>,
 ): URLSearchParams {
   const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(extraQuery ?? {})) {
+  for (const [key, value] of Object.entries(extraQuery)) {
     if (key in ownParams) continue;
     query.set(key, value);
   }
@@ -102,6 +107,28 @@ function buildTargetQuery(
     query.set(key, value);
   }
   return query;
+}
+
+// Briefing refs resolve server-side because agents may hold a typed
+// `briefing:` ref or a legacy id that the view's prefix match cannot reach.
+// The redirect emits the canonical id, which the view matches exactly.
+function resolveLedgerBriefingLink(ref: string, req: RequestLike): BriefingRedirectResolution {
+  try {
+    const db = getDb();
+    return { ok: true, briefingId: resolveBriefingId(db, ref, briefingReadViewer(db, req)) };
+  } catch (error) {
+    const status = (error as { status?: unknown }).status;
+    const code = (error as { code?: unknown }).code;
+    return {
+      ok: false,
+      status: typeof status === "number" && status >= 400 && status < 500 ? status : 404,
+      message: code === "ambiguous_ref"
+        ? `Briefing reference '${ref}' is ambiguous.`
+        : code === "not_found"
+          ? `Briefing reference '${ref}' was not found.`
+          : error instanceof Error ? error.message : "Briefing link could not be resolved.",
+    };
+  }
 }
 
 function resolveLedgerIssueLink(ref: string): IssueRedirectResolution {
@@ -172,15 +199,6 @@ export function resolveLedgerIssueLinkFromDb(db: Db, ref: string): IssueRedirect
     repoId: row.repo_id ?? row.project_id,
     issueId: row.short_id || row.id,
   };
-}
-
-function buildMandibleTarget(
-  path: string,
-  param: string,
-  input: { ref: string; extraQuery?: Record<string, string> },
-): string {
-  const query = buildTargetQuery(input.extraQuery, { [param]: input.ref });
-  return `mandible:///${path}?${query.toString()}`;
 }
 
 function sendRedirectPage(
