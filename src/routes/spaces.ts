@@ -67,7 +67,10 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { requireProjectAccess, PermissionError, sendPermissionError, type ProjectRole } from "../permissions/store.js";
-import { artifactAccessProjectIds, resolveWorkProject } from "../permissions/resources.js";
+import { artifactAccessProjectIds, resolveArtifactProject, resolveWorkProject } from "../permissions/resources.js";
+import { BriefingStoreError, resolveBriefingId, shortBriefingRef } from "../feedback/briefings.js";
+import { ClientAuthzError } from "../client-auth/authz.js";
+import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 
 function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
@@ -111,6 +114,10 @@ class HttpError extends Error {
 
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof PermissionError) { sendPermissionError(res, error); return; }
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof HttpError) {
     sendJson(res, error.statusCode, { error: error.message });
     return;
@@ -294,6 +301,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverRe
     if (prefix === "issue") return resolveIssueRef(store, rest, ref);
     if (prefix === "comment") return resolveCommentRef(db, rest, ref);
     if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
+    if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
   }
@@ -398,6 +406,32 @@ function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string)
   const id = shortestUniquePrefix(request.id as string, ids.map((row) => row.id), 8);
   const { target_repo_root: _root, ...entity } = request;
   return { ref, kind: "auth", resolved: true, entity: { ...entity, id } };
+}
+
+// `briefing:<id-or-prefix>` resolves through the shared Briefing resolver, which
+// also matches legacy ids stored with a `briefing:` prefix. Agents read
+// Briefings as the configured operator, scoped by the Briefing's artifact project.
+function resolveBriefingRef(db: Db, req: RequestLike, ref: string): ResolverResult {
+  const viewer = briefingReadViewer(db, req);
+  let briefingId: string;
+  try {
+    briefingId = resolveBriefingId(db, ref, viewer);
+  } catch (error) {
+    if (!(error instanceof BriefingStoreError)) throw error;
+    const reason = error.code === "ambiguous_ref" ? "ambiguous" : error.code === "not_found" ? "not_found" : error.message;
+    return { ref, kind: "briefing", resolved: false, entity: null, error: reason };
+  }
+  const briefing = db.prepare(
+    `SELECT id, title, description, logical_artifact_id, archived_at, created_at, updated_at
+       FROM briefings WHERE id = ?`,
+  ).get(briefingId) as Record<string, unknown> & { logical_artifact_id: string | null };
+  if (viewer.projectScoped) {
+    const scope = briefing.logical_artifact_id ? resolveArtifactProject(db, briefing.logical_artifact_id) : null;
+    if (!scope?.ok) return { ref, kind: "briefing", resolved: false, entity: null, error: "project_unresolved" };
+    requireProjectAccess(db, req, scope.project_id, "read");
+  }
+  const short = shortBriefingRef(db, briefingId);
+  return { ref, kind: "briefing", resolved: true, entity: { ...briefing, id: short.slice("briefing:".length), ref: short } };
 }
 
 function resolveCommentRef(db: Db, refValue: string, ref: string): ResolverResult {
