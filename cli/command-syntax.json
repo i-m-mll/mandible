@@ -106,7 +106,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "id","value": {"type": "string"}},
-          {"kind": "argument","name": "none|in_progress|done|blocked|pivot-needed","value": {"type": "enum","values": ["none","in_progress","done","blocked","pivot-needed"]}}
+          {"kind": "argument","name": "none|done|blocked|pivot-needed","value": {"type": "enum","values": ["none","done","blocked","pivot-needed"]}}
         ]
       }
     },

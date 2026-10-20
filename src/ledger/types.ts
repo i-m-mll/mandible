@@ -10,6 +10,18 @@ export const LEDGER_WORKER_STATUSES = [
 ] as const;
 export type LedgerWorkerStatus = (typeof LEDGER_WORKER_STATUSES)[number];
 
+/**
+ * Worker statuses a caller may store. `in_progress` is never stored: readers
+ * derive it from an open or committed work unit (see issue-work-state.ts).
+ */
+export const LEDGER_STORED_WORKER_STATUSES = [
+  "none",
+  "done",
+  "blocked",
+  "pivot-needed",
+] as const;
+export type LedgerStoredWorkerStatus = (typeof LEDGER_STORED_WORKER_STATUSES)[number];
+
 export const LEDGER_ISSUE_BRANCH_ROLES = ["primary", "superseded"] as const;
 export type LedgerIssueBranchRole = (typeof LEDGER_ISSUE_BRANCH_ROLES)[number];
 

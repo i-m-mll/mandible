@@ -19,7 +19,7 @@ mandible issue changed --since-manifest <file> [--json]
 mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]
 mandible issue checkpoint add <id> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
 mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
-mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>
+mandible issue status <id> <none|done|blocked|pivot-needed>
 mandible issue branch add <id> <branch> [--role primary|superseded]
 mandible issue link <src> <target...> [--type t] [--note n]
 mandible issue unlink <src> <target...> [--type t]

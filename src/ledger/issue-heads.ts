@@ -18,6 +18,11 @@ export interface LedgerIssueHeadOptions {
   // event. Pinned comparisons may omit that one establishing event without
   // changing the normal issue-head domain.
   excludeCheckpointId?: string;
+  // Issue d9e59e8 — the head includes each linked work unit's lifecycle so a
+  // coordinator notices a child gaining, committing, or resolving a lane. The
+  // auth action staleness guard excludes it: a merge resolves its own work
+  // unit, which must not make the merge's staged issue actions look stale.
+  excludeWorkUnits?: boolean;
 }
 
 interface IssueHeadEventRow {
@@ -187,6 +192,10 @@ export function batchLedgerIssueHeads(
       ${eventFilters.length ? `WHERE ${eventFilters.join(" AND ")}` : ""}`,
   ).all(allBindings) as Array<Record<string, unknown>>);
 
+  if (!options.excludeWorkUnits) {
+    appendRows(workUnitHeadRows(db, allIdList, options.at));
+  }
+
   const heads = new Map<string, LedgerIssueHead>();
   for (const issue of issues) {
     const ownEvents = (rowsByIssue.get(issue.id) ?? []).slice().sort(compareHeadEvents);
@@ -219,6 +228,51 @@ export function batchLedgerIssueHeads(
   return heads;
 }
 
+/**
+ * Work-unit lifecycle facts as head rows: a claim at `created_at`, a commit at
+ * `activated_at`, and a terminal state at `resolved_at`. Abandonment does not
+ * always record a time, so it falls back to the latest known transition.
+ */
+function workUnitHeadRows(db: Db, issueIds: string[], at: number | undefined): Array<Record<string, unknown>> {
+  if (issueIds.length === 0) return [];
+  const { sql, bindings } = placeholders(issueIds, "wu");
+  const units = db.prepare(
+    `SELECT id, ledger_issue_id, branch, state, created_at, activated_at, resolved_at
+       FROM work_units
+      WHERE ledger_issue_id IN (${sql})`,
+  ).all(bindings) as Array<{
+    id: string;
+    ledger_issue_id: string;
+    branch: string | null;
+    state: string;
+    created_at: number;
+    activated_at: number | null;
+    resolved_at: number | null;
+  }>;
+  const rows: Array<Record<string, unknown>> = [];
+  const push = (unit: (typeof units)[number], transition: string, occurredAt: number, payload: Record<string, unknown>) => {
+    if (at != null && occurredAt > at) return;
+    rows.push({
+      issue_id: unit.ledger_issue_id,
+      id: `work_unit:${unit.id}:${transition}`,
+      event_type: `work_unit.${transition}`,
+      entity_type: "work_unit",
+      entity_id: unit.id,
+      payload_json: JSON.stringify(payload),
+      occurred_at: occurredAt,
+      observed_at: occurredAt,
+    });
+  };
+  for (const unit of units) {
+    push(unit, "claimed", unit.created_at, { branch: unit.branch });
+    if (unit.activated_at != null) push(unit, "committed", unit.activated_at, {});
+    if (unit.state === "resolved" || unit.state === "abandoned") {
+      push(unit, unit.state, unit.resolved_at ?? unit.activated_at ?? unit.created_at, {});
+    }
+  }
+  return rows;
+}
+
 export function getLedgerIssueHead(
   db: Db,
   issueId: string,
@@ -227,4 +281,12 @@ export function getLedgerIssueHead(
   const head = batchLedgerIssueHeads(db, [issueId], options).get(issueId);
   if (!head) throw new Error(`Ledger issue not found: ${issueId}`);
   return head;
+}
+
+/**
+ * The digest the auth action staleness guard compares: issue-entity events only,
+ * without work-unit lifecycle (see `excludeWorkUnits`).
+ */
+export function getLedgerIssueContentDigest(db: Db, issueId: string): string {
+  return getLedgerIssueHead(db, issueId, { excludeWorkUnits: true }).digest;
 }

@@ -1926,6 +1926,41 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE briefing_roundless_archive",
     ],
   },
+  // Issue d9e59e8 — `in_progress` is derived from an open or committed work
+  // unit and is no longer stored. Stored `in_progress` rows are cleared to
+  // `none`, each with one issue.worker_status.updated ledger event.
+  {
+    version: 200,
+    name: "clear_stored_in_progress_worker_status",
+    statements: [
+      `CREATE TEMP TABLE worker_status_in_progress_clear (
+        issue_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        cleared_at INTEGER NOT NULL
+      )`,
+      `INSERT INTO worker_status_in_progress_clear (issue_id, event_id, cleared_at)
+       SELECT id, lower(hex(randomblob(32))), CAST(strftime('%s', 'now') AS INTEGER) * 1000
+       FROM ledger_issues
+       WHERE worker_status = 'in_progress'`,
+      `UPDATE ledger_issues SET worker_status = 'none'
+       WHERE id IN (SELECT issue_id FROM worker_status_in_progress_clear)`,
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type, source,
+        payload_json, occurred_at, observed_at, actor_user_id, evidence_method, evidence_id
+      )
+      SELECT c.event_id, 'issue', c.issue_id, 'issue.worker_status.updated', 'schema-migration-v200', 'system', 'system',
+        json_object(
+          'issue_id', c.issue_id,
+          'previous_worker_status', 'in_progress',
+          'worker_status', 'none',
+          'reason', 'in_progress is derived from an open or committed work unit and is no longer stored.',
+          'migration', 'clear_stored_in_progress_worker_status'
+        ),
+        c.cleared_at, c.cleared_at, NULL, NULL, NULL
+      FROM worker_status_in_progress_clear c`,
+      "DROP TABLE worker_status_in_progress_clear",
+    ],
+  },
 ];
 
 /**

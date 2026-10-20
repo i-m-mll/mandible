@@ -72,6 +72,7 @@ import { BriefingStoreError, resolveBriefingId, shortBriefingRef } from "../feed
 import { ClientAuthzError } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
+import { effectiveWorkerStatus } from "../ledger/issue-work-state.js";
 
 function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
   if (project) requireProjectAccess(db, req, project, role);
@@ -298,7 +299,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverRe
   if (colon > 0) {
     const prefix = ref.slice(0, colon);
     const rest = ref.slice(colon + 1);
-    if (prefix === "issue") return resolveIssueRef(store, rest, ref);
+    if (prefix === "issue") return resolveIssueRef(db, store, rest, ref);
     if (prefix === "comment") return resolveCommentRef(db, rest, ref);
     if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
     if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
@@ -314,7 +315,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverRe
 
   // Fall back: try issue ref resolution, then artifact resolution.
   const issue = store.resolveIssueRef(ref);
-  if (issue.ok) return resolveIssueRef(store, ref, ref);
+  if (issue.ok) return resolveIssueRef(db, store, ref, ref);
   return resolveArtifactResult(db, ref);
 }
 
@@ -330,7 +331,7 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
   const artifactParam = url.searchParams.get("ref");
   const route = url.pathname.replace(/^\/+/, "");
   if (requestParam && route === "auth") return resolveAuthRef(db, req, requestParam, ref);
-  if (issueParam) return resolveIssueRef(store, issueParam, ref);
+  if (issueParam) return resolveIssueRef(db, store, issueParam, ref);
   if (artifactParam) return resolveArtifactResult(db, artifactParam, "mandible", ref);
   return {
     ref,
@@ -344,7 +345,7 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
   };
 }
 
-function resolveIssueRef(store: LedgerStore, refValue: string, ref: string): ResolverResult {
+function resolveIssueRef(db: Db, store: LedgerStore, refValue: string, ref: string): ResolverResult {
   // `issue:<id>#<n>` addresses comment ordinal n; `#0` is the description.
   const target = parseIssueRefTarget(refValue.trim());
   const issueRef = target
@@ -366,7 +367,8 @@ function resolveIssueRef(store: LedgerStore, refValue: string, ref: string): Res
   if (target?.ordinal) return resolveCommentOrdinal(store, resolved.id, String(target.ordinal), ref);
   try {
     const issue = store.getIssue(resolved.id);
-    return { ref, kind: "issue", resolved: true, entity: issue as unknown as Record<string, unknown> };
+    const entity = { ...issue, worker_status: effectiveWorkerStatus(db, issue.id) };
+    return { ref, kind: "issue", resolved: true, entity: entity as unknown as Record<string, unknown> };
   } catch (error) {
     return { ref, kind: "issue", resolved: false, entity: null, error: String(error) };
   }

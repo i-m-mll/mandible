@@ -210,7 +210,6 @@ describe("ledger issue detail projection", () => {
       author_display: "Codex",
       source: "mandible",
     });
-    store.setWorkerStatus(child.id, "in_progress", SYSTEM_ACTOR);
     store.addIssueBranch(child.id, "feature/detail", "primary", SYSTEM_ACTOR);
     store.setIssueStatus(child.id, "closed", "delivered", SYSTEM_ACTOR);
     store.setIssueStatus(child.id, "open", null, SYSTEM_ACTOR);

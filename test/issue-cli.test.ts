@@ -588,7 +588,7 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("comment history <comment-ref>");
     expect(result.stdout).toContain("revision show <revision-id>");
     expect(result.stdout).toContain("revision diff <old-revision-id> <new-revision-id>");
-    expect(result.stdout).toContain("status <id> <none|in_progress|done|blocked|pivot-needed>");
+    expect(result.stdout).toContain("status <id> <none|done|blocked|pivot-needed>");
     expect(result.stdout).toContain("branch add <id> <branch>");
   });
 

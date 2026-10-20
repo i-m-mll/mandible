@@ -471,10 +471,12 @@ describe("ledger store", () => {
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
 
-    const updated = store.setWorkerStatus(issue.id, "in_progress", SYSTEM_ACTOR);
+    expect(() => store.setWorkerStatus(issue.id, "in_progress" as never, SYSTEM_ACTOR))
+      .toThrow(/in_progress is derived from an open or committed work unit/);
+    const updated = store.setWorkerStatus(issue.id, "blocked", SYSTEM_ACTOR);
     const branch = store.addIssueBranch(issue.id, "feature/demo", "primary", SYSTEM_ACTOR);
 
-    expect(updated.worker_status).toBe("in_progress");
+    expect(updated.worker_status).toBe("blocked");
     expect(branch).toMatchObject({
       issue_id: issue.id,
       branch: "feature/demo",
@@ -487,7 +489,7 @@ describe("ledger store", () => {
       .filter((label) => label.deleted_at === null)
       .map((label) => label.label))
       .not.toEqual(expect.arrayContaining([
-        "mandible:status:in_progress",
+        "mandible:status:blocked",
         "mandible:branch:feature/demo",
       ]));
     expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })
