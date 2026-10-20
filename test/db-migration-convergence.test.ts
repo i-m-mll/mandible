@@ -203,6 +203,47 @@ describe("issue priority upgrade", () => {
   });
 });
 
+describe("roundless legacy Briefing repair", () => {
+  it("v199 archives only roundless Briefings held in v1 custody and records one event for each", () => {
+    const dbPath = path.join(tempDir, "roundless-v198.db");
+    createFloorDatabase(dbPath);
+    const db = new SqliteDatabase(dbPath);
+    try {
+      db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+        crypto.createHash("sha256").update(String(value)).digest("hex"));
+      migrateFixtureThrough(db, 198);
+      const briefing = db.prepare(`INSERT INTO briefings
+        (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at, archived_at)
+        VALUES (?, ?, ?, NULL, 0, 1, 1, ?)`);
+      const custody = db.prepare(`INSERT INTO briefing_legacy_custody
+        (id, briefing_id, source_profile, disposition, reason, packet_json, packet_digest, created_at)
+        VALUES (?, ?, 'mandible-briefing.v1', 'sealed_verified', 'sealed', '{}', ?, 2)`);
+      briefing.run("briefing:sealed", "legacy:sealed", "arxiv-scan", null);
+      custody.run("custody-sealed", "briefing:sealed", "a".repeat(64));
+      briefing.run("briefing:archived", "legacy:archived", "task-health", 5);
+      custody.run("custody-archived", "briefing:archived", "b".repeat(64));
+      briefing.run("quiet-feed", "quiet-feed", "Quiet feed", null);
+
+      migrate(db);
+
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      const rows = db.prepare("SELECT id, archived_at FROM briefings ORDER BY id").all() as Array<{ id: string; archived_at: number | null }>;
+      expect(rows.map((row) => [row.id, row.archived_at === null ? null : row.archived_at > 5 ? "migrated" : row.archived_at]))
+        .toEqual([["briefing:archived", 5], ["briefing:sealed", "migrated"], ["quiet-feed", null]]);
+      expect(db.prepare(`SELECT entity_type, entity_id, event_type, actor_type,
+          json_extract(payload_json, '$.legacy_custody_id') AS custody_id, occurred_at
+        FROM ledger_events WHERE actor_id = 'schema-migration-v199'`).all())
+        .toEqual([{ entity_type: "briefing", entity_id: "briefing:sealed", event_type: "briefing.archived",
+          actor_type: "system", custody_id: "custody-sealed",
+          occurred_at: rows.find((row) => row.id === "briefing:sealed")?.archived_at }]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_legacy_custody").get()).toEqual({ n: 2 });
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 function seedBriefingLineage(db: SqliteDatabase, mixed: boolean): { rounds: unknown[] } {
   for (const [suffix, hash] of [["a", "a".repeat(64)], ["b", "b".repeat(64)]] as const) {
     db.prepare(`INSERT INTO artifact_blob

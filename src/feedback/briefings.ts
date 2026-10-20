@@ -828,6 +828,17 @@ export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: st
     .get(briefingId, actorUserId));
 }
 
+/**
+ * A Briefing is listable only while its latest round exists. A recurring feed
+ * whose runs have all been quiet, or a row whose v1 rounds were retired to
+ * legacy custody (migration 143), has no round to show, so every listing
+ * projection excludes it. Queries alias the Briefing row as `b`.
+ */
+export const BRIEFING_HAS_ROUND_SQL = `EXISTS (
+  SELECT 1 FROM briefing_rounds listed_round
+   WHERE listed_round.id = b.latest_round_id AND listed_round.briefing_id = b.id
+)`;
+
 export function listBriefings(db: Db, viewer: { userId: string; operator: boolean }) {
   return db.prepare(
     `SELECT b.id, b.briefing_key, b.logical_artifact_id, b.title, b.description,
@@ -855,7 +866,7 @@ export function listBriefings(db: Db, viewer: { userId: string; operator: boolea
                      )
                 )) ELSE 0 END AS unanswered_directive_count
        FROM briefings b
-      WHERE b.archived_at IS NULL AND (? = 1 OR EXISTS (
+      WHERE b.archived_at IS NULL AND ${BRIEFING_HAS_ROUND_SQL} AND (? = 1 OR EXISTS (
         SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
       ))
       ORDER BY b.updated_at DESC, b.id`,
@@ -864,19 +875,26 @@ export function listBriefings(db: Db, viewer: { userId: string; operator: boolea
 
 export type BriefingViewer = { userId: string; operator: boolean };
 
+/**
+ * Resolve a Briefing reference to any stored row the viewer may see, listed or
+ * not, so organization routes (archive, restore, rename) reach every row a list
+ * can return. A leading `briefing:` is the typed-ref prefix, but some legacy
+ * rows store it as part of their id, so the reference matches both spellings.
+ */
 export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
   const trimmed = briefingRef.trim();
   const ref = trimmed.startsWith("briefing:") ? trimmed.slice("briefing:".length) : trimmed;
   if (!ref) throw new BriefingStoreError("Briefing reference must be nonblank");
+  const spellings = ref === trimmed ? [ref] : [trimmed, ref];
   const rows = db.prepare(
     `SELECT b.id FROM briefings b
       WHERE ? = 1 OR EXISTS (
         SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
       ) ORDER BY b.id`,
   ).all(viewer.operator ? 1 : 0, viewer.userId) as Array<{ id: string }>;
-  const exact = rows.find((row) => row.id === ref);
+  const exact = rows.find((row) => spellings.includes(row.id));
   if (exact) return exact.id;
-  const matches = rows.filter((row) => row.id.startsWith(ref));
+  const matches = rows.filter((row) => spellings.some((spelling) => row.id.startsWith(spelling)));
   if (matches.length === 1) return matches[0].id;
   if (matches.length > 1) {
     throw new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref");

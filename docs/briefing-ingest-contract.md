@@ -39,7 +39,10 @@ changed prose or directive definitions produce a new artifact version before
 the round is bound.
 
 Quiet runs store authenticated publisher, task, replay, evidence, and
-source-health provenance without inventing a human-facing round.
+source-health provenance without inventing a human-facing round. A Briefing
+that has no round yet, such as a feed whose runs have all been quiet, is left
+out of `GET /api/briefings` and of bundle layouts until its first round is
+published. Archive and restore still reach it by its stored id.
 
 ## Replay and receipt
 

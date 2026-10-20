@@ -143,8 +143,8 @@ describe('dashboard API GET cache', () => {
       if (path === '/api/briefing-groups') return jsonResponse({ groups: [] });
       return new Response('unexpected request', { status: 500 });
     }));
-    await expect(queryClient.fetchQuery({ queryKey: browserResourceKeys.briefingSidebar, queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal) })).resolves.toEqual({ briefings: [], bundles: [], groups: [] });
-    expect(queryClient.getQueryData(browserResourceKeys.briefingSidebar)).toEqual({ briefings: [], bundles: [], groups: [] });
+    await expect(queryClient.fetchQuery({ queryKey: browserResourceKeys.briefingSidebar, queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal) })).resolves.toEqual({ briefings: [], bundles: [], groups: [], invalidBriefings: [] });
+    expect(queryClient.getQueryData(browserResourceKeys.briefingSidebar)).toEqual({ briefings: [], bundles: [], groups: [], invalidBriefings: [] });
 
     await queryClient.invalidateQueries({ queryKey: browserResourceKeys.briefings });
     expect(queryClient.getQueryState(browserResourceKeys.briefingSidebar)?.isInvalidated).toBe(true);

@@ -221,6 +221,8 @@
 }
 
 .briefing-empty, .briefing-error { margin: 0; font-size: var(--text-sm); }
+.briefing-invalid-rows { margin: 0; padding-left: var(--space-4); }
+.briefing-invalid-rows code { overflow-wrap: anywhere; }
 .briefing-empty { color: var(--text-muted); }
 .briefing-empty--selection {
   flex: 1;

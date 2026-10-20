@@ -11,6 +11,7 @@ import {
   type BriefingGroup,
   type BriefingSidebarSnapshot,
   type InstanceInfo,
+  type InvalidBriefingRow,
 } from '../api';
 
 import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
@@ -123,6 +124,25 @@ function briefingDisplayContext(
   return undefined;
 }
 
+/** Report rows the Briefing service returned that cannot be shown, without hiding the valid ones. */
+export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefingRow[] }): JSX.Element | null {
+  if (rows.length === 0) return null;
+  const title = rows.length === 1 ? '1 Briefing could not be shown' : `${rows.length} Briefings could not be shown`;
+  return (
+    <DetailPaneNotice source="briefing:invalid-rows" severity="warning" density="compact" title={title} testId="briefing-invalid-rows">
+      <ul className="briefing-invalid-rows">
+        {rows.map((row) => (
+          <li key={`${row.id ?? ''}:${row.title ?? ''}:${row.reason}`}>
+            {row.title ?? 'Untitled Briefing'}
+            {row.id ? <> (<code>{row.id}</code>)</> : null}
+            {`: ${row.reason}.`}
+          </li>
+        ))}
+      </ul>
+    </DetailPaneNotice>
+  );
+}
+
 export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
@@ -133,10 +153,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     enabled: appShell.active,
     refetchOnWindowFocus: true,
   }, queryClient);
-  const sidebar = sidebarQuery.data ?? { briefings: [], bundles: [], groups: [] };
+  const sidebar = sidebarQuery.data ?? { briefings: [], bundles: [], groups: [], invalidBriefings: [] };
   const setSidebar = (update: (current: BriefingSidebarSnapshot) => BriefingSidebarSnapshot) =>
     queryClient.setQueryData<BriefingSidebarSnapshot>(browserResourceKeys.briefingSidebar, (current) => current ? update(current) : current);
-  const { briefings, bundles, groups } = sidebar;
+  const { briefings, bundles, groups, invalidBriefings } = sidebar;
   const error = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable' ? null : sidebarQuery.error?.message ?? null;
   const accessUnavailable = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable';
   const sidebarLoaded = sidebarQuery.data !== undefined;
@@ -257,6 +277,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
         : { ...entry, briefings: entry.briefings.map(updateCollection) }),
     });
     setSidebar((current) => ({
+      ...current,
       briefings: current.briefings.map(updateCollection),
       bundles: current.bundles.map(updateBundle),
       groups: current.groups.map((group) => ({
@@ -280,9 +301,12 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   };
 
   return (
-    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={error ? (
-      <DetailPaneNotice source="briefing:refresh" severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
-    ) : null}>
+    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={<>
+      {error ? (
+        <DetailPaneNotice source="briefing:refresh" severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
+      ) : null}
+      <InvalidBriefingsNotice rows={invalidBriefings} />
+    </>}>
       {selectedGroup ? (
         <BriefingGroupDetail
           key={selectedGroup.id}

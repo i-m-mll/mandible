@@ -185,7 +185,7 @@ describe('Briefing sidebar row actions', () => {
         { position: 1, briefing: row('second', 'Second') },
         { position: 0, briefing: row('first', 'First') },
       ],
-    }] });
+    }] }, []);
     expect(normalized[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
   });
 
@@ -213,7 +213,7 @@ describe('Briefing sidebar row actions', () => {
           ] },
         ],
       }],
-    }] });
+    }] }, []);
 
     expect(groups[0].current?.layout).toMatchObject([
       { kind: 'briefing', briefing: { label: 'Baseline' } },
