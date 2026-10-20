@@ -1,3 +1,4 @@
+import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
@@ -89,11 +90,21 @@ export function registerAuthRoutes(
       res.status(400).json({ error: SPEC_CONTENT_REFUSAL });
       return;
     }
+    const dirtyAction = parseProtectedRootDirtyAction(body.protected_root_dirty_action);
+    if (!dirtyAction.ok) {
+      res.status(400).json({ error: dirtyAction.error });
+      return;
+    }
     const payload = parseAuthRequestPayload(body);
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
     }
+    if (dirtyAction.action && (payload.type ?? "merge") !== "merge") {
+      res.status(400).json({ error: "'protected_root_dirty_action' applies only to merge requests." });
+      return;
+    }
+    payload.protected_root_dirty_action = dirtyAction.action;
     const isAuthMerge = isAuthMergeCommand(payload);
     if (isAuthMerge && !authQueue.externalEffectsAllowed) {
       res.status(403).json({

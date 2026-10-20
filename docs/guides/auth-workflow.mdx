@@ -86,8 +86,11 @@ Supported policies:
 | `stash` | Preserve dirty state in a named Git stash, then continue. |
 | `branch-off` | Move dirty state to a `shelve/protected-root-*` branch and worktree, then continue. |
 
-When `stash` or `branch-off` is used, the CLI prints the stash/branch/worktree
-details so the calling agent can report what happened.
+When `allow-untracked`, `stash`, or `branch-off` lets a submission continue, the
+CLI prints the stash, branch, and worktree details and sends the action with the
+request. Mandible stores it on the request as `protected_root_dirty_action`,
+and the approval page shows it read-only under
+**Protected-root changes**, so the reviewer can see where uncommitted work went.
 
 After the explicit dirty policy is resolved, request submission and approved
 merge execution both use the same Mandible auth check for tracked dirty state

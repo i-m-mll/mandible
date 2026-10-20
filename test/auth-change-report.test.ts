@@ -374,6 +374,38 @@ describe("auth change reports", () => {
     }
   });
 
+  // Issue 8ae6b5f — a dirty policy's note says where uncommitted work went.
+  it("stores a protected-root stash action on the request and reads it back", async () => {
+    const { db, queue, router, token, submit } = authenticatedRoute();
+    try {
+      const stash = "0123456789abcdef0123456789abcdef01234567";
+      const accepted = await submit({
+        ...MERGE_CHANGE_MESSAGE,
+        protected_root_dirty_action: {
+          policy: "stash", action: "stashed", branch: null, worktree: null, stash,
+          files: [{ status: " M", path: "notes.md" }, { status: "??", path: "scratch.txt" }],
+          message: `Protected-root changes were preserved in stash ${stash} before auth request submission.`,
+        },
+      });
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+      const id = (accepted.body as { request_id: string }).request_id;
+      const detail = await router.invoke({
+        method: "GET", url: `/api/auth/request/${id}`, credential: token, transport: "http",
+      });
+      expect((detail.body as { protected_root_dirty_action: unknown }).protected_root_dirty_action).toEqual({
+        policy: "stash", action: "stashed", branch: null, worktree: null, stash,
+        files: [{ status: " M", path: "notes.md" }, { status: "??", path: "scratch.txt" }],
+        message: `Protected-root changes were preserved in stash ${stash} before auth request submission.`,
+      });
+      const listed = await router.invoke({ method: "GET", url: "/api/auth/queue", credential: token, transport: "http" });
+      expect((listed.body as { requests: Array<{ id: string; protected_root_dirty_action: { stash: string } | null }> })
+        .requests.find((row) => row.id === id)?.protected_root_dirty_action?.stash).toBe(stash);
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
   it("ignores caller-supplied counts and returns the server-captured headline", async () => {
     const { db, queue, router, token, project } = authenticatedRoute();
 

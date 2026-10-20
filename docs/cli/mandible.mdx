@@ -384,7 +384,7 @@ page shows read-only.
 1. Validates CWD is on the protected branch
 2. Validates the source branch exists
 3. Verifies the branch has unique commits
-4. Applies the explicit protected-root dirty policy without discarding files
+4. Applies the explicit protected-root dirty policy without discarding files, and sends what it did so the request records it
 5. Runs Mandible's shared auth check for tracked dirtiness and dry-run conflict detection
 
 **Resolution watching:**

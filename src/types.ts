@@ -5,6 +5,7 @@
 // the UI imports directly and is dependency-light, so it owns them; types.ts
 // re-exports so every existing `./types.js` import keeps resolving to ONE
 // definition instead of a copy that drifts without any compile error.
+import type { ProtectedRootDirtyAction } from "./auth-protected-root-dirty-action.js";
 import type {
   AuthRequestAction,
   AuthDependencyProjection,
@@ -260,6 +261,8 @@ export interface AuthRequest {
    * were removed. Always null for new requests; kept read-only as history.
    */
   spec_content: string | null;
+  /** Issue 8ae6b5f — where a protected-root dirty policy moved uncommitted work. */
+  protected_root_dirty_action?: ProtectedRootDirtyAction | null;
   repo?: string;
   base_branch?: string;
   head_branch?: string;
@@ -392,6 +395,11 @@ export interface AuthRequestInput {
   merge_head_sha?: string | null;
   /** Route-owned immutable report; never accepted from request callers. */
   change_report?: AuthChangeReport | null;
+  /**
+   * Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
+   * merge submission. Validated by the route; stored on the request.
+   */
+  protected_root_dirty_action?: ProtectedRootDirtyAction | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;

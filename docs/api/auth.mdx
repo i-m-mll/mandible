@@ -66,6 +66,7 @@ Submit a new auth request.
 | `canonical_message` | boolean | merge | Must be true for a merge request. Declare `commit_message` as the agent-authored canonical change message; the daemon validates its envelope, canonicalizes it, and records `commit_message_digest` |
 | `verification` | string | merge | Required with `canonical_message`. The machine-owned `Verification:` section text; the daemon rejects a message whose section does not match it |
 | `post_merge_handoff` | string | no | Handoff note for next session |
+| `protected_root_dirty_action` | object | no | Merge only. What an explicit protected-root dirty policy did: `{policy, action, branch, worktree, stash, files: [{status, path}], message}`. Stored on the request and returned read-only as `protected_root_dirty_action` |
 | `issue_references` | string[] | no | Issue IDs to attach for context; not closed on merge |
 | `issue_closures` | string[] | no | Issue IDs to close on successful merge |
 | `issues` | string[] | no | Legacy close-on-merge issue IDs; prefer `issue_closures` |

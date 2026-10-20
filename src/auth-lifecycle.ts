@@ -22,9 +22,12 @@ export function authRequestSnapshot(db: Db, requestId: string): string {
     | Record<string, unknown>
     | undefined;
   if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
-  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => key !== "space_publication_id" || value !== null).map(([key, value]) => [
+  // Columns added after receipts existed appear only when set, so receipts
+  // recorded before them keep verifying.
+  const omittedWhenNull = ["space_publication_id", "protected_root_dirty_action_json"];
+  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => !omittedWhenNull.includes(key) || value !== null).map(([key, value]) => [
     key,
-    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json"].includes(key)
+    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"].includes(key)
       ? parseJsonColumn(value)
       : value ?? null,
   ]));
