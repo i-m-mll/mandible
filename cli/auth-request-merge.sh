@@ -253,26 +253,6 @@ build_dirty_action_json() {
     }'
 }
 
-append_dirty_action_to_spec() {
-  local action_json="$1"
-  [[ "$action_json" != "null" ]] || return 0
-  local pretty
-  pretty=$(printf '%s' "$action_json" | jq .)
-  if [[ -n "$spec_content" ]]; then
-    spec_content="${spec_content}
-
-Protected-root dirty action:
-\`\`\`json
-${pretty}
-\`\`\`"
-  else
-    spec_content="Protected-root dirty action:
-\`\`\`json
-${pretty}
-\`\`\`"
-  fi
-}
-
 ensure_clean_with_dirty_policy() {
   local target="$1"
   local base="$2"
@@ -525,7 +505,6 @@ fi
 # .mandible.toml [auth.protected_root_dirty].
 protected_root_dirty_action_json=$(ensure_clean_with_dirty_policy \
   "$target_cwd" "$base_branch" "$branch" "$dirty_policy" "$dirty_branch_prefix" "$configured_include_untracked")
-append_dirty_action_to_spec "$protected_root_dirty_action_json"
 
 # --- Pre-flight: check merge cleanliness through Mandible ---
 # This is the same read-only preflight used by `mandible auth check` and the

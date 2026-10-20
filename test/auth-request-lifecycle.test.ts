@@ -11,7 +11,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import { authSnapshotDigest } from "../src/auth-lifecycle.js";
+import { appendAuthLifecycleEvent, authSnapshotDigest } from "../src/auth-lifecycle.js";
 import { migrate } from "../src/db.js";
 import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
@@ -85,6 +85,40 @@ describe("auth request immutable lifecycle", () => {
     });
     expect(event.snapshot_sha256).toBe(authSnapshotDigest(String(event.snapshot_json)));
     db.close();
+  });
+
+  // Issue 8ae6b5f — new requests carry no spec, but a spec stored by an older
+  // request is part of its reviewed record: it stays readable, its lifecycle
+  // receipts still verify, and guarded transitions neither need nor change it.
+  it("keeps a stored spec readable and verifiable on an older request", () => {
+    const { db, queue, operator, credential } = requesterFixture();
+    const spec = "# Intent\n\nReviewed before specs were removed.\n";
+    // Recreate a request exactly as the former submission path stored it: the
+    // spec column and the submitted receipt both carry the reviewed bytes.
+    db.prepare(`INSERT INTO auth_requests
+      (id, type, command, title, spec_content, status, created_at, updated_at, expires_at)
+      VALUES ('spec-request', 'commit', 'echo old', 'Old request', ?, 'pending', 10, 20, ?)`)
+      .run(spec, Date.now() + 86_400_000);
+    appendAuthLifecycleEvent(db, {
+      requestId: "spec-request", eventType: "submitted", priorStatus: null,
+      nextStatus: "pending", occurredAt: 20,
+    });
+
+    expect(queue.getRequest("spec-request")?.spec_content).toBe(spec);
+    const [submitted] = queue.listLifecycleEvents("spec-request");
+    expect(JSON.parse(submitted!.snapshot_json).request.spec_content).toBe(spec);
+
+    // The guarded transition re-derives the snapshot digest; it must still match.
+    const withdrawn = queue.withdraw("spec-request", "Operator retired an old request", {
+      user_id: operator.id,
+      evidence_method: "api_token",
+      credential_id: credential.id,
+      authority_path: "operator_recovery",
+    }, 1, 0);
+    expect(withdrawn).toMatchObject({ status: "withdrawn", spec_content: spec });
+    const last = queue.listLifecycleEvents("spec-request").at(-1)!;
+    expect(last.snapshot_sha256).toBe(authSnapshotDigest(last.snapshot_json));
+    expect(JSON.parse(last.snapshot_json).request.spec_content).toBe(spec);
   });
 
   it("allows only the exact requester credential to withdraw a pending request", () => {

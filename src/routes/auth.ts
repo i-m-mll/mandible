@@ -84,7 +84,12 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/request", async (req, res) => {
     if (rejectTokenlessSocketExecution(req, res)) return;
-    const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
+    const body = readBody<Record<string, unknown>>(req);
+    if (Object.hasOwn(body, "spec_content")) {
+      res.status(400).json({ error: SPEC_CONTENT_REFUSAL });
+      return;
+    }
+    const payload = parseAuthRequestPayload(body);
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
@@ -929,6 +934,12 @@ function resolveAuthRequester(
   };
 }
 
+// Issue 8ae6b5f — requests no longer carry a spec. The canonical change
+// message states intent, and a substantial design is a tracked artifact linked
+// to the request's issue. Stored specs on older requests stay readable.
+const SPEC_CONTENT_REFUSAL =
+  "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
+
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
   if (body.space_publication_id !== undefined && (typeof body.space_publication_id !== "string" || !body.space_publication_id.trim())) return null;
   if (typeof body.command !== "string" || typeof body.title !== "string") {
@@ -974,7 +985,6 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     // message; the queue canonicalizes it and binds it to a digest.
     canonical_message: body.canonical_message === true,
     verification: typeof body.verification === "string" ? body.verification : null,
-    spec_content: typeof body.spec_content === "string" ? body.spec_content : null,
     repo: typeof body.repo === "string" ? body.repo : undefined,
     base_branch: typeof body.base_branch === "string" ? body.base_branch : undefined,
     head_branch: typeof body.head_branch === "string" ? body.head_branch : undefined,
@@ -1239,13 +1249,7 @@ function parseAuthRequestUpdatePayload(
     }
   }
 
-  if (hasKey("spec_content")) {
-    if (body.spec_content === null || typeof body.spec_content === "string") {
-      payload.spec_content = body.spec_content as string | null;
-    } else {
-      return { ok: false, error: "Invalid 'spec_content' — must be a string or null" };
-    }
-  }
+  if (hasKey("spec_content")) return { ok: false, error: SPEC_CONTENT_REFUSAL };
 
   if (hasKey("repo")) {
     if (typeof body.repo !== "string") {

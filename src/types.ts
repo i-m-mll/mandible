@@ -255,6 +255,10 @@ export interface AuthRequest {
   // message that cli/auth-merge.sh must use verbatim as the merge commit
   // message. Null for legacy/free-form review text.
   commit_message_digest?: string | null;
+  /**
+   * Issue 8ae6b5f — review Markdown stored by requests submitted before specs
+   * were removed. Always null for new requests; kept read-only as history.
+   */
   spec_content: string | null;
   repo?: string;
   base_branch?: string;
@@ -382,7 +386,6 @@ export interface AuthRequestInput {
   // Verification section against this structured field rather than trusting
   // whatever prose the message happens to contain.
   verification?: string | null;
-  spec_content?: string | null;
   repo?: string;
   base_branch?: string;
   head_branch?: string;

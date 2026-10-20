@@ -172,12 +172,6 @@ export function registerTools(
       title: z
         .string()
         .describe("Auth request title (e.g. 'Merge feature/xyz: description')"),
-      spec: z
-        .string()
-        .optional()
-        .describe(
-          "Specification/summary of the changes (mandatory for non-trivial work)",
-        ),
       issue_ids: z
         .array(z.string())
         .optional()
@@ -224,7 +218,6 @@ export function registerTools(
           title: args.title,
           head_branch: args.branch,
           ...(canonical ? { base_branch: base } : {}),
-          spec_content: args.spec ?? null,
           issue_references: args.issue_ids ?? null,
           issue_closures: args.closes_issue_ids ?? null,
           issues: args.closes_issue_ids ?? null,

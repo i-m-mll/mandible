@@ -1693,7 +1693,8 @@ export class AuthQueue {
       diff_summary: payload.diff_summary ?? null,
       commit_message: canonical.message,
       commit_message_digest: canonical.digest,
-      spec_content: payload.spec_content ?? null,
+      // Issue 8ae6b5f — new requests carry no spec; the column holds history.
+      spec_content: null,
       repo: payload.repo,
       base_branch: payload.base_branch,
       head_branch: payload.head_branch,
@@ -2827,7 +2828,6 @@ export class AuthQueue {
       "type",
       "title",
       "diff_summary",
-      "spec_content",
       "post_merge_handoff",
       "repo",
       "base_branch",

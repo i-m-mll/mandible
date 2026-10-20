@@ -1331,23 +1331,21 @@ function AuthRequestDetail({
                     </div>
                   )}
               </CollapsiblePanel>
-              <CollapsiblePanel
-                title="Specification"
-                expanded={showSpec}
-                onExpandedChange={setShowSpec}
-                bodyClassName="spec-panel"
-              >
-                {specHtml ? (
-                    <div
-                      className="rendered-markdown"
-                      dangerouslySetInnerHTML={{ __html: specHtml }}
-                    />
-                  ) : (
-                    <div className="spec-panel--empty">
-                      No specification attached.
-                    </div>
-                  )}
-              </CollapsiblePanel>
+              {/* Issue 8ae6b5f — new requests carry no spec. A spec stored by an
+                  older request stays visible, read-only, as reviewed history. */}
+              {specHtml && (
+                <CollapsiblePanel
+                  title="Specification"
+                  expanded={showSpec}
+                  onExpandedChange={setShowSpec}
+                  bodyClassName="spec-panel"
+                >
+                  <div
+                    className="rendered-markdown"
+                    dangerouslySetInnerHTML={{ __html: specHtml }}
+                  />
+                </CollapsiblePanel>
+              )}
               {authType === 'merge' && (
                 <AuthChangeBreakdown
                   requestId={fullId}

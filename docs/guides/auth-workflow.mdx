@@ -34,7 +34,8 @@ The agent runs:
 mandible auth request feature/add-dark-mode \
   --title "Merge feature/add-dark-mode: dark mode support" \
   --closes-issue abc1234 \
-  --spec-file ./auth-spec.md \
+  --message-file ./change-message.md \
+  --verification "Unit and UI suites pass; dark mode checked in the dashboard." \
   --no-watch
 ```
 
@@ -42,11 +43,12 @@ For merges, the `mandible auth request` CLI automatically detects the protected 
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
-`auth-spec.md` is a detailed Markdown review packet with `Intent`, `Design
-choices`, `Scope` and `Non-goals`, `Verification` and its limitations, and
-`Delivery` sections. `--spec-file -` reads the same content from stdin, while
-the compatible `--spec` form remains available for short inline text. Mandible
-preserves supplied spec text as opaque bytes rather than rewriting it.
+`change-message.md` holds the agent-authored change message: an outcome line,
+then a short `Why:` paragraph, and an optional `Caveats:` section for any
+post-merge manual step. The CLI adds the merge subject prefix and the
+`Verification:` section. Requests carry no separate spec; a substantial design
+belongs in a tracked document registered as an artifact and linked to the
+issue.
 
 ### Protected-Root Dirty Policy
 
@@ -85,8 +87,7 @@ Supported policies:
 | `branch-off` | Move dirty state to a `shelve/protected-root-*` branch and worktree, then continue. |
 
 When `stash` or `branch-off` is used, the CLI prints the stash/branch/worktree
-details and appends the same JSON summary to the auth request spec so the
-calling agent and dashboard can report what happened.
+details so the calling agent can report what happened.
 
 After the explicit dirty policy is resolved, request submission and approved
 merge execution both use the same Mandible auth check for tracked dirty state
@@ -111,8 +112,9 @@ The API receives a payload roughly like:
   "additions": 340,
   "deletions": 45,
   "diff_summary": "src/theme.ts | 120 ++++...\nsrc/settings.tsx | 85 +++...",
-  "commit_message": "feat: dark mode support",
-  "spec_content": "Adds dark mode toggle to the settings panel...",
+  "commit_message": "Merge feature/add-dark-mode: dark mode support\n\nWhy:\nAdds a dark mode toggle to the settings panel...\n\nVerification:\nUnit and UI suites pass.",
+  "canonical_message": true,
+  "verification": "Unit and UI suites pass.",
   "issues": ["abc1234"],
   "session_id": "sess-xyz",
   "execution_mode": "daemon"
@@ -140,8 +142,7 @@ The user examines the request in the dashboard. They can see:
 
 - **Diff stats** — How many files changed, lines added/deleted. A quick sanity check.
 - **Diff summary** — The git stat output showing which files were touched.
-- **Specification** — The agent's explanation of what the changes do and why. For non-trivial work, this is the primary review surface.
-- **Commit messages** — The messages from each commit in the branch.
+- **Commit message** — The canonical change message: the outcome, why it matters, any post-merge caveats, and the verification run. This is the primary review surface.
 - **Linked issues** — Click through to the issue details for full context.
 - **Dependency status** — If this request depends on another (e.g., a prerequisite merge), the status of that dependency is shown.
 
