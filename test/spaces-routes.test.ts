@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
 import { createUser } from "../src/users/store.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
@@ -633,6 +634,41 @@ describe("unified ref resolver", () => {
       expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
     }
     expect(db.prepare("SELECT status FROM auth_requests ORDER BY id").all()).toEqual([{ status: "pending" }, { status: "pending" }]);
+  });
+
+  it("resolves Briefing refs for both stored id spellings without writing issue links", async () => {
+    const legacy = `briefing:8d34a5d3${"0".repeat(56)}`;
+    const insert = db.prepare(`INSERT INTO briefings (id, briefing_key, title, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1)`);
+    insert.run("75e6ecb5-9927-4687-a8d5-34f8c030ad0c", "current", "Current Briefing");
+    insert.run("75e6ecb5-1111-4687-a8d5-34f8c030ad0c", "sibling", "Sibling Briefing");
+    insert.run(legacy, "legacy", "Legacy Briefing");
+    approvalSecrets = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-ref-test-"));
+    const authenticator = new ClientAuthenticator(db, { secretsDir: approvalSecrets });
+    const human = createUser(db, { slug: "briefing-reader", kind: "human", display_name: "Briefing Reader" });
+    setSetting(db, "user.operator_id", human.id);
+    const token = authenticator.mintApiToken(human.id).token;
+    const humanRouter = new Router({ clientAuth: authenticator });
+    registerSpacesRoutes(humanRouter);
+    const resolve = async (ref: string) => {
+      const response = await humanRouter.invoke({ method: "GET", url: `/api/refs/resolve?ref=${encodeURIComponent(ref)}`, credential: token, transport: "http" });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      return (response.body as ResolveRefResponse).resolution;
+    };
+    expect(await resolve("briefing:75e6ecb5-9")).toMatchObject({ kind: "briefing", resolved: true,
+      entity: { id: "75e6ecb5-9", ref: "briefing:75e6ecb5-9", title: "Current Briefing" } });
+    expect(await resolve("briefing:75e6ecb5")).toMatchObject({ kind: "briefing", resolved: false, error: "ambiguous", entity: null });
+    expect(await resolve("briefing:8d34a5d3")).toMatchObject({ resolved: true, entity: { id: "8d34a5d3", title: "Legacy Briefing" } });
+    expect(await resolve(`briefing:${legacy}`)).toMatchObject({ resolved: true, entity: { ref: "briefing:8d34a5d3" } });
+    expect(await resolve("briefing:ffffffff")).toMatchObject({ kind: "briefing", resolved: false, error: "not_found", entity: null });
+    const refs = parseAuthoredReferences("See [briefing:8d34a5d3], not [briefing:spaces-test/8d34a5d3] or `[briefing:75e6ecb5-9]`.");
+    expect(refs.map(ref => [ref.kind, ref.target])).toEqual([["briefing", "8d34a5d3"]]);
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({ ...SYSTEM_ACTOR, project_id: PROJECT_ID, title: "Briefing mention", body: "[briefing:8d34a5d3]", kind: "feature" });
+    store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "[briefing:75e6ecb5-9]" });
+    for (const table of ["ledger_issue_relationships", "ledger_relationship_edges"]) {
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
   });
 
   it("refuses approval metadata when its project is absent, ambiguous, or conflicting", async () => {

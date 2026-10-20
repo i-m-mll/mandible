@@ -12,6 +12,7 @@
 //   - issue:<id>[#<n>]              (Mandible issue refs; #<n> is a comment ordinal)
 //   - comment:<issue>#<comment>     (legacy Mandible comment refs)
 //   - auth:<id-or-prefix>           (Mandible auth request refs)
+//   - briefing:<id-or-prefix>       (Mandible Briefing refs)
 //   - mandible://<repo>/issue/<id>  (app-route entity refs)
 //
 // It drives an unresolved-reference UI: every recognized ref is linkified with a
@@ -28,7 +29,7 @@ import { parseCommentRefTarget, parseIssueRefTarget } from '../../src/ledger/aut
 
 // --- ref grammar -------------------------------------------------------------
 
-export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'auth' | 'submission' | 'unknown';
+export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'auth' | 'briefing' | 'submission' | 'unknown';
 
 export interface ParsedResourceRef {
   /** The original matched ref text (trimmed of trailing punctuation). */
@@ -67,6 +68,9 @@ const ISSUE_REF = /^issue:([^\s\]]+)$/i;
 const COMMENT_REF = /^comment:([^\s\]]+)$/i;
 // Auth request ids are global, so the authority has no project qualifier.
 const AUTH_REF = /^auth:([^\s\]\/#]+)$/i;
+// Briefing ids are global too. Some legacy ids store a `briefing:` prefix, so
+// the server link route owns resolution of both id spellings.
+const BRIEFING_REF = /^briefing:([^\s\]\/#]+)$/i;
 const SUBMISSION_REF = /^submission:([0-9a-f][0-9a-f-]{6,})(?:#([1-9][0-9]*))?$/i;
 
 /**
@@ -141,6 +145,9 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   }
   if (AUTH_REF.test(raw)) {
     return { raw, canonical: raw, kind: 'auth', display: compactAuthRef(raw) };
+  }
+  if (BRIEFING_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'briefing', display: compactBriefingRef(raw) };
   }
   if (SUBMISSION_REF.test(raw)) {
     return { raw, canonical: raw, kind: 'submission', display: compactSubmissionRef(raw) };
@@ -243,6 +250,13 @@ export function compactAuthRef(ref: string): string {
   );
 }
 
+export function compactBriefingRef(ref: string): string {
+  return ref.replace(
+    /^briefing:(.+)$/i,
+    (_match, id: string) => `briefing:${compactLongIdSegments(id)}`,
+  );
+}
+
 export function compactSubmissionRef(ref: string): string {
   return ref.replace(
     /^submission:([0-9a-f-]+)(#[1-9][0-9]*)?$/i,
@@ -272,6 +286,11 @@ export function resourceRefHref(ref: string): string {
     // The auth view resolves prefixes; inbound refs pass through untouched so a
     // full id keeps its power to disambiguate.
     return `#/auth?request=${encodeURIComponent(auth[1])}`;
+  }
+  if (BRIEFING_REF.test(ref.trim())) {
+    // The web link route resolves typed refs and legacy prefixed ids to the
+    // canonical id before opening the Briefing view.
+    return `/briefing/${encodeURIComponent(ref.trim())}`;
   }
   if (SUBMISSION_REF.test(ref.trim())) {
     return `/r/submission/${encodeURIComponent(ref.trim())}`;
@@ -442,7 +461,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment|auth|submission):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment|auth|briefing|submission):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');

@@ -23,6 +23,14 @@ def mandible_typed_short_ref:
   else mandible_short_id
   end;
 
+# A Briefing's `briefing:<short-id>` ref. Legacy ids store the `briefing:`
+# prefix themselves; the ref never repeats it.
+def mandible_briefing_ref:
+  if . == null then "-"
+  elif type != "string" then tostring
+  else "briefing:" + (sub("^briefing:"; "") | mandible_short_id)
+  end;
+
 def mandible_display_id:
   (.display_id // .short_id // .ref // .normalized_ref // (.id | mandible_short_id));
 

@@ -43,6 +43,20 @@ describe('approval references', () => {
   });
 });
 
+describe('Briefing references', () => {
+  it('links typed refs through the server link route, which resolves legacy id spellings', () => {
+    const fullId = '75e6ecb5-9927-4687-a8d5-34f8c030ad0c';
+    expect(parseResourceRef(`briefing:${fullId}`)).toMatchObject({ kind: 'briefing', canonical: `briefing:${fullId}`, display: 'briefing:75e6ecb5' });
+    expect(parseResourceRef('briefing:mandible/75e6ecb5')).toBeNull();
+    const container = document.createElement('div');
+    container.innerHTML = linkifyResourceRefs('<p>[briefing:8d34a5d3]</p><code>[briefing:75e6ecb5]</code>');
+    const anchors = container.querySelectorAll<HTMLAnchorElement>('a.resource-ref__link');
+    expect([...anchors].map(anchor => [anchor.textContent, anchor.getAttribute('href')])).toEqual([
+      ['briefing:8d34a5d3', '/briefing/briefing%3A8d34a5d3'],
+    ]);
+  });
+});
+
 describe('legacy artifact ref rejection', () => {
   it('does not recognize obsolete hash refs as normal resource refs', () => {
     expect(parseResourceRef(`artifact:sha256:${HASH64}`)).toBeNull();

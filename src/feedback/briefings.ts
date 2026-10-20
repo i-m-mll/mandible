@@ -902,6 +902,25 @@ export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingV
   throw new BriefingStoreError("briefing not found", 404, "not_found");
 }
 
+/**
+ * The shortest `briefing:<target>` reference (at least 8 characters of target)
+ * that `resolveBriefingId` maps back to exactly this Briefing among all stored
+ * rows. The target omits a legacy stored `briefing:` id prefix, so both id
+ * spellings share one reference form.
+ */
+export function shortBriefingRef(db: Db, briefingId: string): string {
+  const bare = briefingId.startsWith("briefing:") ? briefingId.slice("briefing:".length) : briefingId;
+  const peers = (db.prepare("SELECT id FROM briefings WHERE id <> ?").all(briefingId) as Array<{ id: string }>)
+    .map((row) => row.id);
+  for (let length = Math.min(8, bare.length); length < bare.length; length++) {
+    const target = bare.slice(0, length);
+    if (!peers.some((peer) => peer.startsWith(target) || peer.startsWith(`briefing:${target}`))) {
+      return `briefing:${target}`;
+    }
+  }
+  return `briefing:${bare}`;
+}
+
 export function updateBriefingTitle(
   db: Db,
   briefingRef: string,

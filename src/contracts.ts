@@ -1338,7 +1338,7 @@ export type SpaceFactPacket = {
 
 // --- unified ref resolver ---------------------------------------------------
 
-export type ResolverRefKind = 'issue' | 'comment' | 'auth' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
+export type ResolverRefKind = 'issue' | 'comment' | 'auth' | 'briefing' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
 
 export type ResolverResult = {
   ref: string;

@@ -33,7 +33,7 @@ cmd_archive_state() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      "\"${action}d briefing \\(.briefing_id | mandible_short_id)\""
+      "\"${action}d \\(.briefing_id | mandible_briefing_ref)\""
   fi
 }
 
@@ -52,7 +52,7 @@ cmd_rename() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '"briefing:\(.briefing_id | mandible_short_id)  \(.title)"'
+      '"\(.briefing_id | mandible_briefing_ref)  \(.title)"'
   fi
 }
 
@@ -75,7 +75,7 @@ cmd_describe() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '"briefing:\(.briefing_id | mandible_short_id)  \(if .description == null then "description cleared" else .description end)"'
+      '"\(.briefing_id | mandible_briefing_ref)  \(if .description == null then "description cleared" else .description end)"'
   fi
 }
 
@@ -88,13 +88,13 @@ emit_bundle() {
       '.bundle | "briefing-bundle:\(.id | mandible_short_id)  \(.name)\n\(
         if (.layout? | type) == "array" then
           [.layout[]? | if .kind == "briefing" then
-            "  \(.position + 1). briefing:\(.briefing.id | mandible_short_id)  \(.briefing.title)"
+            "  \(.position + 1). \(.briefing.id | mandible_briefing_ref)  \(.briefing.title)"
           else
             "  \(.position + 1). \(.name)\n\([.briefings[]? |
-              "    \(.position + 1). briefing:\(.briefing.id | mandible_short_id)  \(.briefing.title)"] | join("\n"))"
+              "    \(.position + 1). \(.briefing.id | mandible_briefing_ref)  \(.briefing.title)"] | join("\n"))"
           end] | join("\n")
         else
-          [.members[]? | "  \(.position + 1). briefing:\(.briefing.id | mandible_short_id)  \(.briefing.title)"] | join("\n")
+          [.members[]? | "  \(.position + 1). \(.briefing.id | mandible_briefing_ref)  \(.briefing.title)"] | join("\n")
         end
       )"'
   fi
@@ -127,7 +127,7 @@ cmd_create() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '"\(.outcome | gsub("_"; " ")) briefing \(.briefing_id | mandible_short_id) round \(.round_id | mandible_short_id) from \(.artifact_version_id | mandible_typed_short_ref)\(if (.archived_candidates | length) > 0 then "; archived advisories=" + ((.archived_candidates | length) | tostring) else "" end)"'
+      '"\(.outcome | gsub("_"; " ")) \(.briefing_id | mandible_briefing_ref) round \(.round_id | mandible_short_id) from \(.artifact_version_id | mandible_typed_short_ref)\(if (.archived_candidates | length) > 0 then "; archived advisories=" + ((.archived_candidates | length) | tostring) else "" end)"'
   fi
 }
 
@@ -388,7 +388,7 @@ cmd_report_update() {
     || die "Failed to update published report Current." 1
   if (( json )); then printf '%s\n' "$response" | jq .; else
     printf '%s\n' "$response" | api_jq_human \
-      '"report briefing=\(.briefing_id | mandible_short_id)  round=\(.round_id | mandible_short_id)  changed=\(.changed)"'
+      '"report \(.briefing_id | mandible_briefing_ref)  round=\(.round_id | mandible_short_id)  changed=\(.changed)"'
   fi
 }
 
