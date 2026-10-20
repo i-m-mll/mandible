@@ -157,6 +157,41 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// Issue 2212987: a Briefing without a round (a quiet-only recurring feed, or a
+// row whose v1 rounds were retired to legacy custody) is never listed, and the
+// organization routes reach every stored row, including ids that themselves
+// begin with the `briefing:` typed-ref prefix.
+describe("roundless Briefings", () => {
+  it("lists only Briefings with a round and archives or restores any row by its stored id", () => {
+    const listed = publishBriefingRun(db, request(), publisherId, 1_000);
+    const quiet = publishBriefingRun(db, request(undefined, {
+      briefing_key: "quiet-feed", run_id: "quiet-1", run_key: "quiet-key-1",
+      document: null, quiet_reason: "no new evidence", occurrences: [],
+    }), publisherId, 1_100);
+    db.prepare(`INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
+      VALUES ('briefing:legacy-feed', 'legacy:feed', 'arxiv-scan', NULL, 0, 1, 1)`).run();
+    const viewer = { userId: humanId, operator: true };
+
+    const listedIds = () => (listBriefings(db, viewer) as Array<{ id: string }>).map((row) => row.id);
+    expect(listedIds()).toEqual([listed.briefing_id]);
+    const bundle = createBriefingBundle(db, {
+      name: "Mixed", briefingRefs: [listed.briefing_id, quiet.briefing_id], viewer,
+    }, 1_200);
+    expect(readBriefingBundle(db, bundle.id, viewer).members.map((member) => member.briefing.id))
+      .toEqual([listed.briefing_id]);
+
+    for (const id of listedIds()) {
+      expect(setBriefingArchived(db, id, true, viewer, 2_000)).toEqual({ briefing_id: id, archived_at: 2_000, changed: true });
+      expect(setBriefingArchived(db, id, false, viewer, 2_001)).toEqual({ briefing_id: id, archived_at: null, changed: true });
+    }
+    expect(setBriefingArchived(db, "briefing:legacy-feed", true, viewer, 3_000))
+      .toEqual({ briefing_id: "briefing:legacy-feed", archived_at: 3_000, changed: true });
+    expect(setBriefingArchived(db, "briefing:legacy", false, viewer, 3_001))
+      .toEqual({ briefing_id: "briefing:legacy-feed", archived_at: null, changed: true });
+    expect(listedIds()).toEqual([listed.briefing_id]);
+  });
+});
+
 describe("artifact-backed Briefing rounds", () => {
   it("resolves active immutable keys without falling back to archived key owners", () => {
     const viewer = { userId: humanId, operator: true };

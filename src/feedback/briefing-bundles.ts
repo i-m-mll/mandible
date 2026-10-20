@@ -5,7 +5,7 @@ import type {
   BriefingBundleMember, BriefingListEntry,
 } from "../contracts.js";
 import type { Db } from "../db.js";
-import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
+import { BRIEFING_HAS_ROUND_SQL, BriefingStoreError, resolveBriefingId } from "./briefings.js";
 import { enforceActivePlacement, placementTargetForBundle, type PlacementOverride } from "./briefing-placement.js";
 
 export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean };
@@ -40,7 +40,7 @@ function layoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewer): Lay
             b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
             b.created_at, b.updated_at
        FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
-      WHERE bm.bundle_id = ? AND b.archived_at IS NULL AND (? = 1 OR EXISTS (
+      WHERE bm.bundle_id = ? AND b.archived_at IS NULL AND ${BRIEFING_HAS_ROUND_SQL} AND (? = 1 OR EXISTS (
         SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
       )) ORDER BY bm.layout_position, bm.subgroup_position`,
   ).all(bundleId, viewer.operator ? 1 : 0, viewer.userId) as LayoutRow[];

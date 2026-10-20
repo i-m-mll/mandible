@@ -4220,29 +4220,55 @@ function briefingRows(payload: unknown, key: string): unknown[] {
   return rows;
 }
 
-export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
-  const rows = briefingRows(payload, 'briefings');
-  return rows.map((entry) => {
-    const row = briefingRecord(entry);
-    const id = briefingString(row.id);
-    const publicationMode: FeedbackCollection['publicationMode'] =
-      row.publication_mode === 'reviewed-document' || row.publication_mode === 'published-report'
-        ? row.publication_mode : null;
-    return {
-      id: feedbackCollectionIdentity(id),
-      collectionId: id,
-      label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
-      description: briefingOptionalString(row.description),
-      publicationMode,
-      unansweredDirectiveCount: briefingOptionalNumber(row.unanswered_directive_count) ?? 0,
-      latestRoundId: briefingString(row.latest_round_id),
-      createdAt: briefingOptionalNumber(row.created_at) ?? 0,
-      updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
-    };
-  }).filter((entry) => {
-    if (!entry.collectionId || !entry.latestRoundId) throw new Error('The Briefing service returned an invalid Briefing.');
-    return true;
-  });
+/** A row the Briefing service returned that the view cannot show, kept so the view can report it. */
+export type InvalidBriefingRow = { id: string | null; title: string | null; reason: string };
+
+export type BriefingList = { briefings: FeedbackCollection[]; invalid: InvalidBriefingRow[] };
+
+function normalizeBriefingRow(entry: unknown): { briefing: FeedbackCollection } | { invalid: InvalidBriefingRow } {
+  const row = briefingRecord(entry);
+  const id = briefingString(row.id);
+  const latestRoundId = briefingString(row.latest_round_id);
+  if (!id || !latestRoundId) {
+    return { invalid: {
+      id: id || null,
+      title: briefingOptionalString(row.title),
+      reason: id ? 'it has no round' : 'it has no id',
+    } };
+  }
+  const publicationMode: FeedbackCollection['publicationMode'] =
+    row.publication_mode === 'reviewed-document' || row.publication_mode === 'published-report'
+      ? row.publication_mode : null;
+  return { briefing: {
+    id: feedbackCollectionIdentity(id),
+    collectionId: id,
+    label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
+    description: briefingOptionalString(row.description),
+    publicationMode,
+    unansweredDirectiveCount: briefingOptionalNumber(row.unanswered_directive_count) ?? 0,
+    latestRoundId,
+    createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+    updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
+  } };
+}
+
+/** Keep the valid rows and report each invalid one, so one bad row never hides the others. */
+export function normalizeBriefings(payload: unknown): BriefingList {
+  const list: BriefingList = { briefings: [], invalid: [] };
+  for (const entry of briefingRows(payload, 'briefings')) {
+    const normalized = normalizeBriefingRow(entry);
+    if ('briefing' in normalized) list.briefings.push(normalized.briefing);
+    else list.invalid.push(normalized.invalid);
+  }
+  return list;
+}
+
+/** Normalize one embedded Briefing, recording it in `invalid` when the view cannot show it. */
+function normalizeMemberBriefing(entry: unknown, invalid: InvalidBriefingRow[]): FeedbackCollection | null {
+  const normalized = normalizeBriefingRow(entry);
+  if ('briefing' in normalized) return normalized.briefing;
+  invalid.push(normalized.invalid);
+  return null;
 }
 
 const BRIEFINGS_PATH = '/api/briefings';
@@ -4331,15 +4357,17 @@ export type BriefingSidebarSnapshot = {
   briefings: FeedbackCollection[];
   bundles: BriefingBundle[];
   groups: BriefingGroup[];
+  /** Rows from any of the three listings that the view cannot show, one entry per distinct row. */
+  invalidBriefings: InvalidBriefingRow[];
 };
 
-function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
+function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]): BriefingBundle | null {
   const bundle = briefingRecord(entry);
   const id = briefingString(bundle.id);
   const memberRows = briefingOptionalRows(bundle.members, 'members');
   const members = memberRows.map((memberEntry) => {
     const member = briefingRecord(memberEntry);
-    const normalized = normalizeBriefings({ briefings: [member.briefing] })[0];
+    const normalized = normalizeMemberBriefing(member.briefing, invalid);
     const position = briefingOptionalNumber(member.position);
     return normalized && position !== null && position >= 0 ? { position, briefing: normalized } : null;
   }).filter((member): member is { position: number; briefing: FeedbackCollection } => member !== null)
@@ -4348,7 +4376,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
   const layout = layoutRows.map((layoutEntry): BriefingBundleLayoutEntry | null => {
     const row = briefingRecord(layoutEntry);
     if (row.kind === 'briefing') {
-      const briefing = normalizeBriefings({ briefings: [row.briefing] })[0];
+      const briefing = normalizeMemberBriefing(row.briefing, invalid);
       return briefing ? { kind: 'briefing', briefing } : null;
     }
     if (row.kind === 'subgroup') {
@@ -4356,7 +4384,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
       const briefings = (briefingOptionalRows(row.briefings, 'subgroup briefings'))
         .map((entry) => {
           const member = briefingRecord(entry);
-          return normalizeBriefings({ briefings: [member.briefing ?? entry] })[0];
+          return normalizeMemberBriefing(member.briefing ?? entry, invalid);
         })
         .filter((briefing): briefing is FeedbackCollection => Boolean(briefing));
       return name ? { kind: 'subgroup', name, briefings } : null;
@@ -4380,24 +4408,24 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
   } : null;
 }
 
-export function normalizeBriefingBundles(payload: unknown): BriefingBundle[] {
+export function normalizeBriefingBundles(payload: unknown, invalid: InvalidBriefingRow[]): BriefingBundle[] {
   const rows = briefingRows(payload, 'bundles');
-  return rows.map(normalizeBriefingBundle).filter((bundle): bundle is BriefingBundle => {
+  return rows.map((entry) => normalizeBriefingBundle(entry, invalid)).filter((bundle): bundle is BriefingBundle => {
     if (!bundle) throw new Error('The Briefing service returned an invalid bundle.');
     return true;
   });
 }
 
-export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
+export function normalizeBriefingGroups(payload: unknown, invalid: InvalidBriefingRow[]): BriefingGroup[] {
   const rows = briefingRows(payload, 'groups');
   return rows.map((entry): BriefingGroup | null => {
     const group = briefingRecord(entry);
     const id = briefingString(group.id);
     const key = briefingString(group.key);
     const name = briefingString(group.name);
-    const current = group.current == null ? null : normalizeBriefingBundle(group.current);
+    const current = group.current == null ? null : normalizeBriefingBundle(group.current, invalid);
     const updates = (briefingOptionalRows(group.updates, 'updates'))
-      .map(normalizeBriefingBundle)
+      .map((bundle) => normalizeBriefingBundle(bundle, invalid))
       .filter((update): update is BriefingBundle => update !== null);
     const parseReviewItem = (entry: unknown): BriefingGroupReviewItem | null => {
       const row = briefingRecord(entry);
@@ -4459,9 +4487,9 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
     const history = (Array.isArray(group.history) ? group.history : []).map((entry): BriefingGroupDisposition | null => {
       const row = briefingRecord(entry);
       const dispositionId = briefingString(row.id);
-      const priorBase = row.prior_base == null ? null : normalizeBriefingBundle(row.prior_base);
-      const proposal = normalizeBriefingBundle(row.proposal);
-      const resultingBase = row.resulting_base == null ? null : normalizeBriefingBundle(row.resulting_base);
+      const priorBase = row.prior_base == null ? null : normalizeBriefingBundle(row.prior_base, invalid);
+      const proposal = normalizeBriefingBundle(row.proposal, invalid);
+      const resultingBase = row.resulting_base == null ? null : normalizeBriefingBundle(row.resulting_base, invalid);
       const kind = row.kind === 'promoted' || row.kind === 'dismissed'
         || row.kind === 'accepted' || row.kind === 'rejected' ? row.kind : null;
       return dispositionId && kind && proposal ? {
@@ -4523,16 +4551,16 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
   });
 }
 
-export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollection[]> {
+export async function getBriefings(signal?: AbortSignal): Promise<BriefingList> {
   return normalizeBriefings(await parseMaybeJson(await apiGet(BRIEFINGS_PATH, { signal })));
 }
 
-export async function getBriefingBundles(signal?: AbortSignal): Promise<BriefingBundle[]> {
-  return normalizeBriefingBundles(await parseMaybeJson(await apiGet(BRIEFING_BUNDLES_PATH, { signal })));
+export async function getBriefingBundles(invalid: InvalidBriefingRow[], signal?: AbortSignal): Promise<BriefingBundle[]> {
+  return normalizeBriefingBundles(await parseMaybeJson(await apiGet(BRIEFING_BUNDLES_PATH, { signal })), invalid);
 }
 
-export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingGroup[]> {
-  return normalizeBriefingGroups(await parseMaybeJson(await apiGet(BRIEFING_GROUPS_PATH, { signal })));
+export async function getBriefingGroups(invalid: InvalidBriefingRow[], signal?: AbortSignal): Promise<BriefingGroup[]> {
+  return normalizeBriefingGroups(await parseMaybeJson(await apiGet(BRIEFING_GROUPS_PATH, { signal })), invalid);
 }
 
 export async function dispositionBriefingGroupProposal(
@@ -4556,10 +4584,11 @@ export async function dispositionBriefingGroupProposal(
     })),
   });
   const root = briefingRecord(await parseMaybeJson(response));
-  const group = normalizeBriefingGroups({ groups: [root.group] })[0];
+  const invalid: InvalidBriefingRow[] = [];
+  const group = normalizeBriefingGroups({ groups: [root.group] }, invalid)[0];
   const rawDisposition = briefingRecord(root.disposition);
   const disposition = group?.history?.find((entry) => entry.id === briefingString(rawDisposition.id));
-  if (!group || !disposition || typeof root.changed !== 'boolean') {
+  if (!group || !disposition || invalid.length > 0 || typeof root.changed !== 'boolean') {
     throw new Error('The Briefing proposal disposition response is invalid.');
   }
   invalidateApiGetCache(BRIEFING_GROUPS_PATH);
@@ -4569,10 +4598,15 @@ export async function dispositionBriefingGroupProposal(
 }
 
 export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {
-  const [briefings, bundles, groups] = await Promise.all([
-    getBriefings(signal), getBriefingBundles(signal), getBriefingGroups(signal),
+  const embeddedInvalid: InvalidBriefingRow[] = [];
+  const [list, bundles, groups] = await Promise.all([
+    getBriefings(signal), getBriefingBundles(embeddedInvalid, signal), getBriefingGroups(embeddedInvalid, signal),
   ]);
-  return { briefings, bundles, groups };
+  const invalidBriefings = new Map<string, InvalidBriefingRow>();
+  for (const row of [...list.invalid, ...embeddedInvalid]) {
+    invalidBriefings.set(`${row.id ?? ''}\u0000${row.title ?? ''}\u0000${row.reason}`, row);
+  }
+  return { briefings: list.briefings, bundles, groups, invalidBriefings: [...invalidBriefings.values()] };
 }
 
 export function normalizeBriefingProjection(payload: unknown): BriefingProjection {

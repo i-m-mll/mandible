@@ -217,7 +217,7 @@ describe('artifact-backed Briefing rounds', () => {
       });
     }));
 
-    await Promise.all([getBriefings(), getBriefingBundles()]);
+    await Promise.all([getBriefings(), getBriefingBundles([])]);
     warming = false;
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined,
       registerInitialRouteLoad: () => undefined,
@@ -231,7 +231,7 @@ describe('artifact-backed Briefing rounds', () => {
   it('normalizes stable logical rows and exact immutable selected-round bindings', () => {
     expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review',
       description: 'Durable source snapshot.', latest_round_id: 'round-2', unanswered_directive_count: 1,
-      created_at: 1, updated_at: 2 }] })[0])
+      created_at: 1, updated_at: 2 }] }).briefings[0])
       .toMatchObject({ collectionId: 'briefing-1', description: 'Durable source snapshot.',
         latestRoundId: 'round-2', unansweredDirectiveCount: 1 });
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));

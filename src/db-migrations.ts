@@ -1882,6 +1882,50 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   // Issue 117ba80 — the latest protected-base history audit of each merge request.
   { version: 198, name: "auth_base_audits", statements: [...PROTECTED_BASE_AUDIT_SCHEMA_SQL] },
+  // Issue 2212987 — migration 143 sealed each v1 Briefing's rounds into
+  // briefing_legacy_custody and left the Briefing row with no round. Those rows
+  // cannot be listed, and the custody packet still references them, so they are
+  // archived rather than deleted. Each archive records one briefing.archived
+  // ledger event.
+  {
+    version: 199,
+    name: "archive_roundless_legacy_briefings",
+    statements: [
+      `CREATE TEMP TABLE briefing_roundless_archive (
+        briefing_id TEXT PRIMARY KEY,
+        custody_id TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        archived_at INTEGER NOT NULL
+      )`,
+      `INSERT INTO briefing_roundless_archive (briefing_id, custody_id, event_id, archived_at)
+       SELECT b.id, custody.id, lower(hex(randomblob(32))), CAST(strftime('%s', 'now') AS INTEGER) * 1000
+       FROM briefings b
+       JOIN briefing_legacy_custody custody ON custody.briefing_id = b.id
+       WHERE b.archived_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM briefing_rounds r WHERE r.briefing_id = b.id)`,
+      `UPDATE briefings
+       SET archived_at = (SELECT a.archived_at FROM briefing_roundless_archive a WHERE a.briefing_id = briefings.id)
+       WHERE id IN (SELECT briefing_id FROM briefing_roundless_archive)`,
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type, source,
+        payload_json, occurred_at, observed_at, actor_user_id, evidence_method, evidence_id
+      )
+      SELECT a.event_id, 'briefing', a.briefing_id, 'briefing.archived', 'schema-migration-v199', 'system', 'system',
+        json_object(
+          'briefing_id', a.briefing_id,
+          'briefing_key', b.briefing_key,
+          'title', b.title,
+          'archived_at', a.archived_at,
+          'legacy_custody_id', a.custody_id,
+          'reason', 'Migration 143 retired every round of this Briefing to sealed legacy custody, so it has no round to show.',
+          'migration', 'roundless_legacy_briefing_archive'
+        ),
+        a.archived_at, a.archived_at, NULL, NULL, NULL
+      FROM briefing_roundless_archive a
+      JOIN briefings b ON b.id = a.briefing_id`,
+      "DROP TABLE briefing_roundless_archive",
+    ],
+  },
 ];
 
 /**
