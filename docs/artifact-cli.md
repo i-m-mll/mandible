@@ -41,7 +41,7 @@ A source move changes the registered update location, not files on disk, ownersh
 - `artifact-blob:<hash>` identifies shared bytes, without borrowing an arbitrary version's Git authority.
 - Authored `artifact-series:<id>` references still name a living document; a numbered selector pins its historical version.
 
-Use `mandible artifact format <ref> --as markdown` for user-facing links. Resolve, show, history, preview, check, download, open, and diff operate on registered identities. Reads never create placeholder artifacts. An unavailable authority or hash mismatch is explicit failure; neither a current checkout nor an alias silently substitutes bytes.
+User-facing artifact links use `/artifact/<typed-short-ref>` on the Mandible origin for the web view, or `/r/artifact/<typed-short-ref>` for the desktop app; `mandible artifact format <ref>` resolves a long or untyped ref. Resolve, show, history, preview, check, download, open, and diff operate on registered identities. Reads never create placeholder artifacts. An unavailable authority or hash mismatch is explicit failure; neither a current checkout nor an alias silently substitutes bytes.
 
 `mandible artifact snapshot` creates managed bytes. Bundles retain ordered membership and manifests; a membership link does not alter member custody. Project associations express ownership/access and grouping independently of byte custody.
 

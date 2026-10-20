@@ -55,15 +55,16 @@ function issueRouteFromUrl(url: URL): string | null {
   return `#/issues?${appendExtraParams(params, url).toString()}`;
 }
 
-function authRouteFromUrl(url: URL): string | null {
-  const route = firstRouteSegment(url);
-  if (route !== 'auth') return null;
+// Routes whose deep link carries one required identity param map straight
+// onto the same-named hash route.
+function singleParamRouteFromUrl(url: URL, routeName: string, param: string): string | null {
+  if (firstRouteSegment(url) !== routeName) return null;
 
-  const request = url.searchParams.get('request')?.trim();
-  if (!request) return null;
+  const value = url.searchParams.get(param)?.trim();
+  if (!value) return null;
 
-  const params = new URLSearchParams({ request });
-  return `#/auth?${appendExtraParams(params, url).toString()}`;
+  const params = new URLSearchParams({ [param]: value });
+  return `#/${routeName}?${appendExtraParams(params, url).toString()}`;
 }
 
 function artifactRouteFromUrl(url: URL): string | null {
@@ -111,7 +112,10 @@ export function routeHashFromMandibleDeepLink(rawUrl: string): string | null {
     return null;
   }
   if (url.protocol !== 'mandible:') return null;
-  return issueRouteFromUrl(url) ?? authRouteFromUrl(url) ?? artifactRouteFromUrl(url);
+  return issueRouteFromUrl(url)
+    ?? singleParamRouteFromUrl(url, 'auth', 'request')
+    ?? singleParamRouteFromUrl(url, 'briefing', 'briefing')
+    ?? artifactRouteFromUrl(url);
 }
 
 export function navigateToMandibleDeepLink(

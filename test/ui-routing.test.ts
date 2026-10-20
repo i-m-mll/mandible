@@ -106,9 +106,12 @@ describe('App routing', () => {
     expect(routeHashFromMandibleDeepLink('https://example.test/issues?issue=dfc924a')).toBeNull();
   });
 
-  it('maps mandible auth and artifact deep links onto existing hash routes', () => {
+  it('maps mandible auth, Briefing, and artifact deep links onto existing hash routes', () => {
     expect(routeHashFromMandibleDeepLink('mandible:///auth?request=abc')).toBe(
       '#/auth?request=abc',
+    );
+    expect(routeHashFromMandibleDeepLink('mandible:///briefing?briefing=0123abcd&agent_session=0198c0de')).toBe(
+      '#/briefing?briefing=0123abcd&agent_session=0198c0de',
     );
     expect(routeHashFromMandibleDeepLink('mandible:///artifacts?ref=bbbbbbbbbbbb')).toBe(
       '#/artifacts?ref=bbbbbbbbbbbb',
