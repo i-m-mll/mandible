@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import SqliteDatabase from "../src/sqlite.ts";
+import { userSchema } from "./sqlite-user-schema.mjs";
 
 // Issue 24f0316 — the ledger database lives under the durable root.
 const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
@@ -56,7 +57,7 @@ export function projectDatabaseSnapshot(options) {
     db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
     db.exec("BEGIN DEFERRED");
 
-    const schema = readSourceSchema(db);
+    const schema = userSchema(db, "source");
     requireProjectedTables(schema.tables);
     const sourceTableNames = new Set(schema.tables.map((table) => table.name));
     const hasLegacyDaemonLog = sourceTableNames.has("daemon_log");
@@ -224,23 +225,6 @@ function convergeProjectedConversationTitles(dbPath, structureCachePath) {
       `Projected conversation convergence returned invalid JSON: ${error instanceof Error ? error.message : error}`,
     );
   }
-}
-
-function readSourceSchema(db) {
-  const rows = db.prepare(
-    `SELECT type, name, tbl_name, sql
-       FROM source.sqlite_master
-      WHERE sql IS NOT NULL
-        AND name NOT LIKE 'sqlite_%'
-      ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END,
-               name`,
-  ).all();
-  return {
-    tables: rows.filter((row) => row.type === "table"),
-    indexes: rows.filter((row) => row.type === "index"),
-    views: rows.filter((row) => row.type === "view"),
-    triggers: rows.filter((row) => row.type === "trigger"),
-  };
 }
 
 function requireProjectedTables(tables) {
