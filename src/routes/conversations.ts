@@ -42,6 +42,8 @@ import {
 import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
+import { childrenOfConversationSql } from "../conversation-lineage.js";
+import { backfillConversationLineage } from "../conversations/lineage-backfill.js";
 import type { SessionRegistry } from "../registry.js";
 import {
   executeConversationExternalNavigation,
@@ -662,6 +664,14 @@ export function registerConversationRoutes(
     }
   }, { operation: { id: "post:/api/conversations/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
+  // POST /api/conversations/lineage-backfill — issue 23f8142. Operator-only,
+  // run once: declares and links the parent of conversations indexed before
+  // their parsers recorded one.
+  server.post("/api/conversations/lineage-backfill", async (req, res) => {
+    requireOperator(getDb(), req);
+    sendJson(res, 200, await backfillConversationLineage(getDb()));
+  }, { operation: { id: "post:/api/conversations/lineage-backfill", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
+
   // POST /api/conversations/scan-credentials — issue 71a287e.
   // On-demand sweep of the normalized index for leaked Mandible credentials.
   // Operator-only: it reports which credentials leaked where and applies the
@@ -1113,7 +1123,7 @@ export function registerConversationRoutes(
     // Sub-agent filtering — Bug: d0759d1
     if (parentIdFilter) {
       // List children of a specific parent
-      conditions.push("c.parent_conversation_id = ?");
+      conditions.push(childrenOfConversationSql("c"));
       params.push(parentIdFilter);
     } else if (excludeSubagents) {
       // Hide sub-agent conversations from the main list
@@ -1143,7 +1153,7 @@ export function registerConversationRoutes(
       const ids = searched.matches.map((match) => match.conversation_id);
       const pageIds = ids.slice(offset, offset + limit);
       const selectCols = groupMode
-        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
         : `c.*`;
       const rows = pageIds.length === 0
         ? []
@@ -1172,7 +1182,7 @@ export function registerConversationRoutes(
 
     // Fetch page — include children_count via subquery when grouping
     const selectCols = groupMode
-      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
       : `c.*`;
 
     const rows = db
@@ -1629,8 +1639,8 @@ export function registerConversationRoutes(
       .prepare(
         `SELECT id, title, block_count, started_at, ended_at, source, model,
                 agent_id, is_sidechain, source_mtime, updated_at
-         FROM conversations
-         WHERE parent_conversation_id = ?
+         FROM conversations child
+         WHERE ${childrenOfConversationSql("child")}
          ORDER BY started_at ASC`
       )
       .all(id) as Array<{

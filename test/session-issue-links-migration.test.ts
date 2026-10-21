@@ -39,6 +39,9 @@ function rewindToV203(): void {
       session_id TEXT NOT NULL, repo_id TEXT NOT NULL, repo_name TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY (session_id, repo_id)
     );
+    DROP INDEX idx_conv_declared_parent;
+    ALTER TABLE conversations DROP COLUMN parent_session_id;
+    ALTER TABLE conversations DROP COLUMN parent_source;
     UPDATE meta SET value = '203' WHERE key = 'schema_version';
   `);
 }

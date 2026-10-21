@@ -23,7 +23,7 @@ import {
   loadCodexNativeSessionId,
   loadCodexSessionIndexTitle,
 } from "./parsers/codex.js";
-import { parseClaudeSubagentPath } from "./parsers/claude.js";
+import { linkIngestedConversation } from "./conversation-lineage.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import {
@@ -693,68 +693,6 @@ const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let ingestionActor: IngestionActor | null = null;
 let backgroundBackoffMs: () => number = () => 0;
 
-function resolveParentConversationId(
-  db: ReturnType<typeof getDb>,
-  sessionId: string,
-  filePath: string,
-  currentConversationId?: string,
-): string | null {
-  const subagentPath = parseClaudeSubagentPath(filePath);
-  if (subagentPath) {
-    const row = db.prepare(`
-      SELECT id
-      FROM conversations
-      WHERE source = 'claude_code'
-        AND session_id = ?
-        AND id != ?
-        AND LOWER(source_path) NOT LIKE '%/subagents/%'
-      ORDER BY started_at ASC, created_at ASC
-      LIMIT 1
-    `).get(subagentPath.parentSessionId, currentConversationId ?? "") as { id: string } | undefined;
-    if (row) {
-      return row.id;
-    }
-  }
-
-  const parentRow = db.prepare(`
-    SELECT c.id FROM sessions s
-    JOIN conversations c ON c.session_id = s.parent_id
-    WHERE s.id = ?
-    LIMIT 1
-  `).get(sessionId) as { id: string } | undefined;
-  return parentRow?.id ?? null;
-}
-
-function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSessionId: string, parentConversationId: string): void {
-  const parentPattern = `%/${parentSessionId}/subagents/agent-%.jsonl`;
-  const workflowPattern = `%/${parentSessionId}/subagents/workflows/%/agent-%.jsonl`;
-  db.prepare(`
-    UPDATE conversations
-    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
-        is_sidechain = 1,
-        agent_id = COALESCE(
-          NULLIF(agent_id, ''),
-          substr(source_path, instr(source_path, '/subagents/agent-') + length('/subagents/agent-'),
-            length(source_path) - instr(source_path, '/subagents/agent-') - length('/subagents/agent-') - length('.jsonl') + 1)
-        )
-    WHERE source = 'claude_code'
-      AND LOWER(source_path) LIKE LOWER(?)
-      AND id != ?
-  `).run(parentConversationId, parentPattern, parentConversationId);
-  db.prepare(`
-    UPDATE conversations
-    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
-        is_sidechain = 1,
-        agent_id = COALESCE(
-          NULLIF(agent_id, ''),
-          substr(source_path, instr(source_path, '/agent-') + length('/agent-'),
-            length(source_path) - instr(source_path, '/agent-') - length('/agent-') - length('.jsonl') + 1)
-        )
-    WHERE source = 'claude_code'
-      AND LOWER(source_path) LIKE LOWER(?)
-      AND id != ?
-  `).run(parentConversationId, workflowPattern, parentConversationId);
-}
 export class BoundedDirtyPathSet {
   private readonly paths = new Set<string>();
 
@@ -2211,6 +2149,7 @@ function mergeAppendConversationMetadata(
       model: result.conversation.model ?? existing.model,
       cli_version: result.conversation.cli_version ?? existing.cli_version,
     },
+    parent: result.parent,
     blocks: result.blocks,
     ...(result.providerTitle ? { providerTitle: result.providerTitle } : {}),
     ...(result.providerTitleSource ? { providerTitleSource: result.providerTitleSource } : {}),
@@ -3056,15 +2995,8 @@ async function ingestFilePass(
     });
   }
 
-  const subagentPath = parseClaudeSubagentPath(filePath);
-  const isSidechain = result.conversation.is_sidechain || Boolean(subagentPath);
-  const agentId = result.conversation.agent_id ?? subagentPath?.agentId ?? null;
-  const parentConversationId = resolveParentConversationId(
-    db,
-    result.conversation.session_id,
-    filePath,
-    existing?.id,
-  );
+  const isSidechain = result.conversation.is_sidechain;
+  const agentId = result.conversation.agent_id;
 
   // Check hash — if same content, just update mtime
   if (existing && existing.source_hash === result.conversation.source_hash) {
@@ -3094,9 +3026,8 @@ async function ingestFilePass(
         block_count = ?,
         model = ?,
         cli_version = ?,
-        parent_conversation_id = COALESCE(?, parent_conversation_id),
-        is_sidechain = ?,
-        agent_id = ?,
+        is_sidechain = MAX(is_sidechain, ?),
+        agent_id = COALESCE(?, agent_id),
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -3107,14 +3038,11 @@ async function ingestFilePass(
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
-      parentConversationId,
       isSidechain ? 1 : 0,
       agentId,
       existing.id,
     );
-    if (!isSidechain && result.conversation.source === "claude_code") {
-      linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
-    }
+    linkIngestedConversation(db, { ...result.conversation, id: existing.id }, result.parent);
     await refreshAppendStateFromParse(db, filePath, stat, result);
     await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks, options.strictParseErrors);
     // The selected Chat reacts to this event by reading its source-backed
@@ -3184,9 +3112,8 @@ async function ingestFilePass(
         source_hash = ?, source_mtime = ?,
         title = ?, summary = ?, ended_at = ?,
         block_count = ?, model = ?, cli_version = ?,
-        parent_conversation_id = COALESCE(?, parent_conversation_id),
-        is_sidechain = ?,
-        agent_id = ?,
+        is_sidechain = MAX(is_sidechain, ?),
+        agent_id = COALESCE(?, agent_id),
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -3198,14 +3125,11 @@ async function ingestFilePass(
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
-      parentConversationId,
       isSidechain ? 1 : 0,
       agentId,
       conversationId,
     );
-    if (!isSidechain && result.conversation.source === "claude_code") {
-      linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
-    }
+    linkIngestedConversation(db, { ...result.conversation, id: conversationId }, result.parent);
     await refreshAppendState(
       db,
       filePath,
@@ -3353,13 +3277,13 @@ async function ingestFilePass(
           id, source, source_path, source_hash, source_mtime,
           title, summary, started_at, ended_at, block_count,
           session_id, project_path, cwd, branch, model, cli_version,
-          starred, tags, notes, parent_conversation_id, is_sidechain, agent_id,
+          starred, tags, notes, is_sidechain, agent_id,
           created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?,
           datetime('now'), datetime('now')
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -3371,8 +3295,8 @@ async function ingestFilePass(
           project_path = excluded.project_path, cwd = excluded.cwd,
           branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
           starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
-          parent_conversation_id = excluded.parent_conversation_id,
-          is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+          is_sidechain = MAX(conversations.is_sidechain, excluded.is_sidechain),
+          agent_id = COALESCE(excluded.agent_id, conversations.agent_id),
           updated_at = excluded.updated_at
       `).run(
         conversationId,
@@ -3394,7 +3318,6 @@ async function ingestFilePass(
         metadata.starred,
         metadata.tags,
         metadata.notes,
-        parentConversationId,
         isSidechain ? 1 : 0,
         agentId,
       );
@@ -3405,9 +3328,8 @@ async function ingestFilePass(
           source_hash = ?, source_mtime = ?,
           title = ?, summary = ?, ended_at = ?,
           block_count = ?, model = ?, cli_version = ?,
-          parent_conversation_id = COALESCE(?, parent_conversation_id),
-          is_sidechain = ?,
-          agent_id = ?,
+          is_sidechain = MAX(is_sidechain, ?),
+          agent_id = COALESCE(?, agent_id),
           updated_at = datetime('now')
         WHERE id = ?
       `).run(
@@ -3419,7 +3341,6 @@ async function ingestFilePass(
         result.conversation.block_count,
         result.conversation.model,
         result.conversation.cli_version,
-        parentConversationId,
         isSidechain ? 1 : 0,
         agentId,
         conversationId,
@@ -3570,13 +3491,13 @@ async function ingestFilePass(
                 id, source, source_path, source_hash, source_mtime,
                 title, summary, started_at, ended_at, block_count,
                 session_id, project_path, cwd, branch, model, cli_version,
-                starred, tags, notes, parent_conversation_id, is_sidechain, agent_id,
+                starred, tags, notes, is_sidechain, agent_id,
                 created_at, updated_at
               ) VALUES (
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
                 datetime('now'), datetime('now')
               )
               ON CONFLICT(id) DO UPDATE SET
@@ -3588,8 +3509,8 @@ async function ingestFilePass(
                 project_path = excluded.project_path, cwd = excluded.cwd,
                 branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
                 starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
-                parent_conversation_id = excluded.parent_conversation_id,
-                is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+                is_sidechain = MAX(conversations.is_sidechain, excluded.is_sidechain),
+                agent_id = COALESCE(excluded.agent_id, conversations.agent_id),
                 updated_at = excluded.updated_at
             `).run(
               conversationId,
@@ -3611,7 +3532,6 @@ async function ingestFilePass(
               metadata.starred,
               metadata.tags,
               metadata.notes,
-              parentConversationId,
               isSidechain ? 1 : 0,
               agentId,
             );
@@ -3696,9 +3616,7 @@ async function ingestFilePass(
     ).run(activeAt, result.conversation.session_id, activeAt);
   }
 
-  if (!isSidechain && result.conversation.source === "claude_code") {
-    linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
-  }
+  linkIngestedConversation(db, { ...result.conversation, id: conversationId }, result.parent);
 
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";

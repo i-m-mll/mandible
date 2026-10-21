@@ -13,6 +13,7 @@ import {
   BASELINE_SCHEMA_VERSION,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
+  CONVERSATION_DECLARED_PARENT_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -2073,6 +2074,21 @@ export const MIGRATIONS: readonly Migration[] = [
           OR (app = 'codex' AND pid IS NULL AND id = 'codex-' || conversation_id)`,
       "DROP TABLE session_issues",
       "DROP TABLE IF EXISTS session_projects",
+    ],
+  },
+  // Issue 23f8142 — conversations record the parent session their provider
+  // declares. Rows already linked declare their parent's session; unlinked
+  // rows wait for `mandible conversations lineage-backfill`.
+  {
+    version: 205,
+    name: "conversation_declared_parent",
+    statements: [
+      ...CONVERSATION_DECLARED_PARENT_SQL,
+      `UPDATE conversations
+          SET parent_source = (SELECT parent.source FROM conversations parent WHERE parent.id = conversations.parent_conversation_id),
+              parent_session_id = (SELECT parent.session_id FROM conversations parent WHERE parent.id = conversations.parent_conversation_id)
+        WHERE parent_conversation_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM conversations parent WHERE parent.id = conversations.parent_conversation_id)`,
     ],
   },
 ];

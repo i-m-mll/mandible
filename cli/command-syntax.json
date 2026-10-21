@@ -2096,6 +2096,15 @@
         ]
       }
     },
+    "conversations.lineage-backfill": {
+      "route": ["conversations", "lineage-backfill"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "conversations.scan-credentials": {
       "route": ["conversations", "scan-credentials"],
       "grammar": {
