@@ -9,6 +9,12 @@ import { protectedBranchNames } from "./protected-branches.js";
 import { resolveProjectRef, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 import { parseJsonObject } from "./row-coerce.js";
+import {
+  classifyIgnored,
+  ignoredStatusPaths,
+  readIgnoredPolicy,
+  type IgnoredFile,
+} from "./trash-ignored.js";
 
 export const TRASH_RETENTION_POLICY = "trash-retention.v1";
 export const DEFAULT_TRASH_RETENTION_DAYS = 30;
@@ -103,10 +109,40 @@ interface GitWorktree {
   branch: string | null;
 }
 
+/**
+ * Ignored files kept in trash custody. They live in a parentless commit under
+ * their own ref, separate from the tracked snapshot, because restore makes the
+ * snapshot commit the branch tip and ignored bytes must never enter the branch.
+ */
+export interface IgnoredCustody {
+  kept: number;
+  skipped: number;
+  refused: number;
+  kept_bytes: number;
+  limit_bytes: number | null;
+  kept_paths: string[];
+  kept_paths_truncated: boolean;
+  ref: string | null;
+  oid: string | null;
+}
+
 export interface TrashCreateOutcome {
   worktree_removed: boolean;
   branch_removed: boolean;
   worktree_path: string | null;
+  ignored: IgnoredCustody;
+}
+
+const IGNORED_PATH_REPORT_LIMIT = 50;
+const TRASH_IDENTITY = {
+  GIT_AUTHOR_NAME: "Mandible Trash",
+  GIT_AUTHOR_EMAIL: "trash@mandible.local",
+  GIT_COMMITTER_NAME: "Mandible Trash",
+  GIT_COMMITTER_EMAIL: "trash@mandible.local",
+};
+
+function ignoredCustodyRef(entryId: string): string {
+  return `refs/mandible/trash-ignored/${entryId}`;
 }
 
 function git(
@@ -274,14 +310,8 @@ function snapshotWorktree(
   const captured = captureWorktreeTree(worktreePath, originalOid, entryId);
   if (!captured.dirty) return originalOid;
 
-  const identity = {
-    GIT_AUTHOR_NAME: "Mandible Trash",
-    GIT_AUTHOR_EMAIL: "trash@mandible.local",
-    GIT_COMMITTER_NAME: "Mandible Trash",
-    GIT_COMMITTER_EMAIL: "trash@mandible.local",
-  };
   return git(worktreePath, ["commit-tree", captured.tree, "-p", originalOid], {
-    env: identity,
+    env: TRASH_IDENTITY,
     input: `Mandible trash snapshot for ${branch}\n`,
   });
 }
@@ -389,6 +419,230 @@ function captureWorktreeTree(
   }
 }
 
+interface IgnoredPlan {
+  kept: IgnoredFile[];
+  skipped: number;
+  keptBytes: number;
+  limitBytes: number;
+}
+
+const NO_WORKTREE_IGNORED: IgnoredCustody = {
+  kept: 0,
+  skipped: 0,
+  refused: 0,
+  kept_bytes: 0,
+  limit_bytes: null,
+  kept_paths: [],
+  kept_paths_truncated: false,
+  ref: null,
+  oid: null,
+};
+
+/**
+ * Decide, before anything is removed, which ignored files trash must keep.
+ * Refuses the whole removal when the unique ignored bytes exceed the limit or
+ * cannot be stored in Git, so the worktree stays untouched.
+ */
+function planIgnored(repoRoot: string, worktreePath: string): IgnoredPlan {
+  const policyResult = readIgnoredPolicy(repoRoot);
+  if (!policyResult.ok) {
+    throw new TrashServiceError(
+      `invalid [trash.ignored] config in ${policyResult.source}: ${policyResult.error}`,
+      "invalid_repo_config",
+      409,
+      { source: policyResult.source },
+    );
+  }
+  const { policy } = policyResult;
+  const status = git(worktreePath, [
+    "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal",
+    "--ignore-submodules=none",
+  ]);
+  const classification = classifyIgnored(worktreePath, ignoredStatusPaths(status), policy);
+  const overLimit = classification.keptBytes > policy.maxPreservedBytes;
+  if (overLimit || classification.unpreservable.length > 0) {
+    const largest = [...classification.kept].sort((left, right) => right.bytes - left.bytes);
+    const refused = classification.kept.length + classification.unpreservable.length;
+    const reasons = [
+      ...(overLimit
+        ? [`${classification.kept.length} ignored files total ${classification.keptBytes} bytes, over the ${policy.maxPreservedBytes}-byte limit`]
+        : []),
+      ...(classification.unpreservable.length > 0
+        ? [`${classification.unpreservable.length} ignored entries cannot be stored in Git`]
+        : []),
+    ];
+    throw new TrashServiceError(
+      `refusing to remove worktree with unpreserved ignored files: ${reasons.join("; ")}. Nothing was removed.`,
+      "ignored_files_refused",
+      409,
+      {
+        outcome: { worktree_removed: false, branch_removed: false, worktree_path: worktreePath },
+        ignored: {
+          kept: 0,
+          skipped: classification.skipped,
+          refused,
+          total_bytes: classification.keptBytes,
+          limit_bytes: policy.maxPreservedBytes,
+          files: largest.slice(0, IGNORED_PATH_REPORT_LIMIT)
+            .map((file) => ({ path: file.path, bytes: file.bytes })),
+          files_truncated: largest.length > IGNORED_PATH_REPORT_LIMIT,
+          unpreservable: classification.unpreservable.slice(0, IGNORED_PATH_REPORT_LIMIT),
+          config_source: policyResult.source,
+        },
+      },
+    );
+  }
+  return {
+    kept: classification.kept,
+    skipped: classification.skipped,
+    keptBytes: classification.keptBytes,
+    limitBytes: policy.maxPreservedBytes,
+  };
+}
+
+function captureIgnored(worktreePath: string, kept: readonly IgnoredFile[], entryId: string): string | null {
+  if (kept.length === 0) return null;
+  const oids = git(worktreePath, ["hash-object", "-w", "--no-filters", "--stdin-paths"], {
+    input: `${kept.map((file) => file.path).join("\n")}\n`,
+  }).split("\n");
+  if (oids.length !== kept.length) {
+    throw new TrashServiceError("git hash-object returned an unexpected object count", "git_failed", 500);
+  }
+  const indexPath = path.join(os.tmpdir(), `mandible-trash-ignored-index-${entryId}`);
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    const records = kept.map((file, index) => `${file.executable ? "100755" : "100644"} ${oids[index]}\t${file.path}\0`);
+    git(worktreePath, ["update-index", "--add", "-z", "--index-info"], { env, input: records.join("") });
+    const tree = git(worktreePath, ["write-tree"], { env });
+    return git(worktreePath, ["commit-tree", tree], {
+      env: TRASH_IDENTITY,
+      input: "Mandible trash ignored files\n",
+    });
+  } finally {
+    fs.rmSync(indexPath, { force: true });
+    fs.rmSync(`${indexPath}.lock`, { force: true });
+  }
+}
+
+function ignoredCustody(plan: IgnoredPlan, ref: string | null, oid: string | null): IgnoredCustody {
+  return {
+    kept: plan.kept.length,
+    skipped: plan.skipped,
+    refused: 0,
+    kept_bytes: plan.keptBytes,
+    limit_bytes: plan.limitBytes,
+    kept_paths: plan.kept.slice(0, IGNORED_PATH_REPORT_LIMIT).map((file) => file.path),
+    kept_paths_truncated: plan.kept.length > IGNORED_PATH_REPORT_LIMIT,
+    ref,
+    oid,
+  };
+}
+
+interface RecordedIgnoredCustody {
+  ref: string;
+  oid: string;
+}
+
+function recordedIgnoredCustody(entry: TrashEntry): RecordedIgnoredCustody | null {
+  const ignored = entry.outcome.ignored;
+  if (!ignored || typeof ignored !== "object") return null;
+  const { ref, oid } = ignored as Partial<IgnoredCustody>;
+  return typeof ref === "string" && typeof oid === "string" ? { ref, oid } : null;
+}
+
+function readBlobs(repoRoot: string, oids: readonly string[]): Buffer[] {
+  if (oids.length === 0) return [];
+  const result = spawnSync("git", ["cat-file", "--batch"], {
+    cwd: repoRoot,
+    input: `${oids.join("\n")}\n`,
+    maxBuffer: 1024 * 1024 * 1024,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (result.error || result.status !== 0) {
+    throw new TrashServiceError(
+      `cannot read ignored-file custody: ${result.error?.message ?? result.stderr.toString().trim()}`,
+      "ignored_custody_unreadable",
+      409,
+    );
+  }
+  const output = result.stdout;
+  const blobs: Buffer[] = [];
+  let offset = 0;
+  for (const oid of oids) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    const header = output.subarray(offset, headerEnd).toString("utf8").split(" ");
+    if (header[0] !== oid || header[1] !== "blob") {
+      throw new TrashServiceError(`ignored-file custody object is missing: ${oid}`, "ignored_custody_unreadable", 409);
+    }
+    const size = Number(header[2]);
+    blobs.push(output.subarray(headerEnd + 1, headerEnd + 1 + size));
+    offset = headerEnd + 1 + size + 1;
+  }
+  return blobs;
+}
+
+/**
+ * Write kept ignored files back into a worktree as untracked files, byte for
+ * byte, without touching its index. A path that already exists is left alone
+ * and counted, so a partially removed worktree can be refilled.
+ */
+function materializeIgnored(
+  repoRoot: string,
+  custody: RecordedIgnoredCustody,
+  worktreePath: string,
+): { restored: number; present: number } {
+  const probe = probeExactRef(repoRoot, custody.ref);
+  if (probe.status !== "present" || probe.oid !== custody.oid) {
+    throw new TrashServiceError(
+      "ignored-file custody ref is missing or no longer matches its record",
+      "ignored_custody_mismatch",
+      409,
+      { ref: custody.ref },
+    );
+  }
+  const realWorktree = fs.realpathSync(worktreePath);
+  const files = git(repoRoot, ["ls-tree", "-r", "-z", custody.oid]).split("\0").filter(Boolean)
+    .map((record) => {
+      const match = record.match(/^(\d+) blob ([0-9a-f]+)\t([\s\S]+)$/);
+      if (!match) {
+        throw new TrashServiceError("ignored-file custody holds a non-file entry", "ignored_custody_unreadable", 409);
+      }
+      return { mode: match[1], oid: match[2], path: match[3] };
+    });
+  const missing = files.filter((file) => {
+    try {
+      fs.lstatSync(path.join(realWorktree, file.path));
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  const blobs = readBlobs(repoRoot, missing.map((file) => file.oid));
+  missing.forEach((file, index) => {
+    const target = path.join(realWorktree, file.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const realParent = fs.realpathSync(path.dirname(target));
+    if (realParent !== realWorktree && !isInside(realWorktree, realParent)) {
+      throw new TrashServiceError(
+        `ignored file would be written outside the worktree: ${file.path}`,
+        "invalid_worktree_path",
+        409,
+      );
+    }
+    fs.writeFileSync(target, blobs[index], { flag: "wx", mode: file.mode === "100755" ? 0o755 : 0o644 });
+  });
+  return { restored: missing.length, present: files.length - missing.length };
+}
+
+function deleteIgnoredRef(repoRoot: string, entryId: string): void {
+  const ref = ignoredCustodyRef(entryId);
+  const probe = probeExactRef(repoRoot, ref);
+  if (probe.status === "unknown") {
+    throw new TrashServiceError(`cannot inspect ignored-file custody ref: ${probe.error}`, "snapshot_probe_unknown", 409);
+  }
+  if (probe.status === "present") git(repoRoot, ["update-ref", "-d", ref, probe.oid]);
+}
+
 function linkedIssueRefs(db: Db, projectId: string, branch: string, explicit: string[]): string[] {
   const rows = db.prepare(
     `SELECT DISTINCT COALESCE(NULLIF(i.short_id, ''), i.id) AS issue_ref
@@ -489,8 +743,33 @@ export function createTrashEntry(
 
   const id = randomUUID();
   const snapshotRef = `refs/mandible/trash/${id}`;
+  const ignoredPlan = worktree ? planIgnored(checkout.root, worktree.path) : null;
   const snapshotOid = snapshotWorktree(branch, worktree?.path ?? null, originalOid, id);
+  const ignoredOid = worktree && ignoredPlan ? captureIgnored(worktree.path, ignoredPlan.kept, id) : null;
+  const ignoredRef = ignoredOid ? ignoredCustodyRef(id) : null;
   git(checkout.root, ["update-ref", snapshotRef, snapshotOid, "0".repeat(40)]);
+  const releaseRefs = () => {
+    git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
+    if (ignoredRef && ignoredOid) {
+      git(checkout.root, ["update-ref", "-d", ignoredRef, ignoredOid], { allowFailure: true });
+    }
+  };
+  if (ignoredRef && ignoredOid) {
+    try {
+      git(checkout.root, ["update-ref", ignoredRef, ignoredOid, "0".repeat(40)]);
+    } catch (error) {
+      releaseRefs();
+      throw error;
+    }
+  }
+  const outcome: TrashCreateOutcome = {
+    worktree_removed: false,
+    branch_removed: false,
+    worktree_path: worktree?.path ?? null,
+    ignored: ignoredPlan
+      ? ignoredCustody(ignoredPlan, ignoredRef, ignoredOid)
+      : NO_WORKTREE_IGNORED,
+  };
   const actor = input.actor?.trim() || "mandible";
   const issueRefs = linkedIssueRefs(db, project.id, branch, input.issue_refs ?? []);
   const expiresAt = now + retentionDays * 86_400_000;
@@ -499,11 +778,11 @@ export function createTrashEntry(
       `INSERT INTO trash_entries (
          id, project_id, checkout_id, repo_root, branch, issue_refs_json,
          reason, actor, snapshot_ref, snapshot_oid, original_oid,
-         retention_policy, retention_days, state, created_at, expires_at
+         retention_policy, retention_days, state, created_at, expires_at, outcome_json
        ) VALUES (
          @id, @project_id, @checkout_id, @repo_root, @branch, @issue_refs_json,
          @reason, @actor, @snapshot_ref, @snapshot_oid, @original_oid,
-         @retention_policy, @retention_days, 'active', @created_at, @expires_at
+         @retention_policy, @retention_days, 'active', @created_at, @expires_at, @outcome_json
        )`,
     ).run({
       id,
@@ -521,17 +800,13 @@ export function createTrashEntry(
       retention_days: retentionDays,
       created_at: now,
       expires_at: expiresAt,
+      outcome_json: JSON.stringify(outcome),
     });
   } catch (error) {
-    git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
+    releaseRefs();
     throw error;
   }
 
-  const outcome: TrashCreateOutcome = {
-    worktree_removed: false,
-    branch_removed: false,
-    worktree_path: worktree?.path ?? null,
-  };
   try {
     if (worktree) {
       git(checkout.root, ["worktree", "remove", "--force", worktree.path]);
@@ -601,6 +876,7 @@ export function restoreTrashEntry(
   const liveBranchOid = branchOid(entry.repo_root, entry.branch);
   const existingWorktree = parseWorktrees(entry.repo_root)
     .find((candidate) => candidate.branch === entry.branch) ?? null;
+  const ignoredCustodyOf = recordedIgnoredCustody(entry);
   const requestedValue = input.worktree_path?.trim() || "";
   const requestedPath = requestedValue ? path.resolve(requestedValue) : null;
 
@@ -635,6 +911,9 @@ export function restoreTrashEntry(
         { worktree_path: existingWorktree.path },
       );
     }
+    const refilled = ignoredCustodyOf
+      ? materializeIgnored(entry.repo_root, ignoredCustodyOf, existingWorktree.path)
+      : { restored: 0, present: 0 };
     db.prepare(
       `UPDATE trash_entries
           SET state = 'restored', restored_at = ?, last_error = NULL,
@@ -644,6 +923,9 @@ export function restoreTrashEntry(
       restored_by: input.actor?.trim() || "mandible",
       worktree_path: existingWorktree.path,
       repaired_remove_failed: true,
+      ignored: entry.outcome.ignored ?? null,
+      ignored_restored: refilled.restored,
+      ignored_present: refilled.present,
     }), id);
     return { entry: getEntry(db, id), branch: entry.branch, worktree_path: existingWorktree.path };
   }
@@ -676,8 +958,12 @@ export function restoreTrashEntry(
       ]);
       branchRepointed = true;
     }
+    let materialized = { restored: 0, present: 0 };
     if (validatedRequestedPath) {
       git(entry.repo_root, ["worktree", "add", validatedRequestedPath, entry.branch]);
+      if (ignoredCustodyOf) {
+        materialized = materializeIgnored(entry.repo_root, ignoredCustodyOf, validatedRequestedPath);
+      }
     }
     db.prepare(
       `UPDATE trash_entries
@@ -688,6 +974,9 @@ export function restoreTrashEntry(
       restored_by: input.actor?.trim() || "mandible",
       worktree_path: validatedRequestedPath,
       repaired_remove_failed: entry.state === "remove_failed",
+      ignored: entry.outcome.ignored ?? null,
+      ignored_restored: materialized.restored,
+      ignored_present: materialized.present,
     }), id);
   } catch (error) {
     if (validatedRequestedPath) {
@@ -785,6 +1074,7 @@ export function gcTrashEntries(
       }
       if (probe.status === "absent") {
         if (entry.state === "gc_pending") {
+          deleteIgnoredRef(entry.repo_root, entry.id);
           db.prepare(
             `UPDATE trash_entries
                 SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
@@ -805,6 +1095,7 @@ export function gcTrashEntries(
         ).run(entry.id);
         pendingRecorded = true;
       }
+      deleteIgnoredRef(entry.repo_root, entry.id);
       git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
       refDeleted = true;
       db.prepare(
