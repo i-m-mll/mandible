@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import type { Db } from "./db.js";
 import {
@@ -345,11 +346,53 @@ export function resolveAuthMergeExecutionContext(
 }
 
 export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
+  return resolveRefCommit(repoRoot, `refs/heads/${branch}`, branch);
+}
+
+/** A ref's commit id, or null when the ref does not name a commit. */
+export type CommitRefReader = (ref: string) => string | null;
+
+/** Reads each ref with a synchronous Git child when it is asked. */
+export function liveCommitRefReader(repoRoot: string | null | undefined): CommitRefReader {
+  return (ref) => {
+    if (!repoRoot) return null;
+    try {
+      return resolveRefCommit(repoRoot, ref, ref);
+    } catch {
+      return null;
+    }
+  };
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * The commit ids of `refs` read by one asynchronous Git child, so the event
+ * loop keeps serving requests while it runs. A ref that is absent or does not
+ * name a commit is absent from the result.
+ */
+export async function readCommitRefs(repoRoot: string, refs: readonly string[]): Promise<Map<string, string>> {
+  const { stdout } = await execFileAsync("git", ["for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", ...refs], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: GIT_REF_TIMEOUT_MS,
+    env: authGitEnv(),
+  });
+  const wanted = new Set(refs);
+  const commits = new Map<string, string>();
+  for (const line of stdout.split("\n")) {
+    const [oid, type, ref] = line.split(" ");
+    if (oid && type === "commit" && ref && wanted.has(ref)) commits.set(ref, oid);
+  }
+  return commits;
+}
+
+function resolveRefCommit(repoRoot: string, ref: string, label: string): string {
   let sha: string;
   try {
     sha = execFileSync(
       "git",
-      ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
+      ["rev-parse", "--verify", `${ref}^{commit}`],
       {
         cwd: repoRoot,
         encoding: "utf-8",
@@ -361,7 +404,7 @@ export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
   } catch (error) {
     // Issue 2205073 — say whether git answered "no such ref" or never ran.
     throw new AuthExecutionContextError(
-      `Unable to resolve auth merge head commit for ${branch}: ` +
+      `Unable to resolve auth merge head commit for ${label}: ` +
         describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))
     );
   }
@@ -369,7 +412,7 @@ export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
     return sha;
   }
   throw new AuthExecutionContextError(
-    `Unable to resolve auth merge head commit for ${branch}: git resolved the ref to an empty value.`
+    `Unable to resolve auth merge head commit for ${label}: git resolved the ref to an empty value.`
   );
 }
 
