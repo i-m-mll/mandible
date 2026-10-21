@@ -244,8 +244,3 @@ Get all issues linked to a session.
 
 **Response:** `200 OK` — array of `{ session_id, issue_id, repo_id, created_at }`.
 
-### POST /api/sessions/discover
-
-Trigger session discovery (scan for running agent processes).
-
-**Response:** `200 OK` — discovery result, or `501` if discovery is not configured.

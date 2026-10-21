@@ -24,7 +24,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 202;
+export const BASELINE_SCHEMA_VERSION = 203;
 
 // Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
 // merge submission: where someone's uncommitted work went. Shared by the fresh

@@ -3,17 +3,6 @@
 set -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-app=$(echo "$INPUT" | jq -r '.app // empty')
-if [[ -z "$app" ]]; then
-  # Codex detection: CODEX_THREAD_ID is set by Codex CLI on every spawned
-  # process. Also check CODEX_CLI/CODEX for backwards compatibility.
-  if [[ -n "${CODEX_THREAD_ID:-}" || -n "${CODEX_CLI:-}" || -n "${CODEX:-}" ]]; then
-    app="codex"
-  else
-    app="claude"
-  fi
-fi
-
 cwd=$(echo "$INPUT" | jq -r '.cwd // .workspace // empty')
 if [[ -z "$cwd" ]]; then
   cwd="$PWD"
@@ -116,7 +105,6 @@ nav_extra=$(jq -n \
 payload=$(jq -n \
   --arg id "$session_id" \
   --arg conversation_id "$provider_session_id" \
-  --arg app "$app" \
   --arg pid "$CLAUDE_PID" \
   --arg cwd "$cwd" \
   --arg branch "$branch" \
@@ -130,7 +118,7 @@ payload=$(jq -n \
   '{
     id: $id,
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
-    app: $app,
+    app: "claude",
     pid: ($pid | tonumber),
     cwd: (if $cwd == "" then null else $cwd end),
     branch: (if $branch == "" then null else $branch end),

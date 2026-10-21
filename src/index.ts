@@ -27,7 +27,7 @@ import { AuthQueue } from "./auth-queue.js";
 import { runCandidateAcceptance } from "./candidate-acceptance.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
-import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
+import { ReaperTimer } from "./session-reaper.js";
 import { broadcast, SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, createLocalSocketServer, startServer, attachWebSocketUpgrade } from "./server.js";
 import { localApiSocketPath, startLocalApiSocket } from "./local-api-socket.js";
@@ -109,8 +109,6 @@ import {
   restartAvailabilityInstanceKey,
 } from "./restart-availability.js";
 import { DEFAULT_BACKEND_PORT } from "./canonical-origin.js";
-
-const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
 
@@ -220,9 +218,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   let readyRestartGeneration: string | null = null;
   let closing = false;
   let startupWorkScanComplete = false;
-  let startupSessionDiscoveryComplete = false;
   const updateWarmReadiness = () => {
-    if (closing || !startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
+    if (closing || !startupWorkScanComplete) return;
     setDaemonWarm(true);
     if (readyRestartGeneration) {
       restartAvailability?.markWarm(readyRestartGeneration);
@@ -303,9 +300,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
   registerBackupRoutes(router);
 
-  const sessionDiscovery = new SessionDiscovery(sessionRegistry, workScanner, logger);
-  const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
-  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, workScanner);
+  const reaperTimer = new ReaperTimer(sessionRegistry, logger);
+  registerSessionRoutes(router, sessionRegistry, workScanner);
 
   registerGraphRoutes(router);
   registerProviderRoutes(router);
@@ -577,6 +573,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     : () => undefined;
   if (!startupWorkScan) {
     startupWorkScanComplete = true;
+    updateWarmReadiness();
     if (instance.role === "preview") startInstanceIngestion();
   }
 
@@ -588,35 +585,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     sse.setStartupCommit(commit);
   });
 
-  // Startup reconciliation can shell out to inspect many local processes and
-  // worktrees. Run it after the daemon is healthy so startup callers are not
-  // blocked by machine-size-dependent discovery latency.
-  const startupDiscoveryTimer = operationalMutationsAllowed
-    ? setTimeout(() => {
-      void (async () => {
-        try {
-          const activeSessions = sessionRegistry.listSessions({ status: "active" });
-          if (activeSessions.length === 0) {
-            const result = await sessionDiscovery.discoverSessions();
-            if (result.discovered > 0 || result.dead_reaped > 0) {
-              logger("info", "startup_discovery", { ...result });
-            }
-          }
-        } catch (error) {
-          logger("warn", "startup_discovery_failed", { error: String(error) });
-        } finally {
-          startupSessionDiscoveryComplete = true;
-          updateWarmReadiness();
-        }
-      })();
-    }, STARTUP_DISCOVERY_DELAY_MS)
-    : null;
-  if (startupDiscoveryTimer && typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
-    startupDiscoveryTimer.unref();
-  }
   if (!operationalMutationsAllowed) {
-    startupSessionDiscoveryComplete = true;
-    updateWarmReadiness();
     logger("info", "background_operational_mutations_disabled", {
       instance_role: instance.role,
       allowed_effects: instance.allowed_effects,
@@ -730,9 +699,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     closing = true;
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
-    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     const scannerDrain = workScanner.stop();
-    const discoveryDrain = reaperTimer.stop();
+    reaperTimer.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -777,7 +745,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       (server as { closeAllConnections: () => void }).closeAllConnections();
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    await Promise.all([scannerDrain, discoveryDrain]);
+    await scannerDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);

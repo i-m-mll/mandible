@@ -9,7 +9,7 @@ Mandible interacts with AI coding agents at four tiers of integration, each with
 | **SDK** | Console spawns via Agent SDK | Full (start/stop/abort/resume) | Structured events, permissions, costs | Primary workflow |
 | **Channel** | `claude --channels server:mandible` | None (external process) | Tools, inbox, work units | Existing CLI sessions |
 | **PTY** | Console spawns via node-pty | Process-level (start/stop/signal) | Terminal I/O | Codex, Gemini, shell |
-| **External** | Process scan + registration hooks | None | PID liveness only | Auto-discovered sessions |
+| **External** | Indexed conversation + Claude registration hooks | None | PID liveness when a hook registered one | Terminal sessions |
 
 ## SDK sessions (first-class)
 
@@ -83,11 +83,11 @@ What you don't get: structured events, tool-level tracking, work unit integratio
 
 ## External sessions (third-class)
 
-Sessions that Mandible discovers on its own, without any explicit integration from the agent side.
+Sessions that Mandible knows without any explicit integration from the agent side.
 
-### Process discovery
+### Indexed conversations
 
-Mandible periodically scans running processes for known agent patterns (Claude, Codex, Gemini). Discovered processes are matched to registered repositories by their working directory and automatically registered as sessions.
+Every Claude, Codex, and Gemini session is identified by its provider session id and its indexed conversation, which Mandible ingests from the provider's own transcript. No registration is needed for a session to appear, to be linked to an issue, or to hold a work unit.
 
 ### The `mandible wrap` command
 
@@ -107,7 +107,7 @@ Claude Code supports `UserPromptSubmit` and `PreToolUse` hooks. Mandible's hook 
 
 ## Upgrading between tiers
 
-The tiers aren't permanent assignments. A session that starts as External (discovered via process scan) can be "upgraded" in several ways:
+The tiers aren't permanent assignments. A session that starts as External (known from its indexed conversation) can be "upgraded" in several ways:
 
 - **External to Channel**: Restart the Claude session with `--channels server:mandible`
 - **Any tier to SDK**: Use "Resume Work" from the Issues tab --- this always spawns a new SDK session, regardless of what the previous session was

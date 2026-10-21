@@ -22,15 +22,13 @@ Configurable hooks that run after successful auth actions. Hooks are stored in t
 
 ### Live Session Monitor
 
-Tracks all running Claude Code, Codex, and Gemini sessions:
+Shows Claude Code, Codex, and Gemini sessions. Each session is identified by its provider session id and its indexed conversation; Claude lifecycle hooks and Mandible launches add a process attachment for sessions Mandible can reach:
 
 - **Status**: active (green), ended, or dead (PID vanished)
 - **Navigation**: click to switch your terminal multiplexer (Zellij/tmux) to the session's pane
 - **Kill / Pin**: terminate or protect sessions from the automatic reaper
 - **Issues & Projects**: linked Mandible issues and repo associations
 - **Channel sessions**: Claude CLI sessions connected via MCP channel server appear with a link badge
-
-Session discovery runs on startup and periodically via the reaper timer.
 
 ### Conversation Browser
 
@@ -173,7 +171,7 @@ Auto-registration reads global config only, and deliberately so: an operator cre
 
 ### Integrating with Claude Code
 
-Mandible discovers running agent sessions by scanning processes. For full lifecycle tracking:
+Mandible knows every session from its indexed conversation. For process lifecycle tracking:
 
 ```bash
 # Session lifecycle wrapper

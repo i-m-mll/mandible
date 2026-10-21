@@ -296,9 +296,9 @@ api_agent_provider() {
 #   - Values are never printed, logged, or written to disk here. secret_get
 #     emits the value on stdout solely for command-substitution capture by an
 #     immediate caller; secret_set takes it on stdin, never as an argument.
-#   - Nothing reaches argv, so `ps` (and Mandible's own process scanner) never
-#     sees a secret. The macOS write uses `security -i` batch mode, where the
-#     whole command line — password included — arrives on stdin.
+#   - Nothing reaches argv, so `ps` never sees a secret. The macOS write uses
+#     `security -i` batch mode, where the whole command line — password
+#     included — arrives on stdin.
 #   - Secret-bearing regions suspend `xtrace` and restore the previous setting,
 #     so running a CLI under `bash -x` / `zsh -x` cannot echo secret material.
 #     This obligation is shared: a callee cannot protect its caller, so every

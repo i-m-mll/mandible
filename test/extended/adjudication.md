@@ -182,7 +182,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `screen-model.test.ts` | Retire with managed PTY scraping; native permission tests replace it | PTY screen detection / PtyScreenObserver. Behavioral, persisted-record, or format boundary retained. |
 | `sdk-backend-lifecycle.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `server-router.test.ts` | Retain | Router error handling / Router route policies. Behavioral, persisted-record, or format boundary retained. |
-| `session-discovery.test.ts` | Retain | SessionDiscovery. Process/transport boundary retained. |
+| `session-discovery.test.ts` | Delete | Process discovery is retired (issue 3b8aa50); sessions are identified by their indexed conversation. |
 | `session-identity-mismatch.test.ts` | Retain | session identity mismatch detection. Behavioral, persisted-record, or format boundary retained. |
 | `session-manager-codex-archive.test.ts` | Retain | SessionManager Codex archive integration. Process/transport boundary retained. |
 | `session-manager-retention.test.ts` | Retain | SessionManager terminal backend retention. Behavioral, persisted-record, or format boundary retained. |
