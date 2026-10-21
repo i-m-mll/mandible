@@ -359,7 +359,7 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
         }
       }
       if (buffer) writeAll(file, buffer);
-    })();
+    }).deferred();
     fs.fsyncSync(file);
     fs.closeSync(file);
     fs.renameSync(temporaryPath, outputPath);

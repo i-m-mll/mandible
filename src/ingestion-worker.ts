@@ -77,13 +77,22 @@ async function handle(
   }
 }
 
+/** A batch aggregates per-file failures; it is retryable when every one of them lost the write lock. */
+function isLockContention(error: unknown): boolean {
+  if (error instanceof AggregateError) {
+    const errors = Array.from(error.errors);
+    return errors.length > 0 && errors.every(isLockContention);
+  }
+  return isSqliteBusy(error);
+}
+
 async function withBusyRetry<T>(operation: () => Promise<T>): Promise<T> {
   let delayMs = 10;
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
-      if (!isSqliteBusy(error) || attempt >= 7) throw error;
+      if (!isLockContention(error) || attempt >= 7) throw error;
       logger("debug", "ingestion_worker_busy_backoff", { attempt: attempt + 1, delay_ms: delayMs });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       delayMs = Math.min(250, delayMs * 2);

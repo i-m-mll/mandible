@@ -184,11 +184,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const restartAvailability = operationalMutationsAllowed
     ? new RestartAvailabilityStore({ instanceKey: restartAvailabilityInstanceKey(port) })
     : null;
+  // A ledger write waits for the ingestion worker's connection to release the
+  // write lock rather than failing: clients do not retry writes, and the
+  // longest measured ingestion transaction (a 1.4 GB transcript) holds the lock
+  // for about 0.9 s, within openDb's busy budget. Issue: 29e81ab.
   const db = openDb(dbPath);
-  // Synchronous lock waits happen on the request thread. Clients already retry
-  // transient contention, so keep this bounded while the ingestion actor uses
-  // its own connection and explicit backoff.
-  db.pragma("busy_timeout = 250");
   let operationalLogStore: OperationalLogStore | null = null;
   if (operationalMutationsAllowed) {
     try {
