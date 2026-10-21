@@ -1,26 +1,35 @@
 # Mandible
 
-Mandible is an operations manager for AI coding agents on one workstation. It keeps the ledger the agents and their operator share: issues, work units, approval requests, artifacts, briefings, reminders, and an index of every agent conversation. A daemon owns the ledger, a CLI gives agents a stable grammar for working it, a web and desktop app gives the operator one place to review and approve, and integrations connect Claude Code, Codex, and Gemini.
+Mandible is an operations manager for AI agents. It consists of:
 
-Everything stays on the machine. State is SQLite under `~/.mandible`; the daemon listens on loopback only; there is no cloud service and no telemetry.
+1. A daemon that manages a ledger: issues, work units, user approvals, annotatable briefings, and an index of agent conversations. 
+2. A CLI that allows agents to interact with the ledger. 
+3. A web and desktop app where the user can interact with the ledger, as well as review conversations.
+4. Integrations that connect Claude Code, Codex, and Gemini to the ledger: lifecycle hooks, an MCP channel server, and Chat.
 
-## What it is useful for
+## Feature highlights
 
-- **Protected branches merge only through an approval you give.** Agents commit on feature branches and submit a merge request with a change message. You review the diff, the message, and the linked issues in the app and approve with your signing key; the merge commit is signed with that key, never the agent's. Issue closures, post-merge hooks, and a rebuild of Mandible itself follow from the approved request, and the request reports whether the machine has converged.
-- **One issue ledger for people and agents.** Issues have a kind, a priority, structured relationships, checkpoints outside the comment stream, working notes, and full revision history. Umbrella issues coordinate lanes of work with a delegation manifest that says what changed since a coordinator last looked.
-- **Work units tie an issue to a branch and to the agent working it.** An issue's branches and its in-progress state are derived from its work units, with custody rules that let an agent take over a stopped agent's work and refuse to take over a live one.
-- **Every conversation is indexed.** Claude Code, Codex, and Gemini transcripts are ingested as they are written, searchable, starrable, taggable, and exportable. Parent and child sessions are linked, so a coordinator's workers appear under it.
-- **Sessions are known without registration.** A session is identified by its provider session id and its indexed conversation. Liveness is live, stopped, or unknown, and Mandible never clears, archives, or takes over behind an unknown.
-- **Durable artifacts and reviewable briefings.** A tracked file or a managed blob becomes a versioned artifact that issues cite. A briefing presents an artifact version for annotation, and a proposed update becomes the base when its merge is approved.
-- **Run agents from the app.** Chat starts and follows Claude Code and Codex conversations with permission prompts, usage, attachments, resume, and fork.
-- **A stable interface contract.** The CLI grammar is versioned, `mandible help <command>` prints any synopsis, and the generated instruction fragment is installed into agent instruction files so every agent sees the same rules.
+- **Approval-gated merges**: agents submit merge requests with a change message; you approve with your hardware signing key, the merge commit is signed with that key, and issue closures and post-merge hooks follow.
+- **Structured issues**: kinds, priorities, typed relationships, checkpoints outside the comment stream, working notes, full revision history, and keyword search.
+- **Umbrella issues** for coordinating lanes of agent work, with a delegation manifest that reports what changed since the coordinator last looked.
+- **Work units** join an issue, a branch, and the agent on it; a stopped agent's work can be taken over, a live agent's never.
+- **Every conversation indexed** as it is written, across Claude Code, Codex, and Gemini: search, star, tag, annotate, export; parent and child sessions linked.
+- **Sessions without registration**, with live, stopped, or unknown liveness, and terminal navigation when a process is attached.
+- **Briefings**: present a document for annotation in the app, submit the annotations as a round, and promote a proposed update to the base when its merge is approved.
+- **Artifacts**: versioned files with Git or managed custody, cited from issues.
+- **Chat**: run and follow Claude Code and Codex conversations from the app, with permission prompts, usage, attachments, resume, and fork.
+- **Reminders** that post to the inbox at a time, when an issue closes, or when a merge count is reached.
+- **Spaces, Timeline, and Graph** to organize, chronologize, and relate ledger entities.
+- **Reversible branch cleanup**: merged branches go to trash custody and can be restored, ignored files included.
+- **Sandboxed agents** reach the ledger through a file spool when they have no network access.
+- **Self-updating**: Mandible merges its own changes only after automated candidate acceptance, then hands the running daemon over to the new build.
 
 ## How it fits together
 
 | Part | What it does |
 |---|---|
 | Daemon (`src/`) | A Bun process serving the HTTP API, Server-Sent Events, WebSocket terminal I/O, and the app from one port. It runs ingestion, the auth queue, the work-unit reconciler, the session reaper, reminders, and backups. |
-| CLI (`bin/mandible`, `cli/`) | Shell scripts over the daemon API. Local calls use the owner-only Unix socket `~/.cache/mandible/local-api/production.sock`; sandboxed clients can use file RPC. |
+| CLI (`bin/mandible`, `cli/`) | Shell scripts over the daemon API. Local calls use the owner-only Unix socket `~/.cache/mandible/local-api/production.sock`. A sandboxed agent with no loopback access sets `MANDIBLE_BASE=file:///path/to/spool` instead: the daemon watches the spool under `~/.cache/mandible/agent-rpc/`, answers request files in place, and serves ledger reads and writes, auth submission and listing, and work-unit mutation over it, never approval, merge, or admin routes. |
 | App (`ui/`, `src-tauri/`) | A Preact single-page app served by the daemon at `https://app.mandible.localhost:19420`, optionally wrapped in a Tauri macOS window that also controls the launchd services. |
 | Channel server (`channel-server/`) | An MCP server that gives a running Claude Code session Mandible tools and notifications. |
 | Hooks (`hooks/`) | Claude Code lifecycle hook scripts that attach a process to its session, and a Git `reference-transaction` guard for protected branches. |
@@ -29,7 +38,7 @@ The daemon's loopback backend port is `29420`; browsers and the desktop reach it
 
 ## The ledger
 
-Entities are referenced by short id with a kind prefix, as in `issue:58e452e`, `auth:bb4c211`, or `artifact-version:1a2b3c4d`. In authored Markdown, `[issue:<id>]`, `[issue:<id>#<n>]`, `[auth:<id>]`, `[briefing:<id>]`, and the artifact forms resolve to links; only `[issue:...]` references are recorded as relationships. Every entity has a web link, `https://app.mandible.localhost:19420/<kind>/<ref>`, and a desktop link with `/r` before the kind.
+Entities are referenced by short id with a kind prefix, as in `issue:58e452e`, `auth:bb4c211`, or `artifact-version:1a2b3c4d`. In authored Markdown, `[issue:<id>]`, `[issue:<id>#<n>]`, `[auth:<id>]`, `[briefing:<id>]`, and the artifact forms resolve to links; only `[issue:...]` references are recorded as relationships. Every entity has a web link, `https://app.mandible.localhost:19420/<kind>/<ref>`; links with `/r` before the kind redirect to the desktop app.
 
 ### Issues
 
@@ -156,7 +165,7 @@ The app preserves view state across refreshes and daemon syncs; resets happen on
 
 ## Agent integration
 
-Mandible has a contract and a policy layer. The contract (`cli/instructions-contract.md`, rendered by `mandible instructions install` into agent instruction files such as `~/.claude/CLAUDE.md`) is the same for every install: command grammar, reference forms, approval rules, coordination facts, and transports. Policy, such as signing identities, branch names, and worktree tooling, belongs to the user. See [Contract vs. policy](docs/contract-vs-policy.md) and [Instruction sources](docs/instruction-sources.md).
+Mandible has a contract and a policy layer. The contract (`cli/instructions-contract.md`) is the same for every install: command grammar, reference forms, approval rules, coordination facts, and transports. Policy, such as signing identities, branch names, and worktree tooling, belongs to the user. Mandible renders the contract into an instruction fragment and writes it to the targets configured with `mandible instructions targets`, either as a managed block inside an existing instruction file or as a standalone file, then runs the optional post-export command (`mandible instructions post-export`), for example a compiler that assembles the user's instruction files. `mandible instructions diff` shows where a target has drifted from the rendered fragment. See [Contract vs. policy](docs/contract-vs-policy.md) and [Instruction sources](docs/instruction-sources.md).
 
 `cli/api.sh` attaches the ambient provider identity (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) to mutating calls as claimed attribution; it is never a credential. Protected lifecycle and credential routes use the durable Keychain credential. `mandible user whoami` reports what the daemon resolves for the caller.
 
@@ -210,6 +219,8 @@ For the production installation, `bash cli/install-desktop-app.sh` installs the 
 The operator's signing key must be registered as an active `ssh_key` credential, or approvals refuse. `mandible user setup` reads the global `user.signingkey` only; register another key with `mandible user credential add <operator> --from-git-signingkey`.
 
 ### State on disk
+
+Everything stays on the machine: state is SQLite under `~/.mandible`, the daemon listens on loopback only, and there is no cloud service and no telemetry.
 
 | Root | Contract | Contents |
 |---|---|---|
