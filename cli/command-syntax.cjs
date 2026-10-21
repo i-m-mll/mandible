@@ -206,6 +206,13 @@ function bindEntry(key, bindings, argv, commands = loadCommands(), main = false)
     return `printf '%s' ${shellQuote(help(key.startsWith('@') ? key.slice(1).split(' ') : commands[key]?.route ?? [], commands))}; ${main ? 'exit' : 'return'} 0`;
   }
   const parsed = key.startsWith("@") ? parse([...key.slice(1).split(" "), ...argv], commands) : parseEntry(key, argv, commands);
+  const referenced = new Set(Object.values(bindings).flat().flatMap(source =>
+    [source.option, source.whenOption, source.unlessOption].flat().filter(Boolean)));
+  const unbound = Object.keys(parsed.options).filter(name => !referenced.has(name));
+  if (unbound.length) {
+    throw new Error(`Not implemented by mandible ${commands[parsed.command].route.join(' ')}: `
+      + unbound.map(name => (name.length === 1 ? '-' : '--') + name).join(', '));
+  }
   return Object.entries(bindings).flatMap(([variable, source]) => {
     if (!/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(variable)) throw new Error(`Invalid binding variable: ${variable}`);
     const sources = Array.isArray(source) ? source : [source];
@@ -215,7 +222,7 @@ function bindEntry(key, bindings, argv, commands = loadCommands(), main = false)
       return candidate.option ? (Array.isArray(candidate.option) ? candidate.option : [candidate.option])
         .some(name => Object.hasOwn(parsed.options, name)) : true;
     });
-    if (!source) return [];
+    if (!source || source.inert) return [];
     let value;
     if (source.option) {
       const option = (Array.isArray(source.option) ? source.option : [source.option])

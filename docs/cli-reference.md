@@ -84,13 +84,10 @@ mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
 ## CONVERSATIONS  (DB-backed)
 mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
-mandible conversations blocks <id|session-id> [--type T] [--limit N] [--json]   # delegates to node
+mandible conversations blocks <id|session-id> [--role R] [--type T] [--content TEXT] [--limit N] [--offset N] [--json]
 mandible conversations export <id|session-id> [--format json|markdown]           # NO --json flag here
-mandible conversations search "<query>" [opts]   # alias for mandible search
-
-## SEARCH  (content search across DB blocks)
-mandible search "<query>" [--provider claude|gemini|codex|all] [--role user|assistant]
-  [--since Nd] [--limit N] [--title]             # NO --json flag
+mandible conversations search "<query>" [--provider claude|gemini|codex|all] [--role user|assistant]
+  [--since Nd|ISO] [--limit N] [--title] [--json]   # daemon caps hits at 100; a larger --limit warns
 
 ## ARTIFACT
 mandible artifact ingest <path...> [--project P] [--commit REF] [--artifact REF] [--issue <id>] [--role R] [--managed|--copy|--link]
@@ -189,9 +186,6 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 - `mandible issue list --json` — `cmd_list` has no `--json` case; only `--status`
 - `mandible issue list --limit N` — no `--limit` in `cmd_list`
 - `mandible issue show --json` — `cmd_show` takes one positional arg only
-- `mandible search ... --json` — no `--json` in search.sh parser
-- `mandible conversations search ... --json` — search is delegated to search.sh, which has no `--json`
-- `mandible conversations search ... --limit` — search.sh uses `--limit` but `conversations search` alias strips no args; however `--limit` IS supported in search.sh (so `mandible search ... --limit N` works; `mandible conversations search ... --limit N` also passes through)
 - `mandible logs inventory --until` — `inventory` subparser has only `--since`, not `--until` (`--until` exists only under `logs inspect --parse`)
 - `mandible auth --help` as a lone flag — does NOT error; dispatcher matches `""|-h|--help|help` and prints auth usage (was previously reported as "Unknown auth subcommand")
 
@@ -202,7 +196,6 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 - `mandible issue -h|--help` → prints issue usage, exits 0
 - `mandible logs -h|--help|help` → prints logs usage, exits 0
 - `mandible conversations -h|--help|help` → prints conversations usage, exits 0
-- `mandible search -h|--help` → prints search usage, exits 0
 - `mandible artifact -h|--help|help` → prints artifact usage, exits 0
 - `mandible inbox --help|-h` → prints inbox usage, exits 0
 

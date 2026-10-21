@@ -19,7 +19,6 @@ report_create_outcome() {
   local removed_path
   removed_path=$(printf '%s' "$response" | jq -r '(.outcome // .detail.outcome).worktree_path // empty' 2>/dev/null)
   if printf '%s' "$response" | jq -e '(.outcome // .detail.outcome).worktree_removed == true' >/dev/null 2>&1; then
-    [[ -n "$removed_path" ]] || removed_path="for branch ${requested_branch:-unknown}"
     mandible_ledger_err "${prefix}: worktree path ${removed_path} is gone. No further work may happen there."
   elif printf '%s' "$response" | jq -e '(.outcome // .detail.outcome).branch_removed == true' >/dev/null 2>&1; then
     mandible_ledger_err "${prefix}: the normal branch ref is gone; preserved bytes remain under trash custody."
@@ -31,9 +30,6 @@ case "$action" in
     mandible_trash_list "$@"
     ;;
   create)
-    requested_branch=""
-    binding=$(mandible_bind_main_arguments "trash.create" '{"requested_branch":{"option":"branch"}}' "$@") || exit $?
-    eval "$binding"
     error_file=$(mktemp) || exit 1
     response=$(MANDIBLE_LEDGER_ERROR_BODY_FILE="$error_file" mandible_trash_create "$@")
     status=$?

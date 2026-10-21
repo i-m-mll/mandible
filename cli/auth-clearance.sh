@@ -13,7 +13,7 @@ shift
 case "$command_name" in
   create)
     request_id=""; grantee=""; credential=""; project=""; base=""; issue=""; head=""; duration=""; max_uses=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.create" '{"request_id":{"option":"request"},"grantee":{"option":"grantee"},"credential":{"option":"credential"},"project":{"option":"project"},"base":{"option":"base"},"issue":{"option":"issue"},"head":{"option":"head"},"duration":{"option":"duration-minutes"},"max_uses":{"option":"max-uses"}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.clearance.create" '{"json":{"option":"json","inert":true},"request_id":{"option":"request"},"grantee":{"option":"grantee"},"credential":{"option":"credential"},"project":{"option":"project"},"base":{"option":"base"},"issue":{"option":"issue"},"head":{"option":"head"},"duration":{"option":"duration-minutes"},"max_uses":{"option":"max-uses"}}' "$@") || exit $?
     eval "$binding"
     [[ -n "$grantee" && ( -n "$issue" || -n "$head" ) ]] || { usage >&2; exit 2; }
     [[ -n "$request_id" || ( -n "$project" && -n "$base" ) ]] || { usage >&2; exit 2; }
@@ -33,7 +33,7 @@ case "$command_name" in
     response=$(api_send POST "/api/auth/clearances" "$payload") ;;
   list)
     request_id=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.list" '{"request_id":{"option":"request"}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.clearance.list" '{"json":{"option":"json","inert":true},"request_id":{"option":"request"}}' "$@") || exit $?
     eval "$binding"
     if [[ -n "$request_id" ]]; then
       response=$(api_get "/api/auth/clearances?request_id=$(jq -rn --arg v "$request_id" '$v|@uri')")
@@ -42,24 +42,22 @@ case "$command_name" in
     fi ;;
   show)
     clearance_id=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.show" '{"clearance_id":{"position":0}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.clearance.show" '{"json":{"option":"json","inert":true},"clearance_id":{"position":0}}' "$@") || exit $?
     eval "$binding"
     response=$(api_get "/api/auth/clearances/$clearance_id") ;;
   revoke)
     clearance_id=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.revoke" '{"clearance_id":{"position":0}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.clearance.revoke" '{"json":{"option":"json","inert":true},"clearance_id":{"position":0}}' "$@") || exit $?
     eval "$binding"
     response=$(api_send POST "/api/auth/clearances/$clearance_id/revoke" '{}') ;;
   execute)
     request_id=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.execute" '{"request_id":{"position":0}}' "$@") || exit $?
+    binding=$(mandible_bind_main_arguments "auth.clearance.execute" '{"json":{"option":"json","inert":true},"request_id":{"position":0}}' "$@") || exit $?
     eval "$binding"
     response=$(api_send POST "/api/auth/request/$request_id/clearance/execute" '{}') ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
 
-# --json is accepted on every subcommand because the Interface Contract
-# documents it, and it changes nothing: this command has no human rendering and
-# emits the exact API JSON either way.
+# --json is inert: this command has no human rendering and always emits API JSON.
 printf '%s\n' "$response" | jq .
