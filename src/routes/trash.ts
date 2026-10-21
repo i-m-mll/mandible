@@ -1,19 +1,20 @@
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import {
-  createTrashEntry,
   gcTrashEntries,
   listTrashEntries,
   restoreTrashEntry,
   TrashServiceError,
+  trashBranch,
   type TrashCreateInput,
   type TrashRestoreInput,
   type TrashState,
 } from "../trash-service.js";
 import { bodyRecord, queryString, sendJson } from "./http.js";
-function handleError(res: ResponseLike, error: unknown): void {
+function handleError(res: ResponseLike, error: unknown, removal = false): void {
   if (error instanceof TrashServiceError) {
     sendJson(res, error.status, {
+      ...(removal ? { result: error.code === "remove_failed" ? "remove_failed" : "refused" } : {}),
       error: error.message,
       code: error.code,
       ...(error.detail ? { detail: error.detail } : {}),
@@ -38,6 +39,7 @@ function createInput(req: RequestLike): TrashCreateInput {
       : undefined,
     checkout_root: typeof body.checkout_root === "string" ? body.checkout_root : undefined,
     retention_days: typeof body.retention_days === "number" ? body.retention_days : undefined,
+    merged_into: typeof body.merged_into === "string" ? body.merged_into : undefined,
   };
 }
 
@@ -74,9 +76,10 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
 
   router.post("/api/v1/trash", (req, res) => {
     try {
-      sendJson(res, 201, createTrashEntry(db, createInput(req)));
+      const removal = trashBranch(db, createInput(req));
+      sendJson(res, removal.result === "trashed" ? 201 : 200, removal);
     } catch (error) {
-      handleError(res, error);
+      handleError(res, error, true);
     }
   }, { operation: { id: "post:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 

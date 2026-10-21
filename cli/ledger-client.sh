@@ -266,10 +266,10 @@ mandible_trash_list() {
 }
 
 mandible_trash_create() {
-  local project="" branch="" reason="" actor="" checkout_root="" retention_days=""
+  local project="" branch="" reason="" actor="" checkout_root="" retention_days="" merged_into=""
   local issue_refs='[]'
   local binding
-  binding=$(mandible_bind_arguments "trash.create" '{"project":{"option":"project"},"branch":{"option":"branch"},"reason":{"option":"reason"},"actor":{"option":"actor"},"checkout_root":{"option":"checkout-root"},"retention_days":{"option":"retention-days"},"issue_refs":{"option":["issue","issue-ref"],"array":true,"json":true}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "trash.create" '{"project":{"option":"project"},"branch":{"option":"branch"},"reason":{"option":"reason"},"actor":{"option":"actor"},"checkout_root":{"option":"checkout-root"},"retention_days":{"option":"retention-days"},"merged_into":{"option":"merged-into"},"issue_refs":{"option":["issue","issue-ref"],"array":true,"json":true}}' "$@") || return $?
   eval "$binding"
 
   [[ -n "$project" ]] || mandible_ledger_die "Missing --project" 2 || return $?
@@ -293,9 +293,11 @@ mandible_trash_create() {
     --arg actor "$actor" \
     --arg checkout_root "$checkout_root" \
     --arg retention_days "$retention_days" \
+    --arg merged_into "$merged_into" \
     --argjson issue_refs "$issue_refs" \
     '{project:$project, branch:$branch, reason:$reason}
      + (if $actor != "" then {actor:$actor} else {} end)
+     + (if $merged_into != "" then {merged_into:$merged_into} else {} end)
      + (if $checkout_root != "" then {checkout_root:$checkout_root} else {} end)
      + (if ($issue_refs | length) > 0 then {issue_refs:$issue_refs} else {} end)
      + (if $retention_days != "" then {retention_days:($retention_days | tonumber)} else {} end)')

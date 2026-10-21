@@ -9,12 +9,13 @@ import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.
 import { registerTrashRoutes } from "../src/routes/trash.js";
 import { Router } from "../src/server.js";
 import {
-  createTrashEntry,
   gcTrashEntries,
   listTrashEntries,
   restoreTrashEntry,
   startTrashGcScheduler,
   stopTrashGcScheduler,
+  trashBranch,
+  type TrashCreateInput,
 } from "../src/trash-service.js";
 import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 
@@ -26,6 +27,12 @@ function git(cwd: string, args: string[]): string {
   });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
   return result.stdout.trim();
+}
+
+function createTrashEntry(db: Db, input: TrashCreateInput, now?: number) {
+  const removal = trashBranch(db, input, now);
+  if (removal.result !== "trashed") throw new Error(`expected trash custody, got ${removal.result}`);
+  return removal;
 }
 
 describe.sequential("trash custody", () => {
@@ -81,10 +88,11 @@ describe.sequential("trash custody", () => {
       issue_refs: ["5cb1eb3"],
     }, 1_000);
 
-    expect(created.outcome).toEqual({
+    expect(created.outcome).toMatchObject({
       worktree_removed: true,
       branch_removed: true,
       worktree_path: expectedWorktreePath,
+      ignored: { kept: 0, ref: null },
     });
     expect(db.prepare(
       `SELECT project_id, checkout_id, repo_root, branch, issue_refs_json,
@@ -132,6 +140,127 @@ describe.sequential("trash custody", () => {
     expect(restored.entry.state).toBe("restored");
     expect(fs.readFileSync(path.join(restoredPath, "tracked.txt"), "utf8")).toBe("dirty tracked\n");
     expect([...fs.readFileSync(path.join(restoredPath, "untracked.bin"))]).toEqual([0, 1, 2, 255]);
+  });
+
+  it("keeps unique ignored files outside the branch and restores them as ignored files", () => {
+    fs.writeFileSync(path.join(featureWorktree, ".gitignore"), ".env\nnode_modules/\nshared\nnotes/\n");
+    git(featureWorktree, ["add", ".gitignore"]);
+    git(featureWorktree, ["commit", "-m", "ignore rules"]);
+    fs.writeFileSync(path.join(featureWorktree, ".env"), "SECRET=1\n");
+    fs.mkdirSync(path.join(featureWorktree, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(featureWorktree, "node_modules", "pkg", "index.js"), "x");
+    const sharedTarget = path.join(tempDir, "shared-target");
+    fs.mkdirSync(sharedTarget);
+    fs.writeFileSync(path.join(sharedTarget, "big.bin"), "shared bytes");
+    fs.symlinkSync(sharedTarget, path.join(featureWorktree, "shared"));
+    fs.mkdirSync(path.join(featureWorktree, "notes", "deep", "build"), { recursive: true });
+    fs.writeFileSync(path.join(featureWorktree, "notes", "deep", "n.txt"), "proof");
+    fs.writeFileSync(path.join(featureWorktree, "notes", "deep", "build", "out.o"), "rebuildable");
+    fs.writeFileSync(path.join(featureWorktree, "notes", "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "merged",
+      actor: "auth-merge",
+    }, 1_000);
+
+    expect(created.outcome.ignored).toMatchObject({
+      kept: 3,
+      skipped: 3,
+      refused: 0,
+      kept_paths: [".env", "notes/deep/n.txt", "notes/run.sh"],
+      ref: `refs/mandible/trash-ignored/${created.entry.id}`,
+    });
+    expect(created.entry.outcome).toMatchObject({ ignored: { kept: 3 } });
+    expect(fs.existsSync(featureWorktree)).toBe(false);
+    expect(git(repoRoot, ["ls-tree", "-r", "--name-only", created.entry.snapshot_oid]).split("\n"))
+      .toEqual([".gitignore", "tracked.txt"]);
+
+    const restoredPath = path.join(repoRoot, "worktrees", "feature-restored");
+    restoreTrashEntry(db, created.entry.id, { worktree_path: restoredPath }, 2_000);
+    expect(fs.readFileSync(path.join(restoredPath, ".env"), "utf8")).toBe("SECRET=1\n");
+    expect(fs.readFileSync(path.join(restoredPath, "notes", "deep", "n.txt"), "utf8")).toBe("proof");
+    expect(fs.statSync(path.join(restoredPath, "notes", "run.sh")).mode & 0o111).not.toBe(0);
+    expect(fs.existsSync(path.join(restoredPath, "node_modules"))).toBe(false);
+    expect(fs.existsSync(path.join(restoredPath, "shared"))).toBe(false);
+    expect(git(restoredPath, ["status", "--porcelain"])).toBe("");
+    expect(git(restoredPath, ["status", "--porcelain", "--ignored"])).toBe("!! .env\n!! notes/");
+    expect(git(restoredPath, ["rev-parse", "HEAD"])).toBe(created.entry.original_oid);
+
+    expect(gcTrashEntries(db, { now: created.entry.expires_at })).toMatchObject({ expired: 1 });
+    expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
+  });
+
+  it("refuses removal when unique ignored bytes exceed the repo-configured limit", () => {
+    fs.writeFileSync(path.join(repoRoot, ".mandible.toml"), [
+      "[trash.ignored]",
+      "max_preserved_bytes = 10",
+      'extra_rebuildable_dirs = ["coverage"]',
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(featureWorktree, ".gitignore"), "*.bin\ncoverage/\n");
+    fs.mkdirSync(path.join(featureWorktree, "coverage"));
+    fs.writeFileSync(path.join(featureWorktree, "coverage", "report.bin"), Buffer.alloc(100));
+    fs.writeFileSync(path.join(featureWorktree, "data.bin"), Buffer.alloc(11));
+
+    let refusal: unknown;
+    try {
+      createTrashEntry(db, { project: "trash-test", branch: "feature/trash", reason: "merged" }, 1_000);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({
+      code: "ignored_files_refused",
+      detail: {
+        outcome: { worktree_removed: false, branch_removed: false },
+        ignored: {
+          kept: 0,
+          skipped: 1,
+          refused: 1,
+          total_bytes: 11,
+          limit_bytes: 10,
+          files: [{ path: "data.bin", bytes: 11 }],
+        },
+      },
+    });
+    expect(fs.readFileSync(path.join(featureWorktree, "data.bin")).length).toBe(11);
+    expect(git(repoRoot, ["rev-parse", "--verify", "refs/heads/feature/trash"])).not.toBe("");
+    expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
+    expect(listTrashEntries(db)).toEqual([]);
+  });
+
+  it("removes a proven-merged worktree holding only rebuildable ignored files without custody", () => {
+    fs.appendFileSync(path.join(repoRoot, ".git", "info", "exclude"), "node_modules/\nshared\n");
+    fs.mkdirSync(path.join(featureWorktree, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(featureWorktree, "node_modules", "pkg", "index.js"), "x");
+    const sharedTarget = path.join(tempDir, "shared-target");
+    fs.mkdirSync(sharedTarget);
+    fs.symlinkSync(sharedTarget, path.join(featureWorktree, "shared"));
+
+    const removal = trashBranch(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "merged",
+      merged_into: "main",
+    }, 1_000);
+
+    expect(removal).toMatchObject({
+      result: "removed",
+      entry: null,
+      outcome: {
+        worktree_removed: true,
+        branch_removed: true,
+        merge_evidence: "merged",
+        ignored: { kept: 0, skipped: 2, ref: null },
+      },
+    });
+    expect(fs.existsSync(featureWorktree)).toBe(false);
+    expect(fs.existsSync(sharedTarget)).toBe(true);
+    expect(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature/trash"], { cwd: repoRoot }).status)
+      .not.toBe(0);
+    expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
+    expect(listTrashEntries(db)).toEqual([]);
   });
 
   it("exposes the thin versioned route and list envelope", async () => {
