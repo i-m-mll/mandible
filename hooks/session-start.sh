@@ -133,6 +133,11 @@ payload=$(jq -n \
 
 api_send POST /api/sessions/register "$payload" >/dev/null || exit 1
 
+# The run's own commands must not attribute their work to the inherited session.
+if [[ -n "$inherited_session_id" && -n "${CLAUDE_ENV_FILE:-}" ]]; then
+  printf 'unset MANDIBLE_SESSION_ID\n' >> "$CLAUDE_ENV_FILE"
+fi
+
 # Check inbox for pending items.
 # Bug: 4e32923 — surface a single-line summary of *escalated* (tier 2/3) and
 # legacy (tier 0) auth results plus continuations and work units. Owner

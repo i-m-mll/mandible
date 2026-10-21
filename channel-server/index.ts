@@ -42,13 +42,28 @@ Available tools:
 - mandible_get_issues: List open issues available for work
 - mandible_request_work: Request a work-unit assignment from Mandible`;
 
+/**
+ * MANDIBLE_SESSION_ID names the session of the process `mandible wrap` exec'd,
+ * and every descendant inherits it. Claude spawns this server directly, so the
+ * variable is this Claude's own only while its row is absent, unbound, or bound
+ * to our parent pid; a nested run's server treats an inherited one as unset.
+ * When the daemon cannot be asked, the variable is kept: a server started during
+ * a daemon restart is far likelier to belong to the wrapped process itself.
+ */
+async function ownManagedSessionId(): Promise<string | null> {
+  const managed = process.env.MANDIBLE_SESSION_ID;
+  if (!managed) return null;
+  try {
+    const ownerPid = await client.sessionOwnerPid(managed);
+    return ownerPid == null || ownerPid === process.ppid ? managed : null;
+  } catch (error) {
+    process.stderr.write(`Warning: could not confirm Mandible session ${managed} belongs to this process: ${error}\n`);
+    return managed;
+  }
+}
+
 async function main(): Promise<void> {
-  // Discover session ID from environment (set by Claude Code or the
-  // spawning process)
-  const sessionId =
-    process.env.MANDIBLE_SESSION_ID ??
-    process.env.SESSION_ID ??
-    null;
+  const sessionId = (await ownManagedSessionId()) ?? process.env.SESSION_ID ?? null;
 
   // Bug: 6d7411b — CLAUDE_CODE_SESSION_ID is the conversation/chat ID that
   // persists across Claude Code resumes, unlike MANDIBLE_SESSION_ID which is
