@@ -43,6 +43,7 @@ import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
 import { childrenOfConversationSql } from "../conversation-lineage.js";
+import { backfillConversationLineage } from "../conversations/lineage-backfill.js";
 import type { SessionRegistry } from "../registry.js";
 import {
   executeConversationExternalNavigation,
@@ -662,6 +663,14 @@ export function registerConversationRoutes(
       });
     }
   }, { operation: { id: "post:/api/conversations/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
+
+  // POST /api/conversations/lineage-backfill — issue 23f8142. Operator-only,
+  // run once: declares and links the parent of conversations indexed before
+  // their parsers recorded one.
+  server.post("/api/conversations/lineage-backfill", async (req, res) => {
+    requireOperator(getDb(), req);
+    sendJson(res, 200, await backfillConversationLineage(getDb()));
+  }, { operation: { id: "post:/api/conversations/lineage-backfill", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   // POST /api/conversations/scan-credentials — issue 71a287e.
   // On-demand sweep of the normalized index for leaked Mandible credentials.

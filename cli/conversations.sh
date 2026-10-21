@@ -429,6 +429,25 @@ case "${1:-}" in
   custody) shift; conversation_custody_command "$@"; exit $? ;;
 esac
 
+# Issue 23f8142 — one-time declaration and linking of conversation parents for
+# conversations indexed before their parsers recorded one.
+if [[ "${1:-}" == "lineage-backfill" ]]; then
+  shift
+  json=0
+  binding=$(mandible_bind_arguments "conversations.lineage-backfill" '{"json":{"option":"json","constant":"1"}}' "$@") || exit $?
+  eval "$binding"
+  response=$(api_send POST "/api/conversations/lineage-backfill" '{}') || exit $?
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      "Examined \(.examined) conversations without a declared parent."
+      + "\nDeclared parents: \(.declared.claude_code) Claude, \(.declared.codex) Codex; linked \(.linked), parent not indexed \(.unresolved_parent)."
+      + "\nCodex lineage from rollout headers \(.codex_lineage_source.rollout_header), Codex state database \(.codex_lineage_source.state_database), neither \(.codex_lineage_source.none)."'
+  fi
+  exit 0
+fi
+
 # Issue 71a287e — scan-credentials is daemon-side in every transport: only the
 # daemon holds the token pepper needed to verify a candidate.
 if [[ "${1:-}" == "scan-credentials" ]]; then

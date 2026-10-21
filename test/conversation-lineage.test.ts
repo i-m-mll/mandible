@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { triggerTargetedIngest } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { backfillConversationLineage } from "../src/conversations/lineage-backfill.js";
+import SqliteDatabase from "../src/sqlite.js";
 import { Router } from "../src/server.js";
 
 let tempDir = "";
@@ -117,6 +119,35 @@ describe("conversation lineage", () => {
     }
     const listed = await router.invoke({ method: "GET", url: `/api/conversations?parent_id=${rowsOf(CHILD_A)[0].id}` });
     expect((listed.body as { total: number }).total).toBe(1);
+  });
+
+  it("backfills Codex rows indexed without lineage from the rollout header, or Codex's registry once the rollout is pruned", async () => {
+    const root = writeRollout(rolloutPath("sessions", ROOT), ROOT, null);
+    const childA = writeRollout(rolloutPath("sessions", CHILD_A), CHILD_A, { parent: ROOT, nickname: "Leibniz" });
+    const childB = writeRollout(rolloutPath("sessions", CHILD_B), CHILD_B, { parent: ROOT, nickname: "Locke" });
+    for (const file of [root, childA, childB]) await ingest(file);
+    db.prepare(
+      "UPDATE conversations SET parent_conversation_id = NULL, parent_source = NULL, parent_session_id = NULL, is_sidechain = 0, agent_id = NULL",
+    ).run();
+    fs.rmSync(childB);
+    const registry = new SqliteDatabase(path.join(tempDir, ".codex", "state_5.sqlite"));
+    registry.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT NOT NULL, thread_source TEXT, agent_nickname TEXT)");
+    registry.prepare("INSERT INTO threads VALUES (?, ?, 'subagent', 'Locke')").run(
+      CHILD_B,
+      JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: ROOT, depth: 1, agent_nickname: "Locke" } } }),
+    );
+    registry.close();
+
+    const result = await backfillConversationLineage(db);
+    expect(result).toMatchObject({
+      declared: { codex: 2 },
+      codex_lineage_source: { rollout_header: 2, state_database: 1 },
+      linked: 2,
+      unresolved_parent: 0,
+    });
+    const rootId = rowsOf(ROOT)[0].id;
+    expect(rowsOf(CHILD_A)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Leibniz" });
+    expect(rowsOf(CHILD_B)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Locke" });
   });
 
   it("links a legacy Claude sidechain transcript to the session its records name", async () => {

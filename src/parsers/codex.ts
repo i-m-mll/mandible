@@ -423,6 +423,15 @@ export async function loadCodexNativeSessionId(filePath: string): Promise<string
   return typeof id === "string" && id.trim() ? id : null;
 }
 
+/** Read subagent lineage from a rollout's header; null when the file holds none. */
+export async function loadCodexThreadLineage(filePath: string): Promise<CodexThreadLineage | null> {
+  const record = await findJsonlRecord<CodexRecord>(
+    filePath,
+    (candidate) => candidate.type === "session_meta",
+  );
+  return record ? codexThreadLineage(record.payload as CodexSessionMeta) : null;
+}
+
 // --- Parser ---
 
 export class CodexParser implements ConversationParser {
