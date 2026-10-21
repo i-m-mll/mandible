@@ -3,8 +3,9 @@ import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import { canonicalRepoKeysForRef, checkoutRootsForRef } from "./repo-identity.js";
-import { isSessionAliasLive } from "./session-liveness.js";
+import { resolveSessionAlias } from "./session-liveness.js";
 import type { Logger } from "./types.js";
+import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
 import { listLocalBranches } from "./work-scanner.js";
 
 /**
@@ -19,7 +20,7 @@ type AuthPipelineMatch =
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
 // Runs every 60s and performs three reconciliation passes:
-// 1. Dead session cleanup: clear assigned_session_id when session is dead
+// 1. Dead holder cleanup: clear assigned_session_id when its alias resolves and is not live
 // 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
 // 3. Auto-commit detection: open → committed when branch has commits
 
@@ -28,16 +29,17 @@ const RECONCILE_INTERVAL_MS = 60_000;
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
-  private readonly sessionIsLive: (db: Db, sessionId: string) => boolean;
+  private readonly resolveSession: WorkUnitSessionResolver;
   private readonly abort = new AbortController();
   private pass: Promise<void> | null = null;
+  private lastUnresolvedHolders = 0;
 
   constructor(
     logger: Logger,
-    options: { sessionIsLive?: (db: Db, sessionId: string) => boolean } = {},
+    options: { resolveSession?: WorkUnitSessionResolver } = {},
   ) {
     this.logger = logger;
-    this.sessionIsLive = options.sessionIsLive ?? isSessionAliasLive;
+    this.resolveSession = options.resolveSession ?? resolveSessionAlias;
   }
 
   start(): void {
@@ -67,13 +69,16 @@ export class WorkUnitReconciler {
 
   private async runPasses(): Promise<void> {
     try {
-      const deadCleared = this.reconcileDeadSessions();
+      const holders = this.reconcileDeadHolders();
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = this.reconcileAutoCommit();
 
-      if (deadCleared > 0 || abandoned > 0 || autoCommitted > 0) {
+      const unresolvedChanged = holders.unresolved !== this.lastUnresolvedHolders;
+      this.lastUnresolvedHolders = holders.unresolved;
+      if (holders.cleared > 0 || abandoned > 0 || autoCommitted > 0 || unresolvedChanged) {
         this.logger("info", "work_unit_reconcile", {
-          dead_sessions_cleared: deadCleared,
+          dead_sessions_cleared: holders.cleared,
+          unresolved_holders: holders.unresolved,
           abandoned: abandoned,
           auto_committed: autoCommitted,
         });
@@ -84,39 +89,43 @@ export class WorkUnitReconciler {
   }
 
   /**
-   * Pass 1: Clear assigned_session_id for work units whose assigned session is dead/ended.
-   * The work unit remains in its current state but shows as "unassigned" in liveness.
+   * Pass 1: Clear assigned_session_id on open and committed work units whose
+   * holder alias resolves to a session that is no longer live. The work unit
+   * keeps its state and reads as unassigned. A holder alias Mandible has never
+   * seen is left in place and counted, since nothing proves it stopped.
    */
-  private reconcileDeadSessions(): number {
+  private reconcileDeadHolders(): { cleared: number; unresolved: number } {
     const db = getDb();
+    const held = db
+      .prepare(
+        `SELECT id, assigned_session_id FROM work_units
+         WHERE assigned_session_id IS NOT NULL
+           AND state IN ('open', 'committed')
+         ORDER BY id`
+      )
+      .all() as Array<{ id: string; assigned_session_id: string }>;
 
-    const run = db.transaction(() => {
-      // Find work units with assigned sessions that are dead or ended
-      const stale = db
-        .prepare(
-          `SELECT wu.id FROM work_units wu
-           JOIN sessions s ON wu.assigned_session_id = s.id
-           WHERE wu.assigned_session_id IS NOT NULL
-             AND wu.state IN ('open', 'committed')
-             AND s.status IN ('dead', 'ended')
-           ORDER BY wu.id`
-        )
-        .all() as Array<{ id: string }>;
+    const dead: typeof held = [];
+    let unresolved = 0;
+    for (const row of held) {
+      const resolution = this.resolveSession(db, row.assigned_session_id);
+      if (!resolution) unresolved++;
+      else if (!resolution.has_live_agent) dead.push(row);
+    }
+    if (dead.length === 0) return { cleared: 0, unresolved };
 
-      if (stale.length === 0) return 0;
-
-      const clearStmt = db.prepare(
-        "UPDATE work_units SET assigned_session_id = NULL WHERE id = ?"
-      );
-
-      for (const row of stale) {
-        clearStmt.run(row.id);
+    const clearStmt = db.prepare(
+      `UPDATE work_units SET assigned_session_id = NULL
+       WHERE id = ? AND assigned_session_id = ? AND state IN ('open', 'committed')`
+    );
+    const cleared = db.transaction(() => {
+      let count = 0;
+      for (const row of dead) {
+        count += Number(clearStmt.run(row.id, row.assigned_session_id).changes);
       }
-
-      return stale.length;
-    });
-
-    return run();
+      return count;
+    })();
+    return { cleared, unresolved };
   }
 
   /**
@@ -173,7 +182,7 @@ export class WorkUnitReconciler {
         // The same canonical provider-session authority used by parent-role
         // and work-unit reads gets first refusal over this destructive state
         // transition; once the task stops, ordinary branch/auth proof applies.
-        if (sessionId && this.sessionIsLive(db, sessionId)) continue;
+        if (sessionId && this.resolveSession(db, sessionId)?.has_live_agent) continue;
         // A branch may be deleted by auth-merge before the successful result
         // reaches Stage 2. Keep it committed while a same-repo request is
         // active, or resolve it here once that request proves success.
