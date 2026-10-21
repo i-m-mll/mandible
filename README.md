@@ -117,7 +117,7 @@ mandible conversations comment <ref> -m 'note'
 
 Star, tag, and comment are Mandible's own metadata, kept apart from the provider's title. Custody of the provider-native bytes is separate from the index; see [Conversation custody](docs/conversation-custody.md).
 
-**Identity.** A session is identified by its provider session id: a Claude session or subagent id, a Codex thread id, a Gemini session id. Its durable record is its indexed conversation; nothing else is required for it to appear, to be linked to an issue, or to hold a work unit. A `sessions` row is an optional process attachment, pid, terminal and multiplexer navigation, kill, created by Claude's lifecycle hooks and by Mandible's own launches. `mandible session link-issue` accepts a provider session id, a console session id, or a session row id, and never creates a row.
+**Identity.** A session is identified by its provider session id: a Claude session or subagent id, a Codex thread id, a Gemini session id. Its durable record is its indexed conversation; nothing else is required for it to appear, to be linked to an issue, or to hold a work unit. A `sessions` row is an optional process attachment, pid, terminal and multiplexer navigation, kill, created by Claude's lifecycle hooks and by Mandible's own launches. Every surface that takes a session (the overview, `mandible session link-issue`, work-unit holders, `--session` on the parent role) accepts a provider session id, a Claude subagent's agent id, a console session id, or a session row id, and none creates a row; `mandible issue parent-role assume` defaults to the caller's own provider session id.
 
 **Liveness.** One rule answers `live`, `stopped`, or `unknown` for any alias: a process row's status, a console session's status, or Codex's own thread-writer lock. A check that cannot complete is `unknown`, and the reconciler, archival, custody, and the parent role all defer behind it. Work-unit and inbox payloads carry the same tri-state.
 
@@ -130,6 +130,8 @@ Star, tag, and comment are Mandible's own metadata, kept apart from the provider
 
 A provider's creator record (a Codex `create_thread` delegation envelope) outranks the marker for who created the thread; the marker supplies the relation and roles. A child is linked whichever of parent and child arrives first. `mandible conversations lineage-gaps` lists children without a trustworthy parent: a malformed marker, an unindexed parent, a marker that disagrees with the creator record, or an agent-created thread with neither. The contract's "Session Lineage" section is the grammar's one definition.
 
+**Overview.** `GET /api/sessions/<ref>/overview` serves every provider from one summary of a session: facts from its indexed conversation, liveness from the rule above, and its process attachment when one exists. Children come from lineage, keyed by the child's own provider id (a subagent by its agent id), bounded in depth and count; work units are matched across the session's and its descendants' ids. A prefix naming several sessions answers with the candidates. Issue session lists read sessions through the same summary, so a linked Codex thread shows its provider and liveness.
+
 **Codex worker threads.** A unit bound with `mandible work-unit activate --worker` has its Codex thread archived by the reconciler once the unit resolves by any path and the thread is stopped, never held a parent role, and holds no other open or committed unit. A resume dispatch unarchives the thread first.
 
 ### Reminders
@@ -140,7 +142,7 @@ A provider's creator record (a Codex `create_thread` delegation envelope) outran
 
 The app's views, in rail order:
 
-- **Session**: a per-session page with its metadata, child sessions, linked issues, work units, and conversations.
+- **Session**: one page per session of any provider, opened by any of its ids or a prefix of one: its facts and liveness, its process attachment when it has one, its child sessions from lineage with their liveness, linked issues, work units, and conversations. Chat's right sidebar shows the same page for the open conversation.
 - **Chat**: start and follow conversations with Claude Code (through the Agent SDK) and Codex (through its app server): permission prompts, usage and context, attachments, resume, and fork. Ownership of a live conversation is a separate fact from observing its transcript.
 - **Timeline**: a project's issues, comments, relationships, and ledger events on one global time axis.
 - **Approvals**: the queue and history, with the diff, change breakdown, protected-base audit, hook output, convergence, and staged issue actions for each request.
