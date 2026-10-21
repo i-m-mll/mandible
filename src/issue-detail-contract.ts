@@ -1,4 +1,4 @@
-import type { ArtifactRecord, WorkUnit, WorkUnitLiveness } from "./contracts.js";
+import type { ArtifactRecord, SessionSummary, WorkUnit, WorkUnitLiveness } from "./contracts.js";
 import type { AttributionReadProjection, ReadUserIdentity } from "./identity/contracts.js";
 import type {
   LedgerActorType, LedgerEventSource, LedgerIssueBranchRole, LedgerIssueKind,
@@ -165,20 +165,7 @@ export interface LedgerIssueDetailWorkUnit extends WorkUnit {
   liveness: WorkUnitLiveness;
 }
 
-export interface LedgerIssueDetailSession {
-  id: string;
-  app: string;
-  parent_id: string | null;
-  status: string;
-  branch: string | null;
-  worktree: string | null;
-  task: string | null;
-  description: string | null;
-  agent_type: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-  ended_at: string | null;
-  last_active: string | null;
+export interface LedgerIssueDetailSession extends SessionSummary {
   owner: ReadUserIdentity | null;
   has_conversation: boolean;
   link_type: string;

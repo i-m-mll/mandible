@@ -1,4 +1,5 @@
 import type { Db } from "./db.js";
+import { columnExists } from "./db-introspection.js";
 
 export const PROVIDER_TO_CONVERSATION_SOURCE: Readonly<Record<string, string>> = Object.freeze({
   codex: "codex",
@@ -28,16 +29,20 @@ export type ProviderSessionIngestion =
   | { status: "ambiguous"; provider_session_id: string; sources: string[] }
   | { status: "unsupported"; provider_session_id: string; source: string };
 
-/** Resolve one exact provider task from Mandible's normalized transcript index. */
+/**
+ * Resolve one exact provider task from Mandible's normalized transcript index.
+ * The id is a session's own provider id, or the agent id of an in-session
+ * child (a Claude subagent), whose transcript carries its parent's session id.
+ */
 export function resolveProviderSessionIngestion(
   db: Db,
   providerSessionId: string,
 ): ProviderSessionIngestion {
   const id = providerSessionId.trim();
-  const rows = db.prepare(`
+  const select = (where: string) => db.prepare(`
     SELECT source, source_path, cwd, branch, updated_at, ended_at, source_mtime
       FROM conversations
-     WHERE session_id = ?
+     WHERE ${where}
      ORDER BY updated_at DESC, id ASC
   `).all(id) as Array<{
     source: string;
@@ -48,6 +53,10 @@ export function resolveProviderSessionIngestion(
     ended_at: string | null;
     source_mtime: number | null;
   }>;
+  let rows = select("session_id = ?");
+  if (rows.length === 0 && columnExists(db, "conversations", "parent_session_id")) {
+    rows = select("agent_id = ? AND parent_session_id = session_id");
+  }
   if (rows.length === 0) return { status: "not_yet_ingested", provider_session_id: id };
 
   const sources = [...new Set(rows.map((row) => row.source))].sort();

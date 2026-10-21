@@ -267,7 +267,7 @@ describe("Codex Desktop provider tasks", () => {
 
     const overview = await router.invoke({
       method: "GET",
-      url: `/api/sessions/overview/by-provider?provider=codex&provider_session_id=${DESKTOP_TASK}`,
+      url: `/api/sessions/${DESKTOP_TASK}/overview`,
     });
     expect((overview.body as { linked_issues: { items: Array<{ issue_id: string }> } }).linked_issues.items)
       .toMatchObject([{ issue_id: umbrellaId }]);

@@ -323,7 +323,7 @@ describe("ledger issue detail projection", () => {
       },
     ]);
     expect(projection.sessions).toMatchObject([
-      { id: "sess_live", status: "active", link_type: "worked_on" },
+      { id: "sess_live", liveness: "live", process: { status: "active" }, link_type: "worked_on" },
     ]);
     expect(projection.auth_requests).toMatchObject([
       { id: "auth_1", status: "completed", link_type: "resolves" },

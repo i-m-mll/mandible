@@ -513,6 +513,51 @@ export type WorkUnit = {
  */
 export type LivenessState = "live" | "stopped" | "unknown";
 
+/** A process Mandible can reach for this session: a `sessions` row. */
+export interface SessionProcess {
+  id: string;
+  app: string;
+  status: string;
+  pid: number | null;
+  task: string | null;
+  agent_type: string | null;
+  terminal: string | null;
+  multiplexer: string | null;
+  nav_session: string | null;
+  nav_tab: string | null;
+  nav_pane_id: string | null;
+  worktree: string | null;
+  created_at: string | null;
+  ended_at: string | null;
+  last_active: string | null;
+  owner_user_id: string | null;
+}
+
+export interface SessionSummary {
+  /** The session's key: its provider session id when known (`sessionLinkKey`). */
+  id: string;
+  provider: string | null;
+  provider_session_id: string | null;
+  liveness: LivenessState;
+  /** The indexed conversation that records this session, when ingested. */
+  conversation_id: string | null;
+  title: string | null;
+  /** The agent role or name: the process row's agent type, else the provider's agent name. */
+  agent: string | null;
+  cwd: string | null;
+  branch: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  last_activity: string | null;
+  process: SessionProcess | null;
+}
+
+/** A session in a lineage listing: a child of `parent_id`, `depth` levels down. */
+export interface SessionDescendant extends SessionSummary {
+  parent_id: string;
+  depth: number;
+}
+
 export type WorkUnitLiveness = {
   state: LivenessState;
   agent_session_id: string | null;

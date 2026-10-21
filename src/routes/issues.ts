@@ -5,10 +5,10 @@ import { tableExists } from "../db-introspection.js";
 import {
   resolveSessionAlias,
   sessionAliasIds,
-  sessionRowForLinkKeySql,
   type LivenessState,
   type SessionAliasResolution,
 } from "../session-liveness.js";
+import { summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -2303,50 +2303,17 @@ export function registerIssueRoutes(
     }
 
     // 3. Linked sessions via ledger links.
-    const sessionLinksById = new Map<string, Record<string, unknown>>();
-    if (ledgerIssueId) {
-      const ledgerSessionLinks = db
-        .prepare(
-          `SELECT l.session_id, s.status, s.created_at, s.app, l.created_at AS link_created_at
-           FROM ledger_session_issue_links l
-           LEFT JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
-           WHERE l.issue_id = ?
-           ORDER BY l.created_at ASC`
-        )
-        .all(ledgerIssueId) as Array<Record<string, unknown>>;
-      for (const row of ledgerSessionLinks) {
-        const sessionId = String(row.session_id ?? "");
-        if (!sessionLinksById.has(sessionId)) sessionLinksById.set(sessionId, row);
-      }
-    }
-
-    const sessions = Array.from(sessionLinksById.values()).map((row) => ({
-      session_id: String(row.session_id ?? ""),
-      status: String(row.status ?? "unknown"),
-      created_at: row.created_at ?? null,
-      app: String(row.app ?? ""),
-      has_conversation: false, // populated below
-    }));
-
-    // Check which sessions have conversations
-    if (sessions.length > 0) {
-      const sessionIds = sessions.map((s) => s.session_id);
-      // Query conversations table for these session_ids
-      try {
-        const placeholders = sessionIds.map(() => "?").join(",");
-        const convRows = db
-          .prepare(
-            `SELECT DISTINCT session_id FROM conversations WHERE session_id IN (${placeholders})`
-          )
-          .all(...sessionIds) as Array<{ session_id: string }>;
-        const convSet = new Set(convRows.map((r) => r.session_id));
-        for (const s of sessions) {
-          s.has_conversation = convSet.has(s.session_id);
-        }
-      } catch {
-        // conversations table may not exist in all setups
-      }
-    }
+    const sessions = ledgerIssueId
+      ? (db.prepare(
+        `SELECT session_id FROM ledger_session_issue_links
+         WHERE issue_id = ?
+         GROUP BY session_id
+         ORDER BY MIN(created_at) ASC`
+      ).all(ledgerIssueId) as Array<{ session_id: string }>).map((row) => {
+        const summary = summarizeSessionKey(db, row.session_id);
+        return { ...summary, has_conversation: summary.conversation_id !== null };
+      })
+      : [];
 
     // 4. Auth requests linked to this issue, preferring canonical ledger links
     // and keeping legacy JSON issue matching for pre-ledger rows.
