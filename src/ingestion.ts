@@ -23,7 +23,7 @@ import {
   loadCodexNativeSessionId,
   loadCodexSessionIndexTitle,
 } from "./parsers/codex.js";
-import { linkIngestedConversation } from "./conversation-lineage.js";
+import { lineageGapSeverity, linkIngestedConversation } from "./conversation-lineage.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import {
@@ -2138,11 +2138,13 @@ function applyIngestedLineage(
 ): void {
   const gap = linkIngestedConversation(db, conversation, result);
   if (gap) {
-    logger("warn", "conversation_lineage_gap", {
+    const severity = lineageGapSeverity(gap);
+    logger(severity === "gap" ? "warn" : "info", "conversation_lineage_gap", {
       conversation_id: conversation.id,
       source: conversation.source,
       session_id: conversation.session_id,
       kind: gap,
+      severity,
     });
   }
 }

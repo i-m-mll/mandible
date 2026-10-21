@@ -274,6 +274,18 @@ function createThreadDelegation(payload: CodexResponsePayload): CodexDelegation 
 }
 
 /**
+ * The parent a creation delegation declares: the thread that created this one,
+ * unless the prompt's lineage marker declares this thread its successor. A
+ * child is the default relation, so a delegation without a marker is a child.
+ */
+function delegationParent(delegation: CodexDelegation): ConversationParent | null {
+  if (!delegation.sourceThreadId) return null;
+  const line = readOpeningLine(delegation.prompt);
+  if (line.kind === "marker" && line.marker.relation === "successor") return null;
+  return { source: "codex", sessionId: delegation.sourceThreadId };
+}
+
+/**
  * Read a first user message for its lineage marker. A message delivered in a
  * delegation envelope is read from its prompt, and the envelope's source
  * thread is the thread that delivered it.
@@ -516,6 +528,7 @@ export class CodexParser implements ConversationParser {
     let lineage: CodexThreadLineage = { parent: null, isSubagent: false, agentId: null };
     let createdByAgent = false;
     let opening: TranscriptOpening | null = null;
+    let delegatedParent: ConversationParent | null = null;
 
     // Check for legacy format (single-line sessions with top-level fields)
     const firstRec = records[0];
@@ -658,6 +671,13 @@ export class CodexParser implements ConversationParser {
               },
             });
           } else if (role === "user") {
+            // Older Codex delivered the creating delegation as the first user
+            // message; only a parse from the transcript's start can tell it
+            // from a later send_message_to_thread delivery.
+            if (!opening && createdByAgent && options.baseBlockCount === 0) {
+              const delegation = parseCodexDelegation(text);
+              if (delegation) delegatedParent ??= delegationParent(delegation);
+            }
             opening ??= codexOpening(text, options.baseBlockCount === 0);
             blocks.push({
               type: "user_message",
@@ -749,6 +769,7 @@ export class CodexParser implements ConversationParser {
             const delegation = createThreadDelegation(payload);
             if (!delegation) continue;
             const prompt = delegation.prompt;
+            delegatedParent ??= delegationParent(delegation);
             opening ??= codexOpening(payload.output as string, options.baseBlockCount === 0);
             blocks.push({
               type: "user_message",
@@ -942,7 +963,7 @@ export class CodexParser implements ConversationParser {
         is_sidechain: lineage.isSubagent,
         agent_id: lineage.agentId,
       },
-      parent: lineage.parent,
+      parent: lineage.parent ?? delegatedParent,
       opening,
       createdByAgent,
       blocks,

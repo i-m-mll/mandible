@@ -91,13 +91,24 @@ export type OpeningLineage =
   | "mismatched"
   | "legacy-prose";
 
-/** Why a conversation that should have a parent has none, or a doubtful one. */
+/**
+ * Why a conversation that should have a parent has none or a doubtful one
+ * (a gap), or has one whose relation was assumed (a warning).
+ */
 export type LineageGapKind =
   | "malformed-marker"
   | "parent-mismatch"
   | "unresolved-parent"
   | "legacy-prose"
-  | "missing-marker";
+  | "missing-marker"
+  | "assumed-child";
+
+export type LineageGapSeverity = "gap" | "warning";
+
+/** A child linked from the provider's creator record alone has no declared roles. */
+export function lineageGapSeverity(kind: LineageGapKind): LineageGapSeverity {
+  return kind === "assumed-child" ? "warning" : "gap";
+}
 
 interface OpeningDeclaration {
   lineage: Exclude<OpeningLineage, "unread">;
@@ -121,15 +132,19 @@ export function openingDeclaration(opening: TranscriptOpening): OpeningDeclarati
   return { lineage: agrees ? "child" : "mismatched", line: line.line, parent: creator ?? marker.parent };
 }
 
-/** SQL expression for the lineage gap of the conversation row `alias`, or NULL. */
+/**
+ * SQL expression for the lineage gap of the conversation row `alias`, or NULL.
+ * Subagents are never judged, nor are rows whose opening has not been read.
+ */
 export function lineageGapSql(alias: string): string {
   return `CASE
-    WHEN ${alias}.is_sidechain != 0 THEN NULL
+    WHEN ${alias}.is_sidechain != 0 OR ${alias}.opening_lineage IS NULL OR ${alias}.opening_lineage = 'unread' THEN NULL
     WHEN ${alias}.opening_lineage = 'malformed' THEN 'malformed-marker'
     WHEN ${alias}.opening_lineage = 'mismatched' THEN 'parent-mismatch'
-    WHEN ${alias}.opening_lineage = 'child' AND ${alias}.parent_conversation_id IS NULL THEN 'unresolved-parent'
+    WHEN ${alias}.parent_session_id IS NOT NULL AND ${alias}.parent_conversation_id IS NULL THEN 'unresolved-parent'
     WHEN ${alias}.opening_lineage = 'legacy-prose' THEN 'legacy-prose'
-    WHEN ${alias}.opening_lineage = 'none' AND ${alias}.agent_created != 0 THEN 'missing-marker'
+    WHEN ${alias}.opening_lineage = 'none' AND ${alias}.agent_created != 0 AND ${alias}.parent_session_id IS NULL THEN 'missing-marker'
+    WHEN ${alias}.opening_lineage = 'none' AND ${alias}.parent_session_id IS NOT NULL THEN 'assumed-child'
   END`;
 }
 
@@ -186,6 +201,7 @@ export function linkIngestedConversation(
 
 export interface LineageGap {
   kind: LineageGapKind;
+  severity: LineageGapSeverity;
   conversation_id: string;
   source: ConversationSource;
   session_id: string;
@@ -199,7 +215,7 @@ export interface LineageGap {
 export interface LineageGapReport {
   /** Gaps in conversations started at or after this time; null for every one. */
   since: string | null;
-  counts: Array<{ source: ConversationSource; kind: LineageGapKind; count: number }>;
+  counts: Array<{ source: ConversationSource; kind: LineageGapKind; severity: LineageGapSeverity; count: number }>;
   gaps: LineageGap[];
 }
 
@@ -224,18 +240,19 @@ export function listLineageGaps(
       )
      WHERE kind IS NOT NULL
      ORDER BY started_at DESC, created_at, conversation_id
-  `).all(options.since, options.since, options.source, options.source) as LineageGap[];
+  `).all(options.since, options.since, options.source, options.source) as Array<Omit<LineageGap, "severity">>;
   const sessions = new Set<string>();
-  const gaps = rows.filter((gap) => {
-    const session = `${gap.source}:${gap.session_id}`;
-    if (sessions.has(session)) return false;
+  const gaps: LineageGap[] = [];
+  for (const row of rows) {
+    const session = `${row.source}:${row.session_id}`;
+    if (sessions.has(session)) continue;
     sessions.add(session);
-    return true;
-  });
-  const counts = new Map<string, { source: ConversationSource; kind: LineageGapKind; count: number }>();
+    gaps.push({ ...row, severity: lineageGapSeverity(row.kind) });
+  }
+  const counts = new Map<string, LineageGapReport["counts"][number]>();
   for (const gap of gaps) {
     const key = `${gap.source}:${gap.kind}`;
-    const entry = counts.get(key) ?? { source: gap.source, kind: gap.kind, count: 0 };
+    const entry = counts.get(key) ?? { source: gap.source, kind: gap.kind, severity: gap.severity, count: 0 };
     entry.count += 1;
     counts.set(key, entry);
   }

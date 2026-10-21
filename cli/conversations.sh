@@ -367,8 +367,7 @@ file_rpc_main() {
 }
 
 # Issue 061c5d6 — conversations that are children without a trustworthy
-# parent: a malformed or mismatched lineage marker, a marker naming a parent
-# Mandible has not indexed, or an agent-created thread with no marker.
+# parent (gaps), and children whose relation was assumed (warnings).
 lineage_gaps_command() {
   local since="" provider="all" json=0 query response binding
   binding=$(mandible_bind_arguments "conversations.lineage-gaps" '{"since":{"option":"since"},"provider":{"option":"provider"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
@@ -383,9 +382,9 @@ lineage_gaps_command() {
   printf '%s\n' "$response" | api_jq_human '
     (if .since then "Lineage gaps in conversations started since \(.since):" else "Lineage gaps:" end),
     (if (.gaps | length) == 0 then "none" else
-      (.counts[] | "  \(.source)\t\(.kind)\t\(.count)"),
+      (.counts[] | "  \(.severity)\t\(.source)\t\(.kind)\t\(.count)"),
       "",
-      (.gaps[] | "\(.session_id)\t\(.source)\t\(.kind)\t\(.started_at)\t\(.opening_line // .title)")
+      (.gaps[] | "\(.session_id)\t\(.source)\t\(.severity)\t\(.kind)\t\(.started_at)\t\(.opening_line // .title)")
     end)'
 }
 

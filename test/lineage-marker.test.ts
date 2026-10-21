@@ -8,10 +8,15 @@ import { readOpeningLine } from "../src/lineage-marker.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import type { LineageGapReport } from "../src/conversation-lineage.js";
+import { backfillConversationLineage } from "../src/conversations/lineage-backfill.js";
 
 const CODEX_PARENT = "01a15eab-0000-7000-8000-000000000001";
 const CODEX_OTHER = "01a15eab-0000-7000-8000-000000000002";
 const CODEX_CHILD = "01a15eab-0000-7000-8000-00000000000c";
+const CODEX_MISMATCHED = "01a15eab-0000-7000-8000-00000000000d";
+const CODEX_SUCCESSOR = "01a15eab-0000-7000-8000-00000000000e";
+const CODEX_UNMARKED = "01a15eab-0000-7000-8000-00000000000f";
+const CODEX_UNRECORDED = "01a15eab-0000-7000-8000-000000000010";
 const CLAUDE_PARENT = "11111111-1111-4111-8111-111111111111";
 const CLAUDE_CHILD = "22222222-2222-4222-8222-222222222222";
 const NIL = "00000000-0000-0000-0000-000000000000";
@@ -79,7 +84,7 @@ function delegation(source: string, prompt: string): string {
   return `<codex_delegation>\n  <source_thread_id>${source}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`;
 }
 
-type CodexOpening = { prompt: string } | { createdBy: string; prompt: string } | null;
+type CodexOpening = { prompt: string; agentCreated?: true } | { createdBy: string; prompt: string } | null;
 
 function codexRecords(threadId: string, opening: CodexOpening): Array<Record<string, unknown>> {
   const meta = {
@@ -90,7 +95,7 @@ function codexRecords(threadId: string, opening: CodexOpening): Array<Record<str
       cwd: "/tmp/project",
       cli_version: "0.162.0",
       source: "vscode",
-      thread_source: opening && "createdBy" in opening ? "agent_created_thread" : "user",
+      thread_source: opening && ("createdBy" in opening || opening.agentCreated) ? "agent_created_thread" : "user",
     },
   };
   const first = !opening ? [] : "createdBy" in opening
@@ -175,24 +180,37 @@ describe("lineage marker ingestion", () => {
   it("takes an agent-created Codex thread's parent from its delegation envelope and its relation from the marker", async () => {
     await ingest(codexRollout(CODEX_PARENT, { prompt: "Coordinate." }));
     await ingest(codexRollout(CODEX_OTHER, { prompt: "Something else." }));
+    const parentId = row(CODEX_PARENT).id;
 
     await ingest(codexRollout(CODEX_CHILD, { createdBy: CODEX_PARENT, prompt: `${marker(`codex:${CODEX_PARENT}`)}\nWork.` }));
-    expect(row(CODEX_CHILD).parent_conversation_id).toBe(row(CODEX_PARENT).id);
-    expect((await gaps()).gaps).toEqual([]);
-
-    await ingest(codexRollout(CODEX_CHILD, { createdBy: CODEX_PARENT, prompt: `${marker(`codex:${CODEX_OTHER}`)}\nWork.` }));
-    expect(row(CODEX_CHILD).parent_conversation_id).toBe(row(CODEX_PARENT).id);
-    expect((await gaps()).gaps).toMatchObject([{ session_id: CODEX_CHILD, kind: "parent-mismatch" }]);
-
-    await ingest(codexRollout(CODEX_CHILD, {
+    await ingest(codexRollout(CODEX_MISMATCHED, { createdBy: CODEX_PARENT, prompt: `${marker(`codex:${CODEX_OTHER}`)}\nWork.` }));
+    await ingest(codexRollout(CODEX_SUCCESSOR, {
       createdBy: CODEX_PARENT,
       prompt: `[mandible successor predecessor=codex:${CODEX_PARENT} role=coordinator]\nTake over.`,
     }));
-    expect(row(CODEX_CHILD)).toMatchObject({ opening_lineage: "successor" });
-    expect((await gaps()).gaps).toEqual([]);
+    await ingest(codexRollout(CODEX_UNMARKED, { createdBy: CODEX_PARENT, prompt: "Work, with no marker." }));
+    await ingest(codexRollout(CODEX_UNRECORDED, { agentCreated: true, prompt: "Work, with neither." }));
 
-    await ingest(codexRollout(CODEX_CHILD, { createdBy: CODEX_PARENT, prompt: "Work, with no marker." }));
-    expect((await gaps()).gaps).toMatchObject([{ session_id: CODEX_CHILD, kind: "missing-marker" }]);
+    expect(row(CODEX_CHILD).parent_conversation_id).toBe(parentId);
+    expect(row(CODEX_MISMATCHED).parent_conversation_id).toBe(parentId);
+    expect(row(CODEX_SUCCESSOR)).toMatchObject({ opening_lineage: "successor", parent_conversation_id: null });
+    expect(row(CODEX_UNMARKED).parent_conversation_id).toBe(parentId);
+    expect(row(CODEX_UNRECORDED).parent_conversation_id).toBeNull();
+    expect((await gaps()).gaps.map((gap) => [gap.session_id, gap.kind, gap.severity]).sort()).toEqual([
+      [CODEX_MISMATCHED, "parent-mismatch", "gap"],
+      [CODEX_UNMARKED, "assumed-child", "warning"],
+      [CODEX_UNRECORDED, "missing-marker", "gap"],
+    ].sort());
+  });
+
+  it("backfills create_thread children indexed before their creator was read", async () => {
+    await ingest(codexRollout(CODEX_PARENT, { prompt: "Coordinate." }));
+    await ingest(codexRollout(CODEX_UNMARKED, { createdBy: CODEX_PARENT, prompt: "Work, with no marker." }));
+    db.prepare(`UPDATE conversations SET parent_conversation_id = NULL, parent_source = NULL, parent_session_id = NULL,
+      opening_lineage = 'unread', opening_line = NULL`).run();
+
+    expect(await backfillConversationLineage(db)).toMatchObject({ declared: { codex: 1 }, linked: 1 });
+    expect(row(CODEX_UNMARKED).parent_conversation_id).toBe(row(CODEX_PARENT).id);
   });
 
   it("reads the opening from the batch that appends a thread's first user message", async () => {

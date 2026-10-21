@@ -199,9 +199,11 @@ export type ParserSourceSnapshot = FullParserSourceSnapshot | AppendParserSource
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
   /**
-   * The session that created this conversation as its subagent, as the
-   * provider's own transcript records it. Null when this parse batch carries no
-   * such record: a top-level session, or an append batch without the header.
+   * The session that created this conversation as its subagent or child
+   * thread, as the provider's own transcript records it (a subagent header, or
+   * the Codex `create_thread` delegation that created the thread unless its
+   * marker declares a successor). Null when this parse batch carries no such
+   * record: a top-level session, or an append batch without it.
    */
   parent: ConversationParent | null;
   /**
