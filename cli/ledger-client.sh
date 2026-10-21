@@ -49,7 +49,9 @@ mandible_ledger_request() {
     cp "$tmp_response" "$MANDIBLE_LEDGER_ERROR_BODY_FILE"
   fi
 
-  if [[ "$graceful" == "1" || "$graceful" == "true" ]]; then
+  # --graceful covers only an unreachable or unavailable daemon. A refusal the
+  # daemon actually returned (a custody conflict, a validation error) still fails.
+  if [[ ( "$graceful" == "1" || "$graceful" == "true" ) && ( -z "$status" || "$status" == "000" || "$status" == "503" ) ]]; then
     mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${status:-unreachable})"
     rm -f "$tmp_response"
     return 0
@@ -198,9 +200,9 @@ mandible_work_unit_release_issue() {
 }
 
 mandible_work_unit_custody_assume() {
-  local id="" expected_generation="" reason="" checkpoint="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local id="" expected_generation="" reason="" checkpoint="" request_approval=0 graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   local binding
-  binding=$(mandible_bind_arguments "work-unit.custody-assume" '{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"checkpoint":{"option":"parent-role-checkpoint"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.custody-assume" '{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"checkpoint":{"option":"parent-role-checkpoint"},"request_approval":{"option":"request-approval","constant":"1"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
   eval "$binding"
   [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
   [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
@@ -208,8 +210,42 @@ mandible_work_unit_custody_assume() {
   mandible_ledger_require_tools || return $?
   local payload
   payload=$(jq -n --argjson expected_generation "$expected_generation" --arg reason "$reason" --arg checkpoint "$checkpoint" \
-    '{expected_generation:$expected_generation,reason:$reason} + (if $checkpoint != "" then {parent_role_checkpoint_id:$checkpoint} else {} end)')
+    --argjson request_approval "$request_approval" --arg target_session_id "${MANDIBLE_SESSION_ID:-}" \
+    '{expected_generation:$expected_generation,reason:$reason}
+    + (if $checkpoint != "" then {parent_role_checkpoint_id:$checkpoint} else {} end)
+    + (if $request_approval == 1 then {request_approval:true} + (if $target_session_id != "" then {target_session_id:$target_session_id} else {} end) else {} end)')
   mandible_ledger_request POST "/api/work-units/$(mandible_ledger_urlencode "$id")/custody/assume" "$payload" "$graceful"
+}
+
+# Issue 72b00f8 — read-only custody answer for commit wrappers. Exit 0: the
+# caller holds the branch's unit or may claim it. Exit 3: another credential
+# holds it and is live or of unknown liveness. Exit 4: another credential holds
+# it but has stopped, so the printed takeover command works. Exit 1: the
+# request failed (daemon unreachable or refused); exit 2: usage.
+mandible_work_unit_custody_check() {
+  local repo_id="" branch="" issue_id="" json=0
+  local binding
+  binding=$(mandible_bind_arguments "work-unit.custody-check" '{"repo_id":{"option":["repo","repo-id"]},"branch":{"option":"branch"},"issue_id":{"option":["issue","issue-id"]},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$repo_id" ]] || mandible_ledger_die "Missing --repo" 2 || return $?
+  [[ -n "$branch" ]] || mandible_ledger_die "Missing --branch" 2 || return $?
+  mandible_ledger_require_tools || return $?
+  local query response outcome
+  query="repo_id=$(mandible_ledger_urlencode "$repo_id")&branch=$(mandible_ledger_urlencode "$branch")"
+  [[ -z "$issue_id" ]] || query="${query}&issue_id=$(mandible_ledger_urlencode "$issue_id")"
+  response=$(mandible_ledger_request GET "/api/work-units/custody-check?${query}" "" 0) || return 1
+  outcome=$(jq -er '.outcome' <<< "$response") || mandible_ledger_die "Malformed custody check response." 1 || return $?
+  if [[ "$json" == "1" ]]; then
+    printf '%s\n' "$response"
+  else
+    jq -r '.message, (if .warning then "Warning: \(.warning)" else empty end), (if .takeover_command then "Takeover: \(.takeover_command)" else empty end)' <<< "$response"
+  fi
+  case "$outcome" in
+    clear) return 0 ;;
+    held) return 3 ;;
+    takeover_available) return 4 ;;
+    *) mandible_ledger_err "Unknown custody check outcome: $outcome"; return 1 ;;
+  esac
 }
 
 mandible_trash_list() {

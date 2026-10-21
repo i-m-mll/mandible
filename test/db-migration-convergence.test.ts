@@ -606,3 +606,32 @@ describe("protected-root dirty action column", () => {
     }
   });
 });
+
+describe("work-unit custody takeover paths", () => {
+  it("v202 keeps every existing custody receipt and its immutability", () => {
+    const dbPath = path.join(tempDir, "custody-v201.db");
+    createFloorDatabase(dbPath);
+    const db = new SqliteDatabase(dbPath);
+    try {
+      db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+        crypto.createHash("sha256").update(String(value)).digest("hex"));
+      migrateFixtureThrough(db, 201);
+      db.prepare("INSERT INTO users (id, slug, kind, display_name, created_at, updated_at) VALUES ('agent', 'agent', 'agent', 'Agent', 1, 1)").run();
+      db.prepare("INSERT INTO user_credentials (id, user_id, type, fingerprint, created_at) VALUES ('cred', 'agent', 'api_token', 'fp', 1)").run();
+      db.prepare("INSERT INTO work_units (id, issue_id, repo_id, kind, state, created_at) VALUES ('wu', 'issue', 'repo', 'solo', 'open', 1)").run();
+      db.prepare(`INSERT INTO work_unit_custody_events (id, work_unit_id, new_user_id, new_credential_id,
+        prior_generation, new_generation, authority_path, reason, occurred_at)
+        VALUES ('receipt', 'wu', 'agent', 'cred', 0, 1, 'initial_assignment', 'Authenticated work-unit activation.', 5)`).run();
+
+      migrate(db);
+
+      expect(db.prepare("SELECT id, authority_path, new_generation, reason, auth_request_id, prior_holder_liveness_json FROM work_unit_custody_events").all())
+        .toEqual([{ id: "receipt", authority_path: "initial_assignment", new_generation: 1,
+          reason: "Authenticated work-unit activation.", auth_request_id: null, prior_holder_liveness_json: null }]);
+      expect(() => db.prepare("UPDATE work_unit_custody_events SET reason = 'changed'").run()).toThrow(/immutable/);
+      expect(() => db.prepare("DELETE FROM work_unit_custody_events").run()).toThrow(/immutable/);
+    } finally {
+      db.close();
+    }
+  });
+});

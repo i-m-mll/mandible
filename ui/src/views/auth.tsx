@@ -208,6 +208,7 @@ const AUTH_TYPE_META: Record<AuthRequestType, { label: string; cssClass: string 
   'branch-delete':  { label: 'Delete',      cssClass: 'type-badge--branch-delete' },
   'config-change':  { label: 'Config',      cssClass: 'type-badge--config-change' },
   'data-delete':    { label: 'Delete Data', cssClass: 'type-badge--data-delete' },
+  'custody-transfer': { label: 'Custody',   cssClass: 'type-badge--custody-transfer' },
 };
 
 const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
@@ -362,6 +363,7 @@ function getStatusLabel(request: AuthRequest): string {
       'branch-delete': 'Deleted',
       'config-change': 'Updated',
       'data-delete': 'Deleted',
+      'custody-transfer': 'Transferred',
     }[type];
   }
   return status.charAt(0).toUpperCase() + status.slice(1);

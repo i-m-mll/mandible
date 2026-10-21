@@ -279,7 +279,7 @@ export function computeAuthRequestOutcome(
 
 export type AuthExecutionMode = "daemon" | "remote";
 export const AUTH_REQUEST_TYPES = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete",
+  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete", "custody-transfer",
 ] as const;
 export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
 

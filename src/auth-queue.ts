@@ -124,6 +124,7 @@ import {
   type LedgerStoredWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
+import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import {
   appendAuthLifecycleEvent,
@@ -3483,6 +3484,7 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: executing.id, lifecycle: "executing", approved_by_user_id: approverUserId,
     } });
+    if (executing.type === "custody-transfer") return this.completeCustodyTransfer(executing);
     const executionEnv = {
       ...(effectiveApproval?.env ?? {}),
       ...this.approveTimePreflightEnv(executing),
@@ -3502,6 +3504,32 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing } });
     this.executeInBackground(executing);
     return executing;
+  }
+
+  /**
+   * Issue 72b00f8 — an approved custody-transfer request runs in process, never
+   * through a shell, hooks, or the merge finalizers: the transfer is applied (or
+   * refused with nothing changed) and the request completes in the same call.
+   */
+  private completeCustodyTransfer(request: AuthRequest): AuthRequest {
+    const result = applyApprovedCustodyTransfer(this.db, request);
+    const now = this.now();
+    const output = result.ok
+      ? `Work-unit custody transferred to credential ${result.work_unit.owner_credential_id} at generation ${result.work_unit.custody_generation}.\n`
+      : `${result.error}\n`;
+    const error = result.ok ? null : result.error;
+    this.db.transaction(() => {
+      this.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, last_executed_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
+      ).run(now, now, now, result.ok ? 0 : 1, output, error, request.id);
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "completed", priorStatus: request.status,
+        nextStatus: "completed", actor: systemAction(), reason: error, occurredAt: now,
+      });
+    })();
+    const completed = this.requireRequest(request.id);
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(completed) });
+    return completed;
   }
 
   /** Consume one exact scoped clearance and begin the protected merge. */

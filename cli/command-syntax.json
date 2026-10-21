@@ -441,7 +441,20 @@
           {"kind": "option","names": ["--expected-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "option","names": ["--reason"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--parent-role-checkpoint"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--request-approval"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
+        ]
+      }
+    },
+    "work-unit.custody-check": {
+      "route": ["work-unit", "custody-check"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "option","names": ["--repo", "--repo-id"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--branch"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue", "--issue-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
     },
