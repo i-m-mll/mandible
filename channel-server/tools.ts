@@ -355,52 +355,6 @@ export function registerTools(
     },
   );
 
-  server.tool(
-    "mandible_spawn_conversation",
-    "Create one conversation through Mandible's idempotent spawn authority. The initial message, exact project checkout, and deliberate topology are recorded before the provider is invoked.",
-    {
-      provider: z.enum(["claude", "codex", "gemini"]),
-      label: z.string().min(1),
-      initial_message: z.string().min(1),
-      idempotency_key: z.string().min(1),
-      project_id: z.string().optional(),
-      checkout_id: z.string().optional(),
-      topology: z.enum(["top-level", "autonomous", "child", "sibling", "successor"]).default("top-level"),
-      topology_target: z.string().optional(),
-    },
-    async (args) => {
-      await ensureChannelRegistered("mandible_spawn_conversation");
-      try {
-        if (Boolean(args.project_id) !== Boolean(args.checkout_id)) throw new Error("project_id and checkout_id must be supplied together");
-        const targetKey = args.topology === "child" ? "parent_conversation_id"
-          : args.topology === "sibling" ? "sibling_conversation_id"
-            : args.topology === "successor" ? "predecessor_conversation_id"
-              : "sponsor_conversation_id";
-        if (["child", "sibling", "successor"].includes(args.topology) && !args.topology_target) throw new Error(`${args.topology} topology requires topology_target`);
-        const provider = args.provider === "claude" ? "claude_code" : args.provider;
-        const result = await client.spawnConversation({
-          schema: "mandible-conversation-spawn-request@1",
-          idempotency_key: args.idempotency_key,
-          provider,
-          label: args.label,
-          initial_message: args.initial_message,
-          placement: args.project_id ? { project_id: args.project_id, checkout_id: args.checkout_id } : { project_id: null, checkout_id: null },
-          topology: args.topology === "top-level" ? { kind: "top-level" }
-            : { kind: args.topology, [targetKey]: args.topology_target ?? null },
-          command: {
-            name: args.provider,
-            backend_type: args.provider === "claude" ? "sdk" : "acp",
-            transport_lane: args.provider === "claude" ? "sdk" : "acp",
-            channel_enabled: false,
-            run_options: {},
-          },
-        });
-        return { content: [{ type: "text", text: `Conversation ${result.spawn.reservation_id} is ${result.spawn.state}; initial message ${result.spawn.initial_message_state}.` }] };
-      } catch (err) {
-        return errorResult(err);
-      }
-    },
-  );
 }
 
 // --- Merge command helpers (issue 08a5f04) ---

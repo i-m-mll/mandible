@@ -13,49 +13,6 @@ usage() {
   mandible_command_help conversations
 }
 
-conversation_spawn_command() {
-  local provider="" message="" label="New chat" project_id="" checkout_id="" topology="top-level" target="" idempotency_key="" json=0
-  local command backend lane payload response topology_json placement_json
-  local binding
-  binding=$(mandible_bind_arguments "conversations.spawn" '{"provider":{"option":"provider"},"message":{"option":"message"},"label":{"option":"label"},"project_id":{"option":"project-id"},"checkout_id":{"option":"checkout-id"},"topology":{"option":"topology"},"target":{"option":"target"},"idempotency_key":{"option":"idempotency-key"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
-  eval "$binding"
-  [[ -n "$message" ]] || { echo "Error: --message is required." >&2; return 2; }
-  [[ "$provider" == "claude" || "$provider" == "codex" || "$provider" == "gemini" ]] || {
-    echo "Error: --provider must be claude, codex, or gemini." >&2; return 2;
-  }
-  [[ -z "$project_id" && -z "$checkout_id" || -n "$project_id" && -n "$checkout_id" ]] || {
-    echo "Error: --project-id and --checkout-id must be supplied together." >&2; return 2;
-  }
-  if [[ "$topology" == "top-level" ]]; then
-    [[ -z "$target" ]] || { echo "Error: top-level topology does not accept --target." >&2; return 2; }
-    topology_json='{"kind":"top-level"}'
-  elif [[ "$topology" == "autonomous" ]]; then
-    topology_json=$(jq -nc --arg target "$target" '{kind:"autonomous",sponsor_conversation_id:(if $target == "" then null else $target end)}')
-  else
-    [[ "$topology" == "child" || "$topology" == "sibling" || "$topology" == "successor" ]] || { echo "Error: invalid topology." >&2; return 2; }
-    [[ -n "$target" ]] || { echo "Error: --target is required for $topology topology." >&2; return 2; }
-    local target_key="${topology}_conversation_id"
-    [[ "$topology" == "successor" ]] && target_key="predecessor_conversation_id"
-    topology_json=$(jq -nc --arg kind "$topology" --arg key "$target_key" --arg target "$target" '{kind:$kind} + {($key):$target}')
-  fi
-  if [[ -n "$project_id" ]]; then
-    placement_json=$(jq -nc --arg project "$project_id" --arg checkout "$checkout_id" '{project_id:$project,checkout_id:$checkout}')
-  else
-    placement_json='{"project_id":null,"checkout_id":null}'
-  fi
-  [[ -n "$idempotency_key" ]] || idempotency_key="cli-$(uuidgen | tr '[:upper:]' '[:lower:]')"
-  command="$provider"; backend="acp"; lane="acp"
-  [[ "$provider" == "claude" ]] && { command="claude"; backend="sdk"; lane="sdk"; provider="claude_code"; }
-  payload=$(jq -nc --arg schema "mandible-conversation-spawn-request@1" --arg key "$idempotency_key" \
-    --arg provider "$provider" --arg label "$label" --arg message "$message" --arg command "$command" \
-    --arg backend "$backend" --arg lane "$lane" --argjson placement "$placement_json" --argjson topology "$topology_json" \
-    '{schema:$schema,idempotency_key:$key,provider:$provider,label:$label,initial_message:$message,placement:$placement,topology:$topology,command:{name:$command,backend_type:$backend,transport_lane:$lane,channel_enabled:false,run_options:{}}}')
-  response=$(api_send POST "/api/conversation-spawns" "$payload") || return $?
-  if (( json )); then printf '%s\n' "$response" | jq .; else
-    printf '%s\n' "$response" | api_jq_human '"\(.spawn.reservation_id | mandible_short_id): \(.spawn.state) [\(.spawn.request.provider)]\ninitial message: \(.spawn.initial_message_state)"'
-  fi
-}
-
 conversation_custody_command() {
   local operation="${1:-}" target="${2:-}" json=0 rewind=0 mirroring=0
   local version="" destination="" staging_root="" provider_root="" payload response conv_id
@@ -409,11 +366,34 @@ file_rpc_main() {
   esac
 }
 
+# Issue 061c5d6 — conversations that are children without a trustworthy
+# parent: a malformed or mismatched lineage marker, a marker naming a parent
+# Mandible has not indexed, or an agent-created thread with no marker.
+lineage_gaps_command() {
+  local since="" provider="all" json=0 query response binding
+  binding=$(mandible_bind_arguments "conversations.lineage-gaps" '{"since":{"option":"since"},"provider":{"option":"provider"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
+  query="provider=$(urlencode "$provider")"
+  if [[ -n "$since" ]]; then query="${query}&since=$(urlencode "$since")"; fi
+  response=$(api_get "/api/conversations/lineage-gaps?${query}") || return $?
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+    return 0
+  fi
+  printf '%s\n' "$response" | api_jq_human '
+    (if .since then "Lineage gaps in conversations started since \(.since):" else "Lineage gaps:" end),
+    (if (.gaps | length) == 0 then "none" else
+      (.counts[] | "  \(.source)\t\(.kind)\t\(.count)"),
+      "",
+      (.gaps[] | "\(.session_id)\t\(.source)\t\(.kind)\t\(.started_at)\t\(.opening_line // .title)")
+    end)'
+}
+
 if api_is_file_rpc; then
   case "${1:-}" in
     star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
-    spawn) shift; conversation_spawn_command "$@"; exit $? ;;
     custody) shift; conversation_custody_command "$@"; exit $? ;;
+    lineage-gaps) shift; lineage_gaps_command "$@"; exit $? ;;
   esac
   file_rpc_main "$@"
   exit $?
@@ -425,8 +405,8 @@ case "${1:-}" in
     exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
     ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
-  spawn) shift; conversation_spawn_command "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;
+  lineage-gaps) shift; lineage_gaps_command "$@"; exit $? ;;
 esac
 
 # Issue 23f8142 — one-time declaration and linking of conversation parents for

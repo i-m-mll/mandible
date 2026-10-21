@@ -2130,6 +2130,23 @@ export async function readAppendForTest(
   });
 }
 
+/** Apply a batch's lineage and report a lineage gap the batch created. */
+function applyIngestedLineage(
+  db: ReturnType<typeof getDb>,
+  conversation: ParseResult["conversation"] & { id: string },
+  result: ParseResult,
+): void {
+  const gap = linkIngestedConversation(db, conversation, result);
+  if (gap) {
+    logger("warn", "conversation_lineage_gap", {
+      conversation_id: conversation.id,
+      source: conversation.source,
+      session_id: conversation.session_id,
+      kind: gap,
+    });
+  }
+}
+
 function mergeAppendConversationMetadata(
   result: ParseResult,
   existing: ExistingConversationRow,
@@ -2150,6 +2167,8 @@ function mergeAppendConversationMetadata(
       cli_version: result.conversation.cli_version ?? existing.cli_version,
     },
     parent: result.parent,
+    opening: result.opening,
+    createdByAgent: result.createdByAgent,
     blocks: result.blocks,
     ...(result.providerTitle ? { providerTitle: result.providerTitle } : {}),
     ...(result.providerTitleSource ? { providerTitleSource: result.providerTitleSource } : {}),
@@ -3042,7 +3061,7 @@ async function ingestFilePass(
       agentId,
       existing.id,
     );
-    linkIngestedConversation(db, { ...result.conversation, id: existing.id }, result.parent);
+    applyIngestedLineage(db, { ...result.conversation, id: existing.id }, result);
     await refreshAppendStateFromParse(db, filePath, stat, result);
     await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks, options.strictParseErrors);
     // The selected Chat reacts to this event by reading its source-backed
@@ -3129,7 +3148,7 @@ async function ingestFilePass(
       agentId,
       conversationId,
     );
-    linkIngestedConversation(db, { ...result.conversation, id: conversationId }, result.parent);
+    applyIngestedLineage(db, { ...result.conversation, id: conversationId }, result);
     await refreshAppendState(
       db,
       filePath,
@@ -3616,7 +3635,7 @@ async function ingestFilePass(
     ).run(activeAt, result.conversation.session_id, activeAt);
   }
 
-  linkIngestedConversation(db, { ...result.conversation, id: conversationId }, result.parent);
+  applyIngestedLineage(db, { ...result.conversation, id: conversationId }, result);
 
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";

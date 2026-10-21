@@ -216,19 +216,6 @@ export type ProviderDurableReconciliationEvent = {
   terminal_retired_identities?: string[];
 };
 
-export type ProviderLineageEvent = {
-  kind: "provider-lineage";
-  conversation_id: string;
-  provider_session_id: string;
-  generation: number;
-  sequence: number;
-  observed_at: number;
-  provider_event_id: string;
-  relation: "spawned-child";
-  sender_provider_session_id: string;
-  receiver_provider_session_id: string;
-};
-
 export type ProviderTransientRetirementEvent = {
   kind: "transient-retirement";
   conversation_id: string;
@@ -242,7 +229,6 @@ export type ProviderTransientRetirementEvent = {
 
 export type ProviderAdapterEvent =
   | ProviderLiveContentEvent
-  | ProviderLineageEvent
   | ProviderDurableReconciliationEvent
   | ProviderTransientRetirementEvent;
 

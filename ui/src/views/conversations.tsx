@@ -1797,7 +1797,6 @@ export function ConversationDetail({
         scheduleRefresh();
         return;
       }
-      if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
       setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
     });
     // Reconnect resync: refetch the open conversation after a dropped stream so

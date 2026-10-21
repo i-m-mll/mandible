@@ -42,6 +42,9 @@ function rewindToV203(): void {
     DROP INDEX idx_conv_declared_parent;
     ALTER TABLE conversations DROP COLUMN parent_session_id;
     ALTER TABLE conversations DROP COLUMN parent_source;
+    ALTER TABLE conversations DROP COLUMN opening_lineage;
+    ALTER TABLE conversations DROP COLUMN opening_line;
+    ALTER TABLE conversations DROP COLUMN agent_created;
     UPDATE meta SET value = '203' WHERE key = 'schema_version';
   `);
 }

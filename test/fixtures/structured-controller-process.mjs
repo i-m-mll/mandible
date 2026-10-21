@@ -50,10 +50,6 @@ lines.on("line", (line) => {
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "lo" } });
       send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "codex-message-1", type: "agentMessage", text: "hello" } } });
     }
-    if (request.params.input[0]?.text === "lineage") {
-      send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "spawn-exact", type: "collabAgentToolCall", tool: "spawnAgent", senderThreadId: request.params.threadId, receiverThreadIds: ["child-thread"], agentsStates: {}, status: "completed" } } });
-      send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "spawn-incomplete", type: "collabAgentToolCall", tool: "spawnAgent", senderThreadId: "", receiverThreadIds: ["unclassified-child"], agentsStates: {}, status: "completed" } } });
-    }
     if (request.params.input[0]?.text === "rich") {
       send({ method: "item/reasoning/summaryTextDelta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "reasoning-rich", summaryIndex: 0, delta: "first" } });
       send({ method: "item/reasoning/summaryTextDelta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "reasoning-rich", summaryIndex: 1, delta: "second" } });

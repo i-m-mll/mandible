@@ -14,6 +14,7 @@ import {
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
+  CONVERSATION_OPENING_LINEAGE_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -2089,6 +2090,17 @@ export const MIGRATIONS: readonly Migration[] = [
               parent_session_id = (SELECT parent.session_id FROM conversations parent WHERE parent.id = conversations.parent_conversation_id)
         WHERE parent_conversation_id IS NOT NULL
           AND EXISTS (SELECT 1 FROM conversations parent WHERE parent.id = conversations.parent_conversation_id)`,
+    ],
+  },
+  // Issue 061c5d6 — conversations record what their opening line declares.
+  // Rows already indexed stay unread until a full parse, which keeps history
+  // out of lineage gaps.
+  {
+    version: 206,
+    name: "conversation_opening_lineage",
+    statements: [
+      ...CONVERSATION_OPENING_LINEAGE_SQL,
+      "UPDATE conversations SET opening_lineage = 'unread'",
     ],
   },
 ];

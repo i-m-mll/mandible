@@ -75,6 +75,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command conversations.tag.add}} - Append ordered, trimmed, exact-case-deduplicated tags to one durable conversation.
 - {{command conversations.tag.rm}} - Remove exact-case tags from one durable conversation.
 - {{command conversations.comment}} - Append Markdown to durable conversation notes with one blank-line separator; existing notes are never overwritten.
+- {{command conversations.lineage-gaps}} - List conversations that are children without a trustworthy parent, with counts by provider and kind: a malformed lineage marker, a marker whose parent disagrees with the provider's creator record, a marker naming a parent Mandible has not indexed, an agent-created thread with no marker, or a legacy prose role clarification. Only conversations whose opening Mandible has read are judged; `--since` narrows by start time.
 - {{command logs.inspect}} - Read one provider-native source transcript, the veridical record behind the conversation index, without touching the Mandible database; --parse applies normalized block filters.
 - {{command db.query}} - Run one row-returning SQL statement against the live ledger database over a connection SQLite holds read-only. This is the supported way to run arbitrary counts and joins the structured commands do not cover. It reads the write-ahead log, so results are current; opening the database file directly with a `?immutable=1` URI skips the -wal file and silently returns a stale snapshot, and this command cannot be pointed at one. Statements that write, or that return no rows, are refused. Rows are capped at 500 unless --limit says otherwise, and truncation is always reported.
 - {{command db.tables}}, {{command db.schema}}, {{command db.info}} - List ledger tables and views, print their exact CREATE statements, or report the open database's path, size, journal mode, and write-ahead-log bytes. Same read-only connection as `mandible db query`; these replace the sqlite3 dot-commands so exploring the schema never requires opening the database file by hand.
@@ -176,6 +177,17 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - Successful auth merges archive reliably linked terminal Codex worker threads. A resolved request-linked work unit can archive directly without `console_sessions` only when its `worker_provider_session_id` was explicitly bound by `work-unit activate --worker`; generic `provider` and `provider_session_id` remain ambient attribution only. Assigned stopped console or registered-session links remain valid. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.
 - Work units are the source of an issue's branches and in-progress state; stored `worker_status` records only explicit done, blocked, or pivot-needed statements. Open/closed issue lifecycle remains separate.
 - The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes work-unit, trash-custody, issue-title, session-link, and issue-file helpers for policy wrappers.
+
+## Session Lineage
+
+- A child is a session another session created to do part of its work; a successor handed a goal is not a child. `conversations.parent_conversation_id` is the one lineage store, written only by ingestion.
+- A subagent's parent is its provider's own record. Every other child declares its parent with the lineage marker, which is exactly line 1 of its first user message, read by every provider's parser and nowhere else:
+  - `[mandible child parent=<provider>:<session-id> parent-role=<role> role=<role>]`
+  - `[mandible successor predecessor=<provider>:<session-id> role=<role>]`
+- `<provider>` is `claude`, `codex`, or `gemini`; `<session-id>` is the provider session or thread id (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`); roles are lowercase role names. Fields may appear in any order, each exactly once. A line that starts with `[mandible` and does not parse is malformed and is never guessed at.
+- When the provider records who created the thread (a Codex `create_thread` delegation envelope's `source_thread_id`), that record is the parent and the marker supplies the relation and roles; a marker naming a different parent is flagged. A `successor` marker keeps the thread out of the child store.
+- A child is linked when its parent is indexed, whichever arrives first; until then it is an unresolved-parent lineage gap. Mandible logs `conversation_lineage_gap` once when ingestion creates a gap.
+- A launch that writes a child's or successor's first message puts the marker on its line 1, derived from the launching session's id and the roles.
 
 ## Transports
 

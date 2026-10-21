@@ -374,10 +374,3 @@ export async function updateSession(
     patch,
   );
 }
-
-export async function spawnConversation(payload: Record<string, unknown>): Promise<{
-  spawn: { reservation_id: string; state: string; initial_message_state: string };
-  session: { id: string } | null;
-}> {
-  return request("POST", "/api/conversation-spawns", payload);
-}
