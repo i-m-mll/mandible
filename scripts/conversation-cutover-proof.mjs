@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import SqliteDatabase from "../src/sqlite.ts";
+import { userSchema } from "./sqlite-user-schema.mjs";
 
 const require = createRequire(import.meta.url);
 const {
@@ -156,20 +157,6 @@ function orderClause(columns) {
     .sort((left, right) => Number(left.pk) - Number(right.pk));
   if (primary.length === 0) return " ORDER BY rowid";
   return ` ORDER BY ${primary.map((column) => quoteIdentifier(column.name)).join(", ")}`;
-}
-
-function userSchema(db, schema = "main") {
-  const rows = db.prepare(
-    `SELECT type, name, tbl_name, sql FROM ${schema}.sqlite_master
-      WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
-      ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, name`,
-  ).all();
-  return {
-    tables: rows.filter((row) => row.type === "table"),
-    indexes: rows.filter((row) => row.type === "index"),
-    views: rows.filter((row) => row.type === "view"),
-    triggers: rows.filter((row) => row.type === "trigger"),
-  };
 }
 
 function normalizedRowIterator(db, schema, table) {

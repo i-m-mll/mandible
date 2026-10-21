@@ -6,6 +6,7 @@ import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { resolveProjectRef } from "./project-registry.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -78,14 +79,34 @@ export function resolveOperationalIssueRef(
   if (!trimmed) return { ok: false, error: "not_found" };
 
   const store = new LedgerStore(db);
-  const projectIds = candidateProjectIds(db, repoRef);
-  if (projectIds.length === 0) {
-    return withProject(db, store.resolveIssueRef(trimmed));
-  }
+  const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef));
+  if (scoped.ok || scoped.error === "ambiguous") return scoped;
 
+  const global = withProject(db, store.resolveIssueRef(trimmed));
+  if (global.ok || global.error === "ambiguous") return global;
+
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator === trimmed.length - 1) return global;
+  const project = resolveProjectRef(db, trimmed.slice(0, separator));
+  if (project.ambiguous) return { ok: false, error: "ambiguous" };
+  if (!project.ok || !project.project) return global;
+  return resolveInProjects(db, store, trimmed.slice(separator + 1), [project.project.id]);
+}
+
+/**
+ * Issue ids are global, so the caller's repo only ranks candidates: a ref
+ * resolves in the repo's own projects first, then across the ledger, then as
+ * `<project>/<id>`.
+ */
+function resolveInProjects(
+  db: Db,
+  store: LedgerStore,
+  ref: string,
+  projectIds: string[],
+): ResolveOperationalIssueResult {
   const matches = new Set<string>();
   for (const projectId of projectIds) {
-    const resolved = store.resolveIssueRef(trimmed, { project_id: projectId });
+    const resolved = store.resolveIssueRef(ref, { project_id: projectId });
     if (resolved.ok) {
       matches.add(resolved.id);
     } else if (resolved.error === "ambiguous") {
@@ -156,11 +177,11 @@ export function linkSessionToLedgerIssue(
   input: { session_id: string; issue_ref: string; repo_ref: string; link_type?: string } & LinkOptions,
 ): OperationalLinkResult {
   if (!ledgerOperationalLinksAvailable(db) || !tableExists(db, "ledger_session_issue_links")) {
-    return { ok: false, error: "unavailable", source_table: "session_issues", source_id: input.session_id };
+    return { ok: false, error: "unavailable", source_table: "ledger_session_issue_links", source_id: input.session_id };
   }
   const resolved = resolveOperationalIssueRef(db, input.issue_ref, input.repo_ref);
   if (!resolved.ok) {
-    return linkError("session_issues", input.session_id, input.issue_ref, input.repo_ref, resolved);
+    return linkError("ledger_session_issue_links", input.session_id, input.issue_ref, input.repo_ref, resolved);
   }
   const now = input.now ?? Date.now();
   const linkType = input.link_type ?? "worked_on";
@@ -591,7 +612,6 @@ export function runOperationalLinkBackfill(db: Db): OperationalLinkReport {
 
   try {
     backfillWorkUnits(db, report);
-    backfillSessions(db, report);
     backfillAuthRequests(db, report);
     backfillCommitResolutions(db, report);
     report.status = report.mismatches.length === 0 ? "clean" : "incomplete";
@@ -632,28 +652,6 @@ function backfillWorkUnits(db: Db, report: OperationalLinkReport): void {
       recordEvent: false,
     });
     tally(report, result, "work_units", row.id, row.issue_id, row.repo_id);
-  }
-}
-
-function backfillSessions(db: Db, report: OperationalLinkReport): void {
-  if (!tableExists(db, "session_issues")) return;
-  const rows = db.prepare("SELECT session_id, issue_id, repo_id, created_at FROM session_issues").all() as Array<{
-    session_id: string;
-    issue_id: string;
-    repo_id: string;
-    created_at: number;
-  }>;
-  report.source_counts.session_issues = rows.length;
-  for (const row of rows) {
-    const result = linkSessionToLedgerIssue(db, {
-      session_id: row.session_id,
-      issue_ref: row.issue_id,
-      repo_ref: row.repo_id,
-      source: "system",
-      now: row.created_at,
-      recordEvent: false,
-    });
-    tally(report, result, "session_issues", row.session_id, row.issue_id, row.repo_id);
   }
 }
 

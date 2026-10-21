@@ -47,7 +47,7 @@ Get pending inbox items, optionally filtered by branch and repo.
     "issue_id": "abc1234",
     "state": "open",
     "liveness": {
-      "has_live_agent": false,
+      "state": "stopped",
       "agent_session_id": null,
       "is_processing": false
     }
@@ -55,7 +55,7 @@ Get pending inbox items, optionally filtered by branch and repo.
   "work_unit_continuations": [{
     "id": "...",
     "continuation": "Paused at step 3. Resume with...",
-    "liveness": { "has_live_agent": false }
+    "liveness": { "state": "stopped" }
   }],
   "pending_webhooks": [{
     "id": "...",

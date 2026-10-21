@@ -43,7 +43,6 @@
 #   trash <subcommand>               Reversible branch/worktree trash custody
 #   issue-file <subcommand>          Read/write the .issue helper file
 #   session link-issue <id> ...      Link sessions to issues
-#   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
 set -euo pipefail
@@ -56,6 +55,9 @@ export MANDIBLE_CLI_DIR="$(cd "$MANDIBLE_BIN_DIR/../cli" && pwd -P)"
 source "$MANDIBLE_CLI_DIR/canonical-origin.sh"
 export MANDIBLE_PORT="${MANDIBLE_PORT:-$MANDIBLE_DEFAULT_BACKEND_PORT}"
 # api.sh selects the private socket when no transport was explicitly chosen.
+source "$MANDIBLE_CLI_DIR/api.sh"
+# Every subcommand inherits the caller's own identity, never a parent agent's.
+api_scope_inherited_identity
 
 usage() {
   "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help
@@ -109,7 +111,6 @@ case "${1:-}" in
   trash) shift; exec "$MANDIBLE_CLI_DIR/trash.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
-  search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help) shift; if (( $# )); then exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;
   -h|--help) usage ;;
   "") usage >&2; exit 1 ;;

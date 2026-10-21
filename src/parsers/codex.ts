@@ -19,7 +19,10 @@ import type {
   IncrementalParseInput,
   ParserSourceSnapshot,
   ParseResult,
+  TranscriptOpening,
 } from "./types.js";
+import type { ConversationParent } from "../conversation-lineage.js";
+import { readOpeningLine } from "../lineage-marker.js";
 import { attachTranscriptChatItem } from "./types.js";
 import { normalizeCodexTokenCount } from "./context-usage.js";
 import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
@@ -31,13 +34,57 @@ interface CodexSessionMeta {
   cwd?: string;
   cli_version?: string;
   model_provider?: string;
-  source?: string;
+  source?: CodexSessionSource;
+  thread_source?: string;
+  parent_thread_id?: string | null;
+  agent_nickname?: string | null;
   timestamp?: string;
   base_instructions?: string;
   git?: {
     commit_hash?: string;
     branch?: string;
     repository_url?: string;
+  };
+}
+
+/** `session_meta.source`: a launcher name, or the spawn record of a subagent thread. */
+export type CodexSessionSource = string | {
+  subagent?: {
+    thread_spawn?: {
+      parent_thread_id?: string | null;
+      agent_nickname?: string | null;
+    };
+    other?: string;
+  };
+};
+
+/** What a rollout header says about the thread's place under another thread. */
+export interface CodexThreadLineage {
+  parent: ConversationParent | null;
+  isSubagent: boolean;
+  agentId: string | null;
+}
+
+/**
+ * Read subagent lineage from a rollout header's fields. Codex writes the parent
+ * thread into `source.subagent.thread_spawn` for `spawn_agent` children, and
+ * into the top-level `parent_thread_id` for its own internal subagents.
+ */
+export function codexThreadLineage(meta: {
+  source?: CodexSessionSource | null;
+  thread_source?: string | null;
+  parent_thread_id?: string | null;
+  agent_nickname?: string | null;
+}): CodexThreadLineage {
+  const subagent = typeof meta.source === "object" && meta.source ? meta.source.subagent : undefined;
+  const spawn = subagent?.thread_spawn;
+  const parentThreadId = subagent ? spawn?.parent_thread_id ?? meta.parent_thread_id : null;
+  return {
+    parent: typeof parentThreadId === "string" && parentThreadId.trim()
+      ? { source: "codex", sessionId: parentThreadId }
+      : null,
+    isSubagent: Boolean(subagent) || meta.thread_source === "subagent",
+    agentId: spawn?.agent_nickname ?? meta.agent_nickname ?? subagent?.other ?? null,
   };
 }
 
@@ -201,16 +248,55 @@ function decodeXmlText(value: string): string {
  * Recognize only that exact envelope; all other identity-less transport output
  * remains provider bookkeeping and stays out of the transcript.
  */
-function delegatedTaskPrompt(payload: CodexResponsePayload): string | null {
-  if (payload.name !== "create_thread" || typeof payload.output !== "string") return null;
-  const envelope = payload.output.trim();
+/** A message another Codex thread delivered through the app's thread tools. */
+export interface CodexDelegation {
+  sourceThreadId: string | null;
+  prompt: string;
+}
+
+/** Unwrap a `<codex_delegation>` envelope; null for any other text. */
+export function parseCodexDelegation(text: string): CodexDelegation | null {
+  const envelope = text.trim();
   if (!envelope.startsWith("<codex_delegation>") || !envelope.endsWith("</codex_delegation>")) {
     return null;
   }
-  const match = envelope.match(/<input>([\s\S]*?)<\/input>/);
-  if (!match) return null;
-  const prompt = decodeXmlText(match[1]).trim();
-  return prompt || null;
+  const input = envelope.match(/<input>([\s\S]*?)<\/input>/);
+  const prompt = input ? decodeXmlText(input[1]).trim() : "";
+  if (!prompt) return null;
+  const source = envelope.match(/<source_thread_id>\s*([^<\s]+)\s*<\/source_thread_id>/);
+  return { sourceThreadId: source ? source[1] : null, prompt };
+}
+
+/** The delegation that created this thread, carried by a `create_thread` output record. */
+function createThreadDelegation(payload: CodexResponsePayload): CodexDelegation | null {
+  if (payload.name !== "create_thread" || typeof payload.output !== "string") return null;
+  return parseCodexDelegation(payload.output);
+}
+
+/**
+ * The parent a creation delegation declares: the thread that created this one,
+ * unless the prompt's lineage marker declares this thread its successor. A
+ * child is the default relation, so a delegation without a marker is a child.
+ */
+function delegationParent(delegation: CodexDelegation): ConversationParent | null {
+  if (!delegation.sourceThreadId) return null;
+  const line = readOpeningLine(delegation.prompt);
+  if (line.kind === "marker" && line.marker.relation === "successor") return null;
+  return { source: "codex", sessionId: delegation.sourceThreadId };
+}
+
+/**
+ * Read a first user message for its lineage marker. A message delivered in a
+ * delegation envelope is read from its prompt, and the envelope's source
+ * thread is the thread that delivered it.
+ */
+function codexOpening(text: string, atStart: boolean): TranscriptOpening {
+  const delegation = parseCodexDelegation(text);
+  return {
+    line: readOpeningLine(delegation?.prompt ?? text),
+    creator: delegation?.sourceThreadId ? { source: "codex", sessionId: delegation.sourceThreadId } : null,
+    atStart,
+  };
 }
 
 type CodexFunctionCallOutputClassification =
@@ -439,6 +525,10 @@ export class CodexParser implements ConversationParser {
     let startedAt = "";
     let endedAt: string | null = null;
     let seenSessionMeta = false;
+    let lineage: CodexThreadLineage = { parent: null, isSubagent: false, agentId: null };
+    let createdByAgent = false;
+    let opening: TranscriptOpening | null = null;
+    let delegatedParent: ConversationParent | null = null;
 
     // Check for legacy format (single-line sessions with top-level fields)
     const firstRec = records[0];
@@ -470,6 +560,8 @@ export class CodexParser implements ConversationParser {
           if (meta.model_provider) modelProvider = meta.model_provider;
           if (meta.git?.branch) branch = meta.git.branch;
           if (meta.timestamp && !startedAt) startedAt = meta.timestamp;
+          lineage = codexThreadLineage(meta);
+          createdByAgent = meta.thread_source === "agent_created_thread";
           seenSessionMeta = true;
         }
       } else if (rec.type === "turn_context") {
@@ -579,6 +671,14 @@ export class CodexParser implements ConversationParser {
               },
             });
           } else if (role === "user") {
+            // Older Codex delivered the creating delegation as the first user
+            // message; only a parse from the transcript's start can tell it
+            // from a later send_message_to_thread delivery.
+            if (!opening && createdByAgent && options.baseBlockCount === 0) {
+              const delegation = parseCodexDelegation(text);
+              if (delegation) delegatedParent ??= delegationParent(delegation);
+            }
+            opening ??= codexOpening(text, options.baseBlockCount === 0);
             blocks.push({
               type: "user_message",
               role: "user",
@@ -666,8 +766,11 @@ export class CodexParser implements ConversationParser {
             });
         } else if (payload.type === "function_call_output") {
           if (classifyFunctionCallOutput(payload) === "provider_transport") {
-            const prompt = delegatedTaskPrompt(payload);
-            if (!prompt) continue;
+            const delegation = createThreadDelegation(payload);
+            if (!delegation) continue;
+            const prompt = delegation.prompt;
+            delegatedParent ??= delegationParent(delegation);
+            opening ??= codexOpening(payload.output as string, options.baseBlockCount === 0);
             blocks.push({
               type: "user_message",
               role: "user",
@@ -857,9 +960,12 @@ export class CodexParser implements ConversationParser {
         branch,
         model: model || (modelProvider ? `${modelProvider}` : null),
         cli_version: cliVersion,
-        is_sidechain: false,
-        agent_id: null,
+        is_sidechain: lineage.isSubagent,
+        agent_id: lineage.agentId,
       },
+      parent: lineage.parent ?? delegatedParent,
+      opening,
+      createdByAgent,
       blocks,
       ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
     };

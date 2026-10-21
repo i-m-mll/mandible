@@ -352,6 +352,17 @@ export async function registerSession(payload: {
   );
 }
 
+/** The pid recorded on a session row: null when the row has none, undefined when there is no row. */
+export async function sessionOwnerPid(sessionId: string): Promise<number | null | undefined> {
+  try {
+    const row = await request<{ pid?: number | null }>("GET", `/api/sessions/${encodeURIComponent(sessionId)}`);
+    return row.pid ?? null;
+  } catch (error) {
+    if (error instanceof MandibleClientError && error.statusCode === 404) return undefined;
+    throw error;
+  }
+}
+
 /** Bug: 0b454df — notify Mandible that a channel tool was called. */
 export async function recordChannelToolCall(
   sessionId: string,
@@ -373,11 +384,4 @@ export async function updateSession(
     `/api/sessions/${sessionId}`,
     patch,
   );
-}
-
-export async function spawnConversation(payload: Record<string, unknown>): Promise<{
-  spawn: { reservation_id: string; state: string; initial_message_state: string };
-  session: { id: string } | null;
-}> {
-  return request("POST", "/api/conversation-spawns", payload);
 }

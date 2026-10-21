@@ -38,8 +38,7 @@ export function chatItemIdentityKey(
 export function providerAdapterEventKey(event: ProviderAdapterEvent): string {
   if (event.kind === "provisional-content") return `content:${event.identity}`;
   if (event.kind === "durable-reconciliation") return `reconciliation:${event.provider_event_id}`;
-  if (event.kind === "transient-retirement") return `retirement:${event.provider_event_id}`;
-  return `lineage:${event.provider_event_id}:${event.receiver_provider_session_id}`;
+  return `retirement:${event.provider_event_id}`;
 }
 
 export function mergeProviderLiveProjection(

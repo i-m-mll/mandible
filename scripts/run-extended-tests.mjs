@@ -18,7 +18,7 @@ const supervisor = new ProcessGroupSupervisor();
 async function runPhase(label, script, args = []) {
   const outcome = await executeTestPhase({
     supervisor,
-    spawnChild: (env) => spawn(process.execPath, ["--smol", path.join(root, script), ...args], {
+    spawnChild: (env) => spawn(env.MANDIBLE_RUNTIME, ["--smol", path.join(root, script), ...args], {
       cwd: root, detached: true, env, stdio: "inherit",
     }),
   });

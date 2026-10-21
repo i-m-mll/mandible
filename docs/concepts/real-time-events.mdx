@@ -66,12 +66,11 @@ exist.
 
 | Event | Description | Data |
 |---|---|---|
-| `session:registered` | New session discovered or registered | Session object |
+| `session:registered` | Process attachment registered | Session object |
 | `session:updated` | Session metadata changed (task, branch, status, etc.) | Session object |
 | `session:ended` | Session ended normally | Session object |
 | `session:child:added` | Child session added to a parent | `{ parent_id, child }` |
 | `session:child:ended` | Child session ended | `{ parent_id, child }` |
-| `session:discovery:completed` | Process scan finished | `{ discovered, dead_reaped, already_tracked, ... }` |
 | `session:metadata-warning` | Terminal metadata enrichment issue | `{ session_id, message }` |
 
 ### `auth:` --- Auth queue

@@ -182,13 +182,13 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `screen-model.test.ts` | Retire with managed PTY scraping; native permission tests replace it | PTY screen detection / PtyScreenObserver. Behavioral, persisted-record, or format boundary retained. |
 | `sdk-backend-lifecycle.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `server-router.test.ts` | Retain | Router error handling / Router route policies. Behavioral, persisted-record, or format boundary retained. |
-| `session-discovery.test.ts` | Retain | SessionDiscovery. Process/transport boundary retained. |
+| `session-discovery.test.ts` | Delete | Process discovery is retired (issue 3b8aa50); sessions are identified by their indexed conversation. |
 | `session-identity-mismatch.test.ts` | Retain | session identity mismatch detection. Behavioral, persisted-record, or format boundary retained. |
 | `session-manager-codex-archive.test.ts` | Retain | SessionManager Codex archive integration. Process/transport boundary retained. |
 | `session-manager-retention.test.ts` | Retain | SessionManager terminal backend retention. Behavioral, persisted-record, or format boundary retained. |
 | `session-manager-run-options.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
-| `session-overview-binding.test.tsx` | Retain | SessionOverviewView provider-scoped binding / SessionOverviewView truncated resolution (review C4). Mounted interaction/projection evidence retained. |
-| `session-overview-routes.test.ts` | Retain | GET /api/sessions/resolve / GET /api/sessions/resolve with short prefixes. Behavioral, persisted-record, or format boundary retained. |
+| `session-overview-binding.test.tsx` | Delete | Removed boundary: the provider-scoped binding state and the resolve endpoint are gone; the overview is keyed on any alias. Replacement evidence: `../session-overview.test.ts`. |
+| `session-overview-routes.test.ts` | Delete | Removed boundary: `GET /api/sessions/resolve` and `GET /api/sessions/overview/by-provider`. Replacement evidence: `../session-overview.test.ts`. |
 | `session-run-options.test.ts` | Retain | session run options. Behavioral, persisted-record, or format boundary retained. |
 | `settings-delegated-signing.test.tsx` | Retain | delegated signing settings. Mounted interaction/projection evidence retained. |
 | `settings-routes.test.ts` | Retain | settings routes. Behavioral, persisted-record, or format boundary retained. |

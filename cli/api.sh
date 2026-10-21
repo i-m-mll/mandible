@@ -296,9 +296,9 @@ api_agent_provider() {
 #   - Values are never printed, logged, or written to disk here. secret_get
 #     emits the value on stdout solely for command-substitution capture by an
 #     immediate caller; secret_set takes it on stdin, never as an argument.
-#   - Nothing reaches argv, so `ps` (and Mandible's own process scanner) never
-#     sees a secret. The macOS write uses `security -i` batch mode, where the
-#     whole command line — password included — arrives on stdin.
+#   - Nothing reaches argv, so `ps` never sees a secret. The macOS write uses
+#     `security -i` batch mode, where the whole command line — password
+#     included — arrives on stdin.
 #   - Secret-bearing regions suspend `xtrace` and restore the previous setting,
 #     so running a CLI under `bash -x` / `zsh -x` cannot echo secret material.
 #     This obligation is shared: a callee cannot protect its caller, so every
@@ -938,6 +938,12 @@ api_http_exchange() {
       curl_exit=$?
     fi
     http_status="${http_status:-000}"
+    # A transfer curl abandoned (e.g. --max-time after the headers arrived)
+    # still reports the server's 2xx, beside a truncated body.
+    if (( curl_exit != 0 )); then
+      http_status=000
+      : > "$output_file"
+    fi
     empty_response=false
     [[ ! -s "$output_file" ]] && empty_response=true
     retryable=false
@@ -963,6 +969,70 @@ api_http_exchange() {
   [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
   [[ -z "$token_cfg" ]] || rm -f "$token_cfg"
   printf '%s' "$http_status"
+}
+
+# MANDIBLE_SESSION_ID and the provider session markers are environment
+# variables, so agents nested inside a session (a `claude -p` or `codex exec`
+# probe) inherit them. When several providers' markers are present, only the
+# nearest agent's are the caller's own. A session id is the caller's own only
+# when the nearest agent process above the caller is the one its session row
+# records (a row with no pid yet, or no row, binds nothing); otherwise it is
+# unset here. A matching provider session proves the same process without a
+# process-tree walk.
+api_scope_inherited_identity() {
+  local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status
+
+  if (( $(api_provider_marker_count) > 1 )); then
+    processes=$(ps -axo pid=,ppid=,comm=)
+    nearest=$(api_nearest_agent "$processes" "")
+    case "${nearest#* }" in
+      claude) unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID ;;
+      codex) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID GEMINI_SESSION_ID ;;
+      gemini) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_THREAD_ID CODEX_SESSION_ID ;;
+    esac
+  fi
+  [[ -n "${MANDIBLE_SESSION_ID:-}" ]] || return 0
+
+  # The row is read as the caller's provider alone: the managed identity is the
+  # one in question.
+  row_file=$(api_temp_file) || return 1
+  row_path="/api/sessions/$(urlencode "$MANDIBLE_SESSION_ID")"
+  http_status=$(unset MANDIBLE_SESSION_ID; api_capture GET "$row_path" "" "$row_file")
+  if [[ "$http_status" == 200 ]]; then
+    row_pid=$(jq -r '.pid // empty' "$row_file")
+    row_conversation=$(jq -r '.conversation_id // empty' "$row_file")
+  fi
+  rm -f "$row_file"
+  # 404 binds nothing; without the daemon there is nothing to attribute to, and
+  # the command's own requests report that.
+  [[ -n "$row_pid" ]] || return 0
+
+  (( $(api_provider_marker_count) == 1 )) && own_marker="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${GEMINI_SESSION_ID:-}}}}}"
+  [[ -z "$own_marker" || "$own_marker" != "$row_conversation" ]] || return 0
+  [[ -n "$processes" ]] || processes=$(ps -axo pid=,ppid=,comm=)
+  nearest=$(api_nearest_agent "$processes" "$row_pid")
+  [[ "${nearest%% *}" == "$row_pid" ]] || unset MANDIBLE_SESSION_ID
+}
+
+api_provider_marker_count() {
+  local count=0
+  [[ -z "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]] || count=$(( count + 1 ))
+  [[ -z "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}" ]] || count=$(( count + 1 ))
+  [[ -z "${GEMINI_SESSION_ID:-}" ]] || count=$(( count + 1 ))
+  printf '%s' "$count"
+}
+
+# The first process at or above this shell that is the given pid or an agent
+# (claude, codex, gemini, or Claude's announced CLAUDE_PID), as "<pid> <kind>".
+api_nearest_agent() {
+  awk -v start="$$" -v owner="$2" -v claude_pid="${CLAUDE_PID:-}" '
+    { pid = $1; parent[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); n = split($0, path, "/"); name[pid] = path[n] }
+    END {
+      for (p = start; p > 1 && (p in parent); p = parent[p]) {
+        kind = name[p] ~ /^(claude|codex|gemini)$/ ? name[p] : (p == claude_pid ? "claude" : "")
+        if (p == owner || kind != "") { print p, kind; exit }
+      }
+    }' <<< "$1"
 }
 
 # Total, unlike api_agent_provider: callers assign it under errexit.

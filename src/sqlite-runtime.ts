@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
@@ -22,8 +21,25 @@ export const SQLITE_RUNTIME_LOCK = {
 } as const;
 
 function hash(filename: string) { return createHash("sha256").update(fs.readFileSync(filename)).digest("hex"); }
+
+let accountStore: string | undefined;
+/**
+ * The verified runtime store, shared with scripts/bun-runtime.sh. It belongs to
+ * the OS account, not to HOME or XDG_DATA_HOME, which tests and agents override
+ * to isolate data; Bun's os.userInfo() reports HOME, so the account's home
+ * comes from the user database.
+ */
+export function runtimeStoreRoot() {
+  if (process.env.MANDIBLE_RUNTIME_STORE) return process.env.MANDIBLE_RUNTIME_STORE;
+  if (!accountStore) {
+    const result = spawnSync("/bin/sh", ["-c", 'eval "printf %s ~$(id -un)"'], { encoding: "utf8", timeout: 5_000 });
+    if (result.status !== 0 || !path.isAbsolute(result.stdout)) throw new Error("Cannot resolve the OS account home for the runtime store; set MANDIBLE_RUNTIME_STORE.");
+    accountStore = path.join(result.stdout, ".local", "share", "mandible", "runtimes");
+  }
+  return accountStore;
+}
 export function sqliteRuntimePaths() {
-  const root = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "mandible", "runtimes", "sqlite", SQLITE_RUNTIME_LOCK.librarySha256);
+  const root = path.join(runtimeStoreRoot(), "sqlite", SQLITE_RUNTIME_LOCK.librarySha256);
   return { root, library: path.join(root, "libsqlite3.dylib"), archive: path.join(root, "sqlite.tar.gz") };
 }
 export function verifySqliteLibrary(filename: string) {

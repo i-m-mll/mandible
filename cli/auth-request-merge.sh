@@ -253,6 +253,47 @@ build_dirty_action_json() {
     }'
 }
 
+# The dirty state of a checkout as one commit shaped like `git stash push`
+# output (parents: HEAD, the index, and the untracked files when included),
+# built under temporary index files so it never enters refs/stash, the stack
+# every worktree of the repository shares (issue 029661a). Restore it with
+# `git stash apply --index <sha>`. Prints the commit SHA, and writes the
+# captured untracked paths NUL-separated to $4 so the caller removes only those.
+snapshot_dirty_state() {
+  local root="$1" include_untracked="$2" label="$3" untracked_list="$4"
+  local scratch head index_tree index_commit work_tree untracked_tree untracked_commit
+  local -a parents
+  scratch=$(mktemp -d) || return 1
+  : > "$untracked_list"
+  if ! head=$(git -C "$root" rev-parse --verify HEAD) ||
+    ! index_tree=$(git -C "$root" write-tree) ||
+    ! index_commit=$(git -C "$root" commit-tree "$index_tree" -p "$head" -m "index on ${label}") ||
+    ! cp "$(git -C "$root" rev-parse --path-format=absolute --git-path index)" "$scratch/work" ||
+    ! GIT_INDEX_FILE="$scratch/work" git -C "$root" add --update -- ":/" ||
+    ! work_tree=$(GIT_INDEX_FILE="$scratch/work" git -C "$root" write-tree); then
+    rm -rf "$scratch"
+    return 1
+  fi
+  parents=(-p "$head" -p "$index_commit")
+  if truthy_config_value "$include_untracked"; then
+    if ! git -C "$root" ls-files -z --others --exclude-standard -- ":/" > "$untracked_list"; then
+      rm -rf "$scratch"
+      return 1
+    fi
+    if [[ -s "$untracked_list" ]]; then
+      if ! GIT_INDEX_FILE="$scratch/untracked" git -C "$root" update-index --add -z --stdin < "$untracked_list" ||
+        ! untracked_tree=$(GIT_INDEX_FILE="$scratch/untracked" git -C "$root" write-tree) ||
+        ! untracked_commit=$(git -C "$root" commit-tree "$untracked_tree" -m "untracked files on ${label}"); then
+        rm -rf "$scratch"
+        return 1
+      fi
+      parents+=(-p "$untracked_commit")
+    fi
+  fi
+  rm -rf "$scratch"
+  git -C "$root" commit-tree "$work_tree" "${parents[@]}" -m "On ${label}"
+}
+
 ensure_clean_with_dirty_policy() {
   local target="$1"
   local base="$2"
@@ -260,7 +301,8 @@ ensure_clean_with_dirty_policy() {
   local policy="$4"
   local branch_prefix="$5"
   local include_untracked="$6"
-  local status tracked_status stash_args stash_ref timestamp shelve_branch safe_branch shelve_root message
+  local status tracked_status remaining timestamp untracked_list snapshot snapshot_ref restore
+  local shelve_branch safe_branch shelve_root message
 
   status=$(git -C "$target" status --porcelain=v1 2>/dev/null || true)
   if [[ -z "$status" ]]; then
@@ -273,7 +315,7 @@ ensure_clean_with_dirty_policy() {
     block)
       echo "Error: protected branch worktree is dirty; auth request will not modify it." >&2
       echo "$status" >&2
-      echo "Move, commit, stash, or explicitly request --dirty-policy stash or --dirty-policy branch-off." >&2
+      echo "Move, commit, or explicitly request --dirty-policy stash or --dirty-policy branch-off." >&2
       exit 1
       ;;
     allow-untracked)
@@ -289,25 +331,45 @@ ensure_clean_with_dirty_policy() {
       return 0
       ;;
     stash|branch-off)
-      stash_args=(push)
-      if truthy_config_value "$include_untracked"; then
-        stash_args+=(-u)
-      fi
-      stash_args+=(-m "mandible protected-root dirty state before auth request ${source}")
-      git -C "$target" stash "${stash_args[@]}" >/dev/null
-      stash_ref=$(git -C "$target" rev-parse -q --verify refs/stash 2>/dev/null || true)
-      if [[ -z "$stash_ref" ]]; then
-        echo "Error: dirty policy ${policy} could not create a stash for protected-root changes." >&2
+      timestamp=$(date +%Y%m%d-%H%M%S)
+      untracked_list=$(mktemp)
+      if ! snapshot=$(snapshot_dirty_state "$target" "$include_untracked" \
+        "${base}: mandible protected-root dirty state before auth request ${source}" "$untracked_list"); then
+        rm -f "$untracked_list"
+        echo "Error: dirty policy ${policy} could not snapshot protected-root changes; the protected root was not modified." >&2
         exit 1
       fi
+      snapshot_ref="refs/mandible/protected-root-dirty/${timestamp}-$(safe_branch_component "$source")"
+      if ! git -C "$target" update-ref -m "auth request ${source}" "$snapshot_ref" "$snapshot" ""; then
+        rm -f "$untracked_list"
+        echo "Error: could not record protected-root snapshot ${snapshot} at ${snapshot_ref}; the protected root was not modified." >&2
+        exit 1
+      fi
+      restore="git -C '${target}' stash apply --index ${snapshot}"
+
+      git -C "$target" reset --hard --quiet HEAD
+      if [[ -s "$untracked_list" ]]; then
+        (cd "$target" && xargs -0 rm -f -- < "$untracked_list")
+      fi
+      rm -f "$untracked_list"
+      remaining=$(git -C "$target" status --porcelain=v1 2>/dev/null || true)
+      if ! truthy_config_value "$include_untracked"; then
+        remaining=$(printf '%s\n' "$remaining" | grep -v '^??' || true)
+      fi
+      if [[ -n "$remaining" ]]; then
+        echo "Error: the protected root changed while dirty policy ${policy} was clearing it:" >&2
+        echo "$remaining" >&2
+        echo "The earlier state is preserved as stash commit ${snapshot} at ${snapshot_ref}; restore it with: ${restore}" >&2
+        exit 1
+      fi
+
       if [[ "$policy" == "stash" ]]; then
-        message="Protected-root changes were preserved in stash ${stash_ref} before auth request submission."
+        message="Protected-root changes were preserved as stash commit ${snapshot} at ${snapshot_ref} before auth request submission. Restore them with: ${restore}"
         echo "Warning: $message" >&2
-        build_dirty_action_json "$policy" "stashed" "$status" "" "" "$stash_ref" "$message"
+        build_dirty_action_json "$policy" "stashed" "$status" "" "" "$snapshot" "$message"
         return 0
       fi
 
-      timestamp=$(date +%Y%m%d-%H%M%S)
       shelve_branch="${branch_prefix}-${timestamp}"
       while git -C "$target" rev-parse --verify "refs/heads/${shelve_branch}" >/dev/null 2>&1; do
         sleep 1
@@ -317,12 +379,13 @@ ensure_clean_with_dirty_policy() {
       safe_branch=$(safe_branch_component "$shelve_branch")
       shelve_root="${target}/worktrees/${safe_branch}"
       mkdir -p "$(dirname "$shelve_root")"
-      git -C "$target" branch "$shelve_branch" "$base"
-      git -C "$target" worktree add "$shelve_root" "$shelve_branch" >/dev/null
-      if ! git -C "$shelve_root" stash apply --index "$stash_ref" >/dev/null 2>&1; then
-        git -C "$shelve_root" stash apply "$stash_ref" >/dev/null
+      if ! git -C "$target" worktree add -b "$shelve_branch" "$shelve_root" "$base" >/dev/null ||
+        ! git -C "$shelve_root" stash apply --index "$snapshot" >/dev/null; then
+        echo "Error: could not move protected-root changes to ${shelve_branch}." >&2
+        echo "They are preserved as stash commit ${snapshot} at ${snapshot_ref}; restore them in a clean checkout of ${base} with: git stash apply --index ${snapshot}" >&2
+        exit 1
       fi
-      git -C "$target" stash drop "$stash_ref" >/dev/null
+      git -C "$target" update-ref -d "$snapshot_ref" "$snapshot"
       message="Protected-root changes were moved to branch ${shelve_branch} at ${shelve_root} before auth request submission."
       echo "Warning: $message" >&2
       build_dirty_action_json "$policy" "branched-off" "$status" "$shelve_branch" "$shelve_root" "" "$message"

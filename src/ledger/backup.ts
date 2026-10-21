@@ -38,8 +38,6 @@ export const METADATA_BACKUP_TABLES = [
   "auth_requests",
   "auth_request_actions",
   "sessions",
-  "session_issues",
-  "session_projects",
   "console_sessions",
   "console_session_usage",
   "console_session_telemetry",
@@ -359,7 +357,7 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
         }
       }
       if (buffer) writeAll(file, buffer);
-    })();
+    }).deferred();
     fs.fsyncSync(file);
     fs.closeSync(file);
     fs.renameSync(temporaryPath, outputPath);

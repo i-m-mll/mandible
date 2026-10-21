@@ -17,7 +17,7 @@ export function getPidFilePath(): string {
 // once it has completed the critical synchronous startup work (server
 // listening, routes registered, DB open, pid written, session manager init,
 // startup commit read). It deliberately does NOT wait on deferred background
-// scans (issue scan, session discovery) — those are not required for auth or
+// scans (issue scan) — those are not required for auth or
 // dashboard mutations to be safe. The health endpoint reports this so the UI
 // can distinguish "listener alive" from "ready for normal mutations".
 //

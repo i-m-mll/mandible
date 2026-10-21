@@ -261,15 +261,19 @@ describe("conversations CLI file RPC", () => {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });
-      const topLevel = await run(["search", "RPC"], {
+      const json = await run(["conversations", "search", "RPC", "--json", "--limit", "500"], {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("[codex] 2026-06-12 | \"Sandbox session\" | assistant: file RPC route is readable");
-      expect(topLevel.status).toBe(0);
-      expect(topLevel.stdout).toBe(result.stdout);
+      expect(json.status).toBe(0);
+      expect(JSON.parse(json.stdout).results).toEqual([expect.objectContaining({
+        conversation: expect.objectContaining({ id: "conv-1", session_id: "session-1" }),
+        snippet: "file RPC route is readable",
+      })]);
+      expect(json.stderr).toContain("--limit 500 exceeds the server cap; at most 20 hits are returned");
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/search?"))).toBe(true);
     } finally {
       responder.stop();

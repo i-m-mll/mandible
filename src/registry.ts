@@ -1214,12 +1214,12 @@ export class SessionRegistry {
       return;
     }
     try {
-      // Find issues linked to this session
+      // Find issues linked to this session under its row id or provider id
       const links = this.db
         .prepare(
-          "SELECT issue_id, repo_id FROM session_issues WHERE session_id = ?"
+          "SELECT DISTINCT issue_id FROM ledger_session_issue_links WHERE session_id IN (?, ?)"
         )
-        .all(session.id) as Array<{ issue_id: string; repo_id: string }>;
+        .all(session.id, session.conversation_id ?? session.id) as Array<{ issue_id: string }>;
 
       if (links.length === 0) {
         return;
@@ -1227,14 +1227,14 @@ export class SessionRegistry {
 
       const now = Date.now();
       for (const link of links) {
-        // Find open/committed work unit for this issue+repo
+        // Find open/committed work unit for this issue
         const wu = this.db
           .prepare(
             `SELECT id FROM work_units
-             WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')
+             WHERE ledger_issue_id = ? AND state IN ('open', 'committed')
              ORDER BY created_at DESC LIMIT 1`
           )
-          .get(link.issue_id, link.repo_id) as { id: string } | undefined;
+          .get(link.issue_id) as { id: string } | undefined;
 
         if (wu) {
           this.db

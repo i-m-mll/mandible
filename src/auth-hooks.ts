@@ -266,6 +266,18 @@ export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSu
   };
 }
 
+/**
+ * A handoff whose hook row is terminal and whose journal is acknowledged,
+ * failed, or gone has nothing left for reconciliation to adopt, acknowledge,
+ * or record. Reconciling it would only re-verify an old publication against
+ * the current checkout, at several synchronous Git children per run, for
+ * every self-update in the installation's history (issue 63c9031).
+ */
+export function runtimeHandoffSettled(runState: AuthHookRunState, journalPhase: string | undefined): boolean {
+  return (runState === "complete" || runState === "failed")
+    && (journalPhase === undefined || journalPhase === "acknowledged" || journalPhase === "failed");
+}
+
 export class AuthHookManager {
   private readonly db: Db;
   private readonly handoffClient?: RuntimeHandoffClient;
@@ -362,6 +374,7 @@ export class AuthHookManager {
         const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
         const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(moduleUrl);
         const journal = await runtime.readRuntimeHandoff(getMandibleHome(), run.auth_request_id, run.id);
+        if (runtimeHandoffSettled(run.state, journal?.phase)) continue;
         if (!journal) throw new Error("The retained runtime handoff journal is unavailable");
         const binding = journal.binding as RuntimePublicationBinding;
         if (journal.schema !== "mandible-runtime-handoff@1" || binding.requestId !== run.auth_request_id || binding.executionId !== run.id || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest) throw new Error("Runtime handoff journal differs from the retained hook");

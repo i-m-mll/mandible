@@ -14,15 +14,14 @@
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
+import { archiveFinishedWorkerThreads } from "../src/codex-thread-archive.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { SessionRegistry } from "../src/registry.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
-import { isSessionAliasLive, resolveSessionAlias } from "../src/session-liveness.js";
-import type { AuthRequest } from "../src/types.js";
+import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
@@ -36,6 +35,7 @@ const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
 const PROVIDER_THREAD = "01a04e24-a731-7362-bce3-ff7a63a845e2";
 const DESKTOP_TASK = "01a072f2-0e05-7a91-abcd-df4dc6a64e62";
+const OUTAGE_TASK = "01a072f2-0e05-7a91-abcd-df4dc6a64e63";
 
 let db: Db;
 let router: Router;
@@ -100,6 +100,7 @@ async function parentRoleStatus() {
   return response.body as {
     holder: Record<string, unknown> | null;
     live_holder: Record<string, unknown> | null;
+    unknown_holders: Array<Record<string, unknown>>;
   };
 }
 
@@ -122,11 +123,11 @@ beforeEach(async () => {
   router = authenticatedTestRouter(coordinator);
   const sessionAliasResolver = (database: Db, id: string) => resolveSessionAlias(database, id, {
     readCodexTaskLiveness: (_sourcePath, taskId) => ({
-      status: taskId === DESKTOP_TASK ? "live" : "not_live",
+      status: taskId === DESKTOP_TASK ? "live" : taskId === OUTAGE_TASK ? "unavailable" : "not_live",
     }),
   });
   registerIssueRoutes(router, fakeScanner, { sessionAliasResolver });
-  registerSessionRoutes(router, new SessionRegistry(db), undefined, fakeScanner);
+  registerSessionRoutes(router, new SessionRegistry(db), fakeScanner);
 
   const created = await router.invoke({
     method: "POST",
@@ -142,15 +143,13 @@ afterEach(() => {
 });
 
 describe("parent-role assume rejects unverifiable session ids", () => {
-  it("refuses an id Mandible has never recorded, and names the id and the repair", async () => {
+  it("refuses an id Mandible has never recorded, and names the id", async () => {
     const response = await assume("01a04e24-not-a-registered-thread");
 
     expect(response.status).toBe(400);
-    const body = response.body as { error: string; supplied_session_id: string; repair_command: string };
+    const body = response.body as { error: string; supplied_session_id: string };
     expect(body.supplied_session_id).toBe("01a04e24-not-a-registered-thread");
     expect(body.error).toContain("01a04e24-not-a-registered-thread");
-    expect(body.error).toContain("mandible session link-issue");
-    expect(body.repair_command).toContain("mandible session link-issue");
 
     // Nothing was recorded: a refused assume must leave the umbrella holderless
     // rather than plant a holder no check can ever verify.
@@ -213,7 +212,7 @@ describe("parent-role assume accepts every registered alias form", () => {
     // recorded and the next coordinator could take the umbrella silently.
     const status = await parentRoleStatus();
     expect(status.live_holder).not.toBeNull();
-    expect((status.holder?.liveness as { has_live_agent: boolean }).has_live_agent).toBe(true);
+    expect((status.holder?.liveness as { state: string }).state).toBe("live");
     expect(status.holder?.liveness).toMatchObject({
       resolved_session_id: MANDIBLE_SESSION,
       provider_session_id: PROVIDER_THREAD,
@@ -237,7 +236,7 @@ describe("Codex Desktop provider tasks", () => {
     const status = await parentRoleStatus();
     expect(status.live_holder).not.toBeNull();
     expect(status.holder?.liveness).toMatchObject({
-      has_live_agent: true,
+      state: "live",
       agent_status: "active",
       provider: "codex",
       provider_session_id: DESKTOP_TASK,
@@ -246,7 +245,7 @@ describe("Codex Desktop provider tasks", () => {
       .toBeUndefined();
   });
 
-  it("materializes the ingested provider identity when session-link needs its foreign key", async () => {
+  it("links an ingested provider task under its thread id without creating a session row", async () => {
     seedCodexConversation();
 
     const response = await router.invoke({
@@ -257,18 +256,41 @@ describe("Codex Desktop provider tasks", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      session_id: `codex-${DESKTOP_TASK}`,
-      issue_id: umbrellaId,
+      session_id: DESKTOP_TASK,
       ledger_issue_id: umbrellaId,
     });
-    expect(db.prepare(
-      "SELECT app, status, agent_type, conversation_id FROM sessions WHERE id = ?",
-    ).get(`codex-${DESKTOP_TASK}`)).toEqual({
-      app: "codex",
-      status: "active",
-      agent_type: "provider-session",
-      conversation_id: DESKTOP_TASK,
+    expect(db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+
+    const linked = await router.invoke({ method: "GET", url: `/api/sessions/${DESKTOP_TASK}/issues` });
+    expect(linked.status).toBe(200);
+    expect(linked.body).toMatchObject([{ session_id: DESKTOP_TASK, ledger_issue_id: umbrellaId }]);
+
+    const overview = await router.invoke({
+      method: "GET",
+      url: `/api/sessions/${DESKTOP_TASK}/overview`,
     });
+    expect((overview.body as { linked_issues: { items: Array<{ issue_id: string }> } }).linked_issues.items)
+      .toMatchObject([{ issue_id: umbrellaId }]);
+  });
+
+  it("keys a wrap session's link on its provider session id and reads it back under either id", async () => {
+    const claudeSession = "4be0c2a1-6b44-4a43-9d2e-0d6f1c9a7e21";
+    db.prepare(
+      "INSERT INTO sessions (id, app, status, conversation_id) VALUES ('wrap-1', 'claude', 'active', ?)",
+    ).run(claudeSession);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/sessions/wrap-1/issues",
+      body: { issue_id: umbrellaId, repo_id: "mandible" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ session_id: claudeSession });
+    for (const id of ["wrap-1", claudeSession]) {
+      const linked = await router.invoke({ method: "GET", url: `/api/sessions/${id}/issues` });
+      expect(linked.body).toMatchObject([{ session_id: claudeSession, ledger_issue_id: umbrellaId }]);
+    }
   });
 
   it("returns a typed retryable result before provider ingestion arrives", async () => {
@@ -282,7 +304,6 @@ describe("Codex Desktop provider tasks", () => {
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({
       code: "provider_session_not_ingested",
-      status: "not_yet_ingested",
       provider_session_id: notIngested,
       retryable: true,
     });
@@ -313,12 +334,12 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     seedSession("sess-other", "active");
     const conflict = await assume("sess-other");
     expect(conflict.status).toBe(409);
-    const body = conflict.body as { error: string; live_holder: Record<string, unknown> };
+    const body = conflict.body as { error: string; blocking_holder: Record<string, unknown> };
     expect(body.error).toContain("only the operator may displace it");
     // The conflict names the holder, so a coordinator can decide rather than
     // guess (issue 7a97e2c's `- (-)` was unactionable).
-    expect(body.live_holder.session_id).toBe(PROVIDER_THREAD);
-    expect(body.live_holder.mechanism).toBe("codex");
+    expect(body.blocking_holder.session_id).toBe(PROVIDER_THREAD);
+    expect(body.blocking_holder.mechanism).toBe("codex");
 
     const deniedOverride = await assume("sess-other", true);
     expect(deniedOverride.status).toBe(409);
@@ -331,6 +352,21 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     expect((await parentRoleStatus()).live_holder).toBeNull();
 
     expect((await assume(MANDIBLE_SESSION)).status).toBe(200);
+  });
+
+  it("blocks on a holder whose lock check cannot complete, as on a live one", async () => {
+    seedCodexConversation(OUTAGE_TASK);
+    expect((await assume(OUTAGE_TASK)).status).toBe(200);
+    const status = await parentRoleStatus();
+    expect(status.live_holder).toBeNull();
+    expect(status.unknown_holders).toEqual([expect.objectContaining({ session_id: OUTAGE_TASK })]);
+
+    seedSession("sess-other", "active");
+    const conflict = await assume("sess-other");
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      blocking_holder: { session_id: OUTAGE_TASK, liveness: { state: "unknown" } },
+    });
   });
 });
 
@@ -352,13 +388,13 @@ describe("canonical session liveness", () => {
         mandible_session_id: MANDIBLE_SESSION,
         console_session_id: CONSOLE_SESSION,
         provider_session_id: PROVIDER_THREAD,
-        has_live_agent: true,
+        liveness: "live",
       });
-      expect(isSessionAliasLive(db, alias)).toBe(true);
+      expect(sessionAliasLiveness(db, alias)).toBe("live");
     }
 
     expect(resolveSessionAlias(db, "never-registered")).toBeNull();
-    expect(isSessionAliasLive(db, "never-registered")).toBe(false);
+    expect(sessionAliasLiveness(db, "never-registered")).toBe("stopped");
   });
 
   it("counts a live console session whose Mandible session has ended", () => {
@@ -370,8 +406,8 @@ describe("canonical session liveness", () => {
       providerSessionId: PROVIDER_THREAD,
     });
 
-    expect(isSessionAliasLive(db, PROVIDER_THREAD)).toBe(true);
-    expect(resolveSessionAlias(db, PROVIDER_THREAD)?.has_live_agent).toBe(true);
+    expect(sessionAliasLiveness(db, PROVIDER_THREAD)).toBe("live");
+    expect(resolveSessionAlias(db, PROVIDER_THREAD)?.liveness).toBe("live");
   });
 
   it("reports a fully stopped agent as resolved but not live", () => {
@@ -385,7 +421,7 @@ describe("canonical session liveness", () => {
 
     const resolved = resolveSessionAlias(db, PROVIDER_THREAD);
     expect(resolved?.mandible_session_id).toBe(MANDIBLE_SESSION);
-    expect(resolved?.has_live_agent).toBe(false);
+    expect(resolved?.liveness).toBe("stopped");
   });
 });
 
@@ -395,7 +431,7 @@ describe("canonical session liveness", () => {
  * calls the shared predicate, so this pins its behaviour through the real entry
  * point rather than through the helper.
  */
-describe("Codex archive candidates still exclude live threads", () => {
+describe("Codex worker thread archival still excludes live threads", () => {
   function archiveDb(): InstanceType<typeof SqliteDatabase> {
     const archive = new SqliteDatabase(":memory:");
     archive.exec(`
@@ -405,6 +441,7 @@ describe("Codex archive candidates still exclude live threads", () => {
         ledger_issue_id TEXT,
         state TEXT NOT NULL,
         assigned_session_id TEXT,
+        provider_session_id TEXT,
         worker_provider_session_id TEXT,
         auth_request_id TEXT
       );
@@ -416,6 +453,15 @@ describe("Codex archive candidates still exclude live threads", () => {
         command TEXT,
         status TEXT
       );
+      CREATE TABLE worker_thread_archives (
+        work_unit_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        archived_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_retry_at INTEGER,
+        PRIMARY KEY (work_unit_id, thread_id)
+      );
     `);
     archive.prepare(
       `INSERT INTO work_units (id, issue_id, state, worker_provider_session_id, auth_request_id)
@@ -425,9 +471,18 @@ describe("Codex archive candidates still exclude live threads", () => {
     return archive;
   }
 
-  const request = { id: "auth-1", type: "merge", issues: [], issue_closures: [] } as AuthRequest;
+  async function archivedThreads(archive: InstanceType<typeof SqliteDatabase>): Promise<string[]> {
+    const archived: string[] = [];
+    await archiveFinishedWorkerThreads(archive as unknown as Db, {
+      archiver: { archive: async (threadId) => { archived.push(threadId); }, unarchive: async () => undefined },
+      liveness: sessionAliasLiveness,
+      resolveAlias: resolveSessionAlias,
+      now: () => 0,
+    });
+    return archived;
+  }
 
-  it("skips a thread whose console session is still running", () => {
+  it("skips a thread whose console session is still running", async () => {
     const archive = archiveDb();
     archive.prepare(
       `INSERT INTO console_sessions (id, provider_session_id, command, status)
@@ -435,13 +490,11 @@ describe("Codex archive candidates still exclude live threads", () => {
               ('cs-done', 'thread-done', 'codex', 'stopped')`,
     ).run();
 
-    const candidates = listCompletedWorkerThreadArchiveCandidates(archive as unknown as Db, request);
-
-    expect(candidates.map((candidate) => candidate.provider_session_id)).toEqual(["thread-done"]);
+    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
     archive.close();
   });
 
-  it("skips a thread whose linked Mandible session is still active", () => {
+  it("skips a thread whose linked Mandible session is still active", async () => {
     const archive = archiveDb();
     archive.prepare(
       "INSERT INTO sessions (id, status) VALUES ('mandible-live', 'active')",
@@ -452,9 +505,7 @@ describe("Codex archive candidates still exclude live threads", () => {
               ('cs-done', NULL, 'thread-done', 'codex', 'stopped')`,
     ).run();
 
-    const candidates = listCompletedWorkerThreadArchiveCandidates(archive as unknown as Db, request);
-
-    expect(candidates.map((candidate) => candidate.provider_session_id)).toEqual(["thread-done"]);
+    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
     archive.close();
   });
 });

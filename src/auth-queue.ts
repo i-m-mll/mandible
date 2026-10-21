@@ -43,9 +43,13 @@ import {
   classifyGitFailure,
   describeGitFailure,
   isAuthMergeCommand,
+  liveCommitRefReader,
+  readCommitRefs,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
+  type CommitRefReader,
 } from "./auth-context.js";
+import { gitObjectAnswer } from "./git-object-facts.js";
 import {
   canonicalizeChangeMessage,
   changeMessageDigest,
@@ -861,7 +865,7 @@ export class AuthQueue {
     const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
     for (const { id } of rows) {
       const request = this.readRequestByExactId(id);
-      if (!request || !this.candidateAcceptanceApplies(request) || (!startup && this.mergeCandidateExact(request))) continue;
+      if (!request || !this.candidateAcceptanceApplies(request) || (!startup && await this.mergeCandidateExactUnblocking(request))) continue;
       await this.repoChainSettled(request);
       this.startCandidateAcceptanceAutomatically(id);
     }
@@ -3852,7 +3856,7 @@ export class AuthQueue {
     return this.requireRequest(request.id);
   }
 
-  private mergeCandidatePinIsValid(request: AuthRequest): boolean {
+  private mergeCandidatePinIsValid(request: AuthRequest, refs: CommitRefReader = liveCommitRefReader(request.cwd)): boolean {
     if (
       !request.cwd ||
       !request.merge_candidate_tree_sha ||
@@ -3861,18 +3865,13 @@ export class AuthQueue {
       !request.merge_head_sha
     ) return false;
     try {
-      const git = (args: string[]): string => execFileSync("git", args, {
-        cwd: request.cwd!,
-        encoding: "utf8",
-        timeout: 5_000,
-        env: authGitEnv(),
-      }).trim();
+      const pin = (args: string[]): string => gitObjectAnswer(request.cwd!, args, { timeout: 5_000, env: authGitEnv() });
       return (
-        git(["cat-file", "-t", request.merge_candidate_pin_sha]) === "commit" &&
-        git(["rev-parse", `${request.merge_candidate_pin_sha}^{tree}`]) === request.merge_candidate_tree_sha &&
-        git(["rev-parse", `${request.merge_candidate_pin_sha}^1`]) === request.merge_preflight_base_sha &&
-        git(["rev-parse", `${request.merge_candidate_pin_sha}^2`]) === request.merge_head_sha &&
-        git(["rev-parse", this.mergeCandidateRef(request.id)]) === request.merge_candidate_pin_sha
+        pin(["cat-file", "-t", request.merge_candidate_pin_sha]) === "commit" &&
+        pin(["rev-parse", `${request.merge_candidate_pin_sha}^{tree}`]) === request.merge_candidate_tree_sha &&
+        pin(["rev-parse", `${request.merge_candidate_pin_sha}^1`]) === request.merge_preflight_base_sha &&
+        pin(["rev-parse", `${request.merge_candidate_pin_sha}^2`]) === request.merge_head_sha &&
+        refs(this.mergeCandidateRef(request.id)) === request.merge_candidate_pin_sha
       );
     } catch {
       return false;
@@ -4049,14 +4048,25 @@ export class AuthQueue {
    * exactly: pinned, base branch unmoved from the preflighted base, and the
    * retained pin commit intact.
    */
-  private mergeCandidateExact(request: AuthRequest): boolean {
+  private mergeCandidateExact(request: AuthRequest, refs: CommitRefReader = liveCommitRefReader(request.cwd)): boolean {
     return Boolean(
       request.merge_candidate_pin_sha &&
       request.cwd &&
       request.base_branch &&
-      request.merge_preflight_base_sha === this.resolveBranchHeadForCheck(request.cwd, request.base_branch) &&
-      this.mergeCandidatePinIsValid(request)
+      request.merge_preflight_base_sha === refs(`refs/heads/${request.base_branch}`) &&
+      this.mergeCandidatePinIsValid(request, refs)
     );
+  }
+
+  /**
+   * `mergeCandidateExact` over refs read without blocking the event loop. The
+   * idle tick uses it to pass over unchanged candidates; any path that acts on
+   * a candidate rechecks it against live refs.
+   */
+  private async mergeCandidateExactUnblocking(request: AuthRequest): Promise<boolean> {
+    if (!request.cwd || !request.base_branch) return false;
+    const refs = await readCommitRefs(request.cwd, [`refs/heads/${request.base_branch}`, this.mergeCandidateRef(request.id)]).catch(() => null);
+    return refs !== null && this.mergeCandidateExact(request, (ref) => refs.get(ref) ?? null);
   }
 
   /**
@@ -4833,11 +4843,12 @@ export class AuthQueue {
     const signature = verifyAuthorizedMergeCommitSignature(this.db, cwd, mergeSha, request.approved_by_user_id, lease?.credential_id);
     if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
     try {
-      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 5_000, env: authGitEnv() }).trim();
-      const parents = git(["show", "-s", "--format=%P", mergeSha]).split(/\s+/);
-      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || git(["rev-parse", `${mergeSha}^{tree}`]) !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
-      if (request.commit_message_digest && canonicalizeChangeMessage(git(["show", "-s", "--format=%B", mergeSha])) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
-      git(["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`]);
+      const options = { timeout: 5_000, env: authGitEnv() };
+      const published = (args: string[]) => gitObjectAnswer(cwd, args, options);
+      const parents = published(["show", "-s", "--format=%P", mergeSha]).split(/\s+/);
+      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published(["rev-parse", `${mergeSha}^{tree}`]) !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
+      if (request.commit_message_digest && canonicalizeChangeMessage(published(["show", "-s", "--format=%B", mergeSha])) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
+      execFileSync("git", ["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`], { cwd, ...options, stdio: "ignore" });
     } catch {
       return "Exact signed candidate publication could not be verified on the protected branch.";
     }

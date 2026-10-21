@@ -8,6 +8,8 @@ import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { Router } from "../src/server.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
 import { PTYBackend } from "../src/backends/pty-backend.js";
 import { SessionManager } from "../src/session-manager.js";
 import {
@@ -27,6 +29,8 @@ describe("session and work-unit ownership", () => {
     db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
+    const fixtures = addProject(db, { project_key: "ownership-fixtures", display_name: "Ownership fixtures" });
+    createLedgerIssue(db, { project_id: fixtures.id, alias: "ownership-issue" });
   });
 
   afterEach(() => db.close());
@@ -81,10 +85,10 @@ describe("session and work-unit ownership", () => {
 
     registry.registerSession({ id: "registry-codex", app: "codex" });
     registry.registerSession({ id: "channel-claude", app: "claude" });
-    registry.registerSession({ id: "discovered-gemini", app: "gemini" });
+    registry.registerSession({ id: "registry-gemini", app: "gemini" });
     expect(owner("sessions", "registry-codex")).toBe(codex.id);
     expect(owner("sessions", "channel-claude")).toBe(claude.id);
-    expect(owner("sessions", "discovered-gemini")).toBe(gemini.id);
+    expect(owner("sessions", "registry-gemini")).toBe(gemini.id);
 
     const worker = createUser(db, {
       slug: "worker-owner",
@@ -161,7 +165,7 @@ describe("session and work-unit ownership", () => {
     setupAgentUsers(db);
     const codex = getUserBySlug(db, "codex")!;
     const router = new Router();
-    registerWorkUnitRoutes(router, {} as never, {} as never, vi.fn());
+    registerWorkUnitRoutes(router, {} as never, vi.fn());
 
     const claim = await router.invoke({
       method: "POST",

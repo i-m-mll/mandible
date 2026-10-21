@@ -135,7 +135,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("links and archives branch-contained recovered work units that match explicit closure issues", async () => {
+  it("links branch-contained recovered work units that match explicit closure issues, leaving worker archival to the reconciler", async () => {
     let now = 0;
     const archived: string[] = [];
     const repo = createAuthCheckRepo();
@@ -196,7 +196,7 @@ describe("auth queue", () => {
       expect(db.prepare(
         "SELECT state, resolved_at, auth_request_id FROM work_units WHERE id = 'wu-closed-child'",
       ).get()).toEqual({ state: "resolved", resolved_at: now, auth_request_id: request.id });
-      expect(archived).toEqual(["thread-closed-child"]);
+      expect(archived).toEqual([]);
       queue.dispose();
     } finally {
       db.close();

@@ -35,6 +35,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     },
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
+      "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
+      "Line 1 of the first user message is read for the lineage marker; a message delivered in a create_thread <codex_delegation> envelope is read from its <input>, and its <source_thread_id> is the thread's creator. thread_source = agent_created_thread marks a thread another agent created.",
       "Messages, plans, tools, and semantic activity expose metadata.chat_item using the shared provider-neutral contract.",
       "Reasoning summary arrays preserve ordered provider-authored parts; readable reasoning content is separate and encrypted content is never normalized.",
       "Tool names are stored in metadata.tool_name.",
@@ -63,7 +65,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool results come from user content blocks with type tool_result.",
       "Messages, tools, thinking, progress, summaries, and informational records expose metadata.chat_item using the shared provider-neutral contract.",
       "Native content-block indexes preserve ordered siblings that share one Claude message identity.",
-      "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
+      "Task subagent transcripts under <parent>/subagents/agent-*.jsonl, and legacy sibling agent-*.jsonl sidechain transcripts, are sidechain conversations whose parent is the session they name.",
+      "Line 1 of the first user message is read for the lineage marker.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
       "Assistant usage blocks preserve message accounting but do not infer current context; authoritative occupancy comes only from Claude statusline telemetry.",
       "Known user_meta and system records are hidden provider bookkeeping; unknown system/event kinds remain transcript-visible.",
@@ -86,6 +89,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
+      "Line 1 of the first user message is read for the lineage marker.",
       "Messages, plans, tools, and thinking expose metadata.chat_item using the shared provider-neutral contract.",
       "Tool-use support depends on Gemini logs containing toolCalls.",
       "Some Gemini logs only contain user and assistant messages.",

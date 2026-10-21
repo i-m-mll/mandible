@@ -72,7 +72,7 @@ At least one commit exists on the branch. The work is in progress or ready for r
 
 ### resolved
 
-The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed. Terminal Codex worker threads that are reliably linked to those closed child issues are archived after merge finalization; a later Codex resume dispatch unarchives the thread first.
+The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed. A unit's Codex worker thread, bound by `work-unit activate --worker`, is archived by the work-unit reconciler once the thread is stopped and holds no other open or committed unit; this applies to every resolution path, not only merges. A later Codex resume dispatch unarchives the thread first.
 
 ### abandoned
 
@@ -227,4 +227,4 @@ curl http://localhost:19420/api/work-units?state=open&repo_id=abc
 curl http://localhost:19420/api/work-units/unit-id-here
 ```
 
-The response includes a `liveness` overlay with `has_live_agent`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time.
+The response includes a `liveness` overlay with `state`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time. `state` is `live`, `stopped`, or `unknown`; `unknown` means a liveness check could not complete (for example, the Codex thread-writer lock scan failed), and Mandible never clears, archives, or takes over behind it.

@@ -352,8 +352,8 @@ describe("ledger issue routes", () => {
       "INSERT INTO sessions (id, app, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
     ).run("sess-1", "codex", "idle", "2026-05-16T12:00:00.000Z", "2026-05-16T12:00:00.000Z");
     db.prepare(
-      "INSERT INTO session_issues (session_id, issue_id, repo_id, created_at) VALUES (?, ?, ?, ?)",
-    ).run("sess-1", issue.short_id, "mandible", 1);
+      "INSERT INTO ledger_session_issue_links (session_id, issue_id, created_at) VALUES (?, ?, ?)",
+    ).run("sess-1", issue.id, 1);
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 
@@ -450,10 +450,10 @@ describe("ledger issue routes", () => {
     });
 
     expect(status.body).toMatchObject({
-      live_holder: { session_id: "sess-live", liveness: { has_live_agent: true } },
+      live_holder: { session_id: "sess-live", liveness: { state: "live" } },
     });
     expect(blocked.statusCode).toBe(409);
-    expect(blocked.body).toMatchObject({ live_holder: { session_id: "sess-live" } });
+    expect(blocked.body).toMatchObject({ blocking_holder: { session_id: "sess-live" } });
     expect(retaken.statusCode).toBe(200);
     expect(retaken.body).toMatchObject({
       ok: true,

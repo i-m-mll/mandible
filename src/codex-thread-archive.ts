@@ -1,8 +1,13 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
+import type { LivenessState } from "./contracts.js";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import { isLiveSessionStatus, isSessionAliasLive } from "./session-liveness.js";
+import { getUserHome } from "./platform-paths.js";
+import { isLiveSessionStatus, sessionAliasLiveness, type SessionAliasResolution } from "./session-liveness.js";
+import SqliteDatabase from "./sqlite.js";
 import type { AuthRequest } from "./types.js";
 
 // Issue 75f52ac — archiving spawns the codex CLI (up to 15 s). Running it via
@@ -26,12 +31,22 @@ export interface WorkerThreadArchiveCandidate {
 type CodexCommandRunner = typeof execFileAsync;
 type CodexThreadArchiveCommand = "archive" | "unarchive";
 
-interface RankedArchiveCandidate extends WorkerThreadArchiveCandidate {
-  rank: number;
-}
+/**
+ * Codex's own archived flag for a thread: true or false when its state database
+ * answers, null when it cannot be read.
+ */
+export type CodexThreadArchivedProbe = (threadId: string) => boolean | null;
 
+/**
+ * Archive and unarchive are idempotent: `codex archive` fails on a thread that
+ * is already archived (and `unarchive` on one that is not), so a failed command
+ * whose thread already sits in the requested state counts as done.
+ */
 export class CodexCliThreadArchiver implements CodexThreadArchiver {
-  constructor(private readonly execFile: CodexCommandRunner = execFileAsync) {}
+  constructor(
+    private readonly execFile: CodexCommandRunner = execFileAsync,
+    private readonly archivedProbe: CodexThreadArchivedProbe = readCodexThreadArchived,
+  ) {}
 
   async archive(threadId: string): Promise<void> {
     await this.run("archive", threadId);
@@ -42,9 +57,45 @@ export class CodexCliThreadArchiver implements CodexThreadArchiver {
   }
 
   private async run(command: CodexThreadArchiveCommand, threadId: string): Promise<void> {
-    await this.execFile("codex", [command, threadId], {
-      timeout: 15_000,
-    });
+    try {
+      await this.execFile("codex", [command, threadId], {
+        timeout: 15_000,
+      });
+    } catch (error) {
+      if (this.archivedProbe(threadId) === (command === "archive")) return;
+      throw error;
+    }
+  }
+}
+
+/** Read the `archived` flag from the newest `state_<n>.sqlite` under the Codex home. */
+export function readCodexThreadArchived(threadId: string): boolean | null {
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(getUserHome(), ".codex");
+  let stateDb: string | null = null;
+  let newest = -1;
+  try {
+    for (const name of fs.readdirSync(codexHome)) {
+      const match = /^state_(\d+)\.sqlite$/.exec(name);
+      if (match && Number(match[1]) > newest) {
+        newest = Number(match[1]);
+        stateDb = path.join(codexHome, name);
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!stateDb) return null;
+  let db: SqliteDatabase | null = null;
+  try {
+    db = new SqliteDatabase(stateDb, { readonly: true, fileMustExist: true, timeout: 2000 });
+    const row = db.prepare("SELECT archived FROM threads WHERE id = ?").get(threadId) as
+      | { archived: unknown }
+      | undefined;
+    return row ? Number(row.archived) === 1 : null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
   }
 }
 
@@ -87,21 +138,17 @@ export function listCompletedWorkerThreadArchiveCandidates(
   }
 
   const parentRoleSessionIds = allParentRoleSessionIds(db);
-  const byProviderId = new Map<string, RankedArchiveCandidate>();
+  const byProviderId = new Map<string, WorkerThreadArchiveCandidate>();
   const closureIssueIds = completedIssueIds(db, request);
 
-  for (const row of directCandidateRowsFromRequestWorkUnits(db, request.id)) {
-    addDirectWorkUnitCandidate(db, byProviderId, row, parentRoleSessionIds);
-  }
-
   for (const row of candidateRowsFromRequestWorkUnits(db, request.id)) {
-    addCandidate(byProviderId, row, parentRoleSessionIds);
+    addCandidate(db, byProviderId, row, parentRoleSessionIds);
   }
 
   if (closureIssueIds.size > 0) {
-    if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
-      for (const row of candidateRowsFromLegacyIssueSessions(db, closureIssueIds)) {
-        addCandidate(byProviderId, row, parentRoleSessionIds);
+    if (tableExists(db, "console_sessions") && tableExists(db, "ledger_session_issue_links")) {
+      for (const row of candidateRowsFromIssueSessionLinks(db, closureIssueIds)) {
+        addCandidate(db, byProviderId, row, parentRoleSessionIds);
       }
     }
   }
@@ -109,28 +156,9 @@ export function listCompletedWorkerThreadArchiveCandidates(
   return selectConservativeArchiveCandidates(Array.from(byProviderId.values()), closureIssueIds);
 }
 
-function addDirectWorkUnitCandidate(
-  db: Db,
-  byProviderId: Map<string, RankedArchiveCandidate>,
-  row: DirectWorkUnitCandidateRow,
-  parentRoleSessionIds: Set<string>,
-): void {
-  const providerSessionId = stringOrNull(row.worker_provider_session_id);
-  if (!providerSessionId) return;
-  if (parentRoleSessionIds.has(providerSessionId) || isSessionAliasLive(db, providerSessionId)) return;
-
-  addRankedCandidate(byProviderId, {
-    provider_session_id: providerSessionId,
-    console_session_id: null,
-    mandible_session_id: null,
-    issue_id: String(row.issue_id),
-    work_unit_id: String(row.work_unit_id),
-    rank: 10,
-  });
-}
-
 function addCandidate(
-  byProviderId: Map<string, RankedArchiveCandidate>,
+  db: Db,
+  byProviderId: Map<string, WorkerThreadArchiveCandidate>,
   row: CandidateRow,
   parentRoleSessionIds: Set<string>,
 ): void {
@@ -139,6 +167,7 @@ function addCandidate(
   if (!providerSessionId || !consoleSessionId) return;
   if (row.command !== "codex") return;
   if (isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)) return;
+  if (sessionAliasLiveness(db, providerSessionId) !== "stopped") return;
 
   const mandibleSessionId = stringOrNull(row.mandible_session_id);
   if (
@@ -149,32 +178,31 @@ function addCandidate(
     return;
   }
 
-  addRankedCandidate(byProviderId, {
+  addArchiveCandidate(byProviderId, {
     provider_session_id: providerSessionId,
     console_session_id: consoleSessionId,
     mandible_session_id: mandibleSessionId,
     issue_id: String(row.issue_id),
     work_unit_id: stringOrNull(row.work_unit_id),
-    rank: 0,
   });
 }
 
-function addRankedCandidate(
-  byProviderId: Map<string, RankedArchiveCandidate>,
-  candidate: RankedArchiveCandidate,
+function addArchiveCandidate(
+  byProviderId: Map<string, WorkerThreadArchiveCandidate>,
+  candidate: WorkerThreadArchiveCandidate,
 ): void {
   const existing = byProviderId.get(candidate.provider_session_id);
-  if (!existing || compareRankedArchiveCandidates(candidate, existing) < 0) {
+  if (!existing || compareWorkerThreadArchiveCandidates(candidate, existing) < 0) {
     byProviderId.set(candidate.provider_session_id, candidate);
   }
 }
 
 function selectConservativeArchiveCandidates(
-  candidates: RankedArchiveCandidate[],
+  candidates: WorkerThreadArchiveCandidate[],
   closureIssueIds: Set<string>,
 ): WorkerThreadArchiveCandidate[] {
-  const byClosureIssue = new Map<string, RankedArchiveCandidate>();
-  const selected: RankedArchiveCandidate[] = [];
+  const byClosureIssue = new Map<string, WorkerThreadArchiveCandidate>();
+  const selected: WorkerThreadArchiveCandidate[] = [];
 
   for (const candidate of candidates) {
     if (!closureIssueIds.has(candidate.issue_id)) {
@@ -182,23 +210,21 @@ function selectConservativeArchiveCandidates(
       continue;
     }
     const existing = byClosureIssue.get(candidate.issue_id);
-    if (!existing || compareRankedArchiveCandidates(candidate, existing) < 0) {
+    if (!existing || compareWorkerThreadArchiveCandidates(candidate, existing) < 0) {
       byClosureIssue.set(candidate.issue_id, candidate);
     }
   }
 
   selected.push(...byClosureIssue.values());
   return selected
-    .sort((a, b) => a.provider_session_id.localeCompare(b.provider_session_id))
-    .map(({ rank: _rank, ...candidate }) => candidate);
+    .sort((a, b) => a.provider_session_id.localeCompare(b.provider_session_id));
 }
 
-function compareRankedArchiveCandidates(
-  a: RankedArchiveCandidate,
-  b: RankedArchiveCandidate,
+function compareWorkerThreadArchiveCandidates(
+  a: WorkerThreadArchiveCandidate,
+  b: WorkerThreadArchiveCandidate,
 ): number {
   return (
-    a.rank - b.rank ||
     String(a.work_unit_id ?? "").localeCompare(String(b.work_unit_id ?? "")) ||
     a.provider_session_id.localeCompare(b.provider_session_id)
   );
@@ -238,29 +264,6 @@ interface CandidateRow {
   work_unit_id: unknown;
 }
 
-interface DirectWorkUnitCandidateRow {
-  worker_provider_session_id: string | null;
-  issue_id: string;
-  work_unit_id: string;
-}
-
-function directCandidateRowsFromRequestWorkUnits(db: Db, requestId: string): DirectWorkUnitCandidateRow[] {
-  if (
-    !tableHasColumn(db, "work_units", "auth_request_id")
-    || !tableHasColumn(db, "work_units", "worker_provider_session_id")
-  ) {
-    return [];
-  }
-  return db.prepare(
-    `SELECT id AS work_unit_id, COALESCE(ledger_issue_id, issue_id) AS issue_id,
-            worker_provider_session_id
-     FROM work_units
-     WHERE state = 'resolved'
-       AND auth_request_id = ?
-       AND worker_provider_session_id IS NOT NULL`,
-  ).all(requestId) as DirectWorkUnitCandidateRow[];
-}
-
 function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): CandidateRow[] {
   if (!tableExists(db, "console_sessions") || !tableHasColumn(db, "work_units", "auth_request_id")) {
     return [];
@@ -292,14 +295,17 @@ function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): Candidate
   return rows;
 }
 
-function candidateRowsFromLegacyIssueSessions(db: Db, issueIds: Set<string>): CandidateRow[] {
+function candidateRowsFromIssueSessionLinks(db: Db, issueIds: Set<string>): CandidateRow[] {
   const rows: CandidateRow[] = [];
   const linkedSessions = new Map<string, string>();
 
-  const legacyRows = db.prepare(
-    "SELECT session_id, issue_id FROM session_issues",
-  ).all() as Array<{ session_id: string; issue_id: string }>;
-  for (const row of legacyRows) {
+  const ids = [...issueIds];
+  const linkRows = db.prepare(
+    `SELECT session_id, issue_id FROM ledger_session_issue_links
+     WHERE issue_id IN (${ids.map(() => "?").join(", ")})
+     ORDER BY created_at ASC`,
+  ).all(...ids) as Array<{ session_id: string; issue_id: string }>;
+  for (const row of linkRows) {
     if (issueIds.has(row.issue_id) && !linkedSessions.has(row.session_id)) {
       linkedSessions.set(row.session_id, row.issue_id);
     }
@@ -342,6 +348,148 @@ function consoleSessionRowsForLink(
     input.sessionId,
     input.sessionId,
   ) as CandidateRow[];
+}
+
+export type WorkerThreadLiveness = (db: Db, threadId: string) => LivenessState;
+export type WorkerThreadAliasResolver = (db: Db, id: string) => SessionAliasResolution | null;
+
+export interface FinishedWorkerThreadArchivePass {
+  /** Archived threads, with how many failed attempts preceded this success. */
+  archived: Array<{ thread_id: string; prior_attempts: number }>;
+  /** Threads whose liveness could not be established; reconsidered next pass. */
+  deferred: string[];
+  /** Failed attempts, with the attempt count now recorded for the thread. */
+  failed: Array<{ thread_id: string; attempts: number; error: string }>;
+}
+
+const ARCHIVE_RETRY_BASE_MS = 60_000;
+const ARCHIVE_RETRY_MAX_MS = 6 * 60 * 60_000;
+
+/** Delay before the next attempt after `attempts` consecutive failures. */
+export function workerThreadArchiveRetryDelayMs(attempts: number): number {
+  return Math.min(ARCHIVE_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), ARCHIVE_RETRY_MAX_MS);
+}
+
+/**
+ * Archive each Codex worker thread whose bound work is finished, once per
+ * resolved work unit.
+ *
+ * A unit's worker thread is the one `work-unit activate --worker` bound. Its
+ * work is finished once the unit is resolved, by whatever path resolved it: a
+ * merge request, the merge's ancestry scan, `wt merge` into a parent branch, or
+ * an explicit resolve. `worker_thread_archives` records the archive per unit
+ * and thread, so a thread later unarchived by the user or a follow-up dispatch
+ * is archived again only when another of its units resolves. A failed attempt
+ * is recorded on the same rows and retried with exponential backoff.
+ *
+ * A thread is archived only when its liveness is definitely `stopped`, it has
+ * never held an umbrella parent role, and no open or committed unit names it
+ * under any of its aliases. `unknown` liveness defers to a later pass.
+ */
+export async function archiveFinishedWorkerThreads(
+  db: Db,
+  input: {
+    archiver: CodexThreadArchiver;
+    liveness: WorkerThreadLiveness;
+    resolveAlias: WorkerThreadAliasResolver;
+    now: () => number;
+  },
+): Promise<FinishedWorkerThreadArchivePass> {
+  const pass: FinishedWorkerThreadArchivePass = { archived: [], deferred: [], failed: [] };
+  const now = input.now();
+  const rows = db.prepare(
+    `SELECT wu.id AS work_unit_id, wu.worker_provider_session_id AS thread_id,
+            COALESCE(a.attempts, 0) AS attempts, a.next_retry_at
+     FROM work_units wu
+     LEFT JOIN worker_thread_archives a
+       ON a.work_unit_id = wu.id AND a.thread_id = wu.worker_provider_session_id
+     WHERE wu.state = 'resolved'
+       AND wu.worker_provider_session_id IS NOT NULL
+       AND trim(wu.worker_provider_session_id) != ''
+       AND a.archived_at IS NULL
+     ORDER BY wu.worker_provider_session_id, wu.id`,
+  ).all() as Array<{ work_unit_id: string; thread_id: string; attempts: number; next_retry_at: number | null }>;
+
+  const threads = new Map<string, { units: string[]; attempts: number; due: boolean }>();
+  for (const row of rows) {
+    const thread = threads.get(row.thread_id) ?? { units: [], attempts: 0, due: true };
+    thread.units.push(row.work_unit_id);
+    thread.attempts = Math.max(thread.attempts, Number(row.attempts));
+    if (row.next_retry_at != null && row.next_retry_at > now) thread.due = false;
+    threads.set(row.thread_id, thread);
+  }
+  const due = [...threads].filter(([, thread]) => thread.due);
+  if (due.length === 0) return pass;
+
+  const parentRoleSessionIds = allParentRoleSessionIds(db);
+  const busy = threadsHoldingUnfinishedWork(db, input.resolveAlias);
+  const recordArchived = db.prepare(
+    `INSERT INTO worker_thread_archives (work_unit_id, thread_id, archived_at, attempts)
+     VALUES (?, ?, ?, 0)
+     ON CONFLICT(work_unit_id, thread_id)
+     DO UPDATE SET archived_at = excluded.archived_at, next_retry_at = NULL`,
+  );
+  const recordFailure = db.prepare(
+    `INSERT INTO worker_thread_archives (work_unit_id, thread_id, attempts, last_error, next_retry_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(work_unit_id, thread_id)
+     DO UPDATE SET attempts = excluded.attempts, last_error = excluded.last_error,
+       next_retry_at = excluded.next_retry_at`,
+  );
+
+  for (const [threadId, thread] of due) {
+    if (parentRoleSessionIds.has(threadId) || busy.has(threadId)) continue;
+    const liveness = input.liveness(db, threadId);
+    if (liveness === "live") continue;
+    if (liveness === "unknown") {
+      pass.deferred.push(threadId);
+      continue;
+    }
+    try {
+      await input.archiver.archive(threadId);
+    } catch (error) {
+      const attempts = thread.attempts + 1;
+      const message = errorMessage(error);
+      const retryAt = input.now() + workerThreadArchiveRetryDelayMs(attempts);
+      db.transaction(() => {
+        for (const unit of thread.units) recordFailure.run(unit, threadId, attempts, message, retryAt);
+      })();
+      pass.failed.push({ thread_id: threadId, attempts, error: message });
+      continue;
+    }
+    const archivedAt = input.now();
+    db.transaction(() => {
+      for (const unit of thread.units) recordArchived.run(unit, threadId, archivedAt);
+    })();
+    pass.archived.push({ thread_id: threadId, prior_attempts: thread.attempts });
+  }
+  return pass;
+}
+
+/** Every alias of every session recorded on an open or committed work unit. */
+function threadsHoldingUnfinishedWork(db: Db, resolveAlias: WorkerThreadAliasResolver): Set<string> {
+  const held = new Set<string>();
+  const rows = db.prepare(
+    `SELECT assigned_session_id, worker_provider_session_id, provider_session_id
+     FROM work_units
+     WHERE state IN ('open', 'committed')`,
+  ).all() as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    for (const value of [row.assigned_session_id, row.worker_provider_session_id, row.provider_session_id]) {
+      const id = stringOrNull(value)?.trim();
+      if (!id || held.has(id)) continue;
+      held.add(id);
+      const resolution = resolveAlias(db, id);
+      for (const alias of [
+        resolution?.provider_session_id,
+        resolution?.mandible_session_id,
+        resolution?.console_session_id,
+      ]) {
+        if (alias) held.add(alias);
+      }
+    }
+  }
+  return held;
 }
 
 function allParentRoleSessionIds(db: Db): Set<string> {

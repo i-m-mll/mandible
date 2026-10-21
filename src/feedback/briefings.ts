@@ -1685,5 +1685,5 @@ export function exportBriefingSubmissionMarkdown(
       content = content.slice(0, replacement.start) + replacement.body + content.slice(replacement.end);
     }
     return { content, sha256: createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex") };
-  })();
+  }).deferred();
 }

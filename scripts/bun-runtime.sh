@@ -24,11 +24,33 @@ case "$platform" in
 esac
 
 hash() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
-verify() {
-  [ -x "$1" ] && [ "$(hash "$1")" = "$binary_sha" ] &&
+fingerprint() {
+  case "$platform" in
+    Darwin-*) stat -f '%d:%i:%z:%m:%c' "$1" ;;
+    *) stat -c '%d:%i:%s:%Y:%Z' "$1" ;;
+  esac
+}
+# Every CLI call resolves the runtime, and hashing its files dominated CLI
+# startup. A receipt beside a file memoizes one passing check of it; any
+# rewrite, replacement or chmod changes the inode or ctime it records.
+receipted() {
+  file=$1 key=$2
+  shift 2
+  receipt="$file.verified"
+  stamp="$key $(fingerprint "$file")"
+  if [ -f "$receipt" ] && IFS= read -r recorded < "$receipt" && [ "$recorded" = "$stamp" ]; then
+    return 0
+  fi
+  "$@" "$file" || return 1
+  { printf '%s\n' "$stamp" > "$receipt.$$" && mv -f "$receipt.$$" "$receipt"; } 2>/dev/null || rm -f "$receipt.$$"
+}
+check_binary() {
+  [ "$(hash "$1")" = "$binary_sha" ] &&
     [ "$("$1" --version)" = "$version" ] &&
     [ "$("$1" --no-install --print 'Bun.revision')" = "$revision" ]
 }
+check_archive() { [ "$(hash "$1")" = "$archive_sha" ]; }
+verify() { [ -x "$1" ] && receipted "$1" "$binary_sha $revision" check_binary; }
 emit_runtime() {
   "$1" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
   printf '%s\n' "$1"
@@ -43,10 +65,21 @@ if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
     exit 0
   fi
 fi
-runtime="${XDG_DATA_HOME:-$HOME/.local/share}/mandible/runtimes/bun/$revision/$binary_sha/bun"
+# The store belongs to the OS account, not to HOME or XDG_DATA_HOME, which tests
+# and agents override to isolate data. Content addressing keeps one verified
+# copy per revision for every caller, so a firewall rule for its path holds.
+# src/sqlite-runtime.ts resolves the same root for the SQLite library.
+if [ -z "${MANDIBLE_RUNTIME_STORE:-}" ]; then
+  account=$(id -un) || { echo "Cannot resolve the OS account for the Bun runtime store; set MANDIBLE_RUNTIME_STORE" >&2; exit 1; }
+  account_home=$(eval "printf '%s' ~$account")
+  case "$account_home" in /*) ;; *) echo "No home directory for account $account; set MANDIBLE_RUNTIME_STORE" >&2; exit 1 ;; esac
+  MANDIBLE_RUNTIME_STORE="$account_home/.local/share/mandible/runtimes"
+fi
+export MANDIBLE_RUNTIME_STORE
+runtime="$MANDIBLE_RUNTIME_STORE/bun/$revision/$binary_sha/bun"
 archive_cache="$(dirname "$runtime")/runtime.zip"
 if [ -e "$archive_cache" ]; then
-  [ "$(hash "$archive_cache")" = "$archive_sha" ] || { echo "Pinned Bun archive cache is corrupt: $archive_cache" >&2; exit 1; }
+  receipted "$archive_cache" "$archive_sha" check_archive || { echo "Pinned Bun archive cache is corrupt: $archive_cache" >&2; exit 1; }
 fi
 if [ -e "$runtime" ]; then
   verify "$runtime" || { echo "Pinned Bun cache is corrupt: $runtime; preserve it and supply a verified runtime archive" >&2; exit 1; }

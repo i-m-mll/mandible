@@ -18,6 +18,7 @@ import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { longestEventLoopBlockMs, useSlowGit } from "./helpers/event-loop-blocking.js";
 import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
@@ -189,6 +190,25 @@ describe("candidate acceptance gate", () => {
     await vi.waitFor(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
     expect(acceptanceOf(request.id)).toMatchObject({ state: "running" });
+  });
+
+  it("passes over an unchanged candidate on the idle tick without blocking the event loop on Git", async () => {
+    const request = submit();
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    await queue.refreshPendingCandidates();
+    const pin = queue.getRequest(request.id)!.merge_candidate_pin_sha;
+
+    const slow = useSlowGit(0.3);
+    try {
+      const blocked = await longestEventLoopBlockMs(() => queue.refreshPendingCandidates());
+      expect(blocked).toBeLessThan(150);
+    } finally {
+      fs.rmSync(slow.dir, { recursive: true, force: true });
+    }
+    expect(queue.getRequest(request.id)!.merge_candidate_pin_sha).toBe(pin);
+    expect(runs).toHaveLength(1);
   });
 
   it("runs a run a restart interrupted again at startup", async () => {

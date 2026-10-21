@@ -12,7 +12,7 @@ import type {
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
-import { attachTranscriptChatItem } from "./types.js";
+import { attachTranscriptChatItem, firstUserMessageOpening } from "./types.js";
 
 // --- Raw JSON shapes ---
 
@@ -527,6 +527,9 @@ export class GeminiParser implements ConversationParser {
         is_sidechain: false,
         agent_id: null,
       },
+      parent: null,
+      opening: firstUserMessageOpening(blocks, options.baseBlockCount === 0),
+      createdByAgent: false,
       blocks,
     };
   }

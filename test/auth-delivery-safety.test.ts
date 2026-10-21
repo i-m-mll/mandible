@@ -13,6 +13,7 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
+import { longestEventLoopBlockMs, useSlowGit } from "./helpers/event-loop-blocking.js";
 
 let repo: string;
 let db: ReturnType<typeof createMigratedDb>;
@@ -365,6 +366,22 @@ describe('runtime convergence recovery', () => {
     expect(queue.getRequest(f.request.id)).toMatchObject({ output: before.output, status: before.status, approved_at: before.approved_at, resolved_at: before.resolved_at });
     expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
     expect(git(repo, ['rev-parse', 'main'])).toBe(f.journal.binding.mergeCommit);
+  });
+
+  it('leaves settled handoffs alone on the idle tick instead of re-verifying them with synchronous Git', async () => {
+    const f = await recoveryFixture();
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('complete');
+    const adopt = vi.fn();
+    const slow = useSlowGit(0.3);
+    try {
+      expect(await longestEventLoopBlockMs(() => f.hooks.reconcileRuntimeHandoffs(adopt, vi.fn()))).toBeLessThan(150);
+    } finally {
+      fs.rmSync(slow.dir, { recursive: true, force: true });
+    }
+    expect(adopt).not.toHaveBeenCalled();
+    expect(f.ack).toHaveBeenCalledTimes(1);
   });
 
   it('holds the SQLite writer lock before persisting external recovery evidence', async () => {

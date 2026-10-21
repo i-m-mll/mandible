@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { getDaemonLogger } from "./daemon-log.js";
 import { locateCodexRollout } from "./parsers/codex.js";
 
 const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -20,6 +21,23 @@ type CodexTaskLockSnapshot =
 type CachedSnapshot = { expiresAt: number; snapshot: CodexTaskLockSnapshot };
 
 const cache = new Map<string, CachedSnapshot>();
+/** The last reported failure per lock directory or rollout, so an outage logs once per change. */
+const reportedFailures = new Map<string, string>();
+
+/**
+ * Log a liveness check that could not complete, loudly and once per distinct
+ * failure: every holder behind it reads as `unknown` until it recovers.
+ */
+function reportUnavailable(key: string, reason: string): void {
+  if (reportedFailures.get(key) === reason) return;
+  reportedFailures.set(key, reason);
+  getDaemonLogger()("error", "codex_task_liveness_unavailable", { target: key, reason });
+}
+
+function reportRecovered(key: string): void {
+  if (!reportedFailures.delete(key)) return;
+  getDaemonLogger()("info", "codex_task_liveness_recovered", { target: key });
+}
 
 function lsofPath(): string | null {
   for (const candidate of ["/usr/sbin/lsof", "/usr/bin/lsof"]) {
@@ -101,6 +119,8 @@ function currentSnapshot(lockDir: string): CodexTaskLockSnapshot {
   if (cached && cached.expiresAt > now) return cached.snapshot;
   const snapshot = scanCodexTaskLocks(lockDir);
   cache.set(lockDir, { expiresAt: now + CACHE_MS, snapshot });
+  if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason);
+  else reportRecovered(lockDir);
   return snapshot;
 }
 
@@ -115,7 +135,9 @@ export function readCodexTaskLiveness(sourcePath: string, threadId: string): Cod
   if (!CODEX_THREAD_ID.test(threadId)) return { status: "not_live" };
   const location = locateCodexRollout(sourcePath);
   if (!location) {
-    return { status: "unavailable", reason: "ingested source is outside a Codex rollout root" };
+    const reason = "ingested source is outside a Codex rollout root";
+    reportUnavailable(sourcePath, reason);
+    return { status: "unavailable", reason };
   }
   const lockDir = path.join(location.codexRoot, "thread-writer-locks");
   const snapshot = currentSnapshot(lockDir);
@@ -126,4 +148,5 @@ export function readCodexTaskLiveness(sourcePath: string, threadId: string): Cod
 
 export function clearCodexTaskLivenessCache(): void {
   cache.clear();
+  reportedFailures.clear();
 }

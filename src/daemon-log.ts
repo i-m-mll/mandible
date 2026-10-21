@@ -16,7 +16,7 @@ const PERSIST_MIN_INDEX = LEVELS.indexOf("info");
 // a short timer instead of running a synchronous INSERT (11 columns, up to 8
 // index updates) on every request turn. This keeps the write off the request
 // path and coalesces WAL fsyncs that otherwise contend with the ingestion
-// worker under the 250 ms busy_timeout. Issue: 0d81726.
+// worker for the write lock. Issue: 0d81726.
 const DEFAULT_FLUSH_INTERVAL_MS = 500;
 const DEFAULT_MAX_QUEUE = 1_000;
 // Rotation of the stderr mirror file used to run a statSync on every log line.

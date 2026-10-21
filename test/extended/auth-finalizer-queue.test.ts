@@ -1,7 +1,8 @@
-import { approvePausedFixtureRequest, completeFixturePublication, createAuthCheckRepo, commitOnBranch, registerWorkRepo, git, createNoopHookManager } from "../helpers/auth-queue-fixtures.js";
+import { approvePausedFixtureRequest, completeFixturePublication, createAuthCheckRepo, commitOnBranch, registerWorkRepo, git, createNoopHookManager, insertConsoleSession } from "../helpers/auth-queue-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
+import { archiveFinishedWorkerThreads } from "../../src/codex-thread-archive.js";
 import type { Db } from "../../src/db.js";
 import type { SseEvent } from "../../src/types.js";
 import { createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
@@ -57,19 +58,26 @@ async function submitSuccessfulRequest(
   return request.id;
 }
 
-/** Insert a resolved-on-merge codex worker work unit so an archive candidate exists. */
+/**
+ * Insert a codex work unit linked to the request through a stopped console
+ * session, so the merge finalizer's archive step has a candidate. Units bound
+ * by `activate --worker` are archived by the work-unit reconciler instead.
+ */
 function insertCodexWorkUnit(
   db: Db,
   id: string,
   authRequestId: string,
   providerSessionId: string,
+  state: "committed" | "resolved" = "committed",
 ): void {
+  insertConsoleSession(db, { id: `console-${id}`, providerSessionId });
   db.prepare(
     `INSERT INTO work_units (
-      id, issue_id, repo_id, branch, kind, state, provider, provider_session_id,
-      worker_provider_session_id, created_at, auth_request_id
-    ) VALUES (?, ?, 'finalizer-repo', NULL, 'solo', 'committed', 'codex', ?, ?, 0, ?)`
-  ).run(id, `issue-${id}`, providerSessionId, providerSessionId, authRequestId);
+      id, issue_id, repo_id, branch, kind, state, assigned_session_id, provider,
+      provider_session_id, created_at, resolved_at, auth_request_id
+    ) VALUES (?, ?, 'finalizer-repo', NULL, 'solo', ?, ?, 'codex', ?, 0, ?, ?)`
+  ).run(id, `issue-${id}`, state, `console-${id}`, providerSessionId,
+    state === "resolved" ? 100 : null, authRequestId);
 }
 
 function eventsFor(events: SseEvent[], requestId: string, name: string): SseEvent[] {
@@ -81,7 +89,7 @@ function eventsFor(events: SseEvent[], requestId: string, name: string): SseEven
 }
 
 describe("auth finalizer queue (Issue 75f52ac)", () => {
-  it("archives only explicit worker ownership when the ambient coordinator has no guards", async () => {
+  it("leaves worker-bound threads to the reconciler, which archives only explicit worker ownership", async () => {
     const db = createMigratedDb();
     const archived: string[] = [];
     const queue = new AuthQueue({
@@ -115,7 +123,14 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
 
       await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
+      expect(archived).toEqual([]);
 
+      await archiveFinishedWorkerThreads(db, {
+        archiver: { archive: async (threadId) => { archived.push(threadId); }, unarchive: async () => undefined },
+        liveness: () => "stopped",
+        resolveAlias: () => null,
+        now: () => 0,
+      });
       expect(archived).toEqual(["thread-explicit"]);
     } finally {
       queue.dispose();
@@ -354,15 +369,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
           resolve_ancestry_work_units: { state: 'done', attempts: 1, at: 0 },
           archive_worker_threads: { state: 'pending', attempts: 1, error: 'boom', at: 0 },
         }), id);
-      db.prepare(
-        `INSERT INTO work_units (
-          id, issue_id, repo_id, branch, kind, state, provider, provider_session_id,
-          worker_provider_session_id, created_at, resolved_at, auth_request_id
-        ) VALUES (
-          'wu-crash', 'issue-crash', 'finalizer-repo', NULL, 'solo', 'resolved',
-          'codex', 'thread-crash', 'thread-crash', 0, 100, ?
-        )`
-      ).run(id);
+      insertCodexWorkUnit(db, "wu-crash", id, "thread-crash", "resolved");
 
       // Fresh queue: the startup sweep resumes only the archive step.
       const recovered = new AuthQueue({

@@ -65,12 +65,16 @@ file_rpc_inventory() {
 }
 
 file_rpc_inspect() {
-  local target="${1:-}" provider="all" head=20 parse=0 json=0 role_filter="" type_filter="" content_filter="" limit=50 offset=0 conv_id request response
+  local target="${1:-}" provider="all" head=20 parse=0 json=0 host_filter="" role_filter="" type_filter="" content_filter="" limit=50 offset=0 conv_id request response
   if [[ -z "$target" ]]; then echo "log path, conversation id, or session id required" >&2; exit 2; fi
   shift
   local binding
-  binding=$(mandible_bind_arguments "logs.inspect" '{"provider":{"option":"provider"},"head":{"option":"head"},"parse":{"option":"parse","constant":"1"},"role_filter":{"option":"role"},"type_filter":{"option":"type"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"}}' "$target" "$@") || return $?
+  binding=$(mandible_bind_arguments "logs.inspect" '{"provider":{"option":"provider"},"head":{"option":"head"},"parse":{"option":"parse","constant":"1"},"role_filter":{"option":"role"},"type_filter":{"option":"type"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"},"host_filter":{"option":["tool","tool-kind","since","until"],"constant":"1"}}' "$target" "$@") || return $?
   eval "$binding"
+  if [[ -n "$host_filter" ]]; then
+    echo "Error: logs inspect --tool, --tool-kind, --since and --until read host logs and are not available through file-RPC." >&2
+    return 2
+  fi
   conv_id=$(logs_resolve_conversation_id "$target")
   if (( parse )); then
     request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"

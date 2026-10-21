@@ -56,15 +56,15 @@ Used for agents without SDK support (Codex, Gemini), shell sessions, and any com
 
 ### External (third-class)
 
-**Connection**: Discovered via process scan or registered by shell hooks.
+**Connection**: Known from the indexed conversation; Claude lifecycle hooks and `mandible wrap` register a process attachment.
 
-Mandible scans running processes for known agent patterns (`claude`, `codex`, `gemini`) and matches them to registered repository worktrees. Sessions can also self-register via the HTTP API (which is what `mandible wrap` does).
+Every session is identified by its provider session id and its indexed conversation, with no registration needed. Claude's lifecycle hooks, and `mandible wrap`, also register a process attachment through the HTTP API, which carries the PID and terminal navigation.
 
 External sessions have the least visibility. Mandible knows the PID, working directory, and branch --- enough for liveness tracking and dashboard display, but nothing about what the agent is actually doing.
 
 **Key details**:
 - Backend type: N/A (external process, not managed by Console)
-- Communication: HTTP API (registration), process scan (discovery)
+- Communication: HTTP API (registration)
 - Lifecycle: none (PID monitoring only)
 - Data: PID, working directory, branch, terminal multiplexer metadata
 - The `mandible wrap` command improves this with session ID generation, multiplexer detection, and orphan-watcher cleanup
@@ -87,7 +87,6 @@ External sessions have the least visibility. Mandible knows the PID, working dir
 | Status reporting | Yes | Yes | -- | -- |
 | PID liveness | Yes | Yes | Yes | Yes |
 | Branch detection | Yes | Yes | Yes | Yes |
-| Session discovery | -- | -- | -- | Yes |
 | Auto-restart | -- | -- | Yes | -- |
 
 "Yes" means the feature works at that tier. "--" means it's not available or not applicable.

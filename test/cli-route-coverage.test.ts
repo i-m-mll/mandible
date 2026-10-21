@@ -39,7 +39,6 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/ledger-client.sh:40 api_send_capture \"$method\" \"$request_path\" \"$data\" \"$tmp_response\")",
   "cli/logs.sh:71 api_get \"$request\")",
   "cli/logs.sh:115 api_get \"$request\")",
-  "cli/search.sh:94 api_get \"$request\"",
   "cli/space.sh:81 api_send POST \"$1\" \"$2\"",
   "cli/umbrella.sh:80 api_get \"$path\") \\",
 ] as const;
@@ -58,6 +57,8 @@ const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
   "cli/auth-clearance.sh:86 POST /api/auth/request/:param/clearance/execute",
   // Issue a09b4d2 — operator retirement of a failed runtime handoff lock.
   "cli/auth-handoff.sh:39 POST /api/runtime-handoff/retire",
+  // Issue 23f8142 — operator one-time conversation lineage backfill.
+  "cli/conversations.sh:420 POST /api/conversations/lineage-backfill",
 ] as const;
 
 describe("CLI API route coverage", () => {

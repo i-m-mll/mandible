@@ -2,8 +2,14 @@ import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
-import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
-import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
+import {
+  resolveSessionAlias,
+  sessionAliasIds,
+  type LivenessState,
+  type SessionAliasResolution,
+} from "../session-liveness.js";
+import { summarizeSessionKey } from "../session-summary.js";
+import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
@@ -234,30 +240,9 @@ function resolveLedgerIssueId(
   db: Db,
   issueRef: string,
 ): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
-  const store = new LedgerStore(db);
-  const resolved = store.resolveIssueRef(issueRef);
-  if (resolved.ok) return { ok: true, issue_id: resolved.id };
+  const resolved = resolveOperationalIssueRef(db, issueRef);
+  if (resolved.ok) return { ok: true, issue_id: resolved.issue_id };
   if (resolved.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous issue reference" };
-
-  // Preserve global IDs, short IDs, and exact aliases above, then treat
-  // `<project>/<issue>` as a qualified fallback through the canonical project
-  // registry. LedgerStore already owns project-scoped issue prefix resolution.
-  const separator = issueRef.indexOf("/");
-  if (separator > 0 && separator < issueRef.length - 1) {
-    const project = resolveProjectRef(db, issueRef.slice(0, separator));
-    if (project.ambiguous) {
-      return { ok: false, status: 409, error: "ambiguous project reference" };
-    }
-    if (project.ok && project.project) {
-      const qualified = store.resolveIssueRef(issueRef.slice(separator + 1), {
-        project_id: project.project.id,
-      });
-      if (qualified.ok) return { ok: true, issue_id: qualified.id };
-      if (qualified.error === "ambiguous") {
-        return { ok: false, status: 409, error: "ambiguous issue reference" };
-      }
-    }
-  }
   return { ok: false, status: 404, error: "ledger issue not found" };
 }
 
@@ -388,10 +373,10 @@ function sessionLiveness(
 ): Record<string, unknown> {
   const resolved = sessionId ? resolver(db, sessionId) : null;
   return {
-    has_live_agent: resolved?.has_live_agent ?? false,
+    state: resolved?.liveness ?? "stopped",
     agent_session_id: sessionId,
     agent_status: resolved
-      ? resolved.mandible_status ?? resolved.console_status ?? (resolved.has_live_agent ? "active" : "stopped")
+      ? resolved.mandible_status ?? resolved.console_status ?? (resolved.liveness === "live" ? "active" : resolved.liveness)
       : null,
     last_activity: resolved?.last_activity ?? null,
     resolved_session_id: resolved?.mandible_session_id ?? null,
@@ -431,35 +416,18 @@ const PARENT_ROLE_IDENTITY_KEYS = [
   "provider_session_id",
 ] as const;
 
-function resolutionAliasIds(
-  suppliedId: string,
-  resolution: SessionAliasResolution,
-): Set<string> {
-  return new Set(
-    [
-      suppliedId,
-      resolution.mandible_session_id,
-      resolution.console_session_id,
-      resolution.provider_session_id,
-    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
-  );
-}
-
 function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
   return {
-    error: `unknown session id "${suppliedId}": Mandible has no session, console session, `
-      + "provider session, or ingested provider conversation recorded under it, so a parent-role holder recorded under it "
-      + "could never be verified. Assume the role from a session Mandible has registered, "
-      + `or link this one first with \`mandible session link-issue ${suppliedId} `
-      + "--issue <issue> --repo <repo>`, then retry.",
+    error: `unknown session id "${suppliedId}": Mandible has no session row, console session, `
+      + "or ingested provider transcript recorded under it, so a parent-role holder recorded under it "
+      + "could never be verified. Retry once the provider transcript has been ingested, or assume the role "
+      + "from a session Mandible already knows.",
     supplied_session_id: suppliedId,
     accepted_session_id_forms: [
-      "a Mandible session id (sessions.id)",
+      "a session row id (sessions.id)",
       "a console session id (console_sessions.id)",
-      "a provider session or thread id (console_sessions.provider_session_id)",
-      "an exact provider task id in the normalized conversations index",
+      "an ingested provider session id (conversations.session_id)",
     ],
-    repair_command: `mandible session link-issue ${suppliedId} --issue <issue> --repo <repo>`,
   };
 }
 
@@ -501,16 +469,14 @@ function buildParentRoleStatus(
   resolver: SessionAliasResolver = resolveSessionAlias,
 ): Record<string, unknown> {
   const holders = parentRoleHolders(db, issueId, resolver);
-  const liveHolder = holders.find((holder) =>
-    Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
-  ) ?? null;
+  const holdersIn = (state: LivenessState) =>
+    holders.filter((holder) => (holder.liveness as { state: LivenessState }).state === state);
   return {
     issue_id: issueId,
     holder: holders[0] ?? null,
-    live_holder: liveHolder,
-    stale_holders: holders.filter((holder) =>
-      !Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
-    ),
+    live_holder: holdersIn("live")[0] ?? null,
+    unknown_holders: holdersIn("unknown"),
+    stale_holders: holdersIn("stopped"),
     holders,
   };
 }
@@ -1319,16 +1285,24 @@ export function registerIssueRoutes(
       sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
     }
+    // A holder whose liveness check could not complete may be working right
+    // now, so it blocks exactly like a live one (issue 8c7eb06).
     const liveHolder = current.live_holder as Record<string, unknown> | null;
+    const blockingHolder = liveHolder
+      ?? (current.unknown_holders as Array<Record<string, unknown>>)[0]
+      ?? null;
     // The lease belongs to the agent, not to one spelling of its id: a holder
     // recorded under its provider thread id is the same holder when it returns
     // with its Mandible session id.
-    const callerAliases = resolutionAliasIds(sessionId, resolution);
-    const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
-    if (liveHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
+    const callerAliases = new Set([sessionId, ...sessionAliasIds(resolution)]);
+    const callerAlreadyHolds = [...holderAliasIds(blockingHolder)].some((id) => callerAliases.has(id));
+    if (blockingHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
+      const state = (blockingHolder.liveness as { state: LivenessState }).state;
       sendJson(res, 409, {
-        error: "parent role already held by a live session; only the operator may displace it",
-        live_holder: liveHolder,
+        error: state === "live"
+          ? "parent role already held by a live session; only the operator may displace it"
+          : "parent role held by a session whose liveness cannot be established; only the operator may displace it",
+        blocking_holder: blockingHolder,
         parent_role: current,
       });
       return;
@@ -1347,7 +1321,7 @@ export function registerIssueRoutes(
         mechanism,
         assumed_at: now,
         override,
-        previous_live_holder: liveHolder,
+        previous_live_holder: blockingHolder,
         authenticated_user_id: identity?.method === "api_token" ? identity.user_id : null,
         authenticated_credential_id: identity?.method === "api_token" ? identity.credential_id : null,
       },
@@ -2316,29 +2290,7 @@ export function registerIssueRoutes(
     let workUnit: Record<string, unknown> | null = null;
     if (workUnitRow) {
       const wu = mapWorkUnitRow(workUnitRow);
-      const liveness = deps?.sessionRegistry && deps?.sessionManager
-        ? computeLiveness(wu, deps.sessionRegistry, deps.sessionManager)
-        : (() => {
-            // Fallback: inline approximation when session deps not available
-            const assignedSessionId = wu.assigned_session_id;
-            if (!assignedSessionId) {
-              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-            }
-            const sessionRow = db
-              .prepare("SELECT status, updated_at, last_active FROM sessions WHERE id = ?")
-              .get(assignedSessionId) as Record<string, unknown> | undefined;
-            if (!sessionRow) {
-              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-            }
-            const status = String(sessionRow.status ?? "unknown");
-            return {
-              has_live_agent: status === "active" || status === "idle",
-              agent_session_id: assignedSessionId,
-              agent_status: status,
-              is_processing: status === "active",
-              last_activity: sessionRow.last_active ?? sessionRow.updated_at ?? null,
-            };
-          })();
+      const liveness = computeWorkUnitLiveness(db, wu, deps?.sessionManager);
 
       workUnit = {
         branch: wu.branch,
@@ -2350,63 +2302,18 @@ export function registerIssueRoutes(
       };
     }
 
-    // 3. Linked sessions via canonical ledger links plus legacy session_issues.
-    const sessionLinksById = new Map<string, Record<string, unknown>>();
-    const legacySessionLinks = db
-      .prepare(
-        `SELECT si.session_id, s.status, s.created_at, s.app, si.created_at AS link_created_at
-         FROM session_issues si
-         LEFT JOIN sessions s ON s.id = si.session_id
-         WHERE si.issue_id = ? AND si.repo_id = ?
-         ORDER BY si.created_at ASC`
-      )
-      .all(issue.id, repoId) as Array<Record<string, unknown>>;
-    for (const row of legacySessionLinks) {
-      sessionLinksById.set(String(row.session_id ?? ""), row);
-    }
-    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
-      const ledgerSessionLinks = db
-        .prepare(
-          `SELECT l.session_id, s.status, s.created_at, s.app, l.created_at AS link_created_at
-           FROM ledger_session_issue_links l
-           LEFT JOIN sessions s ON s.id = l.session_id
-           WHERE l.issue_id = ?
-           ORDER BY l.created_at ASC`
-        )
-        .all(ledgerIssueId) as Array<Record<string, unknown>>;
-      for (const row of ledgerSessionLinks) {
-        const sessionId = String(row.session_id ?? "");
-        if (!sessionLinksById.has(sessionId)) sessionLinksById.set(sessionId, row);
-      }
-    }
-
-    const sessions = Array.from(sessionLinksById.values()).map((row) => ({
-      session_id: String(row.session_id ?? ""),
-      status: String(row.status ?? "unknown"),
-      created_at: row.created_at ?? null,
-      app: String(row.app ?? ""),
-      has_conversation: false, // populated below
-    }));
-
-    // Check which sessions have conversations
-    if (sessions.length > 0) {
-      const sessionIds = sessions.map((s) => s.session_id);
-      // Query conversations table for these session_ids
-      try {
-        const placeholders = sessionIds.map(() => "?").join(",");
-        const convRows = db
-          .prepare(
-            `SELECT DISTINCT session_id FROM conversations WHERE session_id IN (${placeholders})`
-          )
-          .all(...sessionIds) as Array<{ session_id: string }>;
-        const convSet = new Set(convRows.map((r) => r.session_id));
-        for (const s of sessions) {
-          s.has_conversation = convSet.has(s.session_id);
-        }
-      } catch {
-        // conversations table may not exist in all setups
-      }
-    }
+    // 3. Linked sessions via ledger links.
+    const sessions = ledgerIssueId
+      ? (db.prepare(
+        `SELECT session_id FROM ledger_session_issue_links
+         WHERE issue_id = ?
+         GROUP BY session_id
+         ORDER BY MIN(created_at) ASC`
+      ).all(ledgerIssueId) as Array<{ session_id: string }>).map((row) => {
+        const summary = summarizeSessionKey(db, row.session_id);
+        return { ...summary, has_conversation: summary.conversation_id !== null };
+      })
+      : [];
 
     // 4. Auth requests linked to this issue, preferring canonical ledger links
     // and keeping legacy JSON issue matching for pre-ledger rows.
@@ -2513,38 +2420,23 @@ export function registerIssueRoutes(
       return;
     }
     const { repoId, issue } = resolvedIssue.resolved;
-    const linkMap = new Map<string, Record<string, unknown>>();
-    const links = db.prepare(
-      `SELECT session_id, issue_id, repo_id, created_at
-       FROM session_issues
-       WHERE issue_id = ? AND repo_id = ?
-       ORDER BY created_at ASC`
-    ).all(issue.id, repoId) as Array<Record<string, unknown>>;
-    for (const link of links) {
-      linkMap.set(String(link.session_id ?? ""), link);
-    }
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
-    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
-      const canonicalLinks = db.prepare(
-        `SELECT session_id, created_at, issue_id AS ledger_issue_id
+    const links = ledgerIssueId
+      ? db.prepare(
+        `SELECT DISTINCT session_id, MIN(created_at) AS created_at
          FROM ledger_session_issue_links
          WHERE issue_id = ?
+         GROUP BY session_id
          ORDER BY created_at ASC`
-      ).all(ledgerIssueId) as Array<Record<string, unknown>>;
-      for (const link of canonicalLinks) {
-        const sessionId = String(link.session_id ?? "");
-        if (!linkMap.has(sessionId)) {
-          linkMap.set(sessionId, {
-            session_id: sessionId,
-            issue_id: issue.id,
-            repo_id: repoId,
-            created_at: link.created_at,
-            ledger_issue_id: link.ledger_issue_id,
-          });
-        }
-      }
-    }
-    sendJson(res, 200, Array.from(linkMap.values()));
+      ).all(ledgerIssueId) as Array<{ session_id: string; created_at: number }>
+      : [];
+    sendJson(res, 200, links.map((link) => ({
+      session_id: link.session_id,
+      issue_id: issue.id,
+      repo_id: repoId,
+      created_at: link.created_at,
+      ledger_issue_id: ledgerIssueId,
+    })));
   }, { operation: { id: "get:/api/issues/:repoId/:issueId/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Resume the explicitly selected assignment; this action never transfers custody.

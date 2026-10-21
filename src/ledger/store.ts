@@ -518,18 +518,19 @@ export class LedgerStore {
         });
         emitted.push({ event, payload: { issue_id: id, work_notes: input.work_notes } });
       }
-      return this.getIssue(id);
+      const issue = this.getIssue(id);
+      this.applyTextIssueReferences({
+        source_issue_id: issue.id,
+        source_entity_type: "issue_body",
+        source_entity_id: issue.id,
+        body: issue.body,
+        source,
+        actor,
+      }, emitted);
+      return issue;
     });
 
     const issue = run();
-    this.reconcileTextIssueReferences({
-      source_issue_id: issue.id,
-      source_entity_type: "issue_body",
-      source_entity_id: issue.id,
-      body: issue.body,
-      source,
-      actor,
-    });
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -640,20 +641,21 @@ export class LedgerStore {
         });
         emitted.push({ event, payload: { issue_id: id, patch: scalarPatch, changed_fields: scalarChangedFields } });
       }
-      return this.getIssue(id);
+      const issue = this.getIssue(id);
+      if (bodyChanged) {
+        this.applyTextIssueReferences({
+          source_issue_id: issue.id,
+          source_entity_type: "issue_body",
+          source_entity_id: issue.id,
+          body: issue.body,
+          source,
+          actor: normalizedActor,
+        }, emitted);
+      }
+      return issue;
     });
 
     const issue = run();
-    if (bodyChanged) {
-      this.reconcileTextIssueReferences({
-        source_issue_id: issue.id,
-        source_entity_type: "issue_body",
-        source_entity_id: issue.id,
-        body: issue.body,
-        source,
-        actor: normalizedActor,
-      });
-    }
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -803,20 +805,21 @@ export class LedgerStore {
         });
         emitted.push({ event, payload: { issue_id: id, patch: scalarPatch, changed_fields: scalarChangedFields } });
       }
-      return this.getIssue(id);
+      const issue = this.getIssue(id);
+      if (bodyChanged) {
+        this.applyTextIssueReferences({
+          source_issue_id: issue.id,
+          source_entity_type: "issue_body",
+          source_entity_id: issue.id,
+          body: issue.body,
+          source,
+          actor: normalizedActor,
+        }, emitted);
+      }
+      return issue;
     });
 
     const issue = run();
-    if (bodyChanged) {
-      this.reconcileTextIssueReferences({
-        source_issue_id: issue.id,
-        source_entity_type: "issue_body",
-        source_entity_id: issue.id,
-        body: issue.body,
-        source,
-        actor: normalizedActor,
-      });
-    }
     emitLedgerEvents(emitted, this.broadcaster);
     return { changed: true, issue };
   }
@@ -1012,26 +1015,26 @@ export class LedgerStore {
   }
 
   addComment(issueId: string, input: AddLedgerCommentInput): LedgerComment {
-    const issue = this.requireIssue(issueId);
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
     const source = input.source ?? "mandible";
     const actor = this.resolveActor(input);
-    const ordinal = this.nextCommentOrdinal(issueId);
     const nonce = createCreationNonce();
-    const id = input.id ?? createStableCommentId({
-      issue_id: issueId,
-      ordinal,
-      body: input.body,
-      source,
-      created_at: now,
-      author_actor_id: actor.actor_id,
-      author_actor_type: actor.actor_type,
-      author_display: input.author_display ?? "",
-      nonce,
-    });
 
     const run = this.db.transaction(() => {
+      const issue = this.requireIssue(issueId);
+      const ordinal = this.nextCommentOrdinal(issueId);
+      const id = input.id ?? createStableCommentId({
+        issue_id: issueId,
+        ordinal,
+        body: input.body,
+        source,
+        created_at: now,
+        author_actor_id: actor.actor_id,
+        author_actor_type: actor.actor_type,
+        author_display: input.author_display ?? "",
+        nonce,
+      });
       if (input.reopen && issue.status === "closed") {
         this.assertSingletonKindTransition(issue.project_id, issueId, issue, {
           kind: issue.kind,
@@ -1103,18 +1106,19 @@ export class LedgerStore {
         changed_fields: ["body"],
       });
       emitted.push({ event, payload: { issue_id: issueId, comment_id: id, ordinal } });
-      return this.getComment(id);
+      const comment = this.getComment(id);
+      this.applyTextIssueReferences({
+        source_issue_id: issueId,
+        source_entity_type: "comment",
+        source_entity_id: comment.id,
+        body: comment.body,
+        source,
+        actor,
+      }, emitted);
+      return comment;
     });
 
     const comment = run();
-    this.reconcileTextIssueReferences({
-      source_issue_id: issueId,
-      source_entity_type: "comment",
-      source_entity_id: comment.id,
-      body: comment.body,
-      source,
-      actor,
-    });
     emitLedgerEvents(emitted, this.broadcaster);
     return comment;
   }
@@ -1239,20 +1243,21 @@ export class LedgerStore {
         });
         emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields } });
       }
-      return this.getComment(id);
+      const comment = this.getComment(id);
+      if (bodyChanged) {
+        this.applyTextIssueReferences({
+          source_issue_id: existing.issue_id,
+          source_entity_type: "comment",
+          source_entity_id: id,
+          body: comment.body,
+          source,
+          actor,
+        }, emitted);
+      }
+      return comment;
     });
 
     const comment = run();
-    if (bodyChanged) {
-      this.reconcileTextIssueReferences({
-        source_issue_id: existing.issue_id,
-        source_entity_type: "comment",
-        source_entity_id: id,
-        body: comment.body,
-        source,
-        actor,
-      });
-    }
     emitLedgerEvents(emitted, this.broadcaster);
     return { changed: true, comment };
   }
@@ -1321,20 +1326,21 @@ export class LedgerStore {
         });
         emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields } });
       }
-      return this.getComment(id);
+      const comment = this.getComment(id);
+      if (bodyChanged) {
+        this.applyTextIssueReferences({
+          source_issue_id: existing.issue_id,
+          source_entity_type: "comment",
+          source_entity_id: id,
+          body: comment.body,
+          source,
+          actor,
+        }, emitted);
+      }
+      return comment;
     });
 
     const comment = run();
-    if (bodyChanged) {
-      this.reconcileTextIssueReferences({
-        source_issue_id: existing.issue_id,
-        source_entity_type: "comment",
-        source_entity_id: id,
-        body: comment.body,
-        source,
-        actor,
-      });
-    }
     emitLedgerEvents(emitted, this.broadcaster);
     return comment;
   }
@@ -1389,18 +1395,18 @@ export class LedgerStore {
         update_current_body: true,
       });
       emitted.push({ event, payload: input.payload });
+      this.applyTextIssueReferences({
+        source_issue_id: target.issue.id,
+        source_entity_type: target.bodyRevisionEntityType === "issue_body" ? "issue_body" : "comment",
+        source_entity_id: input.entity_id,
+        body: input.next_body,
+        source: "system",
+        actor,
+      }, emitted);
       return event;
     });
 
     const event = run();
-    this.reconcileTextIssueReferences({
-      source_issue_id: target.issue.id,
-      source_entity_type: target.bodyRevisionEntityType === "issue_body" ? "issue_body" : "comment",
-      source_entity_id: input.entity_id,
-      body: input.next_body,
-      source: "system",
-      actor,
-    });
     emitLedgerEvents(emitted, this.broadcaster);
     return event;
   }
@@ -1904,71 +1910,71 @@ export class LedgerStore {
   }
 
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
+    const emitted: LedgerSsePayload[] = [];
+    this.db.transaction(() => this.applyTextIssueReferences(input, emitted))();
+    emitLedgerEvents(emitted, this.broadcaster);
+  }
+
+  /** Runs inside the caller's transaction so the text write and its derived references commit together. */
+  private applyTextIssueReferences(input: ReconcileTextIssueReferencesInput, emitted: LedgerSsePayload[]): void {
     const sourceIssue = this.requireIssue(input.source_issue_id);
     const source = input.source ?? "mandible";
     const actor = this.resolveActor(input.actor);
-    const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
+    const desired = new Map<string, {
+      relationship: LedgerIssueRelationship;
+      ref: ParsedIssueReference;
+    }>();
+    for (const ref of parseIssueReferences(input.body)) {
+      const targetProjectId = this.resolveProjectId(ref.project, sourceIssue.project_id);
+      if (!targetProjectId) continue;
+      const resolved = this.resolveIssueRef(ref.issueRef, { project_id: targetProjectId });
+      if (!resolved.ok || resolved.id === input.source_issue_id) continue;
+      const relationship = this.ensureDerivedReferenceRelationship(
+        input.source_issue_id,
+        resolved.id,
+        source,
+        actor,
+        now,
+        emitted,
+      );
+      const key = relationshipSourceKey(resolved.id, ref.kind, ref.normalized);
+      desired.set(key, { relationship, ref });
+    }
 
-    const run = this.db.transaction(() => {
-      const desired = new Map<string, {
-        relationship: LedgerIssueRelationship;
-        ref: ParsedIssueReference;
-      }>();
-      for (const ref of parseIssueReferences(input.body)) {
-        const targetProjectId = this.resolveProjectId(ref.project, sourceIssue.project_id);
-        if (!targetProjectId) continue;
-        const resolved = this.resolveIssueRef(ref.issueRef, { project_id: targetProjectId });
-        if (!resolved.ok || resolved.id === input.source_issue_id) continue;
-        const relationship = this.ensureDerivedReferenceRelationship(
-          input.source_issue_id,
-          resolved.id,
-          source,
-          actor,
-          now,
-          emitted,
-        );
-        const key = relationshipSourceKey(resolved.id, ref.kind, ref.normalized);
-        desired.set(key, { relationship, ref });
-      }
+    for (const item of desired.values()) {
+      this.upsertRelationshipSource({
+        relationship: item.relationship,
+        input,
+        ref: item.ref,
+        source,
+        actor,
+        now,
+      });
+    }
 
-      for (const item of desired.values()) {
-        this.upsertRelationshipSource({
-          relationship: item.relationship,
-          input,
-          ref: item.ref,
-          source,
-          actor,
-          now,
-        });
-      }
-
-      const existingSources = this.db.prepare(
-        `SELECT * FROM ledger_issue_relationship_sources
-         WHERE source_entity_type = ? AND source_entity_id = ?
-           AND relationship_type = 'references' AND deleted_at IS NULL`,
-      ).all(input.source_entity_type, input.source_entity_id) as LedgerIssueRelationshipSource[];
-      const touchedRelationshipIds = new Set<string>();
-      for (const existing of existingSources) {
-        const key = relationshipSourceKey(existing.target_issue_id, existing.ref_kind, existing.normalized_ref);
-        if (desired.has(key)) continue;
-        this.db.prepare(
-          `UPDATE ledger_issue_relationship_sources
-           SET deleted_at = ?, updated_at = ?
-           WHERE id = ?`,
-        ).run(now, now, existing.id);
-        touchedRelationshipIds.add(existing.relationship_id);
-      }
-      for (const item of desired.values()) {
-        touchedRelationshipIds.add(item.relationship.id);
-      }
-      for (const relationshipId of touchedRelationshipIds) {
-        this.pruneDerivedRelationshipIfUnreferenced(relationshipId, source, actor, now, emitted);
-      }
-    });
-
-    run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    const existingSources = this.db.prepare(
+      `SELECT * FROM ledger_issue_relationship_sources
+       WHERE source_entity_type = ? AND source_entity_id = ?
+         AND relationship_type = 'references' AND deleted_at IS NULL`,
+    ).all(input.source_entity_type, input.source_entity_id) as LedgerIssueRelationshipSource[];
+    const touchedRelationshipIds = new Set<string>();
+    for (const existing of existingSources) {
+      const key = relationshipSourceKey(existing.target_issue_id, existing.ref_kind, existing.normalized_ref);
+      if (desired.has(key)) continue;
+      this.db.prepare(
+        `UPDATE ledger_issue_relationship_sources
+         SET deleted_at = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(now, now, existing.id);
+      touchedRelationshipIds.add(existing.relationship_id);
+    }
+    for (const item of desired.values()) {
+      touchedRelationshipIds.add(item.relationship.id);
+    }
+    for (const relationshipId of touchedRelationshipIds) {
+      this.pruneDerivedRelationshipIfUnreferenced(relationshipId, source, actor, now, emitted);
+    }
   }
 
   resolveIssueRef(ref: string, options: { project_id?: string } = {}): ResolveIssueRefResult {

@@ -2,7 +2,7 @@
 
 Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Gemini, gating protected-branch merges behind hardware key authentication, and providing a web dashboard for managing it all from one place.
 
-Everything stays on your machine. No cloud services, no external databases, no telemetry. Mandible uses a local SQLite database and communicates with agents through process discovery, a CLI wrapper, an MCP channel server, and an embedded console with the Claude Agent SDK.
+Everything stays on your machine. No cloud services, no external databases, no telemetry. Mandible uses a local SQLite database and communicates with agents through their indexed conversations, lifecycle hooks, a CLI wrapper, an MCP channel server, and an embedded console with the Claude Agent SDK.
 
 ## What it does
 

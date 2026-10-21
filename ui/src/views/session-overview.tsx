@@ -1,30 +1,25 @@
-// Issue 037fa85 — Session Overview view: per-session page with page-level
-// agent session auto-binding.
-//
-// The view is generic first: it renders for any session id (from the picker or
-// a #/overview?session=<id> deep link). When the page consumed a tab-local
-// agent_session fragment at boot, the resolver decides the binding with
-// explicit zero/one/many semantics — exactly one match auto-binds, anything
-// else is shown honestly with the session picker as fallback. The binding is
-// display/navigation-only: it is never attached to a mutation request.
+// Session Overview: one page per agent session, for every provider. The page
+// is keyed on any session alias (a provider session id, a Claude subagent id,
+// a `sessions.id`, a console session id) or a prefix of one: the explicit
+// #/overview?session=<ref> selection, else the tab-local agent_session
+// binding. A prefix naming several sessions lists them to pick from. The
+// binding is display/navigation-only: it is never attached to a mutation.
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
-  getProviderScopedOverview,
+  ApiError,
   getSessionOverview,
   getSessions,
   invalidateApiGetCache,
-  resolveAgentSession,
-  type ProviderScopedLinkedIssue,
-  type ProviderScopedOverview,
+  type SessionDescendant,
   type SessionOverview,
-  type SessionOverviewChild,
+  type SessionOverviewAmbiguous,
   type SessionOverviewConversation,
   type SessionOverviewLinkedIssue,
   type SessionOverviewWorkUnit,
-  type SessionResolveMatch,
+  type SessionSummary,
 } from '../api';
 import { shortRouteId } from '../routing';
 import { resourceRefHref } from '../resource-refs';
@@ -33,17 +28,12 @@ import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 
-type BindingState =
-  | { kind: 'none' }
-  | { kind: 'resolving' }
-  | { kind: 'bound'; match: SessionResolveMatch }
-  | { kind: 'zero' }
-  // Issue 037fa85 (follow-up) — exactly one match with a transcript but no
-  // Mandible session row: render the provider-scoped overview, not the picker.
-  | { kind: 'provider-scoped'; match: SessionResolveMatch }
-  // Review C4 — truncated marks a capped prefix scan: even a single returned
-  // match must not be presented (or auto-bound) as unique.
-  | { kind: 'many'; matches: SessionResolveMatch[]; truncated?: boolean }
+type OverviewState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'resolved'; overview: SessionOverview }
+  | { kind: 'ambiguous'; result: SessionOverviewAmbiguous }
+  | { kind: 'not-found' }
   | { kind: 'error'; message: string };
 
 export type SessionOverviewViewProps = {
@@ -78,28 +68,7 @@ function shortUuid(value: string): string {
   return value.length > 13 ? `${value.slice(0, 13)}…` : value;
 }
 
-function distinctSessionRef(value: string, peers: string[]): string {
-  if (value.length <= 13) return value;
-  let length = 8;
-  while (
-    length < value.length
-    && peers.some((peer) => peer !== value && peer.startsWith(value.slice(0, length)))
-  ) {
-    length += 1;
-  }
-  return length < value.length ? `${value.slice(0, length)}…` : value;
-}
-
-function sessionText(session: Record<string, unknown>, key: string): string | null {
-  const value = session[key];
-  return typeof value === 'string' && value ? value : null;
-}
-
-/**
- * Update the #/overview session param in place so refreshes keep the
- * selection. Issue f59b5bd — the shareable URL carries the 8-char short form;
- * the overview endpoints resolve prefixes with honest ambiguity handling.
- */
+/** Update the #/overview session param in place so refreshes keep the selection. */
 function writeSessionParamToHash(sessionId: string | null): void {
   if (typeof window === 'undefined') return;
   try {
@@ -118,6 +87,20 @@ function writeSessionParamToHash(sessionId: string | null): void {
   } catch {
     // Navigation convenience only.
   }
+}
+
+function overviewHref(sessionId: string): string {
+  return `#/overview?session=${encodeURIComponent(shortRouteId(sessionId))}`;
+}
+
+function LivenessBadge({ liveness }: { liveness: SessionSummary['liveness'] }): JSX.Element {
+  return <span className={`session-overview-badge session-overview-badge--${liveness}`}>{liveness}</span>;
+}
+
+function sessionLabel(session: SessionSummary): string {
+  if (session.title) return session.title;
+  if (session.cwd) return session.cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').at(-1) || 'Session';
+  return session.provider ? `${session.provider.charAt(0).toUpperCase()}${session.provider.slice(1)} session` : 'Session';
 }
 
 function IssueRow({ issue }: { issue: SessionOverviewLinkedIssue }): JSX.Element {
@@ -157,21 +140,17 @@ function WorkUnitRow({ unit }: { unit: SessionOverviewWorkUnit }): JSX.Element {
   );
 }
 
-function ChildRow({ child }: { child: SessionOverviewChild }): JSX.Element {
+function ChildRow({ child }: { child: SessionDescendant }): JSX.Element {
   return (
     <tr>
       <td>
-        <a href={`#/overview?session=${encodeURIComponent(shortRouteId(child.id))}`}>{shortUuid(child.id)}</a>
+        <a href={overviewHref(child.id)}>{shortUuid(child.id)}</a>
       </td>
-      <td>{child.app}</td>
-      <td>
-        <span className={`session-overview-badge session-overview-badge--${child.status}`}>
-          {child.status}
-        </span>
-      </td>
-      <td className="session-overview__cell-grow">{child.task ?? child.branch ?? '—'}</td>
+      <td>{child.provider ?? '—'}</td>
+      <td><LivenessBadge liveness={child.liveness} /></td>
+      <td className="session-overview__cell-grow">{child.agent ? `${child.agent} · ` : ''}{child.title ?? child.branch ?? '—'}</td>
       <td>{child.depth}</td>
-      <td>{formatTimestamp(child.last_active ?? child.created_at)}</td>
+      <td>{formatTimestamp(child.last_activity ?? child.started_at)}</td>
     </tr>
   );
 }
@@ -197,14 +176,12 @@ function SectionTable({
   columns,
   count,
   emptyText,
-  unavailableReason,
   children,
 }: {
   label: string;
   columns: string[];
   count: number;
   emptyText: string;
-  unavailableReason?: string | null;
   children?: ComponentChildren;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(true);
@@ -215,9 +192,7 @@ function SectionTable({
       expanded={expanded}
       onExpandedChange={setExpanded}
     >
-      {unavailableReason ? (
-        <p className="session-overview__unavailable">Unavailable: {unavailableReason}</p>
-      ) : count === 0 ? (
+      {count === 0 ? (
         <p className="text-muted">{emptyText}</p>
       ) : (
         <div className="session-overview__table-wrap">
@@ -232,35 +207,6 @@ function SectionTable({
         </div>
       )}
     </CollapsiblePanel>
-  );
-}
-
-function sessionDisplayName(session: Record<string, unknown> | null): string {
-  if (!session) return 'Session Overview';
-  const task = sessionText(session, 'task');
-  if (task) return task;
-  const cwd = sessionText(session, 'cwd');
-  if (cwd) return cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').at(-1) || 'Session';
-  const app = sessionText(session, 'app');
-  return app ? `${app.charAt(0).toUpperCase()}${app.slice(1)} session` : 'Session';
-}
-
-function ProviderIssueRow({ issue }: { issue: ProviderScopedLinkedIssue }): JSX.Element {
-  const shortId = issue.short_id || issue.issue_id.slice(0, 7);
-  const resourceRef = `issue:${shortId}`;
-  return (
-    <tr>
-      <td>
-        <a data-resource-ref={resourceRef} href={resourceRefHref(resourceRef)}>{shortId}</a>
-      </td>
-      <td className="session-overview__cell-grow">{issue.title}</td>
-      <td>
-        <span className={`session-overview-badge session-overview-badge--${issue.status}`}>
-          {issue.status}
-        </span>
-      </td>
-      <td>{issue.work_unit_ids.length}</td>
-    </tr>
   );
 }
 
@@ -326,112 +272,126 @@ function SessionPicker({
   );
 }
 
+function SessionFacts({ session }: { session: SessionSummary }): JSX.Element {
+  return (
+    <dl className="session-overview__facts">
+      <div><dt>Status</dt><dd><LivenessBadge liveness={session.liveness} /></dd></div>
+      <div><dt>Provider</dt><dd>{session.provider ?? '—'}</dd></div>
+      <div><dt>Branch</dt><dd>{session.branch ?? '—'}</dd></div>
+      <div><dt>Cwd</dt><dd className="session-overview__path">{session.cwd ?? '—'}</dd></div>
+      <div><dt>Started</dt><dd>{formatTimestamp(session.started_at)}</dd></div>
+      <div><dt>Last activity</dt><dd>{formatTimestamp(session.last_activity)}</dd></div>
+      {session.agent ? <div><dt>Agent</dt><dd>{session.agent}</dd></div> : null}
+      {session.process ? (
+        <div><dt>Process</dt><dd>{session.process.status}{session.process.pid ? ` · pid ${session.process.pid}` : ''}</dd></div>
+      ) : null}
+    </dl>
+  );
+}
+
+function OverviewSections({ overview }: { overview: SessionOverview }): JSX.Element {
+  return (
+    <>
+      <SectionTable
+        label="Linked issues"
+        columns={['Issue', 'Title', 'Status', 'Link', 'Last seen']}
+        count={overview.linked_issues.items.length}
+        emptyText="No explicit ledger issue links for this session."
+      >
+        {overview.linked_issues.items.map((issue) => (
+          <IssueRow key={`${issue.issue_id}:${issue.link_type}`} issue={issue} />
+        ))}
+      </SectionTable>
+
+      <SectionTable
+        label="Work units"
+        columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
+        count={overview.work_units.items.length}
+        emptyText="No work units held by this session or its descendants."
+      >
+        {overview.work_units.items.map((unit) => (
+          <WorkUnitRow key={unit.id} unit={unit} />
+        ))}
+      </SectionTable>
+
+      <SectionTable
+        label="Child sessions"
+        columns={['Session', 'Provider', 'Status', 'Task', 'Depth', 'Last active']}
+        count={overview.children.items.length}
+        emptyText="No child sessions recorded."
+      >
+        {overview.children.items.map((child) => (
+          <ChildRow key={child.id} child={child} />
+        ))}
+      </SectionTable>
+      {overview.children.truncated ? (
+        <p className="text-muted">
+          Child list truncated (depth limit {overview.children.depth_limit}, count limit{' '}
+          {overview.children.count_limit}).
+        </p>
+      ) : null}
+
+      <SectionTable
+        label="Conversations"
+        columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
+        count={overview.conversations.items.length}
+        emptyText="No indexed conversations for this session."
+      >
+        {overview.conversations.items.map((conversation) => (
+          <ConversationRow key={conversation.id} conversation={conversation} />
+        ))}
+      </SectionTable>
+    </>
+  );
+}
+
 export function SessionOverviewView({
   initialSessionId,
   agentBinding,
   embedded = false,
 }: SessionOverviewViewProps): JSX.Element {
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
-  const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
-  const [overview, setOverview] = useState<SessionOverview | null>(null);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [selectedRef, setSelectedRef] = useState<string | null>(initialSessionId ?? agentBinding);
+  const [state, setState] = useState<OverviewState>({ kind: 'idle' });
   const [pickerError, setPickerError] = useState<string | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
-  const [providerOverview, setProviderOverview] = useState<ProviderScopedOverview | null>(null);
-  const [providerOverviewError, setProviderOverviewError] = useState<string | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const scrollOwnerRef = useRef<HTMLDivElement>(null);
 
   // Deep-link/param changes (e.g. clicking a child session row) win over the
   // in-memory selection.
   useEffect(() => {
-    if (initialSessionId && initialSessionId !== selectedSessionId) {
-      setSelectedSessionId(initialSessionId);
-    }
+    if (initialSessionId && initialSessionId !== selectedRef) setSelectedRef(initialSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSessionId]);
 
-  // Resolve the page-local agent binding once, only when no explicit session
-  // selection exists. Provider-neutral, and the binding may be a full id or a
-  // short prefix. Zero/one/many are surfaced honestly — only exactly one
-  // bindable match auto-selects.
   useEffect(() => {
-    if (!agentBinding || initialSessionId) return;
-    let cancelled = false;
-    setBinding({ kind: 'resolving' });
-    const initialLoad = resolveAgentSession(agentBinding)
-      .then((result) => {
-        if (cancelled) return;
-        const bindable = result.matches.filter((match) => match.mandible_session_id);
-        if (result.truncated) {
-          // Review C4 — a capped scan may hide further identities; never
-          // auto-bind (or render a single provider-scoped view) from it.
-          setBinding({ kind: 'many', matches: result.matches, truncated: true });
-        } else if (result.matches.length === 0) {
-          setBinding({ kind: 'zero' });
-        } else if (result.matches.length === 1 && bindable.length === 1) {
-          setBinding({ kind: 'bound', match: bindable[0] });
-          setSelectedSessionId(bindable[0].mandible_session_id);
-          writeSessionParamToHash(bindable[0].mandible_session_id);
-        } else if (result.matches.length === 1 && result.matches[0].conversation_id) {
-          // One match known via its ingested transcript but with no registry
-          // session row — render the provider-scoped overview instead of
-          // dropping to the picker. Display/navigation-only, like binding.
-          setBinding({ kind: 'provider-scoped', match: result.matches[0] });
-        } else if (result.matches.length === 1) {
-          // One match but no registry session or transcript behind it —
-          // nothing to bind or render.
-          setBinding({ kind: 'zero' });
-        } else {
-          setBinding({ kind: 'many', matches: result.matches });
-        }
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setBinding({
-          kind: 'error',
-          message: err instanceof Error ? err.message : 'Resolver request failed',
-        });
-      });
-    registerInitialRouteLoad(initialLoad);
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentBinding, registerInitialRouteLoad]);
-
-  useEffect(() => {
-    if (!selectedSessionId) {
-      setOverview(null);
-      setOverviewError(null);
+    if (!selectedRef) {
+      setState({ kind: 'idle' });
       return;
     }
     let cancelled = false;
-    setOverviewLoading(true);
-    setOverviewError(null);
-    const matchingAgentBinding = binding.kind === 'bound'
-      && binding.match.mandible_session_id === selectedSessionId
-      ? agentBinding
-      : null;
-    const initialLoad = getSessionOverview(selectedSessionId, matchingAgentBinding)
+    setState((current) => (current.kind === 'resolved' ? current : { kind: 'loading' }));
+    const initialLoad = getSessionOverview(selectedRef)
       .then((payload) => {
         if (cancelled) return;
-        setOverview(payload);
+        if (payload.status === 'ambiguous') {
+          setState({ kind: 'ambiguous', result: payload });
+          return;
+        }
+        setState({ kind: 'resolved', overview: payload });
+        if (!embedded && !initialSessionId) writeSessionParamToHash(payload.session.id);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setOverviewError(err instanceof Error ? err.message : 'Failed to load overview');
-      })
-      .finally(() => {
-        if (!cancelled) setOverviewLoading(false);
+        if (err instanceof ApiError && err.status === 404) setState({ kind: 'not-found' });
+        else setState({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to load overview' });
       });
     registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, agentBinding, binding, refreshToken, registerInitialRouteLoad]);
+  }, [selectedRef, embedded, initialSessionId, refreshToken, registerInitialRouteLoad]);
 
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
@@ -439,9 +399,7 @@ export function SessionOverviewView({
     if (embedded || typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
       if (document.visibilityState !== 'visible') return;
-      if (selectedSessionId) {
-        invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedSessionId)}/overview`);
-      }
+      if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
       setRefreshToken((token) => token + 1);
     };
     const interval = window.setInterval(refreshVisible, 15_000);
@@ -452,79 +410,31 @@ export function SessionOverviewView({
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [embedded, selectedSessionId]);
-
-  // Provider-scoped overview: loaded only for the conversation-only binding
-  // state, keyed on the full identity and provider the (possibly short)
-  // binding resolved to server-side (review C2 — no hard-coded provider).
-  // Read-only rendering.
-  const providerScopedRef =
-    binding.kind === 'provider-scoped' ? binding.match.matched_ref : null;
-  const providerScopedProvider =
-    binding.kind === 'provider-scoped' ? binding.match.provider : null;
-  useEffect(() => {
-    if (binding.kind !== 'provider-scoped' || !providerScopedRef || selectedSessionId) {
-      setProviderOverview(null);
-      setProviderOverviewError(null);
-      return;
-    }
-    if (providerScopedProvider !== 'codex') {
-      // The by-provider overview endpoint is codex-only today. Render the
-      // honest unavailable state for other providers instead of presenting
-      // their data as codex-scoped.
-      setProviderOverview(null);
-      setProviderOverviewError(
-        `Provider-scoped overview is not available for provider ${providerScopedProvider ?? 'unknown'} yet.`,
-      );
-      return;
-    }
-    let cancelled = false;
-    setProviderOverviewError(null);
-    const initialLoad = getProviderScopedOverview(providerScopedProvider, providerScopedRef)
-      .then((payload) => {
-        if (!cancelled) setProviderOverview(payload);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setProviderOverview(null);
-        setProviderOverviewError(
-          err instanceof Error ? err.message : 'Failed to load provider-scoped overview',
-        );
-      });
-    registerInitialRouteLoad(initialLoad);
-    return () => {
-      cancelled = true;
-    };
-  }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken, registerInitialRouteLoad]);
+  }, [embedded, selectedRef]);
 
   const handleSelect = useCallback((sessionId: string) => {
-    setSelectedSessionId(sessionId);
+    setSelectedRef(sessionId);
     writeSessionParamToHash(sessionId);
   }, []);
 
   const handleClearSelection = useCallback(() => {
-    setSelectedSessionId(null);
+    setSelectedRef(null);
     writeSessionParamToHash(null);
   }, []);
 
-  const session = overview?.session ?? null;
-  const sessionId = session ? String(session.id ?? selectedSessionId ?? '') : selectedSessionId ?? '';
+  const session = state.kind === 'resolved' ? state.overview.session : null;
   const sharedHeader = !embedded && session ? (
     <DetailPaneHeader
       variant="standard"
       identity={{
         entityLabel: 'Session',
-        displayRef: sessionText(session, 'app') ?? 'registered',
-        canonicalRef: sessionId,
-        copyRef: sessionId,
+        displayRef: session.provider ?? 'session',
+        canonicalRef: session.id,
+        copyRef: session.id,
         copyLabel: 'Copy session id',
       }}
-      title={sessionDisplayName(session)}
-      status={(
-        <span className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}>
-          {String(session.status ?? 'unknown') === 'active' ? 'running' : String(session.status ?? 'unknown')}
-        </span>
-      )}
+      title={sessionLabel(session)}
+      status={<LivenessBadge liveness={session.liveness} />}
       actions={(
         <details className="session-overview__menu">
           <summary aria-label="Session actions" title="Session actions">•••</summary>
@@ -535,25 +445,19 @@ export function SessionOverviewView({
         </details>
       )}
       actionsLabel="Session actions"
-      secondaryMetadata={(
-        <dl className="session-overview__facts">
-          <div><dt>App</dt><dd>{sessionText(session, 'app') ?? '—'}</dd></div>
-          <div><dt>Branch</dt><dd>{sessionText(session, 'branch') ?? '—'}</dd></div>
-          <div><dt>Cwd</dt><dd className="session-overview__path">{sessionText(session, 'cwd') ?? '—'}</dd></div>
-          <div><dt>Created</dt><dd>{formatTimestamp(session.created_at)}</dd></div>
-          <div><dt>Last message</dt><dd>{formatTimestamp(session.last_active)}</dd></div>
-        </dl>
-      )}
+      secondaryMetadata={<SessionFacts session={session} />}
     />
   ) : !embedded ? <DetailPaneHeader variant="compact" title="Session Overview" /> : null;
+
+  const errorMessage = state.kind === 'error' ? state.message : pickerError;
 
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
       <AppOperationalNoticeOutlet registerAsMain={!embedded} />
-      {(binding.kind === 'error' || providerOverviewError || overviewError || pickerError) ? (
+      {errorMessage ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
-          {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError ?? pickerError}
+          {errorMessage}
         </DetailPaneNotice>
       ) : null}
       <DetailPaneModal
@@ -565,225 +469,54 @@ export function SessionOverviewView({
         embeddedFallback={{ scrollOwnerRef }}
       >
         <dl className="session-overview__metadata">
-          <div><dt>Session id</dt><dd>{sessionId || '—'}</dd></div>
+          <div><dt>Session id</dt><dd>{session?.id ?? '—'}</dd></div>
           <div><dt>Agent binding</dt><dd>{agentBinding ?? '—'}</dd></div>
-          <div><dt>Provider session</dt><dd>{session ? sessionText(session, 'provider_session_id') ?? '—' : '—'}</dd></div>
+          <div><dt>Process session</dt><dd>{session?.process?.id ?? '—'}</dd></div>
+          <div><dt>Conversation</dt><dd>{session?.conversation_id ?? '—'}</dd></div>
         </dl>
       </DetailPaneModal>
 
-      {agentBinding && binding.kind !== 'bound' && binding.kind !== 'provider-scoped' ? (
+      {selectedRef && state.kind === 'not-found' ? (
         <div className="session-overview__binding" role="status">
-          {binding.kind === 'resolving' && (
-            <span>Resolving agent session {shortUuid(agentBinding)}…</span>
-          )}
-          {binding.kind === 'zero' && (
-            <span>
-              No Mandible session matches agent session <code>{shortUuid(agentBinding)}</code>.
-              Pick a session below.
-            </span>
-          )}
-          {binding.kind === 'many' && (
-            <span>
-              {binding.truncated ? (
-                <>
-                  Agent session <code>{shortUuid(agentBinding)}</code> matches too many
-                  identities to resolve uniquely — use a longer id or pick one explicitly.
-                </>
-              ) : (
-                <>
-                  Agent session <code>{shortUuid(agentBinding)}</code> matches multiple Mandible
-                  sessions — pick one explicitly.
-                </>
-              )}
-            </span>
-          )}
+          No session matches <code>{shortUuid(selectedRef)}</code>.
         </div>
       ) : null}
 
-      {binding.kind === 'many' && !selectedSessionId ? (
-        <ul className="session-overview__picker" aria-label="Agent session matches">
-          {binding.matches.map((match, index) => {
-            const matchId = match.mandible_session_id ?? match.matched_ref;
-            const peerIds = binding.matches.map((candidate) => (
-              candidate.mandible_session_id ?? candidate.matched_ref
-            ));
-            return (
-            <li key={`${match.mandible_session_id ?? match.console_session_id ?? index}`}>
-              <button
-                type="button"
-                disabled={!match.mandible_session_id}
-                onClick={() => {
-                  if (match.mandible_session_id) handleSelect(match.mandible_session_id);
-                }}
-              >
-                <span className="session-overview__picker-id">
-                  {match.mandible_session_id
-                    ? distinctSessionRef(matchId, peerIds)
-                    : 'no registry session'}
-                </span>
-                <span className="session-overview__picker-task">
-                  {match.sources.join(', ')}
-                  {match.console_session_id ? ` · console ${shortUuid(match.console_session_id)}` : ''}
-                </span>
-              </button>
-            </li>
-            );
-          })}
-        </ul>
+      {selectedRef && state.kind === 'ambiguous' ? (
+        <>
+          <div className="session-overview__binding" role="status">
+            {state.result.truncated
+              ? <>Session <code>{shortUuid(selectedRef)}</code> matches too many sessions to list; use a longer id.</>
+              : <>Session <code>{shortUuid(selectedRef)}</code> matches several sessions; pick one.</>}
+          </div>
+          <ul className="session-overview__picker" aria-label="Matching sessions">
+            {state.result.candidates.map((candidate) => (
+              <li key={candidate.id}>
+                <button type="button" onClick={() => handleSelect(candidate.id)}>
+                  <span className="session-overview__picker-id">{shortUuid(candidate.id)}</span>
+                  <span className="session-overview__picker-app">{candidate.provider ?? '?'}</span>
+                  <LivenessBadge liveness={candidate.liveness} />
+                  <span className="session-overview__picker-task">{candidate.title ?? candidate.cwd ?? ''}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
 
-      {!selectedSessionId && binding.kind === 'provider-scoped' ? (
-        <div className="session-overview__body">
-          {!providerOverview && !providerOverviewError ? (
-            <p className="text-muted">Loading provider-scoped overview…</p>
-          ) : null}
-          {providerOverview ? (
-            <>
-              <SectionTable
-                label="Linked issues"
-                columns={['Issue', 'Title', 'Status', 'Work units']}
-                count={providerOverview.linked_issues.items.length}
-                emptyText="No issues reachable via provider-matched work units."
-              >
-                {providerOverview.linked_issues.items.map((issue) => (
-                  <ProviderIssueRow key={issue.issue_id} issue={issue} />
-                ))}
-              </SectionTable>
-              <p className="text-muted">{providerOverview.linked_issues.note}</p>
-
-              <SectionTable
-                label="Work units"
-                columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
-                count={providerOverview.work_units.items.length}
-                emptyText="No work units matched this agent session id."
-              >
-                {providerOverview.work_units.items.map((unit) => (
-                  <WorkUnitRow key={unit.id} unit={unit} />
-                ))}
-              </SectionTable>
-
-              <SectionTable
-                label="Child sessions"
-                columns={['Session', 'App', 'Status', 'Task', 'Depth', 'Last active']}
-                count={0}
-                emptyText=""
-                unavailableReason={providerOverview.children.reason}
-              />
-
-              <SectionTable
-                label="Conversations"
-                columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
-                count={providerOverview.conversations.items.length}
-                emptyText="No indexed conversations for this agent session."
-              >
-                {providerOverview.conversations.items.map((conversation) => (
-                  <ConversationRow key={conversation.id} conversation={conversation} />
-                ))}
-              </SectionTable>
-            </>
-          ) : null}
-        </div>
-      ) : !selectedSessionId && (binding.kind === 'many' || binding.kind === 'resolving') ? null
-      : !selectedSessionId ? (
+      {!selectedRef || (state.kind === 'not-found' && !embedded) ? (
         <SessionPicker onSelect={handleSelect} onErrorChange={setPickerError} />
       ) : (
         <div className="session-overview__body">
-          {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
-          {session ? (
+          {state.kind === 'loading' ? <p className="text-muted">Loading overview…</p> : null}
+          {state.kind === 'resolved' ? (
             <>
-              {embedded ? <section className="session-overview__section" aria-label="Session">
-                <dl className="session-overview__facts">
-                  <div>
-                    <dt>Status</dt>
-                    <dd>
-                      <span className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}>
-                        {String(session.status ?? 'unknown')}
-                      </span>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>App</dt>
-                    <dd>{sessionText(session, 'app') ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>Branch</dt>
-                    <dd>{sessionText(session, 'branch') ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>Cwd</dt>
-                    <dd className="session-overview__path">{sessionText(session, 'cwd') ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>Created</dt>
-                    <dd>{formatTimestamp(session.created_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Last message</dt>
-                    <dd>{formatTimestamp(session.last_active)}</dd>
-                  </div>
-                  {sessionText(session, 'task') ? (
-                    <div className="session-overview__facts-wide">
-                      <dt>Task</dt>
-                      <dd>{sessionText(session, 'task')}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </section> : null}
-
-              {overview ? (
-                <>
-                  <SectionTable
-                    label="Linked issues"
-                    columns={['Issue', 'Title', 'Status', 'Link', 'Last seen']}
-                    count={overview.linked_issues.items.length}
-                    emptyText="No explicit ledger issue links for this session."
-                  >
-                    {overview.linked_issues.items.map((issue) => (
-                      <IssueRow key={`${issue.issue_id}:${issue.link_type}`} issue={issue} />
-                    ))}
-                  </SectionTable>
-
-                  <SectionTable
-                    label="Work units"
-                    columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
-                    count={overview.work_units.items.length}
-                    emptyText="No work units assigned to this session or its descendants."
-                  >
-                    {overview.work_units.items.map((unit) => (
-                      <WorkUnitRow key={unit.id} unit={unit} />
-                    ))}
-                  </SectionTable>
-
-                  <SectionTable
-                    label="Child sessions"
-                    columns={['Session', 'App', 'Status', 'Task', 'Depth', 'Last active']}
-                    count={overview.children.items.length}
-                    emptyText="No child sessions recorded."
-                    unavailableReason={overview.children.available ? null : overview.children.reason}
-                  >
-                    {overview.children.items.map((child) => (
-                      <ChildRow key={child.id} child={child} />
-                    ))}
-                  </SectionTable>
-                  {overview.children.truncated ? (
-                    <p className="text-muted">
-                      Child list truncated (depth limit {overview.children.depth_limit}, count limit{' '}
-                      {overview.children.count_limit}).
-                    </p>
-                  ) : null}
-
-                  <SectionTable
-                    label="Conversations"
-                    columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
-                    count={overview.conversations.items.length}
-                    emptyText="No indexed conversations for this session."
-                  >
-                    {overview.conversations.items.map((conversation) => (
-                      <ConversationRow key={conversation.id} conversation={conversation} />
-                    ))}
-                  </SectionTable>
-                </>
+              {embedded ? (
+                <section className="session-overview__section" aria-label="Session">
+                  <SessionFacts session={state.overview.session} />
+                </section>
               ) : null}
+              <OverviewSections overview={state.overview} />
             </>
           ) : null}
         </div>

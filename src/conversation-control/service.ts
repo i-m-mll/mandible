@@ -647,7 +647,6 @@ export class ConversationControlService {
           || snapshot.value.ownership.generation !== event.generation
           || snapshot.value.provider_session_id !== event.provider_session_id) return false;
     }
-    if (event.kind === "provider-lineage") this.materializeExactLineage(event);
     const current = this.liveProjection.get(event.conversation_id) ?? null;
     const next = mergeProviderLiveProjection(current, event);
     if (next === current) return false;
@@ -839,34 +838,5 @@ export class ConversationControlService {
       retired_live_count: new Set(coveredIdentities).size,
       retained_live_count: current.events.filter((event) => event.kind === "provisional-content").length - new Set(coveredIdentities).size,
     });
-  }
-
-  private materializeExactLineage(event: Extract<ProviderAdapterEvent, { kind: "provider-lineage" }>): void {
-    if (!event.sender_provider_session_id || !event.receiver_provider_session_id) return;
-    this.db.prepare(`
-      UPDATE conversations AS child
-         SET parent_conversation_id = (
-           SELECT parent.id
-             FROM conversations AS parent
-            WHERE parent.id = ? AND parent.source = 'codex' AND parent.session_id = ?
-            ORDER BY parent.created_at ASC, parent.id ASC
-            LIMIT 1
-         ),
-             is_sidechain = 1,
-             updated_at = datetime('now')
-       WHERE child.source = 'codex'
-         AND child.session_id = ?
-         AND child.parent_conversation_id IS NULL
-         AND EXISTS (
-           SELECT 1 FROM conversations AS parent
-            WHERE parent.id = ? AND parent.source = 'codex' AND parent.session_id = ?
-         )
-    `).run(
-      event.conversation_id,
-      event.sender_provider_session_id,
-      event.receiver_provider_session_id,
-      event.conversation_id,
-      event.sender_provider_session_id,
-    );
   }
 }

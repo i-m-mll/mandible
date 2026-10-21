@@ -13,7 +13,8 @@ import type {
   ParserSourceSnapshot,
   ParseResult,
 } from "./types.js";
-import { attachTranscriptChatItem } from "./types.js";
+import type { ConversationParent } from "../conversation-lineage.js";
+import { attachTranscriptChatItem, firstUserMessageOpening } from "./types.js";
 import { normalizeClaudeTranscriptUsage } from "./context-usage.js";
 import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
@@ -157,6 +158,29 @@ export function parseClaudeSubagentPath(filePath: string): ClaudeSubagentPathInf
     parentSessionId: match[1],
     agentId: match[2],
   };
+}
+
+/**
+ * A subagent transcript's parent session and agent id. Current Claude nests it
+ * under <parent>/subagents/; older Claude wrote a sibling agent-<id>.jsonl whose
+ * sidechain records carry the parent's session id.
+ */
+function claudeTranscriptLineage(
+  filePath: string,
+  sessionId: string,
+  isSidechain: boolean,
+): { parent: ConversationParent | null; agentId: string | null } {
+  const nested = parseClaudeSubagentPath(filePath);
+  if (nested) {
+    return { parent: { source: "claude_code", sessionId: nested.parentSessionId }, agentId: nested.agentId };
+  }
+  const fileStem = path.basename(filePath, ".jsonl");
+  const legacyAgentId = isSidechain && sessionId && sessionId !== fileStem
+    ? fileStem.match(/^agent-(.+)$/)?.[1] ?? null
+    : null;
+  return legacyAgentId
+    ? { parent: { source: "claude_code", sessionId }, agentId: legacyAgentId }
+    : { parent: null, agentId: null };
 }
 
 // --- Parser ---
@@ -602,7 +626,8 @@ export class ClaudeParser implements ConversationParser {
       return null;
     }
 
-    // Compute source hash
+    const lineage = claudeTranscriptLineage(filePath, sessionId, hasSidechainRecord);
+
     return {
       conversation: {
         source: "claude_code",
@@ -621,8 +646,11 @@ export class ClaudeParser implements ConversationParser {
         model,
         cli_version: cliVersion,
         is_sidechain: Boolean(subagentPath || hasSidechainRecord || indexEntry?.isSidechain),
-        agent_id: subagentPath?.agentId ?? null,
+        agent_id: lineage.agentId,
       },
+      parent: lineage.parent,
+      opening: firstUserMessageOpening(blocks, options.baseBlockCount === 0),
+      createdByAgent: false,
       blocks,
       ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
       ...(providerTitle ? { providerTitle: title } : {}),

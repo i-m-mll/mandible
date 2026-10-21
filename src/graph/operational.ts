@@ -342,65 +342,35 @@ function addSessionIssueEdges(
   sessionNodeIds: Set<string>,
   edges: Map<string, GraphEdge>,
 ): void {
-  interface SessionIssueRow {
-    session_id: string;
-    issue_id: string;
-    repo_id: string;
-  }
-
   const sessionIds = sessionIdsFromGraphNodeIds(sessionNodeIds);
-  if (sessionIds.length === 0) return;
+  if (sessionIds.length === 0 || !tableExists(getDb(), "ledger_session_issue_links")) return;
   const placeholders = sessionIds.map((_, index) => `:session${index}`);
   const bindings = Object.fromEntries(
     sessionIds.map((id, index) => [`session${index}`, id]),
   );
 
-  let rows: SessionIssueRow[];
-  try {
-    rows = getDb().prepare(
-      `SELECT session_id, issue_id, repo_id
-         FROM session_issues
-        WHERE session_id IN (${placeholders.join(", ")})`
-    ).all(bindings) as SessionIssueRow[];
-  } catch {
-    rows = [];
-  }
-
-  for (const row of rows) {
+  // A link is keyed on the provider session id when one is known, so a
+  // session row reaches its links through its own id or its conversation id.
+  const ledgerRows = getDb().prepare(
+    `SELECT s.id AS session_id, l.issue_id AS ledger_issue_id, l.metadata_json
+       FROM sessions s
+       JOIN ledger_session_issue_links l
+         ON l.session_id = s.id OR l.session_id = s.conversation_id
+      WHERE s.id IN (${placeholders.join(", ")})`
+  ).all(bindings) as Array<{ session_id: string; ledger_issue_id: string; metadata_json: string }>;
+  for (const row of ledgerRows) {
     const sessionNodeId = `session:${row.session_id}`;
-    const issueNodeId = `issue:${row.repo_id}:${row.issue_id}`;
-    if (sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
+    const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+      ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+    if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
       upsertEdge(edges, {
-        id: `session_issue:${row.session_id}:${row.repo_id}:${row.issue_id}`,
+        id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
         source: sessionNodeId,
         target: issueNodeId,
         type: "session_issue",
         edge_class: "lifecycle",
-        provenance: "session_issues",
+        provenance: "ledger_session_issue_links",
       });
-    }
-  }
-
-  if (tableExists(getDb(), "ledger_session_issue_links")) {
-    const ledgerRows = getDb().prepare(
-      `SELECT session_id, issue_id AS ledger_issue_id, metadata_json
-         FROM ledger_session_issue_links
-        WHERE session_id IN (${placeholders.join(", ")})`
-    ).all(bindings) as Array<{ session_id: string; ledger_issue_id: string; metadata_json: string }>;
-    for (const row of ledgerRows) {
-      const sessionNodeId = `session:${row.session_id}`;
-      const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
-        ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
-      if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
-        upsertEdge(edges, {
-          id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
-          source: sessionNodeId,
-          target: issueNodeId,
-          type: "session_issue",
-          edge_class: "lifecycle",
-          provenance: "ledger_session_issue_links",
-        });
-      }
     }
   }
 }

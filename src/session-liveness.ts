@@ -4,7 +4,8 @@
  *
  *   1. "Does this string name a session Mandible knows about, and what are its
  *      full identities?" — {@link resolveSessionAlias}.
- *   2. "Is the agent behind this string still live?" — {@link isSessionAliasLive}.
+ *   2. "Is the agent behind this string live, stopped, or unknowable right
+ *      now?" — {@link sessionAliasLiveness}.
  *
  * A caller may hold any one of four aliases for the same agent: a `sessions.id`,
  * a `console_sessions.id`, a `console_sessions.mandible_session_id`, or a
@@ -16,13 +17,16 @@
  * copy of the rule, and `src/ledger/graph-adapter.ts` kept a third copy of the
  * status list.
  *
- * The liveness predicate here is the archive path's predicate, moved verbatim:
- * that path decides whether a Codex thread may be archived, and a false
- * negative there archives a live thread. Its queries are unchanged.
+ * The liveness rule here began as the archive path's predicate: that path
+ * decides whether a Codex thread may be archived, and a false negative there
+ * archives a live thread. It answers in three states so that a check that
+ * could not complete is never mistaken for a stop (issue 8c7eb06).
  *
  * Provider-native task activity is read through a leaf adapter, so every
  * consumer shares the same answer without depending on route or UI state.
  */
+import type { LivenessState } from "./contracts.js";
+import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
 import { readCodexTaskLiveness } from "./codex-task-liveness.js";
@@ -36,6 +40,8 @@ import {
  * a `console_sessions` status; `active` and `idle` are used by both tables.
  */
 export const LIVE_SESSION_STATUSES = ["active", "idle", "running"] as const;
+
+export type { LivenessState } from "./contracts.js";
 
 export function isLiveSessionStatus(value: unknown): boolean {
   return value === "active" || value === "idle" || value === "running";
@@ -57,15 +63,13 @@ export interface SessionAliasResolution {
   console_status: string | null;
   /** ISO timestamp of the Mandible session's last activity, when known. */
   last_activity: string | null;
-  has_live_agent: boolean;
+  liveness: LivenessState;
 }
 
 interface SessionRow {
   id: string;
   app?: string | null;
   status?: string | null;
-  pid?: number | null;
-  agent_type?: string | null;
   conversation_id?: string | null;
   updated_at?: string | null;
   last_active?: string | null;
@@ -132,74 +136,112 @@ export function resolveSessionAlias(
     console_status: consoleRow?.status ?? null,
     last_activity: linkedSession?.last_active
       ?? linkedSession?.updated_at
-      ?? providerIngestion?.updated_at
+      ?? providerIngestion?.last_activity
       ?? null,
-    has_live_agent: isSessionAliasLive(db, id, options),
+    liveness: sessionAliasLiveness(db, id, options),
   };
 }
 
 /**
- * Whether any session reachable from this alias is live.
- *
- * This is the archive path's `isProviderSessionLive`, moved unchanged. It ORs
- * over *every* matching row rather than over the single row
- * {@link resolveSessionAlias} selects for display, because "is anything still
- * running behind this id" is the conservative question the archive path must
- * ask: one live row anywhere is enough to leave the thread alone.
+ * The id a session-to-issue link is keyed on: the provider session id when one
+ * is known, else the console or session row id that is the session's only
+ * identity. Linking never creates a `sessions` row.
  */
-export function isSessionAliasLive(
+export function sessionLinkKey(resolution: SessionAliasResolution): string {
+  return resolution.provider_session_id
+    ?? resolution.console_session_id
+    ?? resolution.mandible_session_id
+    ?? resolution.supplied_id;
+}
+
+/** Every id the resolved session is known by, for reads keyed on any of them. */
+export function sessionAliasIds(resolution: SessionAliasResolution): string[] {
+  return [...new Set(
+    [
+      resolution.supplied_id,
+      resolution.mandible_session_id,
+      resolution.console_session_id,
+      resolution.provider_session_id,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  )];
+}
+
+/**
+ * Whether the agent behind this alias is live, stopped, or of unknown liveness.
+ *
+ * Every row reachable from the alias contributes evidence, and the strongest
+ * wins: one live row is enough to leave the agent alone, a check that could
+ * not complete makes the answer `unknown` unless another row proves the agent
+ * live, and only when every check completed without finding a live agent is it
+ * `stopped`. An alias that carries no liveness signal at all — an unknown id,
+ * or a transcript with no process row — is `stopped`.
+ *
+ * `unknown` is never "not live": a Codex thread whose writer-lock scan failed
+ * may be working right now, so no caller may clear, archive, or take over
+ * behind it.
+ */
+export function sessionAliasLiveness(
   db: Db,
   suppliedId: string,
   options: SessionLivenessOptions = {},
-): boolean {
-  const sessionRows = sessionRowsForAlias(db, suppliedId);
-  for (const row of sessionRows) {
-    if (isProviderProjectionSession(row)) {
-      if (isCodexProviderTaskLive(db, row.conversation_id!, options)) return true;
-      continue;
+): LivenessState {
+  let answer: LivenessState = "stopped";
+  for (const evidence of aliasLivenessEvidence(db, suppliedId, options)) {
+    if (evidence === "live") return "live";
+    if (evidence === "unknown") answer = "unknown";
+  }
+  return answer;
+}
+
+/**
+ * Liveness evidence from each row the alias reaches, lazily, so a live row
+ * short-circuits the remaining lookups. `null` is a row that says nothing.
+ */
+function* aliasLivenessEvidence(
+  db: Db,
+  suppliedId: string,
+  options: SessionLivenessOptions,
+): Generator<LivenessState | null> {
+  for (const row of sessionRowsForAlias(db, suppliedId)) {
+    yield statusLiveness(row.status);
+  }
+  if (tableExists(db, "console_sessions")) {
+    const rows = tableExists(db, "sessions")
+      ? db.prepare(
+        `SELECT cs.status AS console_status, s.id AS mandible_session_id
+         FROM console_sessions cs
+         LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
+         WHERE cs.id = ?
+            OR cs.mandible_session_id = ?
+            OR cs.provider_session_id = ?`,
+      ).all(
+        suppliedId,
+        suppliedId,
+        suppliedId,
+        suppliedId,
+      ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>
+      : db.prepare(
+        `SELECT cs.status AS console_status, NULL AS mandible_session_id
+         FROM console_sessions cs
+         WHERE cs.id = ?
+            OR cs.mandible_session_id = ?
+            OR cs.provider_session_id = ?`,
+      ).all(
+        suppliedId,
+        suppliedId,
+        suppliedId,
+      ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>;
+    for (const row of rows) {
+      yield statusLiveness(row.console_status);
+      if (!row.mandible_session_id) continue;
+      yield isMandibleSessionLive(db, row.mandible_session_id) ? "live" : "stopped";
     }
-    if (isLiveSessionStatus(row.status)) return true;
   }
-  if (!tableExists(db, "console_sessions")) {
-    return isCodexProviderTaskLive(db, suppliedId, options);
-  }
-  const rows = tableExists(db, "sessions")
-    ? db.prepare(
-      `SELECT cs.status AS console_status, s.id AS mandible_session_id
-       FROM console_sessions cs
-       LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
-       WHERE cs.id = ?
-          OR cs.mandible_session_id = ?
-          OR cs.provider_session_id = ?`,
-    ).all(
-      suppliedId,
-      suppliedId,
-      suppliedId,
-      suppliedId,
-    ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>
-    : db.prepare(
-      `SELECT cs.status AS console_status, NULL AS mandible_session_id
-       FROM console_sessions cs
-       WHERE cs.id = ?
-          OR cs.mandible_session_id = ?
-          OR cs.provider_session_id = ?`,
-    ).all(
-      suppliedId,
-      suppliedId,
-      suppliedId,
-    ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>;
-  for (const row of rows) {
-    if (isLiveSessionStatus(row.console_status)) return true;
-    if (!row.mandible_session_id) continue;
-    const session = lookupSession(db, row.mandible_session_id);
-    if (!session) continue;
-    if (isProviderProjectionSession(session)) {
-      if (isCodexProviderTaskLive(db, session.conversation_id!, options)) return true;
-    } else if (isLiveSessionStatus(session.status)) {
-      return true;
-    }
-  }
-  return isCodexProviderTaskLive(db, suppliedId, options);
+  yield codexTaskLiveness(db, suppliedId, options);
+}
+
+function statusLiveness(status: unknown): LivenessState {
+  return isLiveSessionStatus(status) ? "live" : "stopped";
 }
 
 /**
@@ -235,9 +277,9 @@ function lookupSessionByConversationId(db: Db, providerSessionId: string): Sessi
   const row = db.prepare(
     `SELECT * FROM sessions
      WHERE conversation_id = ?
-     ORDER BY CASE WHEN id = 'codex-' || ? THEN 0 ELSE 1 END, updated_at DESC, id ASC
+     ORDER BY updated_at DESC, id ASC
      LIMIT 1`,
-  ).get(providerSessionId, providerSessionId) as SessionRow | undefined;
+  ).get(providerSessionId) as SessionRow | undefined;
   return row ?? null;
 }
 
@@ -252,13 +294,6 @@ function sessionRowsForAlias(db: Db, suppliedId: string): SessionRow[] {
   ).all(suppliedId, suppliedId) as SessionRow[];
 }
 
-function isProviderProjectionSession(row: SessionRow): boolean {
-  const providerSessionId = row.conversation_id?.trim();
-  if (!providerSessionId || row.app !== "codex") return false;
-  return row.agent_type === "provider-session"
-    || (row.pid == null && row.id === `codex-${providerSessionId}`);
-}
-
 function providerSessionIngestion(db: Db, providerSessionId: string):
   Extract<ProviderSessionIngestion, { status: "ingested" }> | null {
   if (!tableExists(db, "conversations")) return null;
@@ -270,15 +305,31 @@ function providerSessionIngestion(db: Db, providerSessionId: string):
   }
 }
 
-function isCodexProviderTaskLive(
+/**
+ * The Codex writer-lock answer for a provider thread id: `null` when the id is
+ * not an indexed Codex thread, `unknown` when the lookup or the scan could not
+ * complete.
+ */
+function codexTaskLiveness(
   db: Db,
   providerSessionId: string,
   options: SessionLivenessOptions,
-): boolean {
-  const ingestion = providerSessionIngestion(db, providerSessionId);
-  if (!ingestion || ingestion.provider !== "codex") return false;
+): LivenessState | null {
+  if (!tableExists(db, "conversations")) return null;
+  let ingestion: ProviderSessionIngestion;
+  try {
+    ingestion = resolveProviderSessionIngestion(db, providerSessionId);
+  } catch (error) {
+    getDaemonLogger()("error", "session_liveness_lookup_failed", {
+      provider_session_id: providerSessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return "unknown";
+  }
+  if (ingestion.status !== "ingested" || ingestion.provider !== "codex") return null;
   const read = options.readCodexTaskLiveness ?? readCodexTaskLiveness;
-  return read(ingestion.source_path, ingestion.provider_session_id).status === "live";
+  const scan = read(ingestion.source_path, ingestion.provider_session_id).status;
+  return scan === "live" ? "live" : scan === "not_live" ? "stopped" : "unknown";
 }
 
 function consoleRowsForAlias(db: Db, suppliedId: string): ConsoleRow[] {

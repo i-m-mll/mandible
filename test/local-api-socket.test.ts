@@ -122,6 +122,57 @@ describe('owner-only local API socket', () => {
     expect(seen[0].identity).toMatchObject({ user_id: agent.id, method: 'local_socket' });
     expect(seen[0].body).toMatchObject({ id: 'claude-session-1', conversation_id: 'claude-session-1', app: 'claude', pid: process.pid });
   });
+  it('binds a wrapped session only to its own agent process, never to a nested run that inherits its id', async () => {
+    // Issue 5cf2755: a nested `claude -p` inherited MANDIBLE_SESSION_ID and its
+    // hooks rebound the wrapped coordinator's row to the nested conversation,
+    // then ended it; a nested `codex exec` attributed its calls to the coordinator.
+    const agent = createUser(db, { slug: 'claude-nested', kind: 'agent', display_name: 'Claude Nested' });
+    addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CLAUDE_CODE_SESSION_ID' });
+    const codexAgent = createUser(db, { slug: 'codex-nested', kind: 'agent', display_name: 'Codex Nested' });
+    addBinding(db, codexAgent.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
+    const registry = new SessionRegistry(db, () => undefined);
+    registerSessionRoutes(router, registry);
+    router.get('/api/inbox/global', (_req, res) => res.json({}),
+      { fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+    const wrapped = 'wrapped-coordinator';
+    // Ownership follows the process tree: the hook's parent stands in for the
+    // nested agent, and its grandparent for the wrapped one.
+    const wrapperPid = process.ppid;
+    const nestedPid = process.pid;
+    registry.registerSession({ id: wrapped, app: 'claude', pid: wrapperPid });
+    const envFile = path.join(root, 'claude-env.sh');
+    const runHook = async (hook: string, claudePid: number, conversation: string) => {
+      const child = spawn('bash', [path.resolve(`hooks/${hook}.sh`)], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
+        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile } });
+      let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.stdin.end(JSON.stringify({ session_id: conversation, cwd: root }));
+      expect(await new Promise((resolve) => child.once('close', resolve)), stderr).toBe(0);
+    };
+    const row = (id: string) => db.prepare('SELECT pid, conversation_id, status FROM sessions WHERE id = ?').get(id);
+
+    await runHook('session-start', wrapperPid, 'coordinator-conversation');
+    expect(row(wrapped)).toEqual({ pid: wrapperPid, conversation_id: 'coordinator-conversation', status: 'active' });
+    expect(fs.existsSync(envFile)).toBe(false);
+
+    await runHook('session-start', nestedPid, 'nested-conversation');
+    expect(fs.readFileSync(envFile, 'utf8')).toBe('unset MANDIBLE_SESSION_ID\n');
+    await runHook('session-end', nestedPid, 'nested-conversation');
+    expect(row(wrapped)).toEqual({ pid: wrapperPid, conversation_id: 'coordinator-conversation', status: 'active' });
+    expect(row('nested-conversation')).toEqual({ pid: nestedPid, conversation_id: 'nested-conversation', status: 'ended' });
+
+    await runHook('session-start', wrapperPid, 'coordinator-after-clear');
+    expect(row(wrapped)).toEqual({ pid: wrapperPid, conversation_id: 'coordinator-after-clear', status: 'active' });
+
+    const codex = path.join(root, 'codex');
+    fs.symlinkSync('/bin/bash', codex);
+    const nestedCodex = spawn(codex, ['-c', `source ${JSON.stringify(path.resolve('cli/api.sh'))}; api_scope_inherited_identity;
+      printf '%s|%s|%s' "\${MANDIBLE_SESSION_ID:-}" "$(api_ambient_provider)" "$(api_ambient_session_id)"`], { env: { ...process.env,
+      MANDIBLE_SOCKET: socketPath, MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: 'coordinator-after-clear',
+      CLAUDE_PID: String(wrapperPid), CODEX_THREAD_ID: 'codex-thread' } });
+    let identity = ''; nestedCodex.stdout.on('data', (chunk) => { identity += chunk; });
+    await new Promise((resolve) => nestedCodex.once('close', resolve));
+    expect(identity).toBe('|codex|codex-thread');
+  });
   it('rejects unknown, malformed, human-bound, and conflicting managed app claims', async () => {
     const codex = createUser(db, { slug: 'codex-agent', kind: 'agent', display_name: 'Codex Agent' });
     const claude = createUser(db, { slug: 'claude-agent', kind: 'agent', display_name: 'Claude Agent' });

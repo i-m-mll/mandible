@@ -27,15 +27,6 @@ function requestFor(issueRef: string): AuthRequest {
   } as AuthRequest;
 }
 
-function requestWithoutClosures(): AuthRequest {
-  return {
-    id: "auth-1",
-    type: "merge",
-    issues: [],
-    issue_closures: [],
-  } as AuthRequest;
-}
-
 function createWorkUnitsOnlyDb(): InstanceType<typeof SqliteDatabase> {
   const db = new SqliteDatabase(":memory:");
   db.exec(`
@@ -112,34 +103,23 @@ describe("Codex CLI thread archiver", () => {
   });
 });
 
-describe("codex thread archive candidates", () => {
-  it("uses explicitly worker-owned request-linked Codex identity without console_sessions", () => {
-    const db = createWorkUnitsOnlyDb();
-    try {
-      db.prepare(
-        `INSERT INTO work_units (
-           id, issue_id, state, provider, provider_session_id,
-           worker_provider_session_id, auth_request_id
-         ) VALUES (
-           'wu-direct', 'done123', 'resolved', 'codex', 'ambient-requester',
-           'thread-direct', 'auth-1'
-         )`,
-      ).run();
+describe("Codex CLI thread archiver idempotency", () => {
+  const failingExec = (() => {
+    throw new Error("Error: failed to archive session");
+  }) as unknown as typeof import("node:child_process").execFile;
 
-      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([
-        {
-          provider_session_id: "thread-direct",
-          console_session_id: null,
-          mandible_session_id: null,
-          issue_id: "done123",
-          work_unit_id: "wu-direct",
-        },
-      ]);
-    } finally {
-      db.close();
-    }
+  it("treats a failed command as done when the thread already sits in the requested state", async () => {
+    await expect(new CodexCliThreadArchiver(failingExec, () => true).archive("thread-1")).resolves.toBeUndefined();
+    await expect(new CodexCliThreadArchiver(failingExec, () => false).unarchive("thread-1")).resolves.toBeUndefined();
   });
 
+  it("surfaces the failure when the thread is not in the requested state or its state is unreadable", async () => {
+    await expect(new CodexCliThreadArchiver(failingExec, () => false).archive("thread-1")).rejects.toThrow("failed to archive");
+    await expect(new CodexCliThreadArchiver(failingExec, () => null).archive("thread-1")).rejects.toThrow("failed to archive");
+  });
+});
+
+describe("codex thread archive candidates", () => {
   it("does not archive the exact ambient-only coordinator incident before later guards exist", () => {
     const db = createWorkUnitsOnlyDb();
     try {
@@ -180,34 +160,7 @@ describe("codex thread archive candidates", () => {
     }
   });
 
-  it("uses resolved request-linked Codex work units even when issues stay open", () => {
-    const db = createWorkUnitsOnlyDb();
-    try {
-      db.prepare(
-        `INSERT INTO work_units (
-           id, issue_id, state, provider, provider_session_id,
-           worker_provider_session_id, auth_request_id
-         ) VALUES (
-           'wu-open', 'open123', 'resolved', 'codex', 'thread-open',
-           'thread-open', 'auth-1'
-         )`,
-      ).run();
-
-      expect(listCompletedWorkerThreadArchiveCandidates(db, requestWithoutClosures())).toEqual([
-        {
-          provider_session_id: "thread-open",
-          console_session_id: null,
-          mandible_session_id: null,
-          issue_id: "open123",
-          work_unit_id: "wu-open",
-        },
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("keeps legacy session_issues plus console_sessions compatibility", () => {
+  it("finds console sessions through ledger session issue links", () => {
     const db = createWorkUnitsOnlyDb();
     try {
       db.exec(`
@@ -222,16 +175,19 @@ describe("codex thread archive candidates", () => {
           id TEXT PRIMARY KEY,
           status TEXT
         );
-        CREATE TABLE session_issues (
+        CREATE TABLE ledger_session_issue_links (
           session_id TEXT,
-          issue_id TEXT
+          issue_id TEXT,
+          created_at INTEGER
         );
       `);
       db.prepare(
         `INSERT INTO console_sessions (id, provider_session_id, command, status)
          VALUES ('console-worker', 'thread-worker', 'codex', 'stopped')`,
       ).run();
-      db.prepare("INSERT INTO session_issues (session_id, issue_id) VALUES ('console-worker', 'done123')").run();
+      db.prepare(
+        "INSERT INTO ledger_session_issue_links (session_id, issue_id, created_at) VALUES ('thread-worker', 'done123', 1)",
+      ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toMatchObject([
         {
@@ -411,41 +367,6 @@ describe("codex thread archive candidates", () => {
           work_unit_id: "wu-a",
         },
       ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("does not use ledger_session_issue_links as an archive candidate source", () => {
-    const db = createWorkUnitsOnlyDb();
-    try {
-      db.exec(`
-        CREATE TABLE console_sessions (
-          id TEXT PRIMARY KEY,
-          provider_session_id TEXT,
-          mandible_session_id TEXT,
-          command TEXT,
-          status TEXT
-        );
-        CREATE TABLE sessions (
-          id TEXT PRIMARY KEY,
-          status TEXT
-        );
-        CREATE TABLE ledger_session_issue_links (
-          session_id TEXT,
-          issue_id TEXT
-        );
-      `);
-      db.prepare("INSERT INTO sessions (id, status) VALUES ('ledger-session', 'ended')").run();
-      db.prepare(
-        `INSERT INTO console_sessions (id, provider_session_id, mandible_session_id, command, status)
-         VALUES ('console-ledger', 'thread-ledger', 'ledger-session', 'codex', 'stopped')`,
-      ).run();
-      db.prepare(
-        "INSERT INTO ledger_session_issue_links (session_id, issue_id) VALUES ('ledger-session', 'done123')",
-      ).run();
-
-      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
     } finally {
       db.close();
     }

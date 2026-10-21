@@ -8,7 +8,7 @@ The `mandible` command is a dispatcher that routes to subcommands. HTTP subcomma
 |---|---|
 | `MANDIBLE_PORT` | Daemon backend port (default: `29420`) |
 | `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
-| `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
+| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but it is a caller's own only when the nearest agent process above the caller (Claude, Codex or Gemini) is the one that session's row records. A nested `claude -p` or `codex exec` treats it as unset and acts under its own provider session; with several providers' session variables present, the nearest agent's are kept |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
 ## Restart availability temporary failures
@@ -62,7 +62,7 @@ mandible wrap --app codex --id my-session-123 -- codex
 
 1. Infers `app` from the command basename if not specified (`claude*` -> `claude`, `codex*` -> `codex`).
 2. Generates a UUID session ID if not provided.
-3. Exports `MANDIBLE_SESSION_ID` and `AI_AGENT_SIGNING=1` for child processes.
+3. Exports `MANDIBLE_SESSION_ID` and `AI_AGENT_SIGNING=1` for child processes. The session row records the wrapper's pid, which the wrapped command keeps through `exec`; that pid is what makes the ID this process's own (see `MANDIBLE_SESSION_ID` above).
 4. Detects `--dangerously-skip-permissions` flags and exports `CLAUDE_SKIP_PERMISSIONS=1`.
 5. Collects environment data: terminal emulator, multiplexer, git branch, multiplexer pane metadata.
 6. Registers the session via `POST /api/sessions/register`.
@@ -209,8 +209,9 @@ mandible issue-file write [--cwd <path>] <issue>...
 
 ### mandible session link-issue
 
-Link an existing Mandible session to an issue/repo pair through the supported
-client surface.
+Link a session to an issue/repo pair. The session is a session row id, a console
+session id, or an ingested provider session id; the link is keyed on the provider
+session id when one is known and never creates a session row.
 
 ```
 mandible session link-issue <session-id> --issue <id> --repo <repo> [--repo-name <name>] [--graceful]
@@ -443,35 +444,6 @@ conventions such as worktree symlink hygiene belong in explicit policy hooks
 or repo-local workflow configuration, separate from the merge-cleanliness
 predicate.
 
-### mandible search
-
-Search conversation history across all providers.
-
-```
-mandible search "<query>" [options]
-```
-
-**Options:**
-
-| Flag | Description |
-|---|---|
-| `--provider <name>` | Filter: `claude`, `gemini`, `codex`, or `all` (default: `all`) |
-| `--role <role>` | Filter: `user` or `assistant` |
-| `--since Nd` | Only conversations from last N days |
-| `--limit N` | Max results (default: 20) |
-| `--title` | Search conversation titles only (fast, no decompression) |
-
-**Examples:**
-
-```bash
-mandible search "worktree merge"
-mandible search "auth request" --provider claude --since 7d
-mandible search "training loss" --role assistant --limit 5
-mandible search "bigbuild" --title
-```
-
-Searches the SQLite database directly, decompressing gzip-compressed blocks via Python.
-
 ### mandible logs
 
 Inspect provider-native source logs without importing, reconciling, or mutating the Mandible database.
@@ -513,9 +485,16 @@ Inspect DB-backed normalized conversation rows and blocks.
 ```
 mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
-mandible conversations blocks <id|session-id> [filters] [--json]
+mandible conversations blocks <id|session-id> [--role R] [--type T] [--content TEXT] [--limit N] [--offset N] [--json]
 mandible conversations export <id|session-id> [--format json|markdown]
-mandible conversations search "<query>" [search options...]
+mandible conversations search "<query>" [--provider claude|gemini|codex|all] [--role user|assistant] [--since Nd|ISO] [--limit N] [--title] [--json]
 ```
 
-Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. `mandible conversations blocks` uses the same role/type/tool/time/content filters as `mandible logs inspect --parse`. `mandible conversations search` is an alias to `mandible search`.
+Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. Tool and time filters over parsed blocks live on `mandible logs inspect --parse`.
+
+`conversations search` asks the daemon's search route on every transport. `--title` matches titles only. The daemon returns at most 100 hits, and a larger `--limit` warns on stderr. `--json` prints the route's response: `results[]`, each with `conversation` (including `id`, `session_id`, `source`), `block` (including `role` and timestamps; empty for `--title`) and `snippet`, plus `total` and `limit`.
+
+```bash
+mandible conversations search "auth request" --provider claude --since 7d
+mandible conversations search "training loss" --role assistant --limit 5 --json
+```

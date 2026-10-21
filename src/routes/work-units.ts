@@ -9,7 +9,6 @@ import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger
 import { getLedgerIssueWorkMetadata } from "../ledger/issue-detail.js";
 import { normalizeProjectRepoId } from "../ledger/project-registry.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
-import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
@@ -224,9 +223,35 @@ function resolveLedgerIssueId(
   }
 }
 
+/**
+ * A work unit exists to deliver one ledger issue. Refuse, before anything is
+ * written, a ref that names no issue or several, rather than creating a unit
+ * that auth submission can never bind.
+ */
+function refuseUnresolvedIssue(
+  db: ReturnType<typeof getDb>,
+  res: unknown,
+  issueRef: string,
+  repoId: string,
+): boolean {
+  const resolved = resolveOperationalIssueRef(db, issueRef, repoId);
+  if (resolved.ok || resolved.error === "unavailable") return false;
+  if (resolved.error === "ambiguous") {
+    sendJson(res, 409, {
+      error: "issue_ref_ambiguous",
+      message: `Issue ref ${issueRef} matches several ledger issues${resolved.matches ? ` (${resolved.matches.join(", ")})` : ""}; pass a longer id or <project>/<id>.`,
+    });
+  } else {
+    sendJson(res, 404, {
+      error: "issue_not_found",
+      message: `Issue ref ${issueRef} names no ledger issue; claim against an existing issue id or <project>/<id>.`,
+    });
+  }
+  return true;
+}
+
 export function registerWorkUnitRoutes(
   server: RouteRegistrar,
-  sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
   logger: Logger = () => undefined,
   options: WorkUnitRouteOptions = {},
@@ -252,6 +277,7 @@ export function registerWorkUnitRoutes(
       return;
     }
     const repoId = normalizeProjectRepoId(db, body.repo_id);
+    if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const now = Date.now();
@@ -453,6 +479,7 @@ export function registerWorkUnitRoutes(
       });
       return;
     }
+    if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
 
     const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, true);
     if (match.status === "ambiguous") {
@@ -671,7 +698,7 @@ export function registerWorkUnitRoutes(
 
     const workUnits = rows.map(mapRow);
     const enriched = workUnits.map((wu) =>
-      enrichWithLiveness(wu, sessionRegistry, sessionManager)
+      enrichWithLiveness(wu, sessionManager)
     );
 
     sendJson(res, 200, { work_units: enriched });
@@ -931,7 +958,7 @@ export function registerWorkUnitRoutes(
     }
 
     const workUnit = mapRow(row);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
   }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PATCH /api/work-units/:id — update mutable fields
@@ -1027,7 +1054,7 @@ export function registerWorkUnitRoutes(
       .get(id) as Record<string, unknown>;
 
     const workUnit = mapRow(updatedRow);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
   }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 }
 

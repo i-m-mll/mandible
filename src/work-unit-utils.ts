@@ -1,10 +1,9 @@
 // Bug: f3dbb3e — shared work-unit liveness computation.
-// Canonical mapWorkUnitRow, computeLiveness, and enrichWithLiveness used by
+// Canonical mapWorkUnitRow, computeWorkUnitLiveness, and enrichWithLiveness used by
 // both routes/work-units.ts and routes/inbox.ts (and routes/issues.ts).
 
 import { getDb, type Db } from "./db.js";
 import { getChannelRegistry } from "./channel-registry.js";
-import type { SessionRegistry } from "./registry.js";
 import type { SessionManager } from "./session-manager.js";
 import {
   resolveSessionAlias,
@@ -51,20 +50,6 @@ export function normalizeWorkUnitSessionId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/**
- * Compute liveness overlay for a work unit by joining to sessions and console_sessions.
- * Bug: 8a281b3 — liveness is derived at query time, never stored.
- */
-export function computeLiveness(
-  workUnit: WorkUnit,
-  _sessionRegistry: SessionRegistry,
-  sessionManager: SessionManager,
-  sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
-): WorkUnitLiveness {
-  const db = getDb();
-  return computeWorkUnitLiveness(db, workUnit, sessionManager, sessionResolver);
-}
-
 /** One identity-first liveness rule shared by work-unit routes and issue detail. */
 export function computeWorkUnitLiveness(
   db: Db,
@@ -73,7 +58,7 @@ export function computeWorkUnitLiveness(
   sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
 ): WorkUnitLiveness {
   const noLiveness: WorkUnitLiveness = {
-    has_live_agent: false,
+    state: "stopped",
     agent_session_id: null,
     agent_status: null,
     is_processing: false,
@@ -85,19 +70,23 @@ export function computeWorkUnitLiveness(
     workUnit.worker_provider_session_id,
     workUnit.provider_session_id,
   ].filter((value): value is string => Boolean(value))));
-  let resolvedButStopped: { id: string; resolution: SessionAliasResolution } | null = null;
+  // Unknown outranks stopped: one identity whose check failed means the unit's
+  // agent may still be working, whatever its other identities say.
+  let notLive: { id: string; resolution: SessionAliasResolution } | null = null;
   for (const id of identityCandidates) {
     const resolution = sessionResolver(db, id);
     if (!resolution) continue;
     if (workUnit.provider && resolution.provider && resolution.provider !== workUnit.provider) continue;
-    if (!resolution.has_live_agent) {
-      resolvedButStopped ??= { id, resolution };
+    if (resolution.liveness !== "live") {
+      if (!notLive || (resolution.liveness === "unknown" && notLive.resolution.liveness === "stopped")) {
+        notLive = { id, resolution };
+      }
       continue;
     }
     const status = resolution.mandible_status ?? resolution.console_status ?? "active";
     const lastActivity = resolution.last_activity ? Date.parse(resolution.last_activity) : null;
     return {
-      has_live_agent: true,
+      state: "live",
       agent_session_id: resolution.mandible_session_id ?? id,
       agent_status: status,
       is_processing: resolution.console_status === "running"
@@ -105,13 +94,13 @@ export function computeWorkUnitLiveness(
       last_activity: lastActivity !== null && Number.isFinite(lastActivity) ? lastActivity : null,
     };
   }
-  if (resolvedButStopped) {
-    const { id, resolution } = resolvedButStopped;
+  if (notLive) {
+    const { id, resolution } = notLive;
     const lastActivity = resolution.last_activity ? Date.parse(resolution.last_activity) : null;
     return {
-      has_live_agent: false,
+      state: resolution.liveness,
       agent_session_id: resolution.mandible_session_id ?? id,
-      agent_status: resolution.mandible_status ?? resolution.console_status ?? "stopped",
+      agent_status: resolution.mandible_status ?? resolution.console_status ?? resolution.liveness,
       is_processing: false,
       last_activity: lastActivity !== null && Number.isFinite(lastActivity) ? lastActivity : null,
     };
@@ -142,7 +131,7 @@ export function computeWorkUnitLiveness(
     if (channelOnBranch.length > 0) {
       const cs = channelOnBranch[0];
       return {
-        has_live_agent: true,
+        state: "live",
         agent_session_id: cs.session_id,
         agent_status: "active",
         is_processing: false,
@@ -159,7 +148,7 @@ export function computeWorkUnitLiveness(
     const isAlive = channelRegistry.isAlive(sessionRow.id);
     const cs = channelRegistry.get(sessionRow.id);
     return {
-      has_live_agent: isAlive,
+      state: isAlive ? "live" : "stopped",
       agent_session_id: sessionRow.id,
       agent_status: isAlive ? "active" : "stale",
       is_processing: false,
@@ -187,7 +176,7 @@ export function computeWorkUnitLiveness(
   const lastActive = sessionRow.last_active ? new Date(sessionRow.last_active).getTime() : null;
 
   return {
-    has_live_agent: true,
+    state: "live",
     agent_session_id: sessionRow.id,
     agent_status: sessionRow.status,
     is_processing: isProcessing,
@@ -195,13 +184,16 @@ export function computeWorkUnitLiveness(
   };
 }
 
+/**
+ * Liveness overlay for a work unit, derived at query time and never stored
+ * (bug 8a281b3).
+ */
 export function enrichWithLiveness(
   workUnit: WorkUnit,
-  sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
 ): WorkUnitWithLiveness {
   return {
     ...workUnit,
-    liveness: computeLiveness(workUnit, sessionRegistry, sessionManager),
+    liveness: computeWorkUnitLiveness(getDb(), workUnit, sessionManager),
   };
 }

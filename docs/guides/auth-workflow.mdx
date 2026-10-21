@@ -83,7 +83,7 @@ Supported policies:
 | --- | --- |
 | `block` | Fail without modifying the protected root. |
 | `allow-untracked` | Continue only when all dirtiness is untracked files. |
-| `stash` | Preserve dirty state in a named Git stash, then continue. |
+| `stash` | Preserve dirty state as a stash commit under `refs/mandible/protected-root-dirty/`, outside the stash stack every worktree shares, then continue. Restore it with `git stash apply --index <sha>`. |
 | `branch-off` | Move dirty state to a `shelve/protected-root-*` branch and worktree, then continue. |
 
 When `allow-untracked`, `stash`, or `branch-off` lets a submission continue, the

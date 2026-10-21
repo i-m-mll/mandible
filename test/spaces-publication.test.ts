@@ -124,7 +124,12 @@ it('migration separates clean, managed-only, Git-only, divergent and unreachable
   db.exec('DROP TRIGGER space_publication_auth_binding_immutable');
   db.exec('ALTER TABLE auth_requests DROP COLUMN protected_root_dirty_action_json');
   db.exec('ALTER TABLE auth_requests DROP COLUMN space_publication_id');
+  db.exec('DROP INDEX idx_conv_declared_parent');
+  db.exec('ALTER TABLE conversations DROP COLUMN parent_session_id');
+  db.exec('ALTER TABLE conversations DROP COLUMN parent_source');
   db.exec('DROP TABLE space_publications');db.exec('DROP TABLE space_document_history');
+  for(const column of ['opening_lineage','opening_line','agent_created'])db.exec(`ALTER TABLE conversations DROP COLUMN ${column}`);
+  db.exec('DROP TABLE worker_thread_archives');
   db.prepare("UPDATE meta SET value='189' WHERE key='schema_version'").run();
   migrate(db);
   for(const [id,content] of snapshots) {

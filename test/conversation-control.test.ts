@@ -529,51 +529,6 @@ describe("authoritative conversation control", () => {
     });
   });
 
-  it("materializes a child relationship only from the owned Codex generation and exact identities", async () => {
-    db.prepare(`INSERT INTO conversations (
-      id, source, source_path, source_hash, source_mtime, title, started_at,
-      block_count, session_id, created_at, updated_at
-    ) VALUES ('conversation-child', 'codex', '/tmp/child.jsonl', 'child-hash', 1, 'Child',
-      '2026-01-01T00:00:01Z', 0, 'provider-child', '2026-01-01T00:00:01Z', '2026-01-01T00:00:01Z')`).run();
-    const service = new ConversationControlService(db);
-    const adapter = new FakeAdapter();
-    service.registerAdapter(adapter);
-    const submitted = await service.submit(request(0, "lineage-turn"));
-    expect(submitted.ok).toBe(true);
-    if (!submitted.ok) return;
-
-    adapter.emitProvider({
-      kind: "provider-lineage",
-      conversation_id: "conversation-1",
-      provider_session_id: "provider-1",
-      generation: submitted.value.snapshot.ownership.generation - 1,
-      sequence: 1,
-      observed_at: 1,
-      provider_event_id: "stale-spawn",
-      relation: "spawned-child",
-      sender_provider_session_id: "provider-1",
-      receiver_provider_session_id: "provider-child",
-    });
-    expect(db.prepare("SELECT parent_conversation_id FROM conversations WHERE id = 'conversation-child'").get())
-      .toEqual({ parent_conversation_id: null });
-
-    adapter.emitProvider({
-      kind: "provider-lineage",
-      conversation_id: "conversation-1",
-      provider_session_id: "provider-1",
-      generation: submitted.value.snapshot.ownership.generation,
-      sequence: 1,
-      observed_at: 1,
-      provider_event_id: "spawn-1",
-      relation: "spawned-child",
-      sender_provider_session_id: "provider-1",
-      receiver_provider_session_id: "provider-child",
-    });
-
-    expect(db.prepare("SELECT parent_conversation_id, is_sidechain FROM conversations WHERE id = 'conversation-child'").get())
-      .toEqual({ parent_conversation_id: "conversation-1", is_sidechain: 1 });
-  });
-
   it("rejects every lifecycle mutation from a stale fencing generation", async () => {
     const service = new ConversationControlService(db);
     const adapter = new FakeAdapter();

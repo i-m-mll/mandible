@@ -49,13 +49,11 @@ List sessions with optional filtering.
 | `status` | string | Filter by status: `active`, `ended`, `dead` |
 | `app` | string | Filter by application name |
 | `parent_id` | string | Filter by parent session ID (use `null` for top-level only) |
-| `include` | string | `issues` for open issues, `all_issues` for all linked issues |
 
-**Response:** `200 OK` — array of session objects. When `include=issues`, each session includes `issues` and `projects` arrays.
+**Response:** `200 OK` — array of session objects.
 
 ```bash
 curl http://localhost:19420/api/sessions?status=active
-curl http://localhost:19420/api/sessions?include=issues
 ```
 
 ### GET /api/sessions/:id
@@ -222,7 +220,10 @@ Record a tool call for a channel-connected session (used for liveness tracking).
 
 ### POST /api/sessions/:id/issues
 
-Link a session to an issue.
+Link a session to an issue. `:id` is a session row id, a console session id,
+or an ingested provider session id. The link is keyed on the provider session id
+when one is known, else on the console or session row id, and never creates a
+session row.
 
 **Request body:**
 
@@ -235,17 +236,16 @@ Link a session to an issue.
 **Response:** `200 OK`
 
 ```json
-{ "session_id": "...", "issue_id": "abc1234", "repo_id": "mandible", "created_at": 1711234567890 }
+{ "session_id": "...", "issue_id": "abc1234", "repo_id": "mandible", "created_at": 1711234567890, "ledger_issue_id": "...", "identity_warning": null }
 ```
+
+**Error responses:**
+- `409 provider_session_not_ingested` — Mandible has never seen the id; retryable once the provider transcript is ingested
+- `404 issue_not_found` / `409 issue_ambiguous` — the issue ref does not name exactly one ledger issue
 
 ### GET /api/sessions/:id/issues
 
-Get all issues linked to a session.
+Get all issues linked to a session under any of its aliases.
 
-**Response:** `200 OK` — array of `{ session_id, issue_id, repo_id, created_at }`.
+**Response:** `200 OK` — array of `{ session_id, issue_id, repo_id, ledger_issue_id, created_at }`, where `issue_id` is the issue's short id and `repo_id` its project key.
 
-### POST /api/sessions/discover
-
-Trigger session discovery (scan for running agent processes).
-
-**Response:** `200 OK` — discovery result, or `501` if discovery is not configured.

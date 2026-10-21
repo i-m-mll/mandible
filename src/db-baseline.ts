@@ -24,7 +24,25 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 202;
+export const BASELINE_SCHEMA_VERSION = 207;
+
+// Issue 23f8142 — the parent session a conversation's provider declares, which
+// lineage linking resolves into parent_conversation_id whichever row arrives
+// first. Shared by the fresh baseline and migration v205.
+export const CONVERSATION_DECLARED_PARENT_SQL: readonly string[] = [
+  "ALTER TABLE conversations ADD COLUMN parent_source TEXT CHECK(parent_source IN ('claude_code', 'codex', 'gemini'))",
+  "ALTER TABLE conversations ADD COLUMN parent_session_id TEXT CHECK((parent_source IS NULL) = (parent_session_id IS NULL))",
+  "CREATE INDEX idx_conv_declared_parent ON conversations(parent_session_id) WHERE parent_session_id IS NOT NULL",
+];
+
+// Issue 061c5d6 — what line 1 of a conversation's first user message declares
+// about its lineage, and whether the provider records an agent as its creator.
+export const CONVERSATION_OPENING_LINEAGE_SQL: readonly string[] = [
+  `ALTER TABLE conversations ADD COLUMN opening_lineage TEXT
+    CHECK(opening_lineage IN ('unread', 'none', 'child', 'successor', 'malformed', 'mismatched', 'legacy-prose'))`,
+  "ALTER TABLE conversations ADD COLUMN opening_line TEXT",
+  "ALTER TABLE conversations ADD COLUMN agent_created INTEGER NOT NULL DEFAULT 0 CHECK(agent_created IN (0, 1))",
+];
 
 // Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
 // merge submission: where someone's uncommitted work went. Shared by the fresh
@@ -34,6 +52,22 @@ export const AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL = `ALTER TABLE auth_req
         json_valid(protected_root_dirty_action_json)
         AND json_type(protected_root_dirty_action_json) = 'object'
       ))`;
+
+// Issue 506adca — one archive of a resolved work unit's Codex worker thread on
+// that unit's behalf: archived once, or retried with backoff after a failed
+// attempt. Shared by the fresh baseline and migration v203.
+export const WORKER_THREAD_ARCHIVES_SCHEMA_SQL = [
+  `CREATE TABLE worker_thread_archives (
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL,
+        archived_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+        last_error TEXT,
+        next_retry_at INTEGER,
+        PRIMARY KEY (work_unit_id, thread_id)
+      )`,
+  "CREATE INDEX idx_worker_thread_archives_thread ON worker_thread_archives(thread_id)",
+];
 
 // Issue 72b00f8 — immutable work-unit custody receipts. An agent may take over a
 // unit whose holder is provably stopped (the receipt keeps that liveness
@@ -67,6 +101,21 @@ export const WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL: readonly string[] = [
         BEFORE DELETE ON work_unit_custody_events
         BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
 ];
+
+// Issue 2043af5 — a session-to-issue link is keyed on the provider session id
+// (or a console/wrap session id where that is the only identity). Linking never
+// requires a `sessions` row, so `session_id` has no foreign key. Shared by the
+// fresh baseline and migration v204.
+export const LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL = `CREATE TABLE ledger_session_issue_links (
+        session_id TEXT NOT NULL,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,
+        link_type TEXT NOT NULL DEFAULT 'worked_on',
+        source TEXT NOT NULL DEFAULT 'system',
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (session_id, issue_id, link_type)
+      )`;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -267,6 +316,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE conversation_blocks (\n        id TEXT PRIMARY KEY,\n        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n        type TEXT NOT NULL,\n        role TEXT NOT NULL,\n        content TEXT NOT NULL DEFAULT '',\n        position INTEGER NOT NULL,\n        timestamp TEXT,\n        parent_id TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        dag_uuid TEXT,\n        dag_parent_uuid TEXT, compressed INTEGER NOT NULL DEFAULT 0, timestamp_ms INTEGER, payload_state TEXT NOT NULL DEFAULT 'legacy' CHECK(payload_state IN ('legacy','source')),\n        UNIQUE(conversation_id, position)\n      )",
   "CREATE TABLE conversation_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        byte_offset INTEGER NOT NULL DEFAULT 0,\n        line_count INTEGER NOT NULL DEFAULT 0,\n        tail_hash TEXT NOT NULL DEFAULT '',\n        partial_line TEXT NOT NULL DEFAULT '',\n        updated_at INTEGER NOT NULL\n      , empty_source_mtime REAL, empty_source_size INTEGER)",
   "CREATE TABLE conversations (\n        id TEXT PRIMARY KEY,\n        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),\n        source_path TEXT NOT NULL,\n        source_hash TEXT NOT NULL,\n        source_mtime INTEGER NOT NULL,\n        title TEXT NOT NULL DEFAULT '',\n        summary TEXT,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        block_count INTEGER NOT NULL DEFAULT 0,\n        session_id TEXT NOT NULL,\n        project_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        model TEXT,\n        cli_version TEXT,\n        starred INTEGER NOT NULL DEFAULT 0,\n        notes TEXT,\n        created_at TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n      , parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, is_sidechain INTEGER NOT NULL DEFAULT 0, agent_id TEXT, started_at_ms INTEGER, ended_at_ms INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags) AND json_type(tags) = 'array'))",
+  ...CONVERSATION_DECLARED_PARENT_SQL,
+  ...CONVERSATION_OPENING_LINEAGE_SQL,
   "CREATE TABLE conversation_archive_states (\n        conversation_id TEXT PRIMARY KEY,\n        archived_at INTEGER NOT NULL CHECK(archived_at > 0)\n      )",
   ...CONVERSATION_CONTROL_SCHEMA_SQL,
   ...CONVERSATION_RUNTIME_SCHEMA_SQL,
@@ -306,7 +357,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE ledger_reconciliation_mismatches (\n        id TEXT PRIMARY KEY,\n        report_id TEXT NOT NULL REFERENCES ledger_reconciliation_reports(id) ON DELETE CASCADE,\n        project_id TEXT NOT NULL DEFAULT '',\n        repo_id TEXT NOT NULL DEFAULT '',\n        issue_ref TEXT NOT NULL DEFAULT '',\n        mismatch_type TEXT NOT NULL,\n        scanner_value_json TEXT NOT NULL DEFAULT 'null',\n        ledger_value_json TEXT NOT NULL DEFAULT 'null',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL\n      )",
   "CREATE TABLE ledger_reconciliation_reports (\n        id TEXT PRIMARY KEY,\n        read_mode TEXT NOT NULL CHECK(read_mode IN ('scanner','shadow','ledger')),\n        status TEXT NOT NULL CHECK(status IN ('running','clean','mismatch','failed')),\n        scanner_issue_count INTEGER NOT NULL DEFAULT 0,\n        ledger_issue_count INTEGER NOT NULL DEFAULT 0,\n        scanner_open_count INTEGER NOT NULL DEFAULT 0,\n        ledger_open_count INTEGER NOT NULL DEFAULT 0,\n        scanner_closed_count INTEGER NOT NULL DEFAULT 0,\n        ledger_closed_count INTEGER NOT NULL DEFAULT 0,\n        mismatch_count INTEGER NOT NULL DEFAULT 0,\n        summary_json TEXT NOT NULL DEFAULT '{}',\n        error TEXT,\n        started_at INTEGER NOT NULL,\n        finished_at INTEGER\n      )",
   "CREATE TABLE ledger_relationship_edges (\n        id TEXT PRIMARY KEY,\n        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue','comment')),\n        source_entity_id TEXT NOT NULL,\n        source_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        target_entity_type TEXT NOT NULL CHECK(target_entity_type IN ('issue','comment')),\n        target_entity_id TEXT NOT NULL,\n        target_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        link_type TEXT NOT NULL\n          CHECK(link_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n        provenance TEXT NOT NULL DEFAULT 'manual'\n          CHECK(provenance IN ('manual','imported','derived','system')),\n        note TEXT,\n        action_id TEXT NOT NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL\n          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        deleted_at INTEGER, actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,\n        UNIQUE(source_entity_type, source_entity_id, target_entity_type, target_entity_id, link_type)\n      )",
-  "CREATE TABLE ledger_session_issue_links (\n        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'worked_on',\n        source TEXT NOT NULL DEFAULT 'system',\n        created_at INTEGER NOT NULL,\n        last_seen_at INTEGER,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (session_id, issue_id, link_type)\n      )",
+  LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   "CREATE TABLE ledger_work_unit_issue_links (\n        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'work_unit_tracks',\n        source TEXT NOT NULL DEFAULT 'system',\n        created_at INTEGER NOT NULL,\n        last_seen_at INTEGER,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (work_unit_id, issue_id, link_type)\n      )",
   "CREATE TABLE message_params (\n        id              INTEGER PRIMARY KEY AUTOINCREMENT,\n        session_id      TEXT NOT NULL,\n        message_index   INTEGER NOT NULL,\n        model           TEXT,\n        permission_mode TEXT,\n        max_turns       INTEGER,\n        max_cost_usd    REAL,\n        allowed_tools   TEXT,\n        created_at      INTEGER NOT NULL DEFAULT (unixepoch()), thinking_effort TEXT,\n        UNIQUE(session_id, message_index)\n      )",
   "CREATE TABLE meta (\n  key   TEXT PRIMARY KEY,\n  value TEXT NOT NULL\n)",
@@ -329,8 +380,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE provider_manifests ( id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, manifest_type TEXT NOT NULL DEFAULT 'provider_manifest', version TEXT, content_hash TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'ingest', content_json TEXT NOT NULL, created_at INTEGER NOT NULL , blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL)",
   "CREATE TABLE providers (\n        id                TEXT PRIMARY KEY,\n        display_name      TEXT NOT NULL,\n        version           TEXT,\n        status            TEXT NOT NULL DEFAULT 'active',\n        transport         TEXT NOT NULL DEFAULT 'manifest',\n        endpoint          TEXT,\n        capabilities_json TEXT NOT NULL DEFAULT '{}',\n        actions_json      TEXT NOT NULL DEFAULT '[]',\n        source            TEXT NOT NULL DEFAULT 'local',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        last_seen_at      INTEGER\n      )",
   "CREATE TABLE push_history (\n        id TEXT PRIMARY KEY,\n        repo_id TEXT NOT NULL,\n        repo_root TEXT NOT NULL,\n        scope TEXT NOT NULL,\n        status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),\n        result_json TEXT,\n        started_at INTEGER NOT NULL,\n        completed_at INTEGER\n      )",
-  "CREATE TABLE session_issues (\n        session_id  TEXT NOT NULL,\n        issue_id    TEXT NOT NULL,\n        repo_id     TEXT NOT NULL,\n        created_at  INTEGER NOT NULL,\n        PRIMARY KEY (session_id, issue_id, repo_id)\n      )",
-  "CREATE TABLE session_projects (\n        session_id TEXT NOT NULL,\n        repo_id TEXT NOT NULL,\n        repo_name TEXT NOT NULL,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (session_id, repo_id)\n      )",
   "CREATE TABLE sessions (\n  id            TEXT PRIMARY KEY,\n  app           TEXT NOT NULL,\n  parent_id     TEXT REFERENCES sessions(id) ON DELETE CASCADE,\n  status        TEXT NOT NULL DEFAULT 'active',\n  pid           INTEGER,\n  pid_start     TEXT,\n  cwd           TEXT,\n  branch        TEXT,\n  worktree      TEXT,\n  task          TEXT,\n  terminal      TEXT,\n  multiplexer   TEXT,\n  nav_session   TEXT,\n  nav_tab       TEXT,\n  nav_pane_id   TEXT,\n  nav_extra     TEXT,\n  agent_type    TEXT,\n  description   TEXT,\n  created_at    TEXT NOT NULL DEFAULT (datetime('now')),\n  ended_at      TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))\n, nav_metadata_status TEXT NOT NULL DEFAULT 'not_applicable', nav_metadata_attempts INTEGER NOT NULL DEFAULT 0, nav_metadata_last_error TEXT, nav_metadata_last_attempt_at TEXT, nav_metadata_next_retry_at TEXT, continuation TEXT, continuation_acked_by TEXT, pinned INTEGER DEFAULT 0, last_active TEXT, channel_connected_at INTEGER, channel_last_tool_call INTEGER, conversation_id TEXT, owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, identity_mismatch_at INTEGER, identity_mismatch_json TEXT)",
   "CREATE TABLE settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
   "CREATE TABLE space_blocks (\n        id                 TEXT NOT NULL,\n        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        parent_id          TEXT,\n        block_type         TEXT NOT NULL\n                             CHECK(block_type IN (\n                               'heading','paragraph','reference','artifact_embed',\n                               'issue_embed','comment_embed','todo'\n                             )),\n        item_id            TEXT,\n        item_snapshot_json TEXT\n                             CHECK(item_snapshot_json IS NULL\n                               OR (json_valid(item_snapshot_json)\n                                   AND json_type(item_snapshot_json)='object')),\n        sort_key           TEXT NOT NULL,\n        markdown           TEXT NOT NULL DEFAULT '',\n        metadata_json      TEXT NOT NULL DEFAULT '{}'\n                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at         INTEGER NOT NULL,\n        updated_at         INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE RESTRICT\n      )",
@@ -484,9 +533,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_providers_status\n        ON providers(status)",
   "CREATE INDEX idx_push_history_repo ON push_history(repo_id)",
   "CREATE INDEX idx_push_history_status ON push_history(status)",
-  "CREATE INDEX idx_session_issues_issue\n        ON session_issues(issue_id, repo_id)",
-  "CREATE INDEX idx_session_issues_session\n        ON session_issues(session_id)",
-  "CREATE INDEX idx_session_projects_session\n        ON session_projects(session_id)",
   "CREATE INDEX idx_sessions_conversation_id\n        ON sessions(conversation_id) WHERE conversation_id IS NOT NULL",
   "CREATE INDEX idx_space_blocks_item\n        ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL",
   "CREATE INDEX idx_space_blocks_tree\n        ON space_blocks(space_id, parent_id, sort_key)",
@@ -992,6 +1038,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
+    for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
     if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")

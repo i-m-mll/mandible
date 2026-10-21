@@ -1,6 +1,8 @@
 // Chat log ingestion: normalized types for conversations from all sources.
 
 import type { NormalizedUsageTelemetry } from "./context-usage.js";
+import type { ConversationParent } from "../conversation-lineage.js";
+import { readOpeningLine, type OpeningLine } from "../lineage-marker.js";
 
 export type BlockType =
   | "user_message"
@@ -196,6 +198,24 @@ export type ParserSourceSnapshot = FullParserSourceSnapshot | AppendParserSource
 
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
+  /**
+   * The session that created this conversation as its subagent or child
+   * thread, as the provider's own transcript records it (a subagent header, or
+   * the Codex `create_thread` delegation that created the thread unless its
+   * marker declares a successor). Null when this parse batch carries no such
+   * record: a top-level session, or an append batch without it.
+   */
+  parent: ConversationParent | null;
+  /**
+   * The first user message in this parse batch, read for the lineage marker.
+   * Null when the batch carries no user message.
+   */
+  opening: TranscriptOpening | null;
+  /**
+   * The provider records this thread as created by another agent's tool call
+   * rather than by a person (Codex `thread_source = agent_created_thread`).
+   */
+  createdByAgent: boolean;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
   /** Parser-captured JSONL boundary used to keep source indexing aligned. */
   sourceSnapshot?: ParserSourceSnapshot;
@@ -203,6 +223,30 @@ export interface ParseResult {
   providerTitle?: string;
   /** Provider record that supplied providerTitle, when precedence matters across batches. */
   providerTitleSource?: "custom-title" | "ai-title";
+}
+
+export interface TranscriptOpening {
+  /** Line 1 of the message, classified by the lineage marker grammar. */
+  line: OpeningLine;
+  /**
+   * The session the provider records as having delivered this message when it
+   * created the thread (the Codex `create_thread` delegation envelope).
+   */
+  creator: ConversationParent | null;
+  /**
+   * The batch was parsed from the start of the transcript, so this is the
+   * conversation's first user message rather than the first one appended.
+   */
+  atStart: boolean;
+}
+
+/** The opening of a batch whose first user message is its own content. */
+export function firstUserMessageOpening(
+  blocks: readonly Pick<ConversationBlock, "type" | "content">[],
+  atStart: boolean,
+): TranscriptOpening | null {
+  const first = blocks.find((block) => block.type === "user_message");
+  return first ? { line: readOpeningLine(first.content), creator: null, atStart } : null;
 }
 
 export interface IncrementalParseInput {
