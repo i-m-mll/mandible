@@ -8,7 +8,7 @@ The `mandible` command is a dispatcher that routes to subcommands. HTTP subcomma
 |---|---|
 | `MANDIBLE_PORT` | Daemon backend port (default: `29420`) |
 | `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
-| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but a nested Claude run whose pid differs from the one on that session's row treats it as unset and registers under its own provider session ID |
+| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but it is a caller's own only when the nearest agent process above the caller (Claude, Codex or Gemini) is the one that session's row records. A nested `claude -p` or `codex exec` treats it as unset and acts under its own provider session; with several providers' session variables present, the nearest agent's are kept |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
 ## Restart availability temporary failures
