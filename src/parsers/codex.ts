@@ -20,6 +20,7 @@ import type {
   ParserSourceSnapshot,
   ParseResult,
 } from "./types.js";
+import type { ConversationParent } from "../conversation-lineage.js";
 import { attachTranscriptChatItem } from "./types.js";
 import { normalizeCodexTokenCount } from "./context-usage.js";
 import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
@@ -31,13 +32,57 @@ interface CodexSessionMeta {
   cwd?: string;
   cli_version?: string;
   model_provider?: string;
-  source?: string;
+  source?: CodexSessionSource;
+  thread_source?: string;
+  parent_thread_id?: string | null;
+  agent_nickname?: string | null;
   timestamp?: string;
   base_instructions?: string;
   git?: {
     commit_hash?: string;
     branch?: string;
     repository_url?: string;
+  };
+}
+
+/** `session_meta.source`: a launcher name, or the spawn record of a subagent thread. */
+export type CodexSessionSource = string | {
+  subagent?: {
+    thread_spawn?: {
+      parent_thread_id?: string | null;
+      agent_nickname?: string | null;
+    };
+    other?: string;
+  };
+};
+
+/** What a rollout header says about the thread's place under another thread. */
+export interface CodexThreadLineage {
+  parent: ConversationParent | null;
+  isSubagent: boolean;
+  agentId: string | null;
+}
+
+/**
+ * Read subagent lineage from a rollout header's fields. Codex writes the parent
+ * thread into `source.subagent.thread_spawn` for `spawn_agent` children, and
+ * into the top-level `parent_thread_id` for its own internal subagents.
+ */
+export function codexThreadLineage(meta: {
+  source?: CodexSessionSource | null;
+  thread_source?: string | null;
+  parent_thread_id?: string | null;
+  agent_nickname?: string | null;
+}): CodexThreadLineage {
+  const subagent = typeof meta.source === "object" && meta.source ? meta.source.subagent : undefined;
+  const spawn = subagent?.thread_spawn;
+  const parentThreadId = subagent ? spawn?.parent_thread_id ?? meta.parent_thread_id : null;
+  return {
+    parent: typeof parentThreadId === "string" && parentThreadId.trim()
+      ? { source: "codex", sessionId: parentThreadId }
+      : null,
+    isSubagent: Boolean(subagent) || meta.thread_source === "subagent",
+    agentId: spawn?.agent_nickname ?? meta.agent_nickname ?? subagent?.other ?? null,
   };
 }
 
@@ -439,6 +484,7 @@ export class CodexParser implements ConversationParser {
     let startedAt = "";
     let endedAt: string | null = null;
     let seenSessionMeta = false;
+    let lineage: CodexThreadLineage = { parent: null, isSubagent: false, agentId: null };
 
     // Check for legacy format (single-line sessions with top-level fields)
     const firstRec = records[0];
@@ -470,6 +516,7 @@ export class CodexParser implements ConversationParser {
           if (meta.model_provider) modelProvider = meta.model_provider;
           if (meta.git?.branch) branch = meta.git.branch;
           if (meta.timestamp && !startedAt) startedAt = meta.timestamp;
+          lineage = codexThreadLineage(meta);
           seenSessionMeta = true;
         }
       } else if (rec.type === "turn_context") {
@@ -857,9 +904,10 @@ export class CodexParser implements ConversationParser {
         branch,
         model: model || (modelProvider ? `${modelProvider}` : null),
         cli_version: cliVersion,
-        is_sidechain: false,
-        agent_id: null,
+        is_sidechain: lineage.isSubagent,
+        agent_id: lineage.agentId,
       },
+      parent: lineage.parent,
       blocks,
       ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
     };

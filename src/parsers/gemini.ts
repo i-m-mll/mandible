@@ -527,6 +527,7 @@ export class GeminiParser implements ConversationParser {
         is_sidechain: false,
         agent_id: null,
       },
+      parent: null,
       blocks,
     };
   }

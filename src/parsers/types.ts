@@ -1,6 +1,7 @@
 // Chat log ingestion: normalized types for conversations from all sources.
 
 import type { NormalizedUsageTelemetry } from "./context-usage.js";
+import type { ConversationParent } from "../conversation-lineage.js";
 
 export type BlockType =
   | "user_message"
@@ -196,6 +197,12 @@ export type ParserSourceSnapshot = FullParserSourceSnapshot | AppendParserSource
 
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
+  /**
+   * The session that created this conversation as its subagent, as the
+   * provider's own transcript records it. Null when this parse batch carries no
+   * such record: a top-level session, or an append batch without the header.
+   */
+  parent: ConversationParent | null;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
   /** Parser-captured JSONL boundary used to keep source indexing aligned. */
   sourceSnapshot?: ParserSourceSnapshot;

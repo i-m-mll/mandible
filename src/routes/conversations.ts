@@ -42,6 +42,7 @@ import {
 import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
+import { childrenOfConversationSql } from "../conversation-lineage.js";
 import type { SessionRegistry } from "../registry.js";
 import {
   executeConversationExternalNavigation,
@@ -1113,7 +1114,7 @@ export function registerConversationRoutes(
     // Sub-agent filtering — Bug: d0759d1
     if (parentIdFilter) {
       // List children of a specific parent
-      conditions.push("c.parent_conversation_id = ?");
+      conditions.push(childrenOfConversationSql("c"));
       params.push(parentIdFilter);
     } else if (excludeSubagents) {
       // Hide sub-agent conversations from the main list
@@ -1143,7 +1144,7 @@ export function registerConversationRoutes(
       const ids = searched.matches.map((match) => match.conversation_id);
       const pageIds = ids.slice(offset, offset + limit);
       const selectCols = groupMode
-        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
         : `c.*`;
       const rows = pageIds.length === 0
         ? []
@@ -1172,7 +1173,7 @@ export function registerConversationRoutes(
 
     // Fetch page — include children_count via subquery when grouping
     const selectCols = groupMode
-      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
       : `c.*`;
 
     const rows = db
@@ -1629,8 +1630,8 @@ export function registerConversationRoutes(
       .prepare(
         `SELECT id, title, block_count, started_at, ended_at, source, model,
                 agent_id, is_sidechain, source_mtime, updated_at
-         FROM conversations
-         WHERE parent_conversation_id = ?
+         FROM conversations child
+         WHERE ${childrenOfConversationSql("child")}
          ORDER BY started_at ASC`
       )
       .all(id) as Array<{

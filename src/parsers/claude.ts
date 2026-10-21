@@ -602,7 +602,16 @@ export class ClaudeParser implements ConversationParser {
       return null;
     }
 
-    // Compute source hash
+    // A subagent transcript carries its parent's session id. Current Claude
+    // nests it under <parent>/subagents/; older Claude wrote a sibling
+    // agent-<id>.jsonl whose sidechain records name the parent session.
+    const fileStem = path.basename(filePath, ".jsonl");
+    const legacyAgentId = !subagentPath && hasSidechainRecord && sessionId && sessionId !== fileStem
+      ? fileStem.match(/^agent-(.+)$/)?.[1] ?? null
+      : null;
+    const parentSessionId = subagentPath?.parentSessionId ?? (legacyAgentId ? sessionId : null);
+    const parent = parentSessionId ? { source: "claude_code" as const, sessionId: parentSessionId } : null;
+
     return {
       conversation: {
         source: "claude_code",
@@ -621,8 +630,9 @@ export class ClaudeParser implements ConversationParser {
         model,
         cli_version: cliVersion,
         is_sidechain: Boolean(subagentPath || hasSidechainRecord || indexEntry?.isSidechain),
-        agent_id: subagentPath?.agentId ?? null,
+        agent_id: subagentPath?.agentId ?? legacyAgentId,
       },
+      parent,
       blocks,
       ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
       ...(providerTitle ? { providerTitle: title } : {}),
