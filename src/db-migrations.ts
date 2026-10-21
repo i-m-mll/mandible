@@ -11,6 +11,7 @@ import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './arti
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   BASELINE_SCHEMA_VERSION,
+  WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -1968,6 +1969,30 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 201,
     name: "auth_protected_root_dirty_action",
     statements: [AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL],
+  },
+  // Issue 72b00f8 — custody receipts gain the stopped-holder takeover and
+  // operator-approval authority paths. SQLite cannot alter a CHECK, so the
+  // immutable table is rebuilt with every existing receipt copied unchanged.
+  {
+    version: 202,
+    name: "work_unit_custody_takeover_paths",
+    statements: [
+      "DROP TRIGGER work_unit_custody_events_immutable_update",
+      "DROP TRIGGER work_unit_custody_events_immutable_delete",
+      "ALTER TABLE work_unit_custody_events RENAME TO work_unit_custody_events_v201",
+      ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL.slice(0, 1),
+      `INSERT INTO work_unit_custody_events (
+        id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+        prior_generation, new_generation, authority_path, parent_role_checkpoint_id,
+        operator_evidence_method, reason, occurred_at
+      )
+      SELECT id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+        prior_generation, new_generation, authority_path, parent_role_checkpoint_id,
+        operator_evidence_method, reason, occurred_at
+      FROM work_unit_custody_events_v201`,
+      "DROP TABLE work_unit_custody_events_v201",
+      ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL.slice(1),
+    ],
   },
 ];
 

@@ -65,6 +65,8 @@ mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--wor
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
 mandible work-unit release --repo R --branch B --expected-generation N [--graceful]
+mandible work-unit custody-assume --id WU --expected-generation N --reason T [--parent-role-checkpoint C] [--request-approval]
+mandible work-unit custody-check --repo R --branch B [--issue I] [--json]   # exit 0 clear, 3 held, 4 takeover available
 mandible issue title <id> [--json] [--graceful]
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]

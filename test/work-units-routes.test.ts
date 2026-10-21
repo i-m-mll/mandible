@@ -13,6 +13,12 @@ import { systemAction } from "../src/identity/resolver.js";
 import { addGrant } from "../src/permissions/store.js";
 import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
 import { addCredential, createUser } from "../src/users/store.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import {
+  configureSigningCredential, createAuthCheckRepo, createLedgerIssue as createAuthLedgerIssue,
+  createLedgerProject, createMigratedDb, createNoopHookManager,
+} from "./helpers/auth-queue-fixtures.js";
+import fs from "node:fs";
 
 let db: Db;
 let router: Router;
@@ -648,3 +654,124 @@ describe("work unit routes", () => {
   });
 
 });
+
+// Issue 72b00f8 — agents take over a stopped holder's unit; a live holder needs
+// the operator, whose approval hands custody to the requesting agent.
+describe("work-unit custody takeover", () => {
+  let repo: string;
+  let queue: AuthQueue;
+  let guarded: Router;
+  let projectKey: string;
+  let issueId: string;
+  let operatorId: string;
+  const credentials: Record<string, { user_id: string; credential_id: string; slug: string }> = {};
+
+  beforeEach(() => {
+    db.close();
+    db = createMigratedDb();
+    setDb(db);
+    repo = createAuthCheckRepo();
+    operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+    const project = createLedgerProject(db, repo);
+    projectKey = project.project.id;
+    issueId = createAuthLedgerIssue(db, project.project.id, "takeover").id;
+    for (const [token, slug] of [["holder", "codex-holder"], ["taker", "claude-taker"], ["rival", "gemini-rival"]] as const) {
+      const user = createUser(db, { slug, kind: "agent", display_name: slug });
+      const credential = addCredential(db, user.id, { type: "api_token", fingerprint: `${slug}-token` });
+      credentials[token] = { user_id: user.id, credential_id: credential.id, slug };
+    }
+    queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+      executor: async () => { throw new Error("custody transfers never reach the executor"); } });
+    guarded = new Router({ clientAuth: {
+      authenticate: (token) => credentials[token] ? {
+        user_id: credentials[token].user_id, slug: credentials[token].slug, method: "api_token", source: "in_process",
+        credential_id: credentials[token].credential_id, effect_ceiling: PRODUCTION_EFFECTS,
+      } : null,
+      mode: () => "strict",
+      recordUnattributedWrite: () => undefined,
+    } });
+    registerWorkUnitRoutes(guarded, {} as never, {} as never, undefined, { authQueue: queue });
+  });
+
+  afterEach(() => {
+    queue.dispose();
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  async function heldUnit(holderStatus: "active" | "dead"): Promise<string> {
+    const claimed = await guarded.invoke({ method: "POST", url: "/api/work-units/claim", credential: "holder",
+      ambient_identity: { provider: "codex", provider_session_id: "holder-thread" },
+      body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover" } });
+    expect(claimed.status).toBe(201);
+    db.prepare("INSERT INTO sessions (id, app, status, pid, conversation_id) VALUES ('holder-session', 'codex', ?, 4242, 'holder-thread')")
+      .run(holderStatus);
+    return (claimed.body as { id: string }).id;
+  }
+
+  const assume = (token: string, id: string, extra: Record<string, unknown> = {}) => guarded.invoke({
+    method: "POST", url: `/api/work-units/${id}/custody/assume`, credential: token,
+    ambient_identity: { provider: "claude", provider_session_id: `${token}-session` },
+    body: { expected_generation: 1, reason: "Continue the stopped holder's branch.", ...extra },
+  });
+  const check = (token: string) => guarded.invoke({ method: "GET", credential: token,
+    url: `/api/work-units/custody-check?repo_id=${encodeURIComponent(projectKey)}&branch=feature/takeover` });
+  const owner = (id: string) => db.prepare("SELECT owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(id);
+
+  it("lets one agent take over a stopped holder's unit and fences the previous holder", async () => {
+    const id = await heldUnit("dead");
+    expect((await check("taker")).body).toMatchObject({ outcome: "takeover_available", may_commit: false,
+      holder: { user_slug: "codex-holder" }, holder_liveness: { state: "stopped", status: "dead" } });
+
+    const [won, lost] = [await assume("taker", id), await assume("rival", id)];
+    expect(won.status).toBe(200);
+    expect(won.body).toMatchObject({ authority_path: "stopped_holder_takeover",
+      work_unit: { owner_credential_id: credentials.taker.credential_id, custody_generation: 2,
+        provider: "claude", provider_session_id: "taker-session" } });
+    expect(lost.status).toBe(409);
+    expect(lost.body).toMatchObject({ code: "custody_generation_conflict" });
+    expect(owner(id)).toEqual({ owner_credential_id: credentials.taker.credential_id, custody_generation: 2 });
+
+    const receipts = db.prepare("SELECT authority_path, prior_credential_id, new_credential_id, prior_holder_liveness_json FROM work_unit_custody_events WHERE work_unit_id = ? AND authority_path != 'initial_assignment'").all(id) as Array<Record<string, string>>;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ authority_path: "stopped_holder_takeover",
+      prior_credential_id: credentials.holder.credential_id, new_credential_id: credentials.taker.credential_id });
+    expect(JSON.parse(receipts[0]!.prior_holder_liveness_json)).toMatchObject({ state: "stopped", session_id: "holder-session" });
+    const comments = db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").all(issueId) as Array<{ body: string }>;
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("moved from codex-holder (credential");
+    expect(comments[0]!.body).toContain("to claude-taker (credential");
+
+    const stale = await guarded.invoke({ method: "POST", url: "/api/work-units/release", credential: "holder",
+      body: { id, expected_generation: 1 } });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ code: "custody_generation_conflict" });
+    expect((await check("taker")).body).toMatchObject({ outcome: "clear", may_commit: true });
+  });
+
+  it("refuses a live holder, names it, and transfers custody to the agent on operator approval", async () => {
+    const id = await heldUnit("active");
+    expect((await check("taker")).body).toMatchObject({ outcome: "held", may_commit: false,
+      holder_liveness: { state: "live" } });
+
+    const refused = await assume("taker", id);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ code: "custody_holder_live", holder: { user_slug: "codex-holder" } });
+    expect((refused.body as { takeover_command: string }).takeover_command).toContain("--request-approval");
+    expect(owner(id)).toEqual({ owner_credential_id: credentials.holder.credential_id, custody_generation: 1 });
+
+    const requested = await assume("taker", id, { request_approval: true });
+    expect(requested.status).toBe(202);
+    const requestId = (requested.body as { approval_request_id: string }).approval_request_id;
+    const again = await assume("taker", id, { request_approval: true });
+    expect(again.body).toMatchObject({ approval_request_id: requestId, existing: true });
+    expect(queue.getRequest(requestId)).toMatchObject({ type: "custody-transfer", status: "pending",
+      requested_by_user_id: credentials.taker.user_id, requester_credential_id: credentials.taker.credential_id });
+
+    const completed = await queue.approveWithOperatorProof(requestId, operatorId);
+    expect(completed).toMatchObject({ status: "completed", exit_code: 0, approved_by_user_id: operatorId });
+    expect(owner(id)).toEqual({ owner_credential_id: credentials.taker.credential_id, custody_generation: 2 });
+    expect(db.prepare("SELECT authority_path, auth_request_id FROM work_unit_custody_events WHERE work_unit_id = ? AND new_generation = 2").get(id))
+      .toEqual({ authority_path: "operator_approval", auth_request_id: requestId });
+  });
+});
+

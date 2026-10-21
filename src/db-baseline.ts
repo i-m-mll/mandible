@@ -24,7 +24,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 201;
+export const BASELINE_SCHEMA_VERSION = 202;
 
 // Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
 // merge submission: where someone's uncommitted work went. Shared by the fresh
@@ -34,6 +34,39 @@ export const AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL = `ALTER TABLE auth_req
         json_valid(protected_root_dirty_action_json)
         AND json_type(protected_root_dirty_action_json) = 'object'
       ))`;
+
+// Issue 72b00f8 — immutable work-unit custody receipts. An agent may take over a
+// unit whose holder is provably stopped (the receipt keeps that liveness
+// evidence), and an operator-approved custody-transfer request names its
+// request. Shared by the fresh baseline and migration v202.
+export const WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE work_unit_custody_events (
+        id TEXT PRIMARY KEY,
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE RESTRICT,
+        prior_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        prior_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        new_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        new_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        prior_generation INTEGER NOT NULL,
+        new_generation INTEGER NOT NULL CHECK(new_generation = prior_generation + 1),
+        authority_path TEXT NOT NULL CHECK(authority_path IN ('initial_assignment','parent_role_handoff','operator_recovery','stopped_holder_takeover','operator_approval')),
+        parent_role_checkpoint_id TEXT REFERENCES ledger_issue_checkpoints(id) ON DELETE RESTRICT,
+        operator_evidence_method TEXT,
+        reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+        occurred_at INTEGER NOT NULL,
+        auth_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        prior_holder_liveness_json TEXT CHECK(prior_holder_liveness_json IS NULL OR json_valid(prior_holder_liveness_json)),
+        UNIQUE(work_unit_id, new_generation),
+        CHECK((authority_path = 'operator_approval') = (auth_request_id IS NOT NULL)),
+        CHECK(authority_path != 'stopped_holder_takeover' OR prior_holder_liveness_json IS NOT NULL)
+      )`,
+  `CREATE TRIGGER work_unit_custody_events_immutable_update
+        BEFORE UPDATE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
+  `CREATE TRIGGER work_unit_custody_events_immutable_delete
+        BEFORE DELETE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
+];
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -225,9 +258,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
   "CREATE TRIGGER auth_request_lifecycle_events_immutable_update BEFORE UPDATE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
   "CREATE TRIGGER auth_request_lifecycle_events_immutable_delete BEFORE DELETE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
-  "CREATE TABLE work_unit_custody_events (\n        id TEXT PRIMARY KEY,\n        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE RESTRICT,\n        prior_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,\n        prior_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        new_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        new_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        prior_generation INTEGER NOT NULL,\n        new_generation INTEGER NOT NULL CHECK(new_generation = prior_generation + 1),\n        authority_path TEXT NOT NULL CHECK(authority_path IN ('initial_assignment','parent_role_handoff','operator_recovery')),\n        parent_role_checkpoint_id TEXT REFERENCES ledger_issue_checkpoints(id) ON DELETE RESTRICT,\n        operator_evidence_method TEXT,\n        reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),\n        occurred_at INTEGER NOT NULL,\n        UNIQUE(work_unit_id, new_generation)\n      )",
-  "CREATE TRIGGER work_unit_custody_events_immutable_update BEFORE UPDATE ON work_unit_custody_events BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END",
-  "CREATE TRIGGER work_unit_custody_events_immutable_delete BEFORE DELETE ON work_unit_custody_events BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END",
+  ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   "CREATE TABLE auth_request_merge_succeeded_facts (\n        auth_request_id   TEXT PRIMARY KEY,\n        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        base_branch       TEXT NOT NULL,\n        completed_at      INTEGER NOT NULL,\n        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),\n        recorded_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE branches (\n  repo_root     TEXT NOT NULL,\n  branch        TEXT NOT NULL,\n  is_current    INTEGER NOT NULL DEFAULT 0,\n  is_worktree   INTEGER DEFAULT 0,\n  worktree_path TEXT,\n  is_dirty      INTEGER DEFAULT 0,\n  ahead         INTEGER DEFAULT 0,\n  behind        INTEGER DEFAULT 0,\n  last_commit_hash    TEXT,\n  last_commit_message TEXT,\n  last_commit_author  TEXT,\n  last_commit_date    TEXT,\n  diff_stat     TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '', worktree_inventory_known INTEGER NOT NULL DEFAULT 0, worktree_status_known INTEGER NOT NULL DEFAULT 0, default_comparison_known INTEGER NOT NULL DEFAULT 0, has_upstream INTEGER NOT NULL DEFAULT 0, upstream TEXT,\n  PRIMARY KEY (repo_root, branch)\n)",
   "CREATE TABLE console_session_telemetry (\n        telemetry_key TEXT PRIMARY KEY,\n        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,\n        provider_session_id TEXT,\n        transcript_path TEXT,\n        model TEXT,\n        context_used_percentage REAL,\n        context_window_size INTEGER,\n        context_input_tokens INTEGER,\n        context_output_tokens INTEGER,\n        context_cache_creation_input_tokens INTEGER,\n        context_cache_read_input_tokens INTEGER,\n        rate_limit_five_hour_used_percentage REAL,\n        rate_limit_five_hour_resets_at TEXT,\n        rate_limit_seven_day_used_percentage REAL,\n        rate_limit_seven_day_resets_at TEXT,\n        raw_payload_json TEXT NOT NULL,\n        received_at INTEGER NOT NULL\n      )",

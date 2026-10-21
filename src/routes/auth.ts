@@ -100,6 +100,10 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
     }
+    if (payload.type === "custody-transfer") {
+      res.status(400).json({ error: CUSTODY_TRANSFER_SUBMISSION_REFUSAL });
+      return;
+    }
     if (dirtyAction.action && (payload.type ?? "merge") !== "merge") {
       res.status(400).json({ error: "'protected_root_dirty_action' applies only to merge requests." });
       return;
@@ -423,6 +427,10 @@ export function registerAuthRoutes(
           return;
         }
         res.status(404).json({ error: "Auth request not found." });
+        return;
+      }
+      if (current.type === "custody-transfer" || result.payload.type === "custody-transfer") {
+        res.status(400).json({ error: CUSTODY_TRANSFER_SUBMISSION_REFUSAL });
         return;
       }
       const control = authMutationControl(req, res, current, body, true);
@@ -948,6 +956,12 @@ function resolveAuthRequester(
 // Issue 8ae6b5f — requests no longer carry a spec. The canonical change
 // message states intent, and a substantial design is a tracked artifact linked
 // to the request's issue. Stored specs on older requests stay readable.
+// Issue 72b00f8 — a custody-transfer request is created only by
+// `work-unit custody-assume --request-approval`, which binds its exact unit,
+// generation, and requesting credential. Its reviewed bytes are never revised.
+const CUSTODY_TRANSFER_SUBMISSION_REFUSAL =
+  "Custody-transfer requests come only from `mandible work-unit custody-assume --request-approval` and cannot be revised.";
+
 const SPEC_CONTENT_REFUSAL =
   "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
 

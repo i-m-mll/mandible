@@ -22,6 +22,7 @@ case "$action" in
   release) mandible_work_unit_release "$@" ;;
   release-issue) mandible_work_unit_release_issue "$@" ;;
   custody-assume) mandible_work_unit_custody_assume "$@" ;;
+  custody-check) mandible_work_unit_custody_check "$@" ;;
   ""|-h|--help|help) usage ;;
   *) mandible_ledger_err "Unknown work-unit action: $action"; usage >&2; exit 2 ;;
 esac

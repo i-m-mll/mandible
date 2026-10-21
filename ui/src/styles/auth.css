@@ -845,6 +845,11 @@
   color: var(--accent-red);
 }
 
+.type-badge--custody-transfer {
+  background: rgba(245, 194, 92, 0.2);
+  color: var(--accent-yellow);
+}
+
 .artifact-link-badge {
   text-decoration: none;
 }
