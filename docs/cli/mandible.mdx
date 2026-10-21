@@ -8,7 +8,7 @@ The `mandible` command is a dispatcher that routes to subcommands. HTTP subcomma
 |---|---|
 | `MANDIBLE_PORT` | Daemon backend port (default: `29420`) |
 | `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
-| `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
+| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but a nested Claude run whose pid differs from the one on that session's row treats it as unset and registers under its own provider session ID |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
 ## Restart availability temporary failures
@@ -62,7 +62,7 @@ mandible wrap --app codex --id my-session-123 -- codex
 
 1. Infers `app` from the command basename if not specified (`claude*` -> `claude`, `codex*` -> `codex`).
 2. Generates a UUID session ID if not provided.
-3. Exports `MANDIBLE_SESSION_ID` and `AI_AGENT_SIGNING=1` for child processes.
+3. Exports `MANDIBLE_SESSION_ID` and `AI_AGENT_SIGNING=1` for child processes. The session row records the wrapper's pid, which the wrapped command keeps through `exec`; that pid is what makes the ID this process's own (see `MANDIBLE_SESSION_ID` above).
 4. Detects `--dangerously-skip-permissions` flags and exports `CLAUDE_SKIP_PERMISSIONS=1`.
 5. Collects environment data: terminal emulator, multiplexer, git branch, multiplexer pane metadata.
 6. Registers the session via `POST /api/sessions/register`.
