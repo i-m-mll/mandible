@@ -234,30 +234,9 @@ function resolveLedgerIssueId(
   db: Db,
   issueRef: string,
 ): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
-  const store = new LedgerStore(db);
-  const resolved = store.resolveIssueRef(issueRef);
-  if (resolved.ok) return { ok: true, issue_id: resolved.id };
+  const resolved = resolveOperationalIssueRef(db, issueRef);
+  if (resolved.ok) return { ok: true, issue_id: resolved.issue_id };
   if (resolved.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous issue reference" };
-
-  // Preserve global IDs, short IDs, and exact aliases above, then treat
-  // `<project>/<issue>` as a qualified fallback through the canonical project
-  // registry. LedgerStore already owns project-scoped issue prefix resolution.
-  const separator = issueRef.indexOf("/");
-  if (separator > 0 && separator < issueRef.length - 1) {
-    const project = resolveProjectRef(db, issueRef.slice(0, separator));
-    if (project.ambiguous) {
-      return { ok: false, status: 409, error: "ambiguous project reference" };
-    }
-    if (project.ok && project.project) {
-      const qualified = store.resolveIssueRef(issueRef.slice(separator + 1), {
-        project_id: project.project.id,
-      });
-      if (qualified.ok) return { ok: true, issue_id: qualified.id };
-      if (qualified.error === "ambiguous") {
-        return { ok: false, status: 409, error: "ambiguous issue reference" };
-      }
-    }
-  }
   return { ok: false, status: 404, error: "ledger issue not found" };
 }
 

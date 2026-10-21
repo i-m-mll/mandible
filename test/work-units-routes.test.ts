@@ -27,6 +27,13 @@ beforeEach(() => {
   db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
+  const fixtures = addProject(db, { project_key: "work-unit-fixtures", display_name: "Work-unit fixtures" });
+  for (const alias of [
+    "custody-issue", "pending-branches", "withdrawn-branches", "same-branch", "branch-adoption",
+    "dot123", "abc123", "auto123", "header123", "noenv", "release-issue",
+  ]) {
+    createLedgerIssue(db, { project_id: fixtures.id, alias });
+  }
   router = new Router();
   registerWorkUnitRoutes(router, {} as never, {} as never);
 });
@@ -36,6 +43,29 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("binds a claim to an issue in another project and refuses a ref that names no issue", async () => {
+    const other = addProject(db, { project_key: "elsewhere", display_name: "Elsewhere" });
+    const issue = createLedgerIssue(db, { project_id: other.id, alias: "far1234" });
+
+    for (const [ref, branch] of [["far1234", "feature/bare"], ["elsewhere/far1234", "feature/qualified"]] as const) {
+      const claim = await router.invoke({
+        method: "POST", url: "/api/work-units/claim", body: { issue_id: ref, repo_id: "mandible", branch },
+      });
+      expect(claim.status).toBe(201);
+      expect(claim.body).toMatchObject({ ledger_issue_id: issue.id });
+    }
+
+    const before = db.prepare("SELECT COUNT(*) AS count FROM work_units").get();
+    for (const url of ["/api/work-units/claim", "/api/work-units/activate"]) {
+      const refused = await router.invoke({
+        method: "POST", url, body: { issue_id: "nosuch99", repo_id: "mandible", branch: "feature/none" },
+      });
+      expect(refused.status).toBe(404);
+      expect(refused.body).toMatchObject({ error: "issue_not_found" });
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual(before);
+  });
+
   it("retains the exact credential owner from claim through activation", async () => {
     const agent = createUser(db, { slug: "custodian", kind: "agent", display_name: "Custodian" });
     const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "test-custody-token" });

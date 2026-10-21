@@ -193,6 +193,17 @@ describe("ledger operational links", () => {
     });
   });
 
+  it("resolves an issue in another project from a repo's scope, bare or project-qualified", () => {
+    const home = createProject("gamma");
+    const other = createProject("delta");
+    const issue = createIssue(other.project.id, "cross77");
+    const expected = { ok: true, issue_id: issue.id, project_id: other.project.id };
+
+    expect(resolveOperationalIssueRef(db, "cross77", home.checkout.root)).toEqual(expected);
+    expect(resolveOperationalIssueRef(db, `${other.project.project_key}/cross77`, home.checkout.root)).toEqual(expected);
+    expect(resolveOperationalIssueRef(db, "missing9", home.checkout.root)).toEqual({ ok: false, error: "not_found" });
+  });
+
   it("links work units, sessions, and auth requests to canonical ledger issues", () => {
     const project = createProject("repo");
     const issue = createIssue(project.project.id, "abc1234");

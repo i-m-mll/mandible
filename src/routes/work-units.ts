@@ -224,6 +224,33 @@ function resolveLedgerIssueId(
   }
 }
 
+/**
+ * A work unit exists to deliver one ledger issue. Refuse, before anything is
+ * written, a ref that names no issue or several, rather than creating a unit
+ * that auth submission can never bind.
+ */
+function refuseUnresolvedIssue(
+  db: ReturnType<typeof getDb>,
+  res: unknown,
+  issueRef: string,
+  repoId: string,
+): boolean {
+  const resolved = resolveOperationalIssueRef(db, issueRef, repoId);
+  if (resolved.ok || resolved.error === "unavailable") return false;
+  if (resolved.error === "ambiguous") {
+    sendJson(res, 409, {
+      error: "issue_ref_ambiguous",
+      message: `Issue ref ${issueRef} matches several ledger issues${resolved.matches ? ` (${resolved.matches.join(", ")})` : ""}; pass a longer id or <project>/<id>.`,
+    });
+  } else {
+    sendJson(res, 404, {
+      error: "issue_not_found",
+      message: `Issue ref ${issueRef} names no ledger issue; claim against an existing issue id or <project>/<id>.`,
+    });
+  }
+  return true;
+}
+
 export function registerWorkUnitRoutes(
   server: RouteRegistrar,
   sessionRegistry: SessionRegistry,
@@ -252,6 +279,7 @@ export function registerWorkUnitRoutes(
       return;
     }
     const repoId = normalizeProjectRepoId(db, body.repo_id);
+    if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const now = Date.now();
@@ -453,6 +481,7 @@ export function registerWorkUnitRoutes(
       });
       return;
     }
+    if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
 
     const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, true);
     if (match.status === "ambiguous") {
