@@ -327,8 +327,6 @@ mandible auth request <branch> --title <text> --issue <id> (--message <text> | -
 | `--ref-issue <id>` | Alias for `--issue` |
 | `--closes-issue <id>` | Issue ID to close on successful merge (repeatable) |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
-| `--spec <text>` | Inline spec/review Markdown |
-| `--spec-file <file>` | Read spec/review Markdown from a file (`-` for stdin); mutually exclusive with `--spec` |
 | `--handoff <text>` | Post-merge handoff note for next session |
 | `--depends-on <id>` | Auth request ID that must complete first |
 | `--repo <name>` | Override auto-detected repo name |
@@ -371,38 +369,22 @@ already canonical, and commits them on every merge path, aborting rather than
 falling back. A request submitted before messages were required, and therefore
 carrying none, still merges with git's own default merge message.
 
-**Review specification:**
+**No separate spec:**
 
-For a non-trivial merge, prefer `--spec-file` and author a readable Markdown
-review packet. The CLI treats these bytes as opaque text: it does not parse,
-reflow, canonicalize, or infer headings, and legacy one-line `--spec` values
-remain valid unchanged. Use these sections:
-
-- `Intent` — the requested outcome and its issue or coordination record are the
-  source of truth.
-- `Design choices` — the final committed implementation and durable design
-  decisions are the source of truth.
-- `Scope`, including `Non-goals` — the issue boundary and final diff are the
-  source of truth.
-- `Verification`, including limitations — executed checks and observed results
-  are the source of truth; record gaps rather than predicting success.
-- `Delivery` — if something must be done by hand after the merge, say what it
-  is and who does it.
-
-The canonical change message and review specification stay separate because
-they serve different contracts. The canonical message is concise, validated,
-SHA-256-bound, frozen review input that becomes the merge commit message. The
-specification is the detailed Markdown packet used to review intent, choices,
-scope, evidence, and activation. Supplying `--spec-file` does not alter message
-composition, verification-envelope ownership, digesting, freezing,
-closure behavior, or stored spec semantics.
+Requests carry no spec, and `--spec` / `--spec-file` are unknown options. The
+change message states the request's intent. If something must be done by hand
+after the merge, say what it is and who does it under `Caveats:`. A substantial
+design belongs in a tracked document registered as an artifact and linked to
+the request's issue, where it is versioned and reviewable as a Briefing.
+Requests submitted before this rule keep their stored spec, which the approval
+page shows read-only.
 
 **Pre-flight checks:**
 
 1. Validates CWD is on the protected branch
 2. Validates the source branch exists
 3. Verifies the branch has unique commits
-4. Applies the explicit protected-root dirty policy without discarding files
+4. Applies the explicit protected-root dirty policy without discarding files, and sends what it did so the request records it
 5. Runs Mandible's shared auth check for tracked dirtiness and dry-run conflict detection
 
 **Resolution watching:**

@@ -44,8 +44,6 @@
 #
 # Options:
 #   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
-#   --spec <text>           Inline spec/review Markdown
-#   --spec-file <file>      Read spec/review Markdown from a file ('-' reads stdin)
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
@@ -123,10 +121,6 @@ change_message_set=0
 verification_text=""
 canonical_message="false"
 diff_summary=""
-spec_content=""
-spec_file=""
-spec_inline_set=0
-spec_file_set=0
 post_merge_handoff=""
 depends_on_id=""
 supersedes_request_id=""
@@ -148,7 +142,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 
 if [[ -z "$title" ]]; then
@@ -163,29 +157,6 @@ fi
 if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
   echo "Error: --message and --message-file are mutually exclusive" >&2
   exit 2
-fi
-if [[ $spec_inline_set -eq 1 && $spec_file_set -eq 1 ]]; then
-  echo "Error: --spec and --spec-file are mutually exclusive" >&2
-  exit 2
-fi
-if [[ "$change_message_file" == "-" && "$spec_file" == "-" ]]; then
-  echo "Error: --message-file - and --spec-file - cannot both read stdin" >&2
-  exit 2
-fi
-if [[ $spec_file_set -eq 1 ]]; then
-  if [[ "$spec_file" != "-" && ! -f "$spec_file" ]]; then
-    echo "Error: --spec-file '${spec_file}' does not exist" >&2
-    exit 2
-  fi
-  # Command substitution normally strips every trailing newline. Append and
-  # remove one non-newline sentinel so the opaque Markdown reaches jq exactly
-  # as authored, including blank lines and a final newline.
-  if [[ "$spec_file" == "-" ]]; then
-    spec_content="$(cat; printf '\034')"
-  else
-    spec_content="$(cat -- "$spec_file"; printf '\034')"
-  fi
-  spec_content="${spec_content%$'\034'}"
 fi
 if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
   echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
@@ -336,7 +307,6 @@ payload=$(jq -nc \
   --arg commit_message "$commit_message" \
   --argjson canonical_message "$canonical_message" \
   --arg verification "$verification_text" \
-  --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
   --arg supersedes_request_id "$supersedes_request_id" \
@@ -365,7 +335,6 @@ payload=$(jq -nc \
     commit_message: (if $commit_message == "" then null else $commit_message end),
     canonical_message: $canonical_message,
     verification: (if $verification == "" then null else $verification end),
-    spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
     issue_references: $issue_references,
     issue_closures: $issue_closures,

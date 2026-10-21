@@ -9,6 +9,7 @@ import { retainArtifactCommit } from './artifact-repo-resolution.js';
 import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
+  AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   BASELINE_SCHEMA_VERSION,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
@@ -1960,6 +1961,13 @@ export const MIGRATIONS: readonly Migration[] = [
       FROM worker_status_in_progress_clear c`,
       "DROP TABLE worker_status_in_progress_clear",
     ],
+  },
+  // Issue 8ae6b5f — a merge request records what an explicit protected-root
+  // dirty policy did before submission. Existing rows stay NULL.
+  {
+    version: 201,
+    name: "auth_protected_root_dirty_action",
+    statements: [AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL],
   },
 ];
 

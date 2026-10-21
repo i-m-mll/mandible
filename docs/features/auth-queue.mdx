@@ -75,7 +75,14 @@ refuses them otherwise with code `change_message_required`. A revision that
 edits a merge request's message must leave a canonical message with its
 verification text. Requests submitted before this rule keep their other
 revision, approval, and execution paths.
-- `spec_content` — A specification explaining the intent and design decisions.
+
+Requests carry no separate spec. The change message states intent; post-merge
+manual steps go under its `Caveats:` section, and a substantial design belongs
+in a tracked document registered as an artifact and linked to the request's
+issue. The submission and revision routes refuse `spec_content`. Requests
+submitted earlier keep their stored spec, which the approval page shows
+read-only.
+
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.
 - `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
@@ -86,7 +93,7 @@ revision, approval, and execution paths.
 
 ### Change breakdown
 
-Merge requests show a **Change breakdown** panel beneath Specification in Info.
+Merge requests show a **Change breakdown** panel beneath the commit message in Info.
 Language, directory, file-role, generated/vendor and largest-file views all use
 one stored file inventory. Rows expose files, additions, deletions and share of
 changed text lines, with contributing files available through expansion or
@@ -324,7 +331,7 @@ The auth queue broadcasts these SSE event types:
 | Event | When |
 |-------|------|
 | `auth:new` | A new request is submitted or a failed request is retried. |
-| `auth:updated` | Request metadata is modified (title, diff, spec, etc.). |
+| `auth:updated` | Request metadata is modified (title, diff, message, etc.). |
 | `auth:output` | Execution output chunk (stdout/stderr). |
 | `auth:resolved` | Request reached a terminal state (completed, rejected, withdrawn, superseded, expired). |
 | `auth:lifecycle` | An immutable lifecycle revision was appended. |

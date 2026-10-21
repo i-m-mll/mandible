@@ -1,3 +1,4 @@
+import type { ProtectedRootDirtyAction } from "./auth-protected-root-dirty-action.js";
 import { assertAuthPublication, authPublicationSnapshot, bindAuthPublication } from "./auth-publication.js";
 import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
@@ -185,6 +186,8 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
   "supersedes_request_id", "superseded_by_request_id",
   "custody_work_unit_id",
+  // Issue 8ae6b5f — small bounded JSON: where a dirty policy moved protected-root changes.
+  "protected_root_dirty_action_json",
 ].join(", ");
 
 type WorkUnitCustody = {
@@ -1693,7 +1696,9 @@ export class AuthQueue {
       diff_summary: payload.diff_summary ?? null,
       commit_message: canonical.message,
       commit_message_digest: canonical.digest,
-      spec_content: payload.spec_content ?? null,
+      // Issue 8ae6b5f — new requests carry no spec; the column holds history.
+      spec_content: null,
+      protected_root_dirty_action: payload.protected_root_dirty_action ?? null,
       repo: payload.repo,
       base_branch: payload.base_branch,
       head_branch: payload.head_branch,
@@ -1771,6 +1776,7 @@ export class AuthQueue {
         merge_preflight_queue_fingerprint,
         merge_finalized_at,
         change_report_json,
+        protected_root_dirty_action_json,
         files_changed,
         additions,
         deletions,
@@ -1831,6 +1837,7 @@ export class AuthQueue {
         @merge_preflight_queue_fingerprint,
         @merge_finalized_at,
         @change_report_json,
+        @protected_root_dirty_action_json,
         @files_changed,
         @additions,
         @deletions,
@@ -1897,6 +1904,9 @@ export class AuthQueue {
         merge_preflight_queue_fingerprint: request.merge_preflight_queue_fingerprint ?? null,
         merge_finalized_at: request.merge_finalized_at,
         change_report_json: request.change_report ? JSON.stringify(request.change_report) : null,
+        protected_root_dirty_action_json: request.protected_root_dirty_action
+          ? JSON.stringify(request.protected_root_dirty_action)
+          : null,
         post_merge_handoff: request.post_merge_handoff ?? null,
         issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
         issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
@@ -2827,7 +2837,6 @@ export class AuthQueue {
       "type",
       "title",
       "diff_summary",
-      "spec_content",
       "post_merge_handoff",
       "repo",
       "base_branch",
@@ -7818,6 +7827,9 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     // views and crash recovery read it. Kept as a string to match the column.
     merge_finalizer_state: row.merge_finalizer_state == null ? null : String(row.merge_finalizer_state),
     change_report: parseChangeReport(row.change_report_json),
+    protected_root_dirty_action: row.protected_root_dirty_action_json == null
+      ? null
+      : JSON.parse(String(row.protected_root_dirty_action_json)) as ProtectedRootDirtyAction,
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
     deletions: row.deletions == null ? undefined : Number(row.deletions),

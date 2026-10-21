@@ -10,7 +10,7 @@ Agents work on feature branches freely. Protected-branch operations require expl
 
 1. An agent checks for an existing request if needed: `mandible auth list --repo <repo> --head feature/x`
 2. An agent finishes work and submits: `mandible auth request <branch> --title "Merge feature/x" --no-watch`
-3. The request appears in the Auth tab with diff summary, commit message, file stats, and optional spec.
+3. The request appears in the Auth tab with diff summary, change message, and file stats.
 4. You review and approve — Mandible executes the operation with your hardware key.
 5. The result is delivered to the agent's next session via the inbox.
 

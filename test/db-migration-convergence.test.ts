@@ -582,3 +582,27 @@ describe("derived in-progress worker status", () => {
     }
   });
 });
+
+describe("protected-root dirty action column", () => {
+  it("v201 adds a nullable JSON-object column and leaves existing requests unset", () => {
+    const dbPath = path.join(tempDir, "dirty-action-v200.db");
+    createFloorDatabase(dbPath);
+    const db = new SqliteDatabase(dbPath);
+    try {
+      db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+        crypto.createHash("sha256").update(String(value)).digest("hex"));
+      migrateFixtureThrough(db, 200);
+      db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at)
+        VALUES ('existing', 'echo old', 'Old request', 'pending', 1, 1, 2)`).run();
+
+      migrate(db);
+
+      expect(db.prepare("SELECT protected_root_dirty_action_json AS action FROM auth_requests").get())
+        .toEqual({ action: null });
+      expect(() => db.prepare("UPDATE auth_requests SET protected_root_dirty_action_json = '[]'").run())
+        .toThrow(/CHECK/);
+    } finally {
+      db.close();
+    }
+  });
+});

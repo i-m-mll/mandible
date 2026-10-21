@@ -106,6 +106,17 @@ export type AuthRequest = {
   spec_content?: string;
   diff_summary?: string;
   post_merge_handoff?: string | null;
+  // Issue 8ae6b5f — where an explicit dirty policy moved protected-root
+  // changes before submission; read-only.
+  protected_root_dirty_action?: {
+    policy: string;
+    action: string;
+    branch: string | null;
+    worktree: string | null;
+    stash: string | null;
+    files: Array<{ status: string; path: string }>;
+    message: string;
+  } | null;
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
   issue_ids?: string[] | null;
@@ -782,6 +793,7 @@ function AuthRequestDetail({
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(false);
+  const [showDirtyNote, setShowDirtyNote] = useState(true);
   const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
@@ -809,6 +821,7 @@ function AuthRequestDetail({
       : '';
   const isCanonicalMessage = canonicalDigest !== '' && commitMsg !== '';
   const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
+  const dirtyAction = request.protected_root_dirty_action ?? null;
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
   const { branch: commitBranch, body: commitBody } = useMemo(
@@ -1331,23 +1344,38 @@ function AuthRequestDetail({
                     </div>
                   )}
               </CollapsiblePanel>
-              <CollapsiblePanel
-                title="Specification"
-                expanded={showSpec}
-                onExpandedChange={setShowSpec}
-                bodyClassName="spec-panel"
-              >
-                {specHtml ? (
-                    <div
-                      className="rendered-markdown"
-                      dangerouslySetInnerHTML={{ __html: specHtml }}
-                    />
-                  ) : (
-                    <div className="spec-panel--empty">
-                      No specification attached.
-                    </div>
+              {dirtyAction && (
+                <CollapsiblePanel
+                  title="Protected-root changes"
+                  expanded={showDirtyNote}
+                  onExpandedChange={setShowDirtyNote}
+                  bodyClassName="spec-panel"
+                >
+                  <p>{dirtyAction.message}</p>
+                  {dirtyAction.files.length > 0 && (
+                    <ul className="protected-root-files">
+                      {dirtyAction.files.map((file) => (
+                        <li key={file.path}><code>{file.status}</code> {file.path}</li>
+                      ))}
+                    </ul>
                   )}
-              </CollapsiblePanel>
+                </CollapsiblePanel>
+              )}
+              {/* Issue 8ae6b5f — new requests carry no spec. A spec stored by an
+                  older request stays visible, read-only, as reviewed history. */}
+              {specHtml && (
+                <CollapsiblePanel
+                  title="Specification"
+                  expanded={showSpec}
+                  onExpandedChange={setShowSpec}
+                  bodyClassName="spec-panel"
+                >
+                  <div
+                    className="rendered-markdown"
+                    dangerouslySetInnerHTML={{ __html: specHtml }}
+                  />
+                </CollapsiblePanel>
+              )}
               {authType === 'merge' && (
                 <AuthChangeBreakdown
                   requestId={fullId}

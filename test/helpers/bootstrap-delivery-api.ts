@@ -16,7 +16,6 @@ export type BootstrapDeliveryInputs = Api & {
   requesterCredentialId: string;
   commitMessage: string;
   verification: string;
-  spec: string;
 };
 
 async function jsonRequest(api: Api, route: string, method = 'GET', body?: unknown) {
@@ -51,7 +50,7 @@ export async function submitBootstrapDelivery(input: BootstrapDeliveryInputs): P
     cwd: input.cwd, target_repo_root: input.cwd, repo: input.repo,
     head_branch: input.headBranch, base_branch: input.baseBranch, execution_mode: 'daemon',
     issue_references: [input.issueRef], canonical_message: true,
-    commit_message: input.commitMessage, verification: input.verification, spec_content: input.spec,
+    commit_message: input.commitMessage, verification: input.verification,
   }) as { request_id: string };
   assert.ok(result.request_id);
   const detail = await readBootstrapDelivery(input, result.request_id);

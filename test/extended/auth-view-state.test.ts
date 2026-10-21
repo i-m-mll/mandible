@@ -240,7 +240,7 @@ describe('AuthQueueView', () => {
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
   });
 
-  it('renders and persists the canonical change inventory views beneath Specification', async () => {
+  it('renders and persists the canonical change inventory views beneath the commit message', async () => {
     installMemoryLocalStorage();
     const first = {
       id: 'req-change-report-first', title: 'Captured breakdown', type: 'merge' as const,
@@ -261,7 +261,7 @@ describe('AuthQueueView', () => {
     const leftColumn = document.querySelector('.auth-detail__left-col') as HTMLElement;
     expect(Array.from(leftColumn.querySelectorAll(':scope > .collapsible-panel')).map(
       (panel) => panel.querySelector('.collapsible-panel__toggle')?.textContent?.trim(),
-    )).toEqual(['Commit message', 'Specification', 'Change breakdown']);
+    )).toEqual(['Commit message', 'Change breakdown']);
     expect(within(leftColumn).getByText('5 files · +15 −3')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
@@ -528,7 +528,7 @@ describe('AuthQueueView', () => {
     expect(panels?.className).toContain('auth-detail__panels--with-actions');
     expect(panels?.className).not.toContain('auth-detail__panels--single');
     expect(leftColumn?.textContent).toContain('Commit message');
-    expect(leftColumn?.textContent).toContain('Specification');
+    expect(leftColumn?.textContent).not.toContain('Specification');
     expect(rightColumn?.querySelector('.auth-action-bundle')).toBeTruthy();
     expect(rightColumn?.textContent).toContain('On merge...');
     expect(rightColumn?.textContent).not.toContain('Commit Message');
@@ -573,7 +573,7 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__edit-btn')).toBeNull();
   });
 
-  it('renders multiline specifications as sanitized block Markdown without rewriting legacy text', () => {
+  it('shows a spec stored by an older request as sanitized read-only Markdown', () => {
     const multilineSpec = [
       '# Intent',
       '',

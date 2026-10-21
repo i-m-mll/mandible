@@ -1087,6 +1087,18 @@
   font-style: italic;
 }
 
+.protected-root-files {
+  margin: 8px 0 0;
+  padding-left: 0;
+  list-style: none;
+  font: var(--text-xs)/1.5 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.protected-root-files code {
+  white-space: pre;
+}
+
 .auth-change-breakdown__summary {
   color: var(--text-muted);
   font: 500 var(--text-xs)/1.35 var(--font-mono);

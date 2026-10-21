@@ -320,7 +320,7 @@ describe("auth change reports", () => {
     return { db, queue, router, token, project, submit };
   }
 
-  it("refuses merge requests and supersessions without a change message or verification (issue 4720024)", async () => {
+  it("refuses merge requests and supersessions without a change message or verification, or with a spec (issues 4720024, 8ae6b5f)", async () => {
     const { db, queue, router, token, submit } = authenticatedRoute();
     try {
       const { verification: _verification, ...withoutVerification } = MERGE_CHANGE_MESSAGE;
@@ -334,6 +334,9 @@ describe("auth change reports", () => {
         expect(refused.body).toMatchObject({ code: "change_message_required" });
         expect(String((refused.body as { error: string }).error)).toContain(missing);
       }
+      const withSpec = await submit({ ...MERGE_CHANGE_MESSAGE, spec_content: "Intent" });
+      expect(withSpec.status).toBe(400);
+      expect(String((withSpec.body as { error: string }).error)).toContain("spec_content");
       expect(queue.listActive()).toHaveLength(0);
 
       const accepted = await submit(MERGE_CHANGE_MESSAGE);
@@ -355,6 +358,48 @@ describe("auth change reports", () => {
       });
       expect(demoted.status, JSON.stringify(demoted.body)).toBe(400);
       expect(demoted.body).toMatchObject({ code: "change_message_required" });
+
+      const revisedSpec = await router.invoke({
+        method: "PUT",
+        url: `/api/auth/request/${(accepted.body as { request_id: string }).request_id}`,
+        body: { spec_content: "Intent", expected_revision: 1, expected_custody_generation: 1 },
+        credential: token,
+        transport: "http",
+      });
+      expect(revisedSpec.status).toBe(400);
+      expect(String((revisedSpec.body as { error: string }).error)).toContain("spec_content");
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
+  // Issue 8ae6b5f — a dirty policy's note says where uncommitted work went.
+  it("stores a protected-root stash action on the request and reads it back", async () => {
+    const { db, queue, router, token, submit } = authenticatedRoute();
+    try {
+      const stash = "0123456789abcdef0123456789abcdef01234567";
+      const accepted = await submit({
+        ...MERGE_CHANGE_MESSAGE,
+        protected_root_dirty_action: {
+          policy: "stash", action: "stashed", branch: null, worktree: null, stash,
+          files: [{ status: " M", path: "notes.md" }, { status: "??", path: "scratch.txt" }],
+          message: `Protected-root changes were preserved in stash ${stash} before auth request submission.`,
+        },
+      });
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+      const id = (accepted.body as { request_id: string }).request_id;
+      const detail = await router.invoke({
+        method: "GET", url: `/api/auth/request/${id}`, credential: token, transport: "http",
+      });
+      expect((detail.body as { protected_root_dirty_action: unknown }).protected_root_dirty_action).toEqual({
+        policy: "stash", action: "stashed", branch: null, worktree: null, stash,
+        files: [{ status: " M", path: "notes.md" }, { status: "??", path: "scratch.txt" }],
+        message: `Protected-root changes were preserved in stash ${stash} before auth request submission.`,
+      });
+      const listed = await router.invoke({ method: "GET", url: "/api/auth/queue", credential: token, transport: "http" });
+      expect((listed.body as { requests: Array<{ id: string; protected_root_dirty_action: { stash: string } | null }> })
+        .requests.find((row) => row.id === id)?.protected_root_dirty_action?.stash).toBe(stash);
     } finally {
       queue.dispose();
       db.close();

@@ -244,7 +244,7 @@ describe("action-specific request preparation", () => {
       const result = await runAsync([
         "auth", "request", "--type", "config-change", "--command", command,
         "--cwd", executionDir, "--repo", "example", "--title", "Apply reviewed settings",
-        "--issue", "settings123", "--spec", "Review these exact settings.", "--no-watch",
+        "--issue", "settings123", "--no-watch",
       ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
       expect(result.status, result.stderr).toBe(0);
       expect(server.checkBodies).toEqual([]);
@@ -533,92 +533,27 @@ describe("candidate acceptance CLI", () => {
   });
 });
 
-describe("auth request specification authoring", () => {
-  const multilineSpec = [
-    "# Intent",
-    "",
-    "Preserve a readable review packet.",
-    "",
-    "## Design choices",
-    "",
-    "- Keep the specification separate from the canonical message.",
-    "- Preserve source bytes.",
-    "",
-    "```text",
-    "bun run typecheck",
-    "```",
-    "",
-  ].join("\n");
-
-  it("preserves multiline Markdown from a file, including its final newline", async () => {
-    const server = await listenForAuthRequest();
-    const specPath = path.join(homeDir, "auth-spec.md");
-    fs.writeFileSync(specPath, multilineSpec, "utf8");
-    try {
-      const result = await runAsync([
-        "auth", "request", "feature/demo", "--title", "Multiline file spec",
-        "--issue", "799e526", "--spec-file", specPath, "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(server.bodies).toHaveLength(1);
-      expect(server.bodies[0].spec_content).toBe(multilineSpec);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("preserves multiline Markdown read from stdin", async () => {
+// Issue 8ae6b5f — requests carry no spec. The removed flags fail as unknown
+// options before anything is submitted, on merge and non-merge paths alike.
+describe("auth request without a spec", () => {
+  it.each([
+    { label: "merge", args: ["feature/demo", "--spec", "Intent"] },
+    { label: "merge file", args: ["feature/demo", "--spec-file", "-"] },
+    { label: "command", args: ["--type", "config-change", "--command", "true", "--cwd", ".", "--repo", "example", "--spec", "Intent"] },
+  ])("refuses --spec on a $label request before submission", async ({ args }) => {
     const server = await listenForAuthRequest();
     try {
       const result = await runAsync([
-        "auth", "request", "feature/demo", "--title", "Multiline stdin spec",
-        "--issue", "799e526", "--spec-file", "-", "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      }, multilineSpec);
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(server.bodies).toHaveLength(1);
-      expect(server.bodies[0].spec_content).toBe(multilineSpec);
+        "auth", "request", ...args, "--title", "Spec refused", "--issue", "8ae6b5f",
+        "--message", "Refuse specs\n\nWhy:\nThe change message carries intent.", "--verification", "n/a",
+        "--no-watch",
+      ], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/--spec/);
+      expect(server.bodies).toEqual([]);
     } finally {
       await server.close();
     }
-  });
-
-  it("keeps inline one-line specs byte-compatible", async () => {
-    const server = await listenForAuthRequest();
-    const legacySpec = "Intent: ship the already-reviewed correction.";
-    try {
-      const result = await runAsync([
-        "auth", "request", "feature/demo", "--title", "Inline spec",
-        "--issue", "799e526", "--spec", legacySpec, "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(server.bodies[0].spec_content).toBe(legacySpec);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("rejects --spec with --spec-file before submission", () => {
-    const specPath = path.join(tempDir, "auth-spec.md");
-    fs.writeFileSync(specPath, multilineSpec, "utf8");
-    const result = run([
-      "auth", "request", "feature/demo", "--title", "Conflicting spec inputs",
-      "--issue", "799e526", "--spec", "inline", "--spec-file", specPath, "--no-watch",
-    ]);
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Arguments do not match");
   });
 });
 

@@ -729,7 +729,6 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/x",
         diff_summary: "diff --git a/f b/f\n@@ -1 +1 @@\n-a\n+b\n",
-        spec_content: "# Spec\n\nlots of text",
         commit_message: "feat: land it",
         execution_mode: "remote",
         ...overrides,
