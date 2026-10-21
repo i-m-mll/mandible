@@ -45,6 +45,7 @@ function rewindToV203(): void {
     ALTER TABLE conversations DROP COLUMN opening_lineage;
     ALTER TABLE conversations DROP COLUMN opening_line;
     ALTER TABLE conversations DROP COLUMN agent_created;
+    DROP TABLE worker_thread_archives;
     UPDATE meta SET value = '203' WHERE key = 'schema_version';
   `);
 }
