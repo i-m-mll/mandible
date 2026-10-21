@@ -11,6 +11,7 @@ import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './arti
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   BASELINE_SCHEMA_VERSION,
+  LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
@@ -2006,6 +2007,72 @@ export const MIGRATIONS: readonly Migration[] = [
         AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_id = sessions.id)
         AND NOT EXISTS (SELECT 1 FROM work_units w WHERE w.assigned_session_id = sessions.id)
         AND NOT EXISTS (SELECT 1 FROM ledger_session_issue_links l WHERE l.session_id = sessions.id)`,
+    ],
+  },
+  // Issue 2043af5 — a session-to-issue link is keyed on the provider session id
+  // (else the console or session row id that is the session's only identity)
+  // and never requires a `sessions` row. The link table loses its foreign key
+  // and every existing link moves to that key; the on-demand `codex-<thread>`
+  // projection rows that existed only to satisfy the foreign key are deleted.
+  // `ledger_session_issue_links` becomes the only link table: each legacy
+  // `session_issues` row whose issue ref names exactly one ledger issue is
+  // carried over, and the rest (refs to issues the ledger never held) are
+  // dropped with the legacy tables. The statements also apply to a database
+  // already at this shape, which tests replaying later migrations produce.
+  {
+    version: 204,
+    name: "session_issue_links_provider_key",
+    statements: [
+      `CREATE TEMP TABLE session_link_keys AS
+       SELECT alias, key, MIN(rank) AS rank FROM (
+         SELECT s.id AS alias, s.conversation_id AS key, 1 AS rank
+         FROM sessions s
+         WHERE s.conversation_id IS NOT NULL AND s.conversation_id != ''
+         UNION ALL
+         SELECT c.id, c.provider_session_id, 0 FROM console_sessions c
+         WHERE c.provider_session_id IS NOT NULL AND c.provider_session_id != ''
+         UNION ALL
+         SELECT c.mandible_session_id, c.provider_session_id, 0 FROM console_sessions c
+         WHERE c.mandible_session_id IS NOT NULL
+           AND c.provider_session_id IS NOT NULL AND c.provider_session_id != ''
+       )
+       GROUP BY alias`,
+      "ALTER TABLE ledger_session_issue_links RENAME TO ledger_session_issue_links_v203",
+      LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
+      `INSERT OR IGNORE INTO ledger_session_issue_links (
+        session_id, issue_id, link_type, source, created_at, last_seen_at, metadata_json
+      )
+      SELECT COALESCE(k.key, l.session_id), l.issue_id, l.link_type, l.source,
+        l.created_at, l.last_seen_at, l.metadata_json
+      FROM ledger_session_issue_links_v203 l
+      LEFT JOIN session_link_keys k ON k.alias = l.session_id
+      ORDER BY k.key IS NOT NULL, l.created_at`,
+      "DROP TABLE ledger_session_issue_links_v203",
+      "CREATE INDEX idx_ledger_session_issue_issue\n        ON ledger_session_issue_links(issue_id)",
+      `CREATE TABLE IF NOT EXISTS session_issues (
+        session_id TEXT NOT NULL, issue_id TEXT NOT NULL, repo_id TEXT NOT NULL, created_at INTEGER NOT NULL
+      )`,
+      `INSERT OR IGNORE INTO ledger_session_issue_links (
+        session_id, issue_id, link_type, source, created_at, last_seen_at, metadata_json
+      )
+      SELECT COALESCE(k.key, si.session_id),
+        (SELECT MIN(a.issue_id) FROM ledger_issue_aliases a
+          WHERE a.alias >= si.issue_id AND a.alias < si.issue_id || '~'
+            AND substr(a.alias, 1, length(si.issue_id)) = si.issue_id),
+        'worked_on', 'system', si.created_at, si.created_at,
+        json_object('legacy_issue_id', si.issue_id, 'repo_id', si.repo_id)
+      FROM session_issues si
+      LEFT JOIN session_link_keys k ON k.alias = si.session_id
+      WHERE length(si.issue_id) > 0
+        AND (SELECT COUNT(DISTINCT a.issue_id) FROM ledger_issue_aliases a
+          WHERE a.alias >= si.issue_id AND a.alias < si.issue_id || '~'
+            AND substr(a.alias, 1, length(si.issue_id)) = si.issue_id) = 1`,
+      "DROP TABLE session_link_keys",
+      `DELETE FROM sessions
+       WHERE agent_type = 'provider-session'
+          OR (app = 'codex' AND pid IS NULL AND id = 'codex-' || conversation_id)`,
+      "DROP TABLE session_issues",
+      "DROP TABLE IF EXISTS session_projects",
     ],
   },
 ];

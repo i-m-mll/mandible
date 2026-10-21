@@ -156,11 +156,11 @@ export function linkSessionToLedgerIssue(
   input: { session_id: string; issue_ref: string; repo_ref: string; link_type?: string } & LinkOptions,
 ): OperationalLinkResult {
   if (!ledgerOperationalLinksAvailable(db) || !tableExists(db, "ledger_session_issue_links")) {
-    return { ok: false, error: "unavailable", source_table: "session_issues", source_id: input.session_id };
+    return { ok: false, error: "unavailable", source_table: "ledger_session_issue_links", source_id: input.session_id };
   }
   const resolved = resolveOperationalIssueRef(db, input.issue_ref, input.repo_ref);
   if (!resolved.ok) {
-    return linkError("session_issues", input.session_id, input.issue_ref, input.repo_ref, resolved);
+    return linkError("ledger_session_issue_links", input.session_id, input.issue_ref, input.repo_ref, resolved);
   }
   const now = input.now ?? Date.now();
   const linkType = input.link_type ?? "worked_on";
@@ -591,7 +591,6 @@ export function runOperationalLinkBackfill(db: Db): OperationalLinkReport {
 
   try {
     backfillWorkUnits(db, report);
-    backfillSessions(db, report);
     backfillAuthRequests(db, report);
     backfillCommitResolutions(db, report);
     report.status = report.mismatches.length === 0 ? "clean" : "incomplete";
@@ -632,28 +631,6 @@ function backfillWorkUnits(db: Db, report: OperationalLinkReport): void {
       recordEvent: false,
     });
     tally(report, result, "work_units", row.id, row.issue_id, row.repo_id);
-  }
-}
-
-function backfillSessions(db: Db, report: OperationalLinkReport): void {
-  if (!tableExists(db, "session_issues")) return;
-  const rows = db.prepare("SELECT session_id, issue_id, repo_id, created_at FROM session_issues").all() as Array<{
-    session_id: string;
-    issue_id: string;
-    repo_id: string;
-    created_at: number;
-  }>;
-  report.source_counts.session_issues = rows.length;
-  for (const row of rows) {
-    const result = linkSessionToLedgerIssue(db, {
-      session_id: row.session_id,
-      issue_ref: row.issue_id,
-      repo_ref: row.repo_id,
-      source: "system",
-      now: row.created_at,
-      recordEvent: false,
-    });
-    tally(report, result, "session_issues", row.session_id, row.issue_id, row.repo_id);
   }
 }
 

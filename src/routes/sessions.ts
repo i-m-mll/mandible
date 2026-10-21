@@ -20,71 +20,18 @@ import { checkSessionIdentity } from "../identity/session-mismatch.js";
 import {
   CONVERSATION_SOURCE_TO_PROVIDER,
   PROVIDER_TO_CONVERSATION_SOURCE,
-  ensureProviderSessionRegistered,
 } from "../provider-session-ingestion.js";
+import { resolveSessionAlias, sessionAliasIds, sessionLinkKey } from "../session-liveness.js";
 import { readBody, sendJson } from "./http.js";
 import { effectiveWorkerStatusSql } from "../ledger/issue-work-state.js";
 
 export { CONVERSATION_SOURCE_TO_PROVIDER, PROVIDER_TO_CONVERSATION_SOURCE };
-
-function linkSessionLedgerIssue(
-  sessionId: string,
-  issueId: string,
-  repoId: string,
-): string | null {
-  try {
-    const result = linkSessionToLedgerIssue(getDb(), {
-      session_id: sessionId,
-      issue_ref: issueId,
-      repo_ref: repoId,
-    });
-    return result.ok ? result.issue_id : null;
-  } catch {
-    return null;
-  }
-}
 
 function parseStatus(value: string | undefined): SessionStatus | undefined {
   if (value === "active" || value === "ended" || value === "dead") {
     return value;
   }
   return undefined;
-}
-
-function deriveRepoNameFromRepoId(repoId: string): string {
-  const cleaned = repoId.trim().replace(/\/+$/, "");
-  if (!cleaned) return repoId;
-  const parts = cleaned.split("/");
-  const last = parts[parts.length - 1] || cleaned;
-  // Strip leading dots (e.g. '.dotfiles' → 'dotfiles')
-  return last.replace(/^\.+/, "") || last;
-}
-
-function looksLikeBranchName(value: string): boolean {
-  if (!value) return false;
-  if (value === "main" || value === "master" || value === "develop") {
-    return true;
-  }
-  // Slash-separated branch prefixes (e.g. feature/foo)
-  if (/^(feature|fix|bugfix|hotfix|chore|release)\//.test(value)) return true;
-  // Double-underscore sub-branch separator used in Mandible worktrees (e.g. feature__foo)
-  // Bug: 003179f — agent-commit sends worktree dir name as repo_id
-  if (/^(feature|fix|bugfix|hotfix|chore|release)__/.test(value)) return true;
-  return false;
-}
-
-function normalizeRepoDisplayName(repoId: string, repoName?: string | null): string {
-  const fallback = deriveRepoNameFromRepoId(repoId);
-  if (!repoName) return fallback;
-  const trimmed = repoName.trim();
-  if (!trimmed || looksLikeBranchName(trimmed)) return fallback;
-  // Normalize owner/repo to repo for compact UI display.
-  if (trimmed.includes("/")) {
-    const parts = trimmed.split("/");
-    if (parts.length !== 2) return fallback;
-    return parts[1] || fallback;
-  }
-  return trimmed;
 }
 
 function resolveCanonicalRepoId(
@@ -108,16 +55,6 @@ function resolveCanonicalRepoId(
     if (row) return row.id;
   }
   return repoId;
-}
-
-function ledgerIssueStatusForSessionLink(repoId: string, issueId: string): "open" | "closed" | null {
-  const db = getDb();
-  const resolved = resolveOperationalIssueRef(db, issueId, repoId);
-  if (!resolved.ok) return null;
-  const row = db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(resolved.issue_id) as
-    | { status?: string }
-    | undefined;
-  return row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : null;
 }
 
 // Issue 037fa85 / f59b5bd — provider-neutral session alias resolution for the
@@ -485,57 +422,6 @@ function resolveSessionId(id: string, res: ResponseLike): string | null {
   return null;
 }
 
-const PROVIDER_SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Resolve a link target, materializing an already-ingested provider identity when needed. */
-function resolveSessionIdForIssueLink(
-  id: string,
-  registry: SessionRegistry,
-  res: ResponseLike,
-): string | null {
-  const resolved = resolvePrefix(getDb(), "sessions", "id", id);
-  if (resolved.ok) return resolved.id;
-  if (resolved.error === "ambiguous") {
-    sendJson(res, 409, {
-      error: `Ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`,
-      code: "session_ref_ambiguous",
-    });
-    return null;
-  }
-  if (!PROVIDER_SESSION_UUID.test(id)) {
-    sendJson(res, 404, { error: "Session not found", code: "session_not_found" });
-    return null;
-  }
-
-  const registration = ensureProviderSessionRegistered(getDb(), registry, id);
-  if (registration.status === "registered") return registration.session.id;
-  if (registration.status === "not_yet_ingested") {
-    sendJson(res, 409, {
-      error: "Provider session is known only to the caller and has not yet reached Mandible's normalized conversation index.",
-      code: "provider_session_not_ingested",
-      status: registration.status,
-      provider_session_id: id,
-      retryable: true,
-    });
-    return null;
-  }
-  if (registration.status === "ambiguous") {
-    sendJson(res, 409, {
-      error: "Provider session id is claimed by multiple providers.",
-      code: "provider_session_ambiguous",
-      provider_session_id: id,
-      sources: registration.sources,
-    });
-    return null;
-  }
-  sendJson(res, 422, {
-    error: `No provider mapping for conversation source '${registration.source}'`,
-    code: "provider_session_unsupported",
-    provider_session_id: id,
-  });
-  return null;
-}
-
 export function registerSessionRoutes(
   server: RouteRegistrar,
   registry: SessionRegistry = new SessionRegistry(getDb()),
@@ -555,51 +441,6 @@ export function registerSessionRoutes(
     const identityWarning = checkSessionIdentity(getDb(), session.id, req.client_identity);
     sendJson(res, 200, { ...session, identity_warning: identityWarning });
   }, { operation: { id: "post:/api/sessions/register", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
-
-  // Issue f59b5bd (review S1) — deliberate, user-initiated registration of a
-  // provider-known session as a Mandible session row. The client supplies ONLY
-  // the full provider session id it received from the resolver; provider, cwd,
-  // and branch are derived server-side from the validated conversations
-  // row(s), so a forgeable page binding can never steer the registered
-  // identity's provider. Identities with no ingested conversation are
-  // rejected outright.
-  server.post("/api/sessions/register-provider", (req, res) => {
-    const payload = readBody<{ provider_session_id?: string }>(req);
-    const providerSessionId = (payload.provider_session_id ?? "").trim();
-    if (!providerSessionId) {
-      sendJson(res, 400, { error: "Missing provider_session_id" });
-      return;
-    }
-    const result = ensureProviderSessionRegistered(getDb(), registry, providerSessionId);
-    if (result.status === "not_yet_ingested") {
-      sendJson(res, 409, {
-        error: "Provider session is not yet present in the normalized conversation index.",
-        code: "provider_session_not_ingested",
-        status: result.status,
-        provider_session_id: providerSessionId,
-        retryable: true,
-      });
-      return;
-    }
-    if (result.status === "ambiguous") {
-      sendJson(res, 409, {
-        error: "Provider session id is claimed by multiple providers.",
-        code: "provider_session_ambiguous",
-        provider_session_id: providerSessionId,
-        sources: result.sources,
-      });
-      return;
-    }
-    if (result.status === "unsupported") {
-      sendJson(res, 422, {
-        error: `No provider mapping for conversation source '${result.source}'`,
-        code: "provider_session_unsupported",
-        provider_session_id: providerSessionId,
-      });
-      return;
-    }
-    sendJson(res, 200, { ...result.session, provider: result.provider });
-  }, { operation: { id: "post:/api/sessions/register-provider", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.patch("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -709,51 +550,6 @@ export function registerSessionRoutes(
       scope: page.scope,
       limit: page.limit,
     };
-
-    if (query.include === "issues" || query.include === "all_issues") {
-      const showAll = query.include === "all_issues";
-      const db = getDb();
-      const allLinks = db.prepare(
-        `SELECT session_id, issue_id, repo_id, created_at FROM session_issues`
-      ).all() as Array<{ session_id: string; issue_id: string; repo_id: string; created_at: number }>;
-
-      const linkMap = new Map<string, Array<{ issue_id: string; repo_id: string; created_at: number }>>();
-      for (const link of allLinks) {
-        // Filter to open issues by default (treat unknown as open — safe default)
-        if (!showAll) {
-          const status = ledgerIssueStatusForSessionLink(link.repo_id, link.issue_id);
-          if (status === "closed") {
-            continue;
-          }
-        }
-        const existing = linkMap.get(link.session_id) ?? [];
-        existing.push({ issue_id: link.issue_id, repo_id: link.repo_id, created_at: link.created_at });
-        linkMap.set(link.session_id, existing);
-      }
-
-      // Load sticky project associations
-      const allProjects = db.prepare(
-        `SELECT session_id, repo_id, repo_name, created_at FROM session_projects`
-      ).all() as Array<{ session_id: string; repo_id: string; repo_name: string; created_at: number }>;
-
-      const projectMap = new Map<string, Array<{ repo_id: string; repo_name: string }>>();
-      for (const proj of allProjects) {
-        const existing = projectMap.get(proj.session_id) ?? [];
-        const normalizedName = normalizeRepoDisplayName(proj.repo_id, proj.repo_name);
-        if (!existing.some((p) => p.repo_id === proj.repo_id)) {
-          existing.push({ repo_id: proj.repo_id, repo_name: normalizedName });
-        }
-        projectMap.set(proj.session_id, existing);
-      }
-
-      const enriched = sessions.map((s) => ({
-        ...s,
-        issues: linkMap.get(s.id) ?? [],
-        projects: projectMap.get(s.id) ?? [],
-      }));
-      sendJson(res, 200, { sessions: enriched, ...meta });
-      return;
-    }
 
     sendJson(res, 200, { sessions, ...meta });
   }, { operation: { id: "get:/api/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
@@ -908,10 +704,13 @@ export function registerSessionRoutes(
       { id: string; issue_id: string; ledger_issue_id: string | null; repo_id: string } & Record<string, unknown>
     >;
 
-    // Linked issues derived from the matched work units' issue refs. Without a
-    // session row there are no ledger_session_issue_links, so this derivation
-    // (and its provenance note) is the honest best available.
+    // Linked issues: explicit links keyed on any alias, plus the issues of the
+    // matched work units.
     const issueWorkUnits = new Map<string, string[]>();
+    const explicitLinks = db.prepare(
+      `SELECT DISTINCT issue_id FROM ledger_session_issue_links WHERE session_id IN (${aliasPlaceholders})`,
+    ).all(...aliasList) as Array<{ issue_id: string }>;
+    for (const link of explicitLinks) issueWorkUnits.set(link.issue_id, []);
     for (const unit of workUnits) {
       let ledgerId = unit.ledger_issue_id;
       if (!ledgerId && unit.issue_id) {
@@ -978,8 +777,8 @@ export function registerSessionRoutes(
       },
       linked_issues: {
         available: true,
-        source: "work_units",
-        note: "derived from provider-matched work units; ledger_session_issue_links requires a Mandible session row",
+        source: "ledger_session_issue_links",
+        note: "explicit session links, plus the issues of provider-matched work units",
         items: linkedIssueItems,
       },
       work_units: {
@@ -1068,17 +867,17 @@ export function registerSessionRoutes(
     const sessionIds = [id, ...descendantIds];
     const idPlaceholders = sessionIds.map(() => "?").join(", ");
 
-    // Linked issues: explicit ledger links for this session (not the legacy
-    // session_issues table, and deliberately not "every issue this session
-    // ever touched").
+    // Linked issues: explicit ledger links keyed on this session's row id or
+    // provider session id (deliberately not "every issue this session ever
+    // touched").
     const linkedIssues = db.prepare(`
       SELECT l.issue_id, l.link_type, l.source, l.created_at, l.last_seen_at,
              i.short_id, i.title, i.status, ${effectiveWorkerStatusSql("i")} AS worker_status, i.kind
       FROM ledger_session_issue_links l
       JOIN ledger_issues i ON i.id = l.issue_id
-      WHERE l.session_id = ?
+      WHERE l.session_id IN (?, ?)
       ORDER BY COALESCE(l.last_seen_at, l.created_at) DESC
-    `).all(id) as Array<Record<string, unknown>>;
+    `).all(id, session.conversation_id ?? id) as Array<Record<string, unknown>>;
 
     // Work units handled by the session or any listed descendant. When the
     // caller supplies the page-level Codex binding, expand provider-session
@@ -1235,76 +1034,98 @@ export function registerSessionRoutes(
     sendJson(res, 200, { ok: true });
   }, { operation: { id: "post:/api/sessions/:id/kill", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
-  // POST /api/sessions/:id/issues — link a session to an issue
+  // POST /api/sessions/:id/issues — link a session to an issue. The session is
+  // any alias resolveSessionAlias resolves; the link is keyed on
+  // sessionLinkKey and never creates a sessions row (issue 2043af5).
   server.post("/api/sessions/:id/issues", (req, res) => {
     const rawSessionId = req.params.id;
     if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
-    const sessionId = resolveSessionIdForIssueLink(rawSessionId, registry, res);
-    if (!sessionId) return;
     const body = readBody<{ issue_id?: string; repo_id?: string; repo_name?: string }>(req);
     if (!body.issue_id || !body.repo_id) {
       sendJson(res, 400, { error: "Missing issue_id or repo_id" });
       return;
     }
-    const canonicalRepoId = resolveCanonicalRepoId(workScanner, body.repo_id, body.repo_name, body.issue_id);
     const db = getDb();
-    const now = Date.now();
-    db.prepare(
-      `INSERT INTO session_issues (session_id, issue_id, repo_id, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT DO NOTHING`
-    ).run(sessionId, body.issue_id, canonicalRepoId, now);
-
-    // Persist project association (sticky — survives issue closure)
-    let repoName = body.repo_name;
-    if (!repoName || repoName.includes("/") || looksLikeBranchName(repoName)) {
-      const repo = workScanner?.getRepoById(canonicalRepoId);
-      if (repo) {
-        repoName = repo.name;
-      }
+    const resolution = resolveSessionAlias(db, rawSessionId);
+    if (!resolution) {
+      sendJson(res, 409, {
+        error: "Mandible has no session row, console session, or ingested provider transcript for this id yet.",
+        code: "provider_session_not_ingested",
+        provider_session_id: rawSessionId,
+        retryable: true,
+      });
+      return;
     }
-    repoName = normalizeRepoDisplayName(canonicalRepoId, repoName);
-    db.prepare(
-      `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT DO NOTHING`
-    ).run(sessionId, canonicalRepoId, repoName, now);
-
-    const ledgerIssueId = linkSessionLedgerIssue(sessionId, body.issue_id, canonicalRepoId);
+    const sessionId = sessionLinkKey(resolution);
+    const canonicalRepoId = resolveCanonicalRepoId(workScanner, body.repo_id, body.repo_name, body.issue_id);
+    const now = Date.now();
+    const link = linkSessionToLedgerIssue(db, {
+      session_id: sessionId,
+      issue_ref: body.issue_id,
+      repo_ref: canonicalRepoId,
+      now,
+    });
+    if (!link.ok) {
+      if (link.error === "ambiguous") {
+        sendJson(res, 409, {
+          error: `Issue ref '${body.issue_id}' matches several ledger issues in repo '${canonicalRepoId}'.`,
+          code: "issue_ambiguous",
+          matches: link.matches ?? [],
+        });
+      } else if (link.error === "not_found") {
+        sendJson(res, 404, {
+          error: `No ledger issue matches '${body.issue_id}' in repo '${canonicalRepoId}'.`,
+          code: "issue_not_found",
+        });
+      } else {
+        sendJson(res, 503, { error: "The issue ledger is unavailable.", code: "ledger_unavailable" });
+      }
+      return;
+    }
 
     // Issue 499c148 — linking a session to an issue is an authenticated client
     // claiming that session's work, so it is a natural second checkpoint.
-    const identityWarning = checkSessionIdentity(db, sessionId, req.client_identity);
+    const identityWarning = resolution.mandible_session_id
+      ? checkSessionIdentity(db, resolution.mandible_session_id, req.client_identity)
+      : null;
 
     sendJson(res, 200, {
       session_id: sessionId,
       issue_id: body.issue_id,
       repo_id: canonicalRepoId,
       created_at: now,
-      ledger_issue_id: ledgerIssueId,
+      ledger_issue_id: link.issue_id,
       identity_warning: identityWarning,
     });
   }, { operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
-  // GET /api/sessions/:id/issues — get linked issues for a session
+  // GET /api/sessions/:id/issues — the issues linked to a session under any of
+  // its aliases.
   server.get("/api/sessions/:id/issues", (req, res) => {
     const rawSessionId = req.params.id;
     if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
-    const sessionId = resolveSessionId(rawSessionId, res);
-    if (!sessionId) return;
     const db = getDb();
+    const resolution = resolveSessionAlias(db, rawSessionId);
+    if (!resolution) {
+      sendJson(res, 404, { error: "Session not found", code: "session_not_found" });
+      return;
+    }
+    const aliases = sessionAliasIds(resolution);
     const links = db.prepare(
-      `SELECT session_id, issue_id, repo_id, created_at
-       FROM session_issues
-       WHERE session_id = ?
-       ORDER BY created_at ASC`
-    ).all(sessionId);
+      `SELECT l.session_id, i.short_id AS issue_id, COALESCE(NULLIF(p.project_key, ''), p.id) AS repo_id,
+              l.issue_id AS ledger_issue_id, l.created_at
+       FROM ledger_session_issue_links l
+       JOIN ledger_issues i ON i.id = l.issue_id
+       JOIN ledger_projects p ON p.id = i.project_id
+       WHERE l.session_id IN (${aliases.map(() => "?").join(", ")})
+       ORDER BY l.created_at ASC`
+    ).all(...aliases);
     sendJson(res, 200, links);
   }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 

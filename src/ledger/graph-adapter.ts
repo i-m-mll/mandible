@@ -4,7 +4,7 @@ import { columnExists, tableExists } from "../db-introspection.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
 import { parseJsonObject } from "../row-coerce.js";
-import { isLiveSessionStatus } from "../session-liveness.js";
+import { isLiveSessionStatus, sessionRowForLinkKeySql } from "../session-liveness.js";
 
 interface ProjectInfo {
   project_id: string;
@@ -295,7 +295,7 @@ function getSessionSummaries(db: Db): Map<string, {
     `SELECT l.issue_id, l.session_id, l.link_type,
             s.status, s.app, s.agent_type, s.branch, s.created_at
        FROM ledger_session_issue_links l
-       JOIN sessions s ON s.id = l.session_id
+       JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
       ORDER BY COALESCE(l.last_seen_at, l.created_at) DESC`,
   ).all() as Array<{
     issue_id: string;

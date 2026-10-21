@@ -13,6 +13,7 @@ import {
 } from "../provider-artifacts.js";
 import type { ArtifactRecord } from "../types.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow } from "../work-unit-utils.js";
+import { sessionRowForLinkKeySql } from "../session-liveness.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
 import { effectiveWorkerStatus, listIssueBranches } from "./issue-work-state.js";
@@ -970,7 +971,7 @@ function listSessions(
             s.description, s.agent_type, s.created_at, s.updated_at,
             s.ended_at, s.last_active, s.owner_user_id
      FROM ledger_session_issue_links l
-     LEFT JOIN sessions s ON s.id = l.session_id
+     LEFT JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
      WHERE l.issue_id = ?
      ORDER BY
        CASE WHEN s.status IN ('active','idle') THEN 0 ELSE 1 END,

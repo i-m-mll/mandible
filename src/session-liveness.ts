@@ -64,8 +64,6 @@ interface SessionRow {
   id: string;
   app?: string | null;
   status?: string | null;
-  pid?: number | null;
-  agent_type?: string | null;
   conversation_id?: string | null;
   updated_at?: string | null;
   last_active?: string | null;
@@ -139,6 +137,39 @@ export function resolveSessionAlias(
 }
 
 /**
+ * The id a session-to-issue link is keyed on: the provider session id when one
+ * is known, else the console or session row id that is the session's only
+ * identity. Linking never creates a `sessions` row.
+ */
+export function sessionLinkKey(resolution: SessionAliasResolution): string {
+  return resolution.provider_session_id
+    ?? resolution.console_session_id
+    ?? resolution.mandible_session_id
+    ?? resolution.supplied_id;
+}
+
+/**
+ * SQL expression for the `sessions` row a link key reaches: the row whose id is
+ * the key, else the latest row recording the key as its provider session id.
+ */
+export function sessionRowForLinkKeySql(keyExpr: string): string {
+  return `(SELECT r.id FROM sessions r WHERE r.id = ${keyExpr} OR r.conversation_id = ${keyExpr}
+    ORDER BY r.id = ${keyExpr} DESC, r.updated_at DESC LIMIT 1)`;
+}
+
+/** Every id the resolved session is known by, for reads keyed on any of them. */
+export function sessionAliasIds(resolution: SessionAliasResolution): string[] {
+  return [...new Set(
+    [
+      resolution.supplied_id,
+      resolution.mandible_session_id,
+      resolution.console_session_id,
+      resolution.provider_session_id,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  )];
+}
+
+/**
  * Whether any session reachable from this alias is live.
  *
  * This is the archive path's `isProviderSessionLive`, moved unchanged. It ORs
@@ -154,10 +185,6 @@ export function isSessionAliasLive(
 ): boolean {
   const sessionRows = sessionRowsForAlias(db, suppliedId);
   for (const row of sessionRows) {
-    if (isProviderProjectionSession(row)) {
-      if (isCodexProviderTaskLive(db, row.conversation_id!, options)) return true;
-      continue;
-    }
     if (isLiveSessionStatus(row.status)) return true;
   }
   if (!tableExists(db, "console_sessions")) {
@@ -191,13 +218,7 @@ export function isSessionAliasLive(
   for (const row of rows) {
     if (isLiveSessionStatus(row.console_status)) return true;
     if (!row.mandible_session_id) continue;
-    const session = lookupSession(db, row.mandible_session_id);
-    if (!session) continue;
-    if (isProviderProjectionSession(session)) {
-      if (isCodexProviderTaskLive(db, session.conversation_id!, options)) return true;
-    } else if (isLiveSessionStatus(session.status)) {
-      return true;
-    }
+    if (isMandibleSessionLive(db, row.mandible_session_id)) return true;
   }
   return isCodexProviderTaskLive(db, suppliedId, options);
 }
@@ -235,9 +256,9 @@ function lookupSessionByConversationId(db: Db, providerSessionId: string): Sessi
   const row = db.prepare(
     `SELECT * FROM sessions
      WHERE conversation_id = ?
-     ORDER BY CASE WHEN id = 'codex-' || ? THEN 0 ELSE 1 END, updated_at DESC, id ASC
+     ORDER BY updated_at DESC, id ASC
      LIMIT 1`,
-  ).get(providerSessionId, providerSessionId) as SessionRow | undefined;
+  ).get(providerSessionId) as SessionRow | undefined;
   return row ?? null;
 }
 
@@ -250,13 +271,6 @@ function sessionRowsForAlias(db: Db, suppliedId: string): SessionRow[] {
   return db.prepare(
     "SELECT * FROM sessions WHERE id = ? OR conversation_id = ? ORDER BY updated_at DESC, id ASC",
   ).all(suppliedId, suppliedId) as SessionRow[];
-}
-
-function isProviderProjectionSession(row: SessionRow): boolean {
-  const providerSessionId = row.conversation_id?.trim();
-  if (!providerSessionId || row.app !== "codex") return false;
-  return row.agent_type === "provider-session"
-    || (row.pid == null && row.id === `codex-${providerSessionId}`);
 }
 
 function providerSessionIngestion(db: Db, providerSessionId: string):

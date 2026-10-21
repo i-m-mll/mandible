@@ -126,7 +126,7 @@ beforeEach(async () => {
     }),
   });
   registerIssueRoutes(router, fakeScanner, { sessionAliasResolver });
-  registerSessionRoutes(router, new SessionRegistry(db), undefined, fakeScanner);
+  registerSessionRoutes(router, new SessionRegistry(db), fakeScanner);
 
   const created = await router.invoke({
     method: "POST",
@@ -142,15 +142,13 @@ afterEach(() => {
 });
 
 describe("parent-role assume rejects unverifiable session ids", () => {
-  it("refuses an id Mandible has never recorded, and names the id and the repair", async () => {
+  it("refuses an id Mandible has never recorded, and names the id", async () => {
     const response = await assume("01a04e24-not-a-registered-thread");
 
     expect(response.status).toBe(400);
-    const body = response.body as { error: string; supplied_session_id: string; repair_command: string };
+    const body = response.body as { error: string; supplied_session_id: string };
     expect(body.supplied_session_id).toBe("01a04e24-not-a-registered-thread");
     expect(body.error).toContain("01a04e24-not-a-registered-thread");
-    expect(body.error).toContain("mandible session link-issue");
-    expect(body.repair_command).toContain("mandible session link-issue");
 
     // Nothing was recorded: a refused assume must leave the umbrella holderless
     // rather than plant a holder no check can ever verify.
@@ -246,7 +244,7 @@ describe("Codex Desktop provider tasks", () => {
       .toBeUndefined();
   });
 
-  it("materializes the ingested provider identity when session-link needs its foreign key", async () => {
+  it("links an ingested provider task under its thread id without creating a session row", async () => {
     seedCodexConversation();
 
     const response = await router.invoke({
@@ -257,18 +255,41 @@ describe("Codex Desktop provider tasks", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      session_id: `codex-${DESKTOP_TASK}`,
-      issue_id: umbrellaId,
+      session_id: DESKTOP_TASK,
       ledger_issue_id: umbrellaId,
     });
-    expect(db.prepare(
-      "SELECT app, status, agent_type, conversation_id FROM sessions WHERE id = ?",
-    ).get(`codex-${DESKTOP_TASK}`)).toEqual({
-      app: "codex",
-      status: "active",
-      agent_type: "provider-session",
-      conversation_id: DESKTOP_TASK,
+    expect(db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+
+    const linked = await router.invoke({ method: "GET", url: `/api/sessions/${DESKTOP_TASK}/issues` });
+    expect(linked.status).toBe(200);
+    expect(linked.body).toMatchObject([{ session_id: DESKTOP_TASK, ledger_issue_id: umbrellaId }]);
+
+    const overview = await router.invoke({
+      method: "GET",
+      url: `/api/sessions/overview/by-provider?provider=codex&provider_session_id=${DESKTOP_TASK}`,
     });
+    expect((overview.body as { linked_issues: { items: Array<{ issue_id: string }> } }).linked_issues.items)
+      .toMatchObject([{ issue_id: umbrellaId }]);
+  });
+
+  it("keys a wrap session's link on its provider session id and reads it back under either id", async () => {
+    const claudeSession = "4be0c2a1-6b44-4a43-9d2e-0d6f1c9a7e21";
+    db.prepare(
+      "INSERT INTO sessions (id, app, status, conversation_id) VALUES ('wrap-1', 'claude', 'active', ?)",
+    ).run(claudeSession);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/sessions/wrap-1/issues",
+      body: { issue_id: umbrellaId, repo_id: "mandible" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ session_id: claudeSession });
+    for (const id of ["wrap-1", claudeSession]) {
+      const linked = await router.invoke({ method: "GET", url: `/api/sessions/${id}/issues` });
+      expect(linked.body).toMatchObject([{ session_id: claudeSession, ledger_issue_id: umbrellaId }]);
+    }
   });
 
   it("returns a typed retryable result before provider ingestion arrives", async () => {
@@ -282,7 +303,6 @@ describe("Codex Desktop provider tasks", () => {
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({
       code: "provider_session_not_ingested",
-      status: "not_yet_ingested",
       provider_session_id: notIngested,
       retryable: true,
     });

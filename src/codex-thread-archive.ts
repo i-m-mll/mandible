@@ -99,8 +99,8 @@ export function listCompletedWorkerThreadArchiveCandidates(
   }
 
   if (closureIssueIds.size > 0) {
-    if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
-      for (const row of candidateRowsFromLegacyIssueSessions(db, closureIssueIds)) {
+    if (tableExists(db, "console_sessions") && tableExists(db, "ledger_session_issue_links")) {
+      for (const row of candidateRowsFromIssueSessionLinks(db, closureIssueIds)) {
         addCandidate(byProviderId, row, parentRoleSessionIds);
       }
     }
@@ -292,14 +292,17 @@ function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): Candidate
   return rows;
 }
 
-function candidateRowsFromLegacyIssueSessions(db: Db, issueIds: Set<string>): CandidateRow[] {
+function candidateRowsFromIssueSessionLinks(db: Db, issueIds: Set<string>): CandidateRow[] {
   const rows: CandidateRow[] = [];
   const linkedSessions = new Map<string, string>();
 
-  const legacyRows = db.prepare(
-    "SELECT session_id, issue_id FROM session_issues",
-  ).all() as Array<{ session_id: string; issue_id: string }>;
-  for (const row of legacyRows) {
+  const ids = [...issueIds];
+  const linkRows = db.prepare(
+    `SELECT session_id, issue_id FROM ledger_session_issue_links
+     WHERE issue_id IN (${ids.map(() => "?").join(", ")})
+     ORDER BY created_at ASC`,
+  ).all(...ids) as Array<{ session_id: string; issue_id: string }>;
+  for (const row of linkRows) {
     if (issueIds.has(row.issue_id) && !linkedSessions.has(row.session_id)) {
       linkedSessions.set(row.session_id, row.issue_id);
     }

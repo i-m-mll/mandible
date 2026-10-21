@@ -207,7 +207,7 @@ describe("codex thread archive candidates", () => {
     }
   });
 
-  it("keeps legacy session_issues plus console_sessions compatibility", () => {
+  it("finds console sessions through ledger session issue links", () => {
     const db = createWorkUnitsOnlyDb();
     try {
       db.exec(`
@@ -222,16 +222,19 @@ describe("codex thread archive candidates", () => {
           id TEXT PRIMARY KEY,
           status TEXT
         );
-        CREATE TABLE session_issues (
+        CREATE TABLE ledger_session_issue_links (
           session_id TEXT,
-          issue_id TEXT
+          issue_id TEXT,
+          created_at INTEGER
         );
       `);
       db.prepare(
         `INSERT INTO console_sessions (id, provider_session_id, command, status)
          VALUES ('console-worker', 'thread-worker', 'codex', 'stopped')`,
       ).run();
-      db.prepare("INSERT INTO session_issues (session_id, issue_id) VALUES ('console-worker', 'done123')").run();
+      db.prepare(
+        "INSERT INTO ledger_session_issue_links (session_id, issue_id, created_at) VALUES ('thread-worker', 'done123', 1)",
+      ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toMatchObject([
         {
@@ -411,41 +414,6 @@ describe("codex thread archive candidates", () => {
           work_unit_id: "wu-a",
         },
       ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("does not use ledger_session_issue_links as an archive candidate source", () => {
-    const db = createWorkUnitsOnlyDb();
-    try {
-      db.exec(`
-        CREATE TABLE console_sessions (
-          id TEXT PRIMARY KEY,
-          provider_session_id TEXT,
-          mandible_session_id TEXT,
-          command TEXT,
-          status TEXT
-        );
-        CREATE TABLE sessions (
-          id TEXT PRIMARY KEY,
-          status TEXT
-        );
-        CREATE TABLE ledger_session_issue_links (
-          session_id TEXT,
-          issue_id TEXT
-        );
-      `);
-      db.prepare("INSERT INTO sessions (id, status) VALUES ('ledger-session', 'ended')").run();
-      db.prepare(
-        `INSERT INTO console_sessions (id, provider_session_id, mandible_session_id, command, status)
-         VALUES ('console-ledger', 'thread-ledger', 'ledger-session', 'codex', 'stopped')`,
-      ).run();
-      db.prepare(
-        "INSERT INTO ledger_session_issue_links (session_id, issue_id) VALUES ('ledger-session', 'done123')",
-      ).run();
-
-      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
     } finally {
       db.close();
     }

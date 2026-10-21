@@ -959,22 +959,6 @@ export async function getProviderScopedOverview(
   return await response.json() as ProviderScopedOverview;
 }
 
-// Issue 037fa85 / f59b5bd (review S1) — explicit, user-initiated registration
-// of a provider-known session as a Mandible session row. The client sends
-// ONLY the server-resolved full identity; the daemon derives provider, cwd,
-// and branch from the validated conversations record and rejects identities
-// with no ingested transcript, so the forgeable page binding can never steer
-// the registered identity. The deterministic server-side id keeps repeat
-// clicks idempotent.
-export async function registerProviderSession(input: {
-  provider_session_id: string;
-}): Promise<{ id: string; provider: string }> {
-  const response = await apiPost('/api/sessions/register-provider', {
-    provider_session_id: input.provider_session_id,
-  });
-  return await response.json() as { id: string; provider: string };
-}
-
 export async function navigateSession(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
   const response = await browserSessionFetch(path, {

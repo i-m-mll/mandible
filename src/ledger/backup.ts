@@ -38,8 +38,6 @@ export const METADATA_BACKUP_TABLES = [
   "auth_requests",
   "auth_request_actions",
   "sessions",
-  "session_issues",
-  "session_projects",
   "console_sessions",
   "console_session_usage",
   "console_session_telemetry",
