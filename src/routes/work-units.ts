@@ -14,7 +14,6 @@ import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
-import { resolveSessionAlias } from "../session-liveness.js";
 import { shortestUniquePrefix } from "../ledger/ids.js";
 import { attributionForRequest, isOperator } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
@@ -36,6 +35,7 @@ import {
   formatCustodyTransferCommand,
   holderLabel,
   livenessLabel,
+  sameCredentialSessionHolding,
   takeoverCommand,
   transferWorkUnitCustody,
   type CustodyAuthorityPath,
@@ -734,15 +734,40 @@ export function registerWorkUnitRoutes(
       sendJson(res, 409, { error: "Work-unit custody changed; refresh and retry.", code: "custody_generation_conflict" });
       return;
     }
-    if (unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id) {
-      sendJson(res, 200, { work_unit: unit, unchanged: true });
-      return;
-    }
+    const sameCredential = unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id;
     const operatorRecovery = isOperator(db, req.client_identity!);
     let authorityPath: CustodyAuthorityPath = "operator_recovery";
     let checkpointId: string | null = null;
     let priorLiveness: HolderLiveness | null = null;
-    if (!operatorRecovery && unit.kind === "integration") {
+    const blocked = (liveness: HolderLiveness): void => {
+      if (body.request_approval === true) {
+        requestCustodyApproval(req, res, unit, identity, liveness, body.reason!.trim());
+        return;
+      }
+      const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
+      sendJson(res, 409, {
+        error: `Work unit is held by ${sameCredential ? "another session of your credential " : ""}${holderLabel(holder)}, ` +
+          `whose session ${livenessLabel(liveness)}. Takeover without the operator needs a stopped holder. ` +
+          "Ask the holder to release it, or rerun with --request-approval so the operator can approve the transfer in the Mandible app.",
+        code: "custody_holder_live",
+        holder,
+        holder_liveness: liveness,
+        takeover_command: takeoverCommand(unit, { requestApproval: true }),
+      });
+    };
+    if (sameCredential) {
+      // Issue 72b00f8 — within one credential the recorded session holds the unit.
+      const holding = operatorRecovery
+        ? { state: "clear" as const }
+        : sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager);
+      if (holding.state === "clear") {
+        sendJson(res, 200, { work_unit: unit, unchanged: true });
+        return;
+      }
+      priorLiveness = holding.liveness;
+      if (holding.state !== "stopped") return blocked(holding.liveness);
+      authorityPath = "stopped_holder_takeover";
+    } else if (!operatorRecovery && unit.kind === "integration") {
       if (!unit.ledger_issue_id || !body.parent_role_checkpoint_id) {
         sendJson(res, 403, { error: "Integration custody transfer requires the caller's audited parent-role checkpoint." });
         return;
@@ -761,23 +786,7 @@ export function registerWorkUnitRoutes(
       authorityPath = "parent_role_handoff";
     } else if (!operatorRecovery) {
       priorLiveness = classifyHolderLiveness(db, unit, sessionManager);
-      if (priorLiveness.state !== "stopped") {
-        if (body.request_approval === true) {
-          requestCustodyApproval(req, res, unit, identity, priorLiveness, body.reason.trim());
-          return;
-        }
-        const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
-        sendJson(res, 409, {
-          error: `Work unit is held by ${holderLabel(holder)}, whose session ${livenessLabel(priorLiveness)}. ` +
-            "Takeover without the operator needs a stopped holder. Ask the holder to release it, or rerun with " +
-            "--request-approval so the operator can approve the transfer in the Mandible app.",
-          code: "custody_holder_live",
-          holder,
-          holder_liveness: priorLiveness,
-          takeover_command: takeoverCommand(unit, { requestApproval: true }),
-        });
-        return;
-      }
+      if (priorLiveness.state !== "stopped") return blocked(priorLiveness);
       authorityPath = "stopped_holder_takeover";
     }
     try {
@@ -816,7 +825,7 @@ export function registerWorkUnitRoutes(
     liveness: HolderLiveness,
     reason: string,
   ): void {
-    if (unit.kind === "integration") {
+    if (unit.kind === "integration" && unit.owner_credential_id !== identity.credential_id) {
       sendJson(res, 409, { error: "Integration custody transfers use the parent-role checkpoint or operator recovery." });
       return;
     }
@@ -1176,17 +1185,24 @@ function custodyCheck(
     return answer("clear", "No credential holds this work unit; committing claims it.", { holder, holder_liveness: liveness });
   }
   if (unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id) {
-    const own = newHolderSession(req).provider_session_id;
-    const ownResolution = own ? resolveSessionAlias(db, own) : null;
-    const sameSession = !liveness.session_id || !own
-      || liveness.session_id === own || liveness.session_id === ownResolution?.mandible_session_id;
-    return answer("clear", "You hold this work unit.", {
-      holder, holder_liveness: liveness,
-      warning: liveness.state === "live" && !sameSession
-        ? `Another live session (${liveness.session_id!.slice(0, 8)}) of your credential is recorded on this unit. ` +
-          "Custody is per credential, so this check cannot tell your sessions apart."
-        : null,
-    });
+    // Issue 72b00f8 — within one credential the recorded session holds the unit.
+    // Session ids are claimed attribution: this coordinates cooperating agents.
+    const holding = sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager);
+    if (holding.state === "clear") {
+      return answer("clear", "You hold this work unit.", {
+        holder, holder_liveness: holding.liveness ?? liveness,
+        warning: holding.unverifiable && liveness.state === "live"
+          ? `A live session (${liveness.session_id?.slice(0, 8) ?? "unknown"}) of your credential is recorded on this unit, ` +
+            "and this caller has no session id to compare with it."
+          : null,
+      });
+    }
+    const where = `Work unit held by another session of your credential ${holderLabel(holder)}, whose session ${livenessLabel(holding.liveness)}. `;
+    return holding.state === "stopped"
+      ? answer("takeover_available", `${where}Take over custody with the command below before committing.`,
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit) })
+      : answer("held", `${where}Do not commit here. Ask that session to release it, or request operator approval with the command below.`,
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit, { requestApproval: true }) });
   }
   if (unit.kind === "integration") {
     const checkpoint = unit.ledger_issue_id

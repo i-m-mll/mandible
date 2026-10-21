@@ -7,6 +7,11 @@
 // unit's recorded holder session is provably stopped. A live holder, or a holder
 // whose liveness Mandible cannot establish, blocks: the agent asks the operator,
 // who approves a custody-transfer auth request that hands custody to that agent.
+//
+// Within one credential (every session of one agent app shares it), the unit's
+// recorded session holds the unit under the same rule. Session ids are claimed
+// attribution, not credentials: session-level holding coordinates cooperating
+// agents and is not a security boundary.
 
 import { randomUUID } from "node:crypto";
 
@@ -97,6 +102,40 @@ function codexTaskLivenessUnavailable(
 function sessionIdentities(unit: WorkUnit): string[] {
   return Array.from(new Set([unit.assigned_session_id, unit.worker_provider_session_id, unit.provider_session_id]
     .filter((value): value is string => Boolean(value))));
+}
+
+/**
+ * Session-level holding for a caller whose credential already holds the unit.
+ * `clear` when the unit records no session, when the caller's session is one of
+ * the recorded sessions, or when the caller has no session id to compare
+ * (`unverifiable`). Otherwise the recorded session's liveness decides, exactly
+ * as for another credential's holder.
+ */
+export type SessionHolding =
+  | { state: "clear"; unverifiable: boolean; liveness: HolderLiveness | null }
+  | { state: HolderLivenessState; liveness: HolderLiveness };
+
+export function sameCredentialSessionHolding(
+  db: Db,
+  unit: WorkUnit,
+  callerSessionId: string | null,
+  sessionManager?: SessionManager,
+): SessionHolding {
+  const recorded = sessionIdentities(unit);
+  if (recorded.length === 0) return { state: "clear", unverifiable: false, liveness: null };
+  if (!callerSessionId) {
+    return { state: "clear", unverifiable: true, liveness: classifyHolderLiveness(db, unit, sessionManager) };
+  }
+  const caller = resolveSessionAlias(db, callerSessionId);
+  const matches = recorded.some((id) => {
+    if (id === callerSessionId) return true;
+    const resolution = resolveSessionAlias(db, id);
+    return Boolean(resolution && (resolution.provider_session_id === callerSessionId
+      || (resolution.mandible_session_id && resolution.mandible_session_id === caller?.mandible_session_id)));
+  });
+  if (matches) return { state: "clear", unverifiable: false, liveness: null };
+  const liveness = classifyHolderLiveness(db, unit, sessionManager);
+  return { state: liveness.state, liveness };
 }
 
 export interface CustodyHolder {
@@ -251,6 +290,10 @@ export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): Wo
   return mapWorkUnitRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(unit.id) as Record<string, unknown>);
 }
 
+function shortSession(id: string | null | undefined): string {
+  return id ? id.slice(0, 8) : "(none)";
+}
+
 function custodyTransferComment(
   db: Db,
   input: CustodyTransferInput,
@@ -275,8 +318,12 @@ function custodyTransferComment(
         return `The umbrella parent role handed custody over (checkpoint \`${input.parent_role_checkpoint_id}\`).`;
     }
   })();
+  const moved = prior.credential_id && prior.credential_id === next.credential_id
+    ? `moved from session ${shortSession(input.prior_holder_liveness?.session_id)} to session ` +
+      `${shortSession(input.new_session.provider_session_id)} of ${holderLabel(next)}`
+    : `moved from ${holderLabel(prior)} to ${holderLabel(next)}`;
   return [
-    `Work-unit custody of ${branch} moved from ${holderLabel(prior)} to ${holderLabel(next)}. ${how}`,
+    `Work-unit custody of ${branch} ${moved}. ${how}`,
     "",
     `Reason: ${input.reason}`,
     "",
@@ -322,8 +369,8 @@ export function parseCustodyTransferCommand(command: string): CustodyTransferCom
 /**
  * Apply an approved custody-transfer request. Every condition is checked again
  * at approval: the unit still sits at the requested generation, it is not an
- * integration unit, and the requesting credential is still active with project
- * write access. A refusal changes nothing.
+ * integration unit held by another credential, and the requesting credential is
+ * still active with project write access. A refusal changes nothing.
  */
 export function applyApprovedCustodyTransfer(
   db: Db,
@@ -337,7 +384,7 @@ export function applyApprovedCustodyTransfer(
   const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(command.work_unit_id) as Record<string, unknown> | undefined;
   if (!row) return { ok: false, error: "The work unit no longer exists." };
   const unit = mapWorkUnitRow(row);
-  if (unit.kind === "integration") {
+  if (unit.kind === "integration" && unit.owner_credential_id !== command.credential_id) {
     return { ok: false, error: "Integration custody transfers use the parent-role checkpoint or operator recovery." };
   }
   if (unit.custody_generation !== command.expected_generation) {

@@ -713,7 +713,8 @@ describe("work-unit custody takeover", () => {
     ambient_identity: { provider: "claude", provider_session_id: `${token}-session` },
     body: { expected_generation: 1, reason: "Continue the stopped holder's branch.", ...extra },
   });
-  const check = (token: string) => guarded.invoke({ method: "GET", credential: token,
+  const check = (token: string, session?: string) => guarded.invoke({ method: "GET", credential: token,
+    ...(session ? { ambient_identity: { provider: "codex", provider_session_id: session } } : {}),
     url: `/api/work-units/custody-check?repo_id=${encodeURIComponent(projectKey)}&branch=feature/takeover` });
   const owner = (id: string) => db.prepare("SELECT owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(id);
 
@@ -746,6 +747,32 @@ describe("work-unit custody takeover", () => {
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ code: "custody_generation_conflict" });
     expect((await check("taker")).body).toMatchObject({ outcome: "clear", may_commit: true });
+  });
+
+  it("holds a unit for its recorded session against another session of the same credential", async () => {
+    const id = await heldUnit("active");
+    const twin = (body: Record<string, unknown> = {}) => guarded.invoke({
+      method: "POST", url: `/api/work-units/${id}/custody/assume`, credential: "holder",
+      ambient_identity: { provider: "codex", provider_session_id: "twin-thread" },
+      body: { expected_generation: 1, reason: "Second session on the same branch.", ...body },
+    });
+    expect((await check("holder", "holder-thread")).body).toMatchObject({ outcome: "clear" });
+    expect((await check("holder", "twin-thread")).body).toMatchObject({ outcome: "held",
+      holder_liveness: { state: "live", session_id: "holder-session" } });
+    const refused = await twin();
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ code: "custody_holder_live", holder_liveness: { session_id: "holder-session" } });
+    expect(owner(id)).toEqual({ owner_credential_id: credentials.holder.credential_id, custody_generation: 1 });
+
+    db.prepare("UPDATE sessions SET status = 'dead' WHERE id = 'holder-session'").run();
+    expect((await check("holder", "twin-thread")).body).toMatchObject({ outcome: "takeover_available" });
+    const taken = await twin();
+    expect(taken.status).toBe(200);
+    expect(taken.body).toMatchObject({ authority_path: "stopped_holder_takeover", work_unit: {
+      owner_credential_id: credentials.holder.credential_id, custody_generation: 2, provider_session_id: "twin-thread" } });
+    expect((await check("holder", "twin-thread")).body).toMatchObject({ outcome: "clear" });
+    expect((db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").get(issueId) as { body: string }).body)
+      .toContain("moved from session holder-s to session twin-thr of codex-holder");
   });
 
   it("refuses a live holder, names it, and transfers custody to the agent on operator approval", async () => {
