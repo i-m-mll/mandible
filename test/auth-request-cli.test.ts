@@ -719,6 +719,8 @@ describe("auth request protected-root dirty policy", () => {
     git(["add", "mandible.toml"]);
     git(["commit", "-m", "add mandible config"]);
     fs.writeFileSync(path.join(tempDir, "tracked.txt"), "dirty\n", "utf8");
+    fs.writeFileSync(path.join(tempDir, "staged.txt"), "staged\n", "utf8");
+    git(["add", "staged.txt"]);
     fs.writeFileSync(path.join(tempDir, "untracked.txt"), "local\n", "utf8");
 
     const result = run([
@@ -744,5 +746,39 @@ describe("auth request protected-root dirty policy", () => {
     const shelveRoot = path.join(tempDir, "worktrees", safeBranch);
     expect(fs.readFileSync(path.join(shelveRoot, "tracked.txt"), "utf8")).toBe("dirty\n");
     expect(fs.readFileSync(path.join(shelveRoot, "untracked.txt"), "utf8")).toBe("local\n");
+    expect(git(["status", "--porcelain=v1", "--", "staged.txt"], shelveRoot)).toBe("A  staged.txt");
+    expect(git(["stash", "list"])).toBe("");
+    expect(git(["for-each-ref", "refs/mandible/"])).toBe("");
+  });
+
+  it("preserves dirty protected-root state as a stash commit outside the shared stash", () => {
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "dirty\n", "utf8");
+    fs.writeFileSync(path.join(tempDir, "staged.txt"), "staged\n", "utf8");
+    git(["add", "staged.txt"]);
+    fs.writeFileSync(path.join(tempDir, "untracked.txt"), "local\n", "utf8");
+
+    const result = run([
+      "auth",
+      "request",
+      "feature/demo",
+      "--title",
+      "Merge feature/demo",
+      "--issue",
+      "029661a",
+      "--dirty-policy",
+      "stash",
+      "--no-watch",
+    ]);
+
+    expect(result.stderr).toContain("Protected-root changes were preserved as stash commit");
+    expect(git(["status", "--porcelain=v1"])).toBe("");
+    expect(git(["stash", "list"])).toBe("");
+    const snapshot = git(["for-each-ref", "--format=%(objectname)", "refs/mandible/protected-root-dirty/"]);
+    expect(result.stderr).toContain(`stash apply --index ${snapshot}`);
+
+    git(["stash", "apply", "--index", snapshot]);
+    expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("dirty\n");
+    expect(fs.readFileSync(path.join(tempDir, "untracked.txt"), "utf8")).toBe("local\n");
+    expect(git(["status", "--porcelain=v1", "--", "staged.txt"])).toBe("A  staged.txt");
   });
 });
