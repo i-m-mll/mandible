@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
-import { getLedgerIssueHead } from "./ledger/issue-heads.js";
+import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
 import { resolveOperationalIssueRef } from "./ledger/operational-links.js";
+import { LEDGER_STORED_WORKER_STATUSES } from "./ledger/types.js";
 import { validateBriefingGroupPromotionCandidate } from "./feedback/briefing-groups.js";
 import { BriefingStoreError } from "./feedback/briefings.js";
 import { AUTH_REQUEST_ACTION_KINDS } from "./types.js";
@@ -35,7 +36,7 @@ export const WITHHOLD_UNTIL_CONVERGED: Record<AuthRequestActionKind, boolean> = 
 
 const VALID_ACTION_KINDS: readonly AuthRequestActionKind[] = AUTH_REQUEST_ACTION_KINDS;
 const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "vetoed"];
-const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
+const VALID_WORKER_STATUSES: readonly string[] = LEDGER_STORED_WORKER_STATUSES;
 
 export class AuthActionValidationError extends Error {
   readonly status: number;
@@ -346,7 +347,7 @@ function resolveTargetDigest(
   const resolved = resolveOperationalIssueRef(db, issueRef, repoRef);
   if (!resolved.ok) return { ok: false, error: resolved.error };
   try {
-    return { ok: true, digest: getLedgerIssueHead(db, resolved.issue_id).digest };
+    return { ok: true, digest: getLedgerIssueContentDigest(db, resolved.issue_id) };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }

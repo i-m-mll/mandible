@@ -29,10 +29,10 @@ import type {
 // --- worker_status default columns ------------------------------------------
 
 /**
- * The canonical issue `worker_status` values, in the board's default column
- * order. Mirrors the DB CHECK constraint
- * (`ledger_issues.worker_status IN ('none','in_progress','done','blocked','pivot-needed')`,
- * src/db.ts). The board's default columns are exactly these, in this order.
+ * The issue `worker_status` values the resolver reports, in the board's default
+ * column order. `in_progress` is derived from an open or committed work unit
+ * (src/ledger/issue-work-state.ts). The board's default columns are exactly
+ * these, in this order.
  */
 export const WORKER_STATUS_VALUES = [
   'none',

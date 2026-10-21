@@ -47,6 +47,9 @@ export interface LedgerIssueDetailBranch {
   role: LedgerIssueBranchRole;
   created_at: number;
   updated_at: number;
+  /** The work unit that supplies this branch, or null for a manual issue-branch link. */
+  work_unit_id: string | null;
+  work_unit_state: string | null;
 }
 
 export type LedgerIssueTimelineEntry =

@@ -90,6 +90,7 @@ Key conventions:
 - `wt --issue <id>` registers a work unit and writes a `.issue` file for auto-discovery
 - `agent-commit` auto-discovers the issue from `.issue` if `--issue` is not passed explicitly
 - Liveness (is an agent currently working?) is derived at query time, not stored as a state
+- Work units are the source of an issue's branches and in-progress state; readers derive both in `src/ledger/issue-work-state.ts`. Stored `worker_status` keeps only explicit `done`, `blocked`, or `pivot-needed`, and `issue_branches` keeps only branches without a work unit and the `superseded` role
 - Continuations (handoff notes) live on the work unit, not on individual sessions
 
 ## Test suites

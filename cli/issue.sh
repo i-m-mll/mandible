@@ -425,7 +425,7 @@ cmd_report() {
       def short(s): (s // "" | gsub("\\s+"; " ") | if length > 180 then .[0:177] + "..." else . end);
       "\(.display_id) [\(.status)] \(.title)",
       "worker_status: \(.worker_status // "none")",
-      "branches: \(list_or_dash((.issue_branches // []) | map(.branch + " (" + .role + ")")))",
+      "branches: \(list_or_dash((.issue_branches // []) | map(.branch + " (" + .role + (if .work_unit_state then ", " + .work_unit_state else "" end) + ")")))",
       "labels: \(list_or_dash(.labels))",
       "kind: \(.kind // "unknown")",
       "prerequisites: \(list_or_dash((.dependencies // []) | map((.display_id // .id) + " " + .title + " [status=" + (.status // "unknown") + "; resolution=" + (.resolution // "none") + "]" + (if .status == "open" then " (open warning)" else "" end))))",
@@ -521,6 +521,9 @@ cmd_triage() {
 
 cmd_status() {
   local binding
+  if [[ "${2:-}" == "in_progress" ]]; then
+    die "in_progress is derived from an open or committed work unit and is not stored; claim one with \`wt new --issue\` or \`mandible work-unit claim\`, or store none, done, blocked, or pivot-needed" 2
+  fi
   binding=$(mandible_bind_arguments "issue.status" '{"id":{"position":0},"worker_status":{"position":1}}' "$@") || return $?
   eval "$binding"
 

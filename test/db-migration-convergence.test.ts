@@ -554,3 +554,31 @@ describe.sequential("schema convergence", () => {
     refused.close();
   });
 });
+
+describe("derived in-progress worker status", () => {
+  it("v200 clears stored in_progress to none with one event each and keeps explicit statuses", () => {
+    const dbPath = path.join(tempDir, "in-progress-v199.db");
+    createFloorDatabase(dbPath);
+    const db = new SqliteDatabase(dbPath);
+    try {
+      db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+        crypto.createHash("sha256").update(String(value)).digest("hex"));
+      migrateFixtureThrough(db, 199);
+      insertRawLedgerProject(db, { id: "status-project", name: "status-project" });
+      for (const [id, status] of [["issue-stale", "in_progress"], ["issue-done", "done"]]) {
+        insertRawLedgerIssue(db, { id, projectId: "status-project" });
+        db.prepare("UPDATE ledger_issues SET worker_status = ? WHERE id = ?").run(status, id);
+      }
+
+      migrate(db);
+
+      expect(db.prepare("SELECT id, worker_status FROM ledger_issues ORDER BY id").all())
+        .toEqual([{ id: "issue-done", worker_status: "done" }, { id: "issue-stale", worker_status: "none" }]);
+      expect(db.prepare(`SELECT entity_id, event_type, json_extract(payload_json, '$.previous_worker_status') AS previous
+        FROM ledger_events WHERE actor_id = 'schema-migration-v200'`).all())
+        .toEqual([{ entity_id: "issue-stale", event_type: "issue.worker_status.updated", previous: "in_progress" }]);
+    } finally {
+      db.close();
+    }
+  });
+});

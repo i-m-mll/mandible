@@ -35,6 +35,7 @@ import { getSetting } from "./client-auth/settings-kv.js";
 import { getDb, getDbPath, type Db } from "./db.js";
 import { LedgerStore } from "./ledger/store.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
+import { effectiveWorkerStatus, listIssueBranches } from "./ledger/issue-work-state.js";
 import {
   getOperationalIncident,
   transitionOperationalIncidentRemediation,
@@ -304,7 +305,7 @@ function issuePlan(db: Db, issueRef: string, instruction: string, actorUserId: s
   const project = resolveProjectRef(db, detail.project_id);
   const checkoutRoot = project.ok ? (project.project?.checkouts[0]?.root ?? null) : null;
   const cwd = resolveDispatchCwd(db, checkoutRoot);
-  const branches = detail.branches.map((branch) => branch.branch);
+  const branches = listIssueBranches(db, detail.id).map((branch) => branch.branch);
   return withPromptHash({
     subject_kind: "issue",
     subject_label: `issue ${detail.short_id}`,
@@ -324,7 +325,7 @@ function issuePlan(db: Db, issueRef: string, instruction: string, actorUserId: s
         ["Issue", `${detail.short_id} — ${detail.title}`],
         ["Issue id", detail.id],
         ["Project", project.ok && project.project ? project.project.project_key : detail.project_id],
-        ["Status", `${detail.status} / worker ${detail.worker_status}`],
+        ["Status", `${detail.status} / worker ${effectiveWorkerStatus(db, detail.id)}`],
         ["Linked branches", branches.length > 0 ? branches.join(", ") : "none"],
         ["Working directory", cwd],
       ],

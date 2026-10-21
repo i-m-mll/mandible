@@ -141,8 +141,9 @@ describe("subtree digests", () => {
       for (const ids of [[roots[0]], roots, [...roots, ...roots]]) {
         prepare.mockClear();
         expect(batchLedgerIssueHeads(db, ids).size).toBe(new Set(ids).size);
-        expect(prepare.mock.calls).toHaveLength(3);
+        expect(prepare.mock.calls).toHaveLength(4);
         expect(prepare.mock.calls.filter(([sql]) => sql.includes("FROM ledger_events"))).toHaveLength(1);
+        expect(prepare.mock.calls.filter(([sql]) => sql.includes("FROM work_units"))).toHaveLength(1);
       }
       prepare.mockClear();
       expect(batchLedgerIssueHeads(db, []).size).toBe(0);

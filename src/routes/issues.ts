@@ -4,7 +4,7 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
-import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore } from "../ledger/store.js";
+import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
@@ -20,7 +20,7 @@ import {
   LEDGER_PRIORITIES,
   LEDGER_RELATIONSHIP_PROVENANCES,
   LEDGER_RELATIONSHIP_TYPES,
-  LEDGER_WORKER_STATUSES,
+  LEDGER_STORED_WORKER_STATUSES,
   type LedgerIssueKind,
   type LedgerIssueBranchRole,
   type LedgerIssueCheckpoint,
@@ -31,9 +31,10 @@ import {
   type LedgerRelationshipEntityType,
   type LedgerRelationshipProvenance,
   type LedgerRelationshipType,
-  type LedgerWorkerStatus,
+  type LedgerStoredWorkerStatus,
 } from "../ledger/types.js";
 import { getUserById } from "../users/store.js";
+import { batchIssueBranches, effectiveWorkerStatusSql } from "../ledger/issue-work-state.js";
 import {
   buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
@@ -732,30 +733,6 @@ function labelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
   return labels;
 }
 
-function branchesByIssue(db: Db, issueIds: string[]): Map<string, unknown[]> {
-  if (issueIds.length === 0) return new Map();
-  const { sql, bindings } = placeholders(issueIds, "issue");
-  const rows = db.prepare(
-    `SELECT issue_id, branch, role, created_at, updated_at
-       FROM issue_branches
-      WHERE issue_id IN (${sql})
-      ORDER BY issue_id, role, created_at, branch`,
-  ).all(bindings) as Array<Record<string, unknown>>;
-  const branches = new Map<string, unknown[]>();
-  for (const row of rows) {
-    const issueId = String(row.issue_id);
-    const group = branches.get(issueId) ?? [];
-    group.push({
-      branch: row.branch,
-      role: row.role,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    });
-    branches.set(issueId, group);
-  }
-  return branches;
-}
-
 function authRequestsByIssue(db: Db, issueIds: string[]): Map<string, unknown[]> {
   if (issueIds.length === 0 || !tableExists(db, "ledger_auth_issue_links") || !tableExists(db, "auth_requests")) {
     return new Map();
@@ -836,7 +813,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   if (childIds.length === 0) return [];
   const { sql, bindings } = placeholders(childIds, "issue");
   const rows = db.prepare(
-    `SELECT id, short_id, title, status, worker_status, kind
+    `SELECT id, short_id, title, status, ${effectiveWorkerStatusSql("ledger_issues")} AS worker_status, kind
        FROM ledger_issues
       WHERE id IN (${sql}) AND deleted_at IS NULL`,
   ).all(bindings) as Array<{
@@ -850,7 +827,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   const byId = new Map(rows.map((row) => [row.id, row]));
   const labels = labelsByIssue(db, childIds);
   const heads = batchLedgerIssueHeads(db, childIds);
-  const branches = branchesByIssue(db, childIds);
+  const branches = batchIssueBranches(db, childIds);
   const authRequests = authRequestsByIssue(db, childIds);
   const latestComments = latestCommentsByIssue(db, childIds);
   const closeouts = latestCloseoutsByIssue(db, childIds);
@@ -2118,9 +2095,10 @@ export function registerIssueRoutes(
       return;
     }
     const body = getBody(req) ?? {};
-    const workerStatus = enumValue(body.worker_status ?? body.status, LEDGER_WORKER_STATUSES);
+    const requested = body.worker_status ?? body.status;
+    const workerStatus = enumValue(requested, LEDGER_STORED_WORKER_STATUSES);
     if (!workerStatus) {
-      sendJson(res, 400, { error: "invalid worker_status" });
+      sendJson(res, 400, { error: storedWorkerStatusError(String(requested ?? "")) });
       return;
     }
     const db = getDb();
@@ -2132,7 +2110,7 @@ export function registerIssueRoutes(
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
-      workerStatus as LedgerWorkerStatus,
+      workerStatus as LedgerStoredWorkerStatus,
       { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
       "mandible",
     );

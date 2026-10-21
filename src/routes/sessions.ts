@@ -24,6 +24,7 @@ import {
   ensureProviderSessionRegistered,
 } from "../provider-session-ingestion.js";
 import { readBody, sendJson } from "./http.js";
+import { effectiveWorkerStatusSql } from "../ledger/issue-work-state.js";
 
 export { CONVERSATION_SOURCE_TO_PROVIDER, PROVIDER_TO_CONVERSATION_SOURCE };
 
@@ -942,7 +943,7 @@ export function registerSessionRoutes(
       const issueIds = Array.from(issueWorkUnits.keys());
       const issuePlaceholders = issueIds.map(() => "?").join(", ");
       const rows = db.prepare(`
-        SELECT id, short_id, title, status, worker_status, kind, updated_at
+        SELECT id, short_id, title, status, ${effectiveWorkerStatusSql("ledger_issues")} AS worker_status, kind, updated_at
         FROM ledger_issues
         WHERE id IN (${issuePlaceholders})
         ORDER BY updated_at DESC
@@ -1083,7 +1084,7 @@ export function registerSessionRoutes(
     // ever touched").
     const linkedIssues = db.prepare(`
       SELECT l.issue_id, l.link_type, l.source, l.created_at, l.last_seen_at,
-             i.short_id, i.title, i.status, i.worker_status, i.kind
+             i.short_id, i.title, i.status, ${effectiveWorkerStatusSql("i")} AS worker_status, i.kind
       FROM ledger_session_issue_links l
       JOIN ledger_issues i ON i.id = l.issue_id
       WHERE l.session_id = ?

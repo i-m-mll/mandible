@@ -38,9 +38,20 @@ import type {
   LedgerRelationshipEntityType,
   LedgerRelationshipProvenance,
   LedgerRelationshipType,
-  LedgerWorkerStatus,
+  LedgerStoredWorkerStatus,
 } from "./types.js";
+import { LEDGER_STORED_WORKER_STATUSES } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
+
+/**
+ * Issue d9e59e8 — `in_progress` is derived from an open or committed work unit,
+ * so only explicit statements are stored.
+ */
+export function storedWorkerStatusError(value: string): string {
+  return value === "in_progress"
+    ? "in_progress is derived from an open or committed work unit and is not stored; claim one with `wt new --issue` or `mandible work-unit claim`, or store none, done, blocked, or pivot-needed"
+    : `invalid worker status: ${value} (expected one of: ${LEDGER_STORED_WORKER_STATUSES.join(", ")})`;
+}
 
 export type ResolveIssueRefResult =
   | { ok: true; id: string }
@@ -869,10 +880,13 @@ export class LedgerStore {
 
   setWorkerStatus(
     id: string,
-    workerStatus: LedgerWorkerStatus,
+    workerStatus: LedgerStoredWorkerStatus,
     actor: LedgerActorInput,
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
+    if (!(LEDGER_STORED_WORKER_STATUSES as readonly string[]).includes(workerStatus)) {
+      throw new Error(storedWorkerStatusError(workerStatus));
+    }
     const existing = this.requireIssue(id);
     if (existing.worker_status === workerStatus) {
       return existing;

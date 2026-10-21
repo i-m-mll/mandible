@@ -15,13 +15,13 @@ import type { ArtifactRecord } from "../types.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow } from "../work-unit-utils.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
+import { effectiveWorkerStatus, listIssueBranches } from "./issue-work-state.js";
 import type {
   LedgerActorType,
   LedgerComment,
   LedgerEvent,
   LedgerIssue,
   LedgerIssueAlias,
-  LedgerIssueBranch,
   LedgerIssueCheckpoint,
   LedgerIssueRelationship,
   LedgerRelationshipEdge,
@@ -35,7 +35,6 @@ import type {
   LedgerIssueDetailActor,
   LedgerIssueDetailComment,
   LedgerIssueDetailCheckpoint,
-  LedgerIssueDetailBranch,
   LedgerIssueTimelineEntry,
   LedgerIssueSummaryRef,
   LedgerIssueWorkMetadata,
@@ -119,7 +118,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
   const labels = measure("labels", () => (
     db.prepare("SELECT * FROM ledger_labels WHERE issue_id = ? ORDER BY label").all(issueId) as LedgerLabel[]
   ));
-  const branches = measure("branches", () => store.listIssueBranches(issueId));
+  const branches = measure("branches", () => listIssueBranches(db, issueId));
   const rawComments = stage === "initial"
     ? measure("comments", () => listInitialComments(db, issueId, options.commentLimit ?? 50))
     : measure("comments", () => (
@@ -163,7 +162,6 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     comments: rawComments,
     checkpoints: rawCheckpoints,
     labels,
-    branches,
     outgoing_relationships: relationshipInputs.outgoing,
     incoming_relationships: relationshipInputs.incoming,
   };
@@ -211,7 +209,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     work_notes: workMetadata.work_notes,
     work_notes_revision: workMetadata.work_notes_revision,
     status: issue.status,
-    worker_status: issue.worker_status,
+    worker_status: effectiveWorkerStatus(db, issue.id),
     resolution: issue.resolution,
     kind: issue.kind,
     priority: issue.priority,
@@ -222,7 +220,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     closed_at: issue.closed_at,
     aliases: mappedAliases,
     labels: activeIssueLabels,
-    issue_branches: branches.map(mapIssueBranch),
+    issue_branches: branches,
     comments,
     checkpoints,
     timeline,
@@ -301,15 +299,6 @@ function buildInitialTimeline(
 
 function roundMs(value: number): number {
   return Math.round(value * 1000) / 1000;
-}
-
-function mapIssueBranch(branch: LedgerIssueBranch): LedgerIssueDetailBranch {
-  return {
-    branch: branch.branch,
-    role: branch.role,
-    created_at: branch.created_at,
-    updated_at: branch.updated_at,
-  };
 }
 
 function mapCheckpoint(

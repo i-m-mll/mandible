@@ -96,7 +96,7 @@ import {
   resolveOperationalIssueRef,
   syncAuthRequestLedgerLinks,
 } from "./ledger/operational-links.js";
-import { getLedgerIssueHead } from "./ledger/issue-heads.js";
+import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
 import { LedgerStore } from "./ledger/store.js";
 import {
@@ -117,9 +117,10 @@ import {
   getOperator,
   getUserById,
 } from "./users/store.js";
-import type {
-  LedgerRelationshipType,
-  LedgerWorkerStatus,
+import {
+  LEDGER_STORED_WORKER_STATUSES,
+  type LedgerRelationshipType,
+  type LedgerStoredWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
@@ -306,7 +307,7 @@ class FinalizerQueue {
     }
   }
 }
-const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
+const VALID_WORKER_STATUSES: readonly string[] = LEDGER_STORED_WORKER_STATUSES;
 const VALID_RELATIONSHIP_TYPES = [
   "parent_child",
   "blocks",
@@ -6505,7 +6506,7 @@ export class AuthQueue {
     const store = new LedgerStore(this.db);
     const issueId = resolved.issue_id;
     const now = this.now();
-    const currentDigest = getLedgerIssueHead(this.db, issueId).digest;
+    const currentDigest = getLedgerIssueContentDigest(this.db, issueId);
     const digestMoved = Boolean(action.target_digest && action.target_digest !== currentDigest);
     if (action.kind === "issue_close" && digestMoved && action.payload.on_stale === "skip") {
       this.removeActionResolveLink(request, action, issueId);
@@ -6577,7 +6578,7 @@ export class AuthQueue {
         if (!VALID_WORKER_STATUSES.includes(value)) {
           throw new Error(`invalid worker status: ${value}`);
         }
-        store.setWorkerStatus(issueId, value as LedgerWorkerStatus, actor, "auth_queue");
+        store.setWorkerStatus(issueId, value as LedgerStoredWorkerStatus, actor, "auth_queue");
         break;
       }
       case "label_add":
