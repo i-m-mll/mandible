@@ -22,7 +22,7 @@ const shards = [
 if (lines.length === 0) throw new Error(`No test declarations found in ${relativeTest}.`);
 
 function spawnVitestShard(shard, env) {
-  return spawn(process.execPath, [
+  return spawn(env.MANDIBLE_RUNTIME, [
     "--smol", vitest,
     "run",
     "--config", "vitest.iab-preview.config.ts",
