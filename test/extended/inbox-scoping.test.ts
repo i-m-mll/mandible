@@ -780,7 +780,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
       },
       post: () => {},
     };
-    registerInboxRoutes(server, {} as never, undefined, undefined);
+    registerInboxRoutes(server, undefined, undefined);
     if (!handler) throw new Error("/api/inbox/undelivered handler not registered");
     let capturedStatus = 0;
     let capturedBody: unknown = null;
@@ -1705,7 +1705,7 @@ describe("inbox acknowledgement attribution", () => {
       });
 
       const app = new TestRouteRegistrar();
-      registerInboxRoutes(app, {} as never, {} as never);
+      registerInboxRoutes(app, {} as never);
 
       const bound = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
         params: { type: "auth_result", id: "bound-ack" },
@@ -1838,7 +1838,7 @@ function callInbox(
     },
     post: () => {}
   };
-  registerInboxRoutes(server, {} as never, undefined, undefined);
+  registerInboxRoutes(server, undefined, undefined);
   if (!handler) throw new Error("Inbox route handler was not registered");
 
   let captured: unknown = null;

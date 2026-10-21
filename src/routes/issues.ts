@@ -6,9 +6,10 @@ import {
   resolveSessionAlias,
   sessionAliasIds,
   sessionRowForLinkKeySql,
+  type LivenessState,
   type SessionAliasResolution,
 } from "../session-liveness.js";
-import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
+import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
@@ -393,10 +394,10 @@ function sessionLiveness(
 ): Record<string, unknown> {
   const resolved = sessionId ? resolver(db, sessionId) : null;
   return {
-    has_live_agent: resolved?.has_live_agent ?? false,
+    state: resolved?.liveness ?? "stopped",
     agent_session_id: sessionId,
     agent_status: resolved
-      ? resolved.mandible_status ?? resolved.console_status ?? (resolved.has_live_agent ? "active" : "stopped")
+      ? resolved.mandible_status ?? resolved.console_status ?? (resolved.liveness === "live" ? "active" : resolved.liveness)
       : null,
     last_activity: resolved?.last_activity ?? null,
     resolved_session_id: resolved?.mandible_session_id ?? null,
@@ -489,16 +490,14 @@ function buildParentRoleStatus(
   resolver: SessionAliasResolver = resolveSessionAlias,
 ): Record<string, unknown> {
   const holders = parentRoleHolders(db, issueId, resolver);
-  const liveHolder = holders.find((holder) =>
-    Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
-  ) ?? null;
+  const holdersIn = (state: LivenessState) =>
+    holders.filter((holder) => (holder.liveness as { state: LivenessState }).state === state);
   return {
     issue_id: issueId,
     holder: holders[0] ?? null,
-    live_holder: liveHolder,
-    stale_holders: holders.filter((holder) =>
-      !Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
-    ),
+    live_holder: holdersIn("live")[0] ?? null,
+    unknown_holders: holdersIn("unknown"),
+    stale_holders: holdersIn("stopped"),
     holders,
   };
 }
@@ -1307,16 +1306,24 @@ export function registerIssueRoutes(
       sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
     }
+    // A holder whose liveness check could not complete may be working right
+    // now, so it blocks exactly like a live one (issue 8c7eb06).
     const liveHolder = current.live_holder as Record<string, unknown> | null;
+    const blockingHolder = liveHolder
+      ?? (current.unknown_holders as Array<Record<string, unknown>>)[0]
+      ?? null;
     // The lease belongs to the agent, not to one spelling of its id: a holder
     // recorded under its provider thread id is the same holder when it returns
     // with its Mandible session id.
     const callerAliases = new Set([sessionId, ...sessionAliasIds(resolution)]);
-    const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
-    if (liveHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
+    const callerAlreadyHolds = [...holderAliasIds(blockingHolder)].some((id) => callerAliases.has(id));
+    if (blockingHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
+      const state = (blockingHolder.liveness as { state: LivenessState }).state;
       sendJson(res, 409, {
-        error: "parent role already held by a live session; only the operator may displace it",
-        live_holder: liveHolder,
+        error: state === "live"
+          ? "parent role already held by a live session; only the operator may displace it"
+          : "parent role held by a session whose liveness cannot be established; only the operator may displace it",
+        blocking_holder: blockingHolder,
         parent_role: current,
       });
       return;
@@ -1335,7 +1342,7 @@ export function registerIssueRoutes(
         mechanism,
         assumed_at: now,
         override,
-        previous_live_holder: liveHolder,
+        previous_live_holder: blockingHolder,
         authenticated_user_id: identity?.method === "api_token" ? identity.user_id : null,
         authenticated_credential_id: identity?.method === "api_token" ? identity.credential_id : null,
       },
@@ -2304,29 +2311,7 @@ export function registerIssueRoutes(
     let workUnit: Record<string, unknown> | null = null;
     if (workUnitRow) {
       const wu = mapWorkUnitRow(workUnitRow);
-      const liveness = deps?.sessionRegistry && deps?.sessionManager
-        ? computeLiveness(wu, deps.sessionRegistry, deps.sessionManager)
-        : (() => {
-            // Fallback: inline approximation when session deps not available
-            const assignedSessionId = wu.assigned_session_id;
-            if (!assignedSessionId) {
-              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-            }
-            const sessionRow = db
-              .prepare("SELECT status, updated_at, last_active FROM sessions WHERE id = ?")
-              .get(assignedSessionId) as Record<string, unknown> | undefined;
-            if (!sessionRow) {
-              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-            }
-            const status = String(sessionRow.status ?? "unknown");
-            return {
-              has_live_agent: status === "active" || status === "idle",
-              agent_session_id: assignedSessionId,
-              agent_status: status,
-              is_processing: status === "active",
-              last_activity: sessionRow.last_active ?? sessionRow.updated_at ?? null,
-            };
-          })();
+      const liveness = computeWorkUnitLiveness(db, wu, deps?.sessionManager);
 
       workUnit = {
         branch: wu.branch,

@@ -9,7 +9,6 @@ import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger
 import { getLedgerIssueWorkMetadata } from "../ledger/issue-detail.js";
 import { normalizeProjectRepoId } from "../ledger/project-registry.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
-import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
@@ -226,7 +225,6 @@ function resolveLedgerIssueId(
 
 export function registerWorkUnitRoutes(
   server: RouteRegistrar,
-  sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
   logger: Logger = () => undefined,
   options: WorkUnitRouteOptions = {},
@@ -671,7 +669,7 @@ export function registerWorkUnitRoutes(
 
     const workUnits = rows.map(mapRow);
     const enriched = workUnits.map((wu) =>
-      enrichWithLiveness(wu, sessionRegistry, sessionManager)
+      enrichWithLiveness(wu, sessionManager)
     );
 
     sendJson(res, 200, { work_units: enriched });
@@ -931,7 +929,7 @@ export function registerWorkUnitRoutes(
     }
 
     const workUnit = mapRow(row);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
   }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PATCH /api/work-units/:id — update mutable fields
@@ -1027,7 +1025,7 @@ export function registerWorkUnitRoutes(
       .get(id) as Record<string, unknown>;
 
     const workUnit = mapRow(updatedRow);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
   }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 }
 

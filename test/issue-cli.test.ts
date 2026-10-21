@@ -443,7 +443,7 @@ function listen(): Promise<number> {
             res.statusCode = 409;
             res.end(JSON.stringify({
               error: "parent role already held by a live session; pass override to retake",
-              live_holder: { session_id: "sess-live", mechanism: "codex" },
+              blocking_holder: { session_id: "sess-live", mechanism: "codex", liveness: { state: "live" } },
             }));
             return;
           }

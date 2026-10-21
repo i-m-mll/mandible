@@ -23,9 +23,12 @@ import { LedgerStore } from "./ledger/store.js";
 import type { LedgerAttributionInput } from "./ledger/types.js";
 import { evaluateProjectAccess } from "./permissions/store.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
-import { resolveSessionAlias, type ProviderTaskLivenessReader } from "./session-liveness.js";
+import {
+  resolveSessionAlias,
+  type LivenessState,
+  type ProviderTaskLivenessReader,
+} from "./session-liveness.js";
 import { readCodexTaskLiveness } from "./codex-task-liveness.js";
-import { resolveProviderSessionIngestion } from "./provider-session-ingestion.js";
 import type { SessionManager } from "./session-manager.js";
 import { PRODUCTION_EFFECTS } from "./security/effect-policy.js";
 import {
@@ -34,7 +37,7 @@ import {
   type WorkUnitSessionResolver,
 } from "./work-unit-utils.js";
 
-export type HolderLivenessState = "live" | "stopped" | "unknown";
+export type HolderLivenessState = LivenessState;
 
 /**
  * Whether the session recorded on a work unit is still working.
@@ -43,9 +46,9 @@ export type HolderLivenessState = "live" | "stopped" | "unknown";
  * recorded Mandible or console session, none of them live, or, for an indexed
  * Codex thread with no such record, a completed thread-writer lock scan that
  * finds no Codex process holding the thread's lock. A Claude or Gemini
- * transcript alone, an id Mandible never registered, a lock scan that could not
- * run, or a unit with no session identity is `unknown`, which blocks takeover
- * exactly like `live`.
+ * transcript alone, an id Mandible never registered, a liveness check that
+ * could not complete, or a unit with no session identity is `unknown`, which
+ * blocks takeover exactly like `live`.
  */
 export interface HolderLiveness {
   state: HolderLivenessState;
@@ -63,60 +66,28 @@ export function classifyHolderLiveness(
   const resolver: WorkUnitSessionResolver = (database, id) =>
     resolveSessionAlias(database, id, { readCodexTaskLiveness: readCodexTask });
   const liveness = computeWorkUnitLiveness(db, unit, sessionManager, resolver);
-  if (liveness.has_live_agent) {
-    return { state: "live", session_id: liveness.agent_session_id, status: liveness.agent_status, last_activity: liveness.last_activity };
-  }
+  const observed = {
+    session_id: liveness.agent_session_id,
+    status: liveness.agent_status,
+    last_activity: liveness.last_activity,
+  };
+  if (liveness.state !== "stopped") return { state: liveness.state, ...observed };
   for (const id of sessionIdentities(unit)) {
     const resolution = resolver(db, id);
-    if (!resolution) continue;
+    if (!resolution || resolution.liveness !== "stopped") continue;
     if (unit.provider && resolution.provider && resolution.provider !== unit.provider) continue;
     const status = resolution.mandible_status ?? resolution.console_status;
-    const codexTask = resolution.provider === "codex"
-      ? codexThreadLiveness(db, resolution.provider_session_id ?? id, readCodexTask)
-      : null;
-    if (status) {
-      // The shared rule reads an unavailable lock scan as "not live"; here it is
-      // no evidence of a stop.
-      if (codexTask && codexTask.status !== "not_live") continue;
-      return {
-        state: "stopped",
-        session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
-        status,
-        last_activity: parseTime(resolution.last_activity),
-      };
-    }
-    if (codexTask?.status === "not_live" || codexTask?.status === "live") {
-      return {
-        state: codexTask.status === "live" ? "live" : "stopped",
-        session_id: id,
-        status: null,
-        last_activity: parseTime(codexTask.last_activity),
-      };
-    }
+    // The shared rule also calls a bare transcript stopped; only a recorded
+    // session or a completed Codex lock scan is evidence of a stop here.
+    if (!status && resolution.provider !== "codex") continue;
+    return {
+      state: "stopped",
+      session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
+      status,
+      last_activity: parseTime(resolution.last_activity),
+    };
   }
-  return { state: "unknown", session_id: liveness.agent_session_id, status: liveness.agent_status, last_activity: liveness.last_activity };
-}
-
-type CodexThreadLiveness =
-  | { status: "live" | "not_live"; last_activity: string | null }
-  | { status: "unavailable" };
-
-/** The thread-writer lock scan for an indexed Codex rollout; `null` when none is indexed. */
-function codexThreadLiveness(
-  db: Db,
-  providerSessionId: string,
-  readCodexTask: ProviderTaskLivenessReader,
-): CodexThreadLiveness | null {
-  let ingestion: ReturnType<typeof resolveProviderSessionIngestion>;
-  try {
-    ingestion = resolveProviderSessionIngestion(db, providerSessionId);
-  } catch {
-    return { status: "unavailable" };
-  }
-  if (ingestion.status !== "ingested") return null;
-  if (ingestion.provider !== "codex") return { status: "unavailable" };
-  const scan = readCodexTask(ingestion.source_path, ingestion.provider_session_id).status;
-  return scan === "unavailable" ? { status: scan } : { status: scan, last_activity: ingestion.last_activity };
+  return { state: "unknown", ...observed };
 }
 
 function parseTime(value: string | null): number | null {

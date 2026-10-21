@@ -319,7 +319,7 @@ describe("ledger issue detail projection", () => {
       {
         id: "wu_1",
         branch: "feature/detail",
-        liveness: { has_live_agent: true, agent_session_id: "sess_live" },
+        liveness: { state: "live", agent_session_id: "sess_live" },
       },
     ]);
     expect(projection.sessions).toMatchObject([

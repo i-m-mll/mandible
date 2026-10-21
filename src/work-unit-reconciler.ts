@@ -20,7 +20,7 @@ type AuthPipelineMatch =
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
 // Runs every 60s and performs three reconciliation passes:
-// 1. Dead holder cleanup: clear assigned_session_id when its alias resolves and is not live
+// 1. Dead holder cleanup: clear assigned_session_id when its alias resolves to a stopped agent
 // 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
 // 3. Auto-commit detection: open → committed when branch has commits
 
@@ -32,7 +32,7 @@ export class WorkUnitReconciler {
   private readonly resolveSession: WorkUnitSessionResolver;
   private readonly abort = new AbortController();
   private pass: Promise<void> | null = null;
-  private lastUnresolvedHolders = 0;
+  private lastUnknownHolders = 0;
 
   constructor(
     logger: Logger,
@@ -73,12 +73,12 @@ export class WorkUnitReconciler {
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = this.reconcileAutoCommit();
 
-      const unresolvedChanged = holders.unresolved !== this.lastUnresolvedHolders;
-      this.lastUnresolvedHolders = holders.unresolved;
-      if (holders.cleared > 0 || abandoned > 0 || autoCommitted > 0 || unresolvedChanged) {
-        this.logger("info", "work_unit_reconcile", {
+      const unknownChanged = holders.unknown !== this.lastUnknownHolders;
+      this.lastUnknownHolders = holders.unknown;
+      if (holders.cleared > 0 || abandoned > 0 || autoCommitted > 0 || unknownChanged) {
+        this.logger(holders.unknown > 0 ? "warn" : "info", "work_unit_reconcile", {
           dead_sessions_cleared: holders.cleared,
-          unresolved_holders: holders.unresolved,
+          unknown_holders: holders.unknown,
           abandoned: abandoned,
           auto_committed: autoCommitted,
         });
@@ -90,11 +90,12 @@ export class WorkUnitReconciler {
 
   /**
    * Pass 1: Clear assigned_session_id on open and committed work units whose
-   * holder alias resolves to a session that is no longer live. The work unit
-   * keeps its state and reads as unassigned. A holder alias Mandible has never
-   * seen is left in place and counted, since nothing proves it stopped.
+   * holder alias resolves to a stopped agent. The work unit keeps its state and
+   * reads as unassigned. A holder alias Mandible has never seen, or one whose
+   * liveness check could not complete, is left in place and counted, since
+   * nothing proves it stopped.
    */
-  private reconcileDeadHolders(): { cleared: number; unresolved: number } {
+  private reconcileDeadHolders(): { cleared: number; unknown: number } {
     const db = getDb();
     const held = db
       .prepare(
@@ -106,13 +107,13 @@ export class WorkUnitReconciler {
       .all() as Array<{ id: string; assigned_session_id: string }>;
 
     const dead: typeof held = [];
-    let unresolved = 0;
+    let unknown = 0;
     for (const row of held) {
-      const resolution = this.resolveSession(db, row.assigned_session_id);
-      if (!resolution) unresolved++;
-      else if (!resolution.has_live_agent) dead.push(row);
+      const liveness = this.resolveSession(db, row.assigned_session_id)?.liveness ?? "unknown";
+      if (liveness === "stopped") dead.push(row);
+      else if (liveness === "unknown") unknown++;
     }
-    if (dead.length === 0) return { cleared: 0, unresolved };
+    if (dead.length === 0) return { cleared: 0, unknown };
 
     const clearStmt = db.prepare(
       `UPDATE work_units SET assigned_session_id = NULL
@@ -125,7 +126,7 @@ export class WorkUnitReconciler {
       }
       return count;
     })();
-    return { cleared, unresolved };
+    return { cleared, unknown };
   }
 
   /**
@@ -182,7 +183,9 @@ export class WorkUnitReconciler {
         // The same canonical provider-session authority used by parent-role
         // and work-unit reads gets first refusal over this destructive state
         // transition; once the task stops, ordinary branch/auth proof applies.
-        if (sessionId && this.resolveSession(db, sessionId)?.has_live_agent) continue;
+        // A task whose liveness cannot be established gets the same refusal.
+        const liveness = sessionId ? this.resolveSession(db, sessionId)?.liveness : undefined;
+        if (liveness === "live" || liveness === "unknown") continue;
         // A branch may be deleted by auth-merge before the successful result
         // reaches Stage 2. Keep it committed while a same-repo request is
         // active, or resolve it here once that request proves success.

@@ -506,8 +506,15 @@ export type WorkUnit = {
   custody_generation: number;
 };
 
+/**
+ * Whether an agent is behind a session. `unknown` means a liveness check could
+ * not complete; it never means "not live", so nothing may be cleared, archived,
+ * or taken over behind it.
+ */
+export type LivenessState = "live" | "stopped" | "unknown";
+
 export type WorkUnitLiveness = {
-  has_live_agent: boolean;
+  state: LivenessState;
   agent_session_id: string | null;
   agent_status: string | null;
   is_processing: boolean;

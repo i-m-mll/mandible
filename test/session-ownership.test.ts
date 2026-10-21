@@ -161,7 +161,7 @@ describe("session and work-unit ownership", () => {
     setupAgentUsers(db);
     const codex = getUserBySlug(db, "codex")!;
     const router = new Router();
-    registerWorkUnitRoutes(router, {} as never, {} as never, vi.fn());
+    registerWorkUnitRoutes(router, {} as never, vi.fn());
 
     const claim = await router.invoke({
       method: "POST",

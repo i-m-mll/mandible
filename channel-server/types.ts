@@ -77,7 +77,7 @@ export interface InboxWorkUnit {
   resolved_at: number | null;
   auth_request_id: string | null;
   liveness: {
-    has_live_agent: boolean;
+    state: "live" | "stopped" | "unknown";
     agent_session_id: string | null;
     agent_status: string | null;
     is_processing: boolean;

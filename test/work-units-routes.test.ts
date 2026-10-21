@@ -28,7 +28,7 @@ beforeEach(() => {
   migrate(db);
   setDb(db);
   router = new Router();
-  registerWorkUnitRoutes(router, {} as never, {} as never);
+  registerWorkUnitRoutes(router, {} as never);
 });
 
 afterEach(() => {
@@ -48,7 +48,7 @@ describe("work unit routes", () => {
       recordUnattributedWrite: () => undefined,
     };
     const credentialRouter = new Router({ clientAuth: gate });
-    registerWorkUnitRoutes(credentialRouter, {} as never, {} as never);
+    registerWorkUnitRoutes(credentialRouter, {} as never);
     const request = { issue_id: "custody-issue", repo_id: "mandible", branch: "feature/custody" };
     const claimed = await credentialRouter.invoke({ method: "POST", url: "/api/work-units/claim",
       credential: "test-token", body: request });
@@ -77,7 +77,7 @@ describe("work unit routes", () => {
       } : null,
       mode: () => 'strict', recordUnattributedWrite: () => undefined,
     } });
-    registerWorkUnitRoutes(guarded, {} as never, {} as never);
+    registerWorkUnitRoutes(guarded, {} as never);
     const request = { issue_id: issue.id, repo_id: 'kind-project', branch: 'feature/integration' };
     const claimed = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: request });
     expect(claimed.status).toBe(201);
@@ -522,7 +522,7 @@ describe("work unit routes", () => {
       } : null,
       mode: () => 'strict', recordUnattributedWrite: () => undefined,
     } });
-    registerWorkUnitRoutes(guarded, {} as never, {} as never);
+    registerWorkUnitRoutes(guarded, {} as never);
     const create = async (branch: string) => {
       const response = await guarded.invoke({ method: 'POST', url: '/api/work-units/activate',
         credential: 'own', body: { issue_id: 'release-issue', repo_id: 'mandible', branch } });
@@ -692,7 +692,7 @@ describe("work-unit custody takeover", () => {
       recordUnattributedWrite: () => undefined,
     } });
     codexScan = "unavailable";
-    registerWorkUnitRoutes(guarded, {} as never, {} as never, undefined, {
+    registerWorkUnitRoutes(guarded, {} as never, undefined, {
       authQueue: queue, readCodexTaskLiveness: () => ({ status: codexScan }) });
   });
 

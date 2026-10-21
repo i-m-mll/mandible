@@ -45,7 +45,7 @@ describe("managed reminder Inbox projection", () => {
     );
     occurrenceId = created.reminder.occurrence!.id;
     router = new Router();
-    registerInboxRoutes(router, {} as never, {} as never);
+    registerInboxRoutes(router, {} as never);
   });
 
   afterEach(() => db.close());
