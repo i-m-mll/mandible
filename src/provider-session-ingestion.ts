@@ -1,6 +1,4 @@
 import type { Db } from "./db.js";
-import type { SessionRegistry } from "./registry.js";
-import type { Session } from "./types.js";
 
 export const PROVIDER_TO_CONVERSATION_SOURCE: Readonly<Record<string, string>> = Object.freeze({
   codex: "codex",
@@ -78,31 +76,4 @@ function transcriptLastActivity(rows: Array<{ ended_at: string | null; source_mt
     return Number.isFinite(ended) ? ended : Number(row.source_mtime);
   }).filter((time) => Number.isFinite(time) && time > 0);
   return times.length > 0 ? new Date(Math.max(...times)).toISOString() : null;
-}
-
-export type ProviderSessionRegistration =
-  | { status: "registered"; provider: string; session: Session }
-  | Exclude<ProviderSessionIngestion, { status: "ingested" }>;
-
-/**
- * Materialize only the durable Mandible session identity needed by issue-link
- * foreign keys. Provider task activity remains derived from provider-owned
- * state and is never copied into the row as liveness authority.
- */
-export function ensureProviderSessionRegistered(
-  db: Db,
-  registry: SessionRegistry,
-  providerSessionId: string,
-): ProviderSessionRegistration {
-  const ingestion = resolveProviderSessionIngestion(db, providerSessionId);
-  if (ingestion.status !== "ingested") return ingestion;
-  const session = registry.registerSession({
-    id: `${ingestion.provider}-${ingestion.provider_session_id}`,
-    app: ingestion.provider,
-    agent_type: "provider-session",
-    conversation_id: ingestion.provider_session_id,
-    ...(ingestion.cwd ? { cwd: ingestion.cwd } : {}),
-    ...(ingestion.branch ? { branch: ingestion.branch } : {}),
-  });
-  return { status: "registered", provider: ingestion.provider, session };
 }

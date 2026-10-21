@@ -209,8 +209,9 @@ mandible issue-file write [--cwd <path>] <issue>...
 
 ### mandible session link-issue
 
-Link an existing Mandible session to an issue/repo pair through the supported
-client surface.
+Link a session to an issue/repo pair. The session is a session row id, a console
+session id, or an ingested provider session id; the link is keyed on the provider
+session id when one is known and never creates a session row.
 
 ```
 mandible session link-issue <session-id> --issue <id> --repo <repo> [--repo-name <name>] [--graceful]

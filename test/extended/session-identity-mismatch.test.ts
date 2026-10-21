@@ -13,6 +13,9 @@ import { registerSessionRoutes } from "../../src/routes/sessions.js";
 import { registerConsoleRoutes } from "../../src/routes/console.js";
 import { getChannelRegistry } from "../../src/channel-registry.js";
 import { SessionRegistry } from "../../src/registry.js";
+import { addProject } from "../../src/ledger/project-registry.js";
+import { LedgerStore } from "../../src/ledger/store.js";
+import { SYSTEM_ACTOR } from "../helpers/ledger-fixtures.js";
 import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
 import { addBinding, createUser, removeBinding, setupOperator } from "../../src/users/store.js";
 import {
@@ -282,11 +285,13 @@ describe("session identity mismatch detection", () => {
 
   it("checks identity when an authenticated client links a session to an issue", async () => {
     await register(agentToken);
+    const project = addProject(db, { project_key: "mandible", display_name: "Mandible" });
+    const issue = new LedgerStore(db).createIssue({ ...SYSTEM_ACTOR, project_id: project.id, title: "Linked" });
 
     const response = await router.invoke({
       method: "POST",
       url: "/api/sessions/channel-session/issues",
-      body: { issue_id: "abc1234", repo_id: "mandible" },
+      body: { issue_id: issue.id, repo_id: "mandible" },
       credential: operatorToken,
       transport: "http",
     });

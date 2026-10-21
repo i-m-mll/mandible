@@ -2,7 +2,12 @@ import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
-import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
+import {
+  resolveSessionAlias,
+  sessionAliasIds,
+  sessionRowForLinkKeySql,
+  type SessionAliasResolution,
+} from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -431,35 +436,18 @@ const PARENT_ROLE_IDENTITY_KEYS = [
   "provider_session_id",
 ] as const;
 
-function resolutionAliasIds(
-  suppliedId: string,
-  resolution: SessionAliasResolution,
-): Set<string> {
-  return new Set(
-    [
-      suppliedId,
-      resolution.mandible_session_id,
-      resolution.console_session_id,
-      resolution.provider_session_id,
-    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
-  );
-}
-
 function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
   return {
-    error: `unknown session id "${suppliedId}": Mandible has no session, console session, `
-      + "provider session, or ingested provider conversation recorded under it, so a parent-role holder recorded under it "
-      + "could never be verified. Assume the role from a session Mandible has registered, "
-      + `or link this one first with \`mandible session link-issue ${suppliedId} `
-      + "--issue <issue> --repo <repo>`, then retry.",
+    error: `unknown session id "${suppliedId}": Mandible has no session row, console session, `
+      + "or ingested provider transcript recorded under it, so a parent-role holder recorded under it "
+      + "could never be verified. Retry once the provider transcript has been ingested, or assume the role "
+      + "from a session Mandible already knows.",
     supplied_session_id: suppliedId,
     accepted_session_id_forms: [
-      "a Mandible session id (sessions.id)",
+      "a session row id (sessions.id)",
       "a console session id (console_sessions.id)",
-      "a provider session or thread id (console_sessions.provider_session_id)",
-      "an exact provider task id in the normalized conversations index",
+      "an ingested provider session id (conversations.session_id)",
     ],
-    repair_command: `mandible session link-issue ${suppliedId} --issue <issue> --repo <repo>`,
   };
 }
 
@@ -1323,7 +1311,7 @@ export function registerIssueRoutes(
     // The lease belongs to the agent, not to one spelling of its id: a holder
     // recorded under its provider thread id is the same holder when it returns
     // with its Mandible session id.
-    const callerAliases = resolutionAliasIds(sessionId, resolution);
+    const callerAliases = new Set([sessionId, ...sessionAliasIds(resolution)]);
     const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
     if (liveHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
       sendJson(res, 409, {
@@ -2350,26 +2338,14 @@ export function registerIssueRoutes(
       };
     }
 
-    // 3. Linked sessions via canonical ledger links plus legacy session_issues.
+    // 3. Linked sessions via ledger links.
     const sessionLinksById = new Map<string, Record<string, unknown>>();
-    const legacySessionLinks = db
-      .prepare(
-        `SELECT si.session_id, s.status, s.created_at, s.app, si.created_at AS link_created_at
-         FROM session_issues si
-         LEFT JOIN sessions s ON s.id = si.session_id
-         WHERE si.issue_id = ? AND si.repo_id = ?
-         ORDER BY si.created_at ASC`
-      )
-      .all(issue.id, repoId) as Array<Record<string, unknown>>;
-    for (const row of legacySessionLinks) {
-      sessionLinksById.set(String(row.session_id ?? ""), row);
-    }
-    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
+    if (ledgerIssueId) {
       const ledgerSessionLinks = db
         .prepare(
           `SELECT l.session_id, s.status, s.created_at, s.app, l.created_at AS link_created_at
            FROM ledger_session_issue_links l
-           LEFT JOIN sessions s ON s.id = l.session_id
+           LEFT JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
            WHERE l.issue_id = ?
            ORDER BY l.created_at ASC`
         )
@@ -2513,38 +2489,23 @@ export function registerIssueRoutes(
       return;
     }
     const { repoId, issue } = resolvedIssue.resolved;
-    const linkMap = new Map<string, Record<string, unknown>>();
-    const links = db.prepare(
-      `SELECT session_id, issue_id, repo_id, created_at
-       FROM session_issues
-       WHERE issue_id = ? AND repo_id = ?
-       ORDER BY created_at ASC`
-    ).all(issue.id, repoId) as Array<Record<string, unknown>>;
-    for (const link of links) {
-      linkMap.set(String(link.session_id ?? ""), link);
-    }
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
-    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
-      const canonicalLinks = db.prepare(
-        `SELECT session_id, created_at, issue_id AS ledger_issue_id
+    const links = ledgerIssueId
+      ? db.prepare(
+        `SELECT DISTINCT session_id, MIN(created_at) AS created_at
          FROM ledger_session_issue_links
          WHERE issue_id = ?
+         GROUP BY session_id
          ORDER BY created_at ASC`
-      ).all(ledgerIssueId) as Array<Record<string, unknown>>;
-      for (const link of canonicalLinks) {
-        const sessionId = String(link.session_id ?? "");
-        if (!linkMap.has(sessionId)) {
-          linkMap.set(sessionId, {
-            session_id: sessionId,
-            issue_id: issue.id,
-            repo_id: repoId,
-            created_at: link.created_at,
-            ledger_issue_id: link.ledger_issue_id,
-          });
-        }
-      }
-    }
-    sendJson(res, 200, Array.from(linkMap.values()));
+      ).all(ledgerIssueId) as Array<{ session_id: string; created_at: number }>
+      : [];
+    sendJson(res, 200, links.map((link) => ({
+      session_id: link.session_id,
+      issue_id: issue.id,
+      repo_id: repoId,
+      created_at: link.created_at,
+      ledger_issue_id: ledgerIssueId,
+    })));
   }, { operation: { id: "get:/api/issues/:repoId/:issueId/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Resume the explicitly selected assignment; this action never transfers custody.
