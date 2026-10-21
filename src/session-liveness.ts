@@ -154,15 +154,6 @@ export function sessionLinkKey(resolution: SessionAliasResolution): string {
     ?? resolution.supplied_id;
 }
 
-/**
- * SQL expression for the `sessions` row a link key reaches: the row whose id is
- * the key, else the latest row recording the key as its provider session id.
- */
-export function sessionRowForLinkKeySql(keyExpr: string): string {
-  return `(SELECT r.id FROM sessions r WHERE r.id = ${keyExpr} OR r.conversation_id = ${keyExpr}
-    ORDER BY r.id = ${keyExpr} DESC, r.updated_at DESC LIMIT 1)`;
-}
-
 /** Every id the resolved session is known by, for reads keyed on any of them. */
 export function sessionAliasIds(resolution: SessionAliasResolution): string[] {
   return [...new Set(

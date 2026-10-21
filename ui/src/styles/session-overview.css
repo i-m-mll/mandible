@@ -208,12 +208,14 @@
   color: var(--text-muted);
 }
 
+.session-overview-badge--live,
 .session-overview-badge--active,
 .session-overview-badge--open {
   color: var(--accent-success, #2da44e);
   border-color: currentColor;
 }
 
+.session-overview-badge--stopped,
 .session-overview-badge--resolved,
 .session-overview-badge--closed,
 .session-overview-badge--ended {
@@ -224,11 +226,6 @@
 .session-overview-badge--abandoned {
   color: var(--accent-danger, #cf222e);
   border-color: currentColor;
-}
-
-.session-overview__unavailable {
-  color: var(--text-muted);
-  font-style: italic;
 }
 
 .session-overview__error {

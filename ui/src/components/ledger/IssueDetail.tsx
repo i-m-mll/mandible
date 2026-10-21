@@ -181,9 +181,9 @@ export function LedgerIssueDetail({
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
     (auth.status === 'completed' || auth.status === 'approved' || auth.status === 'executing')
   );
-  const liveSession = detail.sessions.find((session) => session.status === 'active' || session.status === 'idle') ?? null;
-  const activeSessions = detail.sessions.filter((session) => session.status === 'active' || session.status === 'idle');
-  const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
+  const liveSession = detail.sessions.find((session) => session.liveness === 'live') ?? null;
+  const activeSessions = detail.sessions.filter((session) => session.liveness !== 'stopped');
+  const historicalSessions = detail.sessions.filter((session) => session.liveness === 'stopped');
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
   const associatedArtifacts = detail.associated_artifacts ?? [];
@@ -1486,8 +1486,8 @@ function SessionRow({
       disabled={!onOpenEntity}
       onClick={() => onOpenEntity?.(session.has_conversation ? 'conversation' : 'session', session.id)}
     >
-      <span className={`ledger-session-row__dot ledger-session-row__dot--${session.status}`} />
-      <strong>{session.app || session.agent_type || 'session'}</strong>
+      <span className={`ledger-session-row__dot ledger-session-row__dot--${session.liveness}`} />
+      <strong>{session.provider ?? session.agent ?? 'session'}</strong>
       <code>{session.branch ?? session.id}</code>
       {session.owner && (
         <span className="ledger-session-row__owner">
@@ -1495,7 +1495,7 @@ function SessionRow({
           <small>{session.owner.kind}</small>
         </span>
       )}
-      <em>{session.status}</em>
+      <em>{session.liveness}</em>
     </button>
   );
 }

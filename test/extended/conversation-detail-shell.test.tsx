@@ -675,7 +675,7 @@ describe('compact detail pane shell', () => {
   it('registers Chat tabs and previews issue links without remounting the transcript', async () => {
     const issueBlock = makeTranscriptBlock({ content: 'Inspect [issue:5096e37] here.' });
     const scopedConversation = mockConversationDetail(defaultControl, [issueBlock]);
-    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
+    vi.spyOn(api, 'getSessionOverview').mockRejectedValue(new api.ApiError('Session not found', 404, 'session_not_found'));
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
     vi.spyOn(api, 'getLedgerIssueDetailByIssueId').mockImplementation(() => new Promise(() => undefined));
     const { container } = render(
@@ -713,7 +713,7 @@ describe('compact detail pane shell', () => {
       }],
       limit: 50,
     });
-    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
+    vi.spyOn(api, 'getSessionOverview').mockRejectedValue(new api.ApiError('Session not found', 404, 'session_not_found'));
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
     const sidebarUpdates = vi.fn();
     render(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);

@@ -867,19 +867,18 @@ describe("issue CLI body revisions", () => {
       "--json",
     ], port, process.cwd(), {
       MANDIBLE_SESSION_ID: "sess-env",
+      CLAUDE_CODE_SESSION_ID: "claude-session",
+      CLAUDE_SESSION_ID: "",
+      CODEX_THREAD_ID: "",
       CODEX_SESSION_ID: "",
+      GEMINI_SESSION_ID: "",
     });
 
     expect(assumed.status).toBe(0);
-    expect(JSON.parse(assumed.stdout).parent_role.holder.payload.session_id).toBe("sess-env");
     expect(requestBodies).toContainEqual({
       path: "/api/ledger/issues/abc/parent-role",
       method: "POST",
-      body: {
-        session_id: "sess-env",
-        mechanism: "codex",
-        override: true,
-      },
+      body: { session_id: "claude-session", override: true },
     });
   });
 

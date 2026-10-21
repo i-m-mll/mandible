@@ -13,7 +13,7 @@ import {
 } from "../provider-artifacts.js";
 import type { ArtifactRecord } from "../types.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow } from "../work-unit-utils.js";
-import { sessionRowForLinkKeySql } from "../session-liveness.js";
+import { summarizeSessionKey } from "../session-summary.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
 import { effectiveWorkerStatus, listIssueBranches } from "./issue-work-state.js";
@@ -962,45 +962,28 @@ function listSessions(
   issueId: string,
   attributionResolver: AttributionReadResolver,
 ): LedgerIssueDetailSession[] {
-  if (!tableExists(db, "ledger_session_issue_links") || !tableExists(db, "sessions")) return [];
+  if (!tableExists(db, "ledger_session_issue_links")) return [];
   const rows = db.prepare(
-    `SELECT l.session_id, l.link_type, l.source AS link_source,
-            l.created_at AS link_created_at, l.last_seen_at,
-            l.metadata_json AS link_metadata_json,
-            s.app, s.parent_id, s.status, s.branch, s.worktree, s.task,
-            s.description, s.agent_type, s.created_at, s.updated_at,
-            s.ended_at, s.last_active, s.owner_user_id
-     FROM ledger_session_issue_links l
-     LEFT JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
-     WHERE l.issue_id = ?
-     ORDER BY
-       CASE WHEN s.status IN ('active','idle') THEN 0 ELSE 1 END,
-       COALESCE(l.last_seen_at, l.created_at) DESC`,
+    `SELECT session_id, link_type, source AS link_source, created_at AS link_created_at,
+            last_seen_at, metadata_json AS link_metadata_json
+     FROM ledger_session_issue_links
+     WHERE issue_id = ?
+     ORDER BY COALESCE(last_seen_at, created_at) DESC`,
   ).all(issueId) as Array<Record<string, unknown>>;
-
-  const conversationSessions = conversationSessionIds(db, rows.map((row) => String(row.session_id ?? "")));
-  return rows.map((row) => ({
-    id: String(row.session_id ?? ""),
-    app: stringOr(row.app, ""),
-    parent_id: nullableString(row.parent_id),
-    status: stringOr(row.status, "unknown"),
-    branch: nullableString(row.branch),
-    worktree: nullableString(row.worktree),
-    task: nullableString(row.task),
-    description: nullableString(row.description),
-    agent_type: nullableString(row.agent_type),
-    created_at: nullableString(row.created_at),
-    updated_at: nullableString(row.updated_at),
-    ended_at: nullableString(row.ended_at),
-    last_active: nullableString(row.last_active),
-    owner: attributionResolver.user(nullableString(row.owner_user_id)),
-    has_conversation: conversationSessions.has(String(row.session_id ?? "")),
-    link_type: stringOr(row.link_type, "worked_on"),
-    link_source: stringOr(row.link_source, "session"),
-    link_created_at: numberOrNull(row.link_created_at),
-    last_seen_at: numberOrNull(row.last_seen_at),
-    metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
-  }));
+  const sessions = rows.map((row) => {
+    const summary = summarizeSessionKey(db, String(row.session_id ?? ""));
+    return {
+      ...summary,
+      owner: attributionResolver.user(summary.process?.owner_user_id ?? null),
+      has_conversation: summary.conversation_id !== null,
+      link_type: stringOr(row.link_type, "worked_on"),
+      link_source: stringOr(row.link_source, "session"),
+      link_created_at: numberOrNull(row.link_created_at),
+      last_seen_at: numberOrNull(row.last_seen_at),
+      metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
+    };
+  });
+  return sessions.sort((a, b) => Number(b.liveness === "live") - Number(a.liveness === "live"));
 }
 
 function listAuthRequests(
@@ -1163,16 +1146,6 @@ export function getLedgerIssueWorkMetadata(db: Db, issueId: string): LedgerIssue
     dependencies,
     dependency_warning: dependencies.some((dependency) => dependency.status === "open"),
   };
-}
-
-function conversationSessionIds(db: Db, sessionIds: string[]): Set<string> {
-  const unique = Array.from(new Set(sessionIds.filter(Boolean)));
-  if (unique.length === 0 || !tableExists(db, "conversations")) return new Set();
-  const placeholders = unique.map(() => "?").join(", ");
-  const rows = db.prepare(
-    `SELECT DISTINCT session_id FROM conversations WHERE session_id IN (${placeholders})`,
-  ).all(...unique) as Array<{ session_id: string }>;
-  return new Set(rows.map((row) => row.session_id));
 }
 
 function activeLabels(labels: LedgerLabel[]): string[] {

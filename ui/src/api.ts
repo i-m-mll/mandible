@@ -2,6 +2,8 @@ import { DOMAIN_EVENTS, isBriefingEvent } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import type { SessionDescendant, SessionSummary } from '../../src/contracts';
+export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
@@ -794,59 +796,8 @@ export async function getSessionsPage<T>(params?: {
   };
 }
 
-// Issue 037fa85 / f59b5bd — Session Overview: provider-neutral session alias
-// resolution with explicit zero/one/many semantics, and the aggregate
-// per-session payload. The ref may be a full id or a short prefix (min 8
-// chars); `matched_ref` carries the full identity each match resolved to and
-// `provider` its transcript-attested provider (null when unattested).
-export type SessionResolveMatch = {
-  matched_ref: string;
-  provider: string | null;
-  mandible_session_id: string | null;
-  console_session_id: string | null;
-  conversation_id: string | null;
-  sources: string[];
-};
-
-export type SessionResolveResult = {
-  provider: string | null;
-  provider_session_id: string;
-  // Review C4 — true when a prefix scan hit a candidate cap: a single match
-  // must not be treated as unique.
-  truncated: boolean;
-  matches: SessionResolveMatch[];
-};
-
-export async function resolveAgentSession(
-  ref: string,
-  provider?: string,
-): Promise<SessionResolveResult> {
-  const query = buildQuery({ provider_session_id: ref, provider });
-  const response = await apiGet(`/api/sessions/resolve${query}`);
-  return await response.json() as SessionResolveResult;
-}
-
-export type SessionOverviewSection<T> = {
-  available: boolean;
-  reason?: string;
-  items: T[];
-};
-
-export type SessionOverviewChild = {
-  id: string;
-  parent_id: string | null;
-  app: string;
-  status: string;
-  branch: string | null;
-  cwd: string | null;
-  task: string | null;
-  agent_type: string | null;
-  created_at: string;
-  ended_at: string | null;
-  last_active: string | null;
-  depth: number;
-};
-
+// The Session Overview of any session alias, or of an alias prefix naming
+// several sessions, which answers with the candidates.
 export type SessionOverviewLinkedIssue = {
   issue_id: string;
   short_id: string;
@@ -871,6 +822,7 @@ export type SessionOverviewWorkUnit = {
   assigned_session_id: string | null;
   provider: string | null;
   provider_session_id: string | null;
+  worker_provider_session_id: string | null;
   created_at: number;
   resolved_at: number | null;
 };
@@ -890,73 +842,31 @@ export type SessionOverviewConversation = {
 
 export type SessionOverview = {
   as_of: number;
-  session: Record<string, unknown>;
-  children: SessionOverviewSection<SessionOverviewChild> & {
+  status: 'resolved';
+  session: SessionSummary;
+  children: {
+    items: SessionDescendant[];
     truncated: boolean;
     depth_limit: number;
     count_limit: number;
   };
-  linked_issues: SessionOverviewSection<SessionOverviewLinkedIssue> & { source: string };
-  work_units: SessionOverviewSection<SessionOverviewWorkUnit> & {
-    includes_descendants: boolean;
-    matched_provider_aliases: string[];
-  };
-  conversations: SessionOverviewSection<SessionOverviewConversation> & { limit: number };
+  linked_issues: { items: SessionOverviewLinkedIssue[] };
+  work_units: { includes_descendants: boolean; items: SessionOverviewWorkUnit[] };
+  conversations: { limit: number; items: SessionOverviewConversation[] };
 };
 
-export async function getSessionOverview(
-  sessionId: string,
-  providerSessionId?: string | null,
-): Promise<SessionOverview> {
-  const query = buildQuery({ provider_session_id: providerSessionId ?? undefined });
-  return cachedApiGetJson<SessionOverview>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/overview${query}`,
+export type SessionOverviewAmbiguous = {
+  as_of: number;
+  status: 'ambiguous';
+  truncated: boolean;
+  candidates: SessionSummary[];
+};
+
+export async function getSessionOverview(sessionRef: string): Promise<SessionOverview | SessionOverviewAmbiguous> {
+  return cachedApiGetJson<SessionOverview | SessionOverviewAmbiguous>(
+    `/api/sessions/${encodeURIComponent(sessionRef)}/overview`,
     WARMED_ROUTE_GET_OPTIONS,
   );
-}
-
-// Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
-// known only through its ingested transcript (no Mandible session row).
-export type ProviderScopedLinkedIssue = {
-  issue_id: string;
-  short_id: string;
-  title: string;
-  status: string;
-  worker_status: string | null;
-  kind: string | null;
-  work_unit_ids: string[];
-};
-
-export type ProviderScopedOverview = {
-  as_of: number;
-  binding: { kind: 'provider-scoped'; provider: string; provider_session_id: string };
-  session: { available: false; reason: string };
-  children: {
-    available: false;
-    reason: string;
-    items: SessionOverviewChild[];
-    truncated: boolean;
-    depth_limit: number;
-    count_limit: number;
-  };
-  linked_issues: SessionOverviewSection<ProviderScopedLinkedIssue> & {
-    source: string;
-    note: string;
-  };
-  work_units: SessionOverviewSection<SessionOverviewWorkUnit> & {
-    includes_descendants: boolean;
-    matched_provider_aliases: string[];
-  };
-  conversations: SessionOverviewSection<SessionOverviewConversation> & { limit: number };
-};
-
-export async function getProviderScopedOverview(
-  provider: string,
-  providerSessionId: string,
-): Promise<ProviderScopedOverview> {
-  const query = buildQuery({ provider, provider_session_id: providerSessionId });
-  const response = await apiGet(`/api/sessions/overview/by-provider${query}`);
-  return await response.json() as ProviderScopedOverview;
 }
 
 export async function navigateSession(sessionId: string): Promise<void> {
@@ -1429,13 +1339,7 @@ export type IssueContextWorkUnit = {
   liveness: IssueContextLiveness;
 };
 
-export type IssueContextSession = {
-  session_id: string;
-  status: string;
-  created_at: string | null;
-  app: string;
-  has_conversation: boolean;
-};
+export type IssueContextSession = SessionSummary & { has_conversation: boolean };
 
 export type IssueContextAuthRequest = {
   id: string;

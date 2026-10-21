@@ -870,11 +870,11 @@
   background: var(--text-muted);
 }
 
-.ledger-session-row__dot--active {
+.ledger-session-row__dot--live {
   background: #32d296;
 }
 
-.ledger-session-row__dot--idle {
+.ledger-session-row__dot--unknown {
   background: #f5c25c;
 }
 

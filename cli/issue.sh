@@ -1154,11 +1154,11 @@ cmd_parent_role_status() {
   else
     printf '%s\n' "$response" | api_jq_human '
       if .live_holder then
-        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-"))"
+        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.liveness.provider // .live_holder.mechanism // "-"))"
       elif (.unknown_holders // []) | length > 0 then
-        "holder of unknown liveness: \((.unknown_holders[0].session_id // "-") | mandible_short_id) (\(.unknown_holders[0].mechanism // "-"))"
+        "holder of unknown liveness: \((.unknown_holders[0].session_id // "-") | mandible_short_id) (\(.unknown_holders[0].liveness.provider // .unknown_holders[0].mechanism // "-"))"
       elif .holder then
-        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.mechanism // "-"))"
+        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.liveness.provider // .holder.mechanism // "-"))"
       else
         "no parent-role holder"
       end
@@ -1168,8 +1168,10 @@ cmd_parent_role_status() {
 
 cmd_parent_role_assume() {
   local issue_ref=""
-  local session_id="${MANDIBLE_SESSION_ID:-${CODEX_SESSION_ID:-}}"
-  local mechanism="codex"
+  local session_id
+  session_id="$(api_ambient_session_id)"
+  session_id="${session_id:-${MANDIBLE_SESSION_ID:-}}"
+  local mechanism=""
   local override=0
   local json=0
   local binding
@@ -1179,7 +1181,7 @@ cmd_parent_role_assume() {
     die "Usage: $(mandible_command_syntax issue.parent-role.assume)" 2
   fi
   if [[ -z "$session_id" ]]; then
-    die "Missing parent-role session id. Pass --session <id>, or set MANDIBLE_SESSION_ID or CODEX_SESSION_ID for auto-detection." 2
+    die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Gemini session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, GEMINI_SESSION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
   fi
   require_tools
   local payload tmp_response status response
@@ -1187,7 +1189,7 @@ cmd_parent_role_assume() {
     --arg session_id "$session_id" \
     --arg mechanism "$mechanism" \
     --arg override "$override" \
-    '{session_id:$session_id, mechanism:$mechanism, override:($override == "1")}')
+    '{session_id:$session_id, override:($override == "1")} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
   tmp_response=$(mktemp)
   status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
   response=$(cat "$tmp_response")

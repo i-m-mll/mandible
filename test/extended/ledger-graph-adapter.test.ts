@@ -167,7 +167,7 @@ describe("ledger graph projection", () => {
     expect(childNode.detail?.layout).toMatchObject({ role: "umbrella_child", rank: 1, order: 3 });
     expect(childNode.detail?.annotations).toEqual([
       expect.objectContaining({ type: "auth_request", target: "auth_request:auth_1", link_type: "resolves" }),
-      expect.objectContaining({ type: "session", target: "session:sess_live", status: "active" }),
+      expect.objectContaining({ type: "session", target: "session:sess_live", status: "live" }),
     ]);
   });
 

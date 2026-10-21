@@ -4,7 +4,8 @@ import { columnExists, tableExists } from "../db-introspection.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
 import { parseJsonObject } from "../row-coerce.js";
-import { isLiveSessionStatus, sessionRowForLinkKeySql } from "../session-liveness.js";
+import type { SessionSummary } from "../contracts.js";
+import { summarizeSessionKey } from "../session-summary.js";
 
 interface ProjectInfo {
   project_id: string;
@@ -285,44 +286,38 @@ function getAuthAnnotations(db: Db): Map<string, AttachmentAnnotation[]> {
   return grouped;
 }
 
-function getSessionSummaries(db: Db): Map<string, {
+/** Each issue's linked sessions, live ones listed, judged by the canonical session summary. */
+function getSessionSummaries(db: Db, issueIds: Set<string>): Map<string, {
   live: AttachmentAnnotation[];
   historical_count: number;
   live_count: number;
 }> {
-  if (!tableExists(db, "ledger_session_issue_links") || !tableExists(db, "sessions")) return new Map();
-  const rows = db.prepare(
-    `SELECT l.issue_id, l.session_id, l.link_type,
-            s.status, s.app, s.agent_type, s.branch, s.created_at
-       FROM ledger_session_issue_links l
-       JOIN sessions s ON s.id = ${sessionRowForLinkKeySql("l.session_id")}
-      ORDER BY COALESCE(l.last_seen_at, l.created_at) DESC`,
-  ).all() as Array<{
-    issue_id: string;
-    session_id: string;
-    link_type: string;
-    status: string | null;
-    app: string | null;
-    agent_type: string | null;
-    branch: string | null;
-    created_at: string | null;
-  }>;
+  if (!tableExists(db, "ledger_session_issue_links")) return new Map();
+  const rows = (db.prepare(
+    `SELECT issue_id, session_id, link_type
+       FROM ledger_session_issue_links
+      ORDER BY COALESCE(last_seen_at, created_at) DESC`,
+  ).all() as Array<{ issue_id: string; session_id: string; link_type: string }>)
+    .filter((row) => issueIds.has(row.issue_id));
 
+  const sessions = new Map<string, SessionSummary>();
   const summaries = new Map<string, { live: AttachmentAnnotation[]; historical_count: number; live_count: number }>();
   for (const row of rows) {
+    const session = sessions.get(row.session_id) ?? summarizeSessionKey(db, row.session_id);
+    sessions.set(row.session_id, session);
     const summary = summaries.get(row.issue_id) ?? { live: [], historical_count: 0, live_count: 0 };
-    if (isLiveSessionStatus(row.status)) {
+    if (session.liveness === "stopped") {
+      summary.historical_count += 1;
+    } else {
       summary.live_count += 1;
       summary.live.push({
         id: `session:${row.session_id}:${row.link_type}`,
         type: "session",
-        label: row.agent_type ?? row.app ?? row.session_id,
-        status: row.status ?? undefined,
+        label: session.agent ?? session.provider ?? row.session_id,
+        status: session.liveness,
         target: `session:${row.session_id}`,
         link_type: row.link_type,
       });
-    } else {
-      summary.historical_count += 1;
     }
     summaries.set(row.issue_id, summary);
   }
@@ -585,7 +580,7 @@ export function buildLedgerIssueProjection(
   const labelsByIssue = getLabelsByIssue(db);
   const commentStats = getCommentStats(db);
   const authByIssue = getAuthAnnotations(db);
-  const sessionsByIssue = getSessionSummaries(db);
+  const sessionsByIssue = getSessionSummaries(db, visibleIssueIds);
   const relationships = getRelationships(db).filter((rel) =>
     visibleIssueIds.has(rel.source_issue_id) && visibleIssueIds.has(rel.target_issue_id)
   );
