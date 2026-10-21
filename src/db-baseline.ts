@@ -24,7 +24,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 202;
+export const BASELINE_SCHEMA_VERSION = 203;
 
 // Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
 // merge submission: where someone's uncommitted work went. Shared by the fresh
@@ -34,6 +34,22 @@ export const AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL = `ALTER TABLE auth_req
         json_valid(protected_root_dirty_action_json)
         AND json_type(protected_root_dirty_action_json) = 'object'
       ))`;
+
+// Issue 506adca — one archive of a resolved work unit's Codex worker thread on
+// that unit's behalf: archived once, or retried with backoff after a failed
+// attempt. Shared by the fresh baseline and migration v203.
+export const WORKER_THREAD_ARCHIVES_SCHEMA_SQL = [
+  `CREATE TABLE worker_thread_archives (
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL,
+        archived_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+        last_error TEXT,
+        next_retry_at INTEGER,
+        PRIMARY KEY (work_unit_id, thread_id)
+      )`,
+  "CREATE INDEX idx_worker_thread_archives_thread ON worker_thread_archives(thread_id)",
+];
 
 // Issue 72b00f8 — immutable work-unit custody receipts. An agent may take over a
 // unit whose holder is provably stopped (the receipt keeps that liveness
@@ -992,6 +1008,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
+    for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
     if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")

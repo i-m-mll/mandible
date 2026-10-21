@@ -97,6 +97,7 @@ import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
 import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
+import { defaultCodexThreadArchiver } from "./codex-thread-archive.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
@@ -699,7 +700,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
 
   // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
-  const workUnitReconciler = new WorkUnitReconciler(logger);
+  const workUnitReconciler = new WorkUnitReconciler(logger, { archiver: defaultCodexThreadArchiver });
   if (operationalMutationsAllowed) {
     workUnitReconciler.start();
   }
