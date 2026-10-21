@@ -433,9 +433,10 @@ mandible auth merge <source-branch> --into <target>
 8. Verifies the merge is not empty (tree differs from parent).
 9. Applies explicitly authorized structured issue closure actions.
 10. Closes issues declared in the auth request's `issue_closures` field.
-11. Cleans up merged branch worktrees through the configured worktree removal
-    policy (`wt rm` in the reference dotfiles profile; `dwt` is a compatibility
-    alias there).
+11. Cleans up merged branches and their worktrees through the trash service
+    (`mandible trash create --merged-into <target>`), which removes a branch
+    with no unique local bytes outright and keeps anything else in reversible
+    trash custody. See [trash custody](../trash-custody.md).
 
 Mandible's core merge preflight does not call user dotfiles scripts. Local
 conventions such as worktree symlink hygiene belong in explicit policy hooks

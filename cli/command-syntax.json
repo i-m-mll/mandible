@@ -1402,7 +1402,8 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--actor"],"values": [{"kind": "argument","name": "actor","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--issue","--issue-ref"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--checkout-root"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--retention-days"],"values": [{"kind": "argument","name": "days","value": {"type": "integer","min": 0}}]}]}}
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--retention-days"],"values": [{"kind": "argument","name": "days","value": {"type": "integer","min": 0}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--merged-into"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}}
         ]
       }
     },

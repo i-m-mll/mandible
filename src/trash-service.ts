@@ -61,6 +61,7 @@ export interface TrashCreateInput {
   issue_refs?: string[];
   checkout_root?: string;
   retention_days?: number;
+  merged_into?: string;
 }
 
 export interface TrashRestoreInput {
@@ -130,6 +131,7 @@ export interface TrashCreateOutcome {
   worktree_removed: boolean;
   branch_removed: boolean;
   worktree_path: string | null;
+  merge_evidence: MergeEvidence | null;
   ignored: IgnoredCustody;
 }
 
@@ -297,23 +299,6 @@ function chooseCheckout(
     );
   }
   return candidates[0];
-}
-
-function snapshotWorktree(
-  branch: string,
-  worktreePath: string | null,
-  originalOid: string,
-  entryId: string,
-): string {
-  if (!worktreePath) return originalOid;
-
-  const captured = captureWorktreeTree(worktreePath, originalOid, entryId);
-  if (!captured.dirty) return originalOid;
-
-  return git(worktreePath, ["commit-tree", captured.tree, "-p", originalOid], {
-    env: TRASH_IDENTITY,
-    input: `Mandible trash snapshot for ${branch}\n`,
-  });
 }
 
 function indexGitlinks(cwd: string, env?: NodeJS.ProcessEnv): Map<string, string> {
@@ -695,11 +680,73 @@ export function listTrashEntries(
   return (db.prepare(sql).all(...values) as TrashRow[]).map(mapRow);
 }
 
-export function createTrashEntry(
+export type MergeEvidence = "merged" | "tree-equivalent";
+
+/**
+ * What one removal did. A branch proven merged into `merged_into` whose
+ * worktree holds no unique bytes is removed outright, with no entry or refs;
+ * anything else is kept in reversible trash custody.
+ */
+export type TrashRemoval =
+  | { result: "trashed"; entry: TrashEntry; outcome: TrashCreateOutcome }
+  | { result: "removed"; entry: null; outcome: TrashCreateOutcome };
+
+function isAncestor(repoRoot: string, ancestor: string, descendant: string): boolean {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new TrashServiceError(
+    (result.stderr || result.error?.message || "git merge-base failed").trim(),
+    "git_failed",
+    409,
+  );
+}
+
+/**
+ * Prove the branch contributes no bytes to `target`: either it is an ancestor,
+ * or a synthetic merge reproduces the target's exact tree. `git cherry` is not
+ * enough because it ignores merge-resolution tree changes.
+ */
+function proveMergedInto(repoRoot: string, branchTip: string, target: string): MergeEvidence {
+  const targetOid = branchOid(repoRoot, target);
+  if (!targetOid) throw new TrashServiceError(`merge target not found: ${target}`, "target_not_found", 404);
+  if (isAncestor(repoRoot, branchTip, targetOid)) return "merged";
+  const targetTree = git(repoRoot, ["rev-parse", "--verify", `${targetOid}^{tree}`]);
+  const mergeTree = git(repoRoot, ["merge-tree", "--write-tree", targetOid, branchTip], { allowFailure: true })
+    .split("\n")[0];
+  if (mergeTree === targetTree) return "tree-equivalent";
+  throw new TrashServiceError(
+    `git cannot prove merged or patch-equivalent to ${target}`,
+    "branch_not_merged",
+    409,
+    { target },
+  );
+}
+
+function removeLocalBranch(
+  repoRoot: string,
+  worktree: GitWorktree | null,
+  branch: string,
+  originalOid: string,
+  outcome: TrashCreateOutcome,
+): void {
+  if (worktree) {
+    git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
+    outcome.worktree_removed = true;
+  }
+  git(repoRoot, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
+  outcome.branch_removed = true;
+}
+
+export function trashBranch(
   db: Db,
   input: TrashCreateInput,
   now = Date.now(),
-): { entry: TrashEntry; outcome: TrashCreateOutcome } {
+): TrashRemoval {
   if (!input.project?.trim()) throw new TrashServiceError("project is required", "missing_project");
   if (!input.branch?.trim()) throw new TrashServiceError("branch is required", "missing_branch");
   if (!["superseded", "merged", "abandoned", "manual"].includes(input.reason)) {
@@ -718,6 +765,11 @@ export function createTrashEntry(
   }
   const originalOid = branchOid(checkout.root, branch);
   if (!originalOid) throw new TrashServiceError(`branch not found: ${branch}`, "branch_not_found", 404);
+  const mergedInto = input.merged_into?.trim() || null;
+  if (mergedInto === branch) {
+    throw new TrashServiceError("merged_into must name a different branch", "invalid_merge_target");
+  }
+  const evidence = mergedInto ? proveMergedInto(checkout.root, originalOid, mergedInto) : null;
   const worktree = parseWorktrees(checkout.root).find((entry) => entry.branch === branch) ?? null;
   if (worktree && path.resolve(worktree.path) === path.resolve(checkout.root)) {
     throw new TrashServiceError("refusing to remove the registered root worktree", "current_worktree", 409);
@@ -727,6 +779,14 @@ export function createTrashEntry(
       `refusing to trash app-managed worktree: ${worktree.path}`,
       "app_managed_worktree",
       409,
+    );
+  }
+  if (worktree && !fs.existsSync(worktree.path)) {
+    throw new TrashServiceError(
+      `registered worktree path is missing: ${worktree.path}`,
+      "worktree_missing",
+      409,
+      { worktree_path: worktree.path },
     );
   }
   const active = db.prepare(
@@ -742,11 +802,38 @@ export function createTrashEntry(
   }
 
   const id = randomUUID();
-  const snapshotRef = `refs/mandible/trash/${id}`;
   const ignoredPlan = worktree ? planIgnored(checkout.root, worktree.path) : null;
-  const snapshotOid = snapshotWorktree(branch, worktree?.path ?? null, originalOid, id);
+  const captured = worktree ? captureWorktreeTree(worktree.path, originalOid, id) : null;
+  const outcome: TrashCreateOutcome = {
+    worktree_removed: false,
+    branch_removed: false,
+    worktree_path: worktree?.path ?? null,
+    merge_evidence: evidence,
+    ignored: ignoredPlan ? ignoredCustody(ignoredPlan, null, null) : NO_WORKTREE_IGNORED,
+  };
+
+  if (evidence && !captured?.dirty && (ignoredPlan?.kept.length ?? 0) === 0) {
+    try {
+      removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
+    } catch (error) {
+      throw new TrashServiceError("local removal failed", "remove_failed", 409, {
+        error: error instanceof Error ? error.message : String(error),
+        outcome,
+      });
+    }
+    return { result: "removed", entry: null, outcome };
+  }
+
+  const snapshotRef = `refs/mandible/trash/${id}`;
+  const snapshotOid = worktree && captured?.dirty
+    ? git(worktree.path, ["commit-tree", captured.tree, "-p", originalOid], {
+      env: TRASH_IDENTITY,
+      input: `Mandible trash snapshot for ${branch}\n`,
+    })
+    : originalOid;
   const ignoredOid = worktree && ignoredPlan ? captureIgnored(worktree.path, ignoredPlan.kept, id) : null;
   const ignoredRef = ignoredOid ? ignoredCustodyRef(id) : null;
+  if (ignoredPlan) outcome.ignored = ignoredCustody(ignoredPlan, ignoredRef, ignoredOid);
   git(checkout.root, ["update-ref", snapshotRef, snapshotOid, "0".repeat(40)]);
   const releaseRefs = () => {
     git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
@@ -762,14 +849,6 @@ export function createTrashEntry(
       throw error;
     }
   }
-  const outcome: TrashCreateOutcome = {
-    worktree_removed: false,
-    branch_removed: false,
-    worktree_path: worktree?.path ?? null,
-    ignored: ignoredPlan
-      ? ignoredCustody(ignoredPlan, ignoredRef, ignoredOid)
-      : NO_WORKTREE_IGNORED,
-  };
   const actor = input.actor?.trim() || "mandible";
   const issueRefs = linkedIssueRefs(db, project.id, branch, input.issue_refs ?? []);
   const expiresAt = now + retentionDays * 86_400_000;
@@ -808,12 +887,7 @@ export function createTrashEntry(
   }
 
   try {
-    if (worktree) {
-      git(checkout.root, ["worktree", "remove", "--force", worktree.path]);
-      outcome.worktree_removed = true;
-    }
-    git(checkout.root, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
-    outcome.branch_removed = true;
+    removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
     db.prepare("UPDATE trash_entries SET outcome_json = ? WHERE id = ?")
       .run(JSON.stringify(outcome), id);
   } catch (error) {
@@ -839,7 +913,7 @@ export function createTrashEntry(
     });
   }
 
-  return { entry: getEntry(db, id), outcome };
+  return { result: "trashed", entry: getEntry(db, id), outcome };
 }
 
 export function restoreTrashEntry(

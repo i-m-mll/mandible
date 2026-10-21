@@ -1,15 +1,24 @@
 # Trash custody and ignored files
 
-`mandible trash create` and post-merge cleanup (actor `auth-merge`) remove a
-branch and its worktree into reversible custody. Tracked and untracked changes
-go into the snapshot commit under `refs/mandible/trash/<id>`, which restore
-makes the branch tip.
+`mandible trash create` removes a branch and its worktree into reversible
+custody. Tracked and untracked changes go into the snapshot commit under
+`refs/mandible/trash/<id>`, which restore makes the branch tip.
+
+Every post-merge branch removal (actor `auth-merge`) goes through the same
+routine with `--merged-into <target>`. The service first proves the branch is
+merged into the target or tree-equivalent to it, and refuses otherwise. A
+proven branch whose worktree has no tracked or untracked changes and no kept
+ignored files is removed outright: no entry and no refs are created, and the
+response says `"result": "removed"`. Otherwise the response says
+`"result": "trashed"` with the entry. A refusal answers with
+`"result": "refused"` and removes nothing.
 
 Ignored files are classified before anything is removed:
 
 - **Skipped:** symlinks, which hold no unique bytes (shared links are
-  symlinks), and directories named on the rebuildable list, matched by name at
-  any depth and never descended into.
+  symlinks), Mandible's root-level `.issue` helper file, whose facts live in
+  the work-unit ledger, and directories named on the rebuildable list, matched
+  by name at any depth and never descended into.
 - **Kept:** every other ignored file, when their total size is at or under the
   limit. They are stored as a parentless commit under
   `refs/mandible/trash-ignored/<id>`, separate from the snapshot, so they never

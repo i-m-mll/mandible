@@ -5,6 +5,10 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { openDb, type Db } from "../src/db.js";
+import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
+import { registerTrashRoutes } from "../src/routes/trash.js";
+import { Router } from "../src/server.js";
 import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
@@ -19,6 +23,7 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let tempDir = "";
 let homeDir = "";
 let server: http.Server | null = null;
+let cleanupDb: Db | null = null;
 
 function run(
   args: string[],
@@ -164,6 +169,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  cleanupDb?.close();
+  cleanupDb = null;
   if (server) {
     await new Promise<void>((resolve, reject) => {
       server!.close((error) => (error ? reject(error) : resolve()));
@@ -457,7 +464,8 @@ function provisionManagedDocsWorktree(branch: string): string {
 }
 
 describe("auth merge worktree cleanup preserves the docs branch", () => {
-  it("tears down a promote/docs proxy worktree but leaves the docs worktree", () => {
+  it("tears down a promote/docs proxy worktree but leaves the docs worktree", async () => {
+    const { port } = await listenForCleanup();
     const docsBranch = "docs/spaces";
     const docsWorktree = provisionManagedDocsWorktree(docsBranch);
 
@@ -469,14 +477,14 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
     expect(fs.existsSync(proxyWorktree)).toBe(true);
     expect(fs.existsSync(docsWorktree)).toBe(true);
 
-    const result = runCleanupHelper(
+    const result = await runCleanupHelperAsync(
       `cleanup_merged_worktrees ${JSON.stringify(proxy)} 0 ${JSON.stringify(docsBranch)}`,
       tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
 
-    // The disposable proxy worktree is gone (dwt removes the worktree; the
-    // branch ref is best-effort and only force-deleted when merged).
+    // The disposable proxy worktree is gone through the trash service.
     expect(fs.existsSync(proxyWorktree)).toBe(false);
     const proxyRegistered = spawnSync("git", ["worktree", "list", "--porcelain"], {
       cwd: tempDir,
@@ -548,11 +556,20 @@ function listenForCleanup(options: {
   requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
 }> {
   const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> = [];
+  cleanupDb = openDb(path.join(homeDir, "mandible.db"));
+  addProject(cleanupDb, { project_key: "canonical-mandible", display_name: "Cleanup Test" }, 1);
+  addOrUpdateCheckout(cleanupDb, "canonical-mandible", {
+    root: fs.realpathSync(tempDir),
+    name: "repo",
+    default_branch: "main",
+  }, 2);
+  const trashRouter = new Router();
+  registerTrashRoutes(trashRouter, cleanupDb);
   server = http.createServer((req, res) => {
     let raw = "";
     req.setEncoding("utf8");
     req.on("data", (chunk) => { raw += chunk; });
-    req.on("end", () => {
+    req.on("end", async () => {
       requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
       res.setHeader("Content-Type", "application/json");
       if (req.method === "GET" && req.url === "/api/instance") {
@@ -581,15 +598,13 @@ function listenForCleanup(options: {
           }));
           return;
         }
-        res.statusCode = 201;
-        res.end(JSON.stringify({
-          entry: { id: "trash-auth", branch: "feature/dirty" },
-          outcome: {
-            worktree_removed: true,
-            branch_removed: true,
-            worktree_path: "/reported/worktree/feature__dirty",
-          },
-        }));
+        const answer = await trashRouter.invoke({
+          method: "POST",
+          url: req.url,
+          body: raw ? JSON.parse(raw) : null,
+        });
+        res.statusCode = answer.status;
+        res.end(JSON.stringify(answer.body));
       } else if (req.method === "GET" && req.url?.startsWith("/api/work-units?")) {
         res.end(JSON.stringify({ work_units: options.workUnits ?? [{ branch: "feature/sibling" }] }));
       } else if (req.method === "POST" && req.url === "/api/work-units/release") {
@@ -623,15 +638,17 @@ function commitFile(worktree: string, filename: string, content: string): void {
 }
 
 describe("auth merge reversible cleanup", () => {
-  it("visibly removes a clean merged worktree and local branch", () => {
+  it("visibly removes a clean merged worktree and local branch without trash custody", async () => {
+    const { port } = await listenForCleanup();
     const branch = "feature/clean";
     const worktree = createFeatureWorktree(branch);
     commitFile(worktree, "clean.txt", "clean\n");
     git(["merge", "--no-ff", "--no-edit", branch], tempDir);
 
-    const result = runCleanupHelper(
+    const result = await runCleanupHelperAsync(
       `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
       tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("reaped clean merged branch feature/clean");
@@ -641,6 +658,7 @@ describe("auth merge reversible cleanup", () => {
     expect(fs.existsSync(worktree)).toBe(false);
     expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: tempDir }).status)
       .not.toBe(0);
+    expect(git(["for-each-ref", "refs/mandible/"], tempDir)).toBe("");
   });
 
   it("sends a dirty merged worktree through daemon trash custody", async () => {
@@ -657,47 +675,20 @@ describe("auth merge reversible cleanup", () => {
       { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("trashed dirty merged branch feature/dirty");
-    expect(result.stderr).toContain("Worktree path");
-    expect(result.stderr).toContain("/reported/worktree/feature__dirty is gone");
+    expect(result.stderr).toContain("trashed merged branch feature/dirty");
+    expect(result.stderr).toContain("worktrees/feature__dirty is gone");
+    expect(fs.existsSync(worktree)).toBe(false);
+    const snapshotRef = git(["for-each-ref", "--format=%(refname)", "refs/mandible/trash/"], tempDir);
+    expect(git(["show", `${snapshotRef}:residue.sqlite`], tempDir)).toBe("untracked fixture residue");
     expect(result.stderr).toContain("No further work may happen there");
     expect(requests.find((request) => request.url === "/api/v1/trash")?.body).toMatchObject({
       branch,
       reason: "merged",
       actor: "auth-merge",
+      merged_into: "main",
       issue_refs: ["abc123"],
       checkout_root: git(["rev-parse", "--show-toplevel"], tempDir),
     });
-  });
-
-  it("detects submodule-only dirtiness even when repository config hides it", () => {
-    const submoduleSource = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-submodule-"));
-    try {
-      git(["init", "-b", "main"], submoduleSource);
-      git(["config", "user.name", "Auth Merge Test"], submoduleSource);
-      git(["config", "user.email", "auth-merge@example.invalid"], submoduleSource);
-      commitFile(submoduleSource, "nested.txt", "base\n");
-
-      const branch = "feature/submodule-dirty";
-      const worktree = createFeatureWorktree(branch);
-      git([
-        "-c", "protocol.file.allow=always", "submodule", "add", submoduleSource, "module",
-      ], worktree);
-      git(["commit", "-m", "add submodule"], worktree);
-      git(["merge", "--no-ff", "--no-edit", branch], tempDir);
-      git(["config", "diff.ignoreSubmodules", "all"], tempDir);
-      fs.writeFileSync(path.join(worktree, "module", "nested.txt"), "dirty nested bytes\n", "utf8");
-
-      expect(git(["status", "--porcelain"], worktree)).toBe("");
-      const result = runCleanupHelper(
-        `branch_worktree_status ${JSON.stringify(branch)}`,
-        tempDir,
-      );
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain("module");
-    } finally {
-      fs.rmSync(submoduleSource, { recursive: true, force: true });
-    }
   });
 
   it("reaps a differently named patch-equivalent sibling work-unit branch", async () => {
@@ -776,7 +767,7 @@ describe("auth merge reversible cleanup", () => {
     expect(requests.some((request) => request.url?.startsWith("/api/work-units?"))).toBe(false);
   });
 
-  it("preserves protected, app-managed, and git-ambiguous candidates", () => {
+  it("preserves protected, app-managed, and git-ambiguous candidates", async () => {
     const appBranch = "feature/app-managed";
     const appWorktree = path.join(tempDir, ".codex", "worktrees", "app-managed");
     fs.mkdirSync(path.dirname(appWorktree), { recursive: true });
@@ -797,15 +788,18 @@ describe("auth merge reversible cleanup", () => {
     const ambiguous = "feature/not-merged";
     const ambiguousWorktree = createFeatureWorktree(ambiguous);
     commitFile(ambiguousWorktree, "ambiguous.txt", "unique\n");
-    const ambiguousResult = runCleanupHelper(
+    const { port } = await listenForCleanup();
+    const ambiguousResult = await runCleanupHelperAsync(
       `cleanup_merged_worktrees ${JSON.stringify(ambiguous)} 0 main`,
       tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(ambiguousResult.stderr).toContain("cannot prove merged or patch-equivalent");
     expect(fs.existsSync(ambiguousWorktree)).toBe(true);
   });
 
-  it("preserves merge-only tree changes that git cherry cannot see", () => {
+  it("preserves merge-only tree changes that git cherry cannot see", async () => {
+    const { port } = await listenForCleanup();
     const feature = "feature/merge-only";
     const featureWorktree = createFeatureWorktree(feature);
     const side = "feature/merge-side";
@@ -829,36 +823,15 @@ describe("auth merge reversible cleanup", () => {
     git(["commit", "-m", "merge with unique tree bytes"], featureWorktree);
 
     expect(git(["cherry", "main", feature], tempDir)).toBe("");
-    const result = runCleanupHelper(
+    const result = await runCleanupHelperAsync(
       `cleanup_merged_worktrees ${JSON.stringify(feature)} 0 main`,
       tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("cannot prove merged or patch-equivalent");
     expect(fs.existsSync(featureWorktree)).toBe(true);
     expect(git(["show", `${feature}:merge-only.txt`], tempDir)).toBe("unique merge resolution");
-  });
-
-  it("uses compare-and-swap deletion and preserves a concurrently advanced branch", () => {
-    const branch = "feature/race";
-    const worktree = createFeatureWorktree(branch);
-    commitFile(worktree, "race.txt", "initial\n");
-    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
-    const provenOid = git(["rev-parse", branch], tempDir);
-    commitFile(worktree, "advanced.txt", "advanced after proof\n");
-    const advancedOid = git(["rev-parse", branch], tempDir);
-
-    const dwt = path.join(process.cwd(), "cli", "dwt");
-    const result = runCleanupHelper(
-      `remove_clean_reapable_branch ${JSON.stringify(branch)} merged ${JSON.stringify(provenOid)} ${JSON.stringify(dwt)}`,
-      tempDir,
-    );
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Worktree path");
-    expect(result.stderr).toContain("No further work may happen there");
-    expect(result.stderr).toContain("compare-and-swap deletion refused");
-    expect(fs.existsSync(worktree)).toBe(false);
-    expect(git(["rev-parse", branch], tempDir)).toBe(advancedOid);
   });
 
   it("preserves nonstandard repository-configured protected branches", () => {
@@ -891,7 +864,7 @@ describe("auth merge reversible cleanup", () => {
       { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("Trash custody is incomplete");
+    expect(result.stderr).toContain("Removal of feature/partial-dirty is incomplete");
     expect(result.stderr).toContain("/reported/worktree/feature__dirty is gone");
     expect(result.stderr).toContain("No further work may happen there");
     expect(result.stderr).not.toContain("no deletion attempted");

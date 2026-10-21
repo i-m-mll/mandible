@@ -45,7 +45,11 @@ case "$action" in
     fi
     rm -f "$error_file"
     printf '%s\n' "$response"
-    report_create_outcome "$response" "Trash custody complete"
+    if [[ "$(printf '%s' "$response" | jq -r '.result // empty' 2>/dev/null)" == "removed" ]]; then
+      report_create_outcome "$response" "Removed proven-merged branch with no unique bytes; no trash entry was needed"
+    else
+      report_create_outcome "$response" "Trash custody complete"
+    fi
     ;;
   restore)
     id="${1:-}"

@@ -29,6 +29,9 @@ export const DEFAULT_REBUILDABLE_DIRS: readonly string[] = [
 
 export const DEFAULT_MAX_PRESERVED_BYTES = 50 * 1024 * 1024;
 
+/** Mandible's own root-level issue helper file; the work-unit ledger holds its facts. */
+const ISSUE_HELPER_FILE = ".issue";
+
 const REPO_CONFIG_FILES = ["mandible.toml", ".mandible.toml"];
 
 export interface IgnoredPolicy {
@@ -183,7 +186,11 @@ export function classifyIgnored(
     }
     const components = relative.split("/");
     const directoryComponents = stat.isDirectory() ? components : components.slice(0, -1);
-    if (stat.isSymbolicLink() || directoryComponents.some((name) => policy.rebuildableDirs.has(name))) {
+    if (
+      stat.isSymbolicLink()
+      || relative === ISSUE_HELPER_FILE
+      || directoryComponents.some((name) => policy.rebuildableDirs.has(name))
+    ) {
       result.skipped += 1;
     } else if (stat.isDirectory()) {
       walk(relative);
