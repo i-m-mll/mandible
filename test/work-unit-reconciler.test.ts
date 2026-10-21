@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { createAuthCheckRepo, git } from "./helpers/auth-queue-fixtures.js";
 import type { Logger } from "../src/types.js";
-import { computeWorkUnitLiveness, mapWorkUnitRow } from "../src/work-unit-utils.js";
+import { resolveSessionAlias, type SessionAliasResolution } from "../src/session-liveness.js";
+import { computeWorkUnitLiveness, mapWorkUnitRow, type WorkUnitSessionResolver } from "../src/work-unit-utils.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 
 let db: Db;
@@ -113,6 +114,46 @@ describe("work unit reconciler", () => {
     ]);
   });
 
+  it("clears a finished Codex thread holder with no session row and keeps one holding its writer lock", async () => {
+    db.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, session_id TEXT NOT NULL,
+        source_path TEXT NOT NULL, cwd TEXT, branch TEXT, updated_at TEXT,
+        ended_at TEXT, source_mtime REAL
+      );
+    `);
+    const liveThread = "019a0000-0000-7000-8000-00000000000a";
+    const finishedThread = "019a0000-0000-7000-8000-00000000000b";
+    const unknownThread = "019a0000-0000-7000-8000-00000000000c";
+    const conversation = db.prepare(
+      "INSERT INTO conversations (id, source, session_id, source_path) VALUES (?, 'codex', ?, ?)",
+    );
+    conversation.run("conv-live", liveThread, `/rollouts/${liveThread}.jsonl`);
+    conversation.run("conv-finished", finishedThread, `/rollouts/${finishedThread}.jsonl`);
+    const unit = db.prepare(
+      "INSERT INTO work_units (id, state, provider, assigned_session_id) VALUES (?, 'committed', 'codex', ?)",
+    );
+    unit.run("wu-live", liveThread);
+    unit.run("wu-finished", finishedThread);
+    unit.run("wu-unknown", unknownThread);
+
+    await reconciler((database, id) => resolveSessionAlias(database, id, {
+      readCodexTaskLiveness: (_sourcePath, threadId) => ({
+        status: threadId === liveThread ? "live" : "not_live",
+      }),
+    })).reconcile();
+
+    expect(db.prepare("SELECT id, state, assigned_session_id FROM work_units ORDER BY id").all()).toEqual([
+      { id: "wu-finished", state: "committed", assigned_session_id: null },
+      { id: "wu-live", state: "committed", assigned_session_id: liveThread },
+      { id: "wu-unknown", state: "committed", assigned_session_id: unknownThread },
+    ]);
+    expect(logs[0]).toMatchObject({
+      event: "work_unit_reconcile",
+      data: { dead_sessions_cleared: 1, unresolved_holders: 1 },
+    });
+  });
+
   it("abandons committed work only when Git confirms its branch is gone", async () => {
     const repo = createAuthCheckRepo();
     git(repo, ["branch", "feature/not-yet-scanned"]);
@@ -151,7 +192,7 @@ describe("work unit reconciler", () => {
     );
 
     await new WorkUnitReconciler(() => undefined, {
-      sessionIsLive: (_database, id) => id === "desktop-task",
+      resolveSession: (_database, id) => id === "desktop-task" ? liveCodexResolution(id) : null,
     }).reconcile();
 
     expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-live-provider"))
@@ -170,17 +211,7 @@ describe("work unit reconciler", () => {
       provider_session_id: "desktop-task",
       worker_provider_session_id: "desktop-task",
     });
-    const liveness = computeWorkUnitLiveness(db, workUnit, undefined, (_database, id) => ({
-      supplied_id: id,
-      mandible_session_id: null,
-      console_session_id: null,
-      provider_session_id: id,
-      provider: "codex",
-      mandible_status: null,
-      console_status: null,
-      last_activity: "2026-09-05T19:01:00Z",
-      has_live_agent: true,
-    }));
+    const liveness = computeWorkUnitLiveness(db, workUnit, undefined, (_database, id) => liveCodexResolution(id));
 
     expect(liveness).toEqual({
       has_live_agent: true,
@@ -290,9 +321,23 @@ describe("work unit reconciler", () => {
   });
 });
 
-function reconciler(): WorkUnitReconciler {
+function reconciler(resolveSession?: WorkUnitSessionResolver): WorkUnitReconciler {
   const logger: Logger = (level, event, data) => {
     logs.push({ level, event, data });
   };
-  return new WorkUnitReconciler(logger);
+  return new WorkUnitReconciler(logger, { resolveSession });
+}
+
+function liveCodexResolution(id: string): SessionAliasResolution {
+  return {
+    supplied_id: id,
+    mandible_session_id: null,
+    console_session_id: null,
+    provider_session_id: id,
+    provider: "codex",
+    mandible_status: null,
+    console_status: null,
+    last_activity: "2026-09-05T19:01:00Z",
+    has_live_agent: true,
+  };
 }
