@@ -938,6 +938,12 @@ api_http_exchange() {
       curl_exit=$?
     fi
     http_status="${http_status:-000}"
+    # A transfer curl abandoned (e.g. --max-time after the headers arrived)
+    # still reports the server's 2xx, beside a truncated body.
+    if (( curl_exit != 0 )); then
+      http_status=000
+      : > "$output_file"
+    fi
     empty_response=false
     [[ ! -s "$output_file" ]] && empty_response=true
     retryable=false

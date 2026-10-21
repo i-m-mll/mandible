@@ -141,6 +141,38 @@ describe("CLI client resilience", () => {
     expect(emptyMissing.stderr).toBe("");
   });
 
+  it("never returns a 2xx body that curl abandoned mid-transfer", async () => {
+    let requests = 0;
+    const port = await listen((req, res) => {
+      requests += 1;
+      res.setHeader("Content-Type", "application/json");
+      if (requests === 1) {
+        res.write("{\"projects\":[{\"name\":\"abc");
+        return;
+      }
+      res.end(JSON.stringify({ projects: [{ name: "abc" }] }));
+    });
+    const result = await runBash([
+      `source ${JSON.stringify(API_SH)}`,
+      "response=$(mktemp)",
+      "code=$(api_capture GET /api/projects '' \"$response\")",
+      "printf '%s\\n' \"$code\"",
+      "cat \"$response\"",
+      "rm -f \"$response\"",
+    ].join("\n"), {
+      MANDIBLE_BASE: `http://127.0.0.1:${port}`,
+      MANDIBLE_HTTP_TIMEOUT: "0.3",
+      MANDIBLE_HTTP_RETRIES: "1",
+      MANDIBLE_HTTP_RETRY_BASE_MS: "1",
+      MANDIBLE_HTTP_RETRY_MAX_MS: "1",
+      MANDIBLE_HTTP_RETRY_JITTER_MS: "0",
+    });
+
+    expect(requests).toBe(2);
+    expect(result.stdout).toBe("200\n{\"projects\":[{\"name\":\"abc\"}]}");
+    expect(result.stderr).toContain("status=000, curl=28");
+  });
+
   it("does not retry deterministic server failures and reports their structured body", async () => {
     let failedRequests = 0;
     const port = await listen((_req, res) => {
