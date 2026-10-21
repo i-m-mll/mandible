@@ -32,6 +32,8 @@ mandible artifact move artifact:REF --project research --path reports/renamed.md
 mandible artifact ingest reports/renamed.md --artifact artifact:REF --json
 ```
 
+An artifact has at most one source: a repository path, a local path, or a managed producer key. Each source belongs to at most one artifact. Ingesting from the source adds a version; ingesting a different path is refused until a source move. Mandible never reads a source on its own, and each version's bytes stay under the custody fixed at ingest. For a Git-custody artifact the source is the repository path it follows. For a managed artifact it is only where the file was ingested from; that file may change or disappear without affecting saved versions. `mandible artifact source show` prints the source beside the versions' custody.
+
 A source move changes the registered update location, not files on disk, ownership, prior versions, or reviewed bytes. It requires write access to the artifact, owner, old source, and destination. Occupied locations and stale revisions fail. Reusing an old location may create a different logical artifact.
 
 ## References, reads, and history
