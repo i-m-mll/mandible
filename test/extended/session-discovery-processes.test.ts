@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 vi.mock('../../src/sse.js', () => ({ broadcast: vi.fn() }));
 import { SessionRegistry, normalizePidStart } from '../../src/registry.js';
 import { SessionDiscovery, ReaperTimer } from '../../src/session-discovery.js';
-import { sessionAliasLiveness } from '../../src/session-liveness.js';
+import { isSessionAliasLive } from '../../src/session-liveness.js';
 import type { WorkScanner } from '../../src/work-scanner.js';
 import { createMigratedDb } from '../helpers/ledger-fixtures.js';
 
@@ -84,7 +84,7 @@ it('attaches a live process to the pid-less row its launcher named and retires t
     registry.registerSession({ id: 'managed', app: 'claude', conversation_id: 'provider-session', cwd: root });
     registry.registerSession({ id: 'discovered-duplicate', app: 'claude', pid: child.pid, pid_start: start, cwd: root });
     db.prepare("UPDATE sessions SET status = 'dead' WHERE id = 'managed'").run();
-    expect(sessionAliasLiveness(db, 'provider-session')).toBe('stopped');
+    expect(isSessionAliasLive(db, 'provider-session')).toBe(false);
 
     fs.writeFileSync(ps.processes, `${child.pid} ${start} /usr/local/bin/claude\n`);
     fs.writeFileSync(ps.environments, `${child.pid} claude HOME=/x MANDIBLE_SESSION_ID=managed TERM=y\n`);
@@ -94,7 +94,7 @@ it('attaches a live process to the pid-less row its launcher named and retires t
       { id: 'discovered-duplicate', pid: child.pid, status: 'ended' },
       { id: 'managed', pid: child.pid, status: 'active' },
     ]);
-    expect(sessionAliasLiveness(db, 'provider-session')).toBe('live');
+    expect(isSessionAliasLive(db, 'provider-session')).toBe(true);
   } finally {
     await discovery.stop(); db.close(); ps.restore(); await child.kill();
   }
