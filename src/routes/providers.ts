@@ -52,7 +52,7 @@ import {
 } from "../provider-artifacts.js";
 import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
 import {
-  artifactRequiredProjects, getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
+  artifactRequiredProjects, artifactVersionCustody, getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
   type ArtifactSource, type ArtifactLifecycleResult,
 } from "../artifact-source.js";
 import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
@@ -898,7 +898,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       if (!id || !enforceArtifactAccess(req, res, id, "read")) return;
       const source = getArtifactCurrentSource(getDb(), id);
       if (!source) { sendJson(res, 404, { error: "source state not found", code: "unknown_artifact" }); return; }
-      sendJson(res, 200, { source });
+      sendJson(res, 200, { source, version_custody: artifactVersionCustody(getDb(), id) });
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "get:/api/artifacts/source", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -944,7 +944,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         }));
         if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
         const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));
-        if (state) sendJson(res, 200, { source: state, status: state.revision === current.revision ? 'unchanged' : 'updated' });
+        if (state) sendJson(res, 200, { source: state, version_custody: artifactVersionCustody(getDb(), id), status: state.revision === current.revision ? 'unchanged' : 'updated' });
       }).immediate();
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/artifacts/source/move", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });

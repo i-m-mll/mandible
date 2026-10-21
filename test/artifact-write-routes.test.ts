@@ -379,24 +379,27 @@ describe("artifact write authorization", () => {
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
-    const cli = (args: string[]) => new Promise<any>((resolve, reject) => {
-      const child = spawn(path.join(process.cwd(), "bin/mandible"), ["artifact", ...args, "--json"], {
+    const run = (args: string[]) => new Promise<string>((resolve, reject) => {
+      const child = spawn(path.join(process.cwd(), "bin/mandible"), ["artifact", ...args], {
         cwd: root, env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`,
           MANDIBLE_NO_KEYCHAIN_TOKEN: "1", MANDIBLE_TOKEN: "", MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" },
       });
       let stdout = "", stderr = "";
       child.stdout.on("data", x => stdout += x); child.stderr.on("data", x => stderr += x);
-      child.on("error", reject); child.on("close", code => {
-        try { code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr + stdout)); }
-        catch (error) { reject(error); }
-      });
+      child.on("error", reject);
+      child.on("close", code => code === 0 ? resolve(stdout) : reject(new Error(stderr + stdout)));
     });
+    const cli = async (args: string[]) => JSON.parse(await run([...args, "--json"]));
     try {
       const oldPath = path.join(root, "old.md"), newPath = path.join(root, "new.md");
       fs.writeFileSync(oldPath, "original\n");
       const first = await cli(["ingest", oldPath, "--managed"]);
       const version = first.registered[0].version;
       const id = first.registered[0].series.id.replace(/^artifact-series:/, "artifact:");
+      // Show headlines the logical artifact the ref names, not the blob of its bytes.
+      const headline = (await run(["show", id])).split("\n")[0];
+      expect(headline).toMatch(/^artifact:[0-9a-f]+$/);
+      expect(id.startsWith(headline)).toBe(true);
       const uploaded = await cli(["ingest", oldPath, "--managed", "--upload"]);
       expect(uploaded.registered[0].series.id).toBe(first.registered[0].series.id);
       expect(uploaded.registered[0].version.commit_sha).toBeNull();
@@ -432,6 +435,8 @@ describe("artifact write authorization", () => {
       const copied = await cli(["ingest", tracked, "--managed"]);
       expect(copied.registered[0].series.id).toBe(linked.registered[0].series.id);
       expect(copied.registered[0].version.custody_mode).toBe("managed");
+      const shown = await invoke("GET", `/api/artifacts/source?ref=${encodeURIComponent(trackedId)}`);
+      expect((shown.body as any).version_custody).toEqual({ git: 1, managed: 1 });
       expect(getArtifactCurrentSource(db, trackedId)?.source).toEqual({ kind: "repo", project_id: project.id, path: "tracked.md" });
       fs.writeFileSync(tracked, "dirty\n");
       const dirty = await cli(["ingest", tracked, "--managed"]);

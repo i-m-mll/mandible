@@ -968,13 +968,28 @@ cmd_show() {
   eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.show)" 2
   require_tools
-  local id response
-  id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  local resolution id response
+  resolution="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  id="$(printf '%s\n' "$resolution" | jq -er '.resolution | select(.status == "resolved") | .target_id | select(type == "string" and length > 0)')" \
+    || die "${RED}Failed to resolve artifact ref.${RESET}" 1
   response="$(api_get "/api/artifacts/$(urlencode "$id")")" || die "${RED}Failed to show artifact.${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | api_jq_human '.artifact | "\(mandible_display_ref)\nrole: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"'
+    # The content record describes the selected version's bytes; headline the
+    # entity the ref names, never its blob.
+    printf '%s\n' "$response" | api_jq_human '
+      $resolution.resolution as $r
+      | (if $r.scheme == "artifact-series" and $r.series then $r.series.ref
+         elif $r.target_type == "artifact" then $r.logical_artifact.ref
+         elif $r.target_type == "artifact_version" then $r.artifact_version.ref
+         else $r.artifact_blob.ref end) as $headline
+      | .artifact
+      | $headline,
+        ($r.artifact_version.ref // empty | select(. != $headline) | "version: \(.)"),
+        ($r.artifact_blob.ref // empty | select(. != $headline) | "blob: \(.)"),
+        "role: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"' \
+      --argjson resolution "$resolution"
   fi
 }
 
@@ -1113,7 +1128,22 @@ cmd_source() {
     response="$(artifact_api_request POST "/api/artifacts/source/move" "$payload")" || return $?
   fi
   if (( json )); then printf '%s\n' "$response" | jq .
-  else printf '%s\n' "$response" | jq '.source | {revision,source,reconciliation_reason}'
+  else
+    # A file path is only "ingested from" when Mandible holds every version's bytes.
+    printf '%s\n' "$response" | api_jq_human '
+      .version_custody as $c | .source as $state | $state.source as $s
+      | (.status // empty),
+        "\(if $s != null and $s.kind != "managed" and $c != null and ($c | length) > 0 and ($c | has("git") | not)
+            then "ingested from" else "source" end): \(
+          if $s == null then "none"
+          elif $s.kind == "repo" then "repo \($s.project_id | mandible_short_id) \($s.path)"
+          elif $s.kind == "local" then "local \($s.path)"
+          else "managed \($s.key)" end)",
+        (if $c == null then empty
+         elif ($c | length) == 0 then "custody: no versions"
+         else "custody: " + ([$c | to_entries[] | "\(.key) (\(.value) version\(if .value == 1 then "" else "s" end))"] | join(", ")) end),
+        "revision: \($state.revision)",
+        ($state.reconciliation_reason // empty | "reconciliation: \(.)")'
   fi
 }
 

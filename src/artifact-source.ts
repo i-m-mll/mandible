@@ -51,6 +51,12 @@ export function getArtifactCurrentSource(db: Db, artifactId: string): ArtifactSo
   return row ? { artifact_id: row.artifact_id, source: row.source_json ? JSON.parse(row.source_json) : null,
     revision: row.revision, reconciliation_reason: row.reconciliation_reason } : null;
 }
+/** Version count per custody mode; the source never decides where saved bytes live. */
+export function artifactVersionCustody(db: Db, artifactId: string): Record<string, number> {
+  const rows = db.prepare('SELECT custody_mode, COUNT(*) AS n FROM artifact_version WHERE artifact_id=? GROUP BY custody_mode ORDER BY custody_mode')
+    .all(artifactId) as { custody_mode: string; n: number }[];
+  return Object.fromEntries(rows.map(row => [row.custody_mode, row.n]));
+}
 export function lookupArtifactCurrentSource(db: Db, source: ArtifactSource): ArtifactLifecycleResult<ArtifactSourceState | null> {
   const valid = validateArtifactSource(db, source);
   if (!valid.ok) return valid;
