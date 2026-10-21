@@ -2,7 +2,6 @@ import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
-import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
 import { computeAuthRequestOutcome } from "../contracts.js";
@@ -11,7 +10,7 @@ import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
-  computeLiveness,
+  computeWorkUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
@@ -310,11 +309,10 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
     + countOpenHookAlerts(db);
 }
 
-// Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
+// Bug: f3dbb3e — mapWorkUnitRow and computeWorkUnitLiveness extracted to work-unit-utils.ts
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
-  sessionRegistry: SessionRegistry,
   sessionManager?: SessionManager,
   // Bug: 4e32923 — authQueue is required for the new /api/inbox/delivered
   // endpoint that marks auth_requests as delivered to the owner session.
@@ -409,13 +407,11 @@ export function registerInboxRoutes(
     return rows
       .map(mapWorkUnitRow)
       .map((wu) => {
-        const liveness = sessionManager
-          ? computeLiveness(wu, sessionRegistry, sessionManager)
-          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-        return { ...wu, liveness };
+        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
       })
-      // Show work units that need attention (no live agent)
-      .filter((wu) => !wu.liveness.has_live_agent);
+      // Show work units that need attention: their agent has stopped. One whose
+      // liveness is unknown may still be worked on, so it is not offered.
+      .filter((wu) => wu.liveness.state === "stopped");
   }
 
   // Bug: 8a281b3 — helper to get work-unit continuations
@@ -438,13 +434,10 @@ export function registerInboxRoutes(
     return rows
       .map(mapWorkUnitRow)
       .map((wu) => {
-        const liveness = sessionManager
-          ? computeLiveness(wu, sessionRegistry, sessionManager)
-          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
-        return { ...wu, liveness };
+        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
       })
-      // Only show continuations with no live agent
-      .filter((wu) => !wu.liveness.has_live_agent);
+      // Only show continuations whose agent has stopped
+      .filter((wu) => wu.liveness.state === "stopped");
   }
 
   function ledgerOpenIssues(repoFilter?: string): Array<{

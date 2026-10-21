@@ -150,7 +150,7 @@ describe("work unit reconciler", () => {
     ]);
     expect(logs[0]).toMatchObject({
       event: "work_unit_reconcile",
-      data: { dead_sessions_cleared: 1, unresolved_holders: 1 },
+      data: { dead_sessions_cleared: 1, unknown_holders: 1 },
     });
   });
 
@@ -214,7 +214,7 @@ describe("work unit reconciler", () => {
     const liveness = computeWorkUnitLiveness(db, workUnit, undefined, (_database, id) => liveCodexResolution(id));
 
     expect(liveness).toEqual({
-      has_live_agent: true,
+      state: "live",
       agent_session_id: "desktop-task",
       agent_status: "active",
       is_processing: false,
@@ -338,6 +338,6 @@ function liveCodexResolution(id: string): SessionAliasResolution {
     mandible_status: null,
     console_status: null,
     last_activity: "2026-09-05T19:01:00Z",
-    has_live_agent: true,
+    liveness: "live",
   };
 }

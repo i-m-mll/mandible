@@ -348,8 +348,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   issueDeps.conversationControl = conversationControl;
-  registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger, { authQueue });
-  registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
+  registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
+  registerInboxRoutes(router, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerConversationSpawnRoutes(router, db, conversationControl);

@@ -450,10 +450,10 @@ describe("ledger issue routes", () => {
     });
 
     expect(status.body).toMatchObject({
-      live_holder: { session_id: "sess-live", liveness: { has_live_agent: true } },
+      live_holder: { session_id: "sess-live", liveness: { state: "live" } },
     });
     expect(blocked.statusCode).toBe(409);
-    expect(blocked.body).toMatchObject({ live_holder: { session_id: "sess-live" } });
+    expect(blocked.body).toMatchObject({ blocking_holder: { session_id: "sess-live" } });
     expect(retaken.statusCode).toBe(200);
     expect(retaken.body).toMatchObject({
       ok: true,

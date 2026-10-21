@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import { isLiveSessionStatus, isSessionAliasLive } from "./session-liveness.js";
+import { isLiveSessionStatus, sessionAliasLiveness } from "./session-liveness.js";
 import type { AuthRequest } from "./types.js";
 
 // Issue 75f52ac — archiving spawns the codex CLI (up to 15 s). Running it via
@@ -95,13 +95,13 @@ export function listCompletedWorkerThreadArchiveCandidates(
   }
 
   for (const row of candidateRowsFromRequestWorkUnits(db, request.id)) {
-    addCandidate(byProviderId, row, parentRoleSessionIds);
+    addCandidate(db, byProviderId, row, parentRoleSessionIds);
   }
 
   if (closureIssueIds.size > 0) {
     if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
       for (const row of candidateRowsFromLegacyIssueSessions(db, closureIssueIds)) {
-        addCandidate(byProviderId, row, parentRoleSessionIds);
+        addCandidate(db, byProviderId, row, parentRoleSessionIds);
       }
     }
   }
@@ -117,7 +117,7 @@ function addDirectWorkUnitCandidate(
 ): void {
   const providerSessionId = stringOrNull(row.worker_provider_session_id);
   if (!providerSessionId) return;
-  if (parentRoleSessionIds.has(providerSessionId) || isSessionAliasLive(db, providerSessionId)) return;
+  if (parentRoleSessionIds.has(providerSessionId) || sessionAliasLiveness(db, providerSessionId) !== "stopped") return;
 
   addRankedCandidate(byProviderId, {
     provider_session_id: providerSessionId,
@@ -130,6 +130,7 @@ function addDirectWorkUnitCandidate(
 }
 
 function addCandidate(
+  db: Db,
   byProviderId: Map<string, RankedArchiveCandidate>,
   row: CandidateRow,
   parentRoleSessionIds: Set<string>,
@@ -139,6 +140,7 @@ function addCandidate(
   if (!providerSessionId || !consoleSessionId) return;
   if (row.command !== "codex") return;
   if (isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)) return;
+  if (sessionAliasLiveness(db, providerSessionId) !== "stopped") return;
 
   const mandibleSessionId = stringOrNull(row.mandible_session_id);
   if (

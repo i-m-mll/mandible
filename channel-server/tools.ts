@@ -309,9 +309,10 @@ export function registerTools(
           repo_id: args.repo_id,
         });
 
-        // Filter to unassigned work units (no live agent)
+        // Filter to unassigned work units: their agent has stopped. One whose
+        // liveness is unknown may still be worked on.
         const available = result.work_units.filter(
-          (wu) => !wu.liveness.has_live_agent,
+          (wu) => wu.liveness.state === "stopped",
         );
 
         if (available.length === 0) {

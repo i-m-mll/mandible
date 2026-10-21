@@ -1430,7 +1430,8 @@ export async function getSessionIssues(sessionId: string): Promise<unknown[]> {
 
 // Bug: 84cd5ae — issue context hub aggregation
 export type IssueContextLiveness = {
-  has_live_agent: boolean;
+  /** `unknown`: a liveness check could not complete; never read it as stopped. */
+  state: 'live' | 'stopped' | 'unknown';
   agent_status: string | null;
   is_processing: boolean;
   last_activity: string | null;

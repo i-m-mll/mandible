@@ -21,7 +21,7 @@ import { SessionRegistry } from "../src/registry.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
-import { isSessionAliasLive, resolveSessionAlias } from "../src/session-liveness.js";
+import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
 import type { AuthRequest } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
@@ -36,6 +36,7 @@ const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
 const PROVIDER_THREAD = "01a04e24-a731-7362-bce3-ff7a63a845e2";
 const DESKTOP_TASK = "01a072f2-0e05-7a91-abcd-df4dc6a64e62";
+const OUTAGE_TASK = "01a072f2-0e05-7a91-abcd-df4dc6a64e63";
 
 let db: Db;
 let router: Router;
@@ -100,6 +101,7 @@ async function parentRoleStatus() {
   return response.body as {
     holder: Record<string, unknown> | null;
     live_holder: Record<string, unknown> | null;
+    unknown_holders: Array<Record<string, unknown>>;
   };
 }
 
@@ -122,7 +124,7 @@ beforeEach(async () => {
   router = authenticatedTestRouter(coordinator);
   const sessionAliasResolver = (database: Db, id: string) => resolveSessionAlias(database, id, {
     readCodexTaskLiveness: (_sourcePath, taskId) => ({
-      status: taskId === DESKTOP_TASK ? "live" : "not_live",
+      status: taskId === DESKTOP_TASK ? "live" : taskId === OUTAGE_TASK ? "unavailable" : "not_live",
     }),
   });
   registerIssueRoutes(router, fakeScanner, { sessionAliasResolver });
@@ -213,7 +215,7 @@ describe("parent-role assume accepts every registered alias form", () => {
     // recorded and the next coordinator could take the umbrella silently.
     const status = await parentRoleStatus();
     expect(status.live_holder).not.toBeNull();
-    expect((status.holder?.liveness as { has_live_agent: boolean }).has_live_agent).toBe(true);
+    expect((status.holder?.liveness as { state: string }).state).toBe("live");
     expect(status.holder?.liveness).toMatchObject({
       resolved_session_id: MANDIBLE_SESSION,
       provider_session_id: PROVIDER_THREAD,
@@ -237,7 +239,7 @@ describe("Codex Desktop provider tasks", () => {
     const status = await parentRoleStatus();
     expect(status.live_holder).not.toBeNull();
     expect(status.holder?.liveness).toMatchObject({
-      has_live_agent: true,
+      state: "live",
       agent_status: "active",
       provider: "codex",
       provider_session_id: DESKTOP_TASK,
@@ -313,12 +315,12 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     seedSession("sess-other", "active");
     const conflict = await assume("sess-other");
     expect(conflict.status).toBe(409);
-    const body = conflict.body as { error: string; live_holder: Record<string, unknown> };
+    const body = conflict.body as { error: string; blocking_holder: Record<string, unknown> };
     expect(body.error).toContain("only the operator may displace it");
     // The conflict names the holder, so a coordinator can decide rather than
     // guess (issue 7a97e2c's `- (-)` was unactionable).
-    expect(body.live_holder.session_id).toBe(PROVIDER_THREAD);
-    expect(body.live_holder.mechanism).toBe("codex");
+    expect(body.blocking_holder.session_id).toBe(PROVIDER_THREAD);
+    expect(body.blocking_holder.mechanism).toBe("codex");
 
     const deniedOverride = await assume("sess-other", true);
     expect(deniedOverride.status).toBe(409);
@@ -331,6 +333,21 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     expect((await parentRoleStatus()).live_holder).toBeNull();
 
     expect((await assume(MANDIBLE_SESSION)).status).toBe(200);
+  });
+
+  it("blocks on a holder whose lock check cannot complete, as on a live one", async () => {
+    seedCodexConversation(OUTAGE_TASK);
+    expect((await assume(OUTAGE_TASK)).status).toBe(200);
+    const status = await parentRoleStatus();
+    expect(status.live_holder).toBeNull();
+    expect(status.unknown_holders).toEqual([expect.objectContaining({ session_id: OUTAGE_TASK })]);
+
+    seedSession("sess-other", "active");
+    const conflict = await assume("sess-other");
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      blocking_holder: { session_id: OUTAGE_TASK, liveness: { state: "unknown" } },
+    });
   });
 });
 
@@ -352,13 +369,13 @@ describe("canonical session liveness", () => {
         mandible_session_id: MANDIBLE_SESSION,
         console_session_id: CONSOLE_SESSION,
         provider_session_id: PROVIDER_THREAD,
-        has_live_agent: true,
+        liveness: "live",
       });
-      expect(isSessionAliasLive(db, alias)).toBe(true);
+      expect(sessionAliasLiveness(db, alias)).toBe("live");
     }
 
     expect(resolveSessionAlias(db, "never-registered")).toBeNull();
-    expect(isSessionAliasLive(db, "never-registered")).toBe(false);
+    expect(sessionAliasLiveness(db, "never-registered")).toBe("stopped");
   });
 
   it("counts a live console session whose Mandible session has ended", () => {
@@ -370,8 +387,8 @@ describe("canonical session liveness", () => {
       providerSessionId: PROVIDER_THREAD,
     });
 
-    expect(isSessionAliasLive(db, PROVIDER_THREAD)).toBe(true);
-    expect(resolveSessionAlias(db, PROVIDER_THREAD)?.has_live_agent).toBe(true);
+    expect(sessionAliasLiveness(db, PROVIDER_THREAD)).toBe("live");
+    expect(resolveSessionAlias(db, PROVIDER_THREAD)?.liveness).toBe("live");
   });
 
   it("reports a fully stopped agent as resolved but not live", () => {
@@ -385,7 +402,7 @@ describe("canonical session liveness", () => {
 
     const resolved = resolveSessionAlias(db, PROVIDER_THREAD);
     expect(resolved?.mandible_session_id).toBe(MANDIBLE_SESSION);
-    expect(resolved?.has_live_agent).toBe(false);
+    expect(resolved?.liveness).toBe("stopped");
   });
 });
 

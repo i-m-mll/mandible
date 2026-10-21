@@ -1155,6 +1155,8 @@ cmd_parent_role_status() {
     printf '%s\n' "$response" | api_jq_human '
       if .live_holder then
         "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-"))"
+      elif (.unknown_holders // []) | length > 0 then
+        "holder of unknown liveness: \((.unknown_holders[0].session_id // "-") | mandible_short_id) (\(.unknown_holders[0].mechanism // "-"))"
       elif .holder then
         "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.mechanism // "-"))"
       else
@@ -1202,8 +1204,8 @@ cmd_parent_role_assume() {
   # 409s on this route (and the 400 for an unregistered session id) carry their
   # own `error` and must be shown as themselves, not rendered as a phantom
   # "live parent-role holder exists: - (-)" (issue 7a97e2c).
-  if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.live_holder != null' >/dev/null 2>&1; then
-    printf '%s\n' "$response" | api_jq_human '"live parent-role holder exists: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-")); rerun with --override to retake"' >&2
+  if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
+    printf '%s\n' "$response" | api_jq_human '"\(if .blocking_holder.liveness.state == "live" then "live" else "unknown-liveness" end) parent-role holder exists: \((.blocking_holder.session_id // "-") | mandible_short_id) (\(.blocking_holder.mechanism // "-")); rerun with --override to retake"' >&2
     return 3
   fi
   local rendered
