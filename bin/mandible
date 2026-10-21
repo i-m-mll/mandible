@@ -43,7 +43,6 @@
 #   trash <subcommand>               Reversible branch/worktree trash custody
 #   issue-file <subcommand>          Read/write the .issue helper file
 #   session link-issue <id> ...      Link sessions to issues
-#   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
 set -euo pipefail
@@ -109,7 +108,6 @@ case "${1:-}" in
   trash) shift; exec "$MANDIBLE_CLI_DIR/trash.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
-  search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help) shift; if (( $# )); then exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;
   -h|--help) usage ;;
   "") usage >&2; exit 1 ;;

@@ -39,7 +39,6 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/ledger-client.sh:40 api_send_capture \"$method\" \"$request_path\" \"$data\" \"$tmp_response\")",
   "cli/logs.sh:71 api_get \"$request\")",
   "cli/logs.sh:115 api_get \"$request\")",
-  "cli/search.sh:94 api_get \"$request\"",
   "cli/space.sh:81 api_send POST \"$1\" \"$2\"",
   "cli/umbrella.sh:80 api_get \"$path\") \\",
 ] as const;

@@ -2470,10 +2470,6 @@
           {"kind": "argument","name": "id","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "type","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--tool"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--tool-kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--until"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--content","--contains"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--offset"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
@@ -2487,23 +2483,8 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "query","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|gemini|codex|all","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "user|assistant","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--title"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "search": {
-      "route": ["search"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "query","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|gemini|codex|all","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "user|assistant","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|gemini|codex|all","value": {"type": "enum","values": ["claude","gemini","codex","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "user|assistant","value": {"type": "enum","values": ["user","assistant"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--title"],"values": []}]}},

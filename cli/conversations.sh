@@ -279,12 +279,10 @@ file_rpc_warn_truncated_blocks() {
   fi
 }
 
-file_rpc_search() {
-  local query="${1:-}" provider="all" role="" since="" limit=20 title=0 json=0 source request response
-  if [[ -z "$query" ]]; then echo "Error: search query is required." >&2; exit 1; fi
-  shift
+conversation_search() {
+  local query="" provider="all" role="" since="" limit=20 title=0 json=0 source request response
   local binding
-  binding=$(mandible_bind_arguments "conversations.search" '{"provider":{"option":"provider"},"role":{"option":"role"},"since":{"option":"since"},"limit":{"option":"limit"},"title":{"option":"title","constant":"1"},"json":{"option":"json","constant":"1"}}' "$query" "$@") || return $?
+  binding=$(mandible_bind_arguments "conversations.search" '{"query":{"position":0},"provider":{"option":"provider"},"role":{"option":"role"},"since":{"option":"since"},"limit":{"option":"limit"},"title":{"option":"title","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
   source=$(conversation_source "$provider")
   request="/api/conversations/search?q=$(urlencode "$query")&limit=$(urlencode "$limit")"
@@ -292,7 +290,9 @@ file_rpc_search() {
   if [[ -n "$role" ]]; then request="${request}&role=$(urlencode "$role")"; fi
   if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
   if (( title )); then request="${request}&title=true"; fi
-  response=$(api_get "$request")
+  response=$(api_get "$request") || return $?
+  printf '%s\n' "$response" | jq -r --argjson requested "$limit" \
+    'select(.limit < $requested) | "Warning: --limit \($requested) exceeds the server cap; at most \(.limit) hits are returned."' >&2
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
@@ -359,7 +359,7 @@ file_rpc_main() {
     show) shift; file_rpc_show "$@" ;;
     blocks) shift; file_rpc_blocks "$@" ;;
     export) shift; conversation_export_api "$@" ;;
-    search) shift; file_rpc_search "$@" ;;
+    search) shift; conversation_search "$@" ;;
     scan-credentials) shift; scan_credentials "$@" ;;
     ""|-h|--help|help) usage; exit 0 ;;
     *) echo "Unknown conversations subcommand: $command" >&2; usage >&2; exit 1 ;;
@@ -435,10 +435,11 @@ if [[ "${1:-}" == "scan-credentials" ]]; then
   exit $?
 fi
 
-# Exact reads always traverse the daemon's shared resolver/freshness barrier,
-# including the normal local transport. The Python/SQLite code below serves
-# only `list` and cannot bypass catch-up.
+# Exact reads and search always traverse the daemon's shared resolver/freshness
+# barrier, including the normal local transport. The Python/SQLite code below
+# serves only `list` and cannot bypass catch-up.
 case "${1:-}" in
+  search) shift; conversation_search "$@"; exit $? ;;
   show) shift; file_rpc_show "$@"; exit $? ;;
   blocks) shift; file_rpc_blocks "$@"; exit $? ;;
   export) shift; conversation_export_api "$@"; exit $? ;;
@@ -448,17 +449,6 @@ if [[ ! -f "$MANDIBLE_DB" ]]; then
   echo "Error: Mandible database not found at $MANDIBLE_DB" >&2
   exit 1
 fi
-
-case "${1:-}" in
-  search)
-    shift
-    exec "$SCRIPT_DIR/search.sh" "$@"
-    ;;
-  blocks)
-    shift
-    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
-    ;;
-esac
 
 export MANDIBLE_PARSED_COMMAND
 MANDIBLE_PARSED_COMMAND=$(mandible_parse_command conversations "$@") || exit $?

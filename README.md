@@ -318,7 +318,7 @@ mandible issue <subcommand>              Issue operations, comments, labels, and
 mandible auth list [opts]                List active auth requests
 mandible auth request <branch> [opts]    Submit auth request
 mandible auth merge <branch> [opts]      Execute authenticated merge
-mandible search "<query>" [opts]         Search chat history across providers
+mandible conversations search "<query>"  Search chat history across providers
 mandible help                            Show help
 ```
 
