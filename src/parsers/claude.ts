@@ -165,7 +165,7 @@ export function parseClaudeSubagentPath(filePath: string): ClaudeSubagentPathInf
  * under <parent>/subagents/; older Claude wrote a sibling agent-<id>.jsonl whose
  * sidechain records carry the parent's session id.
  */
-export function claudeTranscriptLineage(
+function claudeTranscriptLineage(
   filePath: string,
   sessionId: string,
   isSidechain: boolean,

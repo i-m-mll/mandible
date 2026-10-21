@@ -1,78 +1,73 @@
 // One-time lineage backfill for conversations indexed before their parsers
-// declared a parent (issue 23f8142). Live ingestion never reads Codex's state
-// database; this backfill falls back to it only for threads whose rollout file
-// Codex has since pruned.
+// declared a parent (issue 23f8142). Lineage is re-derived through each
+// provider's own parser from the head of the transcript, so whatever a parser
+// reads lineage from is backfilled the same way it is ingested. Live ingestion
+// never reads Codex's state database; this backfill falls back to it only for
+// threads whose rollout file Codex has since pruned.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as readline from "node:readline";
 import SqliteDatabase from "../sqlite.js";
 import type { Db } from "../db.js";
 import { recordConversationParent, type ConversationParent } from "../conversation-lineage.js";
-import { claudeTranscriptLineage } from "../parsers/claude.js";
-import {
-  codexRelocationCandidates,
-  codexThreadLineage,
-  loadCodexThreadLineage,
-  locateCodexRollout,
-  type CodexThreadLineage,
-} from "../parsers/codex.js";
+import { getParserForFile } from "../parsers/index.js";
+import { codexRelocationCandidates, codexThreadLineage, locateCodexRollout } from "../parsers/codex.js";
+import type { ConversationSource, ParseResult } from "../parsers/types.js";
+
+/** Lineage records sit at the head of a transcript: header, then the first user message. */
+const TRANSCRIPT_HEAD_LINES = 32;
 
 export interface LineageBackfillResult {
   examined: number;
-  declared: { claude_code: number; codex: number };
-  codex_lineage_source: { rollout_header: number; state_database: number; none: number };
+  declared: Record<ConversationSource, number>;
+  lineage_source: { transcript: number; codex_state_database: number; none: number };
   linked: number;
   unresolved_parent: number;
 }
 
 interface UndeclaredRow {
   id: string;
-  source: "claude_code" | "codex" | "gemini";
+  source: ConversationSource;
   source_path: string;
   session_id: string;
-  is_sidechain: number;
 }
 
-interface CodexThreadRow {
-  source: string;
-  thread_source: string | null;
-  agent_nickname: string | null;
+interface DerivedLineage {
+  parent: ConversationParent | null;
+  isSubagent: boolean;
+  agentId: string | null;
 }
 
 /** Declare and link the parent of every indexed conversation that has none recorded. */
 export async function backfillConversationLineage(db: Db): Promise<LineageBackfillResult> {
   const rows = db.prepare(`
-    SELECT id, source, source_path, session_id, is_sidechain
+    SELECT id, source, source_path, session_id
       FROM conversations
-     WHERE parent_session_id IS NULL AND source IN ('claude_code', 'codex')
+     WHERE parent_session_id IS NULL
   `).all() as UndeclaredRow[];
   const result: LineageBackfillResult = {
     examined: rows.length,
-    declared: { claude_code: 0, codex: 0 },
-    codex_lineage_source: { rollout_header: 0, state_database: 0, none: 0 },
+    declared: { claude_code: 0, codex: 0, gemini: 0 },
+    lineage_source: { transcript: 0, codex_state_database: 0, none: 0 },
     linked: 0,
     unresolved_parent: 0,
   };
-  const declarations: Array<{ row: UndeclaredRow; parent: ConversationParent | null; isSubagent: boolean; agentId: string | null }> = [];
-  const stateDbs = new CodexStateDatabases();
+  const declarations: Array<{ row: UndeclaredRow; lineage: DerivedLineage }> = [];
+  const registry = new CodexThreadRegistry();
   try {
     for (const row of rows) {
-      if (row.source === "claude_code") {
-        const lineage = claudeTranscriptLineage(row.source_path, row.session_id, row.is_sidechain === 1);
-        if (lineage.parent) declarations.push({ row, ...lineage, isSubagent: true });
-        continue;
-      }
-      let lineage = await readRolloutLineage(row.source_path);
+      let lineage = await transcriptLineage(row);
       if (lineage) {
-        result.codex_lineage_source.rollout_header += 1;
+        result.lineage_source.transcript += 1;
       } else {
-        lineage = stateDbs.threadLineage(row.source_path, row.session_id);
-        result.codex_lineage_source[lineage ? "state_database" : "none"] += 1;
+        lineage = row.source === "codex" ? registry.threadLineage(row.source_path, row.session_id) : null;
+        result.lineage_source[lineage ? "codex_state_database" : "none"] += 1;
       }
-      if (lineage && (lineage.parent || lineage.isSubagent)) declarations.push({ row, ...lineage });
+      if (lineage && (lineage.parent || lineage.isSubagent)) declarations.push({ row, lineage });
     }
   } finally {
-    stateDbs.close();
+    registry.close();
   }
 
   const markSubagent = db.prepare(`
@@ -80,14 +75,14 @@ export async function backfillConversationLineage(db: Db): Promise<LineageBackfi
        SET is_sidechain = MAX(is_sidechain, ?), agent_id = COALESCE(agent_id, ?)
      WHERE id = ?
   `);
-  const parentOf = db.prepare("SELECT parent_conversation_id FROM conversations WHERE id = ?");
+  const linkedParent = db.prepare("SELECT parent_conversation_id FROM conversations WHERE id = ?");
   db.transaction(() => {
-    for (const { row, parent, isSubagent, agentId } of declarations) {
-      markSubagent.run(isSubagent ? 1 : 0, agentId, row.id);
-      if (!parent) continue;
-      recordConversationParent(db, row.id, parent);
-      result.declared[row.source as "claude_code" | "codex"] += 1;
-      const linked = (parentOf.get(row.id) as { parent_conversation_id: string | null }).parent_conversation_id;
+    for (const { row, lineage } of declarations) {
+      markSubagent.run(lineage.isSubagent ? 1 : 0, lineage.agentId, row.id);
+      if (!lineage.parent) continue;
+      recordConversationParent(db, row.id, lineage.parent);
+      result.declared[row.source] += 1;
+      const linked = (linkedParent.get(row.id) as { parent_conversation_id: string | null }).parent_conversation_id;
       if (linked) result.linked += 1;
       else result.unresolved_parent += 1;
     }
@@ -95,29 +90,68 @@ export async function backfillConversationLineage(db: Db): Promise<LineageBackfi
   return result;
 }
 
-async function readRolloutLineage(sourcePath: string): Promise<CodexThreadLineage | null> {
-  for (const candidate of [sourcePath, ...codexRelocationCandidates(sourcePath)]) {
-    if (!fs.existsSync(candidate)) continue;
-    const lineage = await loadCodexThreadLineage(candidate).catch(() => null);
-    if (lineage) return lineage;
+/** Parse the head of the row's transcript, wherever the provider has moved it, with its own parser. */
+async function transcriptLineage(row: UndeclaredRow): Promise<DerivedLineage | null> {
+  const candidates = row.source === "codex"
+    ? [row.source_path, ...codexRelocationCandidates(row.source_path)]
+    : [row.source_path];
+  for (const candidate of candidates) {
+    const parser = fs.existsSync(candidate) ? getParserForFile(candidate) : null;
+    if (!parser || parser.source !== row.source) continue;
+    let parsed: ParseResult | null;
+    try {
+      parsed = candidate.endsWith(".jsonl") && parser.parseIncremental
+        ? await parser.parseIncremental({
+          filePath: candidate,
+          raw: await readHeadLines(candidate, TRANSCRIPT_HEAD_LINES),
+          baseBlockCount: 0,
+          baseRecordCount: 0,
+          sourceHash: "lineage-backfill",
+          sourceMtime: 0,
+        })
+        : await parser.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (!parsed || parsed.conversation.session_id !== row.session_id) continue;
+    return {
+      parent: parsed.parent,
+      isSubagent: parsed.conversation.is_sidechain,
+      agentId: parsed.conversation.agent_id,
+    };
   }
   return null;
 }
 
+async function readHeadLines(filePath: string, count: number): Promise<string> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const head: string[] = [];
+  try {
+    for await (const line of lines) {
+      head.push(line);
+      if (head.length >= count) break;
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  return head.length ? `${head.join("\n")}\n` : "";
+}
+
 /** Codex's own thread registry, opened read-only once per Codex home. */
-class CodexStateDatabases {
+class CodexThreadRegistry {
   private readonly open = new Map<string, SqliteDatabase | null>();
 
-  threadLineage(rolloutPath: string, threadId: string): CodexThreadLineage | null {
+  threadLineage(rolloutPath: string, threadId: string): DerivedLineage | null {
     const codexRoot = locateCodexRollout(rolloutPath)?.codexRoot;
-    if (!codexRoot) return null;
-    const stateDb = this.database(codexRoot);
+    const stateDb = codexRoot ? this.database(codexRoot) : null;
     const row = stateDb?.prepare(
       "SELECT source, thread_source, agent_nickname FROM threads WHERE id = ?",
-    ).get(threadId) as CodexThreadRow | undefined;
+    ).get(threadId) as { source: string; thread_source: string | null; agent_nickname: string | null } | undefined;
     if (!row) return null;
     return codexThreadLineage({
-      source: parseThreadSource(row.source),
+      source: row.source.startsWith("{") ? JSON.parse(row.source) : row.source,
       thread_source: row.thread_source,
       agent_nickname: row.agent_nickname,
     });
@@ -137,14 +171,5 @@ class CodexStateDatabases {
       );
     }
     return this.open.get(codexRoot) ?? null;
-  }
-}
-
-function parseThreadSource(source: string): Parameters<typeof codexThreadLineage>[0]["source"] {
-  if (!source.startsWith("{")) return source;
-  try {
-    return JSON.parse(source) as Parameters<typeof codexThreadLineage>[0]["source"];
-  } catch {
-    return source;
   }
 }

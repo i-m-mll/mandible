@@ -442,8 +442,8 @@ if [[ "${1:-}" == "lineage-backfill" ]]; then
   else
     printf '%s\n' "$response" | jq -r '
       "Examined \(.examined) conversations without a declared parent."
-      + "\nDeclared parents: \(.declared.claude_code) Claude, \(.declared.codex) Codex; linked \(.linked), parent not indexed \(.unresolved_parent)."
-      + "\nCodex lineage from rollout headers \(.codex_lineage_source.rollout_header), Codex state database \(.codex_lineage_source.state_database), neither \(.codex_lineage_source.none)."'
+      + "\nDeclared parents: \(.declared.claude_code) Claude, \(.declared.codex) Codex, \(.declared.gemini) Gemini; linked \(.linked), parent not indexed \(.unresolved_parent)."
+      + "\nLineage read from transcripts \(.lineage_source.transcript), from the Codex state database \(.lineage_source.codex_state_database), from neither \(.lineage_source.none)."'
   fi
   exit 0
 fi

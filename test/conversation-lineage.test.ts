@@ -121,7 +121,7 @@ describe("conversation lineage", () => {
     expect((listed.body as { total: number }).total).toBe(1);
   });
 
-  it("backfills Codex rows indexed without lineage from the rollout header, or Codex's registry once the rollout is pruned", async () => {
+  it("backfills rows indexed without lineage through their parsers, or Codex's registry once the rollout is pruned", async () => {
     const root = writeRollout(rolloutPath("sessions", ROOT), ROOT, null);
     const childA = writeRollout(rolloutPath("sessions", CHILD_A), CHILD_A, { parent: ROOT, nickname: "Leibniz" });
     const childB = writeRollout(rolloutPath("sessions", CHILD_B), CHILD_B, { parent: ROOT, nickname: "Locke" });
@@ -141,7 +141,7 @@ describe("conversation lineage", () => {
     const result = await backfillConversationLineage(db);
     expect(result).toMatchObject({
       declared: { codex: 2 },
-      codex_lineage_source: { rollout_header: 2, state_database: 1 },
+      lineage_source: { transcript: 2, codex_state_database: 1 },
       linked: 2,
       unresolved_parent: 0,
     });
