@@ -6,6 +6,7 @@ import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { resolveProjectRef } from "./project-registry.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -78,14 +79,34 @@ export function resolveOperationalIssueRef(
   if (!trimmed) return { ok: false, error: "not_found" };
 
   const store = new LedgerStore(db);
-  const projectIds = candidateProjectIds(db, repoRef);
-  if (projectIds.length === 0) {
-    return withProject(db, store.resolveIssueRef(trimmed));
-  }
+  const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef));
+  if (scoped.ok || scoped.error === "ambiguous") return scoped;
 
+  const global = withProject(db, store.resolveIssueRef(trimmed));
+  if (global.ok || global.error === "ambiguous") return global;
+
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator === trimmed.length - 1) return global;
+  const project = resolveProjectRef(db, trimmed.slice(0, separator));
+  if (project.ambiguous) return { ok: false, error: "ambiguous" };
+  if (!project.ok || !project.project) return global;
+  return resolveInProjects(db, store, trimmed.slice(separator + 1), [project.project.id]);
+}
+
+/**
+ * Issue ids are global, so the caller's repo only ranks candidates: a ref
+ * resolves in the repo's own projects first, then across the ledger, then as
+ * `<project>/<id>`.
+ */
+function resolveInProjects(
+  db: Db,
+  store: LedgerStore,
+  ref: string,
+  projectIds: string[],
+): ResolveOperationalIssueResult {
   const matches = new Set<string>();
   for (const projectId of projectIds) {
-    const resolved = store.resolveIssueRef(trimmed, { project_id: projectId });
+    const resolved = store.resolveIssueRef(ref, { project_id: projectId });
     if (resolved.ok) {
       matches.add(resolved.id);
     } else if (resolved.error === "ambiguous") {

@@ -8,6 +8,8 @@ import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { Router } from "../src/server.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
 import { PTYBackend } from "../src/backends/pty-backend.js";
 import { SessionManager } from "../src/session-manager.js";
 import {
@@ -27,6 +29,8 @@ describe("session and work-unit ownership", () => {
     db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
+    const fixtures = addProject(db, { project_key: "ownership-fixtures", display_name: "Ownership fixtures" });
+    createLedgerIssue(db, { project_id: fixtures.id, alias: "ownership-issue" });
   });
 
   afterEach(() => db.close());
