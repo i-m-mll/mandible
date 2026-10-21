@@ -81,10 +81,10 @@ describe("session and work-unit ownership", () => {
 
     registry.registerSession({ id: "registry-codex", app: "codex" });
     registry.registerSession({ id: "channel-claude", app: "claude" });
-    registry.registerSession({ id: "discovered-gemini", app: "gemini" });
+    registry.registerSession({ id: "registry-gemini", app: "gemini" });
     expect(owner("sessions", "registry-codex")).toBe(codex.id);
     expect(owner("sessions", "channel-claude")).toBe(claude.id);
-    expect(owner("sessions", "discovered-gemini")).toBe(gemini.id);
+    expect(owner("sessions", "registry-gemini")).toBe(gemini.id);
 
     const worker = createUser(db, {
       slug: "worker-owner",

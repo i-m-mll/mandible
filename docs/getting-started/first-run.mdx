@@ -24,13 +24,11 @@ The daemon performs several initialization steps:
 
 1. **Database creation** --- If `~/.mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations for sessions, auth requests, conversations, work units, console sessions, and more.
 
-2. **Session discovery** --- Scans running processes for known agent patterns (Claude, Codex, Gemini) and matches them against registered repository worktrees. Any running agents found are registered as sessions.
+2. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
 
-3. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
+3. **Issue ledger setup** --- After startup, Mandible prepares the local issue ledger and compatibility scanner for registered repositories.
 
-4. **Issue ledger setup** --- After startup, Mandible prepares the local issue ledger and compatibility scanner for registered repositories.
-
-5. **Reaper timer** --- Starts the periodic dead-session reaper, which checks PIDs and marks vanished sessions as dead.
+4. **Reaper timer** --- Starts the periodic dead-session reaper, which checks PIDs and marks vanished sessions as dead.
 
 ## Dashboard tour
 

@@ -1994,6 +1994,20 @@ export const MIGRATIONS: readonly Migration[] = [
       ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL.slice(1),
     ],
   },
+  // Issue 3b8aa50 — process discovery is retired. Its `discovered-*` rows carry
+  // a pid and no provider session id, so nothing joins them to a conversation;
+  // any row something still references is kept.
+  {
+    version: 203,
+    name: "reap_discovered_sessions",
+    statements: [
+      `DELETE FROM sessions
+      WHERE id GLOB 'discovered-*'
+        AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_id = sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM work_units w WHERE w.assigned_session_id = sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM ledger_session_issue_links l WHERE l.session_id = sessions.id)`,
+    ],
+  },
 ];
 
 /**

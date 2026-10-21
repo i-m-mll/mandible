@@ -13,7 +13,6 @@ import {
   getChannelConnectedSessionsFromDb,
 } from "../channel-registry.js";
 import { linkSessionToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
-import type { SessionDiscovery } from "../session-discovery.js";
 import type { WorkScanner } from "../work-scanner.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
@@ -540,18 +539,8 @@ function resolveSessionIdForIssueLink(
 export function registerSessionRoutes(
   server: RouteRegistrar,
   registry: SessionRegistry = new SessionRegistry(getDb()),
-  discovery?: SessionDiscovery,
   workScanner?: WorkScanner,
 ): void {
-  server.post("/api/sessions/discover", async (_req, res) => {
-    if (!discovery) {
-      sendJson(res, 501, { error: "Session discovery not configured" });
-      return;
-    }
-    const result = await discovery.discoverSessions();
-    sendJson(res, 200, result);
-  }, { operation: { id: "post:/api/sessions/discover", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
-
   server.post("/api/sessions/register", (req, res) => {
     const payload = readBody<SessionInput>(req);
     if (!payload.id || !payload.app) {

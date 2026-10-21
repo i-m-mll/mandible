@@ -24,7 +24,6 @@ Mandible is three things: a Bun daemon, a browser-based SPA, and optionally a Ta
 |  |  Issue Ledger -> local issue storage         |  |
 |  |  Ingestion -> conversation file watching     |  |
 |  |  Push Manager -> SSH batch push              |  |
-|  |  Session Discovery -> process scanning       |  |
 |  |  Reaper Timer -> dead session cleanup        |  |
 |  |  Nav Enricher -> terminal metadata           |  |
 |  |  Work Unit Reconciler -> state consistency   |  |
@@ -45,7 +44,7 @@ The HTTP server uses a lightweight custom router rather than Express or similar 
 
 ### Startup and shutdown
 
-On startup, the daemon opens the database, starts the HTTP server, and initializes all background services: conversation ingestion, session discovery, issue scanning, the dead-session reaper, the work-unit reconciler, and the backup scheduler. Each service starts in the background without blocking the server.
+On startup, the daemon opens the database, starts the HTTP server, and initializes all background services: conversation ingestion, issue scanning, the dead-session reaper, the work-unit reconciler, and the backup scheduler. Each service starts in the background without blocking the server.
 
 The daemon shuts down gracefully on `SIGINT` or `SIGTERM`, closing connections, stopping background services, and cleaning up the PID file. A hard deadline prevents the process from hanging if graceful shutdown stalls.
 
@@ -98,6 +97,6 @@ A planned Level 2 integration would bundle the daemon as a Tauri sidecar, starti
 
 ## Process model
 
-Mandible runs as a single Bun process. Background services (session discovery, issue scanning, conversation ingestion, etc.) run on periodic timers within the same process.
+Mandible runs as a single Bun process. Background services (issue scanning, conversation ingestion, the session reaper, etc.) run on periodic timers within the same process.
 
 The exception is the Console: PTY and SDK sessions are child processes managed by the daemon and cleaned up on shutdown.
