@@ -664,6 +664,7 @@ describe("work-unit custody takeover", () => {
   let projectKey: string;
   let issueId: string;
   let operatorId: string;
+  let codexScan: "live" | "not_live" | "unavailable";
   const credentials: Record<string, { user_id: string; credential_id: string; slug: string }> = {};
 
   beforeEach(() => {
@@ -690,7 +691,9 @@ describe("work-unit custody takeover", () => {
       mode: () => "strict",
       recordUnattributedWrite: () => undefined,
     } });
-    registerWorkUnitRoutes(guarded, {} as never, {} as never, undefined, { authQueue: queue });
+    codexScan = "unavailable";
+    registerWorkUnitRoutes(guarded, {} as never, {} as never, undefined, {
+      authQueue: queue, readCodexTaskLiveness: () => ({ status: codexScan }) });
   });
 
   afterEach(() => {
@@ -747,6 +750,23 @@ describe("work-unit custody takeover", () => {
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ code: "custody_generation_conflict" });
     expect((await check("taker")).body).toMatchObject({ outcome: "clear", may_commit: true });
+  });
+
+  it("decides a Codex holder with no session record from its thread-writer lock", async () => {
+    const thread = "01a0c6e2-4442-7640-a0c4-230134688d18";
+    const claimed = await guarded.invoke({ method: "POST", url: "/api/work-units/claim", credential: "holder",
+      ambient_identity: { provider: "codex", provider_session_id: thread },
+      body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover" } });
+    expect(claimed.status).toBe(201);
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title,
+        started_at, ended_at, session_id, updated_at)
+      VALUES ('holder-rollout', 'codex', ?, 'sha', 1, 'Holder', '2026-09-22T02:11:53Z', '2026-09-28T01:03:52.054Z', ?, '2026-09-28 01:17:54')`)
+      .run(`/tmp/.codex/sessions/2026/09/21/rollout-${thread}.jsonl`, thread);
+
+    expect((await check("taker")).body).toMatchObject({ outcome: "held", holder_liveness: { state: "unknown" } });
+    codexScan = "not_live";
+    expect((await check("taker")).body).toMatchObject({ outcome: "takeover_available",
+      holder_liveness: { state: "stopped", session_id: thread, last_activity: Date.parse("2026-09-28T01:03:52.054Z") } });
   });
 
   it("holds a unit for its recorded session against another session of the same credential", async () => {

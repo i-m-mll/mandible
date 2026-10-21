@@ -39,10 +39,13 @@ export type HolderLivenessState = "live" | "stopped" | "unknown";
 /**
  * Whether the session recorded on a work unit is still working.
  *
- * `stopped` needs positive evidence: a recorded Mandible or console session for
- * the unit's own session identity, none of them live. A transcript alone, an id
- * Mandible never registered, or a unit with no session identity is `unknown`,
- * which blocks takeover exactly like `live`.
+ * `stopped` needs positive evidence for the unit's own session identity: a
+ * recorded Mandible or console session, none of them live, or, for an indexed
+ * Codex thread with no such record, a completed thread-writer lock scan that
+ * finds no Codex process holding the thread's lock. A Claude or Gemini
+ * transcript alone, an id Mandible never registered, a lock scan that could not
+ * run, or a unit with no session identity is `unknown`, which blocks takeover
+ * exactly like `live`.
  */
 export interface HolderLiveness {
   state: HolderLivenessState;
@@ -55,9 +58,10 @@ export function classifyHolderLiveness(
   db: Db,
   unit: WorkUnit,
   sessionManager?: SessionManager,
-  resolver: WorkUnitSessionResolver = resolveSessionAlias,
   readCodexTask: ProviderTaskLivenessReader = readCodexTaskLiveness,
 ): HolderLiveness {
+  const resolver: WorkUnitSessionResolver = (database, id) =>
+    resolveSessionAlias(database, id, { readCodexTaskLiveness: readCodexTask });
   const liveness = computeWorkUnitLiveness(db, unit, sessionManager, resolver);
   if (liveness.has_live_agent) {
     return { state: "live", session_id: liveness.agent_session_id, status: liveness.agent_status, last_activity: liveness.last_activity };
@@ -67,36 +71,57 @@ export function classifyHolderLiveness(
     if (!resolution) continue;
     if (unit.provider && resolution.provider && resolution.provider !== unit.provider) continue;
     const status = resolution.mandible_status ?? resolution.console_status;
-    if (!status) continue;
-    // Codex liveness comes from its thread-writer lock. When that scan could not
-    // run, the shared rule reads "not live"; here it is no evidence of a stop.
-    if (codexTaskLivenessUnavailable(db, resolution.provider, resolution.provider_session_id ?? id, readCodexTask)) continue;
-    const lastActivity = resolution.last_activity ? Date.parse(resolution.last_activity) : NaN;
-    return {
-      state: "stopped",
-      session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
-      status,
-      last_activity: Number.isFinite(lastActivity) ? lastActivity : null,
-    };
+    const codexTask = resolution.provider === "codex"
+      ? codexThreadLiveness(db, resolution.provider_session_id ?? id, readCodexTask)
+      : null;
+    if (status) {
+      // The shared rule reads an unavailable lock scan as "not live"; here it is
+      // no evidence of a stop.
+      if (codexTask && codexTask.status !== "not_live") continue;
+      return {
+        state: "stopped",
+        session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
+        status,
+        last_activity: parseTime(resolution.last_activity),
+      };
+    }
+    if (codexTask?.status === "not_live" || codexTask?.status === "live") {
+      return {
+        state: codexTask.status === "live" ? "live" : "stopped",
+        session_id: id,
+        status: null,
+        last_activity: parseTime(codexTask.last_activity),
+      };
+    }
   }
   return { state: "unknown", session_id: liveness.agent_session_id, status: liveness.agent_status, last_activity: liveness.last_activity };
 }
 
-function codexTaskLivenessUnavailable(
+type CodexThreadLiveness =
+  | { status: "live" | "not_live"; last_activity: string | null }
+  | { status: "unavailable" };
+
+/** The thread-writer lock scan for an indexed Codex rollout; `null` when none is indexed. */
+function codexThreadLiveness(
   db: Db,
-  provider: string | null,
   providerSessionId: string,
   readCodexTask: ProviderTaskLivenessReader,
-): boolean {
-  if (provider !== "codex") return false;
+): CodexThreadLiveness | null {
   let ingestion: ReturnType<typeof resolveProviderSessionIngestion>;
   try {
     ingestion = resolveProviderSessionIngestion(db, providerSessionId);
   } catch {
-    return true;
+    return { status: "unavailable" };
   }
-  if (ingestion.status !== "ingested") return false;
-  return readCodexTask(ingestion.source_path, ingestion.provider_session_id).status !== "not_live";
+  if (ingestion.status !== "ingested") return null;
+  if (ingestion.provider !== "codex") return { status: "unavailable" };
+  const scan = readCodexTask(ingestion.source_path, ingestion.provider_session_id).status;
+  return scan === "unavailable" ? { status: scan } : { status: scan, last_activity: ingestion.last_activity };
+}
+
+function parseTime(value: string | null): number | null {
+  const time = value ? Date.parse(value) : NaN;
+  return Number.isFinite(time) ? time : null;
 }
 
 function sessionIdentities(unit: WorkUnit): string[] {
@@ -120,11 +145,12 @@ export function sameCredentialSessionHolding(
   unit: WorkUnit,
   callerSessionId: string | null,
   sessionManager?: SessionManager,
+  readCodexTask: ProviderTaskLivenessReader = readCodexTaskLiveness,
 ): SessionHolding {
   const recorded = sessionIdentities(unit);
   if (recorded.length === 0) return { state: "clear", unverifiable: false, liveness: null };
   if (!callerSessionId) {
-    return { state: "clear", unverifiable: true, liveness: classifyHolderLiveness(db, unit, sessionManager) };
+    return { state: "clear", unverifiable: true, liveness: classifyHolderLiveness(db, unit, sessionManager, readCodexTask) };
   }
   const caller = resolveSessionAlias(db, callerSessionId);
   const matches = recorded.some((id) => {
@@ -134,7 +160,7 @@ export function sameCredentialSessionHolding(
       || (resolution.mandible_session_id && resolution.mandible_session_id === caller?.mandible_session_id)));
   });
   if (matches) return { state: "clear", unverifiable: false, liveness: null };
-  const liveness = classifyHolderLiveness(db, unit, sessionManager);
+  const liveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
   return { state: liveness.state, liveness };
 }
 
