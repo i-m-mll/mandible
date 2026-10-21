@@ -14,21 +14,20 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearCodexTaskLivenessCache } from "../src/codex-task-liveness.js";
-import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
+import type { CodexThreadArchiver } from "../src/codex-thread-archive.js";
 import { setDb, type Db } from "../src/db.js";
 import { sessionAliasLiveness } from "../src/session-liveness.js";
-import type { AuthRequest } from "../src/types.js";
 import { classifyHolderLiveness } from "../src/work-unit-custody.js";
 import { mapWorkUnitRow } from "../src/work-unit-utils.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 
 const THREAD = "019a0000-0000-7000-8000-0000000000d1";
-const request = { id: "auth-1", type: "merge", issues: [], issue_closures: [] } as unknown as AuthRequest;
 
 let db: Db;
 let codexRoot: string;
 let lockDir: string;
 let stderr: string[];
+let archived: string[];
 
 beforeEach(() => {
   clearCodexTaskLivenessCache();
@@ -53,6 +52,11 @@ beforeEach(() => {
       repo_root TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL,
       ahead_default INTEGER DEFAULT 0, PRIMARY KEY (repo_root, branch)
     );
+    CREATE TABLE worker_thread_archives (
+      work_unit_id TEXT NOT NULL, thread_id TEXT NOT NULL, archived_at INTEGER,
+      attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_retry_at INTEGER,
+      PRIMARY KEY (work_unit_id, thread_id)
+    );
   `);
   db.prepare("INSERT INTO conversations (id, source, session_id, source_path) VALUES ('conv', 'codex', ?, ?)")
     .run(THREAD, rollout);
@@ -64,6 +68,7 @@ beforeEach(() => {
   unit.run("wu-merged", "resolved", null, THREAD, "auth-1");
   setDb(db);
   stderr = [];
+  archived = [];
   vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
     stderr.push(String(chunk));
     return true;
@@ -76,6 +81,14 @@ afterEach(() => {
   fs.rmSync(codexRoot, { recursive: true, force: true });
   clearCodexTaskLivenessCache();
 });
+
+function reconciler(): WorkUnitReconciler {
+  const archiver: CodexThreadArchiver = {
+    archive: async (threadId) => { archived.push(threadId); },
+    unarchive: async () => undefined,
+  };
+  return new WorkUnitReconciler(() => undefined, { archiver });
+}
 
 function heldUnit() {
   return mapWorkUnitRow(db.prepare("SELECT * FROM work_units WHERE id = 'wu-held'").get() as Record<string, unknown>);
@@ -97,10 +110,10 @@ describe("a Codex lock check that cannot complete", () => {
     fs.writeFileSync(lockDir, "");
 
     expect(sessionAliasLiveness(db, THREAD)).toBe("unknown");
-    await new WorkUnitReconciler(() => undefined).reconcile();
+    await reconciler().reconcile();
     expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = 'wu-held'").get())
       .toEqual({ assigned_session_id: THREAD });
-    expect(listCompletedWorkerThreadArchiveCandidates(db, request)).toEqual([]);
+    expect(archived).toEqual([]);
     expect(classifyHolderLiveness(db, heldUnit()).state).toBe("unknown");
     expect(logged("codex_task_liveness_unavailable")).toEqual([
       expect.objectContaining({ level: "error", target: lockDir }),
@@ -114,10 +127,9 @@ describe("a Codex lock check that cannot complete", () => {
 
     expect(sessionAliasLiveness(db, THREAD)).toBe("stopped");
     expect(classifyHolderLiveness(db, heldUnit()).state).toBe("stopped");
-    expect(listCompletedWorkerThreadArchiveCandidates(db, request).map((c) => c.provider_session_id))
-      .toEqual([THREAD]);
-    await new WorkUnitReconciler(() => undefined).reconcile();
+    await reconciler().reconcile();
     expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = 'wu-held'").get())
       .toEqual({ assigned_session_id: null });
+    expect(archived).toEqual([THREAD]);
   });
 });

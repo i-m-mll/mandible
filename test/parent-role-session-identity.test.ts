@@ -14,7 +14,7 @@
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
+import { archiveFinishedWorkerThreads } from "../src/codex-thread-archive.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { SessionRegistry } from "../src/registry.js";
@@ -22,7 +22,6 @@ import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
 import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
-import type { AuthRequest } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
@@ -432,7 +431,7 @@ describe("canonical session liveness", () => {
  * calls the shared predicate, so this pins its behaviour through the real entry
  * point rather than through the helper.
  */
-describe("Codex archive candidates still exclude live threads", () => {
+describe("Codex worker thread archival still excludes live threads", () => {
   function archiveDb(): InstanceType<typeof SqliteDatabase> {
     const archive = new SqliteDatabase(":memory:");
     archive.exec(`
@@ -442,6 +441,7 @@ describe("Codex archive candidates still exclude live threads", () => {
         ledger_issue_id TEXT,
         state TEXT NOT NULL,
         assigned_session_id TEXT,
+        provider_session_id TEXT,
         worker_provider_session_id TEXT,
         auth_request_id TEXT
       );
@@ -453,6 +453,15 @@ describe("Codex archive candidates still exclude live threads", () => {
         command TEXT,
         status TEXT
       );
+      CREATE TABLE worker_thread_archives (
+        work_unit_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        archived_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_retry_at INTEGER,
+        PRIMARY KEY (work_unit_id, thread_id)
+      );
     `);
     archive.prepare(
       `INSERT INTO work_units (id, issue_id, state, worker_provider_session_id, auth_request_id)
@@ -462,9 +471,18 @@ describe("Codex archive candidates still exclude live threads", () => {
     return archive;
   }
 
-  const request = { id: "auth-1", type: "merge", issues: [], issue_closures: [] } as AuthRequest;
+  async function archivedThreads(archive: InstanceType<typeof SqliteDatabase>): Promise<string[]> {
+    const archived: string[] = [];
+    await archiveFinishedWorkerThreads(archive as unknown as Db, {
+      archiver: { archive: async (threadId) => { archived.push(threadId); }, unarchive: async () => undefined },
+      liveness: sessionAliasLiveness,
+      resolveAlias: resolveSessionAlias,
+      now: () => 0,
+    });
+    return archived;
+  }
 
-  it("skips a thread whose console session is still running", () => {
+  it("skips a thread whose console session is still running", async () => {
     const archive = archiveDb();
     archive.prepare(
       `INSERT INTO console_sessions (id, provider_session_id, command, status)
@@ -472,13 +490,11 @@ describe("Codex archive candidates still exclude live threads", () => {
               ('cs-done', 'thread-done', 'codex', 'stopped')`,
     ).run();
 
-    const candidates = listCompletedWorkerThreadArchiveCandidates(archive as unknown as Db, request);
-
-    expect(candidates.map((candidate) => candidate.provider_session_id)).toEqual(["thread-done"]);
+    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
     archive.close();
   });
 
-  it("skips a thread whose linked Mandible session is still active", () => {
+  it("skips a thread whose linked Mandible session is still active", async () => {
     const archive = archiveDb();
     archive.prepare(
       "INSERT INTO sessions (id, status) VALUES ('mandible-live', 'active')",
@@ -489,9 +505,7 @@ describe("Codex archive candidates still exclude live threads", () => {
               ('cs-done', NULL, 'thread-done', 'codex', 'stopped')`,
     ).run();
 
-    const candidates = listCompletedWorkerThreadArchiveCandidates(archive as unknown as Db, request);
-
-    expect(candidates.map((candidate) => candidate.provider_session_id)).toEqual(["thread-done"]);
+    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
     archive.close();
   });
 });

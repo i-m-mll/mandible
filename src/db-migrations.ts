@@ -10,6 +10,7 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
@@ -2102,6 +2103,14 @@ export const MIGRATIONS: readonly Migration[] = [
       ...CONVERSATION_OPENING_LINEAGE_SQL,
       "UPDATE conversations SET opening_lineage = 'unread'",
     ],
+  },
+  // Issue 506adca — archive records for Codex worker threads of resolved work
+  // units. No rows are seeded: units resolved earlier are processed by the same
+  // archive pass under the same guards.
+  {
+    version: 207,
+    name: "worker_thread_archives",
+    statements: [...WORKER_THREAD_ARCHIVES_SCHEMA_SQL],
   },
 ];
 

@@ -2,8 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
+import {
+  archiveFinishedWorkerThreads,
+  type CodexThreadArchiver,
+  type WorkerThreadLiveness,
+} from "./codex-thread-archive.js";
 import { canonicalRepoKeysForRef, checkoutRootsForRef } from "./repo-identity.js";
-import { resolveSessionAlias } from "./session-liveness.js";
+import { resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
 import { listLocalBranches } from "./work-scanner.js";
@@ -19,27 +24,38 @@ type AuthPipelineMatch =
   | { status: "unknown" };
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
-// Runs every 60s and performs three reconciliation passes:
+// Runs every 60s and performs four reconciliation passes:
 // 1. Dead holder cleanup: clear assigned_session_id when its alias resolves to a stopped agent
-// 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
-// 3. Auto-commit detection: open → committed when branch has commits
+// 2. Worker thread archival: archive Codex worker threads whose bound units are resolved
+// 3. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
+// 4. Auto-commit detection: open → committed when branch has commits
 
 const RECONCILE_INTERVAL_MS = 60_000;
+
+export interface WorkUnitReconcilerOptions {
+  archiver: CodexThreadArchiver;
+  resolveSession?: WorkUnitSessionResolver;
+  threadLiveness?: WorkerThreadLiveness;
+  now?: () => number;
+}
 
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
   private readonly resolveSession: WorkUnitSessionResolver;
+  private readonly archiver: CodexThreadArchiver;
+  private readonly threadLiveness: WorkerThreadLiveness;
+  private readonly now: () => number;
   private readonly abort = new AbortController();
   private pass: Promise<void> | null = null;
   private lastUnknownHolders = 0;
 
-  constructor(
-    logger: Logger,
-    options: { resolveSession?: WorkUnitSessionResolver } = {},
-  ) {
+  constructor(logger: Logger, options: WorkUnitReconcilerOptions) {
     this.logger = logger;
     this.resolveSession = options.resolveSession ?? resolveSessionAlias;
+    this.archiver = options.archiver;
+    this.threadLiveness = options.threadLiveness ?? sessionAliasLiveness;
+    this.now = options.now ?? Date.now;
   }
 
   start(): void {
@@ -70,6 +86,7 @@ export class WorkUnitReconciler {
   private async runPasses(): Promise<void> {
     try {
       const holders = this.reconcileDeadHolders();
+      await this.archiveFinishedWorkerThreads();
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = this.reconcileAutoCommit();
 
@@ -130,7 +147,32 @@ export class WorkUnitReconciler {
   }
 
   /**
-   * Pass 2: Mark committed work units as abandoned when Git confirms their
+   * Pass 2: Archive Codex worker threads whose bound work units are resolved.
+   * Each archive logs once; a failing thread logs when it first fails and again
+   * when it finally archives, while its recorded backoff paces the retries.
+   */
+  private async archiveFinishedWorkerThreads(): Promise<void> {
+    const outcome = await archiveFinishedWorkerThreads(getDb(), {
+      archiver: this.archiver,
+      liveness: this.threadLiveness,
+      resolveAlias: this.resolveSession,
+      now: this.now,
+    });
+    for (const { thread_id, prior_attempts } of outcome.archived) {
+      this.logger("info", "worker_thread_archived", {
+        thread_id,
+        ...(prior_attempts > 0 ? { recovered_after_attempts: prior_attempts } : {}),
+      });
+    }
+    for (const { thread_id, attempts, error } of outcome.failed) {
+      if (attempts === 1) {
+        this.logger("error", "worker_thread_archive_failed", { thread_id, error });
+      }
+    }
+  }
+
+  /**
+   * Pass 3: Mark committed work units as abandoned when Git confirms their
    * branch is gone. The scanner's `branches` table is a cache refreshed only
    * on scans, so a miss there proves nothing; only Git's own refs do.
    */
@@ -305,7 +347,7 @@ export class WorkUnitReconciler {
   }
 
   /**
-   * Pass 3: Auto-transition open work units to committed when their branch
+   * Pass 4: Auto-transition open work units to committed when their branch
    * has commits ahead of the default branch (detected via the branches table).
    */
   private reconcileAutoCommit(): number {

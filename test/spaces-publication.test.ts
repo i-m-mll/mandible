@@ -129,6 +129,7 @@ it('migration separates clean, managed-only, Git-only, divergent and unreachable
   db.exec('ALTER TABLE conversations DROP COLUMN parent_source');
   db.exec('DROP TABLE space_publications');db.exec('DROP TABLE space_document_history');
   for(const column of ['opening_lineage','opening_line','agent_created'])db.exec(`ALTER TABLE conversations DROP COLUMN ${column}`);
+  db.exec('DROP TABLE worker_thread_archives');
   db.prepare("UPDATE meta SET value='189' WHERE key='schema_version'").run();
   migrate(db);
   for(const [id,content] of snapshots) {
