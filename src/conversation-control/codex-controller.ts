@@ -578,27 +578,6 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     for (const liveItem of this.codexItems(controller, item, complete, turnId)) {
       this.emitItem(controller, liveItem);
     }
-    if (itemType === "collabAgentToolCall" && stringField(item, "tool") === "spawnAgent") {
-      const sender = stringField(item, "senderThreadId");
-      const receivers = Array.isArray(item.receiverThreadIds)
-        ? item.receiverThreadIds.filter((value): value is string => typeof value === "string" && Boolean(value))
-        : [];
-      if (sender !== controller.providerSessionId || receivers.length === 0) return;
-      for (const receiver of receivers) {
-        this.providerEvents.emit({
-          kind: "provider-lineage",
-          conversation_id: controller.conversationId,
-          provider_session_id: controller.providerSessionId,
-          generation: controller.generation,
-          sequence: ++controller.providerSequence,
-          observed_at: Date.now(),
-          provider_event_id: itemId,
-          relation: "spawned-child",
-          sender_provider_session_id: sender,
-          receiver_provider_session_id: receiver,
-        });
-      }
-    }
   }
 
   private emitItem(

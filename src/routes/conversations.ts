@@ -42,7 +42,7 @@ import {
 import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
-import { childrenOfConversationSql } from "../conversation-lineage.js";
+import { childrenOfConversationSql, listLineageGaps } from "../conversation-lineage.js";
 import { backfillConversationLineage } from "../conversations/lineage-backfill.js";
 import type { SessionRegistry } from "../registry.js";
 import {
@@ -650,6 +650,20 @@ export function registerConversationRoutes(
 
     sendJson(res, 200, { sources });
   }, { operation: { id: "get:/api/conversations/sources", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  // GET /api/conversations/lineage-gaps — issue 061c5d6. Conversations that
+  // are children without a trustworthy parent, optionally only those started
+  // since `since`.
+  server.get("/api/conversations/lineage-gaps", (req, res) => {
+    const query = req.query ?? {};
+    const since = parseSinceQuery(query.since);
+    const source = sourceFromQuery(query.provider);
+    if (source !== null && source !== "claude_code" && source !== "codex" && source !== "gemini") {
+      sendJson(res, 400, { error: "provider must be claude, codex, gemini, or all" });
+      return;
+    }
+    sendJson(res, 200, listLineageGaps(db, { since, source }));
+  }, { operation: { id: "get:/api/conversations/lineage-gaps", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // POST /api/conversations/ingest — Manually trigger re-ingestion
   server.post("/api/conversations/ingest", async (_req, res) => {

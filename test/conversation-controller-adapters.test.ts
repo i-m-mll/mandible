@@ -156,28 +156,6 @@ describe("structured conversation controller adapters", () => {
     expect(JSON.stringify(items)).not.toContain("encrypted");
   });
 
-  it("classifies Codex spawn lineage only with exact sender and receiver identities", async () => {
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
-    adapters.push(codex);
-    const events = providerEvents(codex);
-    expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
-    expect((await codex.deliver(delivery("resume-provider-session", "codex-turn", "lineage"))).ok).toBe(true);
-    await waitUntil(() => events.some((event) => event.kind === "provider-lineage"));
-
-    expect(events.filter((event) => event.kind === "provider-lineage")).toEqual([expect.objectContaining({
-      provider_event_id: "spawn-exact",
-      sender_provider_session_id: "codex-thread",
-      receiver_provider_session_id: "child-thread",
-      relation: "spawned-child",
-    })]);
-  });
-
-
-
-
-
-
-
   it("classifies an already active Codex thread as ambiguous acquisition", async () => {
     const codex = new CodexAppServerControllerAdapter({
       spawnProcess: spawner("codex", [], { FAKE_CODEX_RESUME_STATUS: "active" }),

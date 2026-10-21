@@ -2004,21 +2004,6 @@
         ]
       }
     },
-    "conversations.spawn": {
-      "route": ["conversations", "spawn"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},{"kind": "option","names": ["--checkout-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--topology"],"values": [{"kind": "argument","name": "top-level|autonomous|child|sibling|successor","value": {"type": "string"}}]},{"kind": "option","names": ["--target"],"values": [{"kind": "argument","name": "conversation-id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--idempotency-key"],"values": [{"kind": "argument","name": "key","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
     "conversations.storage.prepare": {
       "route": ["conversations", "storage", "prepare"],
       "grammar": {
@@ -2092,6 +2077,17 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "archive-root","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
+    "conversations.lineage-gaps": {
+      "route": ["conversations", "lineage-gaps"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time|Nd","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }

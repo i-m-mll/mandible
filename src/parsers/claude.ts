@@ -14,7 +14,7 @@ import type {
   ParseResult,
 } from "./types.js";
 import type { ConversationParent } from "../conversation-lineage.js";
-import { attachTranscriptChatItem } from "./types.js";
+import { attachTranscriptChatItem, firstUserMessageOpening } from "./types.js";
 import { normalizeClaudeTranscriptUsage } from "./context-usage.js";
 import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
@@ -649,6 +649,8 @@ export class ClaudeParser implements ConversationParser {
         agent_id: lineage.agentId,
       },
       parent: lineage.parent,
+      opening: firstUserMessageOpening(blocks, options.baseBlockCount === 0),
+      createdByAgent: false,
       blocks,
       ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
       ...(providerTitle ? { providerTitle: title } : {}),
