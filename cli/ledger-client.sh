@@ -49,7 +49,9 @@ mandible_ledger_request() {
     cp "$tmp_response" "$MANDIBLE_LEDGER_ERROR_BODY_FILE"
   fi
 
-  if [[ "$graceful" == "1" || "$graceful" == "true" ]]; then
+  # --graceful covers only an unreachable or unavailable daemon. A refusal the
+  # daemon actually returned (a custody conflict, a validation error) still fails.
+  if [[ ( "$graceful" == "1" || "$graceful" == "true" ) && ( -z "$status" || "$status" == "000" || "$status" == "503" ) ]]; then
     mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${status:-unreachable})"
     rm -f "$tmp_response"
     return 0

@@ -762,6 +762,10 @@ describe("work-unit custody takeover", () => {
     const refused = await twin();
     expect(refused.status).toBe(409);
     expect(refused.body).toMatchObject({ code: "custody_holder_live", holder_liveness: { session_id: "holder-session" } });
+    expect((await guarded.invoke({ method: "POST", url: "/api/work-units/activate", credential: "holder",
+      ambient_identity: { provider: "codex", provider_session_id: "twin-thread" },
+      body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover" } })).body)
+      .toMatchObject({ code: "custody_holder_live" });
     expect(owner(id)).toEqual({ owner_credential_id: credentials.holder.credential_id, custody_generation: 1 });
 
     db.prepare("UPDATE sessions SET status = 'dead' WHERE id = 'holder-session'").run();

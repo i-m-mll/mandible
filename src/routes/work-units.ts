@@ -311,6 +311,16 @@ export function registerWorkUnitRoutes(
         sendJson(res, 401, { error: "Existing work-unit custody requires a durable credential." });
         return;
       }
+      // Issue 72b00f8 — a claim that re-records the session or credential on a
+      // held unit obeys the holder rule. The holder's own handoff
+      // (`claim --session <worker>`) passes because the caller is the holder.
+      const recordsSession = Boolean(ambientIdentity) ||
+        Boolean(assignedSessionId && existing.assigned_session_id !== assignedSessionId);
+      if (credential && (recordsSession || (owned.owner_credential_id && owned.owner_credential_id !== credential.credential_id))) {
+        const refusal = holderRefusal(db, mapRow(current as unknown as Record<string, unknown>), credential,
+          ambientIdentity?.provider_session_id ?? null, sessionManager);
+        if (refusal) { sendJson(res, 409, refusal); return; }
+      }
       if (credential) {
         const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
         if (!custody.ok) {
@@ -452,6 +462,14 @@ export function registerWorkUnitRoutes(
       if (owned.owner_credential_id && !credential) {
         sendJson(res, 401, { error: "Existing work-unit custody requires a durable credential." });
         return;
+      }
+      // Issue 72b00f8 — activation re-records the session, so it obeys the
+      // holder rule and never takes a unit over implicitly.
+      if (credential) {
+        const unit = mapRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>);
+        const refusal = holderRefusal(db, unit, credential,
+          ambientIdentity?.provider_session_id ?? assignedSessionId, sessionManager);
+        if (refusal) { sendJson(res, 409, refusal); return; }
       }
       if (credential) {
         const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
@@ -744,16 +762,7 @@ export function registerWorkUnitRoutes(
         requestCustodyApproval(req, res, unit, identity, liveness, body.reason!.trim());
         return;
       }
-      const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
-      sendJson(res, 409, {
-        error: `Work unit is held by ${sameCredential ? "another session of your credential " : ""}${holderLabel(holder)}, ` +
-          `whose session ${livenessLabel(liveness)}. Takeover without the operator needs a stopped holder. ` +
-          "Ask the holder to release it, or rerun with --request-approval so the operator can approve the transfer in the Mandible app.",
-        code: "custody_holder_live",
-        holder,
-        holder_liveness: liveness,
-        takeover_command: takeoverCommand(unit, { requestApproval: true }),
-      });
+      sendJson(res, 409, liveHolderRefusal(db, unit, liveness, sameCredential));
     };
     if (sameCredential) {
       // Issue 72b00f8 — within one credential the recorded session holds the unit.
@@ -1131,6 +1140,59 @@ function custodyMutationFailure(
     return { status: 403, error: "Custodian credential is inactive.", code: "work_unit_custody_conflict" };
   }
   return null;
+}
+
+/** Issue 72b00f8 — the one refusal for a holder that is live or of unknown liveness. */
+function liveHolderRefusal(
+  db: ReturnType<typeof getDb>, unit: WorkUnit, liveness: HolderLiveness, sameCredential: boolean,
+): Record<string, unknown> {
+  const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
+  return {
+    error: `Work unit is held by ${sameCredential ? "another session of your credential " : ""}${holderLabel(holder)}, ` +
+      `whose session ${livenessLabel(liveness)}. Takeover without the operator needs a stopped holder. ` +
+      "Ask the holder to release it, or rerun with --request-approval so the operator can approve the transfer in the Mandible app.",
+    code: "custody_holder_live",
+    holder,
+    holder_liveness: liveness,
+    takeover_command: takeoverCommand(unit, { requestApproval: true }),
+  };
+}
+
+/**
+ * Issue 72b00f8 — the holder rule for mutations that re-record a unit's session
+ * or credential (activate, claim). Null when the caller is the holder, by
+ * credential and recorded session, or the unit has no credential holder.
+ * Otherwise a refusal: a stopped holder still needs the explicit, receipted
+ * `custody-assume`; these mutations never take a unit over.
+ */
+function holderRefusal(
+  db: ReturnType<typeof getDb>,
+  unit: WorkUnit,
+  identity: { user_id: string; credential_id: string },
+  callerSessionId: string | null,
+  sessionManager: SessionManager,
+): Record<string, unknown> | null {
+  if (!unit.owner_credential_id) return null;
+  const sameCredential = unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id;
+  let liveness: HolderLiveness;
+  if (sameCredential) {
+    const holding = sameCredentialSessionHolding(db, unit, callerSessionId, sessionManager);
+    if (holding.state === "clear") return null;
+    liveness = holding.liveness;
+  } else {
+    liveness = classifyHolderLiveness(db, unit, sessionManager);
+  }
+  if (liveness.state !== "stopped") return liveHolderRefusal(db, unit, liveness, sameCredential);
+  const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
+  return {
+    error: `Work unit is held by ${sameCredential ? "another session of your credential " : ""}${holderLabel(holder)}, ` +
+      `whose session ${livenessLabel(liveness)}. Activation and claim never take a unit over; ` +
+      "take over custody explicitly with the command below, then retry.",
+    code: "custody_holder_stopped",
+    holder,
+    holder_liveness: liveness,
+    takeover_command: takeoverCommand(unit, unit.kind === "integration" && !sameCredential ? { parentRoleCheckpointId: null } : {}),
+  };
 }
 
 function shortIssueRef(db: ReturnType<typeof getDb>, unit: WorkUnit): string {
