@@ -27,6 +27,8 @@ import {
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import type { AuthQueue } from "../auth-queue.js";
+import { readCodexTaskLiveness } from "../codex-task-liveness.js";
+import type { ProviderTaskLivenessReader } from "../session-liveness.js";
 import type { WorkUnit } from "../contracts.js";
 import {
   classifyHolderLiveness,
@@ -113,6 +115,8 @@ interface CustodyAssumeInput {
 /** Issue 72b00f8 — the narrow auth-queue surface custody approval needs. */
 export interface WorkUnitRouteOptions {
   authQueue?: Pick<AuthQueue, "submit">;
+  /** Codex thread-writer lock reader for holder liveness; tests inject it. */
+  readCodexTaskLiveness?: ProviderTaskLivenessReader;
 }
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
@@ -228,6 +232,7 @@ export function registerWorkUnitRoutes(
   options: WorkUnitRouteOptions = {},
 ): void {
   const db = getDb();
+  const readCodexTask = options.readCodexTaskLiveness ?? readCodexTaskLiveness;
 
   // POST /api/work-units/claim — create a new work unit (state=open)
   server.post("/api/work-units/claim", (req, res) => {
@@ -318,7 +323,7 @@ export function registerWorkUnitRoutes(
         Boolean(assignedSessionId && existing.assigned_session_id !== assignedSessionId);
       if (credential && (recordsSession || (owned.owner_credential_id && owned.owner_credential_id !== credential.credential_id))) {
         const refusal = holderRefusal(db, mapRow(current as unknown as Record<string, unknown>), credential,
-          ambientIdentity?.provider_session_id ?? null, sessionManager);
+          ambientIdentity?.provider_session_id ?? null, sessionManager, readCodexTask);
         if (refusal) { sendJson(res, 409, refusal); return; }
       }
       if (credential) {
@@ -468,7 +473,7 @@ export function registerWorkUnitRoutes(
       if (credential) {
         const unit = mapRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>);
         const refusal = holderRefusal(db, unit, credential,
-          ambientIdentity?.provider_session_id ?? assignedSessionId, sessionManager);
+          ambientIdentity?.provider_session_id ?? assignedSessionId, sessionManager, readCodexTask);
         if (refusal) { sendJson(res, 409, refusal); return; }
       }
       if (credential) {
@@ -704,7 +709,7 @@ export function registerWorkUnitRoutes(
         return;
       }
     }
-    sendJson(res, 200, custodyCheck(db, rows[0] ? mapRow(rows[0]) : null, identity, req, sessionManager));
+    sendJson(res, 200, custodyCheck(db, rows[0] ? mapRow(rows[0]) : null, identity, req, sessionManager, readCodexTask));
   }, { operation: { id: "get:/api/work-units/custody-check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/work-units/:id/custody/assume", (req, res) => {
@@ -768,7 +773,7 @@ export function registerWorkUnitRoutes(
       // Issue 72b00f8 — within one credential the recorded session holds the unit.
       const holding = operatorRecovery
         ? { state: "clear" as const }
-        : sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager);
+        : sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager, readCodexTask);
       if (holding.state === "clear") {
         sendJson(res, 200, { work_unit: unit, unchanged: true });
         return;
@@ -794,7 +799,7 @@ export function registerWorkUnitRoutes(
       checkpointId = checkpoint.id;
       authorityPath = "parent_role_handoff";
     } else if (!operatorRecovery) {
-      priorLiveness = classifyHolderLiveness(db, unit, sessionManager);
+      priorLiveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
       if (priorLiveness.state !== "stopped") return blocked(priorLiveness);
       authorityPath = "stopped_holder_takeover";
     }
@@ -1171,16 +1176,17 @@ function holderRefusal(
   identity: { user_id: string; credential_id: string },
   callerSessionId: string | null,
   sessionManager: SessionManager,
+  readCodexTask: ProviderTaskLivenessReader,
 ): Record<string, unknown> | null {
   if (!unit.owner_credential_id) return null;
   const sameCredential = unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id;
   let liveness: HolderLiveness;
   if (sameCredential) {
-    const holding = sameCredentialSessionHolding(db, unit, callerSessionId, sessionManager);
+    const holding = sameCredentialSessionHolding(db, unit, callerSessionId, sessionManager, readCodexTask);
     if (holding.state === "clear") return null;
     liveness = holding.liveness;
   } else {
-    liveness = classifyHolderLiveness(db, unit, sessionManager);
+    liveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
   }
   if (liveness.state !== "stopped") return liveHolderRefusal(db, unit, liveness, sameCredential);
   const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
@@ -1222,6 +1228,7 @@ function custodyCheck(
   identity: { user_id: string; credential_id: string },
   req: RequestLike,
   sessionManager: SessionManager,
+  readCodexTask: ProviderTaskLivenessReader,
 ): Record<string, unknown> {
   const unitFields = unit ? {
     id: unit.id, issue_id: unit.issue_id, ledger_issue_id: unit.ledger_issue_id, branch: unit.branch,
@@ -1242,14 +1249,14 @@ function custodyCheck(
   });
   if (!unit) return answer("clear", "No work unit is registered for this branch; committing claims one.");
   const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
-  const liveness = classifyHolderLiveness(db, unit, sessionManager);
+  const liveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
   if (!unit.owner_credential_id) {
     return answer("clear", "No credential holds this work unit; committing claims it.", { holder, holder_liveness: liveness });
   }
   if (unit.owner_user_id === identity.user_id && unit.owner_credential_id === identity.credential_id) {
     // Issue 72b00f8 — within one credential the recorded session holds the unit.
     // Session ids are claimed attribution: this coordinates cooperating agents.
-    const holding = sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager);
+    const holding = sameCredentialSessionHolding(db, unit, newHolderSession(req).provider_session_id, sessionManager, readCodexTask);
     if (holding.state === "clear") {
       return answer("clear", "You hold this work unit.", {
         holder, holder_liveness: holding.liveness ?? liveness,
