@@ -22,7 +22,7 @@ if (!vitestPath) {
 const runtime = createTestRuntime();
 const supervisor = new ProcessGroupSupervisor();
 try {
-  const child = spawn(process.execPath, [vitestPath, ...process.argv.slice(2)], {
+  const child = spawn(runtime.env.MANDIBLE_RUNTIME, [vitestPath, ...process.argv.slice(2)], {
     cwd: repoRoot,
     detached: true,
     env: runtime.env,
