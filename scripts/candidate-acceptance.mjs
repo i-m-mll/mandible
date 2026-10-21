@@ -148,10 +148,10 @@ async function main() {
     if (sha256(path.join(resources, '.bun-version')) !== sha256(path.join(root, '.bun-version')) || sha256(path.join(resources, 'scripts', 'bun-runtime.sh')) !== sha256(path.join(root, 'scripts', 'bun-runtime.sh'))) throw new Error('Native package has stale runtime selection resources');
     if (sha256(path.join(resources, 'scripts/bun-runtime-lock.tsv')) !== sha256(path.join(root, 'scripts/bun-runtime-lock.tsv'))) throw new Error('Native package has stale runtime byte/revision pins');
     if (sha256(path.join(resources, 'scripts/sqlite-runtime-install.mjs')) !== sha256(path.join(root, 'scripts/sqlite-runtime-install.mjs')) || sha256(path.join(resources, 'dist/sqlite-runtime.js')) !== sha256(path.join(root, 'dist/sqlite-runtime.js'))) throw new Error('Native package has stale stock SQLite provisioning resources');
-    const resourceEnv = { HOME: home, XDG_CACHE_HOME: path.join(home, 'runtime-cache'), XDG_DATA_HOME: path.join(home, 'runtime-data'), PATH: '/usr/bin:/bin:/usr/sbin:/sbin', MANDIBLE_RUNTIME_ARCHIVE: path.join(resources, 'runtime/bun.zip'), MANDIBLE_SQLITE_LIBRARY_ARCHIVE: path.join(resources, 'runtime/sqlite.tar.gz') };
+    const resourceEnv = { HOME: home, XDG_CACHE_HOME: path.join(home, 'runtime-cache'), XDG_DATA_HOME: path.join(home, 'runtime-data'), MANDIBLE_RUNTIME_STORE: path.join(home, 'runtime-data', 'mandible', 'runtimes'), PATH: '/usr/bin:/bin:/usr/sbin:/sbin', MANDIBLE_RUNTIME_ARCHIVE: path.join(resources, 'runtime/bun.zip'), MANDIBLE_SQLITE_LIBRARY_ARCHIVE: path.join(resources, 'runtime/sqlite.tar.gz') };
     const packagedRuntime = command('/bin/sh', [path.join(resources, 'scripts/bun-runtime.sh')], { env: resourceEnv });
     const packagedSqlite = command(packagedRuntime, [path.join(resources, 'scripts/sqlite-runtime-install.mjs')], { env: resourceEnv });
-    if (!packagedRuntime.startsWith(`${resourceEnv.XDG_DATA_HOME}${path.sep}`) || !packagedSqlite.startsWith(`${resourceEnv.XDG_DATA_HOME}${path.sep}`)) throw new Error('Packaged runtime escaped the owned durable data root.');
+    if (!packagedRuntime.startsWith(`${resourceEnv.MANDIBLE_RUNTIME_STORE}${path.sep}`) || !packagedSqlite.startsWith(`${resourceEnv.MANDIBLE_RUNTIME_STORE}${path.sep}`)) throw new Error('Packaged runtime escaped the owned durable data root.');
     for (const name of ['local-runtime.mjs', 'runtime-environment.mjs', 'runtime-environment-path.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'pinned-caddy.mjs', 'local-ca-trust.mjs']) {
       if (sha256(path.join(resources, name)) !== sha256(path.join(root, 'scripts', name))) throw new Error(`Native package has stale ${name}`);
     }
@@ -169,7 +169,7 @@ async function main() {
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });
     const env = { ...Object.fromEntries(Object.entries(buildEnv).filter(([key]) => !key.startsWith('MANDIBLE_'))), HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
-    Object.assign(env, { XDG_CACHE_HOME: resourceEnv.XDG_CACHE_HOME, XDG_DATA_HOME: resourceEnv.XDG_DATA_HOME });
+    Object.assign(env, { XDG_CACHE_HOME: resourceEnv.XDG_CACHE_HOME, XDG_DATA_HOME: resourceEnv.XDG_DATA_HOME, MANDIBLE_RUNTIME_STORE: resourceEnv.MANDIBLE_RUNTIME_STORE });
     daemon = launch(runtime, [path.join(root, 'dist', 'index.js')], env, 'daemon');
     gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
     let health;
