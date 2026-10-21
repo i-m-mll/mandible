@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Db } from "./db.js";
+import { gitObjectAnswer, rememberedObjectFact } from "./git-object-facts.js";
 
 export interface SigningCredentialRow {
   credential_id: string;
@@ -172,34 +174,11 @@ export function verifyMergeCommitSignature(
     const line = allowedSignerLine(credential);
     return line ? [line] : [];
   });
-  const verificationDir = mkdtempSync(join(tmpdir(), "mandible-allowed-signers-"));
-  const allowedSignersPath = join(verificationDir, "allowed_signers");
   try {
-    writeFileSync(allowedSignersPath, `${allowed.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
-    const result = spawnSync(
-      "git",
-      [
-        "-c",
-        "gpg.format=ssh",
-        "-c",
-        `gpg.ssh.allowedSignersFile=${allowedSignersPath}`,
-        "-c",
-        `gpg.ssh.program=${sshKeygenPath}`,
-        "-c",
-        "gpg.ssh.revocationFile=/dev/null",
-        "-c",
-        "gpg.minTrustLevel=fully",
-        "verify-commit",
-        commitSha,
-      ],
-      {
-        cwd,
-        encoding: "utf8",
-        timeout: 10_000,
-        env: verificationEnv(),
-      },
-    );
-    const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    const signers = `${allowed.join("\n")}\n`;
+    const key = ["verify-commit", cwd, commitSha, sshKeygenPath, createHash("sha256").update(signers).digest("hex")].join("\0");
+    const result = rememberedObjectFact(key, () => verifyCommitAgainst(cwd, commitSha, sshKeygenPath, signers));
+    const diagnostic = `${result.stdout}\n${result.stderr}`;
     const fingerprint = diagnostic.match(SSH_FINGERPRINT_PATTERN)?.[0] ?? null;
     if (result.status !== 0) {
       return unverified(
@@ -229,8 +208,57 @@ export function verifyMergeCommitSignature(
     };
   } catch {
     return unverified(commitSha, "verification_error");
+  }
+}
+
+/**
+ * One `git verify-commit` of `commitSha` against exactly `signers`. Its verdict
+ * is definitive when Git ran to completion and the commit exists here: exit 1
+ * also covers a commit missing from this repository, which may arrive later.
+ */
+function verifyCommitAgainst(cwd: string, commitSha: string, sshKeygenPath: string, signers: string) {
+  const verificationDir = mkdtempSync(join(tmpdir(), "mandible-allowed-signers-"));
+  const allowedSignersPath = join(verificationDir, "allowed_signers");
+  try {
+    writeFileSync(allowedSignersPath, signers, { encoding: "utf8", mode: 0o600 });
+    const result = spawnSync(
+      "git",
+      [
+        "-c",
+        "gpg.format=ssh",
+        "-c",
+        `gpg.ssh.allowedSignersFile=${allowedSignersPath}`,
+        "-c",
+        `gpg.ssh.program=${sshKeygenPath}`,
+        "-c",
+        "gpg.ssh.revocationFile=/dev/null",
+        "-c",
+        "gpg.minTrustLevel=fully",
+        "verify-commit",
+        commitSha,
+      ],
+      {
+        cwd,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: verificationEnv(),
+      },
+    );
+    const completed = !result.error && result.signal === null && (result.status === 0 || result.status === 1);
+    return {
+      value: { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" },
+      definitive: completed && (result.status === 0 || commitExists(cwd, commitSha)),
+    };
   } finally {
     rmSync(verificationDir, { recursive: true, force: true });
+  }
+}
+
+function commitExists(cwd: string, commitSha: string): boolean {
+  try {
+    return gitObjectAnswer(cwd, ["cat-file", "-t", commitSha], { env: verificationEnv(), timeout: 10_000 }) === "commit";
+  } catch {
+    return false;
   }
 }
 

@@ -3,6 +3,12 @@ import type { Logger } from "./types.js";
 
 const WARNING_THRESHOLD_MS = 100;
 const WARNING_CLEAR_MS = 50;
+/**
+ * A cheap read answers in milliseconds, so any single turn that holds the loop
+ * longer than this is a visible stall for every client. A lone multi-second
+ * stall barely moves a window's p95, so it is reported on its own (issue 63c9031).
+ */
+export const EVENT_LOOP_STALL_BUDGET_MS = 250;
 
 export interface EventLoopLagSnapshot {
   p50Ms: number;
@@ -33,6 +39,9 @@ export class EventLoopLagDiagnostics {
     const maxMs = finiteMilliseconds(this.histogram.max);
     this.highWaterMs = Math.max(this.highWaterMs, maxMs);
 
+    if (maxMs >= EVENT_LOOP_STALL_BUDGET_MS) {
+      this.logger("warn", "daemon_event_loop_stall", { max_ms: maxMs, p95_ms: p95Ms, budget_ms: EVENT_LOOP_STALL_BUDGET_MS });
+    }
     if (!this.warning && p95Ms >= WARNING_THRESHOLD_MS) {
       this.warning = true;
       this.logger("warn", "daemon_event_loop_lag", { p95_ms: p95Ms, max_ms: maxMs });
