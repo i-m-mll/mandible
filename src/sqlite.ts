@@ -155,6 +155,12 @@ export default class SqliteDatabase {
     }
     return new SqliteStatement(native);
   }
+  /**
+   * Calling the returned function directly takes the write lock at BEGIN on a writable connection.
+   * A deferred transaction that reads before it writes fails at once with SQLITE_BUSY whenever
+   * another connection holds or has just released the lock, because SQLite does not invoke the
+   * busy handler for an upgrade. Use `.deferred()` only for read-only snapshots.
+   */
   transaction<Args extends any[], Value>(callback: (...args: Args) => Value): Transaction<Args, Value> {
     const execute = (mode: string, args: Args): Value => {
       if (callback.constructor.name === "AsyncFunction") throw new Error("SQLite transactions require synchronous callbacks");
@@ -173,7 +179,9 @@ export default class SqliteDatabase {
       }
     };
     const deferred = (...args: Args) => execute("DEFERRED", args);
-    return Object.assign(deferred, { deferred, immediate: (...args: Args) => execute("IMMEDIATE", args), exclusive: (...args: Args) => execute("EXCLUSIVE", args) });
+    const immediate = (...args: Args) => execute("IMMEDIATE", args);
+    const exclusive = (...args: Args) => execute("EXCLUSIVE", args);
+    return Object.assign(this.readonly ? deferred : immediate, { deferred, immediate, exclusive });
   }
   backup(destination: string, options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.name === ":memory:") return Promise.reject(new Error("Online backup requires a file-backed database"));
