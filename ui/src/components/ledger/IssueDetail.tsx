@@ -488,14 +488,14 @@ export function LedgerIssueDetail({
             expanded={childrenExpanded}
             onExpandedChange={setChildrenExpanded}
           >
-            <UmbrellaChildrenShelf rows={umbrellaChildren} onOpenEntity={onOpenEntity} />
+            <UmbrellaChildrenShelf rows={umbrellaChildren} projectId={detail.project.id} onOpenEntity={onOpenEntity} />
           </CollapsiblePanel>
         )}
 
         {dependencies.length > 0 && (
           <section className="ledger-issue-detail__section ledger-issue-detail__dependencies-section">
             <SectionTitle title="Prerequisites" count={dependencies.length} />
-            <DependencyList dependencies={dependencies} onOpenEntity={onOpenEntity} />
+            <DependencyList dependencies={dependencies} projectId={detail.project.id} onOpenEntity={onOpenEntity} />
           </section>
         )}
 
@@ -550,7 +550,7 @@ export function LedgerIssueDetail({
             expanded={relationshipsExpanded}
             onExpandedChange={setRelationshipsExpanded}
           >
-            <RelationshipList relationships={otherRelationships} onOpenEntity={onOpenEntity} />
+            <RelationshipList relationships={otherRelationships} projectId={detail.project.id} onOpenEntity={onOpenEntity} />
           </CollapsiblePanel>
         )}
 
@@ -1291,11 +1291,18 @@ function IssueMetadataKeyValue({ rows }: { rows: IssueMetadataRow[] }): JSX.Elem
   );
 }
 
+/** A related issue's id, qualified with its project when that is not `projectId`. */
+function relatedIssueId(related: LedgerIssueSummaryRef, projectId: string): string {
+  return related.project_id === projectId ? related.display_id : `${related.project_ref}/${related.display_id}`;
+}
+
 function RelationshipList({
   relationships,
+  projectId,
   onOpenEntity,
 }: {
   relationships: LedgerIssueDetailRelationship[];
+  projectId: string;
   onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
 }): JSX.Element {
   return (
@@ -1308,11 +1315,11 @@ function RelationshipList({
             type="button"
             className="ledger-relationship-row"
             disabled={!related || !onOpenEntity}
-            onClick={() => related && onOpenEntity?.('issue', related.display_id)}
+            onClick={() => related && onOpenEntity?.('issue', related.display_id, related.project_ref)}
           >
             <span>{relationship.direction === 'incoming' ? 'from' : 'to'}</span>
             <strong>{relationship.relationship_type.replace(/_/g, ' ')}</strong>
-            <code>{related ? `${related.display_id} ${related.title}` : 'missing issue'}</code>
+            <code>{related ? `${relatedIssueId(related, projectId)} ${related.title}` : 'missing issue'}</code>
           </button>
         );
       })}
@@ -1322,9 +1329,11 @@ function RelationshipList({
 
 function DependencyList({
   dependencies,
+  projectId,
   onOpenEntity,
 }: {
   dependencies: LedgerIssueSummaryRef[];
+  projectId: string;
   onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
 }): JSX.Element {
   return (
@@ -1335,9 +1344,9 @@ function DependencyList({
           type="button"
           className="ledger-dependency-row"
           disabled={!onOpenEntity}
-          onClick={() => onOpenEntity?.('issue', dependency.display_id, dependency.project_id)}
+          onClick={() => onOpenEntity?.('issue', dependency.display_id, dependency.project_ref)}
         >
-          <code>{dependency.display_id}</code>
+          <code>{relatedIssueId(dependency, projectId)}</code>
           <strong>{dependency.title}</strong>
           <StatusPill status={dependency.status} resolution={dependency.resolution} size="sm" />
           {dependency.status === 'open' && <span className="ledger-dependency-row__warning">Open prerequisite</span>}
@@ -1349,9 +1358,11 @@ function DependencyList({
 
 function UmbrellaChildrenShelf({
   rows,
+  projectId,
   onOpenEntity,
 }: {
   rows: UmbrellaChildRelationship[];
+  projectId: string;
   onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
 }): JSX.Element {
   return (
@@ -1364,9 +1375,9 @@ function UmbrellaChildrenShelf({
             type="button"
             className="ledger-child-row"
             disabled={!onOpenEntity}
-            onClick={() => onOpenEntity?.('issue', related.display_id)}
+            onClick={() => onOpenEntity?.('issue', related.display_id, related.project_ref)}
           >
-            <code>{related.display_id}</code>
+            <code>{relatedIssueId(related, projectId)}</code>
             <strong>{related.title}</strong>
             <StatusPill status={related.status} resolution={related.resolution} size="sm" />
           </button>

@@ -548,6 +548,28 @@ describe("seed-from-filter", () => {
 });
 
 describe("unified ref resolver", () => {
+  it("resolves a project-qualified issue ref and says whether it is in the context project", async () => {
+    const issueId = createIssue(PROJECT_ID, "Qualified");
+    const shortId = new LedgerStore(db).getIssue(issueId).short_id;
+    type Resolution = {
+      resolution: { resolved: boolean; entity: { id?: string; project_ref?: string } | null; detail?: { same_project?: boolean } };
+    };
+    const resolve = async (ref: string, project: string) =>
+      ((await call("GET", `/api/refs/resolve?ref=${encodeURIComponent(ref)}&project=${project}`)).body as Resolution).resolution;
+
+    expect(await resolve(`issue:spaces-test/${shortId}`, OTHER_PROJECT_ID)).toMatchObject({
+      resolved: true,
+      entity: { id: issueId, project_ref: "spaces-test" },
+      detail: { same_project: false },
+    });
+    expect(await resolve(`issue:${shortId}`, "spaces-test")).toMatchObject({
+      resolved: true,
+      detail: { same_project: true },
+    });
+    expect((await resolve(`issue:spaces-test/${shortId}`, PROJECT_ID)).resolved).toBe(true);
+    expect((await resolve(`issue:other-project/${shortId}`, PROJECT_ID)).resolved).toBe(false);
+  });
+
   it("resolves issue, comment, artifact, mandible, and repo refs to typed results", async () => {
     const issueId = createIssue(PROJECT_ID, "Resolvable");
     const comment = new LedgerStore(db).addComment(

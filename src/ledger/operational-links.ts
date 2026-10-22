@@ -6,7 +6,6 @@ import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
-import { resolveProjectRef } from "./project-registry.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -82,21 +81,13 @@ export function resolveOperationalIssueRef(
   const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef));
   if (scoped.ok || scoped.error === "ambiguous") return scoped;
 
-  const global = withProject(db, store.resolveIssueRef(trimmed));
-  if (global.ok || global.error === "ambiguous") return global;
-
-  const separator = trimmed.indexOf("/");
-  if (separator <= 0 || separator === trimmed.length - 1) return global;
-  const project = resolveProjectRef(db, trimmed.slice(0, separator));
-  if (project.ambiguous) return { ok: false, error: "ambiguous" };
-  if (!project.ok || !project.project) return global;
-  return resolveInProjects(db, store, trimmed.slice(separator + 1), [project.project.id]);
+  return withProject(db, store.resolveIssueRef(trimmed));
 }
 
 /**
  * Issue ids are global, so the caller's repo only ranks candidates: a ref
- * resolves in the repo's own projects first, then across the ledger, then as
- * `<project>/<id>`.
+ * resolves in the repo's own projects first, then across the ledger. A
+ * `<project>/<id>` ref names its project explicitly.
  */
 function resolveInProjects(
   db: Db,
@@ -849,7 +840,7 @@ function maybeRecordLinkEvent(
   });
 }
 
-function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
+export function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
   const trimmed = repoRef?.trim();
   if (!trimmed || !tableExists(db, "ledger_project_checkouts")) return [];
   const ids = new Set<string>();

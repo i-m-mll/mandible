@@ -7,7 +7,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { EntityPill } from '../components/shared/EntityPill';
+import { IssuePill } from '../components/shared/IssuePill';
 import { canPerformOperation, spawnIssueAgent, type InstanceInfo } from '../api';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown } from '../lib/markdown';
@@ -674,7 +674,7 @@ function WorkUnitContinuationDetail({
         {item.issue_id && (
           <div className="inbox-detail__meta-row">
             <span className="inbox-detail__meta-label">Issue</span>
-            <EntityPill type="issue" id={item.issue_id} repoId={item.repo_id} />
+            <IssuePill issueRef={item.issue_id} context={item.repo_id} />
           </div>
         )}
         {item.continuation_at && (
@@ -830,7 +830,7 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
         {item.id && (
           <div className="inbox-detail__meta-row">
             <span className="inbox-detail__meta-label">ID</span>
-            <EntityPill type="issue" id={item.id} repoId={item.repo_id} />
+            <IssuePill issueRef={item.id} context={item.repo_id} />
           </div>
         )}
       </div>

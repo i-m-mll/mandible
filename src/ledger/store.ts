@@ -10,6 +10,7 @@ import {
   createStableIssueId,
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
+import { resolveProjectRef } from "./project-registry.js";
 import { assertEvidenceMethod } from "../identity/resolver.js";
 import { getUserById } from "../users/store.js";
 import type {
@@ -1977,10 +1978,24 @@ export class LedgerStore {
     }
   }
 
+  /**
+   * Resolve an issue ref: a full id, short id, alias, or unique prefix, or any
+   * of those qualified as `<project>/<ref>`. A qualifier names the project the
+   * issue must belong to and takes precedence over `options.project_id`.
+   */
   resolveIssueRef(ref: string, options: { project_id?: string } = {}): ResolveIssueRefResult {
     const trimmed = ref.trim();
     if (!trimmed) {
       return { ok: false, error: "not_found" };
+    }
+    const qualified = /^([^/#\s]+)\/([^/#\s]+)$/.exec(trimmed);
+    if (qualified) {
+      const project = resolveProjectRef(this.db, qualified[1]);
+      if (project.ambiguous) {
+        return { ok: false, error: "ambiguous", count: project.candidates?.length ?? 0, matches: [] };
+      }
+      if (!project.project) return { ok: false, error: "not_found" };
+      return this.resolveIssueRef(qualified[2], { project_id: project.project.id });
     }
 
     const matches = new Set<string>();
