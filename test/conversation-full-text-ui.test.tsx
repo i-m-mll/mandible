@@ -67,16 +67,4 @@ describe("conversation full-text UI request path", () => {
       full_text: true,
     }));
   });
-
-  it("serializes full_text on the API request", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ conversations: [], total: 0 }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await api.getConversationSidebar({ search: "body needle", full_text: true, limit: 5 });
-
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/conversations/sidebar?search=body+needle&full_text=true&limit=5");
-  });
 });

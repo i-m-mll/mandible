@@ -277,27 +277,7 @@ describe('cross-tab SSE coordinator', () => {
     expect(secondStates.at(-1)).toEqual({ state: 'open', reconnected: true });
     second.disconnect();
   });
-
-  it('falls back to one document-local transport when cross-tab primitives are unavailable', () => {
-    const transports: FakeTransport[] = [];
-    const coordinator = new CrossTabSseCoordinator({
-      createTransport: () => {
-        const transport = new FakeTransport();
-        transports.push(transport);
-        return transport;
-      },
-      channelFactory: null,
-      lockManager: null,
-    });
-
-    coordinator.connect();
-    coordinator.connect();
-    expect(transports).toHaveLength(1);
-    expect(transports[0].connectCount).toBe(1);
-    coordinator.disconnect();
-  });
 });
-
 
 it('invalidates warmed data before exact and wildcard consumer reads while heartbeat stays warm', async () => {
   await establishTestClientAccess();

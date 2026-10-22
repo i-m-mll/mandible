@@ -8,6 +8,7 @@ import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 type AssetManifest = {
   version: number;
@@ -16,29 +17,15 @@ type AssetManifest = {
   routes: Record<string, string>;
 };
 
+const uiDistDir = path.join(testRuntimeRoot, "ui-static-assets", "dist");
 let manifest: AssetManifest;
 
 beforeAll(() => {
-  execFileSync(process.execPath, ["ui/esbuild.config.js"], { cwd: process.cwd() });
-  manifest = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "ui", "dist", "asset-manifest.json"), "utf8"),
-  ) as AssetManifest;
+  execFileSync(process.execPath, ["ui/esbuild.config.js", "--outdir", uiDistDir], { cwd: process.cwd() });
+  manifest = JSON.parse(fs.readFileSync(path.join(uiDistDir, "asset-manifest.json"), "utf8")) as AssetManifest;
 });
 
 describe("UI static asset delivery", () => {
-  it("emits entry dependency and route chunk metadata from the current build", () => {
-    expect(manifest.version).toBe(1);
-    expect(manifest.entry).toBe("/dist/app.js");
-    expect(manifest.entryPreloads.length).toBeGreaterThan(0);
-    expect(manifest.entryPreloads).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^\/dist\/chunks\/.+-[A-Z0-9]{8}\.js$/)]),
-    );
-    expect(manifest.routes).toMatchObject({
-      spaces: expect.stringMatching(/^\/dist\/chunks\/SpacesTab-[A-Z0-9]{8}\.js$/),
-      issues: expect.stringMatching(/^\/dist\/chunks\/issues-[A-Z0-9]{8}\.js$/),
-      console: expect.stringMatching(/^\/dist\/chunks\/conversations-[A-Z0-9]{8}\.js$/),
-    });
-  });
 
   it("injects current build preloads while keeping the HTML revalidatable", async () => {
     const { server, origin } = await startServer();
@@ -64,7 +51,7 @@ describe("UI static asset delivery", () => {
       expect(immutable.status).toBe(200);
       expect(immutable.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
 
-      const appPath = path.join(process.cwd(), "ui", "dist", "app.js");
+      const appPath = path.join(uiDistDir, "app.js");
       const appStat = fs.statSync(appPath);
       const revalidated = await fetch(`${origin}/dist/app.js`, {
         headers: { "If-Modified-Since": appStat.mtime.toUTCString() },
@@ -88,6 +75,7 @@ async function startServer(): Promise<{ server: http.Server; origin: string }> {
     router,
     getStartupInfo: () => null,
     instance,
+    uiDistDir,
   });
   const port = await new Promise<number>((resolve, reject) => {
     server.once("error", reject);

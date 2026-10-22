@@ -98,7 +98,7 @@ it('keeps copied project metadata writable while gating host Git operations', as
   fireEvent.click(pushAll);
 
   fireEvent.click(screen.getByRole('button', { name: 'Repo settings' }));
-  fireEvent.input(document.querySelector('.repo-settings-strip__input') as HTMLInputElement, {
+  fireEvent.input(screen.getByRole('textbox', { name: 'Name' }), {
     target: { value: 'Renamed copied repo' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));

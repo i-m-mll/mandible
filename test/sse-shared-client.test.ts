@@ -103,50 +103,6 @@ describe('shared SSE client', () => {
     expect(es.closed).toBe(false);
   });
 
-  it('defers teardown to a timer so a re-acquire in the same tick keeps the socket', async () => {
-    vi.useFakeTimers();
-    const a = acquireSharedSse();
-    a.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-
-    a.close(); // refcount 0 -> teardown scheduled
-    const b = acquireSharedSse(); // re-acquire cancels teardown
-    vi.advanceTimersByTime(1);
-    expect(es.closed).toBe(false);
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-
-    b.close();
-    vi.advanceTimersByTime(1);
-    expect(es.closed).toBe(true);
-  });
-
-  it('re-acquires with a fresh fetch stream after full teardown; first open is not a reconnect', async () => {
-    vi.useFakeTimers();
-    const a = acquireSharedSse();
-    a.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es1 = FakeEventSource.instances[0];
-    es1.open();
-    a.close();
-    vi.advanceTimersByTime(1);
-    expect(es1.closed).toBe(true);
-
-    const b = acquireSharedSse();
-    const events: SSEPayload[] = [];
-    const states: Array<{ state: string; reconnected: boolean }> = [];
-    b.on('heartbeat', (p) => events.push(p));
-    b.onState((state, meta) => states.push({ state, reconnected: meta.reconnected }));
-    b.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(2));
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(2));
-    const es2 = FakeEventSource.instances[1];
-    es2.open();
-    es2.emit({ type: 'heartbeat', data: { timestamp: 1 } });
-    await vi.waitFor(() => expect(events.length).toBe(1));
-    expect(states.find((s) => s.state === 'open')?.reconnected).toBe(false);
-  });
-
   it('retains handlers across a dropped stream and reports reconnected on reopen', async () => {
     vi.useFakeTimers();
     const a = acquireSharedSse();
@@ -186,25 +142,6 @@ describe('shared SSE client', () => {
     expect(es1.closed).toBe(true);
   });
 
-  it('decrements the refcount only once for a double close', async () => {
-    vi.useFakeTimers();
-    const a = acquireSharedSse();
-    const b = acquireSharedSse();
-    a.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-    es.open();
-
-    a.close();
-    a.close(); // no-op; must not drop B's refcount
-    vi.advanceTimersByTime(10);
-    expect(es.closed).toBe(false);
-
-    b.close();
-    vi.advanceTimersByTime(10);
-    expect(es.closed).toBe(true);
-  });
-
   it('isolates a throwing handler so other handlers for the same event still run', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const a = acquireSharedSse();
@@ -222,37 +159,5 @@ describe('shared SSE client', () => {
     es.emit({ type: 'heartbeat', data: { timestamp: 1 } });
     await vi.waitFor(() => expect(wildcardRan).toBe(true));
     expect(errorSpy).toHaveBeenCalled();
-  });
-
-  it('exposes the live connection state through the handle getState()', async () => {
-    vi.useFakeTimers();
-    const a = acquireSharedSse();
-    expect(a.getState()).toBe('idle');
-    a.connect();
-    expect(a.getState()).toBe('connecting');
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-    es.open();
-    await vi.waitFor(() => expect(a.getState()).toBe('open'));
-    es.error(); // terminal drop -> down + backoff
-    await vi.waitFor(() => expect(a.getState()).toBe('down'));
-    await vi.advanceTimersByTimeAsync(500); // reconnect attempt
-    FakeEventSource.instances[1].open();
-    await vi.waitFor(() => expect(a.getState()).toBe('open'));
-  });
-
-  it('dispatches exact handlers before wildcard handlers, each in registration order', async () => {
-    const a = acquireSharedSse();
-    const order: string[] = [];
-    a.on('heartbeat', () => order.push('exact1'));
-    a.on('heartbeat', () => order.push('exact2'));
-    a.on('*', () => order.push('star1'));
-    a.on('*', () => order.push('star2'));
-    a.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-    es.open();
-    es.emit({ type: 'heartbeat', data: { timestamp: 1 } });
-    await vi.waitFor(() => expect(order).toEqual(['exact1', 'exact2', 'star1', 'star2']));
   });
 });

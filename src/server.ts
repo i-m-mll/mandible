@@ -28,7 +28,6 @@ const ROOT_DIR = resolveRootDir();
 const UI_DIR = path.join(ROOT_DIR, "ui");
 const UI_INDEX_PATH = path.join(UI_DIR, "index.html");
 const UI_DIST_DIR = path.join(UI_DIR, "dist");
-const UI_ASSET_MANIFEST_PATH = path.join(UI_DIST_DIR, "asset-manifest.json");
 const UI_BOOTSTRAP_SCRIPT_RE = /<script\s+id="mandible-bootstrap"\s+type="application\/json"><\/script>/;
 const HASHED_ASSET_NAME_RE = /-[A-Za-z0-9_-]{8,}\.[^.]+$/;
 const MIME_TYPES: Record<string, string> = {
@@ -904,11 +903,14 @@ export interface ServerOptions {
   // Issue 708dc4c — client-auth gate for boundary telemetry and the dashboard
   // local access boundary. Optional for isolated test servers.
   clientAuth?: ClientAuthGate;
+  /** Built UI assets served under /dist/. Defaults to the checkout's ui/dist. */
+  uiDistDir?: string;
 }
 
 export function createServer(options: ServerOptions, transport: "http" | "local-socket" = "http"): http.Server {
   const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady, isWarm } = options;
   const instance = options.instance ?? resolveInstanceInfo();
+  const uiDistDir = options.uiDistDir ?? UI_DIST_DIR;
 
   if (transport === "http") {
   router.get("/api/health", (_req, res) => {
@@ -1079,7 +1081,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       const handled = await router.handle(req, res, transport);
       if (!handled) {
         if (transport === "http" && !isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, req, res, instance);
+          const served = await handleStaticRequest(method, pathname, req, res, instance, uiDistDir);
           if (served) {
             return;
           }
@@ -1238,12 +1240,13 @@ async function handleStaticRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   instance: InstanceInfo,
+  distDir: string,
 ): Promise<boolean> {
-  const filePath = resolveStaticPath(pathname);
+  const filePath = resolveStaticPath(pathname, distDir);
   if (!filePath) {
     return false;
   }
-  return sendFile(req, res, filePath, method, instance);
+  return sendFile(req, res, filePath, method, instance, distDir);
 }
 
 const PWA_FILES = new Set([
@@ -1255,7 +1258,7 @@ const PWA_FILES = new Set([
   "/icon-512.png",
 ]);
 
-function resolveStaticPath(pathname: string): string | null {
+function resolveStaticPath(pathname: string, distDir: string): string | null {
   if (pathname === "/") {
     return UI_INDEX_PATH;
   }
@@ -1267,7 +1270,7 @@ function resolveStaticPath(pathname: string): string | null {
     if (!requestPath) {
       return null;
     }
-    return resolveSafePath(UI_DIST_DIR, requestPath);
+    return resolveSafePath(distDir, requestPath);
   }
   return null;
 }
@@ -1294,6 +1297,7 @@ async function sendFile(
   filePath: string,
   method: string,
   instance: InstanceInfo,
+  distDir: string,
 ): Promise<boolean> {
   try {
     const stat = await fs.promises.stat(filePath);
@@ -1302,7 +1306,7 @@ async function sendFile(
     }
     if (filePath === UI_INDEX_PATH) {
       const raw = await fs.promises.readFile(filePath, "utf8");
-      const manifest = await readUiAssetManifest();
+      const manifest = await readUiAssetManifest(distDir);
       const body = injectBootstrapData(injectAssetPreloads(raw, manifest), instance);
       res.writeHead(200, {
         "Content-Type": getContentType(filePath),
@@ -1318,7 +1322,7 @@ async function sendFile(
       return true;
     }
     const lastModified = stat.mtime.toUTCString();
-    const immutable = isImmutableBuildAsset(filePath);
+    const immutable = isImmutableBuildAsset(filePath, distDir);
     const cacheControl = immutable ? "public, max-age=31536000, immutable" : "no-cache";
     if (!immutable && isNotModified(req.headers["if-modified-since"], stat.mtime)) {
       res.writeHead(304, {
@@ -1349,15 +1353,15 @@ async function sendFile(
   }
 }
 
-function isImmutableBuildAsset(filePath: string): boolean {
-  const relative = path.relative(UI_DIST_DIR, filePath);
+function isImmutableBuildAsset(filePath: string, distDir: string): boolean {
+  const relative = path.relative(distDir, filePath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
   return HASHED_ASSET_NAME_RE.test(path.basename(filePath));
 }
 
-async function readUiAssetManifest(): Promise<UiAssetManifest | null> {
+async function readUiAssetManifest(distDir: string): Promise<UiAssetManifest | null> {
   try {
-    const parsed = JSON.parse(await fs.promises.readFile(UI_ASSET_MANIFEST_PATH, "utf8")) as Partial<UiAssetManifest>;
+    const parsed = JSON.parse(await fs.promises.readFile(path.join(distDir, "asset-manifest.json"), "utf8")) as Partial<UiAssetManifest>;
     if (parsed.version !== 1 || !Array.isArray(parsed.entryPreloads) || !isStringRecord(parsed.routes)) {
       return null;
     }

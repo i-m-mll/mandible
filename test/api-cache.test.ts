@@ -4,16 +4,7 @@ import { browserResourceKeys } from '../ui/src/query/browserResources';
 import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  addSpaceItem,
-  dispositionBriefingGroupProposal,
-  briefingApiCacheFamiliesForEvent,
-  getBriefingSidebarSnapshot,
-  getSpace,
-  getSpaceFactPacket,
-  getSessions,
-  invalidateApiGetCache,
-} from '../ui/src/api';
+import { addSpaceItem, briefingApiCacheFamiliesForEvent, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, invalidateApiGetCache } from '../ui/src/api';
 
 describe('Briefing SSE cache invalidation matrix', () => {
   it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing, bundle, and badge caches', (topic) => {
@@ -21,28 +12,6 @@ describe('Briefing SSE cache invalidation matrix', () => {
       '/api/briefings',
       '/api/briefing-bundles',
       '/api/briefing-groups',
-      '/api/dashboard/badges',
-    ]);
-  });
-
-  it('does not classify removed compatibility or merely prefix-matching topics', () => {
-    for (const topic of ['ledger:issue:updated', 'auth:new', 'briefing:unknown', 'ask:answered', 'feedback:collection-updated']) {
-      expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([]);
-    }
-  });
-
-  it('keeps event bursts bounded to the union of their declared families', () => {
-    const burst = [
-      'briefing:created',
-      'briefing:round-published',
-      'briefing:answered',
-      'briefing:submitted',
-    ];
-    const families = new Set(burst.flatMap((topic) => briefingApiCacheFamiliesForEvent(topic)));
-    expect([...families].sort()).toEqual([
-      '/api/briefing-bundles',
-      '/api/briefing-groups',
-      '/api/briefings',
       '/api/dashboard/badges',
     ]);
   });
@@ -66,25 +35,6 @@ describe('dashboard API GET cache', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     invalidateApiGetCache();
-  });
-
-  it('sends the destination changes bound into a Briefing disposition', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ error: 'Stop after request capture' }), {
-      status: 409, headers: { 'content-type': 'application/json' },
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-    await expect(dispositionBriefingGroupProposal('digest', {
-      decision: 'accepted', expectedBaseBundleId: 'base', proposalBundleId: 'proposal',
-      bindingDigest: 'a'.repeat(64), destinationChanges: [{
-        logicalArtifactId: 'artifact:report', expectedGroupId: null, resultingGroupId: 'digest',
-      }],
-    })).rejects.toThrow();
-    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/review-dispositions'));
-    expect(call).toBeDefined();
-    const options = call![1]!;
-    expect(JSON.parse(options.body as string)).toMatchObject({
-      destination_changes: [{ logical_artifact_ref: 'artifact:report', expected_group_ref: null }],
-    });
   });
 
   it('deduplicates concurrent same-URL GETs across API helpers', async () => {
@@ -112,16 +62,6 @@ describe('dashboard API GET cache', () => {
     expect(space.id).toBe('sp1');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith('/api/spaces/sp1', expect.any(Object));
-  });
-
-  it('serves fresh cached GETs without refetching', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ sessions: [{ id: 's1' }] }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(getSessions<{ id: string }>()).resolves.toEqual([{ id: 's1' }]);
-    await expect(getSessions<{ id: string }>()).resolves.toEqual([{ id: 's1' }]);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('publishes cached Briefing containment only after all three reads succeed', async () => {

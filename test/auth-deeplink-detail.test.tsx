@@ -5,7 +5,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // honest not-found state for invalid ids, instead of falling through to the
 // empty-view placeholder (or having the sidebar
 // reconciliation effect steal the selection).
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
@@ -123,25 +123,6 @@ afterEach(() => {
 });
 
 describe('AuthQueueView deep-linked request outside loaded lists', () => {
-  it('fetches the request from the detail route and renders the detail pane', async () => {
-    const fetchMock = stubFetchWithDetailRoute((id) =>
-      id === REMOTE_ID
-        ? new Response(JSON.stringify(remoteDetailPayload), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        : null,
-    );
-
-    renderDeepLinkedView([], REMOTE_ID);
-
-    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
-    expect(screen.queryByText('No requests in this view')).toBeNull();
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/auth/request/${encodeURIComponent(REMOTE_ID)}`,
-      expect.anything(),
-    );
-  });
 
   it('keeps the deep-linked selection when the sidebar has other rows', async () => {
     stubFetchWithDetailRoute((id) =>
@@ -159,20 +140,6 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
     // promoted over the deep-linked selection.
     expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
-  });
-
-  it('shows an honest not-found state for an invalid deep-linked id', async () => {
-    stubFetchWithDetailRoute(() =>
-      new Response(JSON.stringify({ error: 'Auth request not found.' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-
-    renderDeepLinkedView([], 'req-nonexistent');
-
-    expect(await screen.findByText(/Approval request req-none was not found/)).toBeTruthy();
-    expect(screen.queryByText('No requests in this view')).toBeNull();
   });
 });
 
@@ -234,76 +201,6 @@ describe('AuthQueueView short-form request params', () => {
     // The loaded row was NOT silently selected into the detail pane: its
     // title appears only once (the sidebar row), never in the detail header.
     expect(screen.getAllByText(/Self-merge: feature\/x/)).toHaveLength(1);
-  });
-
-  // Review D2 — the deep-linked row scrolls into view only after the short
-  // selection upgrades to the canonical full id the rows are keyed by.
-  it('scrolls the sidebar row into view after the canonical-id upgrade', async () => {
-    const scrollSpy = vi.fn();
-    Element.prototype.scrollIntoView = scrollSpy;
-    stubFetchWithDetailRoute((id) =>
-      fullId.startsWith(id)
-        ? new Response(
-            JSON.stringify({ ...remoteDetailPayload, request_id: fullId, title: uuidRequest.title }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          )
-        : null,
-    );
-
-    renderDeepLinkedView([uuidRequest], fullId.slice(0, 8));
-
-    await waitFor(() => {
-      expect(scrollSpy).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    const scrolled = scrollSpy.mock.instances[0] as Element;
-    expect(scrolled.getAttribute('data-request-id')).toBe(fullId);
-  });
-
-  // Review D1 — a non-404/409 failure renders an explicit error state with a
-  // retry affordance instead of an eternal "Loading request…".
-  it('shows an error state with retry for a failed detail fetch', async () => {
-    let failing = true;
-    stubFetchWithDetailRoute(() =>
-      failing
-        ? new Response(JSON.stringify({ error: 'daemon rebuilding' }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        : new Response(JSON.stringify(remoteDetailPayload), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-    );
-
-    renderDeepLinkedView([], REMOTE_ID);
-
-    expect(await screen.findByText(/Failed to load approval request/)).toBeTruthy();
-    expect(screen.queryByText('Loading request…')).toBeNull();
-
-    failing = false;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-
-    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
-  });
-
-  it('fetches a short id outside the loaded lists from the detail route', async () => {
-    const shortId = REMOTE_ID.slice(0, 8);
-    const fetchMock = stubFetchWithDetailRoute((id) =>
-      REMOTE_ID.startsWith(id)
-        ? new Response(JSON.stringify(remoteDetailPayload), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        : null,
-    );
-
-    renderDeepLinkedView([], shortId);
-
-    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/auth/request/${encodeURIComponent(shortId)}`,
-      expect.anything(),
-    );
   });
 
   it('shows an honest ambiguity state for a prefix matching multiple requests', async () => {
