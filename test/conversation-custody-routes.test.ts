@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { ConversationCustodyStore } from "../src/conversations/custody-store.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerConversationCustodyRoutes } from "../src/routes/conversation-custody.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 describe("conversation custody routes", () => {
   let root: string;
@@ -20,8 +21,7 @@ describe("conversation custody routes", () => {
 
   beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-custody-routes-"));
-    db = openDb(path.join(root, "mandible.db"));
-    migrate(db);
+    db = migratedMemoryDb();
     setDb(db);
     const auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
     token = auth.mintApiToken(setupOperator(db, { display_name: "Operator" }).id).token;

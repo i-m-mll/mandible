@@ -6,19 +6,30 @@ import os from "node:os";
 import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
-import { triggerExactPathIngest, triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
-import { decompressContent } from "../src/compression.js";
+import { setDb, type Db } from "../src/db.js";
+import {
+  startIngestion,
+  stopIngestionGracefully,
+  triggerExactPathIngest,
+  triggerReconcileForTest,
+  triggerTargetedIngest,
+} from "../src/ingestion.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { ensureExactConversationFresh } from "../src/conversations/freshness.js";
+import type { Logger } from "../src/types.js";
+import { waitUntil } from "./helpers/wait-until.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
 let previousCodexHome: string | undefined;
 const TEST_APPEND_BATCH_BYTES = 16 * 1024 * 1024;
+// The watcher roots are fixed when src/ingestion.ts loads, before beforeEach
+// points HOME at a per-test directory.
+const WATCHED_CODEX_SESSIONS = path.join(os.homedir(), ".codex", "sessions");
 
 function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;
@@ -89,8 +100,7 @@ function assistantRow(text: string, second: number): string {
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ingestion-tail-"));
   process.env.HOME = path.join(tempDir, "home");
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   previousCodexHome = process.env.CODEX_HOME;
 });
@@ -654,5 +664,59 @@ describe("incremental tail ingestion", () => {
       SELECT COUNT(*) AS count FROM conversation_block_aliases
        WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
     `).get(original.id)).toEqual({ count: originalBlocks.length });
+  });
+});
+
+describe("watched tail ingestion", () => {
+  let sessionRoot = "";
+  let logs: Array<{ message: string; details?: Record<string, unknown> }> = [];
+  const logger: Logger = (_level, message, details) => { logs.push({ message, details }); };
+
+  beforeEach(() => {
+    fs.mkdirSync(WATCHED_CODEX_SESSIONS, { recursive: true });
+    sessionRoot = fs.mkdtempSync(path.join(WATCHED_CODEX_SESSIONS, "watch-fixture-"));
+    logs = [];
+  });
+  afterEach(async () => {
+    await stopIngestionGracefully();
+    fs.rmSync(sessionRoot, { recursive: true, force: true });
+  });
+
+  async function watchedSession(name: string): Promise<string> {
+    const sessionDir = path.join(sessionRoot, "2026", "07", "02");
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const sessionPath = path.join(sessionDir, `rollout-2026-07-02T00-00-00-${name}.jsonl`);
+    await fsp.writeFile(sessionPath, initialCodexRows(name), "utf8");
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    startIngestion(logger);
+    await waitUntil(() => logs.some((entry) => entry.message === "ingestion_watcher_started"
+      && entry.details?.base === WATCHED_CODEX_SESSIONS), "the Codex sessions watcher");
+    return sessionPath;
+  }
+  const blockCount = (sessionPath: string) => (db.prepare("SELECT block_count FROM conversations WHERE source_path = ?")
+    .get(sessionPath) as { block_count: number } | undefined)?.block_count;
+
+  it("appends watched JSONL records through the incremental path without a reconcile", async () => {
+    const sessionPath = await watchedSession("watchappend");
+    expect(blockCount(sessionPath)).toBe(2);
+    await fsp.appendFile(sessionPath, assistantRow("watched append", 3), "utf8");
+    await waitUntil(() => blockCount(sessionPath) === 3, "the watched append");
+    expect(logs.some((entry) => entry.message === "ingestion_complete"
+      && entry.details?.ingest_mode === "append" && entry.details?.delta === true)).toBe(true);
+  });
+
+  it("tombstones a deleted watched source while keeping the conversation and its coordinates", async () => {
+    const sessionPath = await watchedSession("watchdelete");
+    await fsp.rm(sessionPath);
+    await waitUntil(() => (db.prepare(`
+      SELECT s.availability FROM conversation_sources s
+        JOIN conversation_source_aliases a ON a.source_id = s.id
+       WHERE a.path = ?`).get(sessionPath) as { availability: string } | undefined)?.availability === "missing",
+    "the watched source tombstone");
+    expect(blockCount(sessionPath)).toBe(2);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_blocks b
+        LEFT JOIN conversations c ON c.id = b.conversation_id
+       WHERE c.id IS NULL`).get()).toMatchObject({ count: 0 });
   });
 });

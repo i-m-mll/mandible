@@ -2,13 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { triggerTargetedIngest } from "../src/ingestion.js";
 import { readOpeningLine } from "../src/lineage-marker.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import type { LineageGapReport } from "../src/conversation-lineage.js";
 import { backfillConversationLineage } from "../src/conversations/lineage-backfill.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const CODEX_PARENT = "01a15eab-0000-7000-8000-000000000001";
 const CODEX_OTHER = "01a15eab-0000-7000-8000-000000000002";
@@ -67,7 +68,7 @@ let clock = 1_000_000;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-marker-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
 });
 

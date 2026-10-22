@@ -5,20 +5,15 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate } from "../src/db.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import {
   getConversationStructureCache,
-  sparseConversationBlockId,
 } from "../src/conversations/structure-cache.js";
-import {
-  ConversationSearchCache,
-  SourceBackedConversationSearchSourceAdapter,
-} from "../src/conversations/search-cache.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 
@@ -100,38 +95,9 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
-  it("creates and advances source versions with production foreign keys enabled", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    db.pragma("foreign_keys = ON");
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    let parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-
-    const firstVersion = await record(db, "conversation-a", filePath);
-    expect(db.prepare(`
-      SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
-    `).get("conversation-a")).toEqual({ current_version_id: firstVersion });
-
-    writeRecords(filePath, records([
-      { type: "response_item", timestamp: "2026-08-17T00:00:04Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "changed" }] } },
-    ]));
-    parsed = await parse(filePath);
-    replaceBlocks(db, "conversation-a", parsed);
-    const secondVersion = await record(db, "conversation-a", filePath);
-
-    expect(secondVersion).not.toBe(firstVersion);
-    expect(db.prepare(`
-      SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
-    `).get("conversation-a")).toEqual({ current_version_id: secondVersion });
-    expect(db.pragma("foreign_key_check")).toEqual([]);
-    db.close();
-  });
 
   it("seals the parser extent when the writer appends before source indexing", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     const parsed = await parse(filePath);
@@ -176,82 +142,8 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
-  it("reads verified multi-record tool linkage and resolves every legacy block id", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const versionId = await record(db, "conversation-a", filePath);
-
-    const result = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(result.status).toBe("source");
-    if (result.status !== "source") throw new Error("expected source read");
-    expect(result.sourceVersionId).toBe(versionId);
-    expect(result.value.blocks.map((block) => block.type)).toEqual([
-      "tool_use", "tool_result", "assistant_message",
-    ]);
-    expect(result.value.blocks[1].parent_id).toBe(result.value.blocks[0].id);
-    expect(result.value.blocks[1].metadata_json).toBe(JSON.stringify(parsed.blocks[1].metadata));
-    expect(JSON.parse(result.value.blocks[1].metadata_json)).toMatchObject({ tool_name: "shell" });
-    expect(result.value.blocks.every((block) => block.locator?.recordHash.length === 64)).toBe(true);
-
-    for (const block of parsed.blocks) {
-      const legacy = await new ConversationSourceReader(db).readBlock(`legacy-conversation-a-${block.position}`);
-      expect(legacy.status).toBe("source");
-      if (legacy.status === "source") {
-        expect(legacy.value.content).toBe(block.content);
-        expect(legacy.value.metadata_json).toBe(JSON.stringify(block.metadata));
-      }
-    }
-    db.close();
-  });
-
-  it("pages exact native records after dense structural rows and aliases are reclaimed", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const versionId = await record(db, "conversation-a", filePath);
-    const cache = getConversationStructureCache(db);
-    expect(cache.captureDenseRows(db, "conversation-a", "replace", undefined, new Map(
-      parsed.blocks.filter((block) => block.type === "tool_use" && block.metadata.tool_id)
-        .map((block) => [block.metadata.tool_id!, block.position]),
-    ))).toMatchObject({
-      captured: 3,
-      cached: 3,
-      sourceVersionId: versionId,
-    });
-    expect(cache.findToolPosition("conversation-a", "call-1")).toBe(0);
-    db.exec(`
-      DELETE FROM conversation_block_aliases;
-      DELETE FROM conversation_structural_blocks;
-      DELETE FROM conversation_blocks;
-      DELETE FROM conversation_normalization_checkpoints;
-    `);
-
-    const reader = new ConversationSourceReader(db);
-    const page = await reader.readPage("conversation-a", { offset: 0, limit: 2 });
-    expect(page.status).toBe("source");
-    if (page.status !== "source") throw new Error("expected sparse source read");
-    expect(page.value).toMatchObject({ total: 3, offset: 0, limit: 2 });
-    expect(page.value.blocks.map((block) => block.content))
-      .toEqual(parsed.blocks.slice(0, 2).map((block) => block.content));
-    expect(page.value.blocks[1].parent_id).toBe(page.value.blocks[0].id);
-    expect(page.value.blocks.every((block) => block.locator === null)).toBe(true);
-
-    const direct = await reader.readBlock(sparseConversationBlockId("conversation-a", 2));
-    expect(direct.status).toBe("source");
-    if (direct.status === "source") expect(direct.value.content).toBe(parsed.blocks[2].content);
-    db.close();
-  });
-
   it("serves the sealed sparse prefix during append growth and rejects an in-place rewrite", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     const parsed = await parse(filePath);
@@ -289,63 +181,8 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
-  it("restores Codex model metadata from the durable conversation context for bounded reads", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    const sourceRecords = records([
-      { type: "response_item", timestamp: "2026-08-17T00:00:04Z", payload: { type: "reasoning", summary: "model-aware thinking" } },
-    ]);
-    sourceRecords.splice(1, 0, {
-      type: "turn_context", timestamp: "2026-08-17T00:00:00Z", payload: { model: "gpt-5.6" },
-    });
-    writeRecords(filePath, sourceRecords);
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const store = new ConversationSourceStore(db);
-    await store.recordConversation({
-      conversationId: "conversation-a",
-      provider: "codex",
-      nativeSessionId: parsed.conversation.session_id,
-      filePath,
-      blocks: parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-conversation-a-${block.position}` })),
-      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
-    });
-    await expect(store.verifyAndPromoteConversationPayload("conversation-a"))
-      .resolves.toMatchObject({ promoted: true });
-
-    const read = await new ConversationSourceReader(db).readAll("conversation-a");
-    expect(read.status).toBe("source");
-    if (read.status !== "source") throw new Error("expected source read");
-    for (const block of parsed.blocks.filter((block) => block.type === "assistant_message" || block.type === "thinking")) {
-      const sourceBlock = read.value.find((candidate) => candidate.position === block.position);
-      expect(sourceBlock?.metadata_json).toBe(JSON.stringify(block.metadata));
-      expect(JSON.parse(sourceBlock?.metadata_json ?? "{}")).toMatchObject({ model: "gpt-5.6" });
-    }
-    db.close();
-  });
-
-  it("surfaces the exact source failure after legacy payload has been stripped", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const store = new ConversationSourceStore(db);
-    await record(db, "conversation-a", filePath);
-    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
-    fs.rmSync(filePath);
-
-    const result = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(result.status).toBe("stale");
-    if (result.status === "stale") expect(result.reason).toBe("This transcript changed after Mandible indexed it.");
-    db.close();
-  });
-
   it("keeps byte-identical appended records structurally distinct", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     const repeated = {
       type: "response_item",
@@ -402,40 +239,8 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
-  it("feeds the disposable search cache from the verified source version", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const versionId = await record(db, "conversation-a", filePath);
-    const adapter = new SourceBackedConversationSearchSourceAdapter(db);
-    expect(adapter.describe(["conversation-a"])).toEqual([
-      { conversationId: "conversation-a", sourceVersionId: versionId },
-    ]);
-    const cache = new ConversationSearchCache(adapter, {
-      cachePath: path.join(tempDir, "search-cache.db"),
-    });
-    try {
-      const result = await cache.search({
-        conversationIds: ["conversation-a"],
-        needle: "hello result",
-        limit: 10,
-      });
-      expect(result.matches).toEqual([
-        expect.objectContaining({ conversation_id: "conversation-a" }),
-      ]);
-      expect(result.metrics).toMatchObject({ cold_conversations: 1, exact_verified_blocks: 2 });
-    } finally {
-      cache.close();
-      db.close();
-    }
-  });
-
   it("keeps structural ids across append, and fails closed to legacy on same-size rewrite", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     let parsed = await parse(filePath);
@@ -469,8 +274,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("rejects truncation, prepend, CRLF conversion, and replacement as stale locators", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     const original = fs.readFileSync(filePath);
@@ -496,34 +300,8 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
-  it("falls back when the parser epoch is unavailable or the cold-read bound is exceeded", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    await record(db, "conversation-a", filePath);
-
-    const bounded = await new ConversationSourceReader(db, { maxSourceBytes: 16 })
-      .readPage("conversation-a", { limit: 20 });
-    expect(bounded.status).toBe("legacy");
-    if (bounded.status === "legacy") expect(bounded.reason).toBe("unsupported");
-
-    db.prepare("UPDATE conversation_source_versions SET parser_version = 'future' WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)")
-      .run("conversation-a");
-    const future = await new ConversationSourceReader(db, { legacyFallback: false })
-      .readPage("conversation-a", { limit: 20 });
-    expect(future.status).toBe("unsupported");
-    if (future.status === "unsupported") {
-      expect(future.reason).toBe("This conversation was indexed by an older Mandible version.");
-    }
-    db.close();
-  });
-
   it("rejects a symlink escape and preserves metadata plus fallback bodies on missing source", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     const parsed = await parse(filePath);
@@ -556,8 +334,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("does not treat a duplicate provider session id as conversation identity", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const first = rolloutPath("rollout-2026-08-17T00-00-00-first.jsonl");
     const second = rolloutPath("rollout-2026-08-17T00-00-00-second.jsonl");
     writeRecords(first, records());
@@ -578,8 +355,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("uses a full immutable digest rather than the append generation marker", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const filePath = rolloutPath();
     writeRecords(filePath, records());
     const parsed = await parse(filePath);

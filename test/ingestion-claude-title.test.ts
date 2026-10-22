@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { configureIngestionWorker, ingestBatchForWorker, triggerTargetedIngest } from "../src/ingestion.js";
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
@@ -13,6 +13,7 @@ import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { addCredential, createUser } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -57,8 +58,7 @@ beforeEach(() => {
   previousConfigDir = process.env.MANDIBLE_CONFIG_DIR;
   process.env.HOME = path.join(tempDir, "home");
   process.env.MANDIBLE_CONFIG_DIR = path.join(tempDir, "config");
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
 });
 

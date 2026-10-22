@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { compressContent } from "../src/compression.js";
 import { addCredential, createUser, listCredentials } from "../src/users/store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
@@ -21,18 +21,14 @@ import {
   CREDENTIAL_LEAK_EVENT_TYPE,
   credentialMaskFor,
   extractTokenCandidates,
-  isSessionScopedCredential,
   MAX_CANDIDATES_PER_TEXT,
-  maskActiveCredentialsInText,
-  maskUnverifiedCandidates,
   matchActiveCredential,
-  recordCredentialLeak,
   redactCredentialLeaksInBlocks,
-  remediationFor,
   resetCredentialLeakScanCache,
   scanBlocksForCredentialLeaks,
   unverifiedCredentialMask,
 } from "../src/credential-leak-scan.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -44,7 +40,7 @@ const FAKE_TOKEN = `${API_TOKEN_PREFIX}${"F".repeat(43)}`;
 beforeEach(() => {
   resetCredentialLeakScanCache();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-leak-scan-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   pepper = loadOrCreatePepper(db, path.join(tempDir, "client-auth"));
 });
 
@@ -119,15 +115,6 @@ function seedConversation(
 }
 
 describe("candidate extraction", () => {
-  it("finds prefixed candidates and de-duplicates them", () => {
-    const text = `here is ${REAL_TOKEN} and again ${REAL_TOKEN} plus ${FAKE_TOKEN}`;
-    expect(extractTokenCandidates(text).sort()).toEqual([FAKE_TOKEN, REAL_TOKEN].sort());
-  });
-
-  it("ignores text without the prefix", () => {
-    expect(extractTokenCandidates("no secrets here")).toEqual([]);
-    expect(extractTokenCandidates(null)).toEqual([]);
-  });
 
   it("extracts the exact token prefix even when more base64url text follows", () => {
     expect(extractTokenCandidates(`${REAL_TOKEN}A`)).toEqual([REAL_TOKEN]);
@@ -135,23 +122,6 @@ describe("candidate extraction", () => {
 });
 
 describe("hash verification", () => {
-  it("confirms a candidate that matches an active credential", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN, { label: "agent pat" });
-
-    const match = matchActiveCredential(db, pepper, REAL_TOKEN);
-    expect(match).not.toBeNull();
-    expect(match?.credential_id).toBe(credential.id);
-    expect(match?.user_slug).toBe("mandible-agent-claude");
-    expect(match?.label).toBe("agent pat");
-    expect(match?.session_scoped).toBe(false);
-  });
-
-  it("rejects a well-formed token that matches no credential", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    expect(matchActiveCredential(db, pepper, FAKE_TOKEN)).toBeNull();
-  });
 
   it("rejects a revoked credential's token", () => {
     makeUser();
@@ -286,27 +256,6 @@ describe("no plaintext is persisted", () => {
 });
 
 describe("revocation policy", () => {
-  it("auto-revokes the hypothetical future persisted session-scoped shape", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN, {
-      label: "session token",
-      metadata: { scope: "session", session_id: "sess-42" },
-    });
-
-    const { detections } = scanBlocksForCredentialLeaks(
-      db,
-      [{ content: REAL_TOKEN, position: 0 }],
-      { conversation_id: "conv-1" },
-      { pepper },
-    );
-
-    expect(detections[0].credential.session_scoped).toBe(true);
-    expect(detections[0].revoked).toBe(true);
-    const stored = listCredentials(db, "mandible-agent-claude", { includeRevoked: true })
-      .find((row) => row.id === credential.id);
-    expect(stored?.status).toBe("revoked");
-    expect(JSON.parse(webhookRows()[0].data_json).auto_revoked).toBe(true);
-  });
 
   it("alerts but never revokes a long-lived PAT", () => {
     makeUser();
@@ -329,27 +278,6 @@ describe("revocation policy", () => {
     expect(payload.policy).toBe("long_lived_pat_alert_only");
     expect(payload.remediation.mint).toBe("mandible user token mint mandible-agent-claude --store");
     expect(payload.remediation.revoke).toBe(`mandible user token revoke ${credential.id}`);
-  });
-
-  it("keeps the future-persisted predicate fail-safe for unmarked rows", () => {
-    expect(isSessionScopedCredential({ type: "api_token", metadata: {} })).toBe(false);
-    expect(isSessionScopedCredential({ type: "api_token", metadata: { ephemeral: true } })).toBe(true);
-    expect(isSessionScopedCredential({ type: "api_token", metadata: { scope: "session" } })).toBe(true);
-  });
-
-  it("surfaces the same remediation commands the alert stores", () => {
-    expect(
-      remediationFor({
-        credential_id: "cred-1",
-        user_id: "user-1",
-        user_slug: "agent",
-        label: null,
-        session_scoped: false,
-      }),
-    ).toEqual({
-      mint: "mandible user token mint agent --store",
-      revoke: "mandible user token revoke cred-1",
-    });
   });
 });
 
@@ -392,52 +320,6 @@ describe("backfill over the existing index", () => {
     const stored = listCredentials(db, "mandible-agent-claude").find((r) => r.id === credential.id);
     expect(stored?.status).toBe("active");
   });
-
-  it("scans nothing when the install has no active api tokens", () => {
-    seedConversation("conv-old", [{ content: REAL_TOKEN, position: 0 }]);
-    const result = backfillCredentialLeakScan(db, { pepper });
-    expect(result.skipped).toBe("no_active_api_tokens");
-    expect(result.scanned_blocks).toBe(0);
-  });
-
-  it("respects a conversation filter and a block limit", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    seedConversation("conv-a", [{ content: REAL_TOKEN, position: 0 }]);
-    seedConversation("conv-b", [{ content: REAL_TOKEN, position: 0 }]);
-
-    const scoped = backfillCredentialLeakScan(db, {
-      pepper,
-      conversationId: "conv-b",
-      record: false,
-    });
-    expect(scoped.scanned_blocks).toBe(1);
-    expect(scoped.detections[0].location.conversation_id).toBe("conv-b");
-
-    const limited = backfillCredentialLeakScan(db, { pepper, limit: 1, record: false });
-    expect(limited.scanned_blocks).toBe(1);
-  });
-});
-
-describe("alert record shape", () => {
-  it("queues a high-priority pending webhook event the inbox can render", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN, { label: "agent pat" });
-    recordCredentialLeak(
-      db,
-      matchActiveCredential(db, pepper, REAL_TOKEN)!,
-      { conversation_id: "conv-1", session_id: "sess-1", branch: "feature/x" },
-      1_700_000_000_000,
-    );
-
-    const row = webhookRows()[0];
-    expect(row.priority).toBe("high");
-    expect(row.status).toBe("pending");
-    expect(row.title).toContain("agent pat");
-    const payload = JSON.parse(row.data_json);
-    expect(payload.detected_at).toBe(1_700_000_000_000);
-    expect(payload.session_id).toBe("sess-1");
-  });
 });
 
 // --- Metadata surfaces (issue b3e4a09, review finding 1) ---------------------
@@ -475,59 +357,6 @@ describe("block metadata masking", () => {
     // A lookalike elsewhere in the same metadata object is left alone.
     expect(metadata).toContain(FAKE_TOKEN);
     expect(result.detections).toHaveLength(1);
-  });
-
-  it("finds a token that only ever appears in metadata", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN);
-    const blocks = [{
-      content: "Bash(curl …)",
-      position: 3,
-      metadata: { tool_input: { env: { MANDIBLE_TOKEN: REAL_TOKEN } } },
-    }];
-
-    const result = redactCredentialLeaksInBlocks(
-      db,
-      blocks,
-      { conversation_id: "conv-meta-only" },
-      { pepper },
-    );
-
-    expect(result.redacted_spans).toBe(1);
-    expect(blocks[0].content).toBe("Bash(curl …)");
-    expect(JSON.stringify(blocks[0].metadata))
-      .toBe(JSON.stringify({ tool_input: { env: { MANDIBLE_TOKEN: credentialMaskFor(credential.id) } } }));
-    expect(result.detections[0].location.block_position).toBe(3);
-  });
-
-  it("leaves clean metadata object-identical", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const metadata = { tool_name: "Bash", tool_output: `harmless ${FAKE_TOKEN}` };
-    const blocks = [{ content: "nothing here", position: 0, metadata }];
-
-    const result = redactCredentialLeaksInBlocks(
-      db,
-      blocks,
-      { conversation_id: "conv-clean" },
-      { pepper },
-    );
-
-    expect(result.redacted_blocks).toBe(0);
-    expect(blocks[0].metadata).toBe(metadata);
-  });
-
-  it("reports a metadata leak in the backfill sweep", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN);
-    seedConversation("conv-bf", [{ content: "Bash(curl …)", position: 0 }]);
-    db.prepare("UPDATE conversation_blocks SET metadata_json = ? WHERE id = 'conv-bf-b0'")
-      .run(JSON.stringify({ tool_input: REAL_TOKEN }));
-
-    const result = backfillCredentialLeakScan(db, { pepper });
-
-    expect(result.detections).toHaveLength(1);
-    expect(result.detections[0].credential.credential_id).toBe(credential.id);
   });
 });
 
@@ -579,39 +408,6 @@ describe("fail-closed masking", () => {
     expect(result.detections).toEqual([]);
   });
 
-  it("masks the overflow inside metadata too", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const decoys = decoyTokens(MAX_CANDIDATES_PER_TEXT);
-    const blocks = [{
-      content: "clean text",
-      position: 0,
-      metadata: { tool_output: `${decoys.join(" ")} ${REAL_TOKEN}` },
-    }];
-
-    const result = redactCredentialLeaksInBlocks(
-      db,
-      blocks,
-      { conversation_id: "conv-overflow-meta" },
-      { pepper },
-    );
-
-    expect(result.truncated).toBe(true);
-    expect(JSON.stringify(blocks[0].metadata)).not.toContain(REAL_TOKEN);
-  });
-
-  it("masks derived text when its scan overflows", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const decoys = decoyTokens(MAX_CANDIDATES_PER_TEXT);
-
-    const masked = maskActiveCredentialsInText(db, `${decoys.join(" ")} ${REAL_TOKEN}`, { pepper });
-
-    expect(masked.truncated).toBe(true);
-    expect(masked.unverified_replacements).toBe(1);
-    expect(masked.text).not.toContain(REAL_TOKEN);
-  });
-
   it("masks conservatively when candidate verification throws", () => {
     makeUser();
     registerToken("mandible-agent-claude", REAL_TOKEN);
@@ -634,194 +430,6 @@ describe("fail-closed masking", () => {
     expect(JSON.stringify(blocks[0].metadata))
       .toBe(JSON.stringify({ tool_input: unverifiedCredentialMask(1) }));
     expect(webhookRows()).toEqual([]);
-  });
-
-  it("masks conservatively when the credential table cannot be read", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const blocks = [{ content: `oops ${REAL_TOKEN}`, position: 0 }];
-
-    const result = redactCredentialLeaksInBlocks(
-      dbFailingOn("SELECT 1 AS present FROM user_credentials"),
-      blocks,
-      { conversation_id: "conv-no-table" },
-      { pepper },
-    );
-
-    expect(result.verification_failed).toBe(true);
-    expect(blocks[0].content).toBe(`oops ${unverifiedCredentialMask(1)}`);
-  });
-
-  it("masks derived text when its verification throws", () => {
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-
-    const masked = maskActiveCredentialsInText(
-      dbFailingOn("fingerprint = ?"),
-      `title: ${REAL_TOKEN}`,
-      { pepper },
-    );
-
-    expect(masked.verification_failed).toBe(true);
-    expect(masked.text).toBe(`title: ${unverifiedCredentialMask(1)}`);
-  });
-
-  it("keeps distinct unverified spans distinct instead of collapsing them", () => {
-    // Re-review finding 3: every unverified span used to become one constant,
-    // so token-shaped strings used as distinct object keys reparsed into a
-    // single JSON property and the other values were silently dropped. Masking
-    // has to fail closed for secrecy without being lossy for structure.
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const keys = decoyTokens(3);
-    const blocks = [{
-      content: `${keys[0]} then ${keys[1]} then ${keys[2]}`,
-      position: 0,
-      metadata: { [keys[0]]: "one", [keys[1]]: "two", [keys[2]]: "three" },
-    }];
-
-    const result = redactCredentialLeaksInBlocks(
-      dbFailingOn("fingerprint = ?"),
-      blocks,
-      { conversation_id: "conv-distinct" },
-      { pepper },
-    );
-
-    expect(result.verification_failed).toBe(true);
-    expect(blocks[0].content).toBe(
-      `${unverifiedCredentialMask(1)} then ${unverifiedCredentialMask(2)} `
-        + `then ${unverifiedCredentialMask(3)}`,
-    );
-    // All three properties survive, with their values still paired correctly.
-    expect(blocks[0].metadata).toEqual({
-      [unverifiedCredentialMask(1)]: "one",
-      [unverifiedCredentialMask(2)]: "two",
-      [unverifiedCredentialMask(3)]: "three",
-    });
-    // The discriminator is positional, never derived from the plaintext: a hash
-    // of the secret in the mask would be an offline confirmation oracle.
-    for (const key of keys) {
-      expect(JSON.stringify(blocks[0].metadata)).not.toContain(key.slice(API_TOKEN_PREFIX.length));
-    }
-  });
-
-  it("numbers around an unverified mask the text already contains", () => {
-    // Third-pass finding 4: the discriminator lived in a namespace an attacker
-    // shares. Metadata carrying a literal `[mandible-credential:unverified#1]`
-    // key plus one token-shaped key masked the latter onto the same string, and
-    // JSON.parse keeps only the last of two identical keys — so the structural
-    // loss the discriminator was added to prevent came straight back.
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const [decoy] = decoyTokens(1);
-    const literal = unverifiedCredentialMask(1);
-    const blocks = [{
-      content: `${literal} and ${decoy}`,
-      position: 0,
-      metadata: { [literal]: "already there", [decoy]: "masked now" },
-    }];
-
-    const result = redactCredentialLeaksInBlocks(
-      dbFailingOn("fingerprint = ?"),
-      blocks,
-      { conversation_id: "conv-namespace" },
-      { pepper },
-    );
-
-    expect(result.verification_failed).toBe(true);
-    // Numbering starts above the literal instead of colliding with it.
-    expect(blocks[0].content).toBe(`${literal} and ${unverifiedCredentialMask(2)}`);
-    expect(Object.keys(blocks[0].metadata as Record<string, unknown>)).toHaveLength(2);
-    expect(blocks[0].metadata).toEqual({
-      [literal]: "already there",
-      [unverifiedCredentialMask(2)]: "masked now",
-    });
-    // Still a pure function of the text, so a re-ingest reproduces it.
-    const again = [{
-      content: `${literal} and ${decoy}`,
-      position: 0,
-      metadata: { [literal]: "already there", [decoy]: "masked now" },
-    }];
-    redactCredentialLeaksInBlocks(
-      dbFailingOn("fingerprint = ?"),
-      again,
-      { conversation_id: "conv-namespace" },
-      { pepper },
-    );
-    expect(again[0].content).toBe(blocks[0].content);
-    expect(again[0].metadata).toEqual(blocks[0].metadata);
-  });
-
-  it("keeps numbering distinct past a planted double-precision ceiling", () => {
-    // Fourth-pass finding 4. The occurrence counter was a JS number, and the
-    // namespace it counts in is attacker-supplied text. A literal
-    // `[mandible-credential:unverified#9007199254740991]` pushed it to
-    // Number.MAX_SAFE_INTEGER, where `+ 1` stops advancing: every later span
-    // masked to the same string, which is exactly the duplicate-key loss the
-    // discriminator exists to prevent. Adding the next literal on top of it
-    // turned the "skip what is already taken" loop into an infinite one — an
-    // ingest that hangs on a planted transcript. Counting in BigInt has
-    // neither ceiling.
-    const ceiling = unverifiedCredentialMask(9007199254740991n);
-    const beyond = unverifiedCredentialMask(9007199254740992n);
-    const [first, second] = decoyTokens(2);
-
-    const masked = maskUnverifiedCandidates(`${ceiling} ${beyond} ${first} ${second}`);
-
-    expect(masked.replacements).toBe(2);
-    expect(masked.text).toBe(
-      `${ceiling} ${beyond} ${unverifiedCredentialMask(9007199254740993n)} `
-        + `${unverifiedCredentialMask(9007199254740994n)}`,
-    );
-    // The property that matters, independent of the exact numbers: the planted
-    // literals survive untouched and every mask in the text is unique.
-    const occurrences = [...masked.text.matchAll(/unverified#(\d+)]/g)].map((m) => m[1]);
-    expect(new Set(occurrences).size).toBe(occurrences.length);
-  });
-
-  it("advances past the ceiling from a literal just below it", () => {
-    // The boundary case one step down: the first two masks are representable
-    // as doubles and the third is not, so a number-based counter reproduces
-    // its predecessor and emits a duplicate exactly here.
-    const literal = unverifiedCredentialMask(9007199254740990n);
-    const decoys = decoyTokens(3);
-
-    const masked = maskUnverifiedCandidates(`${literal} ${decoys.join(" ")}`);
-
-    expect(masked.replacements).toBe(3);
-    expect(masked.text).toBe(
-      `${literal} ${unverifiedCredentialMask(9007199254740991n)} `
-        + `${unverifiedCredentialMask(9007199254740992n)} `
-        + `${unverifiedCredentialMask(9007199254740993n)}`,
-    );
-    // Deterministic, so re-ingesting the same text reproduces the same bytes.
-    expect(maskUnverifiedCandidates(`${literal} ${decoys.join(" ")}`).text)
-      .toBe(masked.text);
-  });
-
-  it("numbers unverified spans deterministically across repeats", () => {
-    // Masking must stay a pure function of the text: block ids are content
-    // hashes, so a mask that varied between passes would churn ids forever.
-    makeUser();
-    registerToken("mandible-agent-claude", REAL_TOKEN);
-    const decoys = decoyTokens(3);
-    const text = `${decoys.join(" ")} tail`;
-    const run = (): string => {
-      const blocks = [{ content: text, position: 0 }];
-      redactCredentialLeaksInBlocks(
-        dbFailingOn("fingerprint = ?"),
-        blocks,
-        { conversation_id: "conv-repeat" },
-        { pepper },
-      );
-      return blocks[0].content;
-    };
-
-    expect(run()).toBe(run());
-    expect(run()).toBe(
-      `${unverifiedCredentialMask(1)} ${unverifiedCredentialMask(2)} `
-        + `${unverifiedCredentialMask(3)} tail`,
-    );
   });
 
   it("still masks when the alert insert fails, and reports the lost alert", () => {

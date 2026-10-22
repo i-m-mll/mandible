@@ -32,8 +32,9 @@ import type {
   ConversationOutboxItem,
   Result,
 } from "../src/conversation-control/types.js";
-import { migrate, openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { SessionRegistry } from "../src/registry.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const capabilities: ControllerAdapterCapabilities = {
   mode: "app-server-managed",
@@ -141,8 +142,7 @@ let db: Db;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-control-"));
-  db = openDb(path.join(root, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   db.prepare(`INSERT INTO conversations (
     id, source, source_path, source_hash, source_mtime, title, started_at,
     block_count, session_id, created_at, updated_at
