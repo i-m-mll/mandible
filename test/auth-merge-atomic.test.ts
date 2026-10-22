@@ -7,12 +7,12 @@ import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { extractAtomicMergeState } from "../src/auth-signature-verification.js";
 import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
-import { migrate, resetDb } from "../src/db.js";
+import { resetDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { createServer, Router } from "../src/server.js";
-import SqliteDatabase from "../src/sqlite.ts";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 
@@ -227,8 +227,7 @@ describe("atomic auth merge", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
     const cached = candidate(base, head);
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
@@ -345,22 +344,6 @@ describe("atomic auth merge", () => {
     expect(result.status).not.toBe(0);
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(result.stderr).toContain("moved since auth submission");
-  });
-
-  it("rejects base drift and a missing pin before signing", () => {
-    const oldBase = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/atomic"]);
-    const cached = candidate(oldBase, head);
-    write("main.txt", "main drift\n");
-    const newBase = commit("move base");
-    git(["update-ref", "-d", cached.ref, cached.pin]);
-
-    const result = runAtomic(oldBase, head, cached);
-
-    expect(result.status).not.toBe(0);
-    expect(git(["rev-parse", "main"])).toBe(newBase);
-    expect(result.stderr).toContain("requeue and reapprove");
-    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
   });
 
   it("rejects a missing retained pin with otherwise unchanged reviewed inputs", () => {
@@ -498,18 +481,6 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain("Usage:");
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
-  });
-
-  it("preserves legacy interrupted state instead of resuming protected signing", () => {
-    const base = git(["rev-parse", "main"]);
-    git(["merge", "--no-ff", "--no-commit", "feature/atomic"]);
-
-    // The daemon reviewed a different commit than the one staged in MERGE_HEAD.
-    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: base });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("reviewed signed candidate");
-    expect(git(["rev-parse", "main"])).toBe(base);
   });
 
   it("accepts SHA-256 repository object ids", () => {

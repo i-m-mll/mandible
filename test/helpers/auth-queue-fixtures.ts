@@ -15,10 +15,8 @@
  *   no hook installed, no ref rewritten and no linked worktree registered.
  *   Everything after that point is a clone-local mutation and must never reach
  *   the template.
- * - The migrated SQLite schema. `createMigratedDb()` used to run `migrate()`
- *   against a fresh `:memory:` database ~92 times per run. It now deserialises
- *   one serialised template. This is hygiene, not a lever: measurement puts the
- *   whole migration load near 1s of a 101.5s file.
+ * - The migrated SQLite schema, through `ledger-fixtures.ts`, which migrates
+ *   once per test process and hands out deserialised copies.
  *
  * Git configuration is isolated here rather than inherited. The previous
  * wrapper stripped only `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, so a developer's
@@ -111,7 +109,6 @@ afterAll(() => {
   pristineRepoTemplate = null;
   pristineRepoDigest = null;
   emptyGitTemplateDir = null;
-  migratedDbTemplate = null;
 });
 
 // --- git -------------------------------------------------------------------
@@ -282,20 +279,11 @@ export function commitOnBranch(repo: string, branch: string, changes: Record<str
 
 // --- databases -------------------------------------------------------------
 
-let migratedDbTemplate: Buffer | null = null;
-
 export function createMigratedDb(): Db {
-  if (!migratedDbTemplate) {
-    const seed = createSharedMigratedDb({
-      operator: { slug: "auth-test-operator", display_name: "Auth Test Operator" },
-      now: 1,
-    });
-    migratedDbTemplate = seed.serialize();
-    seed.close();
-  }
-  // Deserialise from a copy: the template buffer is reused for every case and
-  // must not observe a test's writes.
-  return SqliteDatabase.fromSnapshot(Buffer.from(migratedDbTemplate)) as unknown as Db;
+  return createSharedMigratedDb({
+    operator: { slug: "auth-test-operator", display_name: "Auth Test Operator" },
+    now: 1,
+  });
 }
 
 export function createLedgerProject(db: Db, root: string) {

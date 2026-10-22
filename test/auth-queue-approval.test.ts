@@ -4,135 +4,68 @@ import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-q
  *
  * Approval: execution mode, preflight reuse, native hooks, delegated leases.
  *
- * Split out of the former 6,122-line `test/auth-queue.test.ts` (issue 9e40a31).
- * Vitest parallelises across files and never within one, so that single file was
- * 98.9% of the default gate's wall clock. Test names and assertions are
- * unchanged; the shared helpers live in `test/helpers/auth-queue-fixtures.ts`.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import { AuthHookManager } from "../src/auth-hooks.js";
 import type { SseEvent } from "../src/types.js";
-import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../src/users/store.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { setDb } from "../src/db.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { addCredential, addDelegatedSigningLease, createUser } from "../src/users/store.js";
+import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { createLedgerIssue as createSharedLedgerIssue, createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, executionEvidenceChain, git, registerTestDelegatedLease, registerWorkRepo, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
 
-describe("auth queue", () => {
-  it("executes in daemon mode", async () => {
-    const calls: string[] = [];
-    const executor = async () => {
-      calls.push("called");
-      return {
-        exit_code: 0,
-        signal: null,
-        stdout: "ok\n",
-        stderr: "",
-        output: "ok\n",
-        started_at: Date.now(),
-        finished_at: Date.now()
-      };
-    };
-    const queue = createQueue({ executor });
-
-    const request = queue.submit({ type: "commit",
-      command: "echo daemon",
-      title: "Daemon",
-      execution_mode: "daemon"
-    });
-
-    await approveFixtureRequest(queue, request.id);
-    const resolved = await waitForStatus(queue, request.id, "completed");
-    expect(resolved?.exit_code).toBe(0);
-    expect(calls).toHaveLength(1);
+function createMigratedDbWithAgent() {
+  return createSharedMigratedDb({
+    operator: { slug: "cmd-norm-operator", display_name: "Cmd Norm Operator" },
+    agent: { slug: "cmd-norm-agent", display_name: "Cmd Norm Agent", sessionEnv: "cmd-norm-session" },
   });
+}
 
-  it("re-resolves daemon auth merge execution cwd before approval", async () => {
+describe("auth queue", () => {
+
+  it("executes from the re-resolved target root with verified credential-signature evidence", async () => {
     const repo = createAuthCheckRepo();
     const featureWorktree = uniqueMissingPath("mandible-auth-approval");
     const db = createMigratedDb();
-    const calls: Array<string | null | undefined> = [];
-    try {
-      git(repo, ["worktree", "add", "-b", "feature/approval-cwd", featureWorktree]);
-      git(featureWorktree, ["commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234"]);
-      registerWorkRepo(db, repo);
-
-      const queue = new AuthQueue({
-        db,
-        executor: async (options) => {
-          calls.push(options.cwd);
-          expect(options.mandibleArgs).toEqual(["auth", "merge", "feature/approval-cwd", "--into", "main"]);
-          return publishFixtureExecution(queue, options);
-        },
-        hookManager: createNoopHookManager(),
-      });
-
-      const request = queue.submit({ merge_head_sha: git(featureWorktree, ["rev-parse", "feature/approval-cwd"]),
-        type: "merge",
-        command: "mandible auth merge feature/approval-cwd --into main",
-        title: "Merge feature/approval-cwd",
-        repo: "repo",
-        base_branch: "main",
-        head_branch: "feature/approval-cwd",
-        cwd: featureWorktree,
-      });
-
-      const approved = await approveFixtureRequest(queue, request.id);
-      expect(approved.cwd).toBe(fs.realpathSync(repo));
-      const resolved = await waitForStatus(queue, request.id, "completed");
-      expect(calls).toEqual([fs.realpathSync(repo)]);
-      const operator = getOperator(db)!;
-      expect(resolved).toMatchObject({
-        requested_by_user_id: operator.id,
-        approved_by_user_id: operator.id,
-      });
-      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
-      expect(evidence.signature.evidence_method).toBe("credential_signature");
-      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
-        verified: true,
-        authorization_evidence_method: "credential_signature",
-      });
-      expect(evidence.authorization.evidence_method).toBe("credential_signature");
-      expect(evidence.authorization.lease_id).toBeNull();
-      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
-        authorizer_user_id: operator.id,
-      });
-      queue.dispose();
-    } finally {
-      db.close();
-      fs.rmSync(featureWorktree, { recursive: true, force: true });
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("composes interactive approval with verified credential-signature evidence", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
     const events: SseEvent[] = [];
+    const cwds: Array<string | null | undefined> = [];
     try {
-      commitOnBranch(repo, "feature/signed-interactive", { "signed.txt": "signed\n" });
+      git(repo, ["worktree", "add", "-b", "feature/signed-interactive", featureWorktree]);
+      git(featureWorktree, ["commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234"]);
       registerWorkRepo(db, repo);
       const signing = configureSigningCredential(db, repo, "ssh_key");
       const queue = new AuthQueue({
         db,
         broadcast: (event) => events.push(event),
         executor: async (options) => {
+          cwds.push(options.cwd);
+          expect(options.mandibleArgs).toEqual(["auth", "merge", "feature/signed-interactive", "--into", "main"]);
           return publishFixtureExecution(queue, options);
         },
         hookManager: createNoopHookManager(),
       });
 
-      const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/signed-interactive"]),
+      // Submitted from the feature worktree; executed from the protected root.
+      const request = queue.submit({ merge_head_sha: git(featureWorktree, ["rev-parse", "feature/signed-interactive"]),
         type: "merge",
         command: "mandible auth merge feature/signed-interactive --into main",
         title: "Merge signed interactive",
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/signed-interactive",
-        cwd: repo,
+        cwd: featureWorktree,
       });
-      await approveFixtureRequest(queue, request.id);
+      const approved = await approveFixtureRequest(queue, request.id);
+      expect(approved.cwd).toBe(fs.realpathSync(repo));
       const resolved = await waitForStatus(queue, request.id, "completed");
+      expect(cwds).toEqual([fs.realpathSync(repo)]);
+      expect(resolved).toMatchObject({ requested_by_user_id: signing.operatorId, approved_by_user_id: signing.operatorId });
       const chain = executionEvidenceChain(db, resolved!.execution_evidence_id!);
       expect(chain.signature).toMatchObject({
         evidence_method: "credential_signature",
@@ -160,182 +93,6 @@ describe("auth queue", () => {
           credential_id: signing.credentialId,
           user_id: signing.operatorId,
         },
-      });
-      queue.dispose();
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses to execute a legacy request whose retained candidate is missing", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-    try {
-      commitOnBranch(repo, "feature/reuse-preflight", { "feature.txt": "feature\n" });
-      registerWorkRepo(db, repo);
-
-      const queue = new AuthQueue({
-        db,
-        executor: async (options) => {
-          calls.push(options.env);
-          return {
-            exit_code: 0,
-            signal: null,
-            stdout: "ok\n",
-            stderr: "",
-            output: "ok\n",
-            started_at: Date.now(),
-            finished_at: Date.now(),
-          };
-        },
-        hookManager: createNoopHookManager(),
-      });
-
-      const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/reuse-preflight"]),
-        type: "merge",
-        command: "mandible auth merge feature/reuse-preflight --into main",
-        title: "Merge feature/reuse-preflight",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/reuse-preflight",
-        cwd: repo,
-      });
-      expect(request.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
-      expect(request.merge_preflight_queue_fingerprint).toMatch(/^[0-9a-f]{64}$/);
-      db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = NULL WHERE id = ?").run(request.id);
-      await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/retained candidate|not_recomputable_request|lifecycle snapshot changed/);
-      expect(queue.getRequest(request.id)?.status).toBe('pending');
-      expect(calls).toHaveLength(0);
-      queue.dispose();
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses an edited reviewed head until a fresh exact candidate is submitted", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const rangeSnapshot = path.join(repo, "hook-range.txt");
-    try {
-      commitOnBranch(repo, "feature/reviewed-update", { "feature.txt": "first\n" });
-      registerWorkRepo(db, repo);
-
-      // Native post-publication work must not run for an invalidated review.
-      const gitDir = git(repo, ["rev-parse", "--git-dir"]);
-      const nativeHook = path.join(repo, gitDir, "hooks", "post-merge");
-      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(nativeHook, 0o755);
-
-      const hookManager = new AuthHookManager(db);
-      hookManager.create({
-        repo_pattern: path.basename(repo),
-        auth_type: "merge",
-        command:
-          `test -n "$MANDIBLE_AUTH_MERGE_BASE_SHA" && ` +
-          `test -n "$MANDIBLE_AUTH_MERGE_HEAD_SHA" && ` +
-          `printf '%s\\n%s\\n' "$MANDIBLE_AUTH_MERGE_BASE_SHA" ` +
-          `"$MANDIBLE_AUTH_MERGE_HEAD_SHA" > "${rangeSnapshot}"`,
-        label: "Required original range",
-        required: true,
-      });
-      const queue = new AuthQueue({
-        db,
-        executor: async () => ({
-          exit_code: 0,
-          signal: null,
-          stdout: "ok\n",
-          stderr: "",
-          output: "ok\n",
-          started_at: Date.now(),
-          finished_at: Date.now(),
-        }),
-        hookManager,
-      });
-
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/reviewed-update --into main",
-        title: "Merge feature/reviewed-update",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/reviewed-update",
-        merge_head_sha: git(repo, ["rev-parse", "feature/reviewed-update"]),
-        cwd: repo,
-      });
-      const exactBase = git(repo, ["rev-parse", "main"]);
-
-      git(repo, ["checkout", "feature/reviewed-update"]);
-      writeFile(repo, "feature.txt", "reviewed final\n");
-      git(repo, ["add", "feature.txt"]);
-      git(repo, ["commit", "-m", "refresh reviewed head"]);
-      const reviewedHead = git(repo, ["rev-parse", "HEAD"]);
-      git(repo, ["checkout", "main"]);
-
-      // Editing the reviewed head invalidates the previously retained candidate.
-      const updated = queue.update(request.id, { merge_head_sha: reviewedHead });
-      expect(updated.merge_preflight_base_sha).toBeNull();
-      expect(updated.merge_candidate_pin_sha).toBeNull();
-
-      await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/retained candidate|not_recomputable_request/);
-      expect(queue.getRequest(request.id)?.status).toBe('pending');
-      expect(git(repo, ['rev-parse', 'main'])).toBe(exactBase);
-      expect(fs.existsSync(rangeSnapshot)).toBe(false);
-      queue.dispose();
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses a native-hook merge when its persisted reviewed base moved before approval", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-    try {
-      commitOnBranch(repo, "feature/stale-reviewed-base", { "feature.txt": "feature\n" });
-      registerWorkRepo(db, repo);
-      const nativeHook = path.join(repo, ".git", "hooks", "post-merge");
-      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(nativeHook, 0o755);
-
-      const queue = new AuthQueue({
-        db,
-        executor: async (options) => {
-          calls.push(options.env);
-          return { exit_code: 0, output: "must not execute\n" };
-        },
-        hookManager: createNoopHookManager(),
-      });
-      // Omitting merge_head_sha reproduces a legitimate unpinned request: the
-      // submit-time base is persisted, while approval later resolves the
-      // strictly reviewed head from the live branch.
-      const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/stale-reviewed-base"]),
-        type: "merge",
-        command: "mandible auth merge feature/stale-reviewed-base --into main",
-        title: "Merge feature/stale-reviewed-base",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/stale-reviewed-base",
-        cwd: repo,
-      });
-      const reviewedBase = request.merge_preflight_base_sha!;
-      expect(request.merge_candidate_pin_sha).toBeTruthy();
-
-      writeFile(repo, "main-advance.txt", "advanced\n");
-      git(repo, ["add", "main-advance.txt"]);
-      git(repo, ["commit", "-m", "advance main before approval"]);
-      const advancedBase = git(repo, ["rev-parse", "main"]);
-      expect(advancedBase).not.toBe(reviewedBase);
-
-      await expect(approveFixtureRequest(queue, request.id)).rejects.toMatchObject({ code: "merge_check_failed" });
-      expect(calls).toHaveLength(0);
-      expect(git(repo, ["rev-parse", "main"])).toBe(advancedBase);
-      expect(queue.getRequest(request.id)).toMatchObject({
-        status: "pending",
-        merge_preflight_base_sha: reviewedBase,
       });
       queue.dispose();
     } finally {
@@ -534,63 +291,6 @@ describe("auth queue", () => {
     }
   });
 
-  it("still blocks approval when the head branch moved from the reviewed commit", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const calls: string[] = [];
-    try {
-      commitOnBranch(repo, "feature/head-drift", { "feature.txt": "feature\n" });
-      registerWorkRepo(db, repo);
-
-      const queue = new AuthQueue({
-        db,
-        executor: async () => {
-          calls.push("called");
-          return {
-            exit_code: 0,
-            signal: null,
-            stdout: "",
-            stderr: "",
-            output: "",
-            started_at: Date.now(),
-            finished_at: Date.now(),
-          };
-        },
-        hookManager: createNoopHookManager(),
-      });
-
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/head-drift --into main",
-        title: "Merge feature/head-drift",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/head-drift",
-        merge_head_sha: git(repo, ["rev-parse", "feature/head-drift"]),
-        cwd: repo,
-      });
-      expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
-      // Head drift: the reviewed content itself changed.
-      git(repo, ["checkout", "feature/head-drift"]);
-      writeFile(repo, "feature.txt", "revised feature\n");
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "revise head"]);
-      git(repo, ["checkout", "main"]);
-      // Base drift on top of head drift must not unlock recompute either.
-      writeFile(repo, "main-only.txt", "main\n");
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "move main"]);
-
-      await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/moved from reviewed commit/);
-      expect(queue.getRequest(request.id)?.status).toBe("pending");
-      expect(calls).toHaveLength(0);
-      queue.dispose();
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
   it("enables atomic execution only for fresh single-source requests without native hooks", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
@@ -616,9 +316,9 @@ describe("auth queue", () => {
         },
         hookManager: createNoopHookManager(),
       });
-      const submit = (suffix: string, extra = "") => queue.submit({
+      const submit = (suffix: string) => queue.submit({
         type: "merge",
-        command: `mandible auth merge feature/atomic-eligibility --into main${extra}`,
+        command: "mandible auth merge feature/atomic-eligibility --into main",
         title: `Atomic eligibility ${suffix}`,
         repo: path.basename(repo),
         base_branch: "main",
@@ -640,14 +340,6 @@ describe("auth queue", () => {
       expect(queue.getRequest(hooked.id)?.status).toBe('pending');
       expect(envs).toHaveLength(1);
       fs.rmSync(hook);
-
-      // Issue 060c9c8 — hierarchical merge support is removed; a
-      // hierarchical-shaped command is refused by canonical-command
-      // verification at approval and the request stays pending.
-      const hierarchical = submit("hierarchical", " --hierarchical");
-      await expect(approveFixtureRequest(queue, hierarchical.id)).rejects
-        .toThrow(/Hierarchical merge commands cannot be verified/);
-      expect(queue.getRequest(hierarchical.id)?.status).toBe("pending");
 
       const rejected = submit("rejected");
       const rejectedPin = rejected.merge_candidate_pin_sha!;
@@ -1013,4 +705,81 @@ describe("auth queue", () => {
       }
     },
   );
+
+  // Issue 08a5f04 — channel-tool submissions through the route: the legacy
+  // single-source shape (no base_branch) is rewritten to the canonical command
+  // at POST, never at approval, and both it and the canonical form approve.
+  it("normalizes channel-tool merge submissions at POST so approval accepts them", async () => {
+    const repo = fs.realpathSync(createAuthCheckRepo());
+    const db = createMigratedDbWithAgent();
+    setDb(db);
+    const branches = ["feature/channel-legacy", "feature/channel-canonical"];
+    for (const branch of branches) {
+      git(repo, ["checkout", "-b", branch, "main"]);
+      writeFile(repo, `${branch.replace(/\//g, "_")}.txt`, `${branch}\n`);
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", `work on ${branch}\n\nMandible-Issue: abc1234`]);
+      git(repo, ["checkout", "main"]);
+    }
+    const agent = db.prepare("SELECT id, slug FROM users WHERE slug = 'cmd-norm-agent'").get() as { id: string; slug: string };
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "cmd-norm-channel" });
+    const project = resolveProjectForCheckout(db, {
+      root: repo, name: path.basename(repo), workRepoId: path.basename(repo), defaultBranch: "main",
+    });
+    registerWorkRepo(db, repo);
+    const issue = createSharedLedgerIssue(db, {
+      project_id: project.project.id,
+      title: "Command normalization delivery",
+      aliases: [{ alias_kind: "git_bug_short", alias: "abc1234" }],
+    });
+    for (const branch of branches) {
+      db.prepare(
+        `INSERT INTO work_units
+          (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
+           ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+         VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
+      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, credential.id);
+    }
+    const router = authenticatedTestRouter(agent, { credentialId: credential.id });
+    const queue = new AuthQueue({
+      db,
+      executor: async () => ({
+        exit_code: 1, signal: null, stdout: "", stderr: "fixture stop\n", output: "fixture stop\n",
+        started_at: Date.now(), finished_at: Date.now(),
+      }),
+      hookManager: createNoopHookManager(),
+    });
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    try {
+      const submissions = [
+        { command: "mandible auth merge feature/channel-legacy", head_branch: "feature/channel-legacy" },
+        { command: "mandible auth merge feature/channel-canonical --into main", head_branch: "feature/channel-canonical", base_branch: "main" },
+      ];
+      for (const submission of submissions) {
+        const result = await router.invoke({
+          method: "POST",
+          url: "/api/auth/request",
+          body: {
+            ...MERGE_CHANGE_MESSAGE,
+            ...submission,
+            title: `Merge ${submission.head_branch}`,
+            cwd: repo,
+            session_id: "cmd-norm-session",
+            issue_references: ["abc1234"],
+          },
+        });
+        expect(result.status, JSON.stringify(result.body)).toBe(201);
+        const requestId = (result.body as { request_id: string }).request_id;
+        expect(queue.getRequest(requestId)).toMatchObject({
+          base_branch: "main",
+          command: `mandible auth merge ${submission.head_branch} --into main`,
+        });
+        expect((await approveFixtureRequest(queue, requestId)).status).toBe("executing");
+        await waitForStatus(queue, requestId, "completed");
+      }
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
 });

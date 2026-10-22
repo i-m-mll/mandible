@@ -4,11 +4,6 @@ import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
  *
  * Base-transition merge provenance: signature evidence, octopus merges, commit-DAG depth.
  *
- * Split out of the former 6,122-line `test/auth-queue.test.ts` (issue 9e40a31).
- * Vitest parallelises across files and never within one. This pair was split
- * once more from a single `auth-queue-recompute` successor after measurement
- * put that file at 32s, above the 25s-per-successor target; the 32-commit
- * transition test alone is a third of it. Test names are unchanged.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -272,45 +267,42 @@ describe("auth queue", () => {
       }
     });
 
-    // Issue 08a5f04 (review F6) — MAX_BASE_TRANSITION_COMMITS boundary: a
-    // 32-commit fully-authorized transition recomputes; 33 fails strict.
-    it("accepts a 32-commit authorized transition and refuses 33", async () => {
+    // Issue 08a5f04 (review F6) — a transition of several authorized merges
+    // recomputes; a transition longer than the walk bound is refused by its
+    // length before any per-commit verification.
+    it("accepts a multi-merge authorized transition and refuses an over-long one", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
       const queue = createGuardQueue(db, calls);
       try {
-        commitOnBranch(repo, "feature/boundary-32", { "b32.txt": "b32\n" });
-        commitOnBranch(repo, "feature/boundary-33", { "b33.txt": "b33\n" });
+        commitOnBranch(repo, "feature/multi", { "multi.txt": "multi\n" });
+        commitOnBranch(repo, "feature/long", { "long.txt": "long\n" });
         registerWorkRepo(db, repo);
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
         configureSigningCredential(db, repo, "ssh_key");
-        // Keep the signing key out of the chain commits: commitOnBranch does
-        // `git add .`, and a tracked key gets its 0600 mode clobbered by later
-        // checkouts, which breaks signing mid-chain.
-        writeFile(repo, ".gitignore", ".mandible-test-signing-key*\n");
-        git(repo, ["add", ".gitignore"]);
-        git(repo, ["commit", "-m", "ignore signing key"]);
 
-        const at32 = submitPinnedRequest(queue, repo, "feature/boundary-32");
-        const at33 = submitPinnedRequest(queue, repo, "feature/boundary-33");
+        const multi = submitPinnedRequest(queue, repo, "feature/multi");
+        const long = submitPinnedRequest(queue, repo, "feature/long");
 
         let base = "";
-        for (let index = 1; index <= 32; index += 1) {
+        for (let index = 1; index <= 3; index += 1) {
           commitOnBranch(repo, `feature/chain-${index}`, { [`chain-${index}.txt`]: `${index}\n` });
           base = advanceMainViaAuthorizedMerge(db, repo, `feature/chain-${index}`, `merge-chain-${index}`);
         }
 
-        await approveFixtureRequest(queue, at32.id);
-        await waitForStatus(queue, at32.id, "completed");
+        await approveFixtureRequest(queue, multi.id);
+        await waitForStatus(queue, multi.id, "completed");
         expect(calls).toHaveLength(1);
         expect(calls[0]!.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(base);
 
-        commitOnBranch(repo, "feature/chain-33", { "chain-33.txt": "33\n" });
-        advanceMainViaAuthorizedMerge(db, repo, "feature/chain-33", "merge-chain-33");
-
-        await expect(approveFixtureRequest(queue, at33.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(at33.id)?.status).toBe("pending");
+        for (let index = 0; index < 33; index += 1) {
+          git(repo, ["commit", "--allow-empty", "-m", `direct ${index}`]);
+        }
+        const refusal = approveFixtureRequest(queue, long.id);
+        await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
+        await expect(refusal).rejects.toThrow(/beyond the cap for automatic attestation/);
+        expect(queue.getRequest(long.id)?.status).toBe("pending");
         expect(calls).toHaveLength(1);
       } finally {
         queue.dispose();

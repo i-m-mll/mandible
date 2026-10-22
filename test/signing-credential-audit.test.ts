@@ -81,100 +81,53 @@ function createDb(): Db {
 }
 
 describe("resolveSigningKeyFingerprint", () => {
-  it("resolves a private key path via its .pub sibling", () => {
+  it("resolves a key path via its .pub sibling, inline and key:: material, and refuses to guess", () => {
     const { keyPath, fingerprint, publicMaterial } = createRepoWithSigningKey(false);
-    const resolved = resolveSigningKeyFingerprint(keyPath);
-    expect(resolved).toEqual({ ok: true, value: { material: publicMaterial, fingerprint } });
-  });
-
-  it("resolves an inline key and a key:: literal", () => {
-    const { fingerprint, publicMaterial } = createRepoWithSigningKey(false);
-    expect(resolveSigningKeyFingerprint(publicMaterial)).toEqual({
-      ok: true,
-      value: { material: publicMaterial, fingerprint },
-    });
-    expect(resolveSigningKeyFingerprint(`key::${publicMaterial}`)).toEqual({
-      ok: true,
-      value: { material: publicMaterial, fingerprint },
-    });
-  });
-
-  it("reports an unreadable path instead of guessing", () => {
-    const resolved = resolveSigningKeyFingerprint("/nonexistent/mandible-signing-key");
-    expect(resolved).toEqual({ ok: false, reason: "signing_key_path_unreadable" });
+    const resolved = { ok: true, value: { material: publicMaterial, fingerprint } };
+    expect(resolveSigningKeyFingerprint(keyPath)).toEqual(resolved);
+    expect(resolveSigningKeyFingerprint(publicMaterial)).toEqual(resolved);
+    expect(resolveSigningKeyFingerprint(`key::${publicMaterial}`)).toEqual(resolved);
+    expect(resolveSigningKeyFingerprint("/nonexistent/mandible-signing-key"))
+      .toEqual({ ok: false, reason: "signing_key_path_unreadable" });
   });
 });
 
 describe("discoverConfiguredPublicSigningKey", () => {
-  it("reads a .pub sidecar without opening the configured private-key path", () => {
+  it("reads only the .pub sidecar, never the configured private key", () => {
     const { repo, keyPath, fingerprint, publicMaterial } = createRepoWithSigningKey(false);
     execFileSync("git", ["config", "user.signingkey", keyPath], { cwd: repo });
-    fs.rmSync(keyPath);
-    const discovered = withIsolatedGitConfig(() => discoverConfiguredPublicSigningKey({ cwd: repo, global: false }));
-    expect(discovered).toMatchObject({
-      value: { material: publicMaterial, fingerprint },
-      reason: null,
-    });
-  });
+    const discover = () => withIsolatedGitConfig(() => discoverConfiguredPublicSigningKey({ cwd: repo, global: false }));
 
-  it("does not derive public material from a private key when no .pub sidecar exists", () => {
-    const { repo, keyPath } = createRepoWithSigningKey(false);
+    // The private key may be absent: the sidecar alone answers.
+    const privateBytes = fs.readFileSync(keyPath);
+    fs.rmSync(keyPath);
+    expect(discover()).toMatchObject({ value: { material: publicMaterial, fingerprint }, reason: null });
+
+    // Without a sidecar, public material is never derived from the private key.
+    fs.writeFileSync(keyPath, privateBytes, { mode: 0o600 });
     fs.rmSync(`${keyPath}.pub`);
-    execFileSync("git", ["config", "user.signingkey", keyPath], { cwd: repo });
-    const discovered = withIsolatedGitConfig(() => discoverConfiguredPublicSigningKey({ cwd: repo, global: false }));
-    expect(discovered.value).toBeNull();
-    expect(discovered.reason).toBe("public_key_not_available_without_private_key_access");
+    expect(discover()).toMatchObject({ value: null, reason: "public_key_not_available_without_private_key_access" });
   });
 });
 
 describe("auditOperatorSigningCredential", () => {
-  it("warns with the fix command when the configured key is unregistered", () => {
-    const { repo, fingerprint } = createRepoWithSigningKey(true);
-    const db = createDb();
-    try {
-      const audit = withIsolatedGitConfig(() =>
-        auditOperatorSigningCredential(db, { cwd: repo, global: false }));
-      expect(audit.status).toBe("missing_credential");
-      expect(audit.fingerprint).toBe(fingerprint);
-      expect(audit.operator_slug).toBe("audit-operator");
-      expect(audit.hint).toBe("mandible user credential add audit-operator --from-git-signingkey");
-    } finally {
-      db.close();
-    }
-  });
-
-  it("is satisfied once an active credential carries that fingerprint", () => {
+  it("is covered only by an active credential carrying the configured fingerprint", () => {
     const { repo, fingerprint, publicMaterial } = createRepoWithSigningKey(true);
     const db = createDb();
     try {
-      addCredential(db, getOperator(db)!.id, {
-        type: "ssh_key",
+      const audit = () => withIsolatedGitConfig(() => auditOperatorSigningCredential(db, { cwd: repo, global: false }));
+      expect(audit()).toMatchObject({
+        status: "missing_credential",
         fingerprint,
-        public_material: publicMaterial,
+        operator_slug: "audit-operator",
+        hint: "mandible user credential add audit-operator --from-git-signingkey",
       });
-      const audit = withIsolatedGitConfig(() =>
-        auditOperatorSigningCredential(db, { cwd: repo, global: false }));
-      expect(audit.status).toBe("ok");
-      expect(audit.hint).toBeNull();
-    } finally {
-      db.close();
-    }
-  });
 
-  it("does not accept a revoked credential as coverage", () => {
-    const { repo, fingerprint, publicMaterial } = createRepoWithSigningKey(true);
-    const db = createDb();
-    try {
-      const credential = addCredential(db, getOperator(db)!.id, {
-        type: "ssh_key",
-        fingerprint,
-        public_material: publicMaterial,
-      });
+      const credential = addCredential(db, getOperator(db)!.id, { type: "ssh_key", fingerprint, public_material: publicMaterial });
+      expect(audit()).toMatchObject({ status: "ok", hint: null });
+
       db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(credential.id);
-      expect(
-        withIsolatedGitConfig(() =>
-          auditOperatorSigningCredential(db, { cwd: repo, global: false })).status,
-      ).toBe("missing_credential");
+      expect(audit().status).toBe("missing_credential");
     } finally {
       db.close();
     }
