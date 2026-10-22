@@ -14,10 +14,9 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const UI_SRC = path.join(REPO_ROOT, 'ui', 'src');
-const ENTRY = path.join(UI_SRC, 'app.tsx');
 
 const CODE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs'];
 const ASSET_EXTENSIONS = ['.css', '.svg', '.png', '.json'];
@@ -43,10 +42,6 @@ const ALLOWED_UNREACHABLE = new Set([
   // views/spaces/README.md and SpacesViewShell.css rather than imported.
   'ui/src/views/spaces/space-view.css',
 ]);
-
-function toPosix(absolutePath) {
-  return path.relative(REPO_ROOT, absolutePath).split(path.sep).join('/');
-}
 
 function isCode(absolutePath) {
   return CODE_EXTENSIONS.includes(path.extname(absolutePath));
@@ -88,31 +83,40 @@ function resolveImport(fromFile, specifier) {
   return null;
 }
 
-const IMPORT_PATTERNS = [
-  // import ... from 'x' / import 'x' / export ... from 'x'
-  /(?:^|[\s;}])(?:import|export)\s+(?:[\s\S]*?\sfrom\s*)?["']([^"']+)["']/g,
-  // import('x') and import.meta-style dynamic imports with literal specifiers
-  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-  // require('x')
-  /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
-];
-
 const CSS_IMPORT_PATTERN = /@import\s+["']([^"']+)["']/g;
 
-function extractSpecifiers(source, isCssFile) {
+function extractSpecifiers(source, fileName) {
   const found = new Set();
-  const patterns = isCssFile ? [CSS_IMPORT_PATTERN] : IMPORT_PATTERNS;
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0;
+  if (path.extname(fileName) === '.css') {
+    CSS_IMPORT_PATTERN.lastIndex = 0;
     let match;
-    while ((match = pattern.exec(source)) !== null) found.add(match[1]);
+    while ((match = CSS_IMPORT_PATTERN.exec(source)) !== null) found.add(match[1]);
+  } else {
+    const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+    const visit = (node) => {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        found.add(node.moduleSpecifier.text);
+      }
+      if (ts.isCallExpression(node)
+          && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+            || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+          && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) {
+        found.add(node.arguments[0].text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
   }
   return [...found];
 }
 
-export function computeReachability() {
+export function computeReachability({ repoRoot = REPO_ROOT } = {}) {
+  const uiSrc = path.join(repoRoot, 'ui', 'src');
+  const entry = path.join(uiSrc, 'app.tsx');
+  const toPosix = (absolutePath) => path.relative(repoRoot, absolutePath).split(path.sep).join('/');
   const reached = new Set();
-  const queue = [ENTRY];
+  const queue = [entry];
 
   while (queue.length > 0) {
     const current = queue.pop();
@@ -129,7 +133,7 @@ export function computeReachability() {
     } catch {
       continue;
     }
-    for (const specifier of extractSpecifiers(source, isCssFile)) {
+    for (const specifier of extractSpecifiers(source, current)) {
       const resolved = resolveImport(current, specifier);
       if (resolved && !reached.has(resolved)) queue.push(resolved);
     }
@@ -146,7 +150,7 @@ export function computeReachability() {
       // `bun run typecheck` enforces.
       else if (!entry.name.endsWith('.d.ts')) allFiles.push(absolute);
     }
-  })(UI_SRC);
+  })(uiSrc);
 
   const unreachable = allFiles
     .filter((file) => !reached.has(file))
@@ -155,8 +159,8 @@ export function computeReachability() {
     .sort();
 
   return {
-    entry: toPosix(ENTRY),
-    reachedCount: [...reached].filter((file) => file.startsWith(UI_SRC)).length,
+    entry: toPosix(entry),
+    reachedCount: [...reached].filter((file) => file.startsWith(uiSrc)).length,
     totalCount: allFiles.length,
     unreachable,
   };
