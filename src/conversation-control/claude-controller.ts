@@ -17,6 +17,7 @@ import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { chatItemIdentityKey } from "./provider-live.js";
 import { claudeAttachmentContent } from "./attachment-delivery.js";
 import { ClaudeSdkTransport, type ClaudeSdk } from "./claude-sdk-transport.js";
+import type { ExecutionTransition } from "../session-execution.js";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ConversationControlError,
@@ -267,6 +268,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       controller.state = "stopping";
       this.rejectPending(controller, adapterFailure(this.id, "controller-closed", "Claude controller closed"));
       await controller.process.close();
+      this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
     }));
   }
 
@@ -281,13 +283,23 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       void this.abandon(controller);
       return;
     }
-    if (record.type === "system" && record.subtype === "init" && sessionId && !controller.nativeIdentityBound) {
+    if ((record.type === "execution_hook" || record.type === "system" && record.subtype === "init") && sessionId && !controller.nativeIdentityBound) {
       const bound = this.lifecycle.emit(this.event(controller, { kind: "provider-session-bound", provider_session_id: sessionId, at: Date.now() }));
       if (!bound.ok) { void this.abandon(controller); return; }
       controller.nativeIdentityBound = true;
       for (const pendingRecord of controller.identityPendingRecords.splice(0)) this.acceptRecord(controller, pendingRecord);
     }
     if (!controller.nativeIdentityBound) { controller.identityPendingRecords.push(value); return; }
+    if (record.type === "execution_hook") {
+      const transition = record.transition as ExecutionTransition;
+      const event: ProviderRuntimeEvent = { kind: "execution", conversation_id: controller.conversationId,
+        generation: controller.generation, controller_instance_id: controller.controllerInstanceId,
+        provider_session_id: controller.providerSessionId, source: "claude_sdk_hook",
+        state: transition.state, event: transition.event, turn_id: transition.turn_id,
+        preserve_existing: transition.preserve_existing };
+      for (const listener of this.runtimeListeners) listener(event);
+      return;
+    }
     if (record.type === "user") {
       this.acknowledgeUser(controller, record);
       return;
@@ -739,7 +751,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     if (controller.activeTurnId) {
       this.lifecycle.emit(this.event(controller, { kind: "turn-unknown", turn_id: controller.activeTurnId, at: Date.now(), reason: "probe-ambiguous" }));
     }
-    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
+    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now(), reason: "protocol-ambiguous" }));
     controller.intentionalStop = true;
     this.controllers.delete(controller.conversationId);
     this.rejectPending(controller, adapterFailure(this.id, "ambiguous-protocol", "Claude emitted an ambiguous protocol record"));

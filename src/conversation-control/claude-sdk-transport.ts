@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { Options, Query, SDKMessage, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, Options, Query, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
+import { mapSessionExecutionHook } from "../session-execution.js";
 import type { ControllerAcquisitionRequest } from "./adapter.js";
 import type { ConversationRuntimeOptions, ManagedPermissionRequest } from "./types.js";
 
@@ -37,7 +38,7 @@ export class ClaudeSdkTransport {
   private closed = false;
   private recordListener?: (record: unknown) => void;
   private exitListener?: (exit: { code: number | null; signal: string | null; stderr: string }) => void;
-  private readonly buffered: SDKMessage[] = [];
+  private readonly buffered: unknown[] = [];
   private readonly permissions = new Map<string, { request: ManagedPermissionRequest; resolve: (allow: boolean) => void }>();
   private readonly allowedTools = new Set<string>();
   private nativeSessionId: string | null = null;
@@ -64,9 +65,21 @@ export class ClaudeSdkTransport {
     delete env.CLAUDECODE;
     delete env.MANDIBLE_TOKEN;
     env.MANDIBLE_MANAGED_CLIENT = "1";
+    env.MANDIBLE_EXECUTION_OBSERVER_ID = request.controller_instance_id;
+    env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID = providerId;
     const bind = (id: string) => {
       if (id !== providerId) return; // The adapter rejects mismatching native init records.
       if (!this.closed) { this.nativeSessionId = id; }
+    };
+    const executionHook: HookCallback = async (event) => {
+      const mapped = mapSessionExecutionHook({ ...event, provider: "claude" });
+      if (!mapped.ok) throw new Error(mapped.error);
+      if (mapped.ignored || mapped.value.provider_session_id !== providerId) return {};
+      if (event.hook_event_name === "SessionStart") bind(event.session_id);
+      const record = { type: "execution_hook", session_id: event.session_id, transition: mapped.value };
+      if (this.recordListener) this.recordListener(record);
+      else this.buffered.push(record);
+      return {};
     };
     const options: Options = {
       abortController: this.abortController,
@@ -90,7 +103,7 @@ export class ClaudeSdkTransport {
         args: [resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js")],
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
-      hooks: { SessionStart: [{ hooks: [async (event) => { bind(event.session_id); return {}; }] }] },
+      hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
       spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }) => {
         const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
         this.processId = child.pid;

@@ -79,12 +79,12 @@ export class CodexAppServerClient {
     });
   }
 
-  static async connect(options: { spawnProcess?: StructuredProcessSpawner; executable?: string } = {}): Promise<CodexAppServerClient> {
+  static async connect(options: { spawnProcess?: StructuredProcessSpawner; executable?: string; env?: NodeJS.ProcessEnv } = {}): Promise<CodexAppServerClient> {
     const command = codexAppServerExecutable({ override: options.executable });
     const processOwner = await StructuredJsonProcess.start(
       command,
       ["app-server", "--listen", "stdio://"],
-      { spawnProcess: options.spawnProcess },
+      { spawnProcess: options.spawnProcess, env: options.env },
     );
     const client = new CodexAppServerClient(processOwner);
     try {

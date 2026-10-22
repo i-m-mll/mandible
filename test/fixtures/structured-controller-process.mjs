@@ -72,7 +72,18 @@ lines.on("line", (line) => {
       send({ method:"thread/tokenUsage/updated", params:{ threadId:approvalThread,turnId:activeTurnId,tokenUsage:{total:{inputTokens:12,outputTokens:3,totalTokens:15}} } });
       send({ id:"approval-1", method:"item/commandExecution/requestApproval", params:{ threadId:approvalThread,turnId:activeTurnId,command:"true",reason:"bounded approval fixture" } });
     }
-    if (!["hold","permission"].includes(request.params.input[0]?.text)) {
+    if (["retry-failure", "object-failure", "no-code-failure"].includes(request.params.input[0]?.text)) {
+      const code = request.params.input[0].text === "object-failure" ? { responseStreamDisconnected: { httpStatusCode: 429 } }
+        : request.params.input[0].text === "no-code-failure" ? null : "usageLimitExceeded";
+      const error = { message: "native failure", ...(code === null ? {} : { codexErrorInfo: code }), additionalDetails: "native detail" };
+      for (const willRetry of [true, false]) send({ method: "error", params: {
+        threadId: request.params.threadId, turnId: activeTurnId, willRetry, error } });
+      const completion = { method: "turn/completed", params: { threadId: request.params.threadId,
+        turn: { id: activeTurnId, status: "failed", error } } };
+      send(completion); send(completion);
+      send({ method: "thread/status/changed", params: { threadId: request.params.threadId, status: { type: "idle" } } });
+      send({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 100 } } } });
+    } else if (!["hold","permission"].includes(request.params.input[0]?.text)) {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;
     }
