@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import SqliteDatabase from "../src/sqlite.ts";
-import { openDb, type Db } from '../src/db.js';
+import { type Db } from '../src/db.js';
 import { planArtifactVersionBatch, planArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from "../src/provider-artifacts.js";
 import {
   appendArtifactVersion,
@@ -20,7 +20,7 @@ import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permiss
 import { evaluateProjectAccess, setProjectRestricted } from '../src/permissions/store.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from '../src/artifact-source-schema.js';
-import { insertRawLedgerProject, insertRawLedgerCheckout } from './helpers/ledger-fixtures.js';
+import { insertRawLedgerProject, insertRawLedgerCheckout, migratedMemoryDb } from './helpers/ledger-fixtures.js';
 
 let db: Db;
 let dir: string;
@@ -37,7 +37,7 @@ function repo(name:string, text='same bytes') {
   return {root,file,project};
 }
 const identity = (series: string) => series.replace('artifact-series:','artifact:');
-beforeEach(()=>{dir=fs.mkdtempSync(path.join(os.tmpdir(),'artifact-source-'));previous=process.env.MANDIBLE_ARTIFACT_DIR;process.env.MANDIBLE_ARTIFACT_DIR=path.join(dir,'cas');db=openDb(path.join(dir,'db'));});
+beforeEach(()=>{dir=fs.mkdtempSync(path.join(os.tmpdir(),'artifact-source-'));previous=process.env.MANDIBLE_ARTIFACT_DIR;process.env.MANDIBLE_ARTIFACT_DIR=path.join(dir,'cas');db=migratedMemoryDb();});
 afterEach(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});if(previous===undefined)delete process.env.MANDIBLE_ARTIFACT_DIR;else process.env.MANDIBLE_ARTIFACT_DIR=previous;});
 
 it('moves across projects without transferring owner; old-path reuse and equal blobs preserve exact histories',()=>{

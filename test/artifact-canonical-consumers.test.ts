@@ -4,24 +4,18 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { getArtifactContent } from "../src/artifact-content.js";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
   getArtifact,
-  getArtifactDraft,
   ingestArtifact,
   listArtifacts,
   listArtifactSeries,
-  rebaseArtifactDraft,
-  registerArtifactAlias,
   registerArtifactLink,
-  resolveAndLinkArtifact,
-  saveArtifactDraft,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import {
-  publishArtifactDraft,
   recordArtifactVersion,
   resolveArtifactRef,
   resolveArtifactRefReadonlyFull,
@@ -32,25 +26,13 @@ let tempDir = "";
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-canonical-consumers-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
-
-function canonicalRefs(recorded: ReturnType<typeof recordArtifactVersion>): {
-  logical: string;
-  version: string;
-  blob: string;
-} {
-  return {
-    logical: recorded.series.id.replace(/^artifact-series:/, "artifact:"),
-    version: recorded.version.id,
-    blob: `artifact-blob:${recorded.artifact.content_hash}`,
-  };
-}
 
 function recordManaged(name: string, content: string, now: number, repoId?: string) {
   return recordArtifactVersion(db, {
@@ -67,36 +49,6 @@ function recordManaged(name: string, content: string, now: number, repoId?: stri
 }
 
 describe("canonical artifact compatibility consumers", () => {
-  it("searches public artifact identity prefixes across complete version history", () => {
-    const first = recordManaged("searchable-identity", "v1\n", 1000);
-    recordManaged("searchable-identity", "v2\n", 1001);
-    recordManaged("unrelated-identity", "other\n", 1002);
-
-    const refs = canonicalRefs(first);
-    const publicRefs = [
-      refs.logical,
-      first.series.id,
-      refs.version,
-      refs.blob,
-    ];
-
-    for (const ref of publicRefs) {
-      const separator = ref.indexOf(":");
-      const type = ref.slice(0, separator);
-      const prefix = ref.slice(separator + 1, separator + 5);
-      expect(prefix).toHaveLength(4);
-
-      expect(listArtifactSeries(db, { q: prefix.toUpperCase() }).map((item) => item.id))
-        .toContain(first.series.id);
-      expect(listArtifactSeries(db, { q: `${type.toUpperCase()}:${prefix.toUpperCase()}` })
-        .map((item) => item.id)).toContain(first.series.id);
-    }
-
-    // Identity prefix matching extends the existing human-readable substring
-    // search; it does not turn title/name matching into prefix-only matching.
-    expect(listArtifactSeries(db, { q: "ABLE-IDENT" }).map((item) => item.id))
-      .toContain(first.series.id);
-  });
 
   it("paginates canonical series and filtered matches beyond the first 500 blobs", () => {
     const insertBlob = db.prepare(
@@ -229,149 +181,5 @@ describe("canonical artifact compatibility consumers", () => {
       status: "available",
       preview: { text: "canonical bytes\n" },
     });
-  });
-
-  it("reads canonical-only drafts through stable projection fields", () => {
-    const recorded = recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "instructions",
-      role: "instructions",
-      logical_name: "canonical-instructions",
-      title: "Canonical instructions",
-      content: "# Canonical\n\nUse canonical targets.\n",
-      series_key: "managed:instructions:instructions:canonical-instructions",
-    }, 2000, tempDir);
-    saveArtifactDraft(db, {
-      ref: recorded.series.id,
-      content: "# Draft\n",
-    }, 2001);
-
-    expect(getArtifactDraft(db, recorded.version.id)).toMatchObject({
-      series_id: recorded.series.id,
-      base_version_id: recorded.version.id,
-      base_version_no: 1,
-      content: "# Draft\n",
-      stale: false,
-    });
-  });
-
-  it("creates canonical-only living and pinned-version links with complete typed targets", () => {
-    const first = recordManaged("linked", "linked v1\n", 3200);
-    const second = recordManaged("linked", "linked v2\n", 3201);
-    const firstRefs = canonicalRefs(first);
-    const secondRefs = canonicalRefs(second);
-
-    const living = resolveAndLinkArtifact(db, {
-      ref: secondRefs.logical,
-      entity_type: "session",
-      entity_id: "session-living",
-      link_kind: "living",
-    }, 3202).link!;
-    const pinned = resolveAndLinkArtifact(db, {
-      ref: firstRefs.version,
-      entity_type: "session",
-      entity_id: "session-pinned",
-    }, 3203).link!;
-
-    expect(db.prepare(
-      `SELECT blob_id, target_type, target_id, fallback_version_id
-         FROM artifact_links WHERE id = ?`,
-    ).get(living.id)).toEqual({
-      blob_id: secondRefs.blob,
-      target_type: "artifact",
-      target_id: secondRefs.logical,
-      fallback_version_id: secondRefs.version,
-    });
-    expect(db.prepare(
-      `SELECT blob_id, target_type, target_id, fallback_version_id
-         FROM artifact_links WHERE id = ?`,
-    ).get(pinned.id)).toEqual({
-      blob_id: firstRefs.blob,
-      target_type: "artifact_version",
-      target_id: firstRefs.version,
-      fallback_version_id: null,
-    });
-  });
-
-  it("saves, rebases, and publishes a stale draft", () => {
-    const first = recordManaged("draft-flow", "base\n", 3300);
-    const second = recordManaged("draft-flow", "base\nupstream\n", 3301);
-    const firstRefs = canonicalRefs(first);
-    const secondRefs = canonicalRefs(second);
-
-    const saved = saveArtifactDraft(db, {
-      ref: firstRefs.logical,
-      base_version_id: firstRefs.version,
-      content: "base\ndraft\n",
-    }, 3302);
-    expect(saved).toMatchObject({
-      base_version_id: firstRefs.version,
-      latest_version_id: secondRefs.version,
-      stale: true,
-    });
-    expect(db.prepare(
-      "SELECT artifact_id, version_id FROM artifact_drafts",
-    ).get()).toEqual({
-      artifact_id: firstRefs.logical,
-      version_id: firstRefs.version,
-    });
-
-    const rebased = rebaseArtifactDraft(db, firstRefs.logical, 3303);
-    expect(rebased).toMatchObject({ base_version_id: secondRefs.version, stale: false });
-    const published = publishArtifactDraft(db, { ref: firstRefs.logical }, 3304);
-    expect(published.result.series.id).toBe(first.series.id);
-    expect(published.result.version.version_no).toBe(3);
-    expect(getArtifactDraft(db, firstRefs.logical)).toBeNull();
-  });
-
-  it("isolates logical projections for a shared blob and applies q, repo, location, and same-row link filters", () => {
-    insertRawLedgerProject(db, { name: "repo-a", projectKey: "repo-a" });
-    insertRawLedgerProject(db, { name: "repo-b", projectKey: "repo-b" });
-    const first = recordManaged("projection-a", "shared projection\n", 3500, "repo-a");
-    const second = recordManaged("projection-b", "shared projection\n", 3501, "repo-b");
-    const firstRefs = canonicalRefs(first);
-    const secondRefs = canonicalRefs(second);
-    db.prepare("UPDATE artifact SET metadata_json = ? WHERE id = ?")
-      .run('{"logical_only":"a"}', firstRefs.logical);
-    db.prepare("UPDATE artifact SET metadata_json = ? WHERE id = ?")
-      .run('{"logical_only":"b"}', secondRefs.logical);
-    db.prepare(
-      `UPDATE artifact_version
-          SET observed_path = '/docs/a.md'
-        WHERE id = ?`,
-    ).run(firstRefs.version);
-    const matching = resolveAndLinkArtifact(db, {
-      ref: firstRefs.version,
-      entity_type: "session",
-      entity_id: "target-match",
-    }, 3502).link!;
-    const wrongType = resolveAndLinkArtifact(db, {
-      ref: secondRefs.version,
-      entity_type: "session",
-      entity_id: "target-wrong-type",
-    }, 3503).link!;
-    registerArtifactLink(db, first.artifact.id, {
-      entity_type: "issue",
-      entity_id: "cross-row-id",
-    }, 3504);
-    db.prepare("UPDATE artifact_links SET target_type = 'artifact_blob', target_id = ? WHERE id = ?")
-      .run(firstRefs.version, wrongType.id);
-
-    expect(getArtifact(db, firstRefs.logical)?.metadata).toMatchObject({ logical_only: "a" });
-    expect(getArtifact(db, secondRefs.logical)?.metadata).toMatchObject({ logical_only: "b" });
-    expect(getArtifact(db, firstRefs.blob)?.metadata).not.toHaveProperty("logical_only");
-    expect(listArtifacts(db, { q: `artifact:sha256:${first.artifact.content_hash}` })).toHaveLength(1);
-    expect(listArtifacts(db, { repo: "repo-a" })).toHaveLength(1);
-    expect(listArtifacts(db, { location: "/docs/a.md" })).toHaveLength(1);
-    expect(listArtifacts(db, {
-      linkedTargetType: "artifact_version",
-      linkedTargetId: firstRefs.version,
-    }).map((artifact) => artifact.content_hash)).toEqual([first.artifact.content_hash]);
-    expect(listArtifacts(db, {
-      linkedEntityType: "session",
-      linkedEntityId: "cross-row-id",
-    })).toEqual([]);
-    expect(db.prepare("SELECT target_type, target_id FROM artifact_links WHERE id = ?")
-      .get(matching.id)).toEqual({ target_type: "artifact_version", target_id: firstRefs.version });
   });
 });

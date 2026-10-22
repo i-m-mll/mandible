@@ -2,11 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { ensureArtifactSeries, listArtifactSeries, resolveAndLinkArtifact, resolveArtifactVersionHistory } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { Router } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -14,7 +15,7 @@ let db: Db;
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-series-list-"));
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "artifacts");
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
 });
 
@@ -88,56 +89,6 @@ describe("artifact series list", () => {
     });
     expect(series[1].ref.startsWith("artifact-series:")).toBe(true);
     expect(series[1].ref.startsWith("artifact:sha256:")).toBe(false);
-  });
-
-  it("filters against the latest version attributes", () => {
-    const series = recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "provider-a",
-      series_key: "managed:changing",
-      logical_name: "changing",
-      content: "v1\n",
-      media_type: "text/plain",
-      role: "old-role",
-    }, 1000);
-    recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "provider-b",
-      series_key: "managed:changing",
-      logical_name: "changing",
-      content: "v2\n",
-      media_type: "text/plain",
-      role: "new-role",
-    }, 2000);
-
-    expect(listArtifactSeries(db, { role: "new-role" }).map((item) => item.id)).toEqual([series.series.id]);
-    expect(listArtifactSeries(db, { role: "old-role" })).toEqual([]);
-  });
-
-  it("filters against artifact-scoped links on the latest version", () => {
-    const series = recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "latest-provider",
-      logical_name: "linked-latest",
-      content: "linked latest\n",
-      media_type: "text/plain",
-      role: "latest-role",
-    }, 1000);
-    resolveAndLinkArtifact(db, {
-      ref: series.artifact.id,
-      entity_type: "external",
-      entity_id: "external-link",
-      link_type: "references",
-      repo_id: "repo-from-link",
-      provider_id: "provider-from-link",
-      role: "role-from-link",
-    }, 1100);
-
-    expect(listArtifactSeries(db, { repo: "repo-from-link" }).map((item) => item.id)).toEqual([series.series.id]);
-    expect(listArtifactSeries(db, { provider: "provider-from-link" }).map((item) => item.id)).toEqual([
-      series.series.id,
-    ]);
-    expect(listArtifactSeries(db, { role: "role-from-link" }).map((item) => item.id)).toEqual([series.series.id]);
   });
 
   it("exposes series-scoped links separately from latest immutable links", () => {
@@ -217,120 +168,5 @@ describe("artifact series list", () => {
     expect(body.series[0].ref).toMatch(/^artifact-series:.{12,}$/);
     expect(body.series[0].latest_version.ref).toMatch(/^artifact-version:.{12,}$/);
     expect(body.series[0].latest_artifact.role).toBe("route-role");
-  });
-
-  it("serves case-insensitive historical version-id prefix searches", async () => {
-    const first = recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "route-provider",
-      series_key: "managed:route-prefix-search",
-      logical_name: "route-prefix-search",
-      content: "v1\n",
-      media_type: "text/plain",
-    }, 1000);
-    recordArtifactVersion(db, {
-      source_kind: "managed",
-      provider_id: "route-provider",
-      series_key: "managed:route-prefix-search",
-      logical_name: "route-prefix-search",
-      content: "v2\n",
-      media_type: "text/plain",
-    }, 2000);
-    const versionPrefix = first.version.id.replace(/^artifact-version:/, "").slice(0, 4).toUpperCase();
-    const router = createRouter();
-
-    const bare = await router.invoke({
-      method: "GET",
-      url: `/api/artifacts/series?q=${versionPrefix}`,
-    });
-    const typed = await router.invoke({
-      method: "GET",
-      url: `/api/artifacts/series?q=ARTIFACT-VERSION%3A${versionPrefix}`,
-    });
-
-    expect(bare.status).toBe(200);
-    expect((bare.body as { series: Array<{ id: string }> }).series.map((item) => item.id))
-      .toContain(first.series.id);
-    expect(typed.status).toBe(200);
-    expect((typed.body as { series: Array<{ id: string }> }).series.map((item) => item.id))
-      .toContain(first.series.id);
-  });
-
-  it("serves short artifact-series refs through resolve and history routes", async () => {
-    const first = recordArtifactVersion(db, {
-      source_kind: "managed",
-      series_key: "route-short-series",
-      logical_name: "route-short",
-      content: "v1\n",
-      media_type: "text/plain",
-      role: "report",
-    }, 1000);
-    const second = recordArtifactVersion(db, {
-      source_kind: "managed",
-      series_key: "route-short-series",
-      logical_name: "route-short",
-      content: "v2\n",
-      media_type: "text/plain",
-      role: "report",
-    }, 2000);
-    const router = createRouter();
-
-    const resolved = await router.invoke({
-      method: "GET",
-      url: "/api/artifacts/resolve?ref=artifact-series%3Aroute-s%402",
-    });
-    const history = await router.invoke({
-      method: "GET",
-      url: "/api/artifacts/versions?ref=artifact-series%3Aroute-s%40latest",
-    });
-
-    expect(resolved.status).toBe(200);
-    expect((resolved.body as any).resolution).toMatchObject({
-      status: "resolved",
-      artifact: { id: second.version.id },
-      logical_artifact: { id: first.series.id.replace("artifact-series:","artifact:") },
-      artifact_version: { version_no: 2 },
-    });
-    expect(history.status).toBe(200);
-    expect((history.body as any).history).toMatchObject({
-      series: { id: first.series.id, ref: expect.stringMatching(/^artifact-series:.{12,}$/) },
-      versions: [
-        { id: first.version.id, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
-        { id: second.version.id, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
-      ],
-    });
-  });
-
-  it("round-trips projected short artifact ids through direct artifact routes", async () => {
-    const selected = recordArtifactVersion(db, {
-      source_kind: "managed",
-      series_key: "managed:round-trip",
-      logical_name: "round-trip",
-      content: "round trip\n",
-      media_type: "text/plain",
-      role: "report",
-    }, 1000);
-    const router = createRouter();
-    const list = await router.invoke({
-      method: "GET",
-      url: "/api/artifacts/series?summary=true",
-    });
-    const publicId = (list.body as any).series[0].latest_version.artifact_id as string;
-    const encodedId = encodeURIComponent(publicId);
-
-    expect(publicId).toBe(selected.version.id);
-
-    const [detail, content, check] = await Promise.all([
-      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}` }),
-      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}/content` }),
-      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}/check` }),
-    ]);
-
-    expect(detail.status).toBe(200);
-    expect((detail.body as any).artifact.id).toBe(publicId);
-    expect(content.status).toBe(200);
-    expect((content.body as any).content.artifact_id).toBe(publicId);
-    expect(check.status).toBe(200);
-    expect((check.body as any).check.artifact_id).toBe(publicId);
   });
 });

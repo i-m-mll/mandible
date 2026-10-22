@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { classifyArtifactRef } from "../src/artifact-identity.js";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
   canonicalArtifactBlobShortRef,
   canonicalLogicalArtifactShortRef,
@@ -13,6 +13,7 @@ import {
   resolveArtifactIdentity,
 } from "../src/provider-artifacts.js";
 import { recordArtifactVersion, resolveArtifactRefReadonlyFull } from "./helpers/artifact-http-write-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db;
 let tempDir = "";
@@ -24,7 +25,7 @@ function seedDescriptor(hash:string) {
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-identity-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {

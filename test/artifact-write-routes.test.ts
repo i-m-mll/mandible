@@ -6,7 +6,7 @@ import { execFileSync, spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
@@ -21,6 +21,7 @@ import { registerProviderRoutes } from "../src/routes/providers.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import type { Router } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db;
 let previewDb: Db | null = null;
@@ -46,7 +47,7 @@ beforeEach(() => {
   previewDb = null;
   restoreArtifactDir = false;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-write-"));
-  db = new SqliteDatabase(path.join(root, "fixture.db")); migrate(db); setDb(db);
+  db = migratedMemoryDb(); setDb(db);
   setSetting(db, "artifact_root", path.join(root, "cas"));
   operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   agent = createUser(db, { slug: "writer", kind: "agent", display_name: "Writer" });
@@ -77,7 +78,7 @@ describe("artifact write authorization", () => {
     const sourceState = snapshot(db, sourceCas);
     const sourceBytes = fs.readFileSync(sourceFile);
     const sourceDbPath = path.join(root, "source.db");
-    await db.backup(sourceDbPath);
+    fs.writeFileSync(sourceDbPath, (db as unknown as SqliteDatabase).serialize());
     const sourceDbBytes = fs.readFileSync(sourceDbPath);
 
     const previewRoot = path.join(root, "preview");

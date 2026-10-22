@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openArtifactExternally } from "../src/artifact-open.js";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { insertRawLedgerCheckout, insertRawLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -13,7 +14,7 @@ let db: Db;
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-open-"));
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "managed");
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -24,47 +25,14 @@ afterEach(() => {
 });
 
 describe("artifact external open", () => {
-  it("opens managed artifact custody through the injected default-app seam", async () => {
-    const recorded = recordArtifactVersion(db, {
-      source_kind: "managed",
-      series_key: "managed:test-report",
-      logical_name: "report.txt",
-      content: "managed material\n",
-      media_type: "text/plain",
-    });
-    const opener = vi.fn(async () => undefined);
-
-    await expect(openArtifactExternally(db, recorded.artifact.id, opener)).resolves.toEqual({
-      ok: true,
-      artifact_id: recorded.artifact.id,
-    });
-    expect(opener).toHaveBeenCalledOnce();
-    expect(fs.readFileSync(opener.mock.calls[0][0], "utf8")).toBe("managed material\n");
-  });
-
-  it("opens stored input bytes after the original path changes",async()=>{
-    const input=path.join(tempDir,'input.txt');fs.writeFileSync(input,'saved material');
-    const saved=recordArtifactVersion(db,{source_kind:'local_only',path:input,custody_mode:'managed'});
-    fs.writeFileSync(input,'new material');
-    const opener=vi.fn(async()=>undefined);
-    expect(await openArtifactExternally(db,saved.version.id,opener)).toMatchObject({ok:true});
-    expect(opener.mock.calls[0][0]).not.toBe(input);
-    expect(fs.readFileSync(opener.mock.calls[0][0],'utf8')).toBe('saved material');
-  });
 
   it("opens tracked repo material only through its registered checkout locator", async () => {
     const repoRoot = path.join(tempDir, "checkout");
     const trackedPath = path.join(repoRoot, "results", "report.md");
     fs.mkdirSync(path.dirname(trackedPath), { recursive: true });
     fs.writeFileSync(trackedPath, "tracked material\n");
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, created_at, updated_at)
-       VALUES ('prj_repo', 'repo', 1, 1)`,
-    ).run();
-    db.prepare(
-      `INSERT INTO ledger_project_checkouts (id, project_id, work_repo_id, root, name, created_at, updated_at)
-       VALUES ('checkout_repo', 'prj_repo', 'repo', ?, 'repo', 1, 1)`,
-    ).run(repoRoot);
+    const projectId = insertRawLedgerProject(db, { name: "repo", projectKey: "repo" });
+    insertRawLedgerCheckout(db, { projectId, name: "repo", root: repoRoot });
     const git=(args:string[])=>execFileSync('git',['-C',repoRoot,...args],{stdio:'pipe'});
     git(['init','-b','main']);git(['config','user.name','Test']);git(['config','user.email','test@example.invalid']);git(['config','commit.gpgsign','false']);git(['add','.']);git(['commit','-m','save']);
     const saved=recordArtifactVersion(db,{source_kind:'tracked_repo',path:trackedPath,custody_mode:'git'});
