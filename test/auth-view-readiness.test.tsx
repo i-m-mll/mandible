@@ -216,6 +216,58 @@ describe('Auth Description presentation', () => {
   }
 });
 
+describe('Auth Description disclosure persistence', () => {
+  const message = 'Merge feature/x: Preserve the reviewed explanation\n\nVerification:\nPrivate checks pass.\n';
+  const first = { ...pendingRequest, commit_message: message, commit_message_digest: 'a'.repeat(64) };
+  const second = { ...first, id: 'req-2', title: 'Second review', commit_message_digest: 'b'.repeat(64) };
+  const props = (selectedAuthId = 'req-1') => ({
+    queue: [first, second], historyQueue: [], outputs: {}, selectedAuthId, daemonReady: true,
+    instance: authMainInstance, onApprove: vi.fn(), onReject: vi.fn(), onRetry: vi.fn(),
+  });
+  const expanded = (name: string) => screen.getByRole('button', { name }).getAttribute('aria-expanded');
+
+  it('preserves explicit Description and exact Git toggles across refetch, request switches and remount', async () => {
+    const view = render(<AuthQueueView {...props()} />);
+    expect(expanded('Description')).toBe('true');
+    expect(expanded('Exact Git message')).toBe('false');
+    expect(localStorage.getItem('auth-description-view:req-1')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Description' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Exact Git message' }));
+    await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1'))
+      .toBe(JSON.stringify({ descriptionExpanded: false, exactGitExpanded: true })));
+
+    view.rerender(<AuthQueueView {...props()} queue={[{ ...first, updated_at: 2 }, second]} />);
+    expect(expanded('Description')).toBe('false');
+    expect(expanded('Exact Git message')).toBe('true');
+    view.rerender(<AuthQueueView {...props('req-2')} />);
+    await waitFor(() => expect(expanded('Description')).toBe('true'));
+    expect(expanded('Exact Git message')).toBe('false');
+    expect(localStorage.getItem('auth-description-view:req-2')).toBeNull();
+    view.rerender(<AuthQueueView {...props('req-1')} />);
+    await waitFor(() => expect(expanded('Description')).toBe('false'));
+    expect(expanded('Exact Git message')).toBe('true');
+    view.unmount();
+    render(<AuthQueueView {...props()} />);
+    expect(expanded('Description')).toBe('false');
+    expect(expanded('Exact Git message')).toBe('true');
+    expect(screen.getByText(/Merge feature\/x: Preserve the reviewed explanation/).textContent).toBe(message);
+  });
+
+  it('uses independent strict boolean defaults without rewriting malformed storage on initial read', async () => {
+    const invalid = JSON.stringify({ descriptionExpanded: 'false', exactGitExpanded: 1 });
+    localStorage.setItem('auth-description-view:req-1', invalid);
+    const view = render(<AuthQueueView {...props()} />);
+    expect(expanded('Description')).toBe('true');
+    expect(expanded('Exact Git message')).toBe('false');
+    await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1')).toBe(invalid));
+    view.unmount();
+    localStorage.setItem('auth-description-view:req-1', JSON.stringify({ descriptionExpanded: false, exactGitExpanded: 'true' }));
+    render(<AuthQueueView {...props()} />);
+    expect(expanded('Description')).toBe('false');
+    expect(expanded('Exact Git message')).toBe('false');
+  });
+});
+
 describe('AuthQueueView persisted action expansion', () => {
   it('restores normalized per-request expansion and preserves it through queue refetches', async () => {
     const storageKey = 'auth-action-expanded:req-1';
