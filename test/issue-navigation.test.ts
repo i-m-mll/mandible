@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, act } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -434,4 +435,49 @@ it('resolves an unloaded closed issue and its comment without selecting the save
     }
   });
 
+it.each([404, 409, 503])('reconciles cached issue prefix identity with authoritative status %s', async (status) => {
+    stubIssuesLocalStorage();
+    const prefix = '4c26383';
+    const key = detailRequestKey('issue', { repoId: 'mandible', issueId: prefix });
+    const cached = { ...issueDetailProjection({ displayId: prefix, title: 'Cached unique A' }), id: prefix + 'a'.repeat(57) };
+    writePersistedDetail('issue-detail', key, cached);
+    writePersistedDetail('issue-detail', 'unrelated', { id: 'unrelated' });
+    let finish!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: prefix }));
+    expect(await screen.findByRole('heading', { name: 'Cached unique A' })).toBeTruthy();
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    await act(async () => finish(new Response(JSON.stringify({ error: `Authoritative ${status}` }), {
+      status, headers: { 'content-type': 'application/json' },
+    })));
+    if (status === 503) {
+      expect(screen.getByRole('heading', { name: 'Cached unique A' })).toBeTruthy();
+      expect(readPersistedDetail('issue-detail', key)).toEqual(cached);
+    } else {
+      expect(await screen.findByText(`Authoritative ${status}`)).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Cached unique A' })).toBeNull();
+      expect(readPersistedDetail('issue-detail', key)).toBeNull();
+    }
+    expect(readPersistedDetail('issue-detail', 'unrelated')).toEqual({ id: 'unrelated' });
+  });
+
+it('does not restore an invalid issue identity from a late initial projection', async () => {
+    let initial!: (response: Response) => void;
+    let full!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => new Promise<Response>((resolve) => {
+      if (String(input).includes('stage=initial')) initial = resolve;
+      else full = resolve;
+    })));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: '4c26383' }));
+    await waitFor(() => expect(full).toBeTypeOf('function'));
+    await act(async () => full(new Response(JSON.stringify({ error: 'Ambiguous prefix' }), {
+      status: 409, headers: { 'content-type': 'application/json' },
+    })));
+    expect(await screen.findByText('Ambiguous prefix')).toBeTruthy();
+    await act(async () => initial(new Response(JSON.stringify(issueDetailProjection({
+      displayId: '4c26383', title: 'Obsolete initial A', stage: 'initial',
+    })), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.queryByRole('heading', { name: 'Obsolete initial A' })).toBeNull();
+    expect(screen.getByText('Ambiguous prefix')).toBeTruthy();
+  });
 });

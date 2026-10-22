@@ -21,7 +21,7 @@ import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
 import { CollectionShell } from './feedback/CollectionShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
+import { feedbackCollectionIdentity, type FeedbackCollection } from './feedback/collection-model';
 import {
   BRIEFING_VIEW_STATE_KEY,
   DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
@@ -52,6 +52,19 @@ function replaceBriefingGroupRoute(groupKey: string): void {
   replaceRouteHash(briefingGroupRoute(groupKey, window.location.hash).slice(1));
 }
 
+function briefingTargetQuery(ref: string, roundId: string | null) {
+  return {
+    queryKey: browserResourceKeys.briefingProjection(ref, roundId, null),
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const projection = await getBriefing(ref, roundId, null, signal);
+      if (projection.briefing_id !== ref) {
+        queryClient.setQueryData(browserResourceKeys.briefingProjection(projection.briefing_id, roundId, null), projection);
+      }
+      return projection;
+    },
+  };
+}
+
 function defaultBriefingGroup(
   groups: readonly BriefingGroup[],
   lifecycle: BriefingCollectionViewState['collectionLifecycle'],
@@ -65,15 +78,6 @@ function resolveBriefingSelection(
   viewState: BriefingCollectionViewState,
   params: Record<string, string | null | undefined>,
 ): { status: 'resolved' | 'not-found' | 'ambiguous' | 'empty'; briefing: FeedbackCollection | null; group: BriefingGroup | null; roundId: string | null } {
-  if (params.briefing) {
-    const resolved = resolveFeedbackCollection(sidebar.briefings, params.briefing);
-    return {
-      status: resolved.status,
-      briefing: resolved.collection,
-      group: null,
-      roundId: params.round || null,
-    };
-  }
   if (params.group) {
     const groupRef = params.group;
     const exact = sidebar.groups.filter((group) => group.id === groupRef || group.key === groupRef);
@@ -161,15 +165,36 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   const error = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable' ? null : sidebarQuery.error?.message ?? null;
   const accessUnavailable = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable';
   const sidebarLoaded = sidebarQuery.data !== undefined;
+  const explicitBriefingQuery = useQuery({
+    ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null),
+    enabled: appShell.active && Boolean(initialBriefingId),
+    refetchOnWindowFocus: true,
+  }, queryClient);
   useEffect(() => {
     if (appShell.active) registerInitialRouteLoad(sidebarQuery.refetch());
   }, [appShell.active, registerInitialRouteLoad]);
+  useEffect(() => {
+    if (appShell.active && initialBriefingId) registerInitialRouteLoad(explicitBriefingQuery.refetch());
+  }, [appShell.active, initialBriefingId, initialRoundId, registerInitialRouteLoad]);
 
   const hasExplicitTarget = Boolean(initialBriefingId || initialGroupId);
-  const selection = resolveBriefingSelection(sidebar, viewState, {
-    briefing: initialBriefingId, group: initialGroupId, round: initialRoundId,
-  });
-  const routeStatus = hasExplicitTarget && selection.status !== 'resolved'
+  const explicitError = explicitBriefingQuery.error;
+  const identityRejected = explicitError instanceof ApiError && (explicitError.code === 'ambiguous_ref' || explicitError.status === 404);
+  const projection = initialBriefingId && !identityRejected ? explicitBriefingQuery.data : undefined;
+  const explicitBriefing: FeedbackCollection | null = projection
+    ? briefings.find((entry) => entry.collectionId === projection.briefing_id) ?? {
+      id: feedbackCollectionIdentity(projection.briefing_id), collectionId: projection.briefing_id,
+      label: projection.title, description: projection.description, publicationMode: projection.publication_mode,
+      latestRoundId: projection.latest_round_id, unansweredDirectiveCount: 0, createdAt: 0, updatedAt: 0,
+    } : null;
+  const selection = initialBriefingId
+    ? { briefing: explicitBriefing, group: null, roundId: initialRoundId ?? null, status: explicitBriefing ? 'resolved' : 'not-found' }
+    : resolveBriefingSelection(sidebar, viewState, { group: initialGroupId });
+  const routeStatus = initialBriefingId
+    ? explicitBriefing ? 'resolved' : explicitError instanceof ApiError && explicitError.code === 'ambiguous_ref' ? 'ambiguous'
+      : explicitError instanceof ApiError && explicitError.status === 404 ? 'not-found'
+        : explicitError ? 'error' : 'resolving'
+    : hasExplicitTarget && selection.status !== 'resolved'
     ? sidebarQuery.error ? 'error' : !sidebarLoaded || sidebarQuery.isFetching ? 'resolving' : selection.status
     : selection.status;
   const selected = selection.briefing;
@@ -289,7 +314,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
         <div role={routeStatus === 'resolving' ? 'status' : 'alert'} data-route-state={routeStatus}>
           {routeStatus === 'resolving' ? 'Resolving Briefing link…'
             : routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
-              : routeStatus === 'error' ? `The Briefing link could not be resolved: ${sidebarQuery.error?.message}`
+              : routeStatus === 'error' ? `The Briefing link could not be resolved: ${(initialBriefingId ? explicitError : sidebarQuery.error)?.message}`
                 : 'The linked Briefing could not be found.'}
         </div>
       ) : selectedGroup ? (
@@ -320,6 +345,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
 /** Warm the Briefing sidebar and only its explicit, saved, or default selection. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  if (params.briefing) {
+    await queryClient.fetchQuery(briefingTargetQuery(params.briefing, params.round || null));
+    return;
+  }
   const sidebar = await queryClient.fetchQuery({
     queryKey: browserResourceKeys.briefingSidebar,
     queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),

@@ -19,7 +19,7 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
-import { detailRequestKey, writePersistedDetail } from '../detail-cache';
+import { detailRequestKey, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { ARTIFACT_ROUTE_SELECTORS, routeHashWithParams, parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -547,18 +547,21 @@ export function ArtifactsView({
   const loadVersions = useCallback(async (signal: AbortSignal) => (
     sortedVersionHistory(await getArtifactVersions(selectedSeriesRef!, { signal }))
   ), [selectedSeriesRef, selectedVersionNo]);
-  const acceptVersions = useCallback((history: ArtifactVersionHistory) => (
-    seriesRecordRef(history.series) === selectedSeriesRef
-  ), [selectedSeriesRef]);
   const versionsDetail = useKeyedAsyncDetail({
     namespace: 'artifact-versions',
     requestKey: selectedSeriesRef ? detailRequestKey('artifact-versions', { ref: selectedSeriesRef }) : null,
     load: loadVersions,
-    accept: acceptVersions,
   });
   useLayoutEffect(() => {
     if (versionsDetail.error) {
-      setVersionHistory(null);
+      const invalidIdentity = isApiErrorStatus(versionsDetail.failure, 404) || isApiErrorStatus(versionsDetail.failure, 409);
+      if (invalidIdentity) {
+        if (selectedSeriesRef) removePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref: selectedSeriesRef }));
+        setVersionHistory(null);
+        setSelectedArtifactId(null);
+        setSelectedArtifact(null);
+        setResolution(null);
+      }
       if (isApiErrorStatus(versionsDetail.failure, 404) && !deepLinkActiveRef.current) {
         setSelectedSeriesRef(null);
         setSelectedVersionNo(null);
@@ -575,6 +578,11 @@ export function ArtifactsView({
     }
     if (!versionsDetail.data) return;
     const history = sortedVersionHistory(versionsDetail.data);
+    const canonicalSeriesRef = seriesRecordRef(history.series);
+    if (!versionsDetail.stale && canonicalSeriesRef !== selectedSeriesRef) {
+      writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref: canonicalSeriesRef }), history);
+      setSelectedSeriesRef(canonicalSeriesRef);
+    }
     setVersionHistory(history);
     const version = selectedVersionNo === null
       ? history.versions[0] ?? null

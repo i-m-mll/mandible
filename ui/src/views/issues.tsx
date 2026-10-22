@@ -20,7 +20,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import {
@@ -712,10 +712,10 @@ export function IssuesView({
   }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, ledgerIssueDetail]);
 
   const synthesizedLedgerIssueDetail = useMemo(
-    () => !initialIssueId && selectedIssueSummary
+    () => !initialIssueId && !detailLoadFailed && selectedIssueSummary
       ? synthesizeLedgerIssueDetail(selectedIssueSummary.repo, selectedIssueSummary.issue)
       : null,
-    [initialIssueId, selectedIssueSummary],
+    [initialIssueId, detailLoadFailed, selectedIssueSummary],
   );
 
   const visibleLedgerIssueDetail = useMemo(
@@ -797,6 +797,7 @@ export function IssuesView({
     }
     const repoId = selectedRepoId;
     const issueId = selectedIssueId;
+    let identityInvalidated = false;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
     const persistedKey = detailRequestKey('issue', { repoId, issueId });
@@ -824,7 +825,7 @@ export function IssuesView({
     if (initialDetail) {
       initialDetail
         .then((detail) => {
-          if (detailRequestSeqRef.current !== requestSeq) return;
+          if (detailRequestSeqRef.current !== requestSeq || identityInvalidated) return;
           setLedgerIssueDetail((current) => (
             shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
           ));
@@ -846,7 +847,14 @@ export function IssuesView({
         }
       })
       .catch((error) => {
-        if (detailRequestSeqRef.current === requestSeq && !hasCachedDetail) {
+        if (detailRequestSeqRef.current !== requestSeq) return;
+        identityInvalidated = isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409);
+        if (identityInvalidated) {
+          for (const key of issueDetailCacheKeys(repoId, issueId)) issueDetailCacheRef.current.delete(key);
+          removePersistedDetail('issue-detail', persistedKey);
+          setLedgerIssueDetail(null);
+        }
+        if (identityInvalidated || !hasCachedDetail) {
           setDetailLoadFailed(true);
           setDetailError(error instanceof Error ? error.message : String(error));
         }

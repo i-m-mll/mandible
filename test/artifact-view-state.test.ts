@@ -562,4 +562,91 @@ it('clears mounted ref detail during resolution, ignores stale targets and prese
     expect(new URLSearchParams(window.location.hash.split('?')[1]).get('sentinel')).toBe('a+b&c');
   });
 
+describe('authoritative series references', () => {
+    function seriesFetch(artifacts: ReturnType<typeof makeArtifactFixture>[], versions: (ref: string) => Promise<Response>) {
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
+        if (url.startsWith('/api/artifacts/versions?')) return versions(new URLSearchParams(url.split('?')[1]).get('ref')!);
+        const artifact = artifacts.find((entry) => url.includes(encodeURIComponent(entry.id)));
+        if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+        if (artifact && url.endsWith('/content')) return jsonResponse({ content: {
+          artifact_id: artifact.id, status: 'unavailable', kind: 'unavailable', media_type: artifact.media_type,
+          size_bytes: 0, source: null, preview: null,
+          download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+        } });
+        if (artifact) return jsonResponse({ artifact });
+        return Promise.reject(new Error('Unexpected fetch ' + url));
+      }));
+    }
+
+    it.each([
+      ['short', null], ['short', 1], ['full', null], ['full', 1],
+    ] as const)('resolves %s series identity while retaining version %s', async (kind, pin) => {
+      const first = makeArtifactFixture('a', 'First.md');
+      const latest = makeArtifactFixture('b', 'Latest.md');
+      const fullId = 'abcdef0' + '1'.repeat(57);
+      const series = makeArtifactSeries(fullId, [first, latest], 'Resolved series');
+      const ref = kind === 'short' ? 'artifact-series:abcdef0' : series.summary.ref;
+      const requests: string[] = [];
+      seriesFetch([first, latest], async (requested) => {
+        requests.push(requested);
+        return jsonResponse({ history: series.history });
+      });
+      render(h(ArtifactsView, { initialSeriesRef: ref, initialVersionNo: pin }));
+      expect(await screen.findByRole('heading', { name: 'Resolved series' })).toBeTruthy();
+      expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe(pin === null ? '' : '1');
+      expect(document.querySelector('.artifact-detail')?.textContent).toContain(pin === null ? 'Latest.md' : 'First.md');
+      expect(requests[0]).toBe(ref);
+      expect(JSON.parse(window.localStorage.getItem('mandible:artifacts:list-controls:v1')!).selectedSeriesRef).toBe(series.summary.ref);
+    });
+
+    it.each([404, 409, 503])('does not canonicalize a stale short series cache before authoritative status %s', async (status) => {
+      const artifact = makeArtifactFixture('c', 'Cached series.md');
+      const series = makeArtifactSeries('abcdef0' + '1'.repeat(57), [artifact]);
+      const ref = 'artifact-series:abcdef0';
+      writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref }), series.history);
+      const requests: string[] = [];
+      let finish!: (response: Response) => void;
+      seriesFetch([artifact], (requested) => {
+        requests.push(requested);
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      });
+      render(h(ArtifactsView, { initialSeriesRef: ref }));
+      await waitFor(() => expect(document.querySelector('.artifact-detail')).toBeTruthy());
+      expect(requests).toEqual([ref]);
+      await act(async () => finish(new Response(JSON.stringify({ error: `Authoritative ${status}` }), {
+        status, headers: { 'content-type': 'application/json' },
+      })));
+      await waitFor(() => expect(document.body.textContent).toContain(`Authoritative ${status}`));
+      expect(Boolean(document.querySelector('.artifact-detail'))).toBe(status === 503);
+      expect(requests).toEqual([ref]);
+    });
+
+    it('canonicalizes only the current short-series response', async () => {
+      const first = makeArtifactFixture('d', 'Old series.md');
+      const second = makeArtifactFixture('e', 'Current series.md');
+      const oldSeries = makeArtifactSeries('aaaaaaa' + '1'.repeat(57), [first], 'Old series');
+      const currentSeries = makeArtifactSeries('bbbbbbb' + '2'.repeat(57), [second], 'Current series');
+      const pending = new Map<string, (response: Response) => void>();
+      seriesFetch([first, second], (ref) => {
+        if (ref === currentSeries.summary.ref) return jsonResponse({ history: currentSeries.history });
+        return new Promise<Response>((resolve) => pending.set(ref, resolve));
+      });
+      const { rerender } = render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:aaaaaaa', initialVersionNo: 1 }));
+      await waitFor(() => expect(pending.has('artifact-series:aaaaaaa')).toBe(true));
+      rerender(h(ArtifactsView, { initialSeriesRef: 'artifact-series:bbbbbbb', initialVersionNo: 1 }));
+      await waitFor(() => expect(pending.has('artifact-series:bbbbbbb')).toBe(true));
+      await act(async () => pending.get('artifact-series:aaaaaaa')!(new Response(JSON.stringify({ history: oldSeries.history }), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      expect(document.querySelector('.artifact-detail')).toBeNull();
+      await act(async () => pending.get('artifact-series:bbbbbbb')!(new Response(JSON.stringify({ history: currentSeries.history }), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      expect(await screen.findByRole('heading', { name: 'Current series' })).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Old series' })).toBeNull();
+      expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    });
+  });
 });

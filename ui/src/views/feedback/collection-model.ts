@@ -16,16 +16,6 @@ export function feedbackCollectionIdentity(briefingId: string): string {
   return `briefing:${encodeURIComponent(briefingId)}`;
 }
 
-export function resolveFeedbackCollection(
-  briefings: readonly FeedbackCollection[],
-  briefingRef: string,
-): { status: 'resolved'; collection: FeedbackCollection } | { status: 'not-found' | 'ambiguous'; collection: null } {
-  const exact = briefings.filter((briefing) => briefing.collectionId === briefingRef);
-  const matches = exact.length ? exact : briefings.filter((briefing) => briefing.collectionId.startsWith(briefingRef));
-  return matches.length === 1 ? { status: 'resolved', collection: matches[0] }
-    : { status: matches.length ? 'ambiguous' : 'not-found', collection: null };
-}
-
 export function filterFeedbackCollections(briefings: readonly FeedbackCollection[], search: string): FeedbackCollection[] {
   const needle = search.trim().toLocaleLowerCase();
   return needle ? briefings.filter((briefing) => briefing.label.toLocaleLowerCase().includes(needle)) : [...briefings];
