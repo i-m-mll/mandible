@@ -28,6 +28,18 @@ api_short_id() {
   printf '%s\n' "$1" | api_jq_human 'mandible_short_id' -R
 }
 
+# Filters select fixed shell variable names and string values. Validate the
+# complete record before emitting anything; jq's @sh accepts arrays as several
+# words, which are not a valid single assignment value.
+api_json_bindings() {
+  local filter="$1"
+  shift
+  jq -er "$filter | if type == \"object\" and all(to_entries[];
+      (.key | test(\"^[a-zA-Z_][a-zA-Z_0-9]*$\")) and (.value | type == \"string\"))
+    then to_entries | map(.key + \"=\" + (.value | @sh)) | join(\"\\n\")
+    else error(\"Invalid scalar response fields\") end" "$@"
+}
+
 # Issue 24f0316 — Mandible splits its state by lifetime, and the CLI must agree
 # with the daemon on where each half lives:
 #
@@ -785,7 +797,7 @@ api_http_sleep_before_retry() {
 
 api_http_probe_health() {
   local health_base="${1:-$(api_base)}"
-  local health_tmp http_status curl_exit=0 ready rebuilding
+  local health_tmp http_status curl_exit=0 ready rebuilding bindings
   health_tmp=$(api_temp_file)
   local socket_args=()
   api_is_local_socket && socket_args=(--unix-socket "$MANDIBLE_SOCKET")
@@ -798,8 +810,9 @@ api_http_probe_health() {
   http_status="${http_status:-000}"
   if [[ "$curl_exit" -eq 0 && "$http_status" =~ ^2 ]]; then
     ready=unknown rebuilding=false
-    eval "$(jq -r '{ready: (if has("ready") then (.ready | tostring) else "unknown" end), rebuilding: ((.rebuilding // false) | tostring)}
-      | to_entries[] | "\(.key)=\(.value | @sh)"' "$health_tmp" 2>/dev/null)"
+    if bindings=$(api_json_bindings '{ready: (if has("ready") then (.ready | tostring) else "unknown" end), rebuilding: ((.rebuilding // false) | tostring)}' "$health_tmp" 2>/dev/null); then
+      eval "$bindings"
+    fi
     rm -f "$health_tmp"
     if [[ "$ready" == "false" || "$rebuilding" == "true" ]]; then
       printf 'busy_not_ready'
@@ -1019,7 +1032,7 @@ api_http_exchange() {
 # unset here. A matching provider session proves the same process without a
 # process-tree walk.
 api_scope_inherited_identity() {
-  local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status
+  local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status bindings
 
   if (( $(api_provider_marker_count) > 1 )); then
     processes=$(api_process_table)
@@ -1038,8 +1051,11 @@ api_scope_inherited_identity() {
   row_path="/api/sessions/$(urlencode "$MANDIBLE_SESSION_ID")"
   http_status=$(unset MANDIBLE_SESSION_ID; api_capture GET "$row_path" "" "$row_file")
   if [[ "$http_status" == 200 ]]; then
-    eval "$(jq -r '{row_pid: (.pid // ""), row_conversation: (.conversation_id // "")}
-      | to_entries[] | "\(.key)=\(.value | @sh)"' "$row_file")"
+    if ! bindings=$(api_json_bindings '{row_pid: ((.pid // "") | if type == "number" then tostring else . end), row_conversation: (.conversation_id // "")}' "$row_file"); then
+      rm -f "$row_file"
+      return 1
+    fi
+    eval "$bindings"
   fi
   rm -f "$row_file"
   # 404 binds nothing; without the daemon there is nothing to attribute to, and
@@ -1265,9 +1281,14 @@ api_restart_availability_preflight() {
     return 1
   fi
 
-  eval "$(jq -r '{phase, sample_count, retry_after: (.retry_after_seconds // ""),
-    exceeded: (.eta_exceeded_seconds // ""), average: (.average_seconds // "")}
-    | to_entries[] | "\(.key)=\(.value | @sh)"' "$notice_file")"
+  local bindings
+  if ! bindings=$(api_json_bindings '{phase, sample_count: (.sample_count | tostring),
+    retry_after: ((.retry_after_seconds // "") | tostring),
+    exceeded: ((.eta_exceeded_seconds // "") | tostring), average: ((.average_seconds // "") | tostring)}' "$notice_file"); then
+    rm -f "$notice_file"
+    return 1
+  fi
+  eval "$bindings"
   case "$phase" in
     rebuilding) phase_word="rebuilding" ;;
     shutdown) phase_word="restarting" ;;
@@ -1389,7 +1410,7 @@ api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response fetch_status role policy db_path source_db_path message
+  local category tmp_response fetch_status role policy db_path source_db_path message bindings
 
   case "$method" in
     POST|PUT|PATCH|DELETE) ;;
@@ -1443,13 +1464,17 @@ api_preflight_operational_mutation() {
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
-  eval "$(jq -r '{
+  if ! bindings=$(api_json_bindings '{
     role: .instance.role,
     policy: (if (.instance | has("allowed_effects")) then
       if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
       else .instance.operational_mutations end),
-    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}
-    | to_entries[] | "\(.key)=\(.value | @sh)"' "$tmp_response")"
+    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}' "$tmp_response"); then
+    rm -f "$tmp_response"
+    api_write_instance_metadata_unknown "$category" "$output_file"
+    return 22
+  fi
+  eval "$bindings"
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0

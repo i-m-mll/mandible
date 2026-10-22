@@ -449,7 +449,7 @@ cmd_token() {
 #                 established naming contract, and guessing one would create an
 #                 item no reader looks for.
 secret_store_user_fields() {
-  printf '%s' "$1" | jq -r '
+  printf '%s' "$1" | api_json_bindings '
     .user as $u
     | (if $u.kind == "human" then "mandible-operator"
       elif $u.kind == "agent" then
@@ -459,8 +459,7 @@ secret_store_user_fields() {
           | first) as $app
         | if $app == null then "" else "mandible-agent-" + $app end
       else "" end) as $service
-    | {account: ($u.slug // ""), user_kind: ($u.kind // "unknown"), default_service: $service}
-    | to_entries[] | "\(.key)=\(.value | @sh)"'
+    | {account: ($u.slug // ""), user_kind: ($u.kind // "unknown"), default_service: $service}'
 }
 
 token_mint() {
@@ -482,9 +481,11 @@ token_mint() {
   if (( store )); then
     secret_backend_available \
       || die "${RED}Cannot store the token: $(secret_backend_unavailable_reason).${RESET}" 1
-    local user_json user_kind default_service
+    local user_json user_kind default_service user_bindings
     user_json="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
-    eval "$(secret_store_user_fields "$user_json")"
+    user_bindings="$(secret_store_user_fields "$user_json")" \
+      || die "${RED}Could not resolve valid secret-store user fields for '$ref'.${RESET}" 1
+    eval "$user_bindings"
     [[ -n "$account" ]] || die "${RED}Could not resolve the user slug for '$ref'.${RESET}" 1
     if (( ! service_set )); then
       service="$default_service"
@@ -550,10 +551,10 @@ token_mint() {
     return 0
   fi
 
-  local token credential_id result
-  eval "$(printf '%s' "$response" | jq -r '
-    {token: (.token // ""), credential_id: (.credential.id // "")}
-    | to_entries[] | "\(.key)=\(.value | @sh)"')"
+  local token credential_id result mint_bindings
+  mint_bindings="$(printf '%s' "$response" | api_json_bindings '{token: (.token // ""), credential_id: (.credential.id // "")}')" \
+    || die "${RED}Token minted but the daemon returned malformed token or credential fields; no secret was stored.${RESET}" 1
+  eval "$mint_bindings"
   [[ -n "$token" ]] \
     || die "${RED}Token minted (credential ${credential_id:-unknown}) but the daemon returned no token value to store.${RESET} Revoke it with: mandible user token revoke ${credential_id:-<credential-id>}" 1
   printf '%s' "$token" | secret_set "$service" "$account" \
