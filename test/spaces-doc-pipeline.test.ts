@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Tests for the secure, non-executable `spaces-doc.v1` parse/sanitize pipeline
 // (Spaces child C14a, issue 047d1be). These cover:
 //   - parse path: `spaces-doc.v1` -> data nodes + sanitized HTML

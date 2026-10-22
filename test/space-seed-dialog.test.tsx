@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Component tests for the Space seed dialog (child 27a5026).
 //
 // Acceptance criteria covered here:

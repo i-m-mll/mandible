@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import { makeArtifactResolution } from "./helpers/artifact-resolution-fixtures";
 import { makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';

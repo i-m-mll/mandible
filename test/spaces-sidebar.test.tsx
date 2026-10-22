@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Spaces home sidebar tests (umbrella de56ffa, child 6a4a69a).
 //
 // Covers the cohesive Spaces-home interaction the sidebar owns: grouped tree

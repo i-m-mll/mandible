@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Spaces document block editor: a draft survives stale reloads, SSE refetches
 // and rejected writes; reads from a previously selected document are ignored;
 // deleting an embedded item waits for an explicit decision.

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { waitFor } from './helpers/dom.js';
 import { QueryClient } from '@tanstack/preact-query';

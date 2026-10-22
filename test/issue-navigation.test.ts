@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, act } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';

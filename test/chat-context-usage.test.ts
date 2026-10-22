@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { h } from "preact";
 import { cleanup, render, screen } from "./helpers/dom.js";
 import { afterEach, describe, expect, it } from "vitest";

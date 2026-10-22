@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render, mainInstance } from './helpers/ui-workspace-fixture';
 
 import { screen, fireEvent, waitFor, cleanup } from './helpers/dom.js';

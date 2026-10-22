@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { AppShellProvider } from '../ui/src/app-shell';
 import { invalidateApiGetCache } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';

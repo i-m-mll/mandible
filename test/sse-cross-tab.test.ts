@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { getGraph, invalidateApiGetCache } from '../ui/src/api';
 import { establishTestClientAccess } from './helpers/local-client-access';

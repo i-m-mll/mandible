@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Space edge model: free-text labels never produce an invalid ledger link type,
 // only issue/comment endpoints are promotable, and SSE reconciliation keeps a
 // label the user is still editing.

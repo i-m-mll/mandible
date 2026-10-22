@@ -26,9 +26,8 @@ const suite = selectedSuite();
 export default defineConfig({
   test: {
     include: [SUITES[suite]],
-    // jsdom remains the default. Files that touch no DOM opt into `node` with
-    // an `@vitest-environment node` docblock (issue 9e40a31).
-    environment: 'jsdom',
+    // DOM consumers declare @vitest-environment jsdom, including .ts tests.
+    environment: 'node',
     // Hang guards, not speed checks: the timing reporter owns speed, and tests
     // await state through test/helpers/wait-until.ts.
     testTimeout: 60_000,

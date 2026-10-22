@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';

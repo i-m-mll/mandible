@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render,screen,fireEvent,waitFor,cleanup } from './helpers/dom.js';
 import { beforeEach,afterEach,expect,it,vi } from 'vitest';
 import { queryClient } from '../ui/src/query/client';

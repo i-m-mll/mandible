@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 

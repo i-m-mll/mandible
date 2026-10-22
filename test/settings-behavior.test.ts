@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach } from 'vitest';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from './helpers/ui-workspace-fixture';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Issue 037fa85 / f59b5bd — page-level agent session binding: the
 // agent_session hash-fragment param is adopted at boot, held in tab-local
 // memory only, and preserved in route URLs with replace semantics.

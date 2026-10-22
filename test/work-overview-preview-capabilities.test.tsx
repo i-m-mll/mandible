@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render } from './helpers/notice-test-render';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';

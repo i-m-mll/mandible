@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConversationSpawnApiError, invalidateApiGetCache, listCanonicalProjects, startProviderChat } from '../ui/src/api';
