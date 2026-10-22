@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
