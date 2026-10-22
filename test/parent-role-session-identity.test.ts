@@ -84,11 +84,21 @@ function seedCodexConversation(sessionId = DESKTOP_TASK): void {
   );
 }
 
-async function assume(sessionId: string, override = false) {
+/** `caller` is the calling agent's own session, as its ambient provider identity. */
+async function assume(sessionId: string, override = false, caller?: string) {
   return router.invoke({
     method: "POST",
     url: `/api/ledger/issues/${umbrellaId}/parent-role`,
     body: { session_id: sessionId, mechanism: "codex", override },
+    ambient_identity: caller ? { provider: "codex", provider_session_id: caller } : undefined,
+  });
+}
+
+async function release(caller: string) {
+  return router.invoke({
+    method: "DELETE",
+    url: `/api/ledger/issues/${umbrellaId}/parent-role`,
+    ambient_identity: { provider: "codex", provider_session_id: caller },
   });
 }
 
@@ -100,7 +110,6 @@ async function parentRoleStatus() {
   return response.body as {
     holder: Record<string, unknown> | null;
     live_holder: Record<string, unknown> | null;
-    unknown_holders: Array<Record<string, unknown>>;
   };
 }
 
@@ -335,15 +344,39 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     const conflict = await assume("sess-other");
     expect(conflict.status).toBe(409);
     const body = conflict.body as { error: string; blocking_holder: Record<string, unknown> };
-    expect(body.error).toContain("only the operator may displace it");
+    expect(body.error).toContain("only the operator can displace it");
     // The conflict names the holder, so a coordinator can decide rather than
     // guess (issue 7a97e2c's `- (-)` was unactionable).
     expect(body.blocking_holder.session_id).toBe(PROVIDER_THREAD);
     expect(body.blocking_holder.mechanism).toBe("codex");
 
-    const deniedOverride = await assume("sess-other", true);
+    const deniedOverride = await assume("sess-other", true, "sess-other");
     expect(deniedOverride.status).toBe(409);
-    expect((deniedOverride.body as { error: string }).error).toContain("only the operator");
+    expect((deniedOverride.body as { error: string }).error).toContain("only for the operator");
+  });
+
+  it("lets the live holder hand the role to a successor from its own session", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-successor", "active");
+
+    const handoff = await assume("sess-successor", false, PROVIDER_THREAD);
+    expect(handoff.status).toBe(200);
+    // The predecessor stays live but no longer holds the role.
+    expect((await parentRoleStatus()).live_holder).toMatchObject({ session_id: "sess-successor" });
+    expect((await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD)).status).toBe(409);
+  });
+
+  it("lets only the holder release the role", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-other", "active");
+
+    expect((await release("sess-other")).status).toBe(409);
+    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
+
+    const released = await release(PROVIDER_THREAD);
+    expect(released.status).toBe(200);
+    expect((await parentRoleStatus()).holder).toBeNull();
+    expect((await assume("sess-other")).status).toBe(200);
   });
 
   it("does not block on a stale holder", async () => {
@@ -359,7 +392,7 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     expect((await assume(OUTAGE_TASK)).status).toBe(200);
     const status = await parentRoleStatus();
     expect(status.live_holder).toBeNull();
-    expect(status.unknown_holders).toEqual([expect.objectContaining({ session_id: OUTAGE_TASK })]);
+    expect(status.holder).toMatchObject({ session_id: OUTAGE_TASK, liveness: { state: "unknown" } });
 
     seedSession("sess-other", "active");
     const conflict = await assume("sess-other");

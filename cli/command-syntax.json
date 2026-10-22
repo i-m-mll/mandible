@@ -1726,6 +1726,17 @@
         ]
       }
     },
+    "issue.parent-role.release": {
+      "route": ["issue", "parent-role", "release"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "umbrella","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--override"],"values": []}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "issue.refs.backfill": {
       "route": ["issue", "refs", "backfill"],
       "grammar": {

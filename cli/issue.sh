@@ -1127,14 +1127,19 @@ cmd_parent_role() {
   case "$action" in
     status) cmd_parent_role_status "$@" ;;
     assume) cmd_parent_role_assume "$@" ;;
+    release) cmd_parent_role_release "$@" ;;
     ""|-h|--help)
       mandible_command_help issue parent-role
       ;;
     *)
-      die "Unknown parent-role action: $action (expected status or assume)" 2
+      die "Unknown parent-role action: $action (expected status, assume or release)" 2
       ;;
   esac
 }
+
+# The holder's provider comes from its resolved session, not from the free-form
+# --mechanism it was recorded with (issue 23a4edf).
+PARENT_ROLE_HOLDER_JQ='def parent_role_holder: "\((.session_id // "-") | mandible_short_id) (\(.liveness.provider // .mechanism // "-"))";'
 
 cmd_parent_role_status() {
   local issue_ref=""
@@ -1152,18 +1157,48 @@ cmd_parent_role_status() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
   else
-    printf '%s\n' "$response" | api_jq_human '
-      if .live_holder then
-        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.liveness.provider // .live_holder.mechanism // "-"))"
-      elif (.unknown_holders // []) | length > 0 then
-        "holder of unknown liveness: \((.unknown_holders[0].session_id // "-") | mandible_short_id) (\(.unknown_holders[0].liveness.provider // .unknown_holders[0].mechanism // "-"))"
-      elif .holder then
-        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.liveness.provider // .holder.mechanism // "-"))"
-      else
-        "no parent-role holder"
+    printf '%s\n' "$response" | api_jq_human "${PARENT_ROLE_HOLDER_JQ}"'
+      if .holder == null then "no parent-role holder"
+      else {live: "live holder", unknown: "holder of unknown liveness", stopped: "stale holder"}[.holder.liveness.state]
+        + ": " + (.holder | parent_role_holder)
       end
     '
   fi
+}
+
+# Send one parent-role mutation and report it. A refusal exits non-zero: 3 when
+# a holder blocks the change, 1 otherwise, with --json printing the server's
+# answer either way.
+parent_role_send() {
+  local method="$1" issue_ref="$2" payload="$3" json="$4" success_filter="$5"
+  local tmp_response status response
+  tmp_response=$(mktemp)
+  status=$(api_send_capture "$method" "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  local code=0
+  if [[ ! "$status" =~ ^2 ]]; then
+    code=1
+    # Only a response that actually carries a holder is a holder conflict.
+    # Other refusals (and the 400 for an unregistered session id) carry their
+    # own `error` and must be shown as themselves, not as a phantom holder
+    # "- (-)" (issue 7a97e2c).
+    if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
+      code=3
+    fi
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.' 2>/dev/null || printf '%s\n' "$response"
+  elif (( code == 0 )); then
+    printf '%s\n' "$response" | api_jq_human "$success_filter"
+  elif (( code == 3 )); then
+    printf '%s\n' "$response" | api_jq_human "${PARENT_ROLE_HOLDER_JQ}"'"parent role held by \(.blocking_holder | parent_role_holder): \(.error)"' >&2
+  else
+    printf '%s\n' "$response" \
+      | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' >&2 2>/dev/null \
+      || printf '%s\n' "$response" >&2
+  fi
+  return "$code"
 }
 
 cmd_parent_role_assume() {
@@ -1184,38 +1219,31 @@ cmd_parent_role_assume() {
     die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Gemini session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, GEMINI_SESSION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
   fi
   require_tools
-  local payload tmp_response status response
+  local payload
   payload=$(jq -n \
     --arg session_id "$session_id" \
     --arg mechanism "$mechanism" \
     --arg override "$override" \
     '{session_id:$session_id, override:($override == "1")} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
-  tmp_response=$(mktemp)
-  status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
-  response=$(cat "$tmp_response")
-  rm -f "$tmp_response"
-  if [[ "$status" =~ ^2 ]]; then
-    if (( json )); then
-      printf '%s\n' "$response" | jq '.'
-    else
-      printf '%s\n' "$response" | api_jq_human '"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder.payload.session_id | mandible_short_id)"'
-    fi
-    return 0
+  parent_role_send POST "$issue_ref" "$payload" "$json" \
+    "${PARENT_ROLE_HOLDER_JQ}"'"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder | parent_role_holder)"'
+}
+
+cmd_parent_role_release() {
+  local issue_ref=""
+  local override=0
+  local json=0
+  local binding
+  binding=$(mandible_bind_arguments "issue.parent-role.release" '{"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: $(mandible_command_syntax issue.parent-role.release)" 2
   fi
-  # Only a response that actually carries a holder is a holder conflict. Other
-  # 409s on this route (and the 400 for an unregistered session id) carry their
-  # own `error` and must be shown as themselves, not rendered as a phantom
-  # "live parent-role holder exists: - (-)" (issue 7a97e2c).
-  if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
-    printf '%s\n' "$response" | api_jq_human '"\(if .blocking_holder.liveness.state == "live" then "live" else "unknown-liveness" end) parent-role holder exists: \((.blocking_holder.session_id // "-") | mandible_short_id) (\(.blocking_holder.mechanism // "-")); rerun with --override to retake"' >&2
-    return 3
-  fi
-  local rendered
-  rendered=$(printf '%s\n' "$response" \
-    | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' 2>/dev/null) \
-    || rendered="$response"
-  printf '%s\n' "$rendered" >&2
-  return 1
+  require_tools
+  local payload
+  payload=$(jq -n --arg override "$override" '{override:($override == "1")}')
+  parent_role_send DELETE "$issue_ref" "$payload" "$json" \
+    "${PARENT_ROLE_HOLDER_JQ}"'if .released then "parent-role released checkpoint=\(.checkpoint.id | mandible_short_id) previous holder=\(.checkpoint.payload.previous_holder | parent_role_holder)" else "no parent-role holder; nothing released" end'
 }
 
 cmd_label() {
