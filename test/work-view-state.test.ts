@@ -1,6 +1,6 @@
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 import { render, mainInstance } from './helpers/ui-workspace-fixture';
-import { screen, fireEvent, waitFor, act } from '@testing-library/preact';
+import { screen, fireEvent, waitFor, act } from './helpers/dom.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 

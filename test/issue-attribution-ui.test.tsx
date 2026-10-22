@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen } from './helpers/dom.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';

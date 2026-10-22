@@ -1,5 +1,5 @@
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, within } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { latestPlanIndex, parsePlanEntries } from '../ui/src/components/message-blocks/PlanBlock';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../ui/src/components/console/PermissionApprovalCard';

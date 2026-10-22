@@ -395,7 +395,7 @@ describe("exact conversation freshness", () => {
       return triggerExactPathIngest(file);
     };
     await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 5, ingest: slowIngest })).rejects.toMatchObject({ code: "freshness_pending" });
-    await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 500, ingest: slowIngest })).resolves.toMatchObject({ conversationId: seeded.id });
+    await expect(ensureExactConversationFresh(db, seeded.id, { ingest: slowIngest })).resolves.toMatchObject({ conversationId: seeded.id });
     expect(ingests).toBe(1);
   });
 

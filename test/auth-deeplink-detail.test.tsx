@@ -5,7 +5,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // honest not-found state for invalid ids, instead of falling through to the
 // empty-view placeholder (or having the sidebar
 // reconciliation effect steal the selection).
-import { render, screen, cleanup, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';

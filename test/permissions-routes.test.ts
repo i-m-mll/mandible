@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitUntilPasses } from "./helpers/wait-until.js";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
@@ -234,7 +235,7 @@ describe("restricted project route enforcement", () => {
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
     });
     expect(failed.status).toBe(202);
-    await vi.waitFor(() => {
+    await waitUntilPasses(() => {
       const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
         .get("10000000-0000-4000-8000-000000000002") as { state: string; error_json: string };
       expect(row.state).toBe("failed");

@@ -1,4 +1,4 @@
-import { render,screen,fireEvent,waitFor,cleanup } from '@testing-library/preact';
+import { render,screen,fireEvent,waitFor,cleanup } from './helpers/dom.js';
 import { beforeEach,afterEach,expect,it,vi } from 'vitest';
 import { queryClient } from '../ui/src/query/client';
 import { AppShellProvider } from '../ui/src/app-shell';

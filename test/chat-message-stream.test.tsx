@@ -1,5 +1,5 @@
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvents, groupMessagesForDisplay } from '../ui/src/chat';

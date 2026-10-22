@@ -8,7 +8,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // asserts the acceptance criteria: tree render, flat Items section, add/remove,
 // quiet unresolved-ref placeholders, filter, and view-state persistence + SSE-without-
 // reset of selection.
-import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 

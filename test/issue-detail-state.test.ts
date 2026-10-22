@@ -1,5 +1,5 @@
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
-import { screen } from '@testing-library/preact';
+import { screen } from './helpers/dom.js';
 import { describe, expect, it } from 'vitest';
 import { h } from 'preact';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';

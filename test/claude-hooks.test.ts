@@ -437,7 +437,7 @@ describe("Claude statusline relay script", () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-  }, 10_000);
+  });
 });
 
 function runScriptWithInput(

@@ -19,6 +19,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { LEDGER_EVENT_CREATED, ledgerSseTypeForEvent } from "../src/ledger/event-contract.js";
 import { SseManager, setSseManager } from "../src/sse.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 let tempDir = "";
 let db: Db;
@@ -440,7 +441,7 @@ describe("ledger operational links", () => {
       "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = 0 WHERE id = ?",
     ).run(resolvedAt, resolvedAt, "auth_replay");
 
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await waitUntil(() => Date.now() > resolvedAt, "the clock to pass the resolution time", 1);
     store.setIssueStatus(
       resolvedIssue.id,
       "open",

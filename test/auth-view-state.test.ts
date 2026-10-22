@@ -1,6 +1,6 @@
 import { render, mainInstance } from './helpers/ui-workspace-fixture';
 
-import { screen, fireEvent, waitFor, cleanup } from '@testing-library/preact';
+import { screen, fireEvent, waitFor, cleanup } from './helpers/dom.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { h } from 'preact';
 import { bindAuthUiOperations } from './helpers/auth-ui-fixture';

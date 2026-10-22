@@ -2,7 +2,7 @@
 // foreign-space reconciliation input. React Flow is mocked with a deterministic
 // harness so the `onNodesChange` drag/select contract is observable in jsdom.
 
-import { render, screen, cleanup, act, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, act, waitFor } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as api from '../ui/src/api';
 import type { BriefingBundle, BriefingGroup } from '../ui/src/api';

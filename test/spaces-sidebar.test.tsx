@@ -6,7 +6,7 @@
 // flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
 
-import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the seed POST so the SpaceSeedDialog mount path doesn't hit a daemon.

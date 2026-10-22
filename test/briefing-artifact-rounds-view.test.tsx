@@ -4,7 +4,7 @@ import { queryClient } from '../ui/src/query/client';
 import { browserResourceKeys, refreshBrowserResources } from '../ui/src/query/browserResources';
 import { createHash } from 'node:crypto';
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 

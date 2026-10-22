@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

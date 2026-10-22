@@ -1,6 +1,6 @@
 import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
-import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { CancelledError } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -305,7 +305,7 @@ describe('compact detail pane shell', () => {
     mounted.rerender(view(second.id));
     expect(await screen.findByText('Second chat opened')).toBeTruthy();
     mounted.rerender(view(first.id));
-    expect(await screen.findByText('First chat returned', {}, { timeout: 3_000 })).toBeTruthy();
+    expect(await screen.findByText('First chat returned')).toBeTruthy();
     expect(screen.queryByText('No messages yet')).toBeNull();
     expect(firstAttempts).toBeGreaterThanOrEqual(2);
   });

@@ -35,6 +35,7 @@ import type {
 import { type Db } from "../src/db.js";
 import { SessionRegistry } from "../src/registry.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 const capabilities: ControllerAdapterCapabilities = {
   mode: "app-server-managed",
@@ -718,9 +719,7 @@ describe("authoritative conversation control", () => {
 
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
-    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
+    await waitUntil(() => emitted.at(-1)?.kind === "durable-reconciliation", "the durable reconciliation event");
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
@@ -804,9 +803,7 @@ describe("authoritative conversation control", () => {
 
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
-    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
+    await waitUntil(() => emitted.at(-1)?.kind === "durable-reconciliation", "the durable reconciliation event");
 
     expect(diagnostics).toEqual([expect.objectContaining({ durable_identity_count: 1, retired_live_count: 1 })]);
     expect(service.getLiveProjection("conversation-1")).toMatchObject({

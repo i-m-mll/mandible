@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { waitFor } from '@testing-library/preact';
+import { waitFor } from './helpers/dom.js';
 import { QueryClient } from '@tanstack/preact-query';
 import { createSSEClient, type SseStateHandler, type SSEPayload } from '../ui/src/sse-client';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';

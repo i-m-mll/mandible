@@ -7,7 +7,7 @@ import fs from 'node:fs';
 
 import path from 'node:path';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getArtifactContent } from '../src/artifact-content';

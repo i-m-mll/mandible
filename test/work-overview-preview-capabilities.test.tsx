@@ -1,7 +1,7 @@
 import { render } from './helpers/notice-test-render';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 

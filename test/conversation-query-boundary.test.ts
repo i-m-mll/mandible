@@ -1,5 +1,6 @@
 import { QueryClient, QueryObserver } from '@tanstack/query-core';
 import { describe, expect, it, vi } from 'vitest';
+import { waitUntilPasses } from './helpers/wait-until.js';
 
 import type {
   Conversation,
@@ -91,7 +92,7 @@ describe('Chat Query authority', () => {
     });
     const unsubscribe = observer.subscribe(() => undefined);
     unsubscribe();
-    await vi.waitFor(() => expect(aborted).toBe(true));
+    await waitUntilPasses(() => expect(aborted).toBe(true));
     expect(client.getQueryData(conversationKeys.window('new', normalizeWindowTarget({ target: 'initial' })))).toBeUndefined();
   });
 
@@ -180,6 +181,6 @@ describe('Chat Query authority', () => {
       block_count: 4,
       append: { from_position: 3, blocks: [block('b3', 3)] },
     });
-    await vi.waitFor(() => expect(refetch).toHaveBeenCalledTimes(2));
+    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
   });
 });

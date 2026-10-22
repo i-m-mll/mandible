@@ -5,7 +5,7 @@
 import { invalidateApiGetCache } from '../ui/src/api';
 import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
 import { establishTestClientAccess } from './helpers/local-client-access';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { act } from 'preact/test-utils';

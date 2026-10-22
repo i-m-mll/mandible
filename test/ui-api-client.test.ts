@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // @vitest-environment-options {"url":"https://app.mandible.localhost:19420/"}
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitUntilPasses } from './helpers/wait-until.js';
 import { getWorkCompare, invalidateApiGetCache, patchSession, updateConversation } from '../ui/src/api';
 import {
   __resetBrowserSessionForTests, browserSessionFetch, ensureClientAccess, getClientAccessState, retryClientAccess,
@@ -86,7 +87,7 @@ describe("OS-owned browser access", () => {
       ? available ? ready() : Promise.reject(new Error("Service unavailable"))
       : new Response(JSON.stringify({ items: ["kept"] }), { status: 200 })) as typeof fetch;
     const read = browserSessionFetch("/api/issues", {}, fetchImpl);
-    await vi.waitFor(() => expect(getClientAccessState().phase).toBe("failed"));
+    await waitUntilPasses(() => expect(getClientAccessState().phase).toBe("failed"));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     available = true;
     await retryClientAccess(fetchImpl);

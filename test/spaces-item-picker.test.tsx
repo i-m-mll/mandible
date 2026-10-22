@@ -8,7 +8,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // multi-select add (one addSpaceItem per selection), the afterAdd placement hook
 // that materializes a placed canvas occurrence, and graceful already-present
 // handling.
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 

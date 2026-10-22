@@ -9,6 +9,7 @@ import { createUser, revokeCredential } from '../src/users/store.js';
 import { mintApiToken } from '../src/client-auth/tokens.js';
 import { addGrant } from '../src/permissions/store.js';
 import { qualifiedRuntimeFixtureEnv } from './helpers/runtime-fixture.js';
+import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 it('runs the one-shot with a complete durable token identity and retains permission and lifecycle guards', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-recovery-cli-'));
@@ -28,7 +29,7 @@ it('runs the one-shot with a complete durable token identity and retains permiss
     const before = db.prepare('SELECT * FROM auth_requests WHERE id=?').get(request);
     const runtime = spawnSync('/bin/sh', ['scripts/bun-runtime.sh'], { encoding: 'utf8' }).stdout.trim();
     const invoke = () => spawnSync(runtime, ['scripts/verify-current-convergence.ts', request], {
-      input: token.token, encoding: 'utf8', timeout: 10000,
+      input: token.token, encoding: 'utf8', timeout: STATE_DEADLINE_MS,
       env: { ...process.env, ...qualifiedRuntimeFixtureEnv(), MANDIBLE_HOME: home, MANDIBLE_DB: dbFile, GIT_OPTIONAL_LOCKS: '0' },
     });
     const denied = invoke();
