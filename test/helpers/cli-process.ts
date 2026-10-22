@@ -32,13 +32,15 @@ export interface CliOptions {
   cwd?: string;
   /** Merged over the inherited environment; `undefined` removes a variable. */
   env?: Record<string, string | undefined>;
+  /** False starts from an empty environment instead of this process's. */
+  inheritEnv?: boolean;
   input?: string;
   /** Executable to run instead of the CLI, e.g. `bash` with `["-c", script]`. */
   command?: string;
 }
 
 export function runCli(args: string[], options: CliOptions = {}): Promise<CliResult> {
-  const env: Record<string, string | undefined> = { ...process.env, ...options.env };
+  const env: Record<string, string | undefined> = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
   for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
   return new Promise((resolve, reject) => {
     const child = spawn(options.command ?? CLI, args, { cwd: options.cwd, env: env as NodeJS.ProcessEnv });
@@ -62,6 +64,7 @@ export interface StubRequest {
   method: string;
   /** Path plus query, as the CLI sent it. */
   url: string;
+  headers: http.IncomingHttpHeaders;
   body: unknown;
 }
 
@@ -87,7 +90,7 @@ export function startStubDaemon(handler: StubHandler): Promise<StubDaemon> {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const raw = Buffer.concat(chunks).toString("utf8");
-    const request = { method: req.method ?? "GET", url: req.url ?? "", body: raw ? JSON.parse(raw) : null };
+    const request = { method: req.method ?? "GET", url: req.url ?? "", headers: req.headers, body: raw ? JSON.parse(raw) : null };
     res.setHeader("Content-Type", "application/json");
     if (request.method === "GET" && request.url === "/api/instance") {
       res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
