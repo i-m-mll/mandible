@@ -57,7 +57,6 @@ import {
   type MarkdownBodyPolicyWarning,
 } from "../ledger/markdown-body.js";
 import {
-  resolveCheckoutPath,
   resolveProjectRef,
   suggestProjectRefs,
 } from "../ledger/project-registry.js";
@@ -1128,8 +1127,8 @@ export function registerIssueRoutes(
     });
     summaries = summaries.filter((summary) => {
       const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
-      if (project.ambiguous) return false;
-      if (!project.ok || !project.project) return true;
+      if ((!project.ok && project.reason === "ambiguous")) return false;
+      if (!project.ok) return true;
       return evaluateProjectAccess(db, {
         identity: req.client_identity ?? null,
         project_id: project.project.id,
@@ -1154,8 +1153,8 @@ export function registerIssueRoutes(
     let projectIds = (db.prepare("SELECT id FROM ledger_projects").all() as Array<{ id: string }>).map((row) => row.id);
     if (repo) {
       const resolved = resolveProjectRef(db, repo);
-      if (resolved.ambiguous) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
-      if (!resolved.project) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
+      if ((!resolved.ok && resolved.reason === "ambiguous")) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
+      if (!resolved.ok) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
       projectIds = [resolved.project.id];
     }
     projectIds = projectIds.filter((project_id) => evaluateProjectAccess(db, {
@@ -1786,14 +1785,14 @@ export function registerIssueRoutes(
     let project: { id: string } | null = null;
     if (explicitProject) {
       const resolved = resolveProjectRef(db, explicitProject);
-      if (resolved.ambiguous) {
+      if ((!resolved.ok && resolved.reason === "ambiguous")) {
         sendJson(res, 409, {
           error: `ambiguous project ref: ${explicitProject}`,
           candidates: resolved.candidates ?? [],
         });
         return;
       }
-      if (!resolved.ok || !resolved.project) {
+      if (!resolved.ok) {
         sendJson(res, 400, {
           error: `unknown project: ${explicitProject}`,
           suggestions: suggestProjectRefs(db, explicitProject),
@@ -1802,10 +1801,9 @@ export function registerIssueRoutes(
       }
       project = resolved.project;
     } else {
-      project =
-        resolveCheckoutPath(db, root) ??
-        resolveProjectRef(db, repoRef).project ??
-        (root !== repoRef ? resolveProjectRef(db, root).project ?? null : null);
+      const byRoot = resolveProjectRef(db, root);
+      const byRef = byRoot.ok ? byRoot : resolveProjectRef(db, repoRef);
+      project = byRef.ok ? byRef.project : null;
       if (!project) {
         sendJson(res, 400, {
           error:

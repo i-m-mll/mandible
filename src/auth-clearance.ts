@@ -433,9 +433,9 @@ export class AuthClearanceManager {
       throw new AuthClearanceError("project_required", "Prospective clearance requires one canonical project.");
     }
     const resolved = resolveProjectRef(this.db, ref);
-    if (!resolved.ok || !resolved.project) {
+    if (!resolved.ok) {
       throw new AuthClearanceError(
-        resolved.ambiguous ? "project_ambiguous" : "project_unresolved",
+        (!resolved.ok && resolved.reason === "ambiguous") ? "project_ambiguous" : "project_unresolved",
         `Project scope '${ref}' does not resolve to one canonical project.`,
       );
     }
@@ -455,8 +455,8 @@ export class AuthClearanceManager {
     const refs = [request.target_repo_root, request.repo].filter((value): value is string => Boolean(value));
     for (const ref of refs) {
       const resolved = resolveProjectRef(this.db, ref);
-      if (resolved.ok && resolved.project) return resolved.project;
-      if (resolved.ambiguous) break;
+      if (resolved.ok) return resolved.project;
+      if ((!resolved.ok && resolved.reason === "ambiguous")) break;
     }
     throw new AuthClearanceError("project_unresolved", "Auth request does not resolve to one canonical project.");
   }

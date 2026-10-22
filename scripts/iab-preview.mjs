@@ -88,11 +88,7 @@ async function main(options) {
   assertOrdinaryPreviewLifecycleAllowed();
   const legacyLaunchdCleanup = inspectLegacyPreviewJobs();
   if (legacyLaunchdCleanup.error || legacyLaunchdCleanup.labels.length) throw new Error("Registered preview service requires explicit retirement before launch; other instances are preserved");
-  const repo = git(["rev-parse", "--show-toplevel"]).stdout.trim();
-  const current = git(["branch", "--show-current"], { cwd: repo }).stdout.trim();
-  const base = resolveProtectedBranch(repo);
-  const selected = options.branch ?? (!options.forceNew && (current.startsWith("integration/") || current.startsWith("codex/integration/")) ? current
-    : `integration/mandible-iab-preview-${formatDateStamp(new Date())}-${git(["rev-parse", "--short=7", base], { cwd: repo }).stdout.trim()}${options.forceNew ? `-${formatTimeStamp(new Date())}` : ""}`);
+  const selected = selectPreviewBranch(git(["rev-parse", "--show-toplevel"]).stdout.trim(), options).branch;
   const root = previewPaths(selected).root;
   const result = await withOwnedRunLock(root, async () => {
     try { return await createOrReusePreview({ ...options, branch: selected }); }
@@ -115,25 +111,41 @@ async function main(options) {
   return { ...result, legacyLaunchdCleanup };
 }
 
+/**
+ * A non-protected checkout previews itself in place, whatever its branch;
+ * the protected branch, --force-new, or an explicit other --branch previews
+ * a separate integration worktree.
+ */
+function selectPreviewBranch(repoRoot, options) {
+  const currentBranch = git(["branch", "--show-current"], { cwd: repoRoot }).stdout.trim();
+  const protectedBranch = resolveProtectedBranch(repoRoot);
+  if (!options.forceNew && currentBranch && currentBranch !== protectedBranch
+    && (!options.branch || options.branch === currentBranch)) {
+    return { branch: currentBranch, mode: "current-worktree", protectedBranch };
+  }
+  if (!currentBranch && !options.forceNew && !options.branch) {
+    throw new Error(`HEAD is detached; check out the branch to preview, run from ${protectedBranch}, or pass --force-new.`);
+  }
+  const protectedHead = git(["rev-parse", "--short=7", protectedBranch], { cwd: repoRoot }).stdout.trim();
+  const defaultBranch = `integration/mandible-iab-preview-${formatDateStamp(new Date())}-${protectedHead}`;
+  return {
+    branch: options.branch ?? (options.forceNew ? `${defaultBranch}-${formatTimeStamp(new Date())}` : defaultBranch),
+    mode: currentBranch === protectedBranch ? "protected-branch" : "new-integration",
+    protectedBranch,
+  };
+}
+
 async function createOrReusePreview(options) {
   const cwd = process.cwd();
   const repoRoot = git(["rev-parse", "--show-toplevel"], { cwd }).stdout.trim();
   const worktreeHostRoot = resolveWorktreeHostRoot(repoRoot);
-  const currentBranch = git(["branch", "--show-current"], { cwd: repoRoot }).stdout.trim();
-  const protectedBranch = resolveProtectedBranch(repoRoot);
-  const protectedHead = git(["rev-parse", "--short=7", protectedBranch], { cwd: repoRoot }).stdout.trim();
-  const dateStamp = formatDateStamp(new Date());
-  const currentIsProtected = currentBranch === protectedBranch;
-  const currentIsIntegration = currentBranch.startsWith("integration/") || currentBranch.startsWith("codex/integration/");
+  const selection = selectPreviewBranch(repoRoot, options);
+  const { branch, mode, protectedBranch } = selection;
 
-  let branch;
   let worktree;
-  let mode;
 
-  if (!options.forceNew && currentIsIntegration && !currentIsProtected && (!options.branch || options.branch === currentBranch)) {
-    branch = currentBranch;
+  if (mode === "current-worktree") {
     worktree = repoRoot;
-    mode = "current-integration";
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
@@ -149,20 +161,10 @@ async function createOrReusePreview(options) {
         ok: true,
         status: "already-running",
         mode,
-        message: "Already on an integration branch with a healthy preview.",
+        message: "The current worktree already has a healthy preview.",
       };
     }
   } else {
-    const baseBranchName = options.branch ?? `integration/mandible-iab-preview-${dateStamp}-${protectedHead}`;
-    branch = options.forceNew && !options.branch
-      ? `${baseBranchName}-${formatTimeStamp(new Date())}`
-      : baseBranchName;
-    mode = currentIsProtected ? "protected-branch" : "new-integration";
-    if (!currentIsProtected && !options.forceNew && !currentIsIntegration) {
-      throw new Error(
-        `Current branch is ${currentBranch}; run from ${protectedBranch}, run from an integration branch, or pass --force-new.`,
-      );
-    }
     const selectedWorktree = worktreeForBranch(repoRoot, branch);
     const existing = !options.forceNew
       ? await healthyExistingPreview(branch, { worktree: selectedWorktree })
@@ -527,8 +529,8 @@ function validateBriefingDemoCustody() {
   const worktree = git(["rev-parse", "--show-toplevel"], { cwd }).stdout.trim();
   const branch = git(["branch", "--show-current"], { cwd: worktree }).stdout.trim();
   const protectedBranch = resolveProtectedBranch(worktree);
-  if (!branch.startsWith("integration/") || branch === protectedBranch) {
-    throw new Error(`Refusing demo seed: current branch must be a non-protected integration branch, got ${branch || "<detached>"}.`);
+  if (!branch || branch === protectedBranch) {
+    throw new Error(`Refusing demo seed: current branch must be a non-protected preview branch, got ${branch || "<detached>"}.`);
   }
 
   const preview = previewPaths(branch);
@@ -537,7 +539,7 @@ function validateBriefingDemoCustody() {
   }
   const metadata = readJsonFile(preview.metadata);
   if (!metadata) throw new Error(`Refusing demo seed: launcher metadata is unreadable: ${preview.metadata}`);
-  if (metadata.branch !== branch) throw new Error("Refusing demo seed: metadata branch does not match the current integration branch.");
+  if (metadata.branch !== branch) throw new Error("Refusing demo seed: metadata branch does not match the current branch.");
   if (!metadata.worktree || canonicalPath(metadata.worktree) !== canonicalPath(worktree)) {
     throw new Error("Refusing demo seed: metadata worktree does not match the current worktree.");
   }
@@ -794,7 +796,11 @@ function resolvePreviewOwner(worktree, branch, options) {
   const found = JSON.parse(run("mandible", ["work-unit", "find", "--repo", worktree, "--branch", branch], { cwd: worktree }).stdout);
   const units = Array.isArray(found) ? found : found.work_units ?? (found.id ? [found] : []);
   const active = units.filter(unit => !["resolved", "abandoned"].includes(unit.state));
-  if (active.length !== 1) throw new Error("Preview requires one owning delivery work unit; supply --owner-project and --owner-work-unit from the ledger");
+  if (active.length !== 1) {
+    throw new Error(`Preview requires one owning delivery work unit, but ${branch} has ${active.length}. `
+      + "Run the preview from the worktree of the issue-linked branch it serves (wt new <branch> --issue <id>), "
+      + "or pass --owner-project and --owner-work-unit from the ledger.");
+  }
   return { project: project.id ?? project.project?.id, workUnit: active[0].id };
 }
 
@@ -925,14 +931,19 @@ Use finalize to account for stopped preview material before cleanup.
 
   console.log(`Usage: bun scripts/iab-preview.mjs [options]
 
-Create or reuse an isolated Mandible integration preview instance.
+Create or reuse an isolated Mandible preview instance.
+
+From any non-protected branch, the current worktree is previewed in place and
+its owning project and work unit are inferred from the worktree. From the
+protected branch, or with --force-new or another --branch, a separate
+integration worktree is created or reused.
 
 Options:
   --json           Print machine-readable result JSON.
-  --branch NAME    Use an explicit integration branch name.
+  --branch NAME    Preview a separate integration branch with this name.
   --db PATH        Source database to copy. Defaults to MANDIBLE_DB or ~/.mandible/mandible.db.
   --port PORT      Use an explicit preview port.
-  --force-new      Do not reuse the current integration preview; create a new default branch/instance.
+  --force-new      Do not preview the current worktree; create a new default integration branch/instance.
   --no-build       Skip frozen dependency installation and Bun build.
   --disposable-fixture  Explicitly declare automated fixture mutations disposable.
   --owner-project <id>  Canonical owning project.
@@ -941,7 +952,7 @@ Options:
   --dry-run        Resolve the plan without creating a DB copy or starting a daemon.
   -h, --help       Show this help.
 
-Default branch from main/develop:
+Default integration branch:
   integration/mandible-iab-preview-<yyyymmdd>-<protected-short-sha>
 `);
 }

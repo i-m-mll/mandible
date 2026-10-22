@@ -203,7 +203,7 @@ export function credentialMayHoldCustody(db: Db, repoId: string, userId: string,
     return "The requesting credential is not active for its user.";
   }
   const project = resolveProjectRef(db, repoId);
-  if (!project.ok || !project.project || project.ambiguous) return "Work-unit project identity is not unique.";
+  if (!project.ok) return "Work-unit project identity is not unique.";
   const user = db.prepare("SELECT slug FROM users WHERE id = ?").get(userId) as { slug: string } | undefined;
   if (!user) return "The requesting user no longer exists.";
   const decision = evaluateProjectAccess(db, {

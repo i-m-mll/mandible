@@ -178,8 +178,8 @@ export function addGrant(db: Db, input: {
       throw new UserRegistryError("invalid", `Invalid project role '${input.permission}'.`);
     }
     const resolved = resolveProjectRef(db, input.resource ?? "");
-    if (resolved.ambiguous) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-    if (!resolved.ok || !resolved.project) {
+    if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
+    if (!resolved.ok) {
       throw new UserRegistryError("not_found", `No project matches '${input.resource ?? ""}'.`);
     }
     resourceId = resolved.project.id;
@@ -228,8 +228,8 @@ export function listGrants(db: Db, filter: {
 
 export function setProjectRestricted(db: Db, projectRef: string, restricted: boolean): string {
   const resolved = resolveProjectRef(db, projectRef);
-  if (resolved.ambiguous) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-  if (!resolved.ok || !resolved.project) {
+  if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
+  if (!resolved.ok) {
     throw new UserRegistryError("not_found", `No project matches '${projectRef}'.`);
   }
   db.prepare("UPDATE ledger_projects SET restricted = ?, updated_at = ? WHERE id = ?")
@@ -243,8 +243,8 @@ export function projectAccessSettings(db: Db, projectRef: string): {
   grants: PermissionGrant[];
 } {
   const resolved = resolveProjectRef(db, projectRef);
-  if (resolved.ambiguous) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-  if (!resolved.ok || !resolved.project) {
+  if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
+  if (!resolved.ok) {
     throw new UserRegistryError("not_found", `No project matches '${projectRef}'.`);
   }
   const row = db.prepare("SELECT restricted FROM ledger_projects WHERE id = ?")

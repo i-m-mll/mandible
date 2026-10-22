@@ -1047,7 +1047,7 @@ function numberField(value: unknown): number | undefined {
 
 function enforceAuthProjectWrite(req: RequestLike, res: ResponseLike, repo: string | undefined): boolean {
   const resolved = repo ? resolveProjectRef(getDb(), repo) : { ok: false as const };
-  if (!resolved.ok || !resolved.project || resolved.ambiguous) {
+  if (!resolved.ok) {
     res.status(409).json({ error: "Auth request project identity is missing or ambiguous." });
     return false;
   }

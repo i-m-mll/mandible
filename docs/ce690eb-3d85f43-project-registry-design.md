@@ -58,16 +58,19 @@ never becomes the canonical project identity in projections or routing.
 
 ## Resolution contract (`src/ledger/project-registry.ts`)
 
-- `resolveProjectRef(db, ref)` — resolve an arbitrary string to one canonical
-  project. Precedence: (1) ledger id `prj_…`; (2) exact `project_key`; (3)
-  checkout `work_repo_id`; (4) checkout `root` (path-normalized); (5)
-  `remote_identity`; (6) exact `display_name`. A display-name hit that is
-  ambiguous returns an `ambiguous` result carrying the candidate keys, never a
-  silent pick.
-- `resolveCheckoutPath(db, root)` — resolve a filesystem path to a *registered*
-  checkout -> project. Returns `null` when the path is not a registered checkout
-  root. This is the cwd-inference gate: cwd only resolves a project when it is a
-  known checkout, never by minting one.
+- `resolveProjectRef(db, ref)` — the one resolver from any project reference
+  to one canonical project; every caller uses it. It returns the project (and
+  the matched checkout, when the ref named one), or refuses the ref as
+  `unknown` or `ambiguous` with candidate keys. At each tier a ref naming
+  several projects is refused, never passed to a weaker tier.
+  - An absolute path resolves through the checkout it names or lies in: an
+    exact registered root (symlinks of the requested path followed), any
+    working tree of a registered checkout's Git repository (linked worktrees
+    included, by `git worktree list`), a clone whose `origin` is a registered
+    remote, and finally the deepest registered root containing the path.
+  - Any other ref is tried as a project or checkout id, `project_key`,
+    checkout `work_repo_id`, checkout name, remote identity, and
+    `display_name`; keys, names, and display names compare case-insensitively.
 - `listProjects(db)` — canonical project keys, display names, remotes,
   checkouts, and open/closed issue counts.
 - `addOrUpdateProject` / `addOrUpdateCheckout` — intentional registry writes.
@@ -82,7 +85,7 @@ Instead it resolves to an **already-registered** project:
 
 1. `body.project` (explicit registry ref) if present, else
 2. the `:repoId` param and `body.root` against the registry
-   (`resolveProjectRef` then `resolveCheckoutPath`).
+   (`resolveProjectRef`, root first).
 
 If nothing resolves, the route returns `400` with `suggestions` (near-match
 project keys) and creates **nothing**. Project/checkout creation is now only
@@ -243,7 +246,7 @@ intact):
    `project_key`. Both the canonical key AND the legacy `work_repo_id` resolve.
 4. **Scanner sync is the single audited discovery-write path.** git-bug sync
    (`runGitBugSyncForRepos`) now resolves a scanned root through the registry
-   (`resolveCheckoutPath`) FIRST and reuses an already-registered
+   (exact registered root) FIRST and reuses an already-registered
    checkout/project instead of re-minting; genuinely-new checkouts still get
    discovered (and now get a `project_key`). Phantom/duplicate minting for paths
    that already resolve to a registered checkout is prevented without blocking

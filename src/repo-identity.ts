@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 
 import type { Db } from "./db.js";
-import { canonicalProjectRepoId } from "./ledger/project-registry.js";
+import { tableExists } from "./db-introspection.js";
+import { resolveProjectRef } from "./ledger/project-registry.js";
 
 /**
  * Issue ded17e6 — canonical Git repo identity.
@@ -108,31 +109,23 @@ function computeCanonicalKey(inputPath: string): string | null {
 }
 
 /**
- * Every checkout path a free-form repo ref may name: the ref itself, then
- * `work_repos` roots matching id | name | root, then the checkout roots of
- * `ledger_projects` matching project_key or display_name. Missing tables or
- * columns are skipped, so registry-less DBs yield only the ref itself.
+ * Every checkout path a free-form repo ref may name: the ref itself, the
+ * WorkScanner repos matching id | name | root, then the registered checkout
+ * roots of the project the ref resolves to. Absent tables are skipped, so
+ * registry-less DBs yield only the ref itself.
  */
 export function checkoutRootsForRef(db: Db, ref: string): string[] {
-  const roots = new Set<string>([ref]);
-  const queries = [
-    ["SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?", 3],
-    [`SELECT c.root FROM ledger_project_checkouts c
-      JOIN ledger_projects p ON p.id = c.project_id
-      WHERE p.project_key = ?`, 1],
-    [`SELECT c.root FROM ledger_project_checkouts c
-      JOIN ledger_projects p ON p.id = c.project_id
-      WHERE p.display_name = ?`, 1],
-  ] as const;
-  for (const [sql, arity] of queries) {
-    try {
-      const rows = db.prepare(sql).all(...Array(arity).fill(ref)) as Array<{ root: string }>;
-      for (const row of rows) roots.add(row.root);
-    } catch {
-      // Registry table or column absent in lightweight or older DBs.
-    }
-  }
-  return [...roots];
+  const scanned = tableExists(db, "work_repos")
+    ? db.prepare("SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?").all(ref, ref, ref) as Array<{ root: string }>
+    : [];
+  const project = registeredProject(db, ref);
+  return [...new Set([ref, ...scanned.map((row) => row.root), ...(project?.checkouts.map((checkout) => checkout.root) ?? [])])];
+}
+
+function registeredProject(db: Db, ref: string) {
+  if (!tableExists(db, "ledger_projects") || !tableExists(db, "ledger_project_checkouts")) return null;
+  const resolved = resolveProjectRef(db, ref);
+  return resolved.ok ? resolved.project : null;
 }
 
 /**
@@ -146,9 +139,9 @@ export function canonicalRepoKeysForRef(db: Db, ref: string | null | undefined):
   }
   // The project registry is the durable semantic identity. Prefix it so it
   // cannot collide with a physical common-dir path key.
-  const projectRepoId = canonicalProjectRepoId(db, ref);
-  if (projectRepoId) {
-    keys.add(`project:${projectRepoId}`);
+  const project = registeredProject(db, ref);
+  if (project?.project_key) {
+    keys.add(`project:${project.project_key}`);
   }
   for (const root of checkoutRootsForRef(db, ref)) {
     const key = canonicalRepoKeyForPath(root);

@@ -35,12 +35,12 @@ function git(repo: string, args: string[]): string {
 }
 
 function createLedgerCheckout(repoId: string, root: string): void {
-  const projectId = insertRawLedgerProject(db, { name: repoId });
+  const projectId = insertRawLedgerProject(db, { name: repoId, projectKey: repoId });
   insertRawLedgerCheckout(db, { projectId, name: repoId, root, conflict: "replace" });
 }
 
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
-  const projectId = insertRawLedgerProject(db, { name: projectName });
+  const projectId = insertRawLedgerProject(db, { name: projectName, projectKey: projectName });
   return insertRawLedgerIssue(db, { id: issueId, projectId });
 }
 

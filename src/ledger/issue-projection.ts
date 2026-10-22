@@ -10,6 +10,7 @@ import type { RepoInfo, WorkScanner } from "../work-scanner.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import type { LedgerIssue, LedgerIssueDetail } from "./types.js";
+import { resolveProjectRef } from "./project-registry.js";
 
 const IN_CLAUSE_CHUNK = 900;
 
@@ -283,40 +284,22 @@ function findCheckoutByRepoRef(
   repoRef: string,
   repo?: RepoInfo,
 ): CheckoutProjection | null {
-  const candidates = new Set<string>([repoRef]);
-  if (repo) {
-    candidates.add(repo.id);
-    candidates.add(repo.name);
-    candidates.add(repo.root);
+  for (const ref of [repoRef, ...(repo ? [repo.id, repo.name, repo.root] : [])]) {
+    const resolved = resolveProjectRef(db, ref);
+    if (!resolved.ok) continue;
+    const checkout = resolved.checkout ?? resolved.project.checkouts[0];
+    if (!checkout) return null;
+    return checkoutFromRow({
+      checkout_id: checkout.id,
+      project_id: resolved.project.id,
+      work_repo_id: checkout.work_repo_id,
+      root: checkout.root,
+      name: checkout.name,
+      display_name: resolved.project.display_name,
+      project_key: resolved.project.project_key,
+    }, repo);
   }
-  const values = [...candidates].filter((value) => value.trim() !== "");
-  if (values.length === 0) return null;
-  const placeholders = values.map(() => "?").join(", ");
-  // Issue: 3d85f43 — the canonical project key is a valid repo ref, so links
-  // resolve correctly when they carry it instead of a path-derived repo id.
-  const row = db.prepare(
-    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name,
-            p.display_name, COALESCE(p.project_key, '') AS project_key
-     FROM ledger_project_checkouts c
-     JOIN ledger_projects p ON p.id = c.project_id
-     WHERE c.work_repo_id IN (${placeholders})
-        OR c.root IN (${placeholders})
-        OR c.name IN (${placeholders})
-        OR c.project_id IN (${placeholders})
-        OR p.display_name IN (${placeholders})
-        OR (p.project_key != '' AND p.project_key IN (${placeholders}))
-     ORDER BY c.updated_at DESC, c.name, c.root
-     LIMIT 1`,
-  ).get(...values, ...values, ...values, ...values, ...values, ...values) as {
-    checkout_id: string;
-    project_id: string;
-    work_repo_id: string | null;
-    root: string;
-    name: string;
-    display_name: string;
-    project_key: string;
-  } | undefined;
-  return row ? checkoutFromRow(row, repo) : null;
+  return null;
 }
 
 function representativeCheckouts(checkouts: CheckoutProjection[]): CheckoutProjection[] {

@@ -960,7 +960,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       if (body.ref) pinnedRef=documentArtifactAccess(db,req,requireString(body,"ref"));
       else {
         const project=resolveProjectRef(db,requireString(body,"project"));
-        if(!project.ok || !project.project) throw new HttpError(400,"Source project is unavailable or ambiguous");
+        if(!project.ok) throw new HttpError(400,"Source project is unavailable or ambiguous");
         requireProjectAccess(db,req,project.project.id,"read");
       }
       const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:pinnedRef!,title:requireString(body,"title"),projectId:destination })

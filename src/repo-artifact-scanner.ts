@@ -4,10 +4,7 @@ import path from "node:path";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import { mediaTypeForPath } from "./artifact-media-type.js";
-import {
-  resolveCanonicalArtifactRepoForRoot,
-  resolveCanonicalArtifactRepoRef,
-} from "./artifact-repo-resolution.js";
+import { resolveProjectRef } from "./ledger/project-registry.js";
 import { recordArtifactVersion, registerArtifactLink, getArtifact } from "./provider-artifacts.js";
 import type { ArtifactRecord } from "./types.js";
 
@@ -159,15 +156,14 @@ function configuredRoots(db: Db, options: RepoArtifactScannerOptions): RepoArtif
   const roots: RepoArtifactRoot[] = [];
   const allowedIds = new Set(options.repoIds ?? []);
   const canonicalize = (root: RepoArtifactRoot): RepoArtifactRoot | null => {
-    const resolution = root.repo_id
-      ? resolveCanonicalArtifactRepoRef(db, root.repo_id)
-      : resolveCanonicalArtifactRepoForRoot(db, root.root);
+    const resolution = resolveProjectRef(db, root.repo_id ?? root.root);
     if (!resolution.ok) return null;
+    const checkout = resolution.checkout ?? resolution.project.checkouts[0] ?? null;
     return {
       root: root.root,
-      repo_id: resolution.project_key,
-      name: root.name ?? resolution.checkout_name ?? resolution.project_key,
-      default_branch: root.default_branch ?? resolution.default_branch ?? null,
+      repo_id: resolution.project.project_key,
+      name: root.name ?? checkout?.name ?? resolution.project.project_key,
+      default_branch: root.default_branch ?? checkout?.default_branch ?? null,
     };
   };
   const addRoot = (root: RepoArtifactRoot): void => {
@@ -263,22 +259,9 @@ function candidateIssueRef(relativePath: string): string | null {
 }
 
 function projectIdForRepo(db: Db, repoId: string, root: string): string | null {
-  if (!tableExists(db, "ledger_projects")) return null;
-  const hasProjectKey = (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>)
-    .some((column) => column.name === "project_key");
-  const projectKeyClause = hasProjectKey ? " OR project_key = @repoId" : "";
-  const checkoutClause = tableExists(db, "ledger_project_checkouts")
-    ? `UNION
-       SELECT project_id AS id FROM ledger_project_checkouts
-        WHERE work_repo_id = @repoId OR name = @repoId OR root = @root`
-    : "";
-  const rows = db.prepare(
-    `SELECT id FROM ledger_projects
-      WHERE id = @repoId OR display_name = @repoId OR remote_identity = @repoId${projectKeyClause}
-     ${checkoutClause}`
-  ).all({ repoId, root }) as Array<{ id: string }>;
-  const ids = Array.from(new Set(rows.map((row) => row.id)));
-  return ids.length === 1 ? ids[0] : null;
+  const byRoot = resolveProjectRef(db, root);
+  const resolved = byRoot.ok ? byRoot : resolveProjectRef(db, repoId);
+  return resolved.ok ? resolved.project.id : null;
 }
 
 function resolveIssueId(db: Db, repoId: string, root: string, issueRef: string): string | null {

@@ -775,7 +775,7 @@ export function registerWorkUnitRoutes(
     }
     const unit = mapRow(row);
     const project = resolveProjectRef(db, unit.repo_id);
-    if (!project.ok || !project.project || project.ambiguous) {
+    if (!project.ok) {
       sendJson(res, 409, { error: "Work-unit project identity is not unique." });
       return;
     }
@@ -1179,7 +1179,7 @@ function custodyMutationFailure(
     return { status: 403, error: "Only the exact durable custodian may change work-unit delivery state.", code: "work_unit_custody_conflict" };
   }
   const project = resolveProjectRef(db, row.repo_id);
-  if (project.ok && project.project && !project.ambiguous) {
+  if (project.ok) {
     try {
       requireProjectAccess(db, req, project.project.id, "write");
     } catch (error) {

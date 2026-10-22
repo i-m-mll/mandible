@@ -1,6 +1,7 @@
 import type { Db } from "../db.js";
 import { LedgerStore } from "./store.js";
 import type { LedgerActorInput } from "./types.js";
+import { resolveProjectIds } from "./project-registry.js";
 
 export const MARKDOWN_BODY_ESCAPE_POLICY_SETTING = "ledger.markdown_body_escape_policy";
 export const DEFAULT_MARKDOWN_BODY_ESCAPE_POLICY: MarkdownBodyEscapePolicy = "warn";
@@ -292,10 +293,7 @@ function resolveMarkdownBodyAuditIssueIds(db: Db, scope: MarkdownBodyAuditScope)
     issueIds.add(resolved.id);
   }
 
-  const projectIds = resolveProjectRefs(db, scope.project_refs ?? []);
-  for (const projectId of resolveRepoRefs(db, scope.repo_refs ?? [])) {
-    projectIds.add(projectId);
-  }
+  const projectIds = resolveProjectIds(db, [...(scope.project_refs ?? []), ...(scope.repo_refs ?? [])]);
   if (projectIds.size > 0) {
     const rows = db.prepare(
       `SELECT id FROM ledger_issues
@@ -306,39 +304,6 @@ function resolveMarkdownBodyAuditIssueIds(db: Db, scope: MarkdownBodyAuditScope)
   }
 
   return issueIds.size > 0 ? issueIds : null;
-}
-
-function resolveProjectRefs(db: Db, refs: string[]): Set<string> {
-  const projectIds = new Set<string>();
-  for (const ref of refs) {
-    const rows = db.prepare(
-      `SELECT id FROM ledger_projects
-       WHERE id = ? OR display_name = ? OR remote_identity = ? OR upstream_identity = ?
-       UNION
-       SELECT project_id AS id FROM ledger_project_checkouts
-       WHERE id = ? OR root = ? OR name = ? OR work_repo_id = ?`,
-    ).all(ref, ref, ref, ref, ref, ref, ref, ref) as Array<{ id: string }>;
-    if (rows.length === 0) {
-      throw new Error(`Unable to resolve ledger project ref '${ref}'`);
-    }
-    for (const row of rows) projectIds.add(row.id);
-  }
-  return projectIds;
-}
-
-function resolveRepoRefs(db: Db, refs: string[]): Set<string> {
-  const projectIds = new Set<string>();
-  for (const ref of refs) {
-    const rows = db.prepare(
-      `SELECT project_id AS id FROM ledger_project_checkouts
-       WHERE id = ? OR root = ? OR name = ? OR work_repo_id = ?`,
-    ).all(ref, ref, ref, ref) as Array<{ id: string }>;
-    if (rows.length === 0) {
-      throw new Error(`Unable to resolve ledger repo ref '${ref}'`);
-    }
-    for (const row of rows) projectIds.add(row.id);
-  }
-  return projectIds;
 }
 
 function listIssueBodyRows(db: Db, issueIds: Set<string> | null): Array<{
