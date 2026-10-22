@@ -439,3 +439,26 @@ describe("migration v108 schema", () => {
     ).toThrow();
   });
 });
+
+describe("attribution identity display", () => {
+  it("labels known agents but never speculates that an operator is human", async () => {
+    const { h } = await import("preact");
+    const { cleanup, render, screen } = await import("@testing-library/preact");
+    const { AttributionIdentity } = await import("../ui/src/components/shared/DetailHeaderIdentity");
+    const verified = {
+      user: { id: "u1", display_name: "Author", kind: "agent" as const },
+      evidence_method: "api_token",
+      evidence_id: "ev1",
+      credential: null,
+    };
+    try {
+      render(h(AttributionIdentity, { display: "Operator", attribution: { ...verified, user: { ...verified.user, kind: "human" as const } } }));
+      expect(screen.queryByText("human")).toBeNull();
+      cleanup();
+      render(h(AttributionIdentity, { display: "Worker", attribution: verified }));
+      expect(screen.getByText("agent")).toBeTruthy();
+    } finally {
+      cleanup();
+    }
+  });
+});

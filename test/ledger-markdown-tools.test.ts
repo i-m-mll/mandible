@@ -212,3 +212,22 @@ describe("ledger issue Markdown export", () => {
     expect(fs.readFileSync(result.files[0].path, "utf8")).toContain("Configured body");
   });
 });
+
+describe("Markdown body escape detection", () => {
+  it("detects repeated literal escaped newlines with few real newlines", async () => {
+    const { detectAccidentalEscapedMarkdown } = await import("../src/ledger/markdown-body.js");
+    expect(detectAccidentalEscapedMarkdown("Implemented change.\\n\\nDetails:\\n- item")).toMatchObject({
+      suspicious: true,
+      literal_newline_count: 3,
+      actual_newline_count: 0,
+    });
+    expect(detectAccidentalEscapedMarkdown("Implemented change.\n\nDetails:\n- item").suspicious).toBe(false);
+  });
+
+  it("ignores code-ish intentional escaped newline examples", async () => {
+    const { detectAccidentalEscapedMarkdown } = await import("../src/ledger/markdown-body.js");
+    expect(detectAccidentalEscapedMarkdown("```json\n{\"body\":\"a\\n\\nb\"}\n```").suspicious).toBe(false);
+    expect(detectAccidentalEscapedMarkdown("{\"body\":\"a\\n\\nb\"}").suspicious).toBe(false);
+    expect(detectAccidentalEscapedMarkdown("Use `\\n\\n` for a blank escaped line.").suspicious).toBe(false);
+  });
+});
