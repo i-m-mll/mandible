@@ -1,3 +1,4 @@
+import { SessionExecutionStore, mapSessionExecutionHook } from "../session-execution.js";
 import { raiseHookNotificationAttention } from "../claude-hook-attention.js";
 import { getDb } from "../db.js";
 import { triggerTargetedIngest } from "../ingestion.js";
@@ -44,6 +45,25 @@ interface StatuslineTelemetry {
 }
 
 export function registerHookRoutes(server: RouteRegistrar): void {
+  server.get("/api/hooks/session-execution", (req, res) => {
+    const provider = req.query.provider;
+    const id = req.query.session_id;
+    if ((provider !== "claude" && provider !== "codex") || typeof id !== "string" || !id.trim() || id.length > 256) {
+      sendJson(res, 400, { error: "provider_and_session_id_required" }); return;
+    }
+    sendJson(res, 200, { observation: new SessionExecutionStore(getDb()).read(provider, id) });
+  }, { operation: { id: "get:/api/hooks/session-execution", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.post("/api/hooks/session-execution", (req, res) => {
+    const mapped = mapSessionExecutionHook(readBody<unknown>(req));
+    if (!mapped.ok) { sendJson(res, 400, { error: mapped.error }); return; }
+    const store = new SessionExecutionStore(getDb());
+    const result = mapped.ignored
+      ? { status: "unchanged", observation: store.read(mapped.value.provider, mapped.value.provider_session_id) }
+      : store.apply(mapped.value);
+    sendJson(res, 200, result);
+  }, { operation: { id: "post:/api/hooks/session-execution", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+
   server.get("/api/hooks/statusline", (req, res) => {
     const sessionRef =
       normalizeText(req.query.sessionRef) ??

@@ -22,6 +22,8 @@ function wait(ms: number): Promise<void> {
 
 export function providerEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  delete env.MANDIBLE_EXECUTION_OBSERVER_ID;
+  delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID;
   delete env.CLAUDECODE;
   delete env.CODEX_THREAD_ID;
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;

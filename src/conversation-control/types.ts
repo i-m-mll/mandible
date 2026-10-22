@@ -1,3 +1,4 @@
+import type { SessionExecutionState } from "../contracts.js";
 import type { ChatItem } from "../parsers/types.js";
 import type { ChatAttachment } from "./attachments.js";
 
@@ -93,7 +94,20 @@ export type ConversationControlOperation =
   | "resume-provider-session"
   | "resume-message-anchor";
 
-export type ProviderRuntimeEvent = {
+export type ProviderExecutionEvent = {
+  kind: "execution";
+  conversation_id: string;
+  generation: number;
+  controller_instance_id: string;
+  provider_session_id: string;
+  source: "claude_sdk_hook" | "codex_app_server";
+  state: SessionExecutionState;
+  event: string;
+  turn_id: string | null;
+  preserve_existing?: boolean;
+};
+
+export type ProviderRuntimeEvent = ProviderExecutionEvent | {
   kind: "usage";
   conversation_id: string;
   generation: number;
@@ -253,7 +267,7 @@ export type ConversationLifecycleEvent =
   | { kind: "controller-waiting"; at: number }
   | { kind: "controller-stopping"; at: number }
   | { kind: "controller-failed"; at: number; error: ConversationControlError }
-  | { kind: "controller-released"; at: number }
+  | { kind: "controller-released"; at: number; reason?: "protocol-ambiguous" }
   | { kind: "provider-session-bound"; at: number; provider_session_id: string }
   | { kind: "controller-process"; at: number; pid: number }
   | { kind: "turn-started"; at: number; turn_id: string }

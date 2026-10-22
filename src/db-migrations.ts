@@ -12,6 +12,7 @@ import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
@@ -2112,6 +2113,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "worker_thread_archives",
     statements: [...WORKER_THREAD_ARCHIVES_SCHEMA_SQL],
   },
+  { version: 208, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
 ];
 
 /**

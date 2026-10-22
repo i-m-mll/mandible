@@ -24,7 +24,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 207;
+export const BASELINE_SCHEMA_VERSION = 208;
 
 // Issue 23f8142 — the parent session a conversation's provider declares, which
 // lineage linking resolves into parent_conversation_id whichever row arrives
@@ -290,7 +290,23 @@ const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
         ON task_command_events(command_id, event_ordinal)`,
 ];
 
+export const SESSION_EXECUTION_SCHEMA_SQL = `CREATE TABLE provider_session_execution (
+  provider TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+  provider_session_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('claude_hook','claude_sdk_hook','codex_hook','codex_app_server')),
+  controller_instance_id TEXT,
+  controller_generation INTEGER,
+  state_json TEXT NOT NULL CHECK(json_valid(state_json)),
+  native_event TEXT NOT NULL,
+  native_turn_id TEXT,
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY(provider, provider_session_id),
+  CHECK((source IN ('claude_hook','codex_hook') AND controller_instance_id IS NULL AND controller_generation IS NULL)
+    OR (source IN ('claude_sdk_hook','codex_app_server') AND controller_instance_id IS NOT NULL AND controller_generation IS NOT NULL AND controller_generation >= 0))
+)`;
+
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
+  SESSION_EXECUTION_SCHEMA_SQL,
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        logical_name      TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
   "CREATE TABLE \"artifact_aliases\" (\n          id                TEXT PRIMARY KEY,\n          blob_id           TEXT REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n          scheme            TEXT NOT NULL,\n          alias             TEXT NOT NULL,\n          normalized_ref    TEXT NOT NULL,\n          locator_json      TEXT NOT NULL DEFAULT '{}',\n          resolution_status TEXT NOT NULL DEFAULT 'resolved'\n            CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),\n          source            TEXT NOT NULL DEFAULT 'artifact_registry',\n          created_at        INTEGER NOT NULL,\n          updated_at        INTEGER NOT NULL,\n          CHECK (\n            (resolution_status = 'resolved' AND blob_id IS NOT NULL) OR\n            (resolution_status != 'resolved' AND blob_id IS NULL)\n          )\n        )",
   "CREATE TABLE \"artifact_blob\" (\n        id             TEXT PRIMARY KEY,\n        algorithm      TEXT NOT NULL DEFAULT 'sha256' CHECK(algorithm='sha256'),\n        content_hash   TEXT NOT NULL CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^a-f0-9]*'),\n        storage_uri    TEXT,\n        media_type     TEXT,\n        role           TEXT,\n        size_bytes     INTEGER NOT NULL DEFAULT 0,\n        provider_id    TEXT,\n        manifest_id    TEXT,\n        metadata_json  TEXT NOT NULL DEFAULT '{}',\n        created_at     INTEGER NOT NULL,\n        UNIQUE(algorithm, content_hash)\n      )",

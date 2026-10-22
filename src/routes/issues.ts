@@ -1,3 +1,5 @@
+import type { SessionExecutionObservation } from "../contracts.js";
+import { formatExecutionEvidence } from "../session-execution-format.js";
 import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
@@ -362,6 +364,7 @@ function sessionLiveness(
   const resolved = sessionId ? resolver(db, sessionId) : null;
   return {
     state: resolved?.liveness ?? "stopped",
+    execution: resolved?.execution ?? null,
     agent_session_id: sessionId,
     agent_status: resolved
       ? resolved.mandible_status ?? resolved.console_status ?? (resolved.liveness === "live" ? "active" : resolved.liveness)
@@ -493,9 +496,10 @@ function parentRoleAuthority(
   if ([...holderAliasIds(holder)].some((id) => callerAliases.has(id))) return { ok: true, authority: "holder" };
   const identity = req.client_identity;
   if (override && identity && isOperator(db, identity)) return { ok: true, authority: "operator_override" };
-  const held = state === "live"
+  const execution = (holder?.liveness as { execution?: SessionExecutionObservation | null } | undefined)?.execution;
+  const held = (state === "live"
     ? "parent role is held by a live session"
-    : "parent role is held by a session whose liveness cannot be established";
+    : "parent role is held by a session whose liveness cannot be established") + formatExecutionEvidence(execution);
   return {
     ok: false,
     refusal: {

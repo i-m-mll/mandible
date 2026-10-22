@@ -1,3 +1,5 @@
+import { readSessionExecution } from "./session-execution.js";
+import type { SessionExecutionObservation } from "./contracts.js";
 /**
  * One canonical answer to two questions that used to be answered three
  * different ways (issue 5b2cdbf):
@@ -64,6 +66,7 @@ export interface SessionAliasResolution {
   /** ISO timestamp of the Mandible session's last activity, when known. */
   last_activity: string | null;
   liveness: LivenessState;
+  execution?: SessionExecutionObservation | null;
 }
 
 interface SessionRow {
@@ -120,18 +123,15 @@ export function resolveSessionAlias(
   const linkedSession = directSession
     ?? (consoleRow?.mandible_session_id ? lookupSession(db, consoleRow.mandible_session_id) : null);
 
+  const provider = linkedSession?.app?.trim() || consoleRow?.command?.trim() || providerIngestion?.provider || null;
+  const providerId = consoleRow?.provider_session_id?.trim() || linkedSession?.conversation_id?.trim() || providerIngestion?.provider_session_id || null;
   return {
+    execution: readSessionExecution(db, provider, providerId),
     supplied_id: id,
     mandible_session_id: linkedSession?.id ?? null,
     console_session_id: consoleRow?.id ?? null,
-    provider_session_id: consoleRow?.provider_session_id?.trim()
-      || linkedSession?.conversation_id?.trim()
-      || providerIngestion?.provider_session_id
-      || null,
-    provider: linkedSession?.app?.trim()
-      || consoleRow?.command?.trim()
-      || providerIngestion?.provider
-      || null,
+    provider_session_id: providerId,
+    provider,
     mandible_status: linkedSession?.status ?? null,
     console_status: consoleRow?.status ?? null,
     last_activity: linkedSession?.last_active

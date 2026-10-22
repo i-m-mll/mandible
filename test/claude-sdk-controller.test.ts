@@ -1,14 +1,18 @@
-import { afterEach, expect, it } from "vitest";
-import type { Options, Query, SDKMessage, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
+import { ConversationControlService } from "../src/conversation-control/service.js";
+import { SessionExecutionStore } from "../src/session-execution.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { SseManager, setSseManager } from "../src/sse.js";
+import { afterEach, expect, it, vi } from "vitest";
+import type { HookInput, Options, Query, SDKMessage, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeSdkControllerAdapter } from "../src/conversation-control/claude-controller.js";
 import type { ClaudeSdk } from "../src/conversation-control/claude-sdk-transport.js";
-import type { ConversationOutboxItem } from "../src/conversation-control/types.js";
+import type { ProviderRuntimeEvent, ConversationOutboxItem } from "../src/conversation-control/types.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
 const adapters: ClaudeSdkControllerAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map((adapter) => adapter.close())); });
 
-function fakeSdk({ delay = false, identity = true } = {}) {
+function fakeSdk({ delay = false, identity = true, startupEvents = [] as Record<string, unknown>[] } = {}) {
   let options!: Options;
   let nativeId!: string;
   let release!: () => void;
@@ -36,6 +40,7 @@ function fakeSdk({ delay = false, identity = true } = {}) {
   const sdk: ClaudeSdk = { async startup(input) {
     options = input?.options ?? {};
     nativeId = options.sessionId ?? options.resume!;
+    for (const event of startupEvents) await runHook(options, { ...event, session_id: nativeId });
     if (delay) await new Promise<void>((resolve) => { release = resolve; });
     const warm = {
       query(input: AsyncIterable<SDKUserMessage>) {
@@ -133,4 +138,71 @@ it("accepts an initialized controller with native identity pending and never ack
   await until(() => events.includes("controller-released"));
   // The repeated init was handled before the release that followed it.
   expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
+});
+
+async function runHook(options: Options, payload: Record<string, unknown>): Promise<void> {
+  const matchers = options.hooks?.[payload.hook_event_name as keyof NonNullable<Options["hooks"]>] ?? [];
+  for (const matcher of matchers) for (const hook of matcher.hooks) {
+    await hook({ cwd: "/tmp", transcript_path: "/tmp/sdk-transcript", ...payload } as HookInput, undefined,
+      { signal: new AbortController().signal });
+  }
+}
+
+it("buffers SDK startup observations until adoption and fences parent observations with user settings disabled", async () => {
+  const db = migratedMemoryDb();
+  const sse = new SseManager(); setSseManager(sse);
+  const emitted = vi.spyOn(sse, "broadcast");
+  const native = fakeSdk({ identity: false, startupEvents: [
+    { hook_event_name: "SessionStart", source: "startup" },
+    { hook_event_name: "StopFailure", error: "cloud_credential_error", error_details: "native details", last_assistant_message: "native message" },
+  ] });
+  const adapter = new ClaudeSdkControllerAdapter({ sdk: native.sdk });
+  let runtimeListener!: (event: ProviderRuntimeEvent) => void;
+  const subscribe = adapter.subscribeRuntimeEvents.bind(adapter);
+  adapter.subscribeRuntimeEvents = (listener) => { runtimeListener = listener; return subscribe(listener); };
+  const service = new ConversationControlService(db);
+  const unregister = service.registerAdapter(adapter);
+  const execution = new SessionExecutionStore(db);
+  try {
+    const acquired = await service.acquireNew({ conversation_id: "sdk-conversation", provider: "claude_code", generation: 1,
+      cwd: "/tmp", runtime_options: { setting_sources: [] } }, (lease) => {
+      expect(execution.read("claude", lease.provider_session_id!)).toBeNull();
+      db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
+        VALUES ('sdk-conversation', 'claude_code', '/tmp/sdk-transcript', 'hash', 1, 'SDK', '2026-01-01', 0, ?, '2026-01-01', '2026-01-01')`).run(lease.provider_session_id);
+    });
+    expect(acquired.ok, JSON.stringify(acquired)).toBe(true);
+    const session = native.options.sessionId!;
+    expect(native.options.settingSources).toEqual([]);
+    expect(native.options.env).toMatchObject({ MANDIBLE_EXECUTION_OBSERVER_ID: acquired.ok ? acquired.value.controller_instance_id : "",
+      MANDIBLE_EXECUTION_OBSERVER_SESSION_ID: session });
+    const failed = execution.read("claude", session);
+    expect(failed).toMatchObject({ source: "claude_sdk_hook", controller_generation: 1, event: "StopFailure", state: {
+      kind: "failure", error: { type: "cloud_credential_error", details: "native details", message: "native message", data: null } } });
+    expect(emitted.mock.calls.flatMap(([event]) => event.type === "session:execution-updated" ? [event.data.observation.event] : []))
+      .toEqual(["mandible:controller-acquired", "SessionStart", "StopFailure"]);
+    await runHook(native.options, { hook_event_name: "StopFailure", session_id: session, error: "cloud_credential_error",
+      error_details: "native details", last_assistant_message: "native message" });
+    await runHook(native.options, { hook_event_name: "Stop", session_id: session, agent_id: "unrelated-subagent" });
+    expect(execution.read("claude", session)).toEqual(failed);
+    if (!acquired.ok) throw new Error("Acquisition failed");
+    const stale: ProviderRuntimeEvent = { kind: "execution", conversation_id: "sdk-conversation", generation: 1,
+      controller_instance_id: acquired.value.controller_instance_id, provider_session_id: session, source: "claude_sdk_hook",
+      state: { kind: "stopped" }, event: "Stop", turn_id: null };
+    runtimeListener({ ...stale, generation: 0 });
+    runtimeListener({ ...stale, controller_instance_id: "other-controller" });
+    runtimeListener({ ...stale, provider_session_id: "other-native-session" });
+    runtimeListener({ ...stale, conversation_id: "other-conversation" });
+    expect(execution.read("claude", session)).toEqual(failed);
+    expect(execution.read("claude", "other-native-session")).toBeNull();
+    expect(emitted.mock.calls.filter(([event]) => event.type === "session:execution-updated"
+      && event.data.observation.event === "StopFailure")).toHaveLength(1);
+    for (const [hook_event_name, state] of [["UserPromptSubmit", "working"], ["Stop", "stopped"], ["SessionEnd", "ended"]]) {
+      await runHook(native.options, { hook_event_name, session_id: session, reason: "prompt_input_exit" });
+      expect(execution.read("claude", session)?.state.kind).toBe(state);
+    }
+    expect((await service.stop("sdk-conversation", 1)).ok).toBe(true);
+    expect(execution.read("claude", session)?.state).toEqual({ kind: "ended", reason: "mandible:controller-relinquished" });
+    await runHook(native.options, { hook_event_name: "StopFailure", session_id: session, error: "rate_limit" });
+    expect(execution.read("claude", session)?.state.kind).toBe("ended");
+  } finally { await service.close(); unregister(); setSseManager(null); db.close(); }
 });
