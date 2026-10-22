@@ -82,7 +82,11 @@ describe("backup routes", () => {
   let tempHome = "";
   let db: import("../src/db.js").Db | undefined;
 
-  afterEach(() => {
+  let backupService: import("../src/metadata-backup-service.js").MetadataBackupService | undefined;
+
+  afterEach(async () => {
+    await backupService?.close();
+    backupService = undefined;
     db?.close();
     db = undefined;
     process.env.HOME = originalHome;
@@ -105,11 +109,11 @@ describe("backup routes", () => {
 
     const { registerBackupRoutes } = await import("../src/routes/backup.js");
     const routes = new TestRoutes();
-    registerBackupRoutes(routes);
+    backupService = registerBackupRoutes(routes);
     return { routes, db };
   }
 
-  it("runs an in-process metadata dump and excludes reproducible or runtime rows", async () => {
+  it("runs a worker metadata dump and excludes reproducible or runtime rows", async () => {
     const { routes, db } = await setupBackupRoutes();
     const dotfilesBin = path.join(tempHome, ".dotfiles", "bin");
     const sentinel = path.join(tempHome, "external-script-ran");
