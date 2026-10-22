@@ -11,8 +11,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../../src/db.js";
-import { createSpace, listSpacesGrouped } from "../../src/ledger/spaces.js";
+import { openDb, type Db } from "../src/db.js";
+import { createSpace, listSpacesGrouped } from "../src/ledger/spaces.js";
 
 let tempDir = "";
 

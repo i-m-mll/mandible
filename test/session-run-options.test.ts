@@ -5,7 +5,7 @@ import {
   SessionRunOptionError,
   validateRunOptionsPatch,
   type BackendRunOptionDeclaration,
-} from "../../src/session-run-options.js";
+} from "../src/session-run-options.js";
 
 const declaration: BackendRunOptionDeclaration = {
   backendType: "acp",

@@ -1,6 +1,6 @@
-import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from '../helpers/briefing-preview-fixtures';
+import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 
-import { queryClient } from '../../ui/src/query/client';
+import { queryClient } from '../ui/src/query/client';
 
 import fs from 'node:fs';
 
@@ -9,22 +9,22 @@ import path from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getArtifactContent } from '../../src/artifact-content';
-import { setSetting } from '../../src/client-auth/settings-kv';
+import { getArtifactContent } from '../src/artifact-content';
+import { setSetting } from '../src/client-auth/settings-kv';
 
-import { resolveInstanceInfo } from '../../src/instance-policy';
-import { registerBriefingRoutes } from '../../src/routes/briefing';
-import { Router } from '../../src/server';
-import { STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
-import { createUser } from '../../src/users/store';
+import { resolveInstanceInfo } from '../src/instance-policy';
+import { registerBriefingRoutes } from '../src/routes/briefing';
+import { Router } from '../src/server';
+import { STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy';
+import { createUser } from '../src/users/store';
 
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
-import { invalidateApiGetCache } from '../../ui/src/api';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
+import { invalidateApiGetCache } from '../ui/src/api';
 
-import { BriefingDocumentRenderer } from '../../ui/src/views/feedback/BriefingDocumentRenderer';
+import { BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 
-import { seedRichBriefingDemo } from '../../src/feedback/rich-briefing-demo';
+import { seedRichBriefingDemo } from '../src/feedback/rich-briefing-demo';
 
 let noticeHost: HTMLElement;
 beforeEach(async () => {

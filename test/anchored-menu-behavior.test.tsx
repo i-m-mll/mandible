@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useRef, useState } from 'preact/hooks';
 
-import { useAnchoredMenu } from '../../ui/src/hooks/useAnchoredMenu';
+import { useAnchoredMenu } from '../ui/src/hooks/useAnchoredMenu';
 
 const originalInnerWidth = window.innerWidth;
 const originalInnerHeight = window.innerHeight;

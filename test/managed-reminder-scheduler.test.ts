@@ -1,12 +1,12 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
-import { migrate, type Db } from "../../src/db.js";
-import { parseManagedReminderCreateRequest } from "../../src/managed-reminder-parser.js";
-import { startManagedReminderScheduler, stopManagedReminderScheduler } from "../../src/managed-reminder-scheduler.js";
-import { createManagedReminder, getManagedReminder } from "../../src/managed-reminders.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { createUser } from "../../src/users/store.js";
+import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
+import { migrate, type Db } from "../src/db.js";
+import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
+import { startManagedReminderScheduler, stopManagedReminderScheduler } from "../src/managed-reminder-scheduler.js";
+import { createManagedReminder, getManagedReminder } from "../src/managed-reminders.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { createUser } from "../src/users/store.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00Z");
 let db: Db;

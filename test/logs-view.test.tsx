@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LogsView, parseLogsHash } from '../../ui/src/views/logs';
-import type { LogsResponse } from '../../ui/src/api';
-import type { SSEClient, SSEHandler, SSEPayload } from '../../ui/src/sse-client';
+import { LogsView, parseLogsHash } from '../ui/src/views/logs';
+import type { LogsResponse } from '../ui/src/api';
+import type { SSEClient, SSEHandler, SSEPayload } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();
@@ -158,7 +158,7 @@ describe('LogsView', () => {
     });
 
     const { container } = render(
-      <LogsView loadLogs={loadLogs as typeof import('../../ui/src/api').getLogs} createSse={() => client} />,
+      <LogsView loadLogs={loadLogs as typeof import('../ui/src/api').getLogs} createSse={() => client} />,
     );
     await waitFor(() => expect(screen.getAllByText('three')).toHaveLength(2));
     const scrollRegion = container.querySelector('.logs-scroll-region') as HTMLDivElement;

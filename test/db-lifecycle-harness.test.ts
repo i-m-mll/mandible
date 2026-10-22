@@ -1,8 +1,8 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
-import { getDb, inspectDbBinding, resetDb, setDb } from "../../src/db.js";
-import { restoreDbSingleton, withTestDb } from "../helpers/db-lifecycle.js";
+import { getDb, inspectDbBinding, resetDb, setDb } from "../src/db.js";
+import { restoreDbSingleton, withTestDb } from "./helpers/db-lifecycle.js";
 
 // Issue c4f456c: the src/db.ts singleton is now scoped to the test that
 // installed it. These tests pin the reset contract, including the ordering

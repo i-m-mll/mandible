@@ -16,7 +16,7 @@ import {
   shouldEnterSplashOnProbe,
   splashRequiresNewCommit,
   stallEscapeReady,
-} from "../../ui/src/daemon-readiness";
+} from "../ui/src/daemon-readiness";
 
 describe("daemonNeedsSplash", () => {
   it("keeps the splash up when the health fetch failed (null)", () => {

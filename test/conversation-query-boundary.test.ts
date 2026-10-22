@@ -6,14 +6,14 @@ import type {
   ConversationBlock,
   ConversationPositionWindow,
   ConversationSidebarGroup,
-} from '../../ui/src/api';
-import { conversationKeys, normalizeWindowTarget } from '../../ui/src/query/conversationKeys';
+} from '../ui/src/api';
+import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/conversationKeys';
 import {
   conversationTranscriptFromWindow,
   reconcileConversationWindow,
   mergeSidebarPages,
-} from '../../ui/src/query/conversationData';
-import { applyConversationSse } from '../../ui/src/query/conversationSse';
+} from '../ui/src/query/conversationData';
+import { applyConversationSse } from '../ui/src/query/conversationSse';
 
 function conversation(id = 'conv-1', blockCount = 0): Conversation {
   return {

@@ -10,8 +10,8 @@ import { createRef } from 'preact';
 
 
 
-import { ViewSidebar } from '../../ui/src/components/ViewSidebar';
-import { AppShellProvider, type AppShellContextValue } from '../../ui/src/app-shell';
+import { ViewSidebar } from '../ui/src/components/ViewSidebar';
+import { AppShellProvider, type AppShellContextValue } from '../ui/src/app-shell';
 
 
 

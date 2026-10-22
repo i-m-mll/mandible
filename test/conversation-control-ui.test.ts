@@ -1,8 +1,8 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type ConversationControlSnapshot } from "../../ui/src/api.js";
-import { submitConversationControl } from "../../ui/src/api.js";
-import { conversationControlPresentation } from "../../ui/src/chat/conversationControl.js";
+import { ApiError, type ConversationControlSnapshot } from "../ui/src/api.js";
+import { submitConversationControl } from "../ui/src/api.js";
+import { conversationControlPresentation } from "../ui/src/chat/conversationControl.js";
 
 const base: ConversationControlSnapshot = {
   conversation_id: "conversation-1",

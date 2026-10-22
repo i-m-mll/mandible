@@ -1,11 +1,11 @@
-import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { QueryClientProvider } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api.js';
+import * as api from '../ui/src/api.js';
 import type {
   CanonicalProject,
   ConversationControlSnapshot,
@@ -13,15 +13,15 @@ import type {
   ConversationSidebarConversation,
   ConversationSidebarGroup,
   InstanceInfo,
-} from '../../ui/src/api.js';
-import { ConversationsView, getConversationTitle } from '../../ui/src/views/conversations.js';
-import { normalizeSidebarGroupLimit } from '../../ui/src/components/shared/sidebar-group-settings.js';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
-import type { ConsoleSession } from '../../ui/src/state.js';
-import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
-import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
-import { queryClient } from '../../ui/src/query/client.js';
-import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
+} from '../ui/src/api.js';
+import { ConversationsView, getConversationTitle } from '../ui/src/views/conversations.js';
+import { normalizeSidebarGroupLimit } from '../ui/src/components/shared/sidebar-group-settings.js';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
+import type { ConsoleSession } from '../ui/src/state.js';
+import { compareConversationSidebarRows } from '../src/conversations/sidebar-order.js';
+import { normalizeChatViewState, reconcileShownProjects } from '../ui/src/views/conversation-view-state.js';
+import { queryClient } from '../ui/src/query/client.js';
+import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 
 const chatHistoryStylesheet = [
   'ui/src/styles/chat-history.css',

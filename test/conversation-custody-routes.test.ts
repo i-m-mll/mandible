@@ -2,13 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
-import { ConversationCustodyStore } from "../../src/conversations/custody-store.js";
-import { ConversationSourceStore } from "../../src/conversations/source-store.js";
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
-import { registerConversationCustodyRoutes } from "../../src/routes/conversation-custody.js";
-import { Router } from "../../src/server.js";
-import { setupOperator } from "../../src/users/store.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { ConversationCustodyStore } from "../src/conversations/custody-store.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { registerConversationCustodyRoutes } from "../src/routes/conversation-custody.js";
+import { Router } from "../src/server.js";
+import { setupOperator } from "../src/users/store.js";
 
 describe("conversation custody routes", () => {
   let root: string;

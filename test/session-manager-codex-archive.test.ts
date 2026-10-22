@@ -1,8 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CodexAppServerControllerAdapter } from '../../src/conversation-control/codex-controller';
-import { SessionManager } from '../../src/session-manager';
-import { createMigratedDb } from '../helpers/ledger-fixtures';
+import { CodexAppServerControllerAdapter } from '../src/conversation-control/codex-controller';
+import { SessionManager } from '../src/session-manager';
+import { createMigratedDb } from './helpers/ledger-fixtures';
 
 const adapters: CodexAppServerControllerAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });

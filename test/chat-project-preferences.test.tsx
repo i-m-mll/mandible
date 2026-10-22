@@ -1,11 +1,11 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api.js';
+import * as api from '../ui/src/api.js';
 import {
   CHAT_VIEW_STATE_KEY,
   useChatProjectSelection,
-} from '../../ui/src/views/conversation-view-state.js';
+} from '../ui/src/views/conversation-view-state.js';
 
 function Probe(): JSX.Element {
   const [value, setValue, state] = useChatProjectSelection();

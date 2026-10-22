@@ -8,7 +8,7 @@ import {
   startFileRpcResponder,
   type FileRpcHandler,
   type FileRpcRequest,
-} from "../helpers/file-rpc-responder.js";
+} from "./helpers/file-rpc-responder.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 

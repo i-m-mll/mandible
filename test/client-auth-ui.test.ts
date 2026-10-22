@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetBrowserSessionForTests, browserSessionFetch, ensureClientAccess,
   getClientAccessState, retryClientAccess,
-} from "../../ui/src/client-auth-token.js";
-import { DOMAIN_EVENTS } from "../../src/contracts.js";
-import { SSEClient } from "../../ui/src/sse-client.js";
+} from "../ui/src/client-auth-token.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
+import { SSEClient } from "../ui/src/sse-client.js";
 
 const ready = () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: "csrf" } }), {
   status: 200, headers: { "content-type": "application/json" },

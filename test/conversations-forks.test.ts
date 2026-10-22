@@ -2,10 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { compressContent } from "../../src/compression.js";
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
+import { compressContent } from "../src/compression.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
 
 let tempDir = "";
 let db: Db;

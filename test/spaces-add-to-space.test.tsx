@@ -13,8 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const listSpaces = vi.fn();
 const listSpacesGrouped = vi.fn();
 const addSpaceItem = vi.fn();
-vi.mock('../../ui/src/api', async (importActual) => {
-  const actual = await importActual<typeof import('../../ui/src/api')>();
+vi.mock('../ui/src/api', async (importActual) => {
+  const actual = await importActual<typeof import('../ui/src/api')>();
   return {
     ...actual,
     listSpaces: (...args: unknown[]) => listSpaces(...args),
@@ -23,9 +23,9 @@ vi.mock('../../ui/src/api', async (importActual) => {
   };
 });
 
-import { AddToSpace, type AddToSpaceTarget } from '../../ui/src/components/spaces/AddToSpace';
-import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
-import type { LedgerIssueDetailProjection } from '../../ui/src/api';
+import { AddToSpace, type AddToSpaceTarget } from '../ui/src/components/spaces/AddToSpace';
+import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import type { LedgerIssueDetailProjection } from '../ui/src/api';
 
 function makeSpace(id: string, title: string) {
   return {

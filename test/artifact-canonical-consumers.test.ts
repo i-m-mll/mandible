@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
-import { getArtifactContent } from "../../src/artifact-content.js";
-import { openDb, type Db } from "../../src/db.js";
+import { insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
+import { getArtifactContent } from "../src/artifact-content.js";
+import { openDb, type Db } from "../src/db.js";
 import {
   getArtifact,
   getArtifactDraft,
@@ -19,13 +19,13 @@ import {
   resolveAndLinkArtifact,
   saveArtifactDraft,
   snapshotArtifactBytes,
-} from "../../src/provider-artifacts.js";
+} from "../src/provider-artifacts.js";
 import {
   publishArtifactDraft,
   recordArtifactVersion,
   resolveArtifactRef,
   resolveArtifactRefReadonlyFull,
-} from "../helpers/artifact-http-write-fixtures.js";
+} from "./helpers/artifact-http-write-fixtures.js";
 
 let db: Db;
 let tempDir = "";

@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
-import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
-import { migrate } from "../../src/db.js";
-import { setupOperator } from "../../src/users/store.js";
+import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { migrate } from "../src/db.js";
+import { setupOperator } from "../src/users/store.js";
 
 function testIdentity(db: SqliteDatabase): NonNullable<RequestLike["client_identity"]> {
   const operator = setupOperator(db, { slug: "settings-test", display_name: "Settings Test" });
@@ -104,8 +104,8 @@ describe("settings routes", () => {
     let db = new SqliteDatabase(dbPath);
     migrate(db);
     const identity = testIdentity(db);
-    const { setDb } = await import("../../src/db.js");
-    const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
+    const { setDb } = await import("../src/db.js");
+    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
     setDb(db);
 
     const value = JSON.stringify({
@@ -153,8 +153,8 @@ describe("settings routes", () => {
 
     const db = createSettingsDb();
     const identity = testIdentity(db);
-    const { setDb } = await import("../../src/db.js");
-    const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
+    const { setDb } = await import("../src/db.js");
+    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
     setDb(db);
 
     const routes = new TestRoutes();
@@ -213,8 +213,8 @@ describe("settings routes", () => {
       JSON.stringify([{ path: path.join(tempHome, "old.md"), mode: "managed-block" }]),
       1,
     );
-    const { setDb } = await import("../../src/db.js");
-    const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
+    const { setDb } = await import("../src/db.js");
+    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
     setDb(db);
 
     const routes = new TestRoutes();
@@ -297,8 +297,8 @@ describe("settings routes", () => {
 
     const db = createSettingsDb();
     const identity = testIdentity(db);
-    const { setDb } = await import("../../src/db.js");
-    const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
+    const { setDb } = await import("../src/db.js");
+    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
     setDb(db);
     const routes = new TestRoutes();
     registerSettingsRoutes(routes, "preview");

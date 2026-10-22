@@ -1,11 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { AgentDispatchDialog } from '../../ui/src/components/agent-dispatch/AgentDispatchDialog';
-import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
-import type { LedgerIssueDetailProjection } from '../../ui/src/api';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { AgentDispatchDialog } from '../ui/src/components/agent-dispatch/AgentDispatchDialog';
+import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import type { LedgerIssueDetailProjection } from '../ui/src/api';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {

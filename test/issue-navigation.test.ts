@@ -1,8 +1,8 @@
-import { issueDetailProjection, render } from '../helpers/ui-workspace-fixture';
+import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { IssuesView, resolveIssueIdDeepLink, resolveIssueRepoDeepLink, type IssueRepoSummary } from '../../ui/src/views/issues';
+import { IssuesView, resolveIssueIdDeepLink, resolveIssueRepoDeepLink, type IssueRepoSummary } from '../ui/src/views/issues';
 
 describe('issue deep links', () => {
   function stubIssuesLocalStorage(initial: Record<string, string> = {}): void {

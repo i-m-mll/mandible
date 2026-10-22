@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -14,14 +14,14 @@ import {
   getLegacyCacheDbPath,
   openDb,
   type CopyForwardOutcome,
-} from "../../src/db.js";
+} from "../src/db.js";
 import {
   getLegacyMandibleConfigDirs,
   ensureMandibleClientAuthDir,
   getMandibleConfigDir,
   getMandibleHome,
   getMandibleHomePath,
-} from "../../src/platform-paths.js";
+} from "../src/platform-paths.js";
 
 // Issue 24f0316 — Mandible state is split by lifetime: durable state under
 // ~/.mandible, disposable state under ~/.cache/mandible. These tests pin the
@@ -178,7 +178,7 @@ describe("durable-state root (issue 24f0316)", () => {
       fs.mkdirSync(legacyDir, { recursive: true });
       fs.writeFileSync(legacyFile, '{"repos":["/repo"]}\n', "utf8");
 
-      const { ensureMandibleConfigFile } = await import("../../src/platform-paths.js");
+      const { ensureMandibleConfigFile } = await import("../src/platform-paths.js");
       const resolved = ensureMandibleConfigFile("repos.json");
 
       expect(resolved).toBe(path.join(tempHome, ".mandible", "config", "repos.json"));
@@ -197,7 +197,7 @@ describe("durable-state root (issue 24f0316)", () => {
       fs.writeFileSync(path.join(legacyClientAuth, "pepper"), "secret-pepper", { mode: 0o600 });
       fs.chmodSync(path.join(legacyClientAuth, "pepper"), 0o600);
 
-      const { ensureMandibleConfigEntry } = await import("../../src/platform-paths.js");
+      const { ensureMandibleConfigEntry } = await import("../src/platform-paths.js");
       const resolved = ensureMandibleConfigEntry("client-auth");
 
       expect(resolved).toBe(path.join(tempHome, ".mandible", "config", "client-auth"));
@@ -215,13 +215,13 @@ describe("durable-state root (issue 24f0316)", () => {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, "current\n", "utf8");
 
-      const { ensureMandibleConfigFile } = await import("../../src/platform-paths.js");
+      const { ensureMandibleConfigFile } = await import("../src/platform-paths.js");
       expect(ensureMandibleConfigFile("repos.json")).toBe(target);
       expect(fs.readFileSync(target, "utf8")).toBe("current\n");
     });
 
     it("leaves a missing legacy config entry absent", async () => {
-      const { ensureMandibleConfigEntry } = await import("../../src/platform-paths.js");
+      const { ensureMandibleConfigEntry } = await import("../src/platform-paths.js");
       const target = ensureMandibleConfigEntry("client-auth");
       expect(target).toBe(path.join(tempHome, ".mandible", "config", "client-auth"));
       expect(fs.existsSync(target)).toBe(false);
@@ -233,7 +233,7 @@ describe("durable-state root (issue 24f0316)", () => {
       fs.writeFileSync(path.join(legacyDir, "repos.json"), "partial\n", "utf8");
 
       const { ensureMandibleConfigEntry, ensureMandibleConfigFile } = await import(
-        "../../src/platform-paths.js"
+        "../src/platform-paths.js"
       );
       const repos = ensureMandibleConfigFile("repos.json");
       const clientAuth = ensureMandibleConfigEntry("client-auth");
@@ -432,7 +432,7 @@ describe("durable-state root (issue 24f0316)", () => {
   // at the durable path would be adopted by the next copy-forward as though it
   // were the relocated ledger, stranding the real one in the cache root.
   describe("non-daemon resolvers", () => {
-    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
     function shellLiveDbPath(): string {
       return execFileSync(
@@ -444,7 +444,7 @@ describe("durable-state root (issue 24f0316)", () => {
 
     function cjsPaths() {
       const require_ = createRequire(import.meta.url);
-      const modulePath = require_.resolve("../../cli/mandible-paths.cjs");
+      const modulePath = require_.resolve("../cli/mandible-paths.cjs");
       delete require_.cache[modulePath];
       return require_(modulePath) as {
         mandibleHome: () => string;

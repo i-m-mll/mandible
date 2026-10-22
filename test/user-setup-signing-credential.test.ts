@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
 // Issue 2205073 — the protected-merge signing credential must not be a hidden
 // manual step. Every operator otherwise lands in the signature_not_trusted

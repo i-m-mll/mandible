@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { BranchRow } from '../../ui/src/views/work';
+import { BranchRow } from '../ui/src/views/work';
 
 afterEach(() => {
   cleanup();

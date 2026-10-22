@@ -1,20 +1,20 @@
-import { mockConversationStructureFromWindow, mockManagedSettings, changeNativeSelect } from '../helpers/conversation-ui-transport';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { mockConversationStructureFromWindow, mockManagedSettings, changeNativeSelect } from './helpers/conversation-ui-transport';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
-import { render } from './notice-test-render';
+import { render } from './helpers/notice-test-render';
 import { CancelledError } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api.js';
-import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
-import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
-import type { ConsoleSession } from '../../ui/src/state.js';
+import * as api from '../ui/src/api.js';
+import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../ui/src/api.js';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
+import { AppShellProvider, type AppRightSidebarDescriptor } from '../ui/src/app-shell.js';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
+import type { ConsoleSession } from '../ui/src/state.js';
 import {
   ConversationDetail,
   ConversationsView,
@@ -22,14 +22,14 @@ import {
   conversationAnchorHref,
   conversationLoadFailure,
   scopeConversationRightSidebar,
-} from '../../ui/src/views/conversations.js';
-import { chatItemIdentityKey } from '../../src/conversation-control/provider-live.js';
-import type { ChatItem } from '../../src/parsers/types.js';
-import { queryClient } from '../../ui/src/query/client.js';
-import { conversationKeys } from '../../ui/src/query/conversationKeys.js';
-import type { ConversationTranscriptData } from '../../ui/src/query/conversationData.js';
-import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
-import { addDraftAttachments, clearAcceptedDraft } from '../../ui/src/chat/attachmentDrafts.js';
+} from '../ui/src/views/conversations.js';
+import { chatItemIdentityKey } from '../src/conversation-control/provider-live.js';
+import type { ChatItem } from '../src/parsers/types.js';
+import { queryClient } from '../ui/src/query/client.js';
+import { conversationKeys } from '../ui/src/query/conversationKeys.js';
+import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
+import { applyConversationSse } from '../ui/src/query/conversationSse.js';
+import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
 
 
 vi.mock('@xterm/xterm', () => ({

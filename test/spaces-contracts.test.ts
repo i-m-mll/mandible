@@ -1,9 +1,9 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { registerSpacesRoutes } from "../../src/routes/spaces.js";
-import { Router } from "../../src/server.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
+import { Router } from "../src/server.js";
 
 import type {
   AddSpaceItemResponse,
@@ -23,12 +23,12 @@ import type {
   SpaceOccurrenceResponse,
   SpaceRenderer,
   SpaceResponse,
-} from "../../src/contracts.js";
+} from "../src/contracts.js";
 import {
   SPACE_ITEM_REF_TYPES,
   SPACE_OCCURRENCE_RENDERERS,
   SPACE_RENDERERS,
-} from "../../src/contracts.js";
+} from "../src/contracts.js";
 
 // Backend (C2) source-of-truth record/input types — the contracts in
 // `src/contracts.ts` mirror these. The `Expect`/`Equal` checks below fail to
@@ -41,8 +41,8 @@ import type {
   SpaceRenderer as BackendSpaceRenderer,
   SpaceOccurrenceRenderer as BackendOccurrenceRenderer,
   SpaceItemRefType as BackendRefType,
-} from "../../src/ledger/spaces.js";
-import { loadSpaceFactPacket } from "../../src/routes/spaces.js";
+} from "../src/ledger/spaces.js";
+import { loadSpaceFactPacket } from "../src/routes/spaces.js";
 
 // Issue 102d691 (umbrella de56ffa): Spaces shared contracts. This suite proves
 // the `src/contracts.ts` Spaces types round-trip against the C2 route shapes

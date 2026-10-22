@@ -4,8 +4,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { copyRuntimeFixture } from "../helpers/runtime-fixture.js";
-import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
+import { copyRuntimeFixture } from "./helpers/runtime-fixture.js";
+import { renderMandibleInstructionsFragment } from "../src/instructions/fragment.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 const tempRoots: string[] = [];

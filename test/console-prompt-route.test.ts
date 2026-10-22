@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { openDb, setDb, type Db } from '../../src/db.js';
-import { registerConsoleRoutes } from '../../src/routes/console.js';
-import { authenticatedTestRouter } from '../helpers/authenticated-router.js';
-import { setupOperator, createUser } from '../../src/users/store.js';
+import { openDb, setDb, type Db } from '../src/db.js';
+import { registerConsoleRoutes } from '../src/routes/console.js';
+import { authenticatedTestRouter } from './helpers/authenticated-router.js';
+import { setupOperator, createUser } from '../src/users/store.js';
 let db:Db;
 beforeEach(()=>{db=openDb(':memory:');setDb(db);});
 afterEach(()=>db.close());

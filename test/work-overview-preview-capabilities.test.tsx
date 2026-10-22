@@ -1,13 +1,13 @@
-import { render } from './notice-test-render';
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
+import { render } from './helpers/notice-test-render';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import type { InstanceInfo } from '../../ui/src/api';
-import { WorkOverviewView } from '../../ui/src/views/work';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import type { InstanceInfo } from '../ui/src/api';
+import { WorkOverviewView } from '../ui/src/views/work';
 
 const copiedPreview: InstanceInfo = {
   role: 'preview',

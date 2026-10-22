@@ -1,18 +1,18 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { MAIN_CLI_INSTANCE_RESPONSE } from '../helpers/cli-instance-response';
-import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { MAIN_CLI_INSTANCE_RESPONSE } from './helpers/cli-instance-response';
+import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsView } from '../../ui/src/views/settings';
+import { SettingsView } from '../ui/src/views/settings';
 import {
   DEFAULT_TYPOGRAPHY_SETTINGS,
   normalizeTypographySetting,
   reconcileTypographySettings,
   withTypographySetting,
-} from '../../ui/src/typography-settings';
+} from '../ui/src/typography-settings';
 
 beforeEach(async () => {
   await establishTestClientAccess();

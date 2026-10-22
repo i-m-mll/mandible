@@ -1,18 +1,18 @@
-import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { establishTestClientAccess } from './helpers/local-client-access';
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api.js';
+import * as api from '../ui/src/api.js';
 import type {
   ConversationSidebarConversation,
   ConversationSidebarGroup,
   InstanceInfo,
-} from '../../ui/src/api.js';
-import { CHAT_VIEW_STATE_KEY } from '../../ui/src/views/conversation-view-state.js';
-import { ConversationsView } from '../../ui/src/views/conversations.js';
-import { queryClient } from '../../ui/src/query/client.js';
+} from '../ui/src/api.js';
+import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
+import { ConversationsView } from '../ui/src/views/conversations.js';
+import { queryClient } from '../ui/src/query/client.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {

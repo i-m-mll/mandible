@@ -1,20 +1,20 @@
 import fs from "node:fs";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
-import { migrate, type Db } from "../../src/db.js";
+import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
+import { migrate, type Db } from "../src/db.js";
 import {
   cancelManagedReminder,
   createManagedReminder,
   listManagedReminderOccurrences,
   reconcileManagedReminders,
-} from "../../src/managed-reminders.js";
+} from "../src/managed-reminders.js";
 import {
   canonicalizeReminderInstant,
   parseManagedReminderCreateRequest,
-} from "../../src/managed-reminder-parser.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { createUser, SYSTEM_USER_ID } from "../../src/users/store.js";
+} from "../src/managed-reminder-parser.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
 let db: Db;

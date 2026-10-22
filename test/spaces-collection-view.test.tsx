@@ -1,6 +1,6 @@
-import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../../ui/src/api';
-import { queryClient } from '../../ui/src/query/client';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // Collection renderer component tests (umbrella de56ffa, C8 / issue fa83ec7).
 //
 // Drives the rendered view with a mocked fetch (the `GET /api/spaces/:id` fact
@@ -10,12 +10,12 @@ import { establishTestClientAccess } from '../helpers/local-client-access';
 // reset of selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 
-import { SpaceCollectionRenderer } from '../../ui/src/views/spaces/space-collection';
-import { SPACE_RENDERERS_REGISTRY } from '../../ui/src/views/spaces/renderers';
-import { collectionStorageKey } from '../../ui/src/views/spaces/collectionViewState';
+import { SpaceCollectionRenderer } from '../ui/src/views/spaces/space-collection';
+import { SPACE_RENDERERS_REGISTRY } from '../ui/src/views/spaces/renderers';
+import { collectionStorageKey } from '../ui/src/views/spaces/collectionViewState';
 
 const NOW = 1_700_000_000_000;
 

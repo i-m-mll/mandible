@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { PRODUCTION_ORIGIN } from "../../src/canonical-origin";
+import { PRODUCTION_ORIGIN } from "../src/canonical-origin";
 
 describe("desktop native origin boundary", () => {
   it("exposes commands only to the exact registered production HTTPS origin", () => {

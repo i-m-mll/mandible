@@ -10,8 +10,8 @@ import {
   PRODUCTION_OPERATIONAL_LOG_DB_PATH,
   openDb,
   type Db,
-} from "../../src/db.js";
-import { pruneDaemonLogs } from "../../src/daemon-log.js";
+} from "../src/db.js";
+import { pruneDaemonLogs } from "../src/daemon-log.js";
 import {
   OPERATIONAL_LOG_BACKUP_CLASSIFICATION,
   copyForwardLegacyDaemonLogs,
@@ -22,7 +22,7 @@ import {
   verifyLegacyDaemonLogCopy,
   visibleDaemonLogSource,
   type OperationalLogStore,
-} from "../../src/operational-log-db.js";
+} from "../src/operational-log-db.js";
 
 let tempDir: string;
 let canonicalPath: string;

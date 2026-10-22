@@ -3,7 +3,7 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SidebarSearchFilterHeader } from '../../ui/src/components/shared/SidebarSearchFilterHeader';
+import { SidebarSearchFilterHeader } from '../ui/src/components/shared/SidebarSearchFilterHeader';
 
 
 afterEach(() => {

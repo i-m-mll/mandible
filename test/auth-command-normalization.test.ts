@@ -1,24 +1,24 @@
-import { approveFixtureRequest, createNoopHookManager } from "../helpers/auth-queue-fixtures.js";
+import { approveFixtureRequest, createNoopHookManager } from "./helpers/auth-queue-fixtures.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AuthQueue, AuthQueueError } from "../../src/auth-queue.js";
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
+import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import {
   canonicalAuthMergeCommands,
   normalizeLegacySingleSourceMergeCommand,
-} from "../../src/auth-context.js";
-import { setDb, type Db } from "../../src/db.js";
-import { registerAuthRoutes } from "../../src/routes/auth.js";
-import { Router } from "../../src/server.js";
-import { createLedgerIssue, createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
-import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
-import { MERGE_CHANGE_MESSAGE } from "../helpers/auth-delivery-fixtures.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { addCredential } from "../../src/users/store.js";
+} from "../src/auth-context.js";
+import { setDb, type Db } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { Router } from "../src/server.js";
+import { createLedgerIssue, createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { addCredential } from "../src/users/store.js";
 
 // Issue 08a5f04 — channel-server compatibility with approve-time canonical
 // command enforcement:

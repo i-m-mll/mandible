@@ -4,9 +4,9 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { triggerReconcileForTest, triggerTargetedIngest } from "../../src/ingestion.js";
-import type { Logger } from "../../src/types.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
+import type { Logger } from "../src/types.js";
 
 let tempDir = "";
 let watchBase = "";

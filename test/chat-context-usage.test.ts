@@ -5,12 +5,12 @@ import {
   deriveChatUsageSummary,
   getContextSeverity,
   selectContextUsage,
-} from "../../ui/src/chat/contextUsage";
+} from "../ui/src/chat/contextUsage";
 import {
   normalizeClaudeStatusline,
   normalizeCodexTokenCount,
-} from "../../src/parsers/context-usage.js";
-import { UsageModal } from "../../ui/src/chat/UsageModal.js";
+} from "../src/parsers/context-usage.js";
+import { UsageModal } from "../ui/src/chat/UsageModal.js";
 
 afterEach(cleanup);
 

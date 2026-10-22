@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SidebarGroupNode } from '../../ui/src/components/shared/SidebarGroupNode';
+import { SidebarGroupNode } from '../ui/src/components/shared/SidebarGroupNode';
 
 type ResizeCallback = ResizeObserverCallback;
 

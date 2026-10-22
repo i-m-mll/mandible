@@ -2,17 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
+import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueProjection,
   countLedgerGraphIssues,
   getLedgerGraphFilterOptions,
-} from "../../src/ledger/graph-adapter.js";
-import { linkAuthRequestToLedgerIssue, linkSessionToLedgerIssue } from "../../src/ledger/operational-links.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import type { GraphNode } from "../../src/types.js";
+} from "../src/ledger/graph-adapter.js";
+import { linkAuthRequestToLedgerIssue, linkSessionToLedgerIssue } from "../src/ledger/operational-links.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import type { GraphNode } from "../src/types.js";
 
 let tempDir = "";
 let db: Db;

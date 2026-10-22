@@ -4,7 +4,7 @@ import {
   __clearMarkdownRenderCache,
   renderInlineMarkdown,
   renderMarkdown,
-} from '../../ui/src/lib/markdown';
+} from '../ui/src/lib/markdown';
 
 afterEach(() => {
   __clearMarkdownRenderCache();

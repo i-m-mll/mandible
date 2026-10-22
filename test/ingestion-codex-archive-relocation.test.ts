@@ -10,10 +10,10 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { triggerReconcileForTest, triggerTargetedIngest } from "../../src/ingestion.js";
-import { CodexParser } from "../../src/parsers/codex.js";
-import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
+import { CodexParser } from "../src/parsers/codex.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 
 const ROLLOUT_NAME = "rollout-2026-08-11T09-15-00-019f8ab1-archive-move.jsonl";
 const SESSION_ID = "019f8ab1-archive-move";

@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
-import { openDb, type Db } from "../../src/db.js";
-import { setupOperator } from "../../src/users/store.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { openDb, type Db } from "../src/db.js";
+import { setupOperator } from "../src/users/store.js";
 
 describe("delegated signing attribution persistence", () => {
   let tempDir: string;

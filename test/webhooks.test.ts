@@ -9,9 +9,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { startDaemon, type DaemonHandle } from "../../src/index.js";
-import { mintApiToken } from "../../src/client-auth/tokens.js";
-import { setupOperator } from "../../src/users/store.js";
+import { startDaemon, type DaemonHandle } from "../src/index.js";
+import { mintApiToken } from "../src/client-auth/tokens.js";
+import { setupOperator } from "../src/users/store.js";
 
 interface TempPaths {
   dir: string;

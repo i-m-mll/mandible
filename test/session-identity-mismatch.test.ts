@@ -7,22 +7,22 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { Router, type RouteHandler, type RouteRegistrar } from "../../src/server.js";
-import { registerSessionRoutes } from "../../src/routes/sessions.js";
-import { registerConsoleRoutes } from "../../src/routes/console.js";
-import { getChannelRegistry } from "../../src/channel-registry.js";
-import { SessionRegistry } from "../../src/registry.js";
-import { addProject } from "../../src/ledger/project-registry.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { SYSTEM_ACTOR } from "../helpers/ledger-fixtures.js";
-import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
-import { addBinding, createUser, removeBinding, setupOperator } from "../../src/users/store.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { Router, type RouteHandler, type RouteRegistrar } from "../src/server.js";
+import { registerSessionRoutes } from "../src/routes/sessions.js";
+import { registerConsoleRoutes } from "../src/routes/console.js";
+import { getChannelRegistry } from "../src/channel-registry.js";
+import { SessionRegistry } from "../src/registry.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { addBinding, createUser, removeBinding, setupOperator } from "../src/users/store.js";
 import {
   evaluateSessionIdentity,
   readSessionIdentityMismatch,
   readSessionIdentityMismatchBatch,
-} from "../../src/identity/session-mismatch.js";
+} from "../src/identity/session-mismatch.js";
 
 let tempDir = "";
 let db: Db;

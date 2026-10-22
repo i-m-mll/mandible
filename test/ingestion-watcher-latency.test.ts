@@ -4,8 +4,8 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { Db } from "../../src/db.js";
-import type { Logger } from "../../src/types.js";
+import type { Db } from "../src/db.js";
+import type { Logger } from "../src/types.js";
 
 let tempDir = "";
 let db: Db | null = null;
@@ -84,12 +84,12 @@ beforeEach(async () => {
   sessionRoot = fs.mkdtempSync(path.join(watchedRoot, "latency-fixture-"));
   vi.resetModules();
 
-  const dbModule = await import("../../src/db.js");
+  const dbModule = await import("../src/db.js");
   db = dbModule.openDb(path.join(tempDir, "mandible.db"));
   dbModule.migrate(db);
   dbModule.setDb(db);
 
-  const ingestion = await import("../../src/ingestion.js");
+  const ingestion = await import("../src/ingestion.js");
   stopIngestion = ingestion.stopIngestionGracefully;
 });
 
@@ -105,7 +105,7 @@ afterEach(async () => {
 
 describe("watched tail ingestion latency", () => {
   it("ingests appended watched JSONL records without waiting for reconcile", async () => {
-    const ingestion = await import("../../src/ingestion.js");
+    const ingestion = await import("../src/ingestion.js");
     const sessionDir = path.join(sessionRoot, "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
     const sessionPath = path.join(sessionDir, "rollout-2026-07-02T00-00-00-watchlatency.jsonl");
@@ -143,7 +143,7 @@ describe("watched tail ingestion latency", () => {
   });
 
   it("tombstones a missing watched source while preserving its durable coordinates", async () => {
-    const ingestion = await import("../../src/ingestion.js");
+    const ingestion = await import("../src/ingestion.js");
     const sessionDir = path.join(sessionRoot, "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
     const sessionPath = path.join(sessionDir, "rollout-2026-07-02T00-00-00-watchdelete.jsonl");

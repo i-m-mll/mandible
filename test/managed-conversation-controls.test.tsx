@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, expect, it, vi } from 'vitest';
 const fetcher=vi.hoisted(()=>vi.fn());
-vi.mock('../../ui/src/client-auth-token',()=>({browserSessionFetch:fetcher}));
-import { ManagedConversationControls } from '../../ui/src/chat/ManagedConversationControls';
-import type { ConversationControlSnapshot } from '../../ui/src/api';
+vi.mock('../ui/src/client-auth-token',()=>({browserSessionFetch:fetcher}));
+import { ManagedConversationControls } from '../ui/src/chat/ManagedConversationControls';
+import type { ConversationControlSnapshot } from '../ui/src/api';
 afterEach(()=>{cleanup();fetcher.mockReset();});
 it('preserves edited settings across reconciliation and sends generation-scoped decisions',async()=>{
  const calls:{path:string;body:Record<string,unknown>}[]=[];

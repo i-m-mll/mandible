@@ -3,13 +3,13 @@ import {
   acquireSharedSse,
   shouldSkipFallbackPoll,
   __resetSharedSseForTests,
-} from '../../ui/src/sse-shared';
-import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
+} from '../ui/src/sse-shared';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
   applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
-} from '../../ui/src/query/conversationData';
-import type { Conversation, ConversationBlock, ConversationChild } from '../../ui/src/api';
+} from '../ui/src/query/conversationData';
+import type { Conversation, ConversationBlock, ConversationChild } from '../ui/src/api';
 
 /**
  * Controllable fake EventSource — same pattern as sse-shared-client.test.ts.

@@ -1,11 +1,11 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { migrate, setDb } from "../../src/db.js";
-import { resolveSessionClientIdentity, SessionManager } from "../../src/session-manager.js";
-import { ClaudeSdkTransport } from "../../src/conversation-control/claude-sdk-transport.js";
-import { projectManagedProviderIdentity } from "../../src/backends/mandible-transport.js";
-import { addBinding, createUser, setupOperator } from "../../src/users/store.js";
+import { migrate, setDb } from "../src/db.js";
+import { resolveSessionClientIdentity, SessionManager } from "../src/session-manager.js";
+import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
+import { projectManagedProviderIdentity } from "../src/backends/mandible-transport.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 // Managed SDK/Spawn Console backends were retired. Provider transports now
 // obtain local credentials through the private socket, rather than minting or

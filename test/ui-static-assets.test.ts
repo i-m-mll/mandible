@@ -4,10 +4,10 @@ import type http from "node:http";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
-import { createServer, Router } from "../../src/server.js";
-import { SseManager } from "../../src/sse.js";
-import type { Db } from "../../src/db.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { createServer, Router } from "../src/server.js";
+import { SseManager } from "../src/sse.js";
+import type { Db } from "../src/db.js";
 
 type AssetManifest = {
   version: number;

@@ -1,12 +1,12 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../../src/db.js";
+import { migrate, setDb } from "../src/db.js";
 import {
   SessionManager,
   TERMINAL_BACKEND_RETENTION_LIMIT,
-} from "../../src/session-manager.js";
-import { PTYBackend } from "../../src/backends/pty-backend.js";
+} from "../src/session-manager.js";
+import { PTYBackend } from "../src/backends/pty-backend.js";
 
 describe("SessionManager terminal backend retention", () => {
   it("loads copied sessions without reconciling or starting them in read-only mode", () => {

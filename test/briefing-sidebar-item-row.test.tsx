@@ -3,28 +3,28 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api';
-import { briefingRoute } from '../../ui/src/routing';
+import * as api from '../ui/src/api';
+import { briefingRoute } from '../ui/src/routing';
 import {
   normalizeBriefingBundles,
   normalizeBriefingGroups,
   type BriefingBundle,
   type BriefingGroup,
-} from '../../ui/src/api';
-import { CollectionsSidebar } from '../../ui/src/views/feedback/CollectionsSidebar';
-import { BriefingGroupDetail } from '../../ui/src/views/feedback/BriefingGroupDetail';
+} from '../ui/src/api';
+import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar';
+import { BriefingGroupDetail } from '../ui/src/views/feedback/BriefingGroupDetail';
 import {
   feedbackCollectionIdentity,
   resolveFeedbackCollection,
   type FeedbackCollection,
-} from '../../ui/src/views/feedback/collection-model';
+} from '../ui/src/views/feedback/collection-model';
 import {
   BRIEFING_VIEW_STATE_KEY,
   DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
   normalizeBriefingCollectionViewState,
   type BriefingCollectionViewState,
   useBriefingCollectionViewState,
-} from '../../ui/src/views/feedback/collection-view-state';
+} from '../ui/src/views/feedback/collection-view-state';
 
 const firstId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
 const secondId = '06e4aec0-cf58-4a7f-86df-415e08a4eb8e';

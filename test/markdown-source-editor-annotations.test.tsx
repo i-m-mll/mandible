@@ -12,7 +12,7 @@ import {
   markdownSourceDecorationIdFromTarget,
   normalizeMarkdownSourceDecorations,
   type MarkdownSourceDecoration,
-} from '../../ui/src/views/spaces/MarkdownSourceEditor';
+} from '../ui/src/views/spaces/MarkdownSourceEditor';
 
 afterEach(() => {
   cleanup();

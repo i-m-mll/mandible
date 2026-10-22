@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/preact';
 import { QueryClient } from '@tanstack/preact-query';
-import { createSSEClient, type SseStateHandler, type SSEPayload } from '../../ui/src/sse-client';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../ui/src/query/browserResources';
+import { createSSEClient, type SseStateHandler, type SSEPayload } from '../ui/src/sse-client';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../ui/src/query/browserResources';
 
 afterEach(() => __resetBrowserSessionForTests());
 

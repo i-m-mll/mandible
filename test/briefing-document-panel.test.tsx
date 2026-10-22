@@ -4,13 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import type { BriefingResponseValue, BriefingRoundProjection } from '../../ui/src/api';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
-import { BriefingDocumentPanel } from '../../ui/src/views/feedback/BriefingDocumentPanel';
-import { buildBriefingMarkdownModel, changedBriefingEntityIndexes, compareBriefingEntities } from '../../ui/src/views/feedback/briefingMarkdownModel';
-import { parseBriefingDirectives } from '../../src/feedback/briefing-directives';
+import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { buildBriefingMarkdownModel, changedBriefingEntityIndexes, compareBriefingEntities } from '../ui/src/views/feedback/briefingMarkdownModel';
+import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';

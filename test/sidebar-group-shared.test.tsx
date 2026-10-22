@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CollectionsSidebar } from '../../ui/src/views/feedback/CollectionsSidebar.js';
-import { SidebarGroupNode, SidebarNewChatIcon } from '../../ui/src/components/shared/SidebarGroupNode.js';
-import type { SidebarReorderBinding } from '../../ui/src/components/shared/sidebar-order.js';
-import { SettingsView } from '../../ui/src/views/settings.js';
-import type { FeedbackCollection } from '../../ui/src/views/feedback/collection-model.js';
-import * as api from '../../ui/src/api.js';
+import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar.js';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../ui/src/components/shared/SidebarGroupNode.js';
+import type { SidebarReorderBinding } from '../ui/src/components/shared/sidebar-order.js';
+import { SettingsView } from '../ui/src/views/settings.js';
+import type { FeedbackCollection } from '../ui/src/views/feedback/collection-model.js';
+import * as api from '../ui/src/api.js';
 
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
 

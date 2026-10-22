@@ -1,6 +1,6 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
-import { render } from './notice-test-render';
+import { render } from './helpers/notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -8,14 +8,14 @@ import type {
   ArtifactRecord,
   ArtifactSeriesRecord,
   ArtifactVersionRecord,
-} from '../../ui/src/api';
+} from '../ui/src/api';
 import {
   ArtifactDetail,
   artifactDetailIdentity,
   artifactHighlightLanguage,
   artifactPreview,
   highlightArtifactCode,
-} from '../../ui/src/views/artifacts';
+} from '../ui/src/views/artifacts';
 
 beforeEach(establishTestClientAccess);
 

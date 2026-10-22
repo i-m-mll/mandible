@@ -14,18 +14,18 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 describe("channel-server base URL", () => {
   it("defaults to the private socket", async () => {
-    const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
     expect(resolveBaseUrl({})).toBe("http://localhost");
   });
 
   it("honors an absolute socket override", async () => {
-    const { resolveTransport } = await import("../../channel-server/base-url.js");
+    const { resolveTransport } = await import("../channel-server/base-url.js");
     expect(resolveTransport({ MANDIBLE_SOCKET: "/tmp/mandible-preview.sock" }))
       .toEqual({ kind: "socket", socketPath: "/tmp/mandible-preview.sock" });
   });
 
   it("prefers an explicit MANDIBLE_BASE over MANDIBLE_PORT and trims it", async () => {
-    const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
     expect(resolveBaseUrl({
       MANDIBLE_BASE: " http://127.0.0.1:12345/ ",
       MANDIBLE_PORT: "31337",
@@ -33,13 +33,13 @@ describe("channel-server base URL", () => {
   });
 
   it("keeps explicitly selected canonical HTTPS available", async () => {
-    const { resolveTransport } = await import("../../channel-server/base-url.js");
+    const { resolveTransport } = await import("../channel-server/base-url.js");
     expect(resolveTransport({ MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_TRANSPORT: "http" }))
       .toEqual({ kind: "http", baseUrl: "https://app.mandible.localhost:19420" });
   });
 
   it("refuses unsupported explicit transports", async () => {
-    const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
     expect(() => resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool" })).toThrow();
     expect(() => resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toThrow();
     expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost");
@@ -48,7 +48,7 @@ describe("channel-server base URL", () => {
 
 describe("channel-server local socket", () => {
   it("shares bearer selection between REST and notifications", async () => {
-    const { channelTransportHeaders } = await import("../../channel-server/client.js");
+    const { channelTransportHeaders } = await import("../channel-server/client.js");
     const original = process.env.MANDIBLE_TOKEN;
     process.env.MANDIBLE_TOKEN = "explicit-http-token";
     try {
@@ -80,7 +80,7 @@ describe("channel-server local socket", () => {
       process.env.MANDIBLE_SOCKET = socket;
       process.env.MANDIBLE_TOKEN = "stale-token";
       process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE = routes;
-      const { checkInboxGlobal } = await import("../../channel-server/client.js");
+      const { checkInboxGlobal } = await import("../channel-server/client.js");
       await checkInboxGlobal();
       expect(received).toEqual([{ url: "/api/inbox/global", auth: undefined, managed: "1" }]);
     } finally {
@@ -145,7 +145,7 @@ describe("channel-server client", () => {
       continuations: [], auth_results: [], open_issues: [], work_units: [],
       work_unit_continuations: [], total: 0,
     });
-    const { checkInboxGlobal } = await import("../../channel-server/client.js");
+    const { checkInboxGlobal } = await import("../channel-server/client.js");
     await checkInboxGlobal();
     const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(url).toBe("http://127.0.0.1:31337/api/inbox/global");
@@ -157,7 +157,7 @@ describe("channel-server client", () => {
       continuations: [], auth_results: [], open_issues: [], work_units: [],
       work_unit_continuations: [], total: 0,
     });
-    const { checkInboxGlobal } = await import("../../channel-server/client.js");
+    const { checkInboxGlobal } = await import("../channel-server/client.js");
     await checkInboxGlobal();
     const options = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
     expect(options.headers).toMatchObject({ Authorization: "Bearer agent-token" });
@@ -184,7 +184,7 @@ describe("channel-server client", () => {
     };
     mockFetch(200, inboxData);
 
-    const { checkInbox } = await import("../../channel-server/client.js");
+    const { checkInbox } = await import("../channel-server/client.js");
     const result = await checkInbox("main");
 
     expect(result.total).toBe(1);
@@ -206,7 +206,7 @@ describe("channel-server client", () => {
       total: 0,
     });
 
-    const { checkInboxGlobal } = await import("../../channel-server/client.js");
+    const { checkInboxGlobal } = await import("../channel-server/client.js");
     await checkInboxGlobal();
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -218,7 +218,7 @@ describe("channel-server client", () => {
   it("getIssues passes query parameters correctly", async () => {
     mockFetch(200, []);
 
-    const { getIssues } = await import("../../channel-server/client.js");
+    const { getIssues } = await import("../channel-server/client.js");
     await getIssues({ repo: "mandible", status: "open", label: "feature" });
 
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -233,7 +233,7 @@ describe("channel-server client", () => {
   it("submitAuth sends correct payload", async () => {
     mockFetch(201, { request_id: "new-auth-id" });
 
-    const { submitAuth } = await import("../../channel-server/client.js");
+    const { submitAuth } = await import("../channel-server/client.js");
     const result = await submitAuth({
       command: "mandible auth merge feature/x --into main",
       title: "Merge feature/x",
@@ -258,7 +258,7 @@ describe("channel-server client", () => {
     mockFetch(500, { error: "Internal error" });
 
     const { checkInbox, MandibleClientError } = await import(
-      "../../channel-server/client.js"
+      "../channel-server/client.js"
     );
 
     await expect(checkInbox()).rejects.toThrow(MandibleClientError);
@@ -269,7 +269,7 @@ describe("channel-server client", () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
 
     const { checkInbox, MandibleClientError } = await import(
-      "../../channel-server/client.js"
+      "../channel-server/client.js"
     );
 
     await expect(checkInbox()).rejects.toThrow(MandibleClientError);
@@ -279,7 +279,7 @@ describe("channel-server client", () => {
   it("getWorkUnits passes state filter", async () => {
     mockFetch(200, { work_units: [] });
 
-    const { getWorkUnits } = await import("../../channel-server/client.js");
+    const { getWorkUnits } = await import("../channel-server/client.js");
     await getWorkUnits({ state: "open", repo_id: "repo-abc" });
 
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -291,7 +291,7 @@ describe("channel-server client", () => {
   it("updateSession sends PATCH with correct path", async () => {
     mockFetch(200, { ok: true });
 
-    const { updateSession } = await import("../../channel-server/client.js");
+    const { updateSession } = await import("../channel-server/client.js");
     await updateSession("session-123", { task: "working on feature" });
 
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -302,7 +302,7 @@ describe("channel-server client", () => {
   it("patchWorkUnit sends PATCH to correct endpoint", async () => {
     mockFetch(200, { id: "wu-123", state: "committed" });
 
-    const { patchWorkUnit } = await import("../../channel-server/client.js");
+    const { patchWorkUnit } = await import("../channel-server/client.js");
     await patchWorkUnit("wu-123", {
       assigned_session_id: "session-456",
     });
@@ -359,7 +359,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
       statusText: "Created",
       json: async () => ({ request_id: "tool-auth-id" }),
     });
-    const { registerTools } = await import("../../channel-server/tools.js");
+    const { registerTools } = await import("../channel-server/tools.js");
     const handlers = new Map<string, (a: Record<string, unknown>) => Promise<unknown>>();
     const mockServer = {
       tool: (
@@ -436,7 +436,7 @@ describe("notification formatting", () => {
 
   it("createNotificationBridge can be instantiated", async () => {
     const { createNotificationBridge } = await import(
-      "../../channel-server/notifications.js"
+      "../channel-server/notifications.js"
     );
 
     // Minimal mock of Server that satisfies the bridge
@@ -455,7 +455,7 @@ describe("notification formatting", () => {
 
   it("createNotificationBridge accepts an onReconnect callback (Bug: 03d6cb0)", async () => {
     const { createNotificationBridge } = await import(
-      "../../channel-server/notifications.js"
+      "../channel-server/notifications.js"
     );
 
     const mockServer = {
@@ -482,7 +482,7 @@ describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
   it("runStartupCatchUp is called as onReconnect callback on SSE reconnect", async () => {
     // Test that the reconnect catch-up integration works by verifying
     // runStartupCatchUp runs correctly when invoked as a callback
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     const mockServer = {
@@ -533,7 +533,7 @@ describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
     // we verify the behavior through the notification bridge's internal logic
     // by inspecting the bridge construction.
     const { createNotificationBridge } = await import(
-      "../../channel-server/notifications.js"
+      "../channel-server/notifications.js"
     );
 
     const onReconnect = vi.fn();
@@ -559,12 +559,12 @@ describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
 
 describe("tool formatting", () => {
   it("imports tool module without errors", async () => {
-    const mod = await import("../../channel-server/tools.js");
+    const mod = await import("../channel-server/tools.js");
     expect(typeof mod.registerTools).toBe("function");
   });
 
   it("imports types module without errors", async () => {
-    const mod = await import("../../channel-server/types.js");
+    const mod = await import("../channel-server/types.js");
     // Types module only has interfaces — no runtime exports to test
     // but the import should succeed without errors
     expect(mod).toBeDefined();

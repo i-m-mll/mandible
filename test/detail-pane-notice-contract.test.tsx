@@ -3,10 +3,10 @@ import type { ComponentChildren } from 'preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
-import { AppOperationalNoticeOutlet, AppShellProvider } from '../../ui/src/app-shell';
-import { DetailPaneNotice } from '../../ui/src/components/shared/DetailPaneNotice';
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
-import { SessionOverviewView } from '../../ui/src/views/session-overview';
+import { AppOperationalNoticeOutlet, AppShellProvider } from '../ui/src/app-shell';
+import { DetailPaneNotice } from '../ui/src/components/shared/DetailPaneNotice';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
+import { SessionOverviewView } from '../ui/src/views/session-overview';
 
 afterEach(() => cleanup());
 

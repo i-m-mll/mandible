@@ -1,7 +1,7 @@
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { invalidateApiGetCache } from '../../ui/src/api';
-import { queryClient } from '../../ui/src/query/client';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { invalidateApiGetCache } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // Routing + shell tests for Spaces nav/route scaffold (umbrella de56ffa,
 // child 22b50f5).
 import { render as testingRender, screen, cleanup, waitFor } from '@testing-library/preact';
@@ -10,18 +10,18 @@ import { h } from 'preact';
 
 const getSpaceFactPacketMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../../ui/src/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../ui/src/api')>();
+vi.mock('../ui/src/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ui/src/api')>();
   return { ...actual, getSpaceFactPacket: getSpaceFactPacketMock };
 });
 
-import { parseRouteFromHash } from '../../ui/src/routing';
-import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache';
+import { parseRouteFromHash } from '../ui/src/routing';
+import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import {
   SpacesViewShell,
   type SpaceRendererMountProps,
-} from '../../ui/src/views/spaces/SpacesViewShell';
-import type { Space, SpaceFactPacket } from '../../ui/src/api';
+} from '../ui/src/views/spaces/SpacesViewShell';
+import type { Space, SpaceFactPacket } from '../ui/src/api';
 
 const render: typeof testingRender = (view, options) => {
   const wrap = (content: typeof view) => <AppShellProvider value={{

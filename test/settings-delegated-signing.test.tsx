@@ -1,10 +1,10 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { authMainInstance, bindAuthUiOperations } from './helpers/auth-ui-fixture';
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DelegatedSigningSection } from "../../ui/src/views/settings";
-import { __resetBrowserSessionForTests } from "../../ui/src/client-auth-token";
+import { DelegatedSigningSection } from "../ui/src/views/settings";
+import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 
 function response(body: unknown): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), {

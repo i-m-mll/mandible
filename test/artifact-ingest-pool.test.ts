@@ -4,13 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { getArtifactContent } from "../../src/artifact-content.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { getArtifactContent } from "../src/artifact-content.js";
 import {
   materializeArtifactFileIntoCas,
   readAndHashArtifactFile,
   shutdownArtifactIngestPool,
-} from "../../src/artifact-ingest-pool.js";
+} from "../src/artifact-ingest-pool.js";
 import {
   addArtifactBundleMembersAsync,
   createArtifactBundleAsync,
@@ -21,7 +21,7 @@ import {
   registerLocalArtifactPath,
   registerLocalArtifactPathAsync,
   snapshotArtifactBytesAsync,
-} from "../../src/provider-artifacts.js";
+} from "../src/provider-artifacts.js";
 
 function sha256(value: string | Buffer): string {
   return crypto.createHash("sha256").update(value).digest("hex");

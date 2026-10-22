@@ -1,12 +1,12 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import {
   CodexCliThreadArchiver,
   listCompletedWorkerThreadArchiveCandidates,
   safeArchiveCodexThread,
-} from "../../src/codex-thread-archive.js";
-import type { AuthRequest } from "../../src/types.js";
+} from "../src/codex-thread-archive.js";
+import type { AuthRequest } from "../src/types.js";
 
 interface ExecCall {
   file: string;

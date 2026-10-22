@@ -1,6 +1,6 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { MAIN_CLI_INSTANCE_RESPONSE } from '../helpers/cli-instance-response';
-import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { MAIN_CLI_INSTANCE_RESPONSE } from './helpers/cli-instance-response';
+import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 // Tasks view tests — issue 0bc2279.
 //
 // The fixtures below are built by the REAL server projection
@@ -14,26 +14,26 @@ import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures'
 //     way to create anything.
 //   - a stale executor report is visibly stale in the list.
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
-import { render } from './notice-test-render';
-import SqliteDatabase from "../../src/sqlite.ts";
+import { render } from './helpers/notice-test-render';
+import SqliteDatabase from "../src/sqlite.ts";
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TASK_INVENTORY_SCHEMA_V2, type TaskInventoryResponse } from '../../src/contracts.js';
-import { migrate, setDb, type Db } from '../../src/db.js';
+import { TASK_INVENTORY_SCHEMA_V2, type TaskInventoryResponse } from '../src/contracts.js';
+import { migrate, setDb, type Db } from '../src/db.js';
 import {
   getTaskInventoryView,
   parseTaskInventoryGeneration,
   recordTaskInventoryGeneration,
   TASK_INVENTORY_STALE_AFTER_MS,
-} from '../../src/task-inventory.js';
-import { createUser } from '../../src/users/store.js';
-import { createManagedReminder } from '../../src/managed-reminders.js';
-import { parseManagedReminderCreateRequest } from '../../src/managed-reminder-parser.js';
-import { resolveProjectForCheckout } from '../../src/ledger/projects.js';
-import { invalidateApiGetCache, normalizeTaskInventory } from '../../ui/src/api';
-import { parseRouteFromHash } from '../../ui/src/routing';
-import { taskFact, TasksView } from '../../ui/src/views/tasks';
+} from '../src/task-inventory.js';
+import { createUser } from '../src/users/store.js';
+import { createManagedReminder } from '../src/managed-reminders.js';
+import { parseManagedReminderCreateRequest } from '../src/managed-reminder-parser.js';
+import { resolveProjectForCheckout } from '../src/ledger/projects.js';
+import { invalidateApiGetCache, normalizeTaskInventory } from '../ui/src/api';
+import { parseRouteFromHash } from '../ui/src/routing';
+import { taskFact, TasksView } from '../ui/src/views/tasks';
 
 const HOUR = 60 * 60 * 1000;
 const EXECUTION_HASH = 'a'.repeat(64);

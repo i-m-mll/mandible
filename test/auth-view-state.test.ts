@@ -1,12 +1,12 @@
-import { installMemoryLocalStorage, stubFetch, render, mainInstance } from '../helpers/ui-workspace-fixture';
+import { installMemoryLocalStorage, stubFetch, render, mainInstance } from './helpers/ui-workspace-fixture';
 
 import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { bindAuthUiOperations } from '../helpers/auth-ui-fixture';
+import { bindAuthUiOperations } from './helpers/auth-ui-fixture';
 
 beforeEach(() => bindAuthUiOperations(mainInstance));
-import { AuthQueueView } from '../../ui/src/views/auth';
+import { AuthQueueView } from '../ui/src/views/auth';
 
 
 describe('AuthQueueView', () => {

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   usePersistedViewState,
   type PersistedViewStateNormalizer,
-} from '../../ui/src/hooks/usePersistedViewState';
+} from '../ui/src/hooks/usePersistedViewState';
 
 type ViewState = {
   count: number;

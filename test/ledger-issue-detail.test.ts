@@ -1,27 +1,27 @@
-import { registerArtifactAlias } from "../../src/provider-artifacts.js";
+import { registerArtifactAlias } from "../src/provider-artifacts.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
+import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
-} from "../../src/ledger/issue-detail.js";
+} from "../src/ledger/issue-detail.js";
 import {
   getLedgerIssueDetailForRoute,
   resolveLedgerIssueIdForRoute,
-} from "../../src/ledger/issue-projection.js";
+} from "../src/ledger/issue-projection.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
   linkWorkUnitToLedgerIssue,
-} from "../../src/ledger/operational-links.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { addAttributionEvidence, addCredential, createUser } from "../../src/users/store.js";
+} from "../src/ledger/operational-links.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { addAttributionEvidence, addCredential, createUser } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
@@ -136,8 +136,8 @@ describe("ledger issue detail projection", () => {
         WHERE id = ?`,
     ).run(legacyDisplay, legacyComment.id);
 
-    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../../ui/src/api").LedgerIssueDetailProjection;
-    const initial = JSON.parse(JSON.stringify(buildLedgerIssueDetailInitialProjection(db, issue.id, { commentLimit: 1 }))) as import("../../ui/src/api").LedgerIssueDetailProjection;
+    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../ui/src/api").LedgerIssueDetailProjection;
+    const initial = JSON.parse(JSON.stringify(buildLedgerIssueDetailInitialProjection(db, issue.id, { commentLimit: 1 }))) as import("../ui/src/api").LedgerIssueDetailProjection;
     expect(initial).toMatchObject({ detail_stage: "initial", timeline_partial: true, author: projection.author, associated_artifacts: [] });
     expect(projection).toMatchObject({ detail_stage: "full", timeline_partial: false, worker_status: "none", work_notes: "", work_notes_revision: null, issue_branches: [], dependencies: [], dependency_warning: false });
     expect(projection.project).toHaveProperty("work_repo_id");
@@ -581,7 +581,7 @@ describe("ledger issue detail projection", () => {
       )`,
     ).run(`artifact-blob:${linkedHash}`, issue.id, `artifact-blob:${linkedHash}`);
 
-    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../../ui/src/api").LedgerIssueDetailProjection;
+    const projection = JSON.parse(JSON.stringify(buildLedgerIssueDetailProjection(db, issue.id))) as import("../ui/src/api").LedgerIssueDetailProjection;
     const artifacts = projection.associated_artifacts;
 
     expect(artifacts).toHaveLength(3);

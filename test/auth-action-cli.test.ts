@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { startFileRpcResponder } from "../helpers/file-rpc-responder.js";
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 const guards = ["--expected-revision", "0", "--expected-custody-generation", "2"];

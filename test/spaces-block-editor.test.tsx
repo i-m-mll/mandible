@@ -1,6 +1,6 @@
-import { invalidateApiGetCache } from '../../ui/src/api';
-import { bindSpacesOperationCatalog } from '../helpers/spaces-operation-catalog';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { invalidateApiGetCache } from '../ui/src/api';
+import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // Spaces document block editor tests (umbrella de56ffa, C14c / issue cef3eac).
 //
 // Covers the acceptance criteria:
@@ -17,21 +17,21 @@ import { establishTestClientAccess } from '../helpers/local-client-access';
 
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 import { act } from 'preact/test-utils';
 import { undo } from '@codemirror/commands';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { queryClient } from '../../ui/src/query/client';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { queryClient } from '../ui/src/query/client';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 import {
   DocumentBlockEditor,
   type EmbedDeleteDecision,
-} from '../../ui/src/views/spaces/DocumentBlockEditor';
-import { MarkdownSourceEditor } from '../../ui/src/views/spaces/MarkdownSourceEditor';
+} from '../ui/src/views/spaces/DocumentBlockEditor';
+import { MarkdownSourceEditor } from '../ui/src/views/spaces/MarkdownSourceEditor';
 import {
   generateSortKey,
   isValidSortKey,
@@ -40,20 +40,20 @@ import {
   prependSortKey,
   placementForIndex,
   siblingIndexOf,
-} from '../../ui/src/views/spaces/blockEditorModel';
+} from '../ui/src/views/spaces/blockEditorModel';
 import {
   blockEditorStorageKey,
   normalizeBlockEditorViewState,
-} from '../../ui/src/views/spaces/blockEditorViewState';
+} from '../ui/src/views/spaces/blockEditorViewState';
 import {
   listSpaceBlocks,
   createSpaceBlock,
   updateSpaceBlock,
   deleteSpaceBlock,
   detachItemFromBlocks,
-} from '../../ui/src/api';
-import type { InstanceInfo, LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../../ui/src/api';
-import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
+} from '../ui/src/api';
+import type { InstanceInfo, LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../ui/src/api';
+import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
 

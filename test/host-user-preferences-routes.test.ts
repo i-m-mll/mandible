@@ -4,15 +4,15 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { HostUserPreferencesStore } from "../../src/host-user-preferences.js";
-import { registerHostUserPreferencesRoutes } from "../../src/routes/host-user-preferences.js";
+import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
+import { registerHostUserPreferencesRoutes } from "../src/routes/host-user-preferences.js";
 import type {
   RequestLike,
   ResolvedClientIdentity,
   ResponseLike,
   RouteHandler,
   RouteRegistrar,
-} from "../../src/server.js";
+} from "../src/server.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();

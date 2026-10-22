@@ -1,7 +1,7 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 
-import { migrate, type Db } from "../../src/db.js";
+import { migrate, type Db } from "../src/db.js";
 import {
   acknowledgeOperationalIncident,
   closeOperationalIncident,
@@ -11,8 +11,8 @@ import {
   OperationalIncidentError,
   parseOperationalIncidentEnvelope,
   transitionOperationalIncidentRemediation,
-} from "../../src/operational-incidents.js";
-import { createUser } from "../../src/users/store.js";
+} from "../src/operational-incidents.js";
+import { createUser } from "../src/users/store.js";
 
 const FIRST = "2026-08-15T11:54:03.122Z";
 const SECOND = "2026-08-16T11:58:44.980Z";

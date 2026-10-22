@@ -1,6 +1,6 @@
-import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../../ui/src/api';
-import { queryClient } from '../../ui/src/query/client';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // Board renderer component tests (umbrella de56ffa, child 4d4d364 / C17).
 //
 // Drives the rendered board with a mocked fetch (the `GET /api/spaces/:id` fact
@@ -11,16 +11,16 @@ import { establishTestClientAccess } from '../helpers/local-client-access';
 // reconciliation that does not reset selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../../ui/src/sse-shared';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 
-import { SpaceBoardRenderer } from '../../ui/src/views/spaces/SpaceBoard';
-import { SPACE_RENDERERS_REGISTRY } from '../../ui/src/views/spaces/renderers';
+import { SpaceBoardRenderer } from '../ui/src/views/spaces/SpaceBoard';
+import { SPACE_RENDERERS_REGISTRY } from '../ui/src/views/spaces/renderers';
 import {
   defaultColumnKey,
   BOARD_METADATA_KEY,
-} from '../../ui/src/views/spaces/boardModel';
-import { boardStorageKey } from '../../ui/src/views/spaces/boardViewState';
+} from '../ui/src/views/spaces/boardModel';
+import { boardStorageKey } from '../ui/src/views/spaces/boardViewState';
 
 const NOW = 1_700_000_000_000;
 

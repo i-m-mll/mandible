@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { describeAnthropicBilling } from "../../src/claude-lane-policy.js";
+import { describeAnthropicBilling } from "../src/claude-lane-policy.js";
 it("preserves explicit billing metadata for historical Claude sessions", () => {
   expect(describeAnthropicBilling({})).toMatchObject({mode:"subscription",source:null});
   expect(describeAnthropicBilling({ANTHROPIC_API_KEY:"   "})).toMatchObject({mode:"subscription"});

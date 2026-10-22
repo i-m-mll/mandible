@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ContextualAction } from '../../ui/src/components/shared/ContextualAction';
+import { ContextualAction } from '../ui/src/components/shared/ContextualAction';
 
 afterEach(cleanup);
 

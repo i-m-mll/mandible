@@ -1,6 +1,6 @@
-import { invalidateApiGetCache } from '../../ui/src/api';
-import { queryClient } from '../../ui/src/query/client';
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { invalidateApiGetCache } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // SpaceItemPicker tests (umbrella de56ffa, child e670176).
 //
 // Covers the search-and-add picker that adds issues/artifacts to the CURRENT
@@ -19,9 +19,9 @@ import {
   spacesFromGroups,
   matchesQuery,
   type PickerCandidate,
-} from '../../ui/src/views/spaces/SpaceItemPicker';
-import type { GraphNode } from '../../ui/src/types/graph';
-import type { ArtifactRecord } from '../../ui/src/api';
+} from '../ui/src/views/spaces/SpaceItemPicker';
+import type { GraphNode } from '../ui/src/types/graph';
+import type { ArtifactRecord } from '../ui/src/api';
 
 vi.mock('@xyflow/react', async () => {
   const { h } = await import('preact');
@@ -371,7 +371,7 @@ describe('SpaceCanvas afterAdd placement round trip', () => {
     // create a `canvas` occurrence with x/y immediately. The picker reads
     // candidates and posts through the real api client, so we stub fetch for the
     // graph/artifact/items/occurrence routes.
-    const { SpaceCanvas } = await import('../../ui/src/views/spaces/SpaceCanvas');
+    const { SpaceCanvas } = await import('../ui/src/views/spaces/SpaceCanvas');
 
     const newOcc = {
       id: 'occ-new', space_id: 'sp1', item_id: 'new-item', renderer: 'canvas', x: 0, y: 0,
@@ -461,7 +461,7 @@ describe('SpaceCanvas afterAdd placement round trip', () => {
   });
 
   it('links an existing Space from the canvas toolbar and places it as a node', async () => {
-    const { SpaceCanvas } = await import('../../ui/src/views/spaces/SpaceCanvas');
+    const { SpaceCanvas } = await import('../ui/src/views/spaces/SpaceCanvas');
 
     const newOcc = {
       id: 'occ-space', space_id: 'sp1', item_id: 'space-item', renderer: 'canvas', x: 0, y: 0,

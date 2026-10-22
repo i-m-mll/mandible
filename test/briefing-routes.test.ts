@@ -2,26 +2,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/sse.js", () => ({ broadcast: vi.fn() }));
+vi.mock("../src/sse.js", () => ({ broadcast: vi.fn() }));
 
-import { setSetting } from "../../src/client-auth/settings-kv.js";
-import { migrate, type Db } from "../../src/db.js";
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
-import { registerBriefingRoutes } from "../../src/routes/briefing.js";
-import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
-import { createUser } from "../../src/users/store.js";
-import { broadcast } from "../../src/sse.js";
-import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings.js";
-import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
-import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
-import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
-import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
-import { addProject } from "../../src/ledger/project-registry.js";
-import { addGrant } from "../../src/permissions/store.js";
-import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { migrate, type Db } from "../src/db.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { registerBriefingRoutes } from "../src/routes/briefing.js";
+import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
+import { createUser } from "../src/users/store.js";
+import { broadcast } from "../src/sse.js";
+import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
+import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
+import { bindBriefingDestinationOwner, createBriefingGroup } from "../src/feedback/briefing-groups.js";
+import { registerBriefingDestinationRoute } from "../src/feedback/briefing-composer.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { addGrant } from "../src/permissions/store.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}

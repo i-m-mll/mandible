@@ -4,11 +4,11 @@ import {
   isResourceRef,
   linkifyResourceRefs,
   parseResourceRef,
-} from '../../ui/src/resource-refs';
+} from '../ui/src/resource-refs';
 import {
   installSpacesDocRefRecognizer,
   recognizeSpacesDocDirectiveRef,
-} from '../../ui/src/spaces-doc-refs';
+} from '../ui/src/spaces-doc-refs';
 
 const HASH64 = 'a'.repeat(64);
 

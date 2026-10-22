@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { classifyGraphEdge, graphEdgeStyle } from "../../ui/src/graph/edgeStyles";
-import { layoutGraph, routeCrossesNonEndpointNodeBoxes } from "../../ui/src/graph/layout";
-import type { GraphEdge, GraphNode } from "../../ui/src/types/graph";
+import { classifyGraphEdge, graphEdgeStyle } from "../ui/src/graph/edgeStyles";
+import { layoutGraph, routeCrossesNonEndpointNodeBoxes } from "../ui/src/graph/layout";
+import type { GraphEdge, GraphNode } from "../ui/src/types/graph";
 
 function issue(id: string, label = id, layout: Record<string, unknown> = {}): GraphNode {
   return {

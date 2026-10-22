@@ -3,7 +3,7 @@
 import { render } from '@testing-library/preact';
 import { describe, expect, it } from 'vitest';
 
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
 
 describe('anchored detail pane footer contract', () => {
   it('renders one optional outer footer after the scroll-owned body for one or more content pieces', () => {

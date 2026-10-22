@@ -11,7 +11,7 @@ import {
   getAgentPageBinding,
   hashWithAgentSession,
   subscribeAgentPageBinding,
-} from '../../ui/src/agent-page-binding';
+} from '../ui/src/agent-page-binding';
 
 describe('agent page binding', () => {
   beforeEach(() => {

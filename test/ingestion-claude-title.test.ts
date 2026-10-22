@@ -4,15 +4,15 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
-import { configureIngestionWorker, ingestBatchForWorker, triggerTargetedIngest } from "../../src/ingestion.js";
-import { loadOrCreatePepper } from "../../src/client-auth/secret-store.js";
-import { API_TOKEN_PREFIX, fingerprintForToken } from "../../src/client-auth/tokens.js";
-import { credentialMaskFor } from "../../src/credential-leak-scan.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
-import { addCredential, createUser } from "../../src/users/store.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { configureIngestionWorker, ingestBatchForWorker, triggerTargetedIngest } from "../src/ingestion.js";
+import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
+import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
+import { credentialMaskFor } from "../src/credential-leak-scan.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { addCredential, createUser } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;

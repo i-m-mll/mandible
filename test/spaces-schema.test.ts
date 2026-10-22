@@ -1,10 +1,10 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../../src/db.js";
-import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../../src/ledger/backup.js";
+import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 
 // Issue b395083 (umbrella de56ffa): Spaces P1' core schema — the "core four"
 // tables (spaces / space_items / space_occurrences / space_edges) per

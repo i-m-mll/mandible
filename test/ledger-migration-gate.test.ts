@@ -2,23 +2,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../../src/db.js";
+import { openDb, setDb, type Db } from "../src/db.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
   listLedgerIssueSummaries,
-} from "../../src/ledger/issue-projection.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { getLedgerIssueHead } from "../../src/ledger/issue-heads.js";
-import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../../src/routes/issues.js";
-import { setupOperator } from "../../src/users/store.js";
-import type { RepoInfo } from "../../src/work-scanner.js";
+} from "../src/ledger/issue-projection.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
+import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
+import { setupOperator } from "../src/users/store.js";
+import type { RepoInfo } from "../src/work-scanner.js";
 import {
   SYSTEM_ACTOR,
   createLedgerIssue as createSharedLedgerIssue,
   createLedgerProject,
-} from "../helpers/ledger-fixtures.js";
-import { authenticatedTestIdentity } from "../helpers/authenticated-router.js";
+} from "./helpers/ledger-fixtures.js";
+import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
 
 let tempDir = "";
 let db: Db;

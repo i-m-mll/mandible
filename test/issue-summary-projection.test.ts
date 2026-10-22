@@ -2,11 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../../src/db.js";
-import { listLedgerIssueSummaries } from "../../src/ledger/issue-projection.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { systemAction } from "../../src/identity/resolver.js";
+import { openDb, type Db } from "../src/db.js";
+import { listLedgerIssueSummaries } from "../src/ledger/issue-projection.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
 
 // Ledger writes require an explicit attribution context (main/user-system).
 const SYSTEM_ACTOR = { attribution: systemAction() };

@@ -15,7 +15,7 @@ import {
   timelineScrollMetrics,
   viewportFromTimelineScroll,
   zoomTimelineViewport,
-} from '../../ui/src/views/timeline-time';
+} from '../ui/src/views/timeline-time';
 
 describe('timeline time helpers', () => {
   it('builds a padded fit domain that keeps first and last anchors visible', () => {

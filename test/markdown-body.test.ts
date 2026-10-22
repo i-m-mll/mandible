@@ -3,7 +3,7 @@ import {
   detectAccidentalEscapedMarkdown,
   evaluateMarkdownBodyPolicy,
   parseMarkdownBodyEscapePolicy,
-} from "../../src/ledger/markdown-body.js";
+} from "../src/ledger/markdown-body.js";
 
 describe("Markdown body escape policy", () => {
   it("detects repeated literal escaped newlines with few real newlines", () => {

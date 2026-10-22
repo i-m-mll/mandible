@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { dedupeScanRoots, parseWorkScannerScanRoots } from "../../src/work-scanner.js";
+import { dedupeScanRoots, parseWorkScannerScanRoots } from "../src/work-scanner.js";
 
 describe("parseWorkScannerScanRoots", () => {
   it("reads a JSON array of path/depth entries", () => {

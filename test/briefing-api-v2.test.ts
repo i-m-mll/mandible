@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeBriefingRoundProjection, normalizeInstanceInfo } from '../../ui/src/api';
+import { normalizeBriefingRoundProjection, normalizeInstanceInfo } from '../ui/src/api';
 
 const definitions = [
   ['verdict', 'verdict', [], { verdict: 'keep' }],

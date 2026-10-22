@@ -8,8 +8,8 @@
 //   - view-state persistence + SSE reconciliation never reset surviving state
 import { describe, expect, it } from 'vitest';
 
-import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../../ui/src/api';
-import { buildSpaceViewModel } from '../../ui/src/views/spaces/collectionModel';
+import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../ui/src/api';
+import { buildSpaceViewModel } from '../ui/src/views/spaces/collectionModel';
 import {
   projectBoard,
   readBoardMetadata,
@@ -27,13 +27,13 @@ import {
   EMPTY_BOARD_METADATA,
   type BoardMetadata,
   type IssueFactsByItemId,
-} from '../../ui/src/views/spaces/boardModel';
+} from '../ui/src/views/spaces/boardModel';
 import {
   reconcileBoardViewState,
   normalizeBoardViewState,
   boardStorageKey,
   EMPTY_BOARD_VIEW_STATE,
-} from '../../ui/src/views/spaces/boardViewState';
+} from '../ui/src/views/spaces/boardViewState';
 
 const NOW = 1_700_000_000_000;
 

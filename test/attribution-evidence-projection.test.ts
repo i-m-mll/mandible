@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../../src/db.js";
-import { AttributionReadResolver } from "../../src/identity/read-projection.js";
-import { createUser } from "../../src/users/store.js";
+import { openDb, type Db } from "../src/db.js";
+import { AttributionReadResolver } from "../src/identity/read-projection.js";
+import { createUser } from "../src/users/store.js";
 
 // The read projection is what the dashboard consumes to decide how much trust an
 // attributed author's identity carries. Issue 6f356c7: every stored evidence

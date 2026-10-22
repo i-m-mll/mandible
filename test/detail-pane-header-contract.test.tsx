@@ -3,13 +3,13 @@ import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DetailPaneHeader } from '../../ui/src/components/shared/DetailPaneHeader.js';
-import { DetailPaneMenuTrigger } from '../../ui/src/components/shared/DetailPaneMenuTrigger.js';
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
-import { EntityTimestamps } from '../../ui/src/components/shared/EntityTimestamps.js';
-import { CollapsiblePanel } from '../../ui/src/components/shared/CollapsiblePanel.js';
-import { shortIdentityRef } from '../../ui/src/identity-refs.js';
-import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
+import { DetailPaneHeader } from '../ui/src/components/shared/DetailPaneHeader.js';
+import { DetailPaneMenuTrigger } from '../ui/src/components/shared/DetailPaneMenuTrigger.js';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
+import { EntityTimestamps } from '../ui/src/components/shared/EntityTimestamps.js';
+import { CollapsiblePanel } from '../ui/src/components/shared/CollapsiblePanel.js';
+import { shortIdentityRef } from '../ui/src/identity-refs.js';
+import { AppShellProvider, type AppRightSidebarDescriptor } from '../ui/src/app-shell.js';
 
 afterEach(() => {
   cleanup();

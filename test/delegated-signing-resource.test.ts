@@ -1,19 +1,19 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
-import type { AuthAutoApproveManager, AuthApprovalContext } from "../../src/auth-auto-approve.js";
+import type { AuthAutoApproveManager, AuthApprovalContext } from "../src/auth-auto-approve.js";
 import {
   DelegatedSigningResource,
   type DelegatedSignerInspector,
   type SignerProcessIdentity,
   type SignerSocketIdentity,
-} from "../../src/delegated-signing-resource.js";
-import { buildMetadataBackupSql } from "../../src/ledger/backup.js";
-import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../../src/users/store.js";
-import { createLedgerIssue, createLedgerProject, createMigratedDb } from "../helpers/ledger-fixtures.js";
+} from "../src/delegated-signing-resource.js";
+import { buildMetadataBackupSql } from "../src/ledger/backup.js";
+import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../src/users/store.js";
+import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/ledger-fixtures.js";
 
 function fixture() {
   const db = createMigratedDb({

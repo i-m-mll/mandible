@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   extractSettingsPath,
@@ -14,14 +14,14 @@ import {
   mergeMandibleClaudeHookSettings,
   stripSettingsArgs,
   uninstallUserClaudeIntegration,
-} from "../../src/claude-hook-settings.js";
+} from "../src/claude-hook-settings.js";
 import {
   getHookNotificationAttention,
   resetHookNotificationAttentionForTests,
-} from "../../src/claude-hook-attention.js";
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { registerHookRoutes } from "../../src/routes/hooks.js";
-import { Router } from "../../src/server.js";
+} from "../src/claude-hook-attention.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { registerHookRoutes } from "../src/routes/hooks.js";
+import { Router } from "../src/server.js";
 
 let db: Db;
 let router: Router;
@@ -449,7 +449,7 @@ describe("Claude statusline relay script", () => {
       }
       const script = path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),
-        "../../cli/hooks/mandible-claude-statusline.sh",
+        "../cli/hooks/mandible-claude-statusline.sh",
       );
       const input = JSON.stringify({
         session_id: "12345678-1234-4234-8234-123456789abc",

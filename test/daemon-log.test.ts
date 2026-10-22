@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openDb, type Db } from "../../src/db.js";
+import { openDb, type Db } from "../src/db.js";
 import {
   configureDaemonLogger,
   startDaemonLogRetention,
@@ -14,13 +14,13 @@ import {
   pruneDaemonLogs,
   rotateStderrLogSegments,
   runDaemonLogMaintenance,
-} from "../../src/daemon-log.js";
-import { FileRpcTransport } from "../../src/file-rpc-transport.js";
-import { openOperationalLogStore } from "../../src/operational-log-db.js";
-import { registerSystemRoutes } from "../../src/routes/system.js";
-import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../../src/server.js";
-import { SseManager } from "../../src/sse.js";
-import type { RequestLike, ResponseLike } from "../../src/server.js";
+} from "../src/daemon-log.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { openOperationalLogStore } from "../src/operational-log-db.js";
+import { registerSystemRoutes } from "../src/routes/system.js";
+import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../src/server.js";
+import { SseManager } from "../src/sse.js";
+import type { RequestLike, ResponseLike } from "../src/server.js";
 
 let tempDir = "";
 let db: Db;

@@ -1,9 +1,9 @@
 import { render,screen,fireEvent,waitFor,cleanup } from '@testing-library/preact';
 import { beforeEach,afterEach,expect,it,vi } from 'vitest';
-import { queryClient } from '../../ui/src/query/client';
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { SpaceExportDialog } from '../../ui/src/views/spaces/SpaceExportDialog';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { queryClient } from '../ui/src/query/client';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { SpaceExportDialog } from '../ui/src/views/spaces/SpaceExportDialog';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 let publications:Array<Record<string,unknown>>=[];
 beforeEach(()=> {

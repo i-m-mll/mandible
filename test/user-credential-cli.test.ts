@@ -1,4 +1,4 @@
-import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";

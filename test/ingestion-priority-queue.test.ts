@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { IngestionPriorityQueue } from "../../src/ingestion-priority-queue.js";
+import { IngestionPriorityQueue } from "../src/ingestion-priority-queue.js";
 
 describe("ingestion priority queue", () => {
   it("runs an exact ingest at a background reconciliation boundary", async () => {

@@ -4,16 +4,16 @@ import os from "os";
 import path from "path";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/sse", () => ({
+vi.mock("../src/sse", () => ({
   broadcast: vi.fn(),
 }));
 
-import { WorkScanner, type BranchData } from "../../src/work-scanner";
-import { filterAndSortBranches, registerWorkRoutes } from "../../src/routes/work";
-import type { Db } from "../../src/db";
-import { resolveProjectForCheckout } from "../../src/ledger/projects";
-import { Router } from "../../src/server";
-import { createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { WorkScanner, type BranchData } from "../src/work-scanner";
+import { filterAndSortBranches, registerWorkRoutes } from "../src/routes/work";
+import type { Db } from "../src/db";
+import { resolveProjectForCheckout } from "../src/ledger/projects";
+import { Router } from "../src/server";
+import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
 const gitEnv = {
   ...process.env,

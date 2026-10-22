@@ -1,4 +1,4 @@
-import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";

@@ -2,23 +2,23 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate } from "../../src/db.js";
-import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
-import { ConversationSourceStore } from "../../src/conversations/source-store.js";
-import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
+import { migrate } from "../src/db.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import {
   getConversationStructureCache,
   sparseConversationBlockId,
-} from "../../src/conversations/structure-cache.js";
+} from "../src/conversations/structure-cache.js";
 import {
   ConversationSearchCache,
   SourceBackedConversationSearchSourceAdapter,
-} from "../../src/conversations/search-cache.js";
-import { CodexParser } from "../../src/parsers/codex.js";
-import type { ParseResult } from "../../src/parsers/types.js";
+} from "../src/conversations/search-cache.js";
+import { CodexParser } from "../src/parsers/codex.js";
+import type { ParseResult } from "../src/parsers/types.js";
 
 let tempDir = "";
 

@@ -1,4 +1,4 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 2cddba2 — a deep-link (`#/auth?request=<id>`) to a resolved/archived
 // request outside the loaded queue/history lists must fetch the request from
 // the by-id detail route and render the detail pane from that record, with an
@@ -8,10 +8,10 @@ import { establishTestClientAccess } from '../helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { authMainInstance, bindAuthUiOperations } from './helpers/auth-ui-fixture';
 
-import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
+import { AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.

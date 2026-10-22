@@ -6,10 +6,10 @@ import {
   deriveStreamingState,
   flushPendingSSE,
   reconcileProviderProjection,
-} from "../../ui/src/chat";
-import { chatItemIdentityKey } from "../../src/conversation-control/provider-live";
-import type { ChatItem, ConversationSource } from "../../src/parsers/types";
-import type { StreamEvent } from "../../ui/src/components/stream-renderer/types";
+} from "../ui/src/chat";
+import { chatItemIdentityKey } from "../src/conversation-control/provider-live";
+import type { ChatItem, ConversationSource } from "../src/parsers/types";
+import type { StreamEvent } from "../ui/src/components/stream-renderer/types";
 
 function item(
   provider: ConversationSource,

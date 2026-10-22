@@ -16,24 +16,24 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
-import { AuthQueue } from "../../src/auth-queue.js";
-import { migrate, setDb } from "../../src/db.js";
-import { registerAuthRoutes } from "../../src/routes/auth.js";
-import { registerInboxRoutes } from "../../src/routes/inbox.js";
-import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
-import type { SseEvent } from "../../src/types.js";
-import { addBinding, addCredential, createUser, setupOperator } from "../../src/users/store.js";
-import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
-import { createLedgerIssue, createLedgerProject } from "../helpers/ledger-fixtures.js";
-import { MERGE_CHANGE_MESSAGE } from "../helpers/auth-delivery-fixtures.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { migrate, setDb } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { registerInboxRoutes } from "../src/routes/inbox.js";
+import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
+import type { SseEvent } from "../src/types.js";
+import { addBinding, addCredential, createUser, setupOperator } from "../src/users/store.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { createLedgerIssue, createLedgerProject } from "./helpers/ledger-fixtures.js";
+import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -229,7 +229,7 @@ describe("inbox tier query (auth_results)", () => {
 	      )`,
 	    ).run(now - 120_000, now - 60_000, now - 60_000);
 
-	    const inbox = await import("../../src/routes/inbox.js");
+	    const inbox = await import("../src/routes/inbox.js");
 	    // Use the exported registerInboxRoutes against a tiny mock server to read
 	    // the auth_results back out of the response body.
 	    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
@@ -266,7 +266,7 @@ describe("inbox tier query (auth_results)", () => {
       resolved_at: now - 60_000           // 1 minute ago, well inside grace
     });
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "sibling" });
     // sibling sees only the aged-out row; the fresh one belongs to the owner only.
     expect(result.auth_results.map((r: { id: string }) => r.id)).toEqual(["r2"]);
@@ -292,7 +292,7 @@ describe("inbox tier query (auth_results)", () => {
       resolved_at: now - 60_000           // still inside global grace
     });
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "outsider" });
     expect(result.auth_results.map((r: { id: string }) => r.id)).toEqual(["r3"]);
     expect(result.auth_results[0].tier).toBe(3);
@@ -308,7 +308,7 @@ describe("inbox tier query (auth_results)", () => {
       resolved_at: now - 60_000
     });
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "anyone" });
     expect(result.auth_results.map((r: { id: string }) => r.id)).toEqual(["legacy"]);
     expect(result.auth_results[0].tier).toBe(0);
@@ -325,7 +325,7 @@ describe("inbox tier query (auth_results)", () => {
       delivered_at: now - 30_000
     });
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
     expect(result.auth_results).toHaveLength(0);
   });
@@ -341,7 +341,7 @@ describe("inbox tier query (auth_results)", () => {
     });
     db.prepare("UPDATE auth_requests SET acknowledged_by = 'manual' WHERE id = ?").run("acked");
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
     expect(result.auth_results).toHaveLength(0);
   });
@@ -366,7 +366,7 @@ describe("inbox tier query (auth_results)", () => {
       resolved_at: now - 60_000
     });
 
-    const inbox = await import("../../src/routes/inbox.js");
+    const inbox = await import("../src/routes/inbox.js");
     const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "viewer" });
     expect(result.auth_results.map((r: { id: string; tier: number }) => [r.id, r.tier])).toEqual([
       ["t1", 1],
@@ -410,7 +410,7 @@ interface ChannelEventCapture {
 
 describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   async function getDispatch() {
-    return (await import("../../channel-server/notifications.js")).dispatchEvent;
+    return (await import("../channel-server/notifications.js")).dispatchEvent;
   }
 
   it("delivers auth events via the channel-event sender when target_session_id matches", async () => {
@@ -648,7 +648,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   });
 
   it("buildAuthChannelEvent produces a content string with branch + status and a meta record", async () => {
-    const mod = await import("../../channel-server/notifications.js");
+    const mod = await import("../channel-server/notifications.js");
     const payload = mod.buildAuthChannelEvent("auth:resolved", {
       request_id: "abc",
       status: "rejected",
@@ -673,7 +673,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
 
   // Bug: 929c6d0 — error_output in channel events
   it("buildAuthChannelEvent includes error_output in content and meta when present", async () => {
-    const mod = await import("../../channel-server/notifications.js");
+    const mod = await import("../channel-server/notifications.js");
     const payload = mod.buildAuthChannelEvent("auth:resolved", {
       request_id: "def",
       status: "completed",
@@ -692,7 +692,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   });
 
   it("buildAuthChannelEvent omits error_output section when error_output matches error", async () => {
-    const mod = await import("../../channel-server/notifications.js");
+    const mod = await import("../channel-server/notifications.js");
     const sameText = "fatal: merge failed";
     const payload = mod.buildAuthChannelEvent("auth:resolved", {
       request_id: "ghi",
@@ -707,7 +707,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   });
 
   it("buildAuthChannelEvent omits error_output when not present (success case)", async () => {
-    const mod = await import("../../channel-server/notifications.js");
+    const mod = await import("../channel-server/notifications.js");
     const payload = mod.buildAuthChannelEvent("auth:resolved", {
       request_id: "jkl",
       status: "completed",
@@ -743,7 +743,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
     });
     await new Promise<void>((resolve) => server.listen(19420, "127.0.0.1", resolve));
     try {
-      const { markDelivered } = await import("../../channel-server/notifications.js");
+      const { markDelivered } = await import("../channel-server/notifications.js");
       markDelivered("r-delivered");
       // Give the fire-and-forget POST a moment to land.
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -758,11 +758,11 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
 
 describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
   let db: InstanceType<typeof SqliteDatabase>;
-  let registerInboxRoutes: typeof import("../../src/routes/inbox.js")["registerInboxRoutes"];
+  let registerInboxRoutes: typeof import("../src/routes/inbox.js")["registerInboxRoutes"];
 
   beforeEach(async () => {
     db = setupInMemoryDb();
-    registerInboxRoutes = (await import("../../src/routes/inbox.js")).registerInboxRoutes;
+    registerInboxRoutes = (await import("../src/routes/inbox.js")).registerInboxRoutes;
   });
 
   afterEach(() => {
@@ -929,7 +929,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
 
 describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   it("fetches undelivered rows, sends channel events, and marks each delivered", async () => {
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     const mockServer = {
@@ -982,7 +982,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   });
 
   it("logs and exits cleanly when the fetch fails (Mandible down)", async () => {
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: unknown[] = [];
     const delivered: string[] = [];
     const logs: string[] = [];
@@ -1009,7 +1009,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   });
 
   it("is a no-op when there are no undelivered rows", async () => {
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: unknown[] = [];
     const logs: string[] = [];
     const mockServer = {
@@ -1034,7 +1034,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
 
   // Bug: 6d7411b — startup catch-up passes conversation_id to fetchUndelivered
   it("passes conversationId to fetchUndelivered for cross-resume matching", async () => {
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     const fetchCalls: Array<{ sessionId: string; conversationId?: string | null }> = [];
@@ -1075,7 +1075,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   });
 
   it("continues replaying when a single markDelivered call fails", async () => {
-    const mod = await import("../../channel-server/index.js");
+    const mod = await import("../channel-server/index.js");
     const sent: unknown[] = [];
     const delivered: string[] = [];
     const logs: string[] = [];
@@ -1144,7 +1144,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
 
   it("parseAuthRequestPayload preserves the scoping fields", async () => {
     // Re-import to make sure we get the current module.
-    const mod = await import("../../src/routes/auth.js");
+    const mod = await import("../src/routes/auth.js");
     // parseAuthRequestPayload is module-internal; we exercise it indirectly via
     // a fake route registrar that captures the payload as it's submitted.
     const captured: Array<Record<string, unknown>> = [];

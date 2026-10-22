@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { startFileRpcResponder, type FileRpcRequest } from "../helpers/file-rpc-responder.js";
+import { startFileRpcResponder, type FileRpcRequest } from "./helpers/file-rpc-responder.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 let spoolDir = "";

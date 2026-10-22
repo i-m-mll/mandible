@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
-import { ApiError } from '../../ui/src/api';
-import type { LedgerIssueDetailProjection } from '../../ui/src/api';
+import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import { ApiError } from '../ui/src/api';
+import type { LedgerIssueDetailProjection } from '../ui/src/api';
 
 afterEach(cleanup);
 

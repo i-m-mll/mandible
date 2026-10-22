@@ -4,13 +4,13 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getConversationSearchCache } from "../../src/conversations/search-cache.js";
-import { ConversationSpawnService } from "../../src/conversation-spawn/service.js";
-import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../../src/conversation-spawn/types.js";
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
-import { addOrUpdateCheckout, addProject } from "../../src/ledger/project-registry.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
+import { getConversationSearchCache } from "../src/conversations/search-cache.js";
+import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
+import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../src/conversation-spawn/types.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
 
 let tempDir: string;
 let db: Db;

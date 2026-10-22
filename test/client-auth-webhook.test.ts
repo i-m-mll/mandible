@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { registerWebhookRoutes } from "../../src/routes/webhooks.js";
-import { Router } from "../../src/server.js";
-import { addBinding, createUser, setupOperator } from "../../src/users/store.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { registerWebhookRoutes } from "../src/routes/webhooks.js";
+import { Router } from "../src/server.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 describe("client-auth operator webhook delivery", () => {
   let tempDir: string;

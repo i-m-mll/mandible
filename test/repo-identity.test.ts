@@ -1,17 +1,17 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { migrate } from "../../src/db.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
+import { migrate } from "../src/db.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import {
   canonicalRepoKeyForPath,
   canonicalRepoKeysForRef,
   clearRepoIdentityCache,
-} from "../../src/repo-identity.js";
+} from "../src/repo-identity.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, {

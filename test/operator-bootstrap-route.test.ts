@@ -3,14 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { registerIssueRoutes } from "../../src/routes/issues.js";
-import { registerUserRoutes } from "../../src/routes/users.js";
-import { Router } from "../../src/server.js";
-import { SYSTEM_USER_ID } from "../../src/users/store.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { registerIssueRoutes } from "../src/routes/issues.js";
+import { registerUserRoutes } from "../src/routes/users.js";
+import { Router } from "../src/server.js";
+import { SYSTEM_USER_ID } from "../src/users/store.js";
 
 describe("operator bootstrap ledger boundary", () => {
   let tempDir: string;

@@ -1,12 +1,12 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
-import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../../src/ledger/backup.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import {
   createSpace,
   getSpace,
@@ -15,11 +15,11 @@ import {
   listTopLevelSpaces,
   listAllSpaces,
   addSpaceItem,
-} from "../../src/ledger/spaces.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import { registerSpacesRoutes } from "../../src/routes/spaces.js";
-import { Router } from "../../src/server.js";
-import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
+} from "../src/ledger/spaces.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
+import { Router } from "../src/server.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 
 // Issue 812df41 (umbrella de56ffa): top-level / global Spaces + grouped-list API +
 // cross-project item resolution. The v86 migration rebuilds `spaces` with a

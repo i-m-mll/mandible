@@ -3,12 +3,12 @@ import { h } from 'preact';
 import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SidebarItemRow } from '../../ui/src/components/shared/SidebarItemRow';
+import { SidebarItemRow } from '../ui/src/components/shared/SidebarItemRow';
 import {
   mergeSidebarSubsetOrder,
   reconcileSidebarOrder,
-} from '../../ui/src/components/shared/sidebar-order';
-import { useSidebarReorder } from '../../ui/src/hooks/useSidebarReorder';
+} from '../ui/src/components/shared/sidebar-order';
+import { useSidebarReorder } from '../ui/src/hooks/useSidebarReorder';
 
 afterEach(cleanup);
 

@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { ProcessGroupSupervisor, runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
-import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../../scripts/test-phase-executor.mjs';
+import { ProcessGroupSupervisor, runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
+import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../scripts/test-phase-executor.mjs';
 
 const temporaryRoots: string[] = [];
 
@@ -34,19 +34,16 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
   const readyFile = path.join(root, "descendant.ready");
   const leaderTermFile = path.join(root, "leader-term");
   const runtimeFile = path.join(root, "runtime-root");
-  const supervisorUrl = new URL("../../scripts/process-group-supervisor.mjs", import.meta.url).href;
-  const launcherUrl = new URL("../../scripts/run-iab-preview-tests.mjs", import.meta.url).href;
+  const launcherUrl = new URL("../scripts/run-provisioned-tests.mjs", import.meta.url).href;
   const outer = spawn(process.execPath, ["--input-type=module", "-e", `
     import { spawn } from "node:child_process";
     import fs from "node:fs";
-    import { ProcessGroupSupervisor } from ${JSON.stringify(supervisorUrl)};
-    import { runIabPreviewTests } from ${JSON.stringify(launcherUrl)};
-    const supervisor = new ProcessGroupSupervisor({ graceMs: 200 });
-    try {
-      await runIabPreviewTests({
-        supervisor,
-        selectedShards: [{ label: "synthetic", args: [] }],
-        spawnShard: (_shard, env) => {
+    import { runUnits } from ${JSON.stringify(launcherUrl)};
+    await runUnits([{ label: "synthetic", args: [] }], {
+      jobs: 1,
+      graceMs: 200,
+      onRun: () => {},
+      spawnUnit: (_unit, env) => {
           fs.writeFileSync(${JSON.stringify(runtimeFile)}, env.MANDIBLE_TEST_RUNTIME_ROOT);
           return spawn(process.execPath, ["-e", ${JSON.stringify(`
           const { spawn } = require("node:child_process");
@@ -69,9 +66,6 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
         rssLimitKiB: 1,
         monitorIntervalMs: 10,
       });
-    } finally {
-      await supervisor.close();
-    }
   `], { stdio: "ignore" });
   await waitUntil(() => fs.existsSync(readyFile), 2_000);
   const descendantPid = Number(fs.readFileSync(pidFile, "utf8"));

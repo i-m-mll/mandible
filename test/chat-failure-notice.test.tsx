@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, screen } from '@testing-library/preact';
-import { render } from './notice-test-render';
+import { render } from './helpers/notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -7,8 +7,8 @@ import {
   chatControlFailureNotice,
   chatSubmissionFailureNotice,
   chatSpawnFailureNotice,
-} from '../../ui/src/chat/ChatFailureNotice.js';
-import { ApiError } from '../../ui/src/api.js';
+} from '../ui/src/chat/ChatFailureNotice.js';
+import { ApiError } from '../ui/src/api.js';
 
 afterEach(cleanup);
 

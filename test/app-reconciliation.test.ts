@@ -1,18 +1,18 @@
-import { railReorderReady, changeSelect, installMemoryLocalStorage, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance } from '../helpers/ui-workspace-fixture';
+import { railReorderReady, changeSelect, installMemoryLocalStorage, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
-import { initialState, loadCachedState, saveCachedState } from '../../ui/src/state';
-import { App } from '../../ui/src/app';
-import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../../ui/src/app-rail-order';
-import { getSettings, invalidateApiGetCache, type InstanceInfo } from '../../ui/src/api';
-import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../../ui/src/agent-page-binding';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import { AppShellProvider, RightSidebarIcon, useRegisterAppRightSidebar, type AppRightSidebarDescriptor, type AppShellContextValue } from '../../ui/src/app-shell';
-import { GraphView } from '../../ui/src/views/graph';
-import { readResolvedStylesheet } from '../helpers/css-manifest';
-import { operationCatalogFixture } from '../helpers/operation-catalog-fixture';
+import { initialState, loadCachedState, saveCachedState } from '../ui/src/state';
+import { App } from '../ui/src/app';
+import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
+import { getSettings, invalidateApiGetCache, type InstanceInfo } from '../ui/src/api';
+import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { AppShellProvider, RightSidebarIcon, useRegisterAppRightSidebar, type AppRightSidebarDescriptor, type AppShellContextValue } from '../ui/src/app-shell';
+import { GraphView } from '../ui/src/views/graph';
+import { readResolvedStylesheet } from './helpers/css-manifest';
+import { operationCatalogFixture } from './helpers/operation-catalog-fixture';
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {

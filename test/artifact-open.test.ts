@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openArtifactExternally } from "../../src/artifact-open.js";
-import { openDb, type Db } from "../../src/db.js";
-import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
+import { openArtifactExternally } from "../src/artifact-open.js";
+import { openDb, type Db } from "../src/db.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 
 let tempDir = "";
 let db: Db;

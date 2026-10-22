@@ -3,21 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
-import { parseRouteFromHash } from '../../ui/src/routing';
+import { parseRouteFromHash } from '../ui/src/routing';
 import {
   AppShellProvider,
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
-} from '../../ui/src/app-shell';
-import { TimelineView as RawTimelineView, type TimelineViewProps } from '../../ui/src/views/timeline';
+} from '../ui/src/app-shell';
+import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
 import type {
   ProjectTimelineInput,
   ProjectTimelineProjection,
   TimelineIssueRef,
   TimelineRowOccurrence,
   TimelineRowSpecInput,
-} from '../../ui/src/types/timeline';
-import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
+} from '../ui/src/types/timeline';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();

@@ -1,13 +1,13 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { createManagedReminder, listManagedReminderOccurrences } from "../../src/managed-reminders.js";
-import { parseManagedReminderCreateRequest } from "../../src/managed-reminder-parser.js";
-import { countGlobalInboxBadge, registerInboxRoutes } from "../../src/routes/inbox.js";
-import { Router } from "../../src/server.js";
-import { createUser } from "../../src/users/store.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { createManagedReminder, listManagedReminderOccurrences } from "../src/managed-reminders.js";
+import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
+import { countGlobalInboxBadge, registerInboxRoutes } from "../src/routes/inbox.js";
+import { Router } from "../src/server.js";
+import { createUser } from "../src/users/store.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
 

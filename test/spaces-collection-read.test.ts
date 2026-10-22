@@ -5,12 +5,12 @@
 // items/occurrences/edges) per the umbrella plan §5.1 / §589 — the bare space
 // alone is not enough to render. The `space` field is preserved for backward
 // compatibility; this test pins the superset shape the renderer reads.
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { migrate, setDb, type Db } from '../../src/db.js';
-import { registerSpacesRoutes } from '../../src/routes/spaces.js';
-import { Router } from '../../src/server.js';
+import { migrate, setDb, type Db } from '../src/db.js';
+import { registerSpacesRoutes } from '../src/routes/spaces.js';
+import { Router } from '../src/server.js';
 
 let db: Db;
 let router: Router;

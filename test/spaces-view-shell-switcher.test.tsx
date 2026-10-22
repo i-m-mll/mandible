@@ -4,22 +4,22 @@
 // These tests pin that normal selected Spaces no longer show all renderers as
 // equivalent tabs while explicit legacy renderer links still mount.
 import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
-import { render } from './notice-test-render';
+import { render } from './helpers/notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 // The shell renders SpacesSidebar, which loads grouped spaces. Stub the grouped
 // read so the shell mounts without a daemon.
-vi.mock('../../ui/src/api', async (importActual) => {
-  const actual = await importActual<typeof import('../../ui/src/api')>();
+vi.mock('../ui/src/api', async (importActual) => {
+  const actual = await importActual<typeof import('../ui/src/api')>();
   return {
     ...actual,
     listSpacesGrouped: vi.fn().mockResolvedValue([]),
   };
 });
 
-import { SpacesViewShell, type SpaceRendererMountProps } from '../../ui/src/views/spaces/SpacesViewShell';
-import type { InstanceInfo, Space } from '../../ui/src/api';
+import { SpacesViewShell, type SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
+import type { InstanceInfo, Space } from '../ui/src/api';
 
 function Mount(props: SpaceRendererMountProps): JSX.Element {
   return <div data-testid="mount">{props.renderer}</div>;

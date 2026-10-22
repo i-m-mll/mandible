@@ -7,7 +7,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // We test the channel registry in isolation by importing the module
 // and using its public API. We mock getDb to avoid needing a real database.
 
-vi.mock("../../src/db.js", () => ({
+vi.mock("../src/db.js", () => ({
   getDb: vi.fn(() => ({
     prepare: vi.fn(() => ({
       run: vi.fn(),
@@ -17,18 +17,18 @@ vi.mock("../../src/db.js", () => ({
   })),
 }));
 
-vi.mock("../../src/sse.js", () => ({
+vi.mock("../src/sse.js", () => ({
   broadcast: vi.fn(),
 }));
 
 describe("ChannelRegistry", () => {
   // We need to isolate the singleton between tests, so we import fresh each time
-  let getChannelRegistry: () => import("../../src/channel-registry.js").default extends never ? never : ReturnType<typeof import("../../src/channel-registry.js")["getChannelRegistry"]>;
+  let getChannelRegistry: () => import("../src/channel-registry.js").default extends never ? never : ReturnType<typeof import("../src/channel-registry.js")["getChannelRegistry"]>;
 
   beforeEach(async () => {
     // Reset module cache to get a fresh singleton
     vi.resetModules();
-    const mod = await import("../../src/channel-registry.js");
+    const mod = await import("../src/channel-registry.js");
     getChannelRegistry = mod.getChannelRegistry;
   });
 

@@ -1,5 +1,5 @@
-import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
-import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { renderMandibleInstructionsFragment } from "../src/instructions/fragment.js";
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { startFileRpcResponder } from "../helpers/file-rpc-responder.js";
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 

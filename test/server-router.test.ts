@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { Router } from "../../src/server.js";
-import type { Logger } from "../../src/types.js";
+import { Router } from "../src/server.js";
+import type { Logger } from "../src/types.js";
 
 describe("Router error handling", () => {
   it("returns a standard internal error envelope when a handler throws", async () => {

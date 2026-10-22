@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getGraph, invalidateApiGetCache } from '../../ui/src/api';
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { getGraph, invalidateApiGetCache } from '../ui/src/api';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import {
   CrossTabSseCoordinator,
   type BroadcastChannelLike,
   type ExclusiveLockManager,
-} from '../../ui/src/sse-cross-tab';
+} from '../ui/src/sse-cross-tab';
 import type {
   SSEHandler,
   SSEPayload,
   SseConnectionState,
   SseStateHandler,
-} from '../../ui/src/sse-client';
+} from '../ui/src/sse-client';
 
 class FakeTransport {
   readonly listeners = new Map<string, Set<SSEHandler>>();

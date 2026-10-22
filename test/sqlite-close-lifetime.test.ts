@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 
 it.runIf(process.platform === "darwin")("close releases database and WAL handles without garbage collection", () => {
   expect(process.versions.bun).toBeTruthy();

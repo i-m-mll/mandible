@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { executeAuthCommand } from "../../src/auth-executor.js";
+import { executeAuthCommand } from "../src/auth-executor.js";
 
 describe("executeAuthCommand", () => {
   it("strips ambient agent signing overrides and exposes the request id", async () => {

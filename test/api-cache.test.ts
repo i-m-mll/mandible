@@ -1,7 +1,7 @@
-import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
-import { queryClient } from '../../ui/src/query/client';
-import { browserResourceKeys } from '../../ui/src/query/browserResources';
-import { ensureClientAccess, __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { BRIEFING_EVENT_VALUES } from '../src/contracts';
+import { queryClient } from '../ui/src/query/client';
+import { browserResourceKeys } from '../ui/src/query/browserResources';
+import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -13,7 +13,7 @@ import {
   getSpaceFactPacket,
   getSessions,
   invalidateApiGetCache,
-} from '../../ui/src/api';
+} from '../ui/src/api';
 
 describe('Briefing SSE cache invalidation matrix', () => {
   it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing, bundle, and badge caches', (topic) => {

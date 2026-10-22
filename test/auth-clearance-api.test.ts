@@ -1,12 +1,12 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AuthQueue } from "../../src/auth-queue.js";
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
-import { migrate, resetDb, setDb } from "../../src/db.js";
-import { registerAuthRoutes } from "../../src/routes/auth.js";
-import type { RequestLike, ResponseLike, RouteHandler, RouteOptions, RouteRegistrar } from "../../src/server.js";
-import { setupOperator } from "../../src/users/store.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { migrate, resetDb, setDb } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import type { RequestLike, ResponseLike, RouteHandler, RouteOptions, RouteRegistrar } from "../src/server.js";
+import { setupOperator } from "../src/users/store.js";
 
 class CapturingRoutes implements RouteRegistrar {
   readonly handlers = new Map<string, RouteHandler>();

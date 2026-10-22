@@ -9,7 +9,7 @@ import {
   MAX_BUFFERED_APPEND_BYTES,
   readAppendForTest,
   readUtf8FileRangeForTest,
-} from "../../src/ingestion.js";
+} from "../src/ingestion.js";
 
 const INT32_MAX = 2_147_483_647;
 let tempDir = "";

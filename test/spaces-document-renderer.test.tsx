@@ -7,9 +7,9 @@ import {
   renderDocumentText,
   renderSpaceBlocks,
   blocksToDocTree,
-} from '../../ui/src/views/spaces/DocumentRenderer';
-import type { SpaceBlock } from '../../ui/src/api';
-import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
+} from '../ui/src/views/spaces/DocumentRenderer';
+import type { SpaceBlock } from '../ui/src/api';
+import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
 const HASH64 = 'a'.repeat(64);

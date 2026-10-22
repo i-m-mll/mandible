@@ -3,31 +3,31 @@ import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import {
   ConversationFreshnessError,
   ensureExactConversationFresh,
   resolveExactConversation,
-} from "../../src/conversations/freshness.js";
+} from "../src/conversations/freshness.js";
 import {
   INGEST_RANGE_READ_CHUNK_BYTES,
   ingestExactSelectedPath,
   triggerExactPathIngest,
   triggerTargetedIngest,
   configureIngestionWorker,
-} from "../../src/ingestion.js";
-import { registerConversationRoutes, sendFreshnessError } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
-import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
-import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
-import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
-import { ConversationSourceChangedError } from "../../src/conversations/source-store.js";
-import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
-import { CodexParser } from "../../src/parsers/codex.js";
-import { FileRpcTransport } from "../../src/file-rpc-transport.js";
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
+} from "../src/ingestion.js";
+import { registerConversationRoutes, sendFreshnessError } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { ConversationSourceChangedError } from "../src/conversations/source-store.js";
+import { sourceFilesystemIdentity } from "../src/conversations/source-observer.js";
+import { CodexParser } from "../src/parsers/codex.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 
 let tempDir = "";
 let db: Db;

@@ -5,7 +5,7 @@ import {
   DiffView,
   parseUnifiedDiffSections,
   renderUnifiedDiffFallbackHtml,
-} from '../../ui/src/components/DiffView';
+} from '../ui/src/components/DiffView';
 
 const sampleDiff = [
   'diff --git a/src/one.ts b/src/one.ts',

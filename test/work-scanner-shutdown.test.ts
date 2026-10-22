@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { WorkScanner, type SqliteDatabase } from '../../src/work-scanner.js';
+import { WorkScanner, type SqliteDatabase } from '../src/work-scanner.js';
 
-import { createMigratedDb } from '../helpers/ledger-fixtures.js';
+import { createMigratedDb } from './helpers/ledger-fixtures.js';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));

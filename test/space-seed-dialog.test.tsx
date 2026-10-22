@@ -17,8 +17,8 @@ import { h } from 'preact';
 const seedSpaceMock = vi.fn();
 const getGraphMock = vi.fn();
 
-vi.mock('../../ui/src/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../ui/src/api')>();
+vi.mock('../ui/src/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ui/src/api')>();
   return {
     ...actual,
     seedSpace: (...args: unknown[]) => seedSpaceMock(...args),
@@ -26,7 +26,7 @@ vi.mock('../../ui/src/api', async (importOriginal) => {
   };
 });
 
-import { SpaceSeedDialog } from '../../ui/src/views/spaces/SpaceSeedDialog';
+import { SpaceSeedDialog } from '../ui/src/views/spaces/SpaceSeedDialog';
 
 beforeEach(() => {
   seedSpaceMock.mockReset();

@@ -1,15 +1,15 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { setSetting } from "../../src/client-auth/settings-kv.js";
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
-import { registerAgentDispatchRoutes } from "../../src/routes/agent-dispatch.js";
-import { registerOperationalIncidentRoutes } from "../../src/routes/operational-incidents.js";
-import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
-import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
-import { TASK_INVENTORY_EXECUTORS_KEY } from "../../src/task-inventory.js";
-import { createUser, OPERATOR_SETTING_KEY } from "../../src/users/store.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { registerAgentDispatchRoutes } from "../src/routes/agent-dispatch.js";
+import { registerOperationalIncidentRoutes } from "../src/routes/operational-incidents.js";
+import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
+import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
 
 const FIRST = "2026-08-15T11:54:03.122Z";
 

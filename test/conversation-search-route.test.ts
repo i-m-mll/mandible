@@ -2,23 +2,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
-import { getConversationSearchCache } from "../../src/conversations/search-cache.js";
-import { ConversationSourceStore } from "../../src/conversations/source-store.js";
-import { sparseConversationBlockId } from "../../src/conversations/structure-cache.js";
-import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../../src/ingestion.js";
-import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
-import { resetCredentialLeakScanCache } from "../../src/credential-leak-scan.js";
-import { migrate, openDb, setDb, type Db } from "../../src/db.js";
-import { CodexParser } from "../../src/parsers/codex.js";
-import type { ParseResult } from "../../src/parsers/types.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
-import { Router } from "../../src/server.js";
-import { revokeCredential, setupOperator } from "../../src/users/store.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { getConversationSearchCache } from "../src/conversations/search-cache.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { sparseConversationBlockId } from "../src/conversations/structure-cache.js";
+import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { resetCredentialLeakScanCache } from "../src/credential-leak-scan.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { CodexParser } from "../src/parsers/codex.js";
+import type { ParseResult } from "../src/parsers/types.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
+import { revokeCredential, setupOperator } from "../src/users/store.js";
 
 let tempDir: string;
 let db: Db;

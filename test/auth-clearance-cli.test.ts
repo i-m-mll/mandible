@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 

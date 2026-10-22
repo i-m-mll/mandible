@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { acquireSharedSse, __resetSharedSseForTests } from '../../ui/src/sse-shared';
-import type { SSEPayload } from '../../ui/src/sse-client';
-import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
+import { acquireSharedSse, __resetSharedSseForTests } from '../ui/src/sse-shared';
+import type { SSEPayload } from '../ui/src/sse-client';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 
 /**
  * Controllable fake EventSource. Tests drive `open()` / `error()` / `emit()`

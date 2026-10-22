@@ -18,7 +18,7 @@
 import { cleanup } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { SpaceEdge, SpaceItem, SpaceOccurrence } from '../../ui/src/api';
+import type { SpaceEdge, SpaceItem, SpaceOccurrence } from '../ui/src/api';
 import {
   LEDGER_LINK_TYPES,
   DEFAULT_LINK_TYPE,
@@ -31,8 +31,8 @@ import {
   indexItemsById,
   reconcileEdges,
   applyOptimisticLabel,
-} from '../../ui/src/views/spaces/edgeModel';
-import { promoteEdgeToLedger } from '../../ui/src/views/spaces/edgePromote';
+} from '../ui/src/views/spaces/edgeModel';
+import { promoteEdgeToLedger } from '../ui/src/views/spaces/edgePromote';
 
 afterEach(() => {
   cleanup();

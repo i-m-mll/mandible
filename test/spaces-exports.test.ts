@@ -1,15 +1,15 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CURRENT_SCHEMA_VERSION, openDb, type Db } from "../../src/db.js";
+import { CURRENT_SCHEMA_VERSION, openDb, type Db } from "../src/db.js";
 import {
   buildMetadataBackupSql,
   METADATA_BACKUP_TABLES,
   REPRODUCIBLE_OR_RUNTIME_TABLES,
-} from "../../src/ledger/backup.js";
+} from "../src/ledger/backup.js";
 
 // Issue 9041bb3 (umbrella de56ffa): Spaces document-custody tracking — the
 // space_exports table (THIRD serial-chain migration, per

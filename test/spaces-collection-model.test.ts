@@ -7,19 +7,19 @@
 //   - view-state persistence + SSE reconciliation never resets surviving state
 import { describe, expect, it } from 'vitest';
 
-import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../../ui/src/api';
+import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../ui/src/api';
 import {
   buildSpaceViewModel,
   projectCollection,
   compareCollectionOccurrences,
   itemDisplayLabel,
   itemRefString,
-} from '../../ui/src/views/spaces/collectionModel';
+} from '../ui/src/views/spaces/collectionModel';
 import {
   reconcileCollectionViewState,
   normalizeCollectionViewState,
   collectionStorageKey,
-} from '../../ui/src/views/spaces/collectionViewState';
+} from '../ui/src/views/spaces/collectionViewState';
 
 const NOW = 1_700_000_000_000;
 

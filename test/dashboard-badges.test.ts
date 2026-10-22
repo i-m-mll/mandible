@@ -1,9 +1,9 @@
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../../src/db.js";
-import { readDashboardBadgeCounts, registerDashboardRoutes } from "../../src/routes/dashboard.js";
-import { Router } from "../../src/server.js";
+import { migrate, setDb } from "../src/db.js";
+import { readDashboardBadgeCounts, registerDashboardRoutes } from "../src/routes/dashboard.js";
+import { Router } from "../src/server.js";
 
 describe("dashboard badge aggregate", () => {
   const db = new SqliteDatabase(":memory:");

@@ -1,9 +1,9 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import * as api from '../../ui/src/api';
-import { __resetBrowserSessionForTests, retryClientAccess } from '../../ui/src/client-auth-token';
-import { useSidebarOrderPreference } from '../../ui/src/hooks/useSidebarOrderPreference';
+import * as api from '../ui/src/api';
+import { __resetBrowserSessionForTests, retryClientAccess } from '../ui/src/client-auth-token';
+import { useSidebarOrderPreference } from '../ui/src/hooks/useSidebarOrderPreference';
 
 afterEach(() => {
   cleanup();

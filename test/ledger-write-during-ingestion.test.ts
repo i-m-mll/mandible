@@ -6,12 +6,12 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, expect, it } from "vitest";
 
-import { openDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
-import { IngestionActor } from "../../src/ingestion-actor.js";
-import { ingestExactSelectedPath } from "../../src/ingestion.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
+import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { IngestionActor } from "../src/ingestion-actor.js";
+import { ingestExactSelectedPath } from "../src/ingestion.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -91,7 +91,7 @@ it("records every ledger comment while ingestion appends to a live transcript", 
       if (level === "warn" || level === "error") ingestionWarnings.push(`${message} ${JSON.stringify(details)}`);
     },
     publish: () => undefined,
-    workerUrl: new URL("../../src/ingestion-worker.ts", import.meta.url),
+    workerUrl: new URL("../src/ingestion-worker.ts", import.meta.url),
   });
   let appending = true;
   const filler = "x".repeat(64 * 1024);
@@ -148,7 +148,7 @@ it("waits out an ingestion-length write transaction instead of failing", async (
   const { source } = makeIssues();
   // 899 ms is the longest measured ingestion hold (full ingest of a 1.4 GB transcript).
   const holdMs = 900;
-  const sqliteFacade = new URL("../../src/sqlite.ts", import.meta.url).href;
+  const sqliteFacade = new URL("../src/sqlite.ts", import.meta.url).href;
   const holder = new Worker(new URL(`data:text/javascript,${encodeURIComponent(`
     import { workerData, parentPort } from "node:worker_threads";
     const { default: SqliteDatabase } = await import(${JSON.stringify(sqliteFacade)});

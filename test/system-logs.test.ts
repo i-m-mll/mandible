@@ -8,7 +8,7 @@ import type {
   RouteHandler,
   RouteOptions,
   RouteRegistrar,
-} from "../../src/server.js";
+} from "../src/server.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -97,7 +97,7 @@ describe("system log routes", () => {
     fs.writeFileSync(path.join(logDir, "launchd-stderr.log"), `${lines.join("\n")}\n`, "utf8");
     process.env.MANDIBLE_STDERR_LOG_PATH = path.join(logDir, "launchd-stderr.log");
 
-    const { registerSystemRoutes } = await import("../../src/routes/system.js");
+    const { registerSystemRoutes } = await import("../src/routes/system.js");
     const routes = new TestRoutes();
     registerSystemRoutes(routes, { getRepos: () => [] });
     return routes;
@@ -153,7 +153,7 @@ describe("system log routes", () => {
         "utf8",
       );
 
-      const { tailFile } = await import("../../src/routes/system.js");
+      const { tailFile } = await import("../src/routes/system.js");
       const rawText = await tailFile(filePath, 3, { chunkBytes: 1024, maxBytes: 512 * 1024 });
       const indexes = rawText.split("\n").map((line) => (JSON.parse(line) as { index: number }).index);
 

@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import SqliteDatabase from '../../src/sqlite.js';
-import { migrate, setDb } from '../../src/db.js';
-import { SessionManager } from '../../src/session-manager.js';
+import SqliteDatabase from '../src/sqlite.js';
+import { migrate, setDb } from '../src/db.js';
+import { SessionManager } from '../src/session-manager.js';
 
 it('runs real shell input, resize, and exit without managed provider identity', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mandible-terminal-proof-'));

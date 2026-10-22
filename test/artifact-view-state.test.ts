@@ -1,10 +1,10 @@
-import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache';
-import { makeArtifactResolution } from "../helpers/artifact-resolution-fixtures";
-import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from '../helpers/ui-workspace-fixture';
+import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
+import { makeArtifactResolution } from "./helpers/artifact-resolution-fixtures";
+import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { ArtifactsView } from '../../ui/src/views/artifacts';
+import { ArtifactsView } from '../ui/src/views/artifacts';
 
 describe('ArtifactsView', () => {
   it('replaces a removed saved series with the first available artifact', async () => {

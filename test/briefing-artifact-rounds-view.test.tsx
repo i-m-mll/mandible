@@ -1,7 +1,7 @@
-import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from '../helpers/briefing-preview-fixtures';
-import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
-import { queryClient } from '../../ui/src/query/client';
-import { browserResourceKeys, refreshBrowserResources } from '../../ui/src/query/browserResources';
+import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
+import { BRIEFING_EVENT_VALUES } from '../src/contracts';
+import { queryClient } from '../ui/src/query/client';
+import { browserResourceKeys, refreshBrowserResources } from '../ui/src/query/browserResources';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,17 +10,17 @@ import path from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getArtifactContent } from '../../src/artifact-content';
-import { setSetting } from '../../src/client-auth/settings-kv';
+import { getArtifactContent } from '../src/artifact-content';
+import { setSetting } from '../src/client-auth/settings-kv';
 
-import { resolveInstanceInfo } from '../../src/instance-policy';
-import { registerBriefingRoutes } from '../../src/routes/briefing';
-import { Router } from '../../src/server';
-import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
-import { createUser } from '../../src/users/store';
-import { recordArtifactVersion } from '../helpers/artifact-http-write-fixtures';
-import { AppShellProvider } from '../../ui/src/app-shell';
-import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
+import { resolveInstanceInfo } from '../src/instance-policy';
+import { registerBriefingRoutes } from '../src/routes/briefing';
+import { Router } from '../src/server';
+import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy';
+import { createUser } from '../src/users/store';
+import { recordArtifactVersion } from './helpers/artifact-http-write-fixtures';
+import { AppShellProvider } from '../ui/src/app-shell';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
   invalidateBriefingApiCacheForEvent,
   getBriefingBundles,
@@ -29,12 +29,12 @@ import {
   normalizeBriefingProjection,
   normalizeBriefings,
   type InstanceInfo,
-} from '../../ui/src/api';
-import { BriefingView } from '../../ui/src/views/briefing';
-import { briefingRoundOptions, BriefingDocumentRenderer } from '../../ui/src/views/feedback/BriefingDocumentRenderer';
-import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, normalizeBriefingCollectionViewState } from '../../ui/src/views/feedback/collection-view-state';
-import { parseBriefingDirectives } from '../../src/feedback/briefing-directives';
-import { RICH_BRIEFING_DEMO } from '../../src/feedback/rich-briefing-demo';
+} from '../ui/src/api';
+import { BriefingView } from '../ui/src/views/briefing';
+import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
+import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, normalizeBriefingCollectionViewState } from '../ui/src/views/feedback/collection-view-state';
+import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
+import { RICH_BRIEFING_DEMO } from '../src/feedback/rich-briefing-demo';
 
 const source = 'Intro\n:::spec-item{key="decision" type="verdict" required="true"}\nReview this round\n:::\n';
 const bodyStart = source.indexOf('Review this round');

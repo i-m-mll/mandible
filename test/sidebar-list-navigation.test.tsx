@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it } from 'vitest';
-import { useSidebarListNavigation } from '../../ui/src/hooks/useSidebarListNavigation';
+import { useSidebarListNavigation } from '../ui/src/hooks/useSidebarListNavigation';
 
 afterEach(cleanup);
 

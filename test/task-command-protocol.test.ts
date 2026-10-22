@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { setSetting } from "../../src/client-auth/settings-kv.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
 import {
   TASK_COMMAND_EVENT_SCHEMA,
   TASK_COMMAND_EVENT_SCHEMA_V1,
@@ -12,21 +12,21 @@ import {
   TASK_COMMAND_SCHEMA_V1,
   TASK_INVENTORY_SCHEMA_V2,
   type TaskCommand,
-} from "../../src/contracts.js";
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { FileRpcTransport } from "../../src/file-rpc-transport.js";
-import { resolveInstanceInfo } from "../../src/instance-policy.js";
-import { registerTaskRoutes } from "../../src/routes/tasks.js";
-import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
-import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
-import { taskCommandEventDigest } from "../../src/task-commands.js";
+} from "../src/contracts.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { registerTaskRoutes } from "../src/routes/tasks.js";
+import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { taskCommandEventDigest } from "../src/task-commands.js";
 import {
   parseTaskInventoryGeneration,
   recordTaskInventoryGeneration,
   TASK_INVENTORY_EXECUTORS_KEY,
-} from "../../src/task-inventory.js";
-import { setSseManager, SseManager } from "../../src/sse.js";
-import { createUser, OPERATOR_SETTING_KEY } from "../../src/users/store.js";
+} from "../src/task-inventory.js";
+import { setSseManager, SseManager } from "../src/sse.js";
+import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
 
 let db: Db;
 let router: Router;

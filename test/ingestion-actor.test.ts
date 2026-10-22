@@ -3,11 +3,11 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { openDb } from "../../src/db.js";
+import { openDb } from "../src/db.js";
 import { describe, expect, it } from "vitest";
 
-import { IngestionActor } from "../../src/ingestion-actor.js";
-import { ConversationSourceChangedError } from "../../src/conversations/source-store.js";
+import { IngestionActor } from "../src/ingestion-actor.js";
+import { ConversationSourceChangedError } from "../src/conversations/source-store.js";
 
 const TEST_WORKER_SOURCE = `
   import { parentPort } from "node:worker_threads";
@@ -86,7 +86,7 @@ it("opens the same pinned SQLite database in the actual ingestion Worker", async
     dbPath,
     logger: (level, message) => { if (level === "warn" || level === "error") warnings.push(message); },
     publish: () => undefined,
-    workerUrl: new URL("../../src/ingestion-worker.ts", import.meta.url),
+    workerUrl: new URL("../src/ingestion-worker.ts", import.meta.url),
   });
   try {
     await actor.ingest([]);
@@ -102,8 +102,8 @@ it("opens the same pinned SQLite database in the actual ingestion Worker", async
 
 
 it.skipIf(process.platform !== "darwin")("rejects an unowned loaded library and a forged Worker selection receipt", () => {
-  const runtimeUrl = new URL("../../src/sqlite-runtime.ts", import.meta.url).href;
-  const facadeUrl = new URL("../../src/sqlite.ts", import.meta.url).href;
+  const runtimeUrl = new URL("../src/sqlite-runtime.ts", import.meta.url).href;
+  const facadeUrl = new URL("../src/sqlite.ts", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
     import { DatabaseSync } from "node:sqlite";
     import { Worker, setEnvironmentData } from "node:worker_threads";

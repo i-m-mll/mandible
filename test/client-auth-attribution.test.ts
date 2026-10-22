@@ -3,16 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { configureSigningCredential, git } from "../helpers/auth-queue-fixtures.js";
-import { openDb, setDb, type Db } from "../../src/db.js";
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
-import { AuthQueue } from "../../src/auth-queue.js";
-import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { registerIssueRoutes } from "../../src/routes/issues.js";
-import { registerAuthRoutes } from "../../src/routes/auth.js";
-import { Router } from "../../src/server.js";
-import type { SseEvent } from "../../src/types.js";
+import { configureSigningCredential, git } from "./helpers/auth-queue-fixtures.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { registerIssueRoutes } from "../src/routes/issues.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { Router } from "../src/server.js";
+import type { SseEvent } from "../src/types.js";
 import {
   addAttributionEvidence,
   addBinding,
@@ -20,7 +20,7 @@ import {
   createUser,
   setupAgentUsers,
   setupOperator,
-} from "../../src/users/store.js";
+} from "../src/users/store.js";
 
 describe("client-auth durable attribution", () => {
   let tempDir: string;

@@ -1,11 +1,11 @@
-import { approvePausedFixtureRequest, completeFixturePublication, createAuthCheckRepo, commitOnBranch, registerWorkRepo, git, createNoopHookManager, insertConsoleSession } from "../helpers/auth-queue-fixtures.js";
+import { approvePausedFixtureRequest, completeFixturePublication, createAuthCheckRepo, commitOnBranch, registerWorkRepo, git, createNoopHookManager, insertConsoleSession } from "./helpers/auth-queue-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { AuthQueue } from "../../src/auth-queue.js";
-import { archiveFinishedWorkerThreads } from "../../src/codex-thread-archive.js";
-import type { Db } from "../../src/db.js";
-import type { SseEvent } from "../../src/types.js";
-import { createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { archiveFinishedWorkerThreads } from "../src/codex-thread-archive.js";
+import type { Db } from "../src/db.js";
+import type { SseEvent } from "../src/types.js";
+import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
 // Issue 75f52ac — staged auth lifecycle (auth:merged -> auth:resolved ->
 // auth:finalized) and the bounded, idempotent, crash-safe background finalizer

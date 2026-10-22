@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { LoadingSkeleton } from '../../ui/src/components/LoadingSkeleton';
+import { LoadingSkeleton } from '../ui/src/components/LoadingSkeleton';
 
 afterEach(cleanup);
 

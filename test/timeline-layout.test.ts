@@ -6,7 +6,7 @@ import {
   type TimelineLayoutEventInput,
   type TimelineLayoutInput,
   type TimelineLayoutResult,
-} from "../../ui/src/views/timeline-layout";
+} from "../ui/src/views/timeline-layout";
 
 const row = { id: "row-a" };
 const domain = { start: 0, end: 1_000 };

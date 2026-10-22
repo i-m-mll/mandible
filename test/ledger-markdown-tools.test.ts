@@ -2,21 +2,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
-import { buildLedgerIssueDetailProjection } from "../../src/ledger/issue-detail.js";
+import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import {
   ISSUE_MARKDOWN_EXPORT_CONFIG_SETTING,
   exportIssueMarkdownFiles,
   renderIssueMarkdown,
-} from "../../src/ledger/issue-markdown-export.js";
+} from "../src/ledger/issue-markdown-export.js";
 import {
   auditEscapedMarkdownBodies,
   normalizeEscapedMarkdownBodies,
   normalizeEscapedMarkdownBody,
-} from "../../src/ledger/markdown-body.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { LedgerStore } from "../../src/ledger/store.js";
+} from "../src/ledger/markdown-body.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
 
 let tempDir = "";
 let db: Db;

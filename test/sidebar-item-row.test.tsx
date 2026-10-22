@@ -8,7 +8,7 @@ import {
   SidebarItemPinAction,
   SidebarItemRow,
   SidebarLeadingActionRow,
-} from '../../ui/src/components/shared/SidebarItemRow';
+} from '../ui/src/components/shared/SidebarItemRow';
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 

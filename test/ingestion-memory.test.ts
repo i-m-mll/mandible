@@ -7,7 +7,7 @@ import {
   countCompleteLines,
   INGEST_COMPRESSION_CONCURRENCY,
   stageCompressedBlockContents,
-} from "../../src/ingestion.js";
+} from "../src/ingestion.js";
 
 const tempRoots: string[] = [];
 

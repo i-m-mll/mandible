@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BriefingDirectiveItem, BriefingResponseType } from '../../ui/src/api';
+import type { BriefingDirectiveItem, BriefingResponseType } from '../ui/src/api';
 import {
   BRIEFING_DRAFT_KEY_PREFIX,
   briefingDraftStorageKey,
@@ -8,7 +8,7 @@ import {
   normalizeBriefingDraft,
   saveBriefingDraft,
   type BriefingDraftScope,
-} from '../../ui/src/views/feedback/briefing-round-view-state';
+} from '../ui/src/views/feedback/briefing-round-view-state';
 
 function item(id: string, responseType: BriefingResponseType, options: Array<{ key: string; label: string }> = []): BriefingDirectiveItem {
   return {

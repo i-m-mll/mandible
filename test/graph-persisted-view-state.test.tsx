@@ -1,4 +1,4 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,9 +6,9 @@ import {
   AppShellProvider,
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
-} from '../../ui/src/app-shell';
-import { invalidateApiGetCache } from '../../ui/src/api';
-import { GraphView } from '../../ui/src/views/graph';
+} from '../ui/src/app-shell';
+import { invalidateApiGetCache } from '../ui/src/api';
+import { GraphView } from '../ui/src/views/graph';
 
 vi.mock('@xyflow/react', () => ({
   Background: () => null,

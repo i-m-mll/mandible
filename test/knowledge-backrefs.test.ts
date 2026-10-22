@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate } from "../../src/db.js";
+import { migrate } from "../src/db.js";
 import {
   createKnowledgeBackref,
   listKnowledgeBackrefs,
-} from "../../src/knowledge-backrefs.js";
-import { ingestArtifact } from "../../src/provider-artifacts.js";
+} from "../src/knowledge-backrefs.js";
+import { ingestArtifact } from "../src/provider-artifacts.js";
 
 let db: SqliteDatabase;
 let tempDir = "";

@@ -12,16 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the seed POST so the SpaceSeedDialog mount path doesn't hit a daemon.
 const seedSpace = vi.fn();
-vi.mock('../../ui/src/api', async (importActual) => {
-  const actual = await importActual<typeof import('../../ui/src/api')>();
+vi.mock('../ui/src/api', async (importActual) => {
+  const actual = await importActual<typeof import('../ui/src/api')>();
   return {
     ...actual,
     seedSpace: (...args: unknown[]) => seedSpace(...args),
   };
 });
 
-import { SpacesSidebar } from '../../ui/src/views/spaces/SpacesSidebar';
-import type { Space, SpaceGroup } from '../../ui/src/api';
+import { SpacesSidebar } from '../ui/src/views/spaces/SpacesSidebar';
+import type { Space, SpaceGroup } from '../ui/src/api';
 
 function makeSpace(
   id: string,

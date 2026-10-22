@@ -19,8 +19,8 @@ import {
   rowSpecFromChips,
   type TimelineFilterChip,
   type TimelineFilterRowSpec,
-} from '../../ui/src/views/filters/issue-predicate-filter';
-import type { TimelineIssuePredicate } from '../../ui/src/types/timeline';
+} from '../ui/src/views/filters/issue-predicate-filter';
+import type { TimelineIssuePredicate } from '../ui/src/types/timeline';
 
 describe('issue-predicate filter logic', () => {
   it('parses field:value tokens, including negation and multi-value', () => {

@@ -4,7 +4,7 @@ import {
   DEFAULT_MEMORY_WARNING_FRACTION,
   memoryWarningFractionFromEnv,
   type ProcessMemoryValues,
-} from "../../src/daemon-memory.js";
+} from "../src/daemon-memory.js";
 
 function values(rss: number): ProcessMemoryValues {
   return {

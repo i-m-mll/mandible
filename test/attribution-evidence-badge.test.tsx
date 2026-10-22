@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   AttributionIdentity,
   evidenceBadgeFor,
-} from '../../ui/src/components/shared/DetailHeaderIdentity';
-import type { AttributionReadProjection } from '../../ui/src/api';
+} from '../ui/src/components/shared/DetailHeaderIdentity';
+import type { AttributionReadProjection } from '../ui/src/api';
 
 afterEach(cleanup);
 

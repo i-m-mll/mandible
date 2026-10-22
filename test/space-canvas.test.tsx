@@ -17,7 +17,7 @@ import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
-import type { InstanceInfo, SpaceItem, SpaceOccurrence } from '../../ui/src/api';
+import type { InstanceInfo, SpaceItem, SpaceOccurrence } from '../ui/src/api';
 
 const canvasCss = readFileSync('ui/src/views/spaces/SpaceCanvas.css', 'utf8');
 
@@ -117,9 +117,9 @@ vi.mock('@xyflow/react', async () => {
 // Wrap the real layout so we can assert it runs ONLY on explicit arrange/seed.
 
 const layoutCalls = { count: 0 };
-vi.mock('../../ui/src/graph/layout', async () => {
-  const actual = await vi.importActual<typeof import('../../ui/src/graph/layout')>(
-    '../../ui/src/graph/layout',
+vi.mock('../ui/src/graph/layout', async () => {
+  const actual = await vi.importActual<typeof import('../ui/src/graph/layout')>(
+    '../ui/src/graph/layout',
   );
   return {
     ...actual,
@@ -148,10 +148,10 @@ import {
   canvasNodesToFlowNodes,
   applyLocalNodeChanges,
   type SpaceCanvasModel,
-} from '../../ui/src/views/spaces/SpaceCanvas';
-import type { SpaceEdge } from '../../ui/src/api';
-import { reconcileEdges } from '../../ui/src/views/spaces/edgeModel';
-import type { SSEClient, SSEHandler } from '../../ui/src/sse-client';
+} from '../ui/src/views/spaces/SpaceCanvas';
+import type { SpaceEdge } from '../ui/src/api';
+import { reconcileEdges } from '../ui/src/views/spaces/edgeModel';
+import type { SSEClient, SSEHandler } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();

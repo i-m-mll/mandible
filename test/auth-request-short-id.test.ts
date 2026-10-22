@@ -2,17 +2,17 @@
 // unambiguous prefix resolves to the full request, an ambiguous prefix is a
 // 409, and an unknown id stays an honest 404. Deep links emit the 8-char
 // short form, so this route is their resolution point.
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AuthQueue } from "../../src/auth-queue.js";
-import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
-import { appendAuthLifecycleEvent, authRequestSnapshot } from "../../src/auth-lifecycle.js";
-import { migrate, setDb, type Db } from "../../src/db.js";
-import { registerAuthRoutes } from "../../src/routes/auth.js";
-import { Router } from "../../src/server.js";
-import { addCredential, setupOperator } from "../../src/users/store.js";
-import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { appendAuthLifecycleEvent, authRequestSnapshot } from "../src/auth-lifecycle.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { Router } from "../src/server.js";
+import { addCredential, setupOperator } from "../src/users/store.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
 let db: Db | null = null;
 

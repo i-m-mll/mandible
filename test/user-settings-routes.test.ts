@@ -6,18 +6,18 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { USER_SETTING_EVENTS } from "../../src/contracts.js";
-import { openDb, type Db } from "../../src/db.js";
-import { registerUserSettingsRoutes } from "../../src/routes/user-settings.js";
+import { USER_SETTING_EVENTS } from "../src/contracts.js";
+import { openDb, type Db } from "../src/db.js";
+import { registerUserSettingsRoutes } from "../src/routes/user-settings.js";
 import type {
   RequestLike,
   ResolvedClientIdentity,
   ResponseLike,
   RouteHandler,
   RouteRegistrar,
-} from "../../src/server.js";
-import { setSseManager, SseManager } from "../../src/sse.js";
-import { createUser } from "../../src/users/store.js";
+} from "../src/server.js";
+import { setSseManager, SseManager } from "../src/sse.js";
+import { createUser } from "../src/users/store.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();

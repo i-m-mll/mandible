@@ -1,12 +1,12 @@
-import { render } from './notice-test-render';
-import { establishTestClientAccess } from '../helpers/local-client-access';
-import { MAIN_CLI_INSTANCE_RESPONSE } from '../helpers/cli-instance-response';
-import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
+import { render } from './helpers/notice-test-render';
+import { establishTestClientAccess } from './helpers/local-client-access';
+import { MAIN_CLI_INSTANCE_RESPONSE } from './helpers/cli-instance-response';
+import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { InboxView, type InboxData } from "../../ui/src/views/inbox";
+import { InboxView, type InboxData } from "../ui/src/views/inbox";
 
 beforeEach(async () => {
   await establishTestClientAccess();

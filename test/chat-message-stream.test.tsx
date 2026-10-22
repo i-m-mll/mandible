@@ -11,14 +11,14 @@ import {
   groupMessagesForDisplay,
   isRoutineActivityStatus,
   serializeConversationToMarkdown,
-} from '../../ui/src/chat';
-import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
-import type { ConversationTranscriptConsumer } from '../../ui/src/query/conversationData';
-import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
-import { MessageActions } from '../../ui/src/components/shared/MessageActions';
-import { DetailPaneOverlayContext, DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
-import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
-import type { ActivityItem, ChatItem } from '../../src/parsers/types';
+} from '../ui/src/chat';
+import { ChatSurface, shouldShowJumpToLatest } from '../ui/src/chat/ChatSurface';
+import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
+import { plainActivityHeader, presentActivityItems } from '../ui/src/components/message-blocks/ActivityBlock';
+import { MessageActions } from '../ui/src/components/shared/MessageActions';
+import { DetailPaneOverlayContext, DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
+import type { StreamEvent, ToolResultContentBlock } from '../ui/src/components/stream-renderer/types';
+import type { ActivityItem, ChatItem } from '../src/parsers/types';
 
 function installBrowserStubs(): void {
   if (!HTMLElement.prototype.scrollTo) {

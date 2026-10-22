@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
-import { NewChatProviderPicker, reduceNewChatDraft, type NewChatDraft } from '../../ui/src/chat';
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
+import { NewChatProviderPicker, reduceNewChatDraft, type NewChatDraft } from '../ui/src/chat';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
 
 const spawn = (attemptCount: number, updatedAt: number, state: 'starting' | 'ready' = 'starting') => ({
   schema: 'mandible-conversation-spawn-receipt@3' as const,

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   RESTART_AVAILABILITY_HISTORY_LIMIT,
   RestartAvailabilityStore,
-} from "../../src/restart-availability.js";
+} from "../src/restart-availability.js";
 
 const roots: string[] = [];
 

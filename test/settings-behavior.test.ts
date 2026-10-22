@@ -1,11 +1,11 @@
 import { beforeEach } from 'vitest';
-import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
-import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from '../helpers/ui-workspace-fixture';
+import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
+import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
-import { SettingsView } from '../../ui/src/views/settings';
+import { SettingsView } from '../ui/src/views/settings';
 
 beforeEach(() => {
   for (const instance of [mainInstance, previewInstance, preferenceWritablePreviewInstance]) bindTestInstanceCatalog(instance);

@@ -2,14 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import SqliteDatabase from "../../src/sqlite.ts";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ConversationSearchCache,
   type ConversationSearchSourceAdapter,
   type SearchBlockSource,
-} from "../../src/conversations/search-cache.js";
+} from "../src/conversations/search-cache.js";
 
 class FakeSource implements ConversationSearchSourceAdapter {
   active = 0;

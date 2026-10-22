@@ -1,11 +1,11 @@
-import { establishTestClientAccess } from '../helpers/local-client-access';
+import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
-import { AuthHooksPanel } from '../../ui/src/views/auth';
-import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
-import type { AuthHook, InstanceInfo } from '../../ui/src/api';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { AuthHooksPanel } from '../ui/src/views/auth';
+import { authMainInstance, bindAuthUiOperations } from './helpers/auth-ui-fixture';
+import type { AuthHook, InstanceInfo } from '../ui/src/api';
 
 const instance: InstanceInfo = authMainInstance;
 

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
-} from "../../ui/src/query/conversationData";
-import type { Conversation, ConversationBlock, ConversationChild } from "../../ui/src/api";
+} from "../ui/src/query/conversationData";
+import type { Conversation, ConversationBlock, ConversationChild } from "../ui/src/api";
 
 function conversation(blocks: ConversationBlock[]): Conversation & {
   blocks: ConversationBlock[];

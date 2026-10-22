@@ -1,12 +1,12 @@
-import { approveFixtureRequest } from "../helpers/auth-queue-fixtures.js";
-import SqliteDatabase from "../../src/sqlite.ts";
+import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
-import { AuthHookManager, authHookTimeoutMs } from "../../src/auth-hooks.js";
-import { AuthQueue } from "../../src/auth-queue.js";
-import { migrate } from "../../src/db.js";
-import type { AuthRequest } from "../../src/types.js";
-import { setupOperator } from "../../src/users/store.js";
+import { AuthHookManager, authHookTimeoutMs } from "../src/auth-hooks.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { migrate } from "../src/db.js";
+import type { AuthRequest } from "../src/types.js";
+import { setupOperator } from "../src/users/store.js";
 
 function createDbWithHooks(): InstanceType<typeof SqliteDatabase> {
   const db = new SqliteDatabase(":memory:");

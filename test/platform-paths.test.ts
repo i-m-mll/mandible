@@ -28,7 +28,7 @@ describe("platform paths", () => {
     process.env.MANDIBLE_CONFIG_DIR = "~/mandible-config";
     vi.resetModules();
 
-    const { getMandibleConfigPath } = await import("../../src/platform-paths.js");
+    const { getMandibleConfigPath } = await import("../src/platform-paths.js");
 
     expect(getMandibleConfigPath("repos.json")).toBe(
       path.join(home, "mandible-config", "repos.json"),
@@ -44,7 +44,7 @@ describe("platform paths", () => {
     fs.writeFileSync(legacyPath, '{"repos":["/repo"]}\n', "utf8");
     vi.resetModules();
 
-    const { ensureMandibleConfigFile } = await import("../../src/platform-paths.js");
+    const { ensureMandibleConfigFile } = await import("../src/platform-paths.js");
     const configPath = ensureMandibleConfigFile("repos.json");
 
     expect(configPath).toBe(path.join(tempDir, "central-config", "repos.json"));

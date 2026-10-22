@@ -6,7 +6,7 @@ import {
   detailRequestKey,
   readPersistedDetail,
   writePersistedDetail,
-} from '../../ui/src/detail-cache';
+} from '../ui/src/detail-cache';
 
 let setItemSpy: ReturnType<typeof vi.fn>;
 

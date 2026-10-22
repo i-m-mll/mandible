@@ -2,8 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useRef, useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DetailPaneModal } from '../../ui/src/components/shared/DetailPaneModal';
-import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
+import { DetailPaneModal } from '../ui/src/components/shared/DetailPaneModal';
+import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
 
 function rect(top: number, right: number, bottom: number, left: number): DOMRect {
   return {

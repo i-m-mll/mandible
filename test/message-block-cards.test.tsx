@@ -1,16 +1,16 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
-import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
-import { ThinkingBlock } from '../../ui/src/components/message-blocks/ThinkingBlock';
-import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
-import { presentTool, summarizeToolRun, toolRunIcon } from '../../ui/src/components/message-blocks/toolPresentation';
-import { PermissionApprovalCard, permissionActionsForRequest } from '../../ui/src/components/console/PermissionApprovalCard';
-import { MessageGroup } from '../../ui/src/components/stream-renderer/MessageGroup';
-import { CompactActivityRow } from '../../ui/src/components/shared/ChatDisclosure';
-import type { ConsolePermissionRequest } from '../../ui/src/api';
-import type { RenderedTurn } from '../../ui/src/components/stream-renderer/types';
+import { computeDiffStats } from '../ui/src/components/message-blocks/FileEditBlock';
+import { latestPlanIndex, parsePlanEntries } from '../ui/src/components/message-blocks/PlanBlock';
+import { ThinkingBlock } from '../ui/src/components/message-blocks/ThinkingBlock';
+import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../ui/src/components/message-blocks/ToolUseBlock';
+import { presentTool, summarizeToolRun, toolRunIcon } from '../ui/src/components/message-blocks/toolPresentation';
+import { PermissionApprovalCard, permissionActionsForRequest } from '../ui/src/components/console/PermissionApprovalCard';
+import { MessageGroup } from '../ui/src/components/stream-renderer/MessageGroup';
+import { CompactActivityRow } from '../ui/src/components/shared/ChatDisclosure';
+import type { ConsolePermissionRequest } from '../ui/src/api';
+import type { RenderedTurn } from '../ui/src/components/stream-renderer/types';
 
 afterEach(() => {
   cleanup();
