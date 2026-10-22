@@ -143,8 +143,8 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     try {
       const r1 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo one", title: "one" }));
       const r2 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") }));
-      const chainKey = (queue as unknown as { chainKeyForRequest(request: typeof r1): string }).chainKeyForRequest.bind(queue);
-      expect(chainKey(r1)).toBe(chainKey(r2));
+      const chainKey = (request: typeof r1) => (queue as unknown as { reserveRepoAdmission(request: typeof r1, install: (key: string) => string): Promise<string> }).reserveRepoAdmission(request, key => key);
+      expect(await chainKey(r1)).toBe(await chainKey(r2));
     } finally { (await queue.dispose()); db.close(); }
   });
 

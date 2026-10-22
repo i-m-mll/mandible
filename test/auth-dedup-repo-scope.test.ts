@@ -189,12 +189,12 @@ describe("auth request duplicate detection is repo-scoped", () => {
     const first = (await queue.submit(submission(repoA)));
     // The reported bug: this returned `first` and the second repo's delivery
     // was never queued.
-    expect(queue.findDuplicate(submission(repoB))).toBeNull();
+    expect((await queue.findDuplicate(submission(repoB)))).toBeNull();
     const second = (await queue.submit(submission(repoB)));
     expect(second.id).not.toBe(first.id);
     expect((await queue.listActive()).filter((request) => request.head_branch === SHARED_BRANCH)).toHaveLength(2);
 
-    expect(queue.findDuplicate(submission(repoA))?.id).toBe(first.id);
+    expect((await queue.findDuplicate(submission(repoA)))?.id).toBe(first.id);
   });
 
   it("matches one repo by canonical identity across names, paths and linked worktrees", async () => {
@@ -206,13 +206,13 @@ describe("auth request duplicate detection is repo-scoped", () => {
 
     // One side carries only the repo string, the other only the checkout path.
     const first = (await queue.submit(submission(repoA, { cwd: null, target_repo_root: null })));
-    expect(queue.findDuplicate(submission(repoA, { repo: undefined }))?.id).toBe(first.id);
+    expect((await queue.findDuplicate(submission(repoA, { repo: undefined })))?.id).toBe(first.id);
     // Same physical repo, different path and different basename.
-    expect(queue.findDuplicate(submission(repoA, {
+    expect((await queue.findDuplicate(submission(repoA, {
       repo: path.basename(worktree),
       cwd: worktree,
       target_repo_root: worktree,
-    }))?.id).toBe(first.id);
+    })))?.id).toBe(first.id);
   });
 
   it("keeps the fallbacks repo-scoped: session and title, rows without repo evidence, vanished checkouts", async () => {
@@ -234,14 +234,14 @@ describe("auth request duplicate detection is repo-scoped", () => {
     const repoB = createRepo("beta");
     const sessionOnly = { session_id: "session-cross-repo", head_branch: undefined, base_branch: undefined };
     (await queue.submit(submission(repoA, sessionOnly)));
-    expect(queue.findDuplicate(submission(repoB, sessionOnly))).toBeNull();
+    expect((await queue.findDuplicate(submission(repoB, sessionOnly)))).toBeNull();
 
     // A legacy row with no repo evidence never swallows a repo-identified
     // submission, but two evidence-free submissions still dedup (16985e8).
     queue = fresh();
     const legacyRow = (await queue.submit(legacy));
-    expect(queue.findDuplicate(submission(repoA))).toBeNull();
-    expect(queue.findDuplicate(legacy)?.id).toBe(legacyRow.id);
+    expect((await queue.findDuplicate(submission(repoA)))).toBeNull();
+    expect((await queue.findDuplicate(legacy))?.id).toBe(legacyRow.id);
 
     // A queued request whose checkout was deleted falls back to repo strings.
     queue = fresh();
@@ -249,8 +249,8 @@ describe("auth request duplicate detection is repo-scoped", () => {
     const stale = (await queue.submit(submission(repoB, { repo: "deleted-repo" })));
     db!.prepare("UPDATE auth_requests SET cwd = ?, target_repo_root = ? WHERE id = ?").run(missing, missing, stale.id);
     clearRepoIdentityCache();
-    expect(queue.findDuplicate(submission(repoA))).toBeNull();
-    expect(queue.findDuplicate(submission(repoA, { repo: "deleted-repo" }))?.id).toBe(stale.id);
+    expect((await queue.findDuplicate(submission(repoA)))).toBeNull();
+    expect((await queue.findDuplicate(submission(repoA, { repo: "deleted-repo" })))?.id).toBe(stale.id);
   });
 });
 
@@ -268,6 +268,23 @@ describe("POST /api/auth/request duplicate refusal", () => {
     registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db: db! }));
     return app;
   }
+
+  it("queues concurrent same-base submissions from distinct physical repositories", async () => {
+    const queue = createQueue();
+    const router = createRouter(queue);
+    const repoA = createRepo("concurrent-alpha");
+    const repoB = createRepo("concurrent-beta");
+    clearRepoIdentityCache();
+    try {
+      const results = await Promise.all([
+        postRequest(router, submission(repoA)),
+        postRequest(router, submission(repoB)),
+      ]);
+      expect(results.map(result => ({ status: result.status, error: result.body.error })))
+        .toEqual([{ status: 201, error: undefined }, { status: 201, error: undefined }]);
+      expect((await queue.listActive()).filter(request => request.head_branch === SHARED_BRANCH)).toHaveLength(2);
+    } finally { await queue.dispose(); }
+  });
 
   it("reports the stored request's own identity, never the caller's input", async () => {
     const queue = createQueue();

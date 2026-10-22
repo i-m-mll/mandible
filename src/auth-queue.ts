@@ -79,7 +79,7 @@ import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
 } from "./auth-recompute-refusal.js";
-import { canonicalRepoKeyForPath, canonicalRepoKeysForRef } from "./repo-identity.js";
+import { canonicalRepoKeyForPath, observeRepoIdentities, RepoIdentityReadSetChanged, type RepoIdentityObservation } from "./repo-identity.js";
 import {
   auditProtectedBase,
   describeBaseAuditFindings,
@@ -343,6 +343,12 @@ type StaleMergeRecovery =
   | { outcome: "atomic_needs_recovery"; detail: string }
   | { outcome: "requeued"; detail: string }
   | { outcome: "failed"; detail: string };
+
+function completionSignal(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(complete => { resolve = complete; });
+  return { promise, resolve };
+}
 
 export class AuthQueueError extends Error {
   readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused";
@@ -624,6 +630,7 @@ export class AuthQueue {
   // any path/symlink alias) stay strictly FIFO. Unresolvable identities share a
   // single conservative global chain (UNRESOLVED_CHAIN_KEY).
   private readonly executionChains = new Map<string, Promise<void>>();
+  private identityAdmissionTail: Promise<void> = Promise.resolve();
   private readonly candidateChains = new Map<string, Promise<void>>();
   private readonly phaseRuns = new Set<Promise<unknown>>();
   private readonly phaseAbort = new AbortController();
@@ -889,7 +896,7 @@ export class AuthQueue {
       for (const { id } of rows) {
         const request = this.readRequestByExactId(id);
         if (!request || !this.candidateAcceptanceApplies(request) || (!startup && await this.mergeCandidateExactUnblocking(request))) continue;
-        await this.runOnRepoChain(this.chainKeyForRequest(request), () => this.startCandidateAcceptanceAutomatically(id, true));
+        await this.onObservedRepoChain(request, () => this.startCandidateAcceptanceAutomatically(id, true));
       }
     } finally { finishObservation(); }
   }
@@ -898,7 +905,7 @@ export class AuthQueue {
   async runCandidateAcceptance(request: AuthRequest): Promise<CandidateAcceptanceProjection | null> {
     const finishObservation = this.beginObservation();
     try {
-      return (await this.runOnRepoChain(this.chainKeyForRequest(request), () => this.ensureCandidateAcceptance(this.requireRequest(request.id), true)));
+      return (await this.onObservedRepoChain(request, () => this.ensureCandidateAcceptance(this.requireRequest(request.id), true)));
     } finally { finishObservation(); }
   }
 
@@ -1306,13 +1313,13 @@ export class AuthQueue {
       }
       if (request.type === "merge" && isAuthMergeCommand(request)) {
         if (request.merge_atomic_enabled) {
-          this.scheduleAtomicRecovery(request);
+          await this.scheduleAtomicRecovery(request);
           continue;
         }
         const recovery = (await this.inspectStaleMerge(request));
         if (this.observationToken(request.id) !== observed || this.hookManager.runtimeHandoffOwnsRequest(request.id) || this.inFlight.has(request.id)) continue;
         if (recovery.outcome === "atomic_applied") {
-          this.scheduleAtomicRecovery(request);
+          await this.scheduleAtomicRecovery(request);
         } else if (recovery.outcome === "atomic_needs_recovery") {
           this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
             .run(`Atomic merge applied and needs recovery: ${recovery.detail}`, now, request.id);
@@ -1496,43 +1503,30 @@ export class AuthQueue {
    * to session+title: one agent delivering a program across two repos reuses
    * the title, so that check needs the same scoping.
    */
-  findDuplicate(payload: AuthRequestInput): AuthRequest | null {
-    // Repo filtering happens in TS, not SQL, so it can use canonical repo
-    // identity (path/symlink/string aliases) rather than string equality —
-    // the same approach `listActiveRequests` uses for its repo filter.
-    const sameRepo = (row: AuthRequest): boolean => this.dedupRepoMatches(payload, row);
-
-    // Check by same branch pair first (strongest signal — a branch can only
-    // merge once regardless of which session submitted it, *in one repo*)
-    if (payload.head_branch && payload.base_branch) {
-      const byBranch = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE head_branch = ? AND base_branch = ? " +
-            "AND status IN ('pending', 'approved', 'executing') " +
-            "ORDER BY created_at ASC"
-        )
-        .all(payload.head_branch, payload.base_branch) as Record<string, unknown>[];
-      const match = byBranch.map((row) => mapRow(row)).find(sameRepo);
-      if (match) {
-        return match;
+  async findDuplicate(payload: AuthRequestInput): Promise<AuthRequest | null> {
+    const finishObservation = this.beginObservation();
+    try {
+      const read = () => ({
+        branch: payload.head_branch && payload.base_branch ? this.db.prepare("SELECT * FROM auth_requests WHERE head_branch = ? AND base_branch = ? AND status IN ('pending', 'approved', 'executing') ORDER BY created_at ASC").all(payload.head_branch, payload.base_branch) as Record<string, unknown>[] : [],
+        session: payload.session_id && payload.title ? this.db.prepare("SELECT * FROM auth_requests WHERE session_id = ? AND title = ? AND status = 'pending' ORDER BY created_at ASC").all(payload.session_id, payload.title) as Record<string, unknown>[] : [],
+      });
+      for (let attempt = 0; ; attempt++) {
+        const decision = (rows: ReturnType<typeof read>) => JSON.stringify([rows.branch, rows.session].map(group => group.map(row => ["id", "status", "repo", "cwd", "target_repo_root", "head_branch", "base_branch", "session_id", "title", "created_at"].map(key => row[key]))));
+        const rows = read();
+        const candidates = [...rows.branch, ...rows.session].map(mapRow);
+        const identity = await this.observeRequestIdentities([payload, ...candidates]);
+        try {
+          identity.assertCurrent();
+          if (decision(read()) !== decision(rows)) throw new RepoIdentityReadSetChanged("Auth queue changed during duplicate observation; retry submission.");
+        } catch (error) {
+          if (!(error instanceof RepoIdentityReadSetChanged)) throw error;
+          if (attempt >= 2) throw new AuthQueueError("lifecycle_conflict", error.message);
+          continue;
+        }
+        for (const row of candidates) if (this.dedupRepoMatches(payload, row, identity)) return row;
+        return null;
       }
-    }
-
-    // Fall back to session + title match
-    if (payload.session_id && payload.title) {
-      const bySession = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE session_id = ? AND title = ? " +
-            "AND status = 'pending' ORDER BY created_at ASC"
-        )
-        .all(payload.session_id, payload.title) as Record<string, unknown>[];
-      const match = bySession.map((row) => mapRow(row)).find(sameRepo);
-      if (match) {
-        return match;
-      }
-    }
-
-    return null;
+    } finally { finishObservation(); }
   }
 
   /**
@@ -1552,9 +1546,9 @@ export class AuthQueue {
    * `cwd` so a row identified only by path still matches a payload identified
    * only by name (and vice versa).
    */
-  private dedupRepoMatches(payload: Pick<AuthRequestInput, "repo" | "target_repo_root" | "cwd">, row: AuthRequest): boolean {
-    const keysA = this.dedupRepoKeys(payload.repo, payload.target_repo_root, payload.cwd);
-    const keysB = this.dedupRepoKeys(row.repo, row.target_repo_root, row.cwd);
+  private dedupRepoMatches(payload: Pick<AuthRequestInput, "repo" | "target_repo_root" | "cwd">, row: AuthRequest, identity: RepoIdentityObservation): boolean {
+    const keysA = this.dedupRepoKeys(payload.repo, payload.target_repo_root, payload.cwd, identity);
+    const keysB = this.dedupRepoKeys(row.repo, row.target_repo_root, row.cwd, identity);
     if (keysA.size > 0 && keysB.size > 0) {
       for (const key of keysA) {
         if (keysB.has(key)) {
@@ -1571,23 +1565,28 @@ export class AuthQueue {
     repo: string | null | undefined,
     targetRepoRoot: string | null | undefined,
     cwd: string | null | undefined,
+    identity: RepoIdentityObservation,
   ): Set<string> {
     const keys = new Set<string>();
     const repoRef = normalizeRepoRef(repo);
     if (repoRef) {
-      for (const key of canonicalRepoKeysForRef(this.db, repoRef)) {
+      for (const key of identity.keysForRef(repoRef)) {
         keys.add(key);
       }
     }
     // A recorded checkout path is stronger evidence than the repo string, and
     // survives repos whose name was never registered in the ledger.
     for (const candidate of [targetRepoRoot, cwd]) {
-      const key = canonicalRepoKeyForPath(candidate ?? null);
+      const key = identity.keyForPath(candidate ?? null);
       if (key) {
         keys.add(key);
       }
     }
     return keys;
+  }
+
+  private observeRequestIdentities(requests: readonly Pick<AuthRequestInput, "repo" | "target_repo_root" | "cwd">[]): Promise<RepoIdentityObservation> {
+    return observeRepoIdentities(this.db, requests.map(row => normalizeRepoRef(row.repo)), requests.flatMap(row => [row.target_repo_root, row.cwd]), this.phaseAbort.signal);
   }
 
   async replayCodexThreadArchives(requestId: string): Promise<CodexArchiveReplayResult> {
@@ -1640,10 +1639,25 @@ export class AuthQueue {
       const predecessor = payload.supersedes_request_id
         ? this.requireRequest(payload.supersedes_request_id)
         : null;
+      const predecessorObservation = predecessor ? this.observationToken(predecessor.id, predecessor) : null;
       if (predecessor && !payload.space_publication_id) payload.space_publication_id = authPublicationSnapshot(this.db, predecessor.id)?.id;
       const custody = predecessor
         ? this.requireRequestCustody(predecessor, actor, payload.expected_revision, payload.expected_custody_generation)
         : this.resolveSubmissionCustody(payload, actor);
+      const custodyState = JSON.stringify(this.custodyAuthority({ custody_work_unit_id: custody?.id ?? null }));
+      const submissionIdentity = await this.observeRequestIdentities(predecessor ? [payload, predecessor] : [payload]);
+      const assertSubmission = () => {
+        try { submissionIdentity.assertCurrent(); }
+        catch (error) {
+          if (error instanceof RepoIdentityReadSetChanged) throw new AuthQueueError("lifecycle_conflict", error.message);
+          throw error;
+        }
+        if (JSON.stringify(this.custodyAuthority({ custody_work_unit_id: custody?.id ?? null })) !== custodyState) {
+          throw new AuthQueueError("custody_conflict", "Delivery work-unit authority changed during submission.");
+        }
+        if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
+      };
+      assertSubmission();
       const mergeCheck: AuthMergeCheckReport = this.allowExternalEffects
         ? (await this.checkMergeIndependence({
             ...payload,
@@ -1922,12 +1936,19 @@ export class AuthQueue {
       );
 
       const actions = normalizeAuthActionInputs(payload.actions);
+      const supersessionIdentity = predecessor ? await this.observeRequestIdentities([predecessor, request]) : null;
+      if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
       const dispositions = predecessor
-        ? this.validateSupersession(predecessor, request, actions, payload.superseded_action_dispositions ?? [])
+        ? this.validateSupersession(predecessor, request, actions, payload.superseded_action_dispositions ?? [], supersessionIdentity!)
         : new Map<number, string>();
+      let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
+        assertSubmission();
+        supersessionIdentity?.assertCurrent();
+        if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
         if (mergeCheck.status === "clean" && payload.base_branch) {
-          const pending = this.pendingMergeRequestsForCheck({ repo: payload.repo ?? null, baseBranch: payload.base_branch, excludeId: predecessor?.id ?? null });
+          insertionQueue!.assertCurrent();
+          const pending = insertionQueue!.requests;
           if (this.mergeQueueFingerprint(pending) !== mergeCheck.queue_fingerprint) throw new AuthQueueError("merge_check_failed", "Pending merge queue changed during submission; retry its preflight.");
         }
         if (actor.evidence_method === "api_token" || actor.evidence_method === "credential_signature") this.assertActiveCredential(actor);
@@ -2038,7 +2059,14 @@ export class AuthQueue {
         ? (await this.cacheMergeCandidate(request))
         : null;
       try {
-        insertRequest();
+        for (let attempt = 0; ; attempt++) {
+          if (mergeCheck.status === "clean" && payload.base_branch) insertionQueue = await this.observePendingMergeQueue({ repo: payload.repo ?? null, baseBranch: payload.base_branch, excludeId: predecessor?.id ?? null });
+          try { insertRequest(); break; }
+          catch (error) {
+            if (!(error instanceof RepoIdentityReadSetChanged)) throw error;
+            if (attempt >= 2) throw new AuthQueueError("lifecycle_conflict", error.message);
+          }
+        }
         request = this.requireRequest(request.id);
       } catch (error) {
         (await this.dropMergeCandidate(request));
@@ -2319,6 +2347,7 @@ export class AuthQueue {
     replacement: AuthRequest,
     replacementActions: readonly AuthRequestActionInput[],
     rawDispositions: readonly { ordinal: number; reason: string }[],
+    identity: RepoIdentityObservation,
   ): Map<number, string> {
     if (predecessor.status !== "pending") {
       throw new AuthQueueError("invalid_status", `Request is ${predecessor.status}, cannot supersede.`, predecessor.status);
@@ -2326,7 +2355,7 @@ export class AuthQueue {
     if (predecessor.base_branch !== replacement.base_branch ||
         predecessor.head_branch !== replacement.head_branch ||
         predecessor.custody_work_unit_id !== replacement.custody_work_unit_id ||
-        !this.dedupRepoMatches(replacement, predecessor)) {
+        !this.dedupRepoMatches(replacement, predecessor, identity)) {
       throw new AuthQueueError(
         "target_mismatch",
         "A replacement must use the same delivery work unit, canonical project, head branch, and protected target as its predecessor.",
@@ -2526,7 +2555,7 @@ export class AuthQueue {
         };
       }
 
-      const pending = this.pendingMergeRequestsForCheck({
+      const pending = await this.pendingMergeRequestsForCheck({
         repo,
         baseBranch,
         excludeId: input.request_id ?? null,
@@ -4219,7 +4248,7 @@ export class AuthQueue {
     if (currentBaseSha !== request.merge_preflight_base_sha) {
       return false;
     }
-    const currentQueueFingerprint = this.mergeQueueFingerprint(this.pendingMergeRequestsForCheck({
+    const currentQueueFingerprint = this.mergeQueueFingerprint(await this.pendingMergeRequestsForCheck({
       repo: request.repo ?? null,
       baseBranch: request.base_branch,
       excludeId: request.id,
@@ -4288,9 +4317,10 @@ export class AuthQueue {
     const finishObservation = this.beginObservation();
     try {
       if (preflight) return (await this.recomputeStaleCandidateInPhase(request, trigger, preflight));
-      const key = this.chainKeyForRequest(request);
-      if (this.executionChains.has(key)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal({ reason: "execution_chain_busy" }));
-      return (await this.recomputeStaleCandidateInPhase(request, trigger));
+      return await this.reserveRepoAdmission(request, key => {
+        if (this.executionChains.has(key)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal({ reason: "execution_chain_busy" }));
+        return this.recomputeStaleCandidateInPhase(request, trigger);
+      });
     } finally { finishObservation(); }
   }
 
@@ -4429,7 +4459,7 @@ export class AuthQueue {
     if (chain[0] !== newBase) {
       return refuse("first_parent_chain_mismatch");
     }
-    const { recorded, reused } = this.recordedQueueMerges(request);
+    const { recorded, reused, assertCurrent } = await this.recordedQueueMerges(request);
     for (let index = 0; index < chain.length; index += 1) {
       const commit = chain[index]!;
       const expectedFirstParent = chain[index + 1] ?? oldBase;
@@ -4494,6 +4524,7 @@ export class AuthQueue {
         });
       }
     }
+    assertCurrent();
     return { accounted: true };
   }
 
@@ -4505,17 +4536,33 @@ export class AuthQueue {
    * more than one completed request is reuse/forgery evidence: it is moved to
    * `reused` and never counts as recorded (review F1).
    */
-  private recordedQueueMerges(request: AuthRequest): { recorded: Map<string, AuthRequest>; reused: Set<string> } {
-    const completedRows = this.db.prepare(
-      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
-        "AND exit_code = 0 AND base_branch = ? AND id != ?",
+  private async recordedQueueMerges(request: AuthRequest): Promise<{ recorded: Map<string, AuthRequest>; reused: Set<string>; assertCurrent(): void }> {
+    const read = () => this.db.prepare(
+      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0 AND base_branch = ? AND id != ? ORDER BY id",
     ).all(request.base_branch, request.id) as Record<string, unknown>[];
-    const repoKeys = request.repo ? canonicalRepoKeysForRef(this.db, request.repo) : null;
+    const decision = (rows: Record<string, unknown>[]) => JSON.stringify(rows.map(raw => {
+      const row = mapRow(raw);
+      const evidence = row.execution_evidence_id ? getAttributionEvidence(this.db, row.execution_evidence_id) : null;
+      return [row.id, row.type, row.status, row.exit_code, row.base_branch, row.repo, row.cwd, row.target_repo_root,
+        row.merge_head_sha, row.approved_by_user_id, row.resolved_at, row.execution_evidence_id,
+        evidence?.evidence_method ?? null, evidence?.details.commit_sha ?? null, this.recordedMergeCommitSha(row)];
+    }));
+    const completedRows = read();
+    const snapshot = decision(completedRows);
+    const observed = this.observationToken(request.id, request);
+    const identity = await observeRepoIdentities(this.db, [request.repo, ...completedRows.map(row => row.repo as string | null)], [], this.phaseAbort.signal);
+    const assertCurrent = () => {
+      identity.assertCurrent();
+      this.assertObservation(request.id, observed);
+      if (decision(read()) !== snapshot) throw new RepoIdentityReadSetChanged("Recorded merge evidence changed during identity observation");
+    };
+    assertCurrent();
+    const repoKeys = identity.keysForRef(request.repo);
     const recorded = new Map<string, AuthRequest>();
     const reused = new Set<string>();
     for (const row of completedRows.map((raw) => mapRow(raw))) {
       if (request.repo) {
-        if (!this.repoRefsMatch(request.repo, repoKeys!, row.repo ?? null)) continue;
+        if (!this.repoRefsMatch(request.repo, repoKeys, row.repo ?? null, identity)) continue;
       } else if (row.cwd !== request.cwd && row.target_repo_root !== request.cwd) {
         continue;
       }
@@ -4528,7 +4575,7 @@ export class AuthQueue {
       recorded.set(mergeSha, row);
     }
     for (const sha of reused) recorded.delete(sha);
-    return { recorded, reused };
+    return { recorded, reused, assertCurrent };
   }
 
   /** Issue 117ba80 — the request's latest protected-base audit, or null when none has run. */
@@ -4546,13 +4593,15 @@ export class AuthQueue {
     if (!this.allowExternalEffects || request.execution_mode === "remote" || !isAuthMergeCommand(request) ||
       !request.cwd || !request.base_branch || !request.merge_preflight_base_sha) return null;
     const observed = this.observationToken(request.id, request);
+    const evidence = await this.recordedQueueMerges(request);
     const recordedMerges = new Map(
-      [...this.recordedQueueMerges(request).recorded].map(([sha, row]) => [sha, row.resolved_at ?? 0]),
+      [...evidence.recorded].map(([sha, row]) => [sha, row.resolved_at ?? 0]),
     );
     const audit = (await auditProtectedBase(this.db, {
       cwd: request.cwd, baseSha: request.merge_preflight_base_sha, recordedMerges, now: this.now(),
     }));
     this.assertObservation(request.id, observed);
+    evidence.assertCurrent();
     saveProtectedBaseAudit(this.db, request.id, audit);
     if (announce) this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, base_audit: audit } } });
     if (audit.status === "unexpected" || audit.status === "error") {
@@ -5299,120 +5348,128 @@ export class AuthQueue {
     const admitted = this.executionToken(request.id);
     let execution: string | undefined;
     let executionEnv = this.executionEnvs.get(request.id);
-    const chainKey = this.chainKeyForRequest(request);
-    const prior = this.executionChains.get(chainKey) ?? Promise.resolve();
-    const turn = new Promise<void>(resolve => {
-      const cancel = () => resolve();
-      this.phaseAbort.signal.addEventListener("abort", cancel, { once: true });
-      void prior.catch(() => undefined).then(() => { this.phaseAbort.signal.removeEventListener("abort", cancel); resolve(); });
-    });
-    let runPromise!: Promise<void>;
-    runPromise = turn.then(async () => {
-        let executionResult: AuthExecutionResult | null = null;
-        execution = admitted;
-        try {
-          if (!this.executionIsCurrent(request.id, admitted)) return;
-          // Bug: 681739e — a self-merge restart may have been scheduled after
-          // this execution was chained but before it reached the head of the
-          // queue. Re-check admission here so it parks instead of starting.
-          if (this._rebuilding) {
-            (await this.parkExecutionForRestart(request));
-            return;
-          }
-          execution = await this.prepareAuthExecution(request, admitted);
-          executionEnv = this.executionEnvs.get(request.id);
-          if (!this.executionIsCurrent(request.id, execution)) return;
-          const executedAt = Date.now();
-          this.db
-            .prepare(
-              "UPDATE auth_requests SET last_executed_at = ?, updated_at = ? WHERE id = ?"
-            )
-            .run(executedAt, executedAt, request.id);
-          execution = this.executionToken(request.id);
-          this.queuedAdmissions.delete(runPromise);
-          const result = await this.executor({
-            request_id: request.id,
-            command: request.command,
-            cwd: request.cwd,
-            onOutput: (chunk) => { if (execution && this.executionIsCurrent(request.id, execution)) this.handleOutput(chunk); },
-            env: this.executionEnvs.get(request.id),
-            mandibleArgs: this.localMergeArguments(request),
-          });
-          executionResult = result;
-          if (!this.executionIsCurrent(request.id, execution)) return;
-
-          const durableAtomic = extractAtomicMergeState(this.requireRequest(request.id).output);
-          if (request.merge_atomic_enabled && durableAtomic.prepared &&
-            (result.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) !== null)) {
-            const inspection = (await this.inspectStaleMerge(this.requireRequest(request.id)));
-            if (inspection.outcome === "atomic_applied") {
-              try {
-                await this.finishRecoveredAtomicMerge(request, inspection.mergeSha);
-              } catch (error) {
-                const recoveryAt = this.now();
-                this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-                  .run(`Atomic merge applied and needs recovery: ${errorMessage(error) ?? String(error)}`, recoveryAt, request.id);
+    const pendingIdentity = completionSignal();
+    this.inFlight.set(request.id, pendingIdentity.promise);
+    this.queuedAdmissions.add(pendingIdentity.promise);
+    try {
+      await this.reserveRepoAdmission(request, chainKey => {
+        const prior = this.executionChains.get(chainKey) ?? Promise.resolve();
+        const turn = new Promise<void>(resolve => {
+          const cancel = () => resolve();
+          this.phaseAbort.signal.addEventListener("abort", cancel, { once: true });
+          void prior.catch(() => undefined).then(() => { this.phaseAbort.signal.removeEventListener("abort", cancel); resolve(); });
+        });
+        let runPromise!: Promise<void>;
+        runPromise = turn.then(async () => {
+            let executionResult: AuthExecutionResult | null = null;
+            execution = admitted;
+            try {
+              if (!this.executionIsCurrent(request.id, admitted)) return;
+              // Bug: 681739e — a self-merge restart may have been scheduled after
+              // this execution was chained but before it reached the head of the
+              // queue. Re-check admission here so it parks instead of starting.
+              if (this._rebuilding) {
+                (await this.parkExecutionForRestart(request));
+                return;
               }
-              return;
+              execution = await this.prepareAuthExecution(request, admitted);
+              executionEnv = this.executionEnvs.get(request.id);
+              if (!this.executionIsCurrent(request.id, execution)) return;
+              const executedAt = Date.now();
+              this.db
+                .prepare(
+                  "UPDATE auth_requests SET last_executed_at = ?, updated_at = ? WHERE id = ?"
+                )
+                .run(executedAt, executedAt, request.id);
+              execution = this.executionToken(request.id);
+              this.queuedAdmissions.delete(runPromise);
+              const result = await this.executor({
+                request_id: request.id,
+                command: request.command,
+                cwd: request.cwd,
+                onOutput: (chunk) => { if (execution && this.executionIsCurrent(request.id, execution)) this.handleOutput(chunk); },
+                env: this.executionEnvs.get(request.id),
+                mandibleArgs: this.localMergeArguments(request),
+              });
+              executionResult = result;
+              if (!this.executionIsCurrent(request.id, execution)) return;
+              const durableAtomic = extractAtomicMergeState(this.requireRequest(request.id).output);
+              if (request.merge_atomic_enabled && durableAtomic.prepared &&
+                (result.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) !== null)) {
+                const inspection = (await this.inspectStaleMerge(this.requireRequest(request.id)));
+                if (inspection.outcome === "atomic_applied") {
+                  try {
+                    await this.finishRecoveredAtomicMerge(request, inspection.mergeSha);
+                  } catch (error) {
+                    const recoveryAt = this.now();
+                    this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+                      .run(`Atomic merge applied and needs recovery: ${errorMessage(error) ?? String(error)}`, recoveryAt, request.id);
+                  }
+                  return;
+                }
+                if (inspection.outcome === "atomic_needs_recovery") {
+                  const recoveryAt = this.now();
+                  this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+                    .run(`Atomic merge applied and needs recovery: ${inspection.detail}`, recoveryAt, request.id);
+                  return;
+                }
+              }
+              // Bug: 4afab83 — run post-auth hooks after successful execution,
+              // BEFORE reporting completion. Hook failures don't change the
+              // auth result (the merge already succeeded).
+              if (result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
+              // Store result and broadcast auth:resolved BEFORE scheduling
+              // any self-rebuild exit, so the channel server receives the
+              // SSE event while the daemon is still alive.
+              (await this.storeExecutionResult(request.id, result, null, execution));
+              // Bug: 87dfff0 — after hooks complete (build finished), schedule
+              // a graceful exit so launchd respawns with the new code.
+              // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
+              // after storeExecutionResult so the auth:resolved SSE broadcast
+              // has time to reach the channel server before the daemon exits.
+              if (this.disposed || !this.isDbOpen()) return;
+              const completed = this.requireRequest(request.id);
+              if (completed.status !== "completed") return;
+              await this.afterConvergenceHook(completed);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Execution failed.";
+              if (executionResult?.exit_code === 0) {
+                authLog("error", "auth_success_finalization_deferred", {
+                  subsystem: "auth",
+                  auth_request_id: request.id,
+                  error: message,
+                });
+              } else {
+                (await this.storeExecutionResult(request.id, null, message, execution));
+              }
+            } finally {
+              if (settleClearance) await settleClearance().catch(() => undefined);
+              this.queuedAdmissions.delete(runPromise);
+              if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
+              if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
             }
-            if (inspection.outcome === "atomic_needs_recovery") {
-              const recoveryAt = this.now();
-              this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-                .run(`Atomic merge applied and needs recovery: ${inspection.detail}`, recoveryAt, request.id);
-              return;
-            }
+          });
+        const tail = runPromise.catch(() => undefined);
+        this.executionChains.set(chainKey, tail);
+        this.inFlight.set(request.id, runPromise);
+        this.queuedAdmissions.add(runPromise);
+        // Bound map growth: drop the chain entry once this settles, but only if no
+        // later request has already chained onto it (chain installation is synchronous, so
+        // the stored tail is authoritative at this microtask).
+        void tail.finally(() => {
+          if (this.executionChains.get(chainKey) === tail) {
+            this.executionChains.delete(chainKey);
           }
-
-          // Bug: 4afab83 — run post-auth hooks after successful execution,
-          // BEFORE reporting completion. Hook failures don't change the
-          // auth result (the merge already succeeded).
-          if (result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
-
-          // Store result and broadcast auth:resolved BEFORE scheduling
-          // any self-rebuild exit, so the channel server receives the
-          // SSE event while the daemon is still alive.
-          (await this.storeExecutionResult(request.id, result, null, execution));
-
-          // Bug: 87dfff0 — after hooks complete (build finished), schedule
-          // a graceful exit so launchd respawns with the new code.
-          // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
-          // after storeExecutionResult so the auth:resolved SSE broadcast
-          // has time to reach the channel server before the daemon exits.
-          if (this.disposed || !this.isDbOpen()) return;
-          const completed = this.requireRequest(request.id);
-          if (completed.status !== "completed") return;
-          await this.afterConvergenceHook(completed);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Execution failed.";
-          if (executionResult?.exit_code === 0) {
-            authLog("error", "auth_success_finalization_deferred", {
-              subsystem: "auth",
-              auth_request_id: request.id,
-              error: message,
-            });
-          } else {
-            (await this.storeExecutionResult(request.id, null, message, execution));
-          }
-        } finally {
-          if (settleClearance) await settleClearance().catch(() => undefined);
-          this.queuedAdmissions.delete(runPromise);
-          if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
-          if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
-        }
+        });
       });
-
-    const tail = runPromise.catch(() => undefined);
-    this.executionChains.set(chainKey, tail);
-    this.inFlight.set(request.id, runPromise);
-    this.queuedAdmissions.add(runPromise);
-    // Bound map growth: drop the chain entry once this settles, but only if no
-    // later request has already chained onto it (admission is synchronous, so
-    // the stored tail is authoritative at this microtask).
-    void tail.finally(() => {
-      if (this.executionChains.get(chainKey) === tail) {
-        this.executionChains.delete(chainKey);
-      }
-    });
+    } catch (error) {
+      if (this.inFlight.get(request.id) === pendingIdentity.promise) this.inFlight.delete(request.id);
+      if (settleClearance) await settleClearance();
+      throw error;
+    } finally {
+      this.queuedAdmissions.delete(pendingIdentity.promise);
+      pendingIdentity.resolve();
+    }
   }
 
   /**
@@ -5421,82 +5478,103 @@ export class AuthQueue {
    * the realpath'd Git common dir. Anything unresolvable shares the conservative
    * global chain so unknown identities never run concurrently with each other.
    */
-  private chainKeyForRequest(request: Pick<AuthRequest, "cwd" | "target_repo_root">): string {
-    return (
-      canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd) ??
-      AuthQueue.UNRESOLVED_CHAIN_KEY
-    );
+  private async reserveRepoAdmission<T>(request: AuthRequest, install: (key: string) => T | Promise<T>): Promise<T> {
+    const observed = this.observationToken(request.id, request);
+    const finishObservation = this.beginObservation();
+    const prior = this.identityAdmissionTail;
+    const reserved = completionSignal();
+    this.identityAdmissionTail = reserved.promise;
+    try {
+      const key = await canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd, this.phaseAbort.signal) ?? AuthQueue.UNRESOLVED_CHAIN_KEY;
+      await prior;
+      this.assertObservation(request.id, observed);
+      return install(key);
+    } finally { reserved.resolve(); finishObservation(); }
   }
 
-  private scheduleAtomicRecovery(request: AuthRequest): void {
+  private onObservedRepoChain<T>(request: AuthRequest, task: () => Promise<T>): Promise<T> {
+    return this.reserveRepoAdmission<T>(request, key => this.runOnRepoChain(key, task));
+  }
+
+  private async scheduleAtomicRecovery(request: AuthRequest): Promise<void> {
     if (this.inFlight.has(request.id)) return;
-    const chainKey = this.chainKeyForRequest(request);
-    let execution: string | undefined;
-    const promise = this.runOnRepoChain(chainKey, async () => {
-      const refreshed = this.requireRequest(request.id);
-      if (!["approved", "executing"].includes(refreshed.status) || refreshed.exit_code !== null || this.hookManager.runtimeHandoffOwnsRequest(refreshed.id)) return;
-      execution = this.executionToken(refreshed.id);
-      const inspection = (await this.inspectStaleMerge(refreshed));
-      this.assertExecution(refreshed.id, execution);
-      if (this.hookManager.runtimeHandoffOwnsRequest(refreshed.id)) return;
-      if (inspection.outcome === "atomic_applied") {
-        await this.finishRecoveredAtomicMerge(refreshed, inspection.mergeSha);
-        return;
-      }
-      if (inspection.outcome === "requeued") {
-        const now = this.now();
-        this.db.transaction(() => {
-          this.db.prepare(
-            `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
-              exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-              approval_source = 'manual', approval_lease_id = NULL,
-              approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`,
-          ).run(now + this.ttlMs, now, request.id);
-          appendAuthLifecycleEvent(this.db, {
-            requestId: request.id, eventType: "revised", priorStatus: refreshed.status,
-            nextStatus: "pending", actor: systemAction(),
-            reason: `Atomic recovery requeued request: ${inspection.detail}`, occurredAt: now,
+    const pendingIdentity = completionSignal();
+    this.inFlight.set(request.id, pendingIdentity.promise);
+    this.queuedAdmissions.add(pendingIdentity.promise);
+    try {
+      await this.reserveRepoAdmission(request, chainKey => {
+        let execution: string | undefined;
+        const promise = this.runOnRepoChain(chainKey, async () => {
+          const refreshed = this.requireRequest(request.id);
+          if (!["approved", "executing"].includes(refreshed.status) || refreshed.exit_code !== null || this.hookManager.runtimeHandoffOwnsRequest(refreshed.id)) return;
+          execution = this.executionToken(refreshed.id);
+          const inspection = (await this.inspectStaleMerge(refreshed));
+          this.assertExecution(refreshed.id, execution);
+          if (this.hookManager.runtimeHandoffOwnsRequest(refreshed.id)) return;
+          if (inspection.outcome === "atomic_applied") {
+            await this.finishRecoveredAtomicMerge(refreshed, inspection.mergeSha);
+            return;
+          }
+          if (inspection.outcome === "requeued") {
+            const now = this.now();
+            this.db.transaction(() => {
+              this.db.prepare(
+                `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
+                  exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
+                  approval_source = 'manual', approval_lease_id = NULL,
+                  approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`,
+              ).run(now + this.ttlMs, now, request.id);
+              appendAuthLifecycleEvent(this.db, {
+                requestId: request.id, eventType: "revised", priorStatus: refreshed.status,
+                nextStatus: "pending", actor: systemAction(),
+                reason: `Atomic recovery requeued request: ${inspection.detail}`, occurredAt: now,
+              });
+            })();
+            const requeued = this.requireRequest(request.id);
+            this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
+            return;
+          }
+          // The three remaining outcomes used to share one message, "Atomic merge
+          // applied and needs recovery". For `failed` that is the opposite claim
+          // about whether the merge landed — and `failed` covers cases like "target
+          // ref does not match the pinned atomic merge commit" and "atomic merge
+          // signature is not authorized", where asserting a routine recovery
+          // actively misdirects the operator. Report what the inspection found.
+          const now = this.now();
+          const message = ((): string => {
+            switch (inspection.outcome) {
+              case "atomic_needs_recovery":
+                return `Atomic merge applied and needs recovery: ${inspection.detail}`;
+              case "failed":
+                return `Atomic merge recovery could not prove the merge landed correctly: ${inspection.detail}`;
+              default:
+                return assertNever(inspection, `atomic recovery for ${request.id}`);
+            }
+          })();
+          if (!message) return;
+          this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+            .run(message, now, request.id);
+        }).catch((error) => {
+          if (this.disposed || !this.isDbOpen() || execution && !this.executionIsCurrent(request.id, execution)) return;
+          const now = this.now();
+          // A thrown recovery pass proves nothing about the merge either.
+          this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+            .run(
+              `Atomic merge recovery failed before reaching a verdict: ${errorMessage(error) ?? String(error)}`,
+              now,
+              request.id,
+            );
+        })
+          .finally(() => {
+            this.inFlight.delete(request.id);
           });
-        })();
-        const requeued = this.requireRequest(request.id);
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
-        return;
-      }
-      // The three remaining outcomes used to share one message, "Atomic merge
-      // applied and needs recovery". For `failed` that is the opposite claim
-      // about whether the merge landed — and `failed` covers cases like "target
-      // ref does not match the pinned atomic merge commit" and "atomic merge
-      // signature is not authorized", where asserting a routine recovery
-      // actively misdirects the operator. Report what the inspection found.
-      const now = this.now();
-      const message = ((): string => {
-        switch (inspection.outcome) {
-          case "atomic_needs_recovery":
-            return `Atomic merge applied and needs recovery: ${inspection.detail}`;
-          case "failed":
-            return `Atomic merge recovery could not prove the merge landed correctly: ${inspection.detail}`;
-          default:
-            return assertNever(inspection, `atomic recovery for ${request.id}`);
-        }
-      })();
-      if (!message) return;
-      this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(message, now, request.id);
-    }).catch((error) => {
-      if (this.disposed || !this.isDbOpen() || execution && !this.executionIsCurrent(request.id, execution)) return;
-      const now = this.now();
-      // A thrown recovery pass proves nothing about the merge either.
-      this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(
-          `Atomic merge recovery failed before reaching a verdict: ${errorMessage(error) ?? String(error)}`,
-          now,
-          request.id,
-        );
-    })
-      .finally(() => {
-        this.inFlight.delete(request.id);
+        this.inFlight.set(request.id, promise);
       });
-    this.inFlight.set(request.id, promise);
+    } finally {
+      if (this.inFlight.get(request.id) === pendingIdentity.promise) this.inFlight.delete(request.id);
+      this.queuedAdmissions.delete(pendingIdentity.promise);
+      pendingIdentity.resolve();
+    }
   }
 
   private async finishRecoveredAtomicMerge(request: AuthRequest, mergeSha: string): Promise<void> {
@@ -6034,7 +6112,7 @@ export class AuthQueue {
    *
    *   Stage 1 (auth:merged): broadcast immediately (merge type only) — the
    *     perceived-latency fix. The UI flips the row here, before any finalizer.
-   *   Stage 2 (sync, then auth:resolved): pure-SQLite finalizers whose completed
+   *   Stage 2 (then auth:resolved): critical finalizers whose completed
    *     state consumers rely on at auth:resolved — persist merge_head_sha,
    *     deferred ledger completion (incl. issue closes), and direct work-unit
    *     resolution. auth:resolved keeps its exact prior shape/semantics.
@@ -6087,11 +6165,14 @@ export class AuthQueue {
     (await this.applyLedgerCompletionForRequest(finalized));
     // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
     // work_units table may not exist in test DBs or fresh installs mid-migration).
-    // Only the DB-only direct matches run here; ancestry scans are Stage 3.
+    // Direct matches finish here; ancestry scans remain in Stage 3.
+    let directObservation = this.observationToken(finalized.id, finalized);
     if (this.tableExists("work_units")) {
       try {
-        this.resolveDirectWorkUnitsOnMerge(finalized);
+        const resolved = await this.resolveDirectWorkUnitsOnMerge(finalized);
+        directObservation = resolved.observation;
       } catch (err) {
+        if (err instanceof RepoIdentityReadSetChanged || this.phaseAbort.signal.aborted) throw err;
         authLog("warn", "auth_work_units_resolve_failed", {
           subsystem: "auth",
           auth_request_id: finalized.id,
@@ -6099,6 +6180,8 @@ export class AuthQueue {
         });
       }
     }
+
+    this.assertObservation(finalized.id, directObservation);
 
     // Stage 2 complete — consumers (channel server, UI) observe resolved
     // ledger/work-unit state here. Shape/semantics unchanged from before.
@@ -6113,6 +6196,13 @@ export class AuthQueue {
         auth_request_id: completed.id,
       });
     }
+  }
+
+  private finalizerDecisionSnapshot(requestId: string): string {
+    const snapshot = JSON.parse(authRequestSnapshot(this.db, requestId));
+    delete snapshot.request.updated_at;
+    delete snapshot.request.merge_finalizer_state;
+    return JSON.stringify([snapshot, this.custodyAuthority(this.requireRequest(requestId))]);
   }
 
   /**
@@ -6149,10 +6239,17 @@ export class AuthQueue {
       return;
     }
 
-    if ((await this.successfulMergeEvidenceFailure(request))) return;
-
-    const mergeHeadSha = request.merge_head_sha ?? (await this.resolveMergeHeadShaForRequest(request));
-    const finalized: AuthRequest = { ...request, merge_head_sha: mergeHeadSha };
+    const originalObservation = this.observationToken(request.id, request);
+    if (await this.successfulMergeEvidenceFailure(request)) return;
+    this.assertObservation(request.id, originalObservation);
+    const mergeHeadSha = request.merge_head_sha ?? await this.resolveMergeHeadShaForRequest(request);
+    this.assertObservation(request.id, originalObservation);
+    if (request.merge_head_sha == null && mergeHeadSha) {
+      this.db.prepare("UPDATE auth_requests SET merge_head_sha = ? WHERE id = ? AND merge_head_sha IS NULL").run(mergeHeadSha, requestId);
+    }
+    let finalized = this.requireRequest(requestId);
+    const decisionSnapshot = () => this.finalizerDecisionSnapshot(requestId);
+    let validatedDecision = decisionSnapshot();
     const state = this.readFinalizerState(requestId);
 
     const steps: Array<{ name: FinalizerStepName; run: () => Promise<FinalizerStepOutput | void> }> = [
@@ -6172,7 +6269,7 @@ export class AuthQueue {
         name: "resolve_ancestry_work_units",
         run: async () => {
           if (this.tableExists("work_units")) {
-            const resolved = await this.resolveAncestryWorkUnitsOnMerge(finalized);
+            const resolved = await this.resolveAncestryWorkUnitsOnMerge(finalized, successor => { validatedDecision = successor; });
             return { resolved_work_unit_ids: resolved };
           }
           return { resolved_work_unit_ids: [] };
@@ -6203,6 +6300,11 @@ export class AuthQueue {
       if (this.disposed || !this.isDbOpen()) {
         return;
       }
+      if (decisionSnapshot() !== validatedDecision) {
+        authLog("warn", "auth_finalizer_request_changed", { subsystem: "auth", auth_request_id: requestId, step: step.name });
+        return;
+      }
+      finalized = this.requireRequest(requestId);
       const entry = state[step.name];
       if (entry?.state === "done" || entry?.state === "failed") {
         continue;
@@ -6234,6 +6336,10 @@ export class AuthQueue {
           attempts,
           error: message,
         });
+      }
+      if (decisionSnapshot() !== validatedDecision) {
+        authLog("warn", "auth_finalizer_request_changed", { subsystem: "auth", auth_request_id: requestId, step: step.name });
+        return;
       }
       this.writeFinalizerState(requestId, state);
     }
@@ -6476,38 +6582,32 @@ export class AuthQueue {
     }
   }
 
-  private pendingMergeRequestsForCheck({
-    repo,
-    baseBranch,
-    excludeId,
-  }: {
-    repo: string | null;
-    baseBranch: string;
-    excludeId: string | null;
-  }): AuthRequest[] {
+  private pendingMergeRowsForCheck({ baseBranch, excludeId }: { baseBranch: string; excludeId: string | null }): AuthRequest[] {
     const args: unknown[] = [baseBranch];
-    let where = "type = 'merge' AND base_branch = ? AND head_branch IS NOT NULL " +
-      "AND status IN ('pending', 'approved', 'executing')";
-    if (excludeId) {
-      where += " AND id != ?";
-      args.push(excludeId);
+    let where = "type = 'merge' AND base_branch = ? AND head_branch IS NOT NULL AND status IN ('pending', 'approved', 'executing')";
+    if (excludeId) { where += " AND id != ?"; args.push(excludeId); }
+    return (this.db.prepare(`SELECT * FROM auth_requests WHERE ${where} ORDER BY COALESCE(skipped_at, created_at) ASC, created_at ASC`).all(...args) as Record<string, unknown>[]).map(mapRow);
+  }
+
+  private async observePendingMergeQueue(input: { repo: string | null; baseBranch: string; excludeId: string | null }): Promise<{ requests: AuthRequest[]; assertCurrent(): void }> {
+    for (let attempt = 0; ; attempt++) {
+      const rows = this.pendingMergeRowsForCheck(input);
+      const decision = (requests: AuthRequest[]) => JSON.stringify(requests.map(row => [row.id, row.status, row.repo, row.cwd, row.target_repo_root, row.base_branch, row.head_branch, row.merge_head_sha, row.skipped_at, row.created_at]));
+      const snapshot = decision(rows);
+      const identity = await observeRepoIdentities(this.db, [input.repo, ...rows.map(row => row.repo)], [], this.phaseAbort.signal);
+      const assertCurrent = () => {
+        identity.assertCurrent();
+        if (decision(this.pendingMergeRowsForCheck(input)) !== snapshot) throw new RepoIdentityReadSetChanged("Pending merge queue changed during identity observation; retry its preflight.");
+      };
+      try { assertCurrent(); }
+      catch (error) { if (!(error instanceof RepoIdentityReadSetChanged)) throw error; if (attempt >= 2) throw new AuthQueueError("lifecycle_conflict", error.message); continue; }
+      const keys = identity.keysForRef(input.repo);
+      return { requests: !input.repo ? rows : rows.filter(row => this.repoRefsMatch(input.repo, keys, row.repo ?? null, identity)), assertCurrent };
     }
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM auth_requests WHERE ${where} ` +
-          "ORDER BY COALESCE(skipped_at, created_at) ASC, created_at ASC"
-      )
-      .all(...args) as Record<string, unknown>[];
-    const mapped = rows.map((row) => mapRow(row));
-    // Issue ded17e6 — repo filtering moved out of SQL so it can be canonical.
-    // A null repo means "no repo constraint" (unchanged), otherwise keep only
-    // rows whose repo denotes the same physical repo (path/symlink/string alias
-    // aware, with exact-string fallback).
-    if (!repo) {
-      return mapped;
-    }
-    const repoKeys = canonicalRepoKeysForRef(this.db, repo);
-    return mapped.filter((request) => this.repoRefsMatch(repo, repoKeys, request.repo ?? null));
+  }
+
+  private async pendingMergeRequestsForCheck(input: { repo: string | null; baseBranch: string; excludeId: string | null }): Promise<AuthRequest[]> {
+    return (await this.observePendingMergeQueue(input)).requests;
   }
 
   private mergeQueueFingerprint(requests: AuthRequest[]): string {
@@ -6655,7 +6755,7 @@ export class AuthQueue {
     if (!completed.repo || !completed.base_branch || !completed.cwd) {
       return;
     }
-    await this.runOnRepoChain(this.chainKeyForRequest(completed), () =>
+    await this.onObservedRepoChain(completed, () =>
       this.revalidatePendingMergeRequestsSerialized(completed),
     );
   }
@@ -6664,11 +6764,11 @@ export class AuthQueue {
     if (this.disposed || !this.isDbOpen() || !completed.repo || !completed.base_branch || !completed.cwd) {
       return;
     }
-    const pending = this.pendingMergeRequestsForCheck({
+    const pending = (await this.pendingMergeRequestsForCheck({
       repo: completed.repo,
       baseBranch: completed.base_branch,
       excludeId: completed.id,
-    }).filter((request) => request.status === "pending");
+    })).filter((request) => request.status === "pending");
     if (pending.length === 0) {
       return;
     }
@@ -7161,13 +7261,17 @@ export class AuthQueue {
       "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0))";
 
     const completedRepo = completed.repo ?? null;
-    const completedKeys = canonicalRepoKeysForRef(this.db, completedRepo);
-    const siblings = (this.db
+    const completedObservation = this.observationToken(completed.id, completed);
+    const siblingRows = (this.db
       .prepare(
         `SELECT * FROM auth_requests WHERE ${where}`
       )
-      .all(...args) as Record<string, unknown>[])
-      .filter((row) => this.repoRefsMatch(completedRepo, completedKeys, (row.repo as string | null) ?? null));
+      .all(...args) as Record<string, unknown>[]);
+    const identity = await observeRepoIdentities(this.db, [completedRepo, ...siblingRows.map(row => row.repo as string | null)], [], this.phaseAbort.signal);
+    identity.assertCurrent();
+    this.assertObservation(completed.id, completedObservation);
+    const completedKeys = identity.keysForRef(completedRepo);
+    const siblings = siblingRows.filter(row => this.repoRefsMatch(completedRepo, completedKeys, (row.repo as string | null) ?? null, identity));
 
     if (siblings.length === 0) {
       return;
@@ -7181,10 +7285,14 @@ export class AuthQueue {
 
     for (const row of siblings) {
       const sibling = mapRow(row);
+      const siblingObservation = this.observationToken(sibling.id, sibling);
       if (!(await this.shouldAutoDismissDuplicate(completed, sibling))) {
         continue;
       }
       this.db.transaction(() => {
+        identity.assertCurrent();
+        this.assertObservation(completed.id, completedObservation);
+        this.assertObservation(sibling.id, siblingObservation);
         supersedeStmt.run(completed.id, now, now, reason, sibling.id);
         appendAuthLifecycleEvent(this.db, {
           requestId: sibling.id,
@@ -7283,9 +7391,9 @@ export class AuthQueue {
   }
 
   /**
-   * Issue 75f52ac — Stage 2 (synchronous, DB-only) work-unit resolution.
+   * Issue 75f52ac — Stage 2 direct work-unit resolution.
    * Consumers rely on this completed state at auth:resolved, so it runs before
-   * that broadcast. Covers the matches that never spawn git:
+   * that broadcast. Observe identity before the DB-only commit; no ancestry scan:
    * 1. Work units whose auth_request_id matches the completed request
    * 2. Work units whose branch matches the auth request's head_branch
    * 4. Work units linked to explicit auth closure issue IDs
@@ -7293,7 +7401,27 @@ export class AuthQueue {
    * The ancestry scan (original step 3) and retention sweep spawn git and move
    * to Stage 3 (resolveAncestryWorkUnitsOnMerge). Bug: 8a281b3.
    */
-  private resolveDirectWorkUnitsOnMerge(completed: AuthRequest): string[] {
+  private async resolveDirectWorkUnitsOnMerge(completed: AuthRequest): Promise<{ resolvedIds: string[]; observation: string }> {
+    const observed = this.observationToken(completed.id, completed);
+    const read = () => (this.db.prepare("SELECT * FROM work_units WHERE branch = ? AND state IN ('open', 'committed', 'abandoned') ORDER BY id").all(completed.head_branch) as Record<string, unknown>[]).map(row => Object.fromEntries(["id", "repo_id", "branch", "state", "auth_request_id", "assigned_session_id", "owner_user_id", "owner_credential_id", "custody_generation"].map(key => [key, row[key] ?? null]))) as Array<{ repo_id: string }>;
+    for (let attempt = 0; ; attempt++) {
+      const rows = read();
+      const identity = await observeRepoIdentities(this.db, [completed.repo, ...rows.map(row => row.repo_id)], [completed.target_repo_root, completed.cwd, ...rows.map(row => row.repo_id)], this.phaseAbort.signal);
+      try {
+        return this.db.transaction(() => {
+          identity.assertCurrent();
+          this.assertObservation(completed.id, observed);
+          if (JSON.stringify(read()) !== JSON.stringify(rows)) throw new RepoIdentityReadSetChanged("Work-unit authority changed during direct resolution");
+          const resolvedIds = this.resolveDirectWorkUnitsFromIdentities(completed, identity);
+          return { resolvedIds, observation: this.observationToken(completed.id) };
+        })();
+      } catch (error) {
+        if (!(error instanceof RepoIdentityReadSetChanged) || attempt >= 2) throw error;
+      }
+    }
+  }
+
+  private resolveDirectWorkUnitsFromIdentities(completed: AuthRequest, identity: RepoIdentityObservation): string[] {
     const now = this.now();
     const resolveStmt = this.db.prepare(
       `UPDATE work_units
@@ -7304,7 +7432,7 @@ export class AuthQueue {
     const resolvedIds = new Set<string>();
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
     const repoRoots = this.authRequestRepoRoots(completed);
-    const requestKeys = this.canonicalKeysForRequest(completed);
+    const requestKeys = this.canonicalKeysForRequest(completed, identity);
 
     // 1. Match by auth_request_id
     const byAuthId = this.db
@@ -7330,7 +7458,7 @@ export class AuthQueue {
       for (const row of byBranch) {
         if (
           !resolvedIds.has(row.id) &&
-          this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys)
+          this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)
         ) {
           resolveStmt.run(now, completed.id, row.id);
           resolvedIds.add(row.id);
@@ -7414,7 +7542,7 @@ export class AuthQueue {
    * last_commit_hash snapshot. Idempotent: guarded UPDATEs skip already-resolved
    * rows, and the retirement sweep is NULL-guarded. Returns the resolved ids.
    */
-  private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest): Promise<string[]> {
+  private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest, acceptOwnedSuccessor?: (decision: string) => void): Promise<string[]> {
     const now = this.now();
     const recoverMergedStmt = this.db.prepare(
       `UPDATE work_units
@@ -7443,64 +7571,77 @@ export class AuthQueue {
     // Issue 93d978e — one batch per pass; its per-(root,target) git build
     // outcomes gate the retirement sweep below.
     const batch = new AncestryBatch();
-    for (const row of await this.workUnitsMergedByRequest(completed, batch)) {
-      if (!resolvedIds.has(row.id)) {
-        if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
-          recoverClosedMergedStmt.run(now, completed.id, row.id);
-        } else {
-          recoverMergedStmt.run(now, row.id);
+    const retirementBefore = now - this.workUnitAbandonedScanRetentionMs;
+    const readRetirement = () => this.workUnitsHaveRetirementColumn()
+      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "continuation_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
+      : [];
+    const retirementState = JSON.stringify(readRetirement());
+    const scan = await this.workUnitsMergedByRequest(completed, batch);
+    const committed = this.db.transaction(() => {
+      scan.assertCurrent();
+      if (!batch.hadFailure() && JSON.stringify(readRetirement()) !== retirementState) throw new RepoIdentityReadSetChanged("Retirement authority changed during ancestry observation");
+      for (const row of scan.matches) {
+        if (!resolvedIds.has(row.id)) {
+          if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
+            recoverClosedMergedStmt.run(now, completed.id, row.id);
+          } else {
+            recoverMergedStmt.run(now, row.id);
+          }
+          resolvedIds.add(row.id);
         }
-        resolvedIds.add(row.id);
       }
-    }
 
-    // Issue 93d978e — retire abandoned rows that have aged past the retention
-    // window from future merge-side ancestry scans. Runs AFTER the scan so the
-    // current merge still gets its chance at every stale row. This is a
-    // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
-    // not a deletion — state and provenance are preserved. The NULL guard keeps
-    // it idempotent across finalizer re-runs.
-    //
-    // Integration reconciliation: skip the sweep entirely when the ancestry
-    // batch had any git build failure this pass. A failed rev-list/for-each-ref
-    // makes every ancestry test read as "not an ancestor", so a genuinely merged
-    // deleted-branch snapshot would look unmerged; retiring off those false
-    // negatives could tombstone real merges and exclude them from future
-    // automatic resolution. A transient git failure must not cost data.
-    if (this.workUnitsHaveRetirementColumn()) {
-      if (batch.hadFailure()) {
-        authLog("warn", "auth_work_units_scan_retirement_skipped", {
-          subsystem: "auth",
-          auth_request_id: completed.id,
-          reason: "ancestry_batch_build_failed",
-        });
-      } else {
-        const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
-        const retired = this.db.prepare(
-          `UPDATE work_units SET merge_scan_retired_at = ?
-           WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
-             AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
-        ).run(now, retireCutoff);
-        if (retired.changes > 0) {
-          authLog("info", "auth_work_units_scan_retired", {
+      // Issue 93d978e — retire abandoned rows that have aged past the retention
+      // window from future merge-side ancestry scans. Runs AFTER the scan so the
+      // current merge still gets its chance at every stale row. This is a
+      // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
+      // not a deletion — state and provenance are preserved. The NULL guard keeps
+      // it idempotent across finalizer re-runs.
+      //
+      // Integration reconciliation: skip the sweep entirely when the ancestry
+      // batch had any git build failure this pass. A failed rev-list/for-each-ref
+      // makes every ancestry test read as "not an ancestor", so a genuinely merged
+      // deleted-branch snapshot would look unmerged; retiring off those false
+      // negatives could tombstone real merges and exclude them from future
+      // automatic resolution. A transient git failure must not cost data.
+      if (this.workUnitsHaveRetirementColumn()) {
+        if (batch.hadFailure()) {
+          authLog("warn", "auth_work_units_scan_retirement_skipped", {
             subsystem: "auth",
             auth_request_id: completed.id,
-            retired_count: retired.changes,
+            reason: "ancestry_batch_build_failed",
           });
+        } else {
+          const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
+          const retired = this.db.prepare(
+            `UPDATE work_units SET merge_scan_retired_at = ?
+             WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
+               AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+          ).run(now, retireCutoff);
+          if (retired.changes > 0) {
+            authLog("info", "auth_work_units_scan_retired", {
+              subsystem: "auth",
+              auth_request_id: completed.id,
+              retired_count: retired.changes,
+            });
+          }
         }
       }
-    }
 
-    if (resolvedIds.size > directResolvedCount) {
-      authLog("info", "auth_work_units_resolved", {
-        subsystem: "auth",
-        auth_request_id: completed.id,
-        resolved_count: resolvedIds.size - directResolvedCount,
-        head_branch: completed.head_branch,
-        scope: "ancestry",
-      });
-    }
-    return [...resolvedIds];
+      if (resolvedIds.size > directResolvedCount) {
+        authLog("info", "auth_work_units_resolved", {
+          subsystem: "auth",
+          auth_request_id: completed.id,
+          resolved_count: resolvedIds.size - directResolvedCount,
+          head_branch: completed.head_branch,
+          scope: "ancestry",
+        });
+      }
+      return { ids: [...resolvedIds], decision: this.finalizerDecisionSnapshot(completed.id) };
+    })();
+    // Transfer the successor captured inside the validated transaction, never a fresh post-await token.
+    acceptOwnedSuccessor?.(committed.decision);
+    return committed.ids;
   }
 
   // Issue 93d978e — memoized presence of the merge_scan_retired_at column.
@@ -7524,20 +7665,20 @@ export class AuthQueue {
 
   // Issue 75f52ac — async so the batched ancestry git spawns run off the event
   // loop inside the Stage 3 finalizer queue.
-  private async workUnitsMergedByRequest(completed: AuthRequest, batch: AncestryBatch): Promise<Array<{
-    id: string;
-    issue_id: string;
-    ledger_issue_id: string | null;
-  }>> {
+  private async workUnitsMergedByRequest(completed: AuthRequest, batch: AncestryBatch): Promise<{
+    matches: Array<{ id: string; issue_id: string; ledger_issue_id: string | null }>;
+    assertCurrent(): void;
+  }> {
     if (completed.type !== "merge" || !completed.base_branch) {
-      return [];
+      const observed = this.observationToken(completed.id, completed);
+      return { matches: [], assertCurrent: () => this.assertObservation(completed.id, observed) };
     }
     // Issue 93d978e — retired abandoned rows are excluded from merge scans;
     // guarded so DBs without the column behave exactly as before.
     const retirementFilter = this.workUnitsHaveRetirementColumn()
       ? "AND (wu.state != 'abandoned' OR wu.merge_scan_retired_at IS NULL)"
       : "";
-    const candidates = this.db.prepare(
+    const readCandidates = () => this.db.prepare(
       `SELECT
          wu.id,
          wu.issue_id,
@@ -7553,7 +7694,7 @@ export class AuthQueue {
          AND wu.branch IS NOT NULL
          ${retirementFilter}
          AND (wu.auth_request_id IS NULL OR wu.auth_request_id = ?)
-       ORDER BY wu.id`
+       ORDER BY wu.id, b.repo_root`
     ).all(completed.id) as Array<{
       id: string;
       issue_id: string;
@@ -7565,11 +7706,23 @@ export class AuthQueue {
       last_commit_hash: string | null;
     }>;
 
+    const candidates = readCandidates();
+    const candidateState = JSON.stringify(candidates);
+    const observed = this.observationToken(completed.id, completed);
+    const readAuthority = (id: string) => {
+      const row = this.db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      return JSON.stringify(row ? ["id", "state", "repo_id", "branch", "issue_id", "ledger_issue_id", "auth_request_id", "assigned_session_id", "owner_user_id", "owner_credential_id", "custody_generation", "merge_scan_retired_at"].map(key => row[key] ?? null) : null);
+    };
+    const authorities = new Map(candidates.map(row => [row.id, readAuthority(row.id)]));
+    const readBranch = (branch: string) => JSON.stringify(this.db.prepare("SELECT repo_root, last_commit_hash FROM branches WHERE branch = ? ORDER BY repo_root").all(branch));
+    const branchStates = new Map(candidates.map(row => [row.id, readBranch(row.branch)]));
+    const identity = await observeRepoIdentities(this.db, [completed.repo, ...candidates.flatMap(row => [row.repo_id, row.repo_root])], [completed.target_repo_root, completed.cwd, ...candidates.flatMap(row => [row.repo_id, row.repo_root])], this.phaseAbort.signal);
+    identity.assertCurrent();
     const repoRoots = this.authRequestRepoRoots(completed);
     // Issue ded17e6 — canonical repo identity for the completed request, computed
     // once. Unifies path/symlink aliases and the `dotfiles`/`.dotfiles` repo-string
     // mismatch so those work units resolve on merge.
-    const requestKeys = this.canonicalKeysForRequest(completed);
+    const requestKeys = this.canonicalKeysForRequest(completed, identity);
     // Issue 93d978e — the caller owns one batch per pass so its git-build
     // outcomes (see AncestryBatch.hadFailure) can gate the retirement sweep;
     // the reachable-commit sets and branch tip maps are cached for this request
@@ -7583,11 +7736,11 @@ export class AuthQueue {
       if (row.branch === completed.head_branch) {
         continue;
       }
-      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys)) {
+      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)) {
         continue;
       }
       const branchSnapshotMatchesRequest = row.repo_root
-        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots, requestKeys)
+        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots, requestKeys, identity)
         : true;
       const roots = [...repoRoots];
       if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
@@ -7615,7 +7768,12 @@ export class AuthQueue {
         });
       }
     }
-    return [...resolved.values()];
+    return { matches: [...resolved.values()], assertCurrent: () => {
+      identity.assertCurrent();
+      this.assertObservation(completed.id, observed);
+      if (JSON.stringify(readCandidates()) !== candidateState) throw new RepoIdentityReadSetChanged("Ancestry candidates changed during observation");
+      for (const row of candidates) if (readAuthority(row.id) !== authorities.get(row.id) || readBranch(row.branch) !== branchStates.get(row.id)) throw new RepoIdentityReadSetChanged("Work-unit authority or branch snapshot changed during ancestry observation");
+    } };
   }
 
   private explicitClosureIssueRefs(completed: AuthRequest): Set<string> {
@@ -7689,6 +7847,7 @@ export class AuthQueue {
     completed: AuthRequest,
     repoRoots: string[],
     requestKeys: Set<string>,
+    identity: RepoIdentityObservation,
   ): boolean {
     // Issue ded17e6 — canonical identity match first. Resolve the work unit's
     // repo value (a repo string like "dotfiles" or a checkout root path) to its
@@ -7696,12 +7855,12 @@ export class AuthQueue {
     // is what makes work unit repo_id="dotfiles" resolve against request
     // repo=".dotfiles" when the registry roots both at one physical repo.
     if (requestKeys.size > 0) {
-      for (const key of canonicalRepoKeysForRef(this.db, repoValue)) {
+      for (const key of identity.keysForRef(repoValue)) {
         if (requestKeys.has(key)) {
           return true;
         }
       }
-      const pathKey = canonicalRepoKeyForPath(repoValue);
+      const pathKey = identity.keyForPath(repoValue);
       if (pathKey && requestKeys.has(pathKey)) {
         return true;
       }
@@ -7722,15 +7881,15 @@ export class AuthQueue {
    * its resolved execution roots (target_repo_root, cwd) plus every key its
    * free-form `repo` string resolves to through the registry.
    */
-  private canonicalKeysForRequest(request: AuthRequest): Set<string> {
+  private canonicalKeysForRequest(request: AuthRequest, identity: RepoIdentityObservation): Set<string> {
     const keys = new Set<string>();
     for (const path of [request.target_repo_root, request.cwd]) {
-      const key = canonicalRepoKeyForPath(path);
+      const key = identity.keyForPath(path);
       if (key) {
         keys.add(key);
       }
     }
-    for (const key of canonicalRepoKeysForRef(this.db, request.repo)) {
+    for (const key of identity.keysForRef(request.repo)) {
       keys.add(key);
     }
     return keys;
@@ -7743,8 +7902,8 @@ export class AuthQueue {
    * DBs, deleted checkouts), fall back to today's exact string comparison so no
    * previously-matching pair stops matching.
    */
-  private repoRefsMatch(refA: string | null, keysA: Set<string>, refB: string | null): boolean {
-    const keysB = canonicalRepoKeysForRef(this.db, refB);
+  private repoRefsMatch(refA: string | null, keysA: Set<string>, refB: string | null, identity: RepoIdentityObservation): boolean {
+    const keysB = identity.keysForRef(refB);
     if (keysA.size > 0 && keysB.size > 0) {
       for (const key of keysA) {
         if (keysB.has(key)) {

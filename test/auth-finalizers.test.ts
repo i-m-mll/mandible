@@ -114,6 +114,41 @@ function eventsFor(events: SseEvent[], requestId: string, name: string): SseEven
 }
 
 describe("staged finalizer lifecycle", () => {
+  it.each(["own progress", "branch", "closures", "proof"])("validates completed authority after the final archive await: %s", async change => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+      broadcast: event => events.push(event),
+      codexThreadArchiver: { archive: async () => { enter(); await gate; }, unarchive: async () => undefined },
+    });
+    try {
+      const id = await submitSuccessfulRequest(queue);
+      insertCodexWorkUnit(db, "wu-final-step", id, "thread-final-step");
+      await completeFixturePublication(queue, id);
+      await entered;
+      const before = queue.getRequestExact(id)!;
+      expect(JSON.parse(before.merge_finalizer_state!).resolve_ancestry_work_units.state).toBe("done");
+      if (change === "branch") db.prepare("UPDATE auth_requests SET head_branch = 'feature/changed' WHERE id = ?").run(id);
+      if (change === "closures") db.prepare("UPDATE auth_requests SET issue_closures = '[\"changed-closure\"]' WHERE id = ?").run(id);
+      if (change === "proof") db.prepare("UPDATE auth_requests SET execution_evidence_id = NULL WHERE id = ?").run(id);
+      release();
+      await queue.drainFinalizers();
+      const after = queue.getRequestExact(id)!;
+      if (change === "own progress") {
+        expect(after.merge_finalized_at).not.toBeNull();
+        expect(eventsFor(events, id, "auth:finalized")).toHaveLength(1);
+      } else {
+        expect(after.merge_finalized_at).toBeNull();
+        expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
+        expect(JSON.parse(after.merge_finalizer_state!).archive_worker_threads?.state).not.toBe("done");
+      }
+    } finally { release(); await queue.dispose(); db.close(); }
+  });
+
   it("emits merged, resolved and finalized in order, with finalizers off the critical path", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
@@ -484,6 +519,10 @@ describe("work-unit resolution on merge", () => {
     const now = 10_000;
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
+    const failureDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ancestry-failure-"));
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8", timeout: 5000 }).trim();
+    const previousPath = process.env.PATH;
+    fs.writeFileSync(path.join(failureDir, "git"), `#!/bin/sh\nif [ "$1" = rev-list ]; then echo 'private ancestry read failure' >&2; exit 73; fi\nexec ${JSON.stringify(realGit)} "$@"\n`, { mode: 0o755 });
     try {
       commitOnBranch(repo, "feature/live-candidate", { "live.txt": "live\n" });
       commitOnBranch(repo, "integration/bf-batch", { "bf.txt": "bf\n" });
@@ -510,9 +549,10 @@ describe("work-unit resolution on merge", () => {
         execution_mode: "daemon",
       }));
 
-      // A nonexistent target makes the batch build fail: a transient git
-      // failure must not cost the stale row its scan eligibility.
-      await resolveAncestry(queue, { ...request, merge_head_sha: "b".repeat(40) });
+      // An actual child failure preserves the request's original authority.
+      process.env.PATH = `${failureDir}${path.delimiter}${previousPath ?? ""}`;
+      try { await resolveAncestry(queue, queue.getRequestExact(request.id)!); }
+      finally { process.env.PATH = previousPath; }
       expect(db.prepare("SELECT merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'").get())
         .toEqual({ merge_scan_retired_at: null });
 
@@ -521,7 +561,9 @@ describe("work-unit resolution on merge", () => {
         .toEqual({ state: "abandoned", merge_scan_retired_at: now });
       (await queue.dispose());
     } finally {
+      process.env.PATH = previousPath;
       db.close();
+      fs.rmSync(failureDir, { recursive: true, force: true });
     }
   });
 
