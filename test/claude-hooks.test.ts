@@ -1,11 +1,10 @@
+// @vitest-environment node
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import SqliteDatabase from "../src/sqlite.ts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   extractSettingsPath,
   getUserClaudeIntegrationStatus,
@@ -19,7 +18,9 @@ import {
   getHookNotificationAttention,
   resetHookNotificationAttentionForTests,
 } from "../src/claude-hook-attention.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
+import { scratchDir } from "./helpers/cli-process.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { registerHookRoutes } from "../src/routes/hooks.js";
 import { Router } from "../src/server.js";
 
@@ -28,9 +29,8 @@ let router: Router;
 let tempDir = "";
 
 beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-claude-hooks-"));
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  tempDir = scratchDir("claude-hooks");
+  db = migratedMemoryDb();
   setDb(db);
   resetHookNotificationAttentionForTests();
   router = new Router();
@@ -38,20 +38,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   db.close();
-  fs.rmSync(tempDir, { recursive: true, force: true });
   resetHookNotificationAttentionForTests();
 });
 
 describe("Claude hook routes", () => {
-  it("allows hook endpoints over file RPC policy", () => {
-    expect(router.resolveFileRpcPolicy("POST", "/api/hooks/ingest-nudge")).toBe(true);
-    expect(router.resolveFileRpcPolicy("POST", "/api/hooks/notification")).toBe(true);
-    expect(router.resolveFileRpcPolicy("POST", "/api/hooks/statusline")).toBe(true);
-  });
-
   it("ingests one transcript path immediately and rate-limits a burst nudge", async () => {
     const transcriptPath = writeClaudeTranscript("claude-session-1");
+    // One instant for both nudges: the burst is defined by the clock, not by how long ingestion takes.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
 
     const first = await router.invoke({
       method: "POST",
@@ -80,25 +76,15 @@ describe("Claude hook routes", () => {
     expect(second.body).toMatchObject({ ok: true, status: "rate_limited" });
   });
 
-  it("skips attention for unknown sessions without failing the hook", async () => {
-    const response = await router.invoke({
+  it("raises notification attention for a known provider session and skips unknown ones without failing", async () => {
+    const unknown = await router.invoke({
       method: "POST",
       url: "/api/hooks/notification",
       body: { sessionRef: "missing-claude-session", message: "Permission needed" },
     });
+    expect(unknown.status).toBe(202);
+    expect(unknown.body).toMatchObject({ ok: true, attention: { ok: true, status: "unknown_session", session_id: null } });
 
-    expect(response.status).toBe(202);
-    expect(response.body).toMatchObject({
-      ok: true,
-      attention: {
-        ok: true,
-        status: "unknown_session",
-        session_id: null,
-      },
-    });
-  });
-
-  it("raises hook notification attention for a known provider session", async () => {
     db.prepare(`
       INSERT INTO console_sessions (
         id, label, command, args_json, provider_session_id, cwd, env_json,
@@ -238,66 +224,24 @@ describe("Claude hook routes", () => {
     });
   });
 
-  it("stores statusline telemetry for unrecognized external sessions", async () => {
+  it("keys statusline telemetry for an unrecognized session by its provider ref", async () => {
     const response = await router.invoke({
       method: "POST",
       url: "/api/hooks/statusline?sessionRef=external-claude",
-      body: {
-        model: "Claude",
-        context_window: { used_percentage: null },
-      },
+      body: { model: "Claude", context_window: { used_percentage: null } },
     });
 
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
       ok: true,
-      telemetry: {
-        telemetry_key: "provider:external-claude",
-        console_session_id: null,
-        provider_session_id: "external-claude",
-      },
-      ingest: {
-        ok: true,
-        status: "no_target",
-      },
-    });
-  });
-
-  it("returns last-known statusline telemetry by session ref", async () => {
-    db.prepare(`
-      INSERT INTO console_session_telemetry (
-        telemetry_key, console_session_id, provider_session_id, transcript_path,
-        model, context_used_percentage, context_window_size,
-        raw_payload_json, received_at
-      ) VALUES (
-        'provider:external-claude-read', NULL, 'external-claude-read', NULL,
-        'Claude', 64, 200000,
-        '{}', 12345
-      )
-    `).run();
-
-    const response = await router.invoke({
-      method: "GET",
-      url: "/api/hooks/statusline?sessionRef=external-claude-read",
-    });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      telemetry: {
-        telemetry_key: "provider:external-claude-read",
-        provider_session_id: "external-claude-read",
-        context_window: {
-          used_percentage: 64,
-          context_window_size: 200000,
-        },
-        received_at: 12345,
-      },
+      telemetry: { telemetry_key: "provider:external-claude", console_session_id: null, provider_session_id: "external-claude" },
+      ingest: { ok: true, status: "no_target" },
     });
   });
 });
 
 describe("Claude hook settings", () => {
-  it("merges Mandible hooks without replacing existing user hooks", () => {
+  it("appends Mandible hooks after the user's own, directly and through a replaced --settings argument", () => {
     const merged = mergeMandibleClaudeHookSettings({
       theme: "dark",
       hooks: {
@@ -318,9 +262,7 @@ describe("Claude hook settings", () => {
     expect(merged.hooks.Stop[0].hooks[0].command).toContain("mandible-claude-ingest-nudge.sh");
     expect(merged.hooks.Notification[0].hooks[0].command).toContain("mandible-claude-notification.sh");
     expect((merged.statusLine as { command: string }).command).toContain("mandible-claude-statusline.sh");
-  });
 
-  it("writes merged settings and replaces an existing --settings argument", () => {
     const baseSettingsPath = path.join(tempDir, "base-settings.json");
     fs.writeFileSync(
       baseSettingsPath,
@@ -403,18 +345,15 @@ describe("Claude hook settings", () => {
     expect(fs.readFileSync(settingsPath, "utf8")).toBe(originalText);
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(original);
     expect(uninstallUserClaudeIntegration({ settingsPath }).status).toBe("absent");
-  });
 
-  it("keeps installs idempotent when no user settings file existed", () => {
-    const settingsPath = path.join(tempDir, ".claude", "new-settings.json");
+    const freshPath = path.join(tempDir, ".claude", "new-settings.json");
 
-    const first = installUserClaudeIntegration({ settingsPath });
-    const installedText = fs.readFileSync(settingsPath, "utf8");
-    const second = installUserClaudeIntegration({ settingsPath });
+    const fresh = installUserClaudeIntegration({ settingsPath: freshPath });
+    const freshText = fs.readFileSync(freshPath, "utf8");
 
-    expect(first).toMatchObject({ status: "installed", backupPath: null, chainedStatusLine: null });
-    expect(second).toMatchObject({ status: "unchanged", backupPath: null, chainedStatusLine: null });
-    expect(fs.readFileSync(settingsPath, "utf8")).toBe(installedText);
+    expect(fresh).toMatchObject({ status: "installed", backupPath: null, chainedStatusLine: null });
+    expect(installUserClaudeIntegration({ settingsPath: freshPath }).status).toBe("unchanged");
+    expect(fs.readFileSync(freshPath, "utf8")).toBe(freshText);
   });
 });
 

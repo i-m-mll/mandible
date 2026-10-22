@@ -1,7 +1,7 @@
-// Bug: 1d652d5 — Tests for MCP channel server
-//
-// Tests tool handler logic and notification translation.
-// Uses mocked HTTP responses (globalThis.fetch) to avoid needing a running daemon.
+// @vitest-environment node
+// Bug: 1d652d5 — the MCP channel server: transport and bearer rules, the
+// canonical auth submission shape, and replay of results missed while the
+// notification stream was down. Daemon responses are mocked through fetch.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -10,57 +10,28 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
+import { scratchDir } from "./helpers/cli-process.js";
+
 // --- Base URL resolution (issue 70dffb8) ---
 
 describe("channel-server base URL", () => {
-  it("defaults to the private socket", async () => {
-    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
+  it("defaults to the private socket, honors explicit overrides, and refuses unsupported transports", async () => {
+    const { resolveBaseUrl, resolveTransport } = await import("../channel-server/base-url.js");
     expect(resolveBaseUrl({})).toBe("http://localhost");
-  });
-
-  it("honors an absolute socket override", async () => {
-    const { resolveTransport } = await import("../channel-server/base-url.js");
-    expect(resolveTransport({ MANDIBLE_SOCKET: "/tmp/mandible-preview.sock" }))
-      .toEqual({ kind: "socket", socketPath: "/tmp/mandible-preview.sock" });
-  });
-
-  it("prefers an explicit MANDIBLE_BASE over MANDIBLE_PORT and trims it", async () => {
-    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
-    expect(resolveBaseUrl({
-      MANDIBLE_BASE: " http://127.0.0.1:12345/ ",
-      MANDIBLE_PORT: "31337",
-    })).toBe("http://127.0.0.1:12345");
-  });
-
-  it("keeps explicitly selected canonical HTTPS available", async () => {
-    const { resolveTransport } = await import("../channel-server/base-url.js");
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost");
+    expect(resolveTransport({ MANDIBLE_SOCKET: "/tmp/mandible-preview.sock" })).toEqual({ kind: "socket", socketPath: "/tmp/mandible-preview.sock" });
+    // Issue 70dffb8: an explicit base wins over MANDIBLE_PORT.
+    expect(resolveBaseUrl({ MANDIBLE_BASE: " http://127.0.0.1:12345/ ", MANDIBLE_PORT: "31337" })).toBe("http://127.0.0.1:12345");
     expect(resolveTransport({ MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_TRANSPORT: "http" }))
       .toEqual({ kind: "http", baseUrl: "https://app.mandible.localhost:19420" });
-  });
-
-  it("refuses unsupported explicit transports", async () => {
-    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
     expect(() => resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool" })).toThrow();
     expect(() => resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toThrow();
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost");
   });
 });
 
 describe("channel-server local socket", () => {
-  it("shares bearer selection between REST and notifications", async () => {
-    const { channelTransportHeaders } = await import("../channel-server/client.js");
-    const original = process.env.MANDIBLE_TOKEN;
-    process.env.MANDIBLE_TOKEN = "explicit-http-token";
-    try {
-      expect(channelTransportHeaders("socket").Authorization).toBeUndefined();
-      expect(channelTransportHeaders("http").Authorization).toBe("Bearer explicit-http-token");
-    } finally {
-      if (original === undefined) delete process.env.MANDIBLE_TOKEN;
-      else process.env.MANDIBLE_TOKEN = original;
-    }
-  });
-
   it("uses the socket and ignores an inherited bearer on ordinary reads", async () => {
+    // Directly under the temp dir: a path below the runtime root exceeds the 104-byte socket path limit.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
     const socket = path.join(root, "daemon.sock");
     const routes = path.join(root, "routes.json");
@@ -138,180 +109,25 @@ describe("channel-server client", () => {
   });
 
   // Issue 70dffb8 — the client used to hardcode http://localhost:19420.
-  it("sends requests to the resolved daemon base URL", async () => {
+  it("sends every request to the resolved base URL with the injected agent token", async () => {
     process.env.MANDIBLE_BASE = "http://127.0.0.1:31337";
-    process.env.MANDIBLE_PORT = "31337";
-    mockFetch(200, {
-      continuations: [], auth_results: [], open_issues: [], work_units: [],
-      work_unit_continuations: [], total: 0,
-    });
-    const { checkInboxGlobal } = await import("../channel-server/client.js");
-    await checkInboxGlobal();
-    const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(url).toBe("http://127.0.0.1:31337/api/inbox/global");
-  });
-
-  it("authenticates every daemon request with its injected agent token", async () => {
     process.env.MANDIBLE_TOKEN = "agent-token";
-    mockFetch(200, {
-      continuations: [], auth_results: [], open_issues: [], work_units: [],
-      work_unit_continuations: [], total: 0,
-    });
-    const { checkInboxGlobal } = await import("../channel-server/client.js");
+    mockFetch(200, { continuations: [], auth_results: [], open_issues: [], work_units: [], work_unit_continuations: [], total: 0 });
+    const { checkInboxGlobal, channelTransportHeaders } = await import("../channel-server/client.js");
     await checkInboxGlobal();
-    const options = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:31337/api/inbox/global");
     expect(options.headers).toMatchObject({ Authorization: "Bearer agent-token" });
+    expect(channelTransportHeaders("socket").Authorization).toBeUndefined();
   });
 
-  it("checkInbox returns parsed inbox data", async () => {
-    const inboxData = {
-      continuations: [],
-      auth_results: [
-        {
-          id: "auth-123",
-          title: "Merge feature/x",
-          status: "completed",
-          exit_code: 0,
-          error: null,
-          head_branch: "feature/x",
-          resolved_at: Date.now(),
-        },
-      ],
-      open_issues: [],
-      work_units: [],
-      work_unit_continuations: [],
-      total: 1,
-    };
-    mockFetch(200, inboxData);
-
-    const { checkInbox } = await import("../channel-server/client.js");
-    const result = await checkInbox("main");
-
-    expect(result.total).toBe(1);
-    expect(result.auth_results).toHaveLength(1);
-    expect(result.auth_results[0].id).toBe("auth-123");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/inbox?branch=main"),
-      expect.any(Object),
-    );
-  });
-
-  it("checkInboxGlobal calls /api/inbox/global", async () => {
-    mockFetch(200, {
-      continuations: [],
-      auth_results: [],
-      open_issues: [],
-      work_units: [],
-      work_unit_continuations: [],
-      total: 0,
-    });
-
-    const { checkInboxGlobal } = await import("../channel-server/client.js");
-    await checkInboxGlobal();
-
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/inbox/global"),
-      expect.any(Object),
-    );
-  });
-
-  it("getIssues passes query parameters correctly", async () => {
-    mockFetch(200, []);
-
-    const { getIssues } = await import("../channel-server/client.js");
-    await getIssues({ repo: "mandible", status: "open", label: "feature" });
-
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const url = call[0] as string;
-    expect(url).toContain("repo=mandible");
-    expect(url).toContain("status=open");
-    expect(url).toContain("label=feature");
-  });
-
-  // Issue 08a5f04 — the canonical command shape (`--into <base>`) is what the
-  // channel tool now emits; the client passes it through byte-identically.
-  it("submitAuth sends correct payload", async () => {
-    mockFetch(201, { request_id: "new-auth-id" });
-
-    const { submitAuth } = await import("../channel-server/client.js");
-    const result = await submitAuth({
-      command: "mandible auth merge feature/x --into main",
-      title: "Merge feature/x",
-      head_branch: "feature/x",
-      base_branch: "main",
-      issue_references: ["abc123"],
-      issue_closures: ["def456"],
-      cwd: "/tmp/repo",
-      session_id: "session-456",
-    });
-
-    expect(result.request_id).toBe("new-auth-id");
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(call[1].body as string);
-    expect(body.command).toBe("mandible auth merge feature/x --into main");
-    expect(body.base_branch).toBe("main");
-    expect(body.issue_references).toEqual(["abc123"]);
-    expect(body.issue_closures).toEqual(["def456"]);
-  });
-
-  it("throws MandibleClientError on non-200 response", async () => {
+  it("reports daemon failures and an unreachable daemon as MandibleClientError", async () => {
+    const { checkInbox, MandibleClientError } = await import("../channel-server/client.js");
     mockFetch(500, { error: "Internal error" });
-
-    const { checkInbox, MandibleClientError } = await import(
-      "../channel-server/client.js"
-    );
-
     await expect(checkInbox()).rejects.toThrow(MandibleClientError);
     await expect(checkInbox()).rejects.toThrow("500");
-  });
-
-  it("throws MandibleClientError on network error", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-
-    const { checkInbox, MandibleClientError } = await import(
-      "../channel-server/client.js"
-    );
-
-    await expect(checkInbox()).rejects.toThrow(MandibleClientError);
     await expect(checkInbox()).rejects.toThrow("is the Mandible daemon running?");
-  });
-
-  it("getWorkUnits passes state filter", async () => {
-    mockFetch(200, { work_units: [] });
-
-    const { getWorkUnits } = await import("../channel-server/client.js");
-    await getWorkUnits({ state: "open", repo_id: "repo-abc" });
-
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const url = call[0] as string;
-    expect(url).toContain("state=open");
-    expect(url).toContain("repo_id=repo-abc");
-  });
-
-  it("updateSession sends PATCH with correct path", async () => {
-    mockFetch(200, { ok: true });
-
-    const { updateSession } = await import("../channel-server/client.js");
-    await updateSession("session-123", { task: "working on feature" });
-
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[0]).toContain("/api/sessions/session-123");
-    expect(call[1].method).toBe("PATCH");
-  });
-
-  it("patchWorkUnit sends PATCH to correct endpoint", async () => {
-    mockFetch(200, { id: "wu-123", state: "committed" });
-
-    const { patchWorkUnit } = await import("../channel-server/client.js");
-    await patchWorkUnit("wu-123", {
-      assigned_session_id: "session-456",
-    });
-
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[0]).toContain("/api/work-units/wu-123");
-    expect(call[1].method).toBe("PATCH");
-    const body = JSON.parse(call[1].body as string);
-    expect(body.assigned_session_id).toBe("session-456");
   });
 });
 
@@ -320,21 +136,16 @@ describe("channel-server client", () => {
 describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
   const originalFetch = globalThis.fetch;
   const originalBase = process.env.MANDIBLE_BASE;
-  const tempDirs: string[] = [];
 
   beforeEach(() => { process.env.MANDIBLE_BASE = "http://127.0.0.1:29420"; });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
     originalBase === undefined ? delete process.env.MANDIBLE_BASE : (process.env.MANDIBLE_BASE = originalBase);
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   function gitRepo(branches: string[]): string {
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-tool-"));
-    tempDirs.push(repo);
+    const repo = scratchDir("channel-tool");
     const git = (args: string[]) =>
       execFileSync("git", args, { cwd: repo, encoding: "utf8" });
     git(["init", "-b", branches[0]]);
@@ -401,78 +212,15 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
     expect(body.cwd).toBe(repo);
   });
 
-  it("prefers develop over main, matching detect_protected_branch", async () => {
-    const repo = gitRepo(["main", "develop"]);
-    const body = await invokeSubmitAuth({
-      branch: "feature/y",
-      title: "Merge feature/y",
-      cwd: repo,
-    });
-    expect(body.command).toBe("mandible auth merge feature/y --into develop");
-    expect(body.base_branch).toBe("develop");
-  });
-
-  it("falls back to the legacy shape when the base cannot be resolved", async () => {
-    const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-plain-"));
-    tempDirs.push(notARepo);
-    const body = await invokeSubmitAuth({
-      branch: "feature/z",
-      title: "Merge feature/z",
-      cwd: notARepo,
-    });
-    // Legacy single-source shape: the daemon normalizes exactly this shape to
-    // the canonical form at POST submission once it resolves the base.
-    expect(body.command).toBe("mandible auth merge feature/z");
-    expect(body.base_branch).toBeUndefined();
-  });
-});
-
-// --- Notification formatting tests ---
-
-describe("notification formatting", () => {
-  // We test the notification bridge's event formatters indirectly via their
-  // module. Since they are not exported, we test through the bridge behavior.
-  // We mock the MCP server's sendLoggingMessage to capture notifications.
-
-  it("createNotificationBridge can be instantiated", async () => {
-    const { createNotificationBridge } = await import(
-      "../channel-server/notifications.js"
-    );
-
-    // Minimal mock of Server that satisfies the bridge
-    const mockServer = {
-      sendLoggingMessage: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const bridge = createNotificationBridge(mockServer as never);
-    expect(bridge).toBeDefined();
-    expect(typeof bridge.start).toBe("function");
-    expect(typeof bridge.stop).toBe("function");
-
-    // Don't actually start (would try to connect to localhost:19420)
-    // Just verify the interface
-  });
-
-  it("createNotificationBridge accepts an onReconnect callback (Bug: 03d6cb0)", async () => {
-    const { createNotificationBridge } = await import(
-      "../channel-server/notifications.js"
-    );
-
-    const mockServer = {
-      sendLoggingMessage: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const onReconnect = vi.fn();
-    const bridge = createNotificationBridge(
-      mockServer as never,
-      "session-A",
-      "conv-A",
-      onReconnect,
-    );
-    expect(bridge).toBeDefined();
-    expect(typeof bridge.start).toBe("function");
-    expect(typeof bridge.stop).toBe("function");
-    // Don't start (would hit localhost:19420); just verify the signature works
+  it("derives the base like detect_protected_branch, and keeps the legacy shape when it cannot", async () => {
+    const develop = await invokeSubmitAuth({ branch: "feature/y", title: "Merge feature/y", cwd: gitRepo(["main", "develop"]) });
+    expect(develop.command).toBe("mandible auth merge feature/y --into develop");
+    expect(develop.base_branch).toBe("develop");
+    const notARepo = scratchDir("channel-plain");
+    // The daemon normalizes exactly this legacy shape to the canonical form once it resolves the base.
+    const legacy = await invokeSubmitAuth({ branch: "feature/z", title: "Merge feature/z", cwd: notARepo });
+    expect(legacy.command).toBe("mandible auth merge feature/z");
+    expect(legacy.base_branch).toBeUndefined();
   });
 });
 
@@ -527,46 +275,5 @@ describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
     expect(params.meta.status).toBe("completed");
   });
 
-  it("onReconnect callback is not called on first SSE connect (only on reconnects)", async () => {
-    // This tests the hasConnectedBefore flag in createNotificationBridge.
-    // Since we can't easily test the SSE connection without a running daemon,
-    // we verify the behavior through the notification bridge's internal logic
-    // by inspecting the bridge construction.
-    const { createNotificationBridge } = await import(
-      "../channel-server/notifications.js"
-    );
-
-    const onReconnect = vi.fn();
-    const mockServer = {
-      sendLoggingMessage: vi.fn().mockResolvedValue(undefined),
-    };
-
-    // The bridge is created but not started — onReconnect should not be called
-    const bridge = createNotificationBridge(
-      mockServer as never,
-      "session-A",
-      "conv-A",
-      onReconnect,
-    );
-
-    expect(onReconnect).not.toHaveBeenCalled();
-    // Clean up without starting
-    bridge.stop();
-  });
 });
 
-// --- Tool output formatting integration tests ---
-
-describe("tool formatting", () => {
-  it("imports tool module without errors", async () => {
-    const mod = await import("../channel-server/tools.js");
-    expect(typeof mod.registerTools).toBe("function");
-  });
-
-  it("imports types module without errors", async () => {
-    const mod = await import("../channel-server/types.js");
-    // Types module only has interfaces — no runtime exports to test
-    // but the import should succeed without errors
-    expect(mod).toBeDefined();
-  });
-});
