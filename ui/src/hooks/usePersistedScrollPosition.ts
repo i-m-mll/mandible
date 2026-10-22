@@ -1,5 +1,5 @@
 import type { RefObject } from 'preact';
-import { useLayoutEffect } from 'preact/hooks';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 import { readPersistedViewState, writePersistedViewState } from './usePersistedViewState';
 
 function normalizeOffset(value: unknown): number {
@@ -7,12 +7,14 @@ function normalizeOffset(value: unknown): number {
 }
 
 /** Preserve plain scroll-owner position while delayed content reconciles. */
-export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageKey: string): void {
+export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageKey: string): Readonly<{ current: boolean }> {
+  const restoring = useRef(false);
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
     let position = readPersistedViewState(storageKey, normalizeOffset, 0);
     let pending: number | null = position;
+    restoring.current = true;
     let applied = node.scrollTop;
     let resize: ResizeObserver | undefined;
     let mutations: MutationObserver | undefined;
@@ -30,6 +32,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
       applied = node.scrollTop;
       if (Math.abs(applied - pending) < 1) {
         pending = null;
+        restoring.current = false;
         stopRestoring();
       }
     };
@@ -42,6 +45,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     const onScroll = () => {
       if (node.scrollTop === applied) return;
       pending = null;
+      restoring.current = false;
       stopRestoring();
       applied = node.scrollTop;
       save(applied);
@@ -49,6 +53,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     const onIntent = () => {
       if (pending === null) return;
       pending = null;
+      restoring.current = false;
       stopRestoring();
       save(node.scrollTop);
     };
@@ -73,6 +78,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     node.addEventListener('load', observeContent, true);
     window.addEventListener('pagehide', flush);
     return () => {
+      restoring.current = false;
       stopRestoring();
       node.removeEventListener('scroll', onScroll);
       node.removeEventListener('wheel', onIntent);
@@ -84,4 +90,5 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
       writePersistedViewState(storageKey, position);
     };
   }, [ref, storageKey]);
+  return restoring;
 }

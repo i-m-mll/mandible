@@ -439,3 +439,24 @@ describe('Approval body reading position', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledOnce();
   });
 });
+
+
+it('restores a saved Console position when long output arrives after an initially empty console', async () => {
+  localStorage.setItem('auth-review-tab:req-1', '"console"');
+  localStorage.setItem('auth-review-scroll:req-1:console', '184');
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function(this: HTMLElement) {
+    return this.querySelector('.console-output__pre') ? 2000 : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300);
+  const props = { queue: [pendingRequest], historyQueue: [], outputs: {}, selectedAuthId: 'req-1',
+    daemonReady: true, instance: authMainInstance, onApprove: () => undefined, onReject: () => undefined };
+  const view = render(<AuthQueueView {...props} />);
+  const body = document.querySelector<HTMLDivElement>('.auth-detail__body')!;
+  expect(body.scrollTop).toBe(0);
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Long console output arrived after the saved reading position was loaded.' }} />);
+  await waitFor(() => expect(body.scrollTop).toBe(184));
+  expect(localStorage.getItem('auth-review-scroll:req-1:console')).toBe('184');
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+});

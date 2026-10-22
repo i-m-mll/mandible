@@ -816,7 +816,7 @@ function AuthRequestDetail({
     autoShowConsoleOnApproval && isAuthExecutingStatus(getAuthStatus(request)) ? 'console' : 'abstract',
   );
   const bodyRef = useRef<HTMLDivElement>(null);
-  usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`);
+  const scrollRestoring = usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`);
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -922,6 +922,7 @@ function AuthRequestDetail({
   const previousConsole = useRef<{ key: string; text: string } | null>(null);
   const consoleKey = `${fullId}:${viewMode}`;
   const sameConsole = previousConsole.current?.key === consoleKey;
+  const wasRestoringScroll = scrollRestoring.current;
   const consoleWasAtTail = bodyRef.current
     ? bodyRef.current.scrollHeight - bodyRef.current.scrollTop - bodyRef.current.clientHeight < 48
     : true;
@@ -934,7 +935,7 @@ function AuthRequestDetail({
     const freshOutput = sameConsole && previousConsole.current?.text !== consoleText;
     previousConsole.current = { key: consoleKey, text: consoleText };
     if (viewMode === 'console' && consoleEndRef.current
-      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && consoleWasAtTail))) {
+      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && consoleWasAtTail && !wasRestoringScroll && !scrollRestoring.current))) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [consoleKey, consoleText]);
