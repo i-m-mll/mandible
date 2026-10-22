@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
 import { CONVERSATION_SPAWN_REQUEST_SCHEMA, type ConversationSpawnRequest } from "../src/conversation-spawn/types.js";
 import { readConversationSpawnPlacementBatch } from "../src/routes/console.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let root = "";
 let db: Db;
@@ -14,7 +15,7 @@ const ID = "10000000-0000-4000-8000-000000000001";
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-spawn-"));
-  db = openDb(path.join(root, "mandible.db"));
+  db = migratedMemoryDb();
   db.prepare(`INSERT INTO ledger_projects
     (id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at, project_key)
     VALUES ('project-a', 'Project A', '', '', 'local', 1, 1, 'project-a')`).run();

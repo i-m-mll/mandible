@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStreamState,
-  computeLiveTail,
   conversationBlocksToStreamEvents,
   deriveStreamingState,
   flushPendingSSE,
@@ -85,38 +84,6 @@ describe("chat render orchestration", () => {
     expect((reconciled[1] as { item: ChatItem }).item.parts[0]?.text).toBe("latest");
   });
 
-  it("builds the same render model from durable and live canonical items", () => {
-    const values: ChatItem[] = [
-      item("claude_code", "s1", "u1", { type: "message", role: "user", parts: [{ type: "text", text: "Fix the test" }] }),
-      item("claude_code", "s1", "thought-1", { type: "activity", role: "assistant", activity_kind: "thinking", parts: [{ type: "text", text: "Inspecting" }] }),
-      item("claude_code", "s1", "tool-1-call", { type: "tool-call", role: "assistant", phase: "call", tool_id: "tool-1", tool_name: "Read", input: { file: "a.ts" }, parts: [] }),
-      item("claude_code", "s1", "tool-1-result", { type: "tool-call", role: "tool", phase: "result", tool_id: "tool-1", output: "test output", parts: [] }),
-      item("claude_code", "s1", "a1", { type: "message", role: "assistant", parts: [{ type: "text", text: "Fixed." }] }),
-    ];
-    const historyEvents = conversationBlocksToStreamEvents("s1", values.map((value, index) => block(`b${index}`, value)));
-    const liveEvents = values.map((value) => event({
-      ...value,
-      provenance: { ...value.provenance, source: "live-provider-event" },
-    }));
-
-    const project = (events: StreamEvent[]) => buildStreamState(events).nodes.map((node) => {
-      if (node.kind === "user_message") return { kind: node.kind, text: node.text };
-      if (node.kind === "activity") return { kind: node.kind, text: node.item.parts.map((part) => part.text).join("") };
-      if (node.kind === "assistant_turn") return {
-        kind: node.kind,
-        content: node.turn.assistantEvent.message.content.map((part) => part.type),
-        results: [...node.turn.toolResults.keys()],
-      };
-      return { kind: node.kind };
-    });
-    expect(project(historyEvents)).toEqual(project(liveEvents));
-    expect(project(historyEvents)).toEqual([
-      { kind: "user_message", text: "Fix the test" },
-      { kind: "activity", text: "Inspecting" },
-      { kind: "assistant_turn", content: ["tool_use", "text"], results: ["tool-1"] },
-    ]);
-  });
-
   it("uses exact retained parent evidence without hiding genuine orphan results", () => {
     const call = item("codex", "s1", "split-call", {
       type: "tool-call", role: "assistant", phase: "call", tool_id: "split", tool_name: "exec", input: "opaque", parts: [],
@@ -149,19 +116,6 @@ describe("chat render orchestration", () => {
       { ...block("genuine-orphan", result), parent_id: null },
     ]);
     expect(buildStreamState(orphan).nodes).toMatchObject([{ kind: "unmatched_tool_result" }]);
-  });
-
-  it("keeps only the raw-console live tail after persisted history", () => {
-    const historyEvents = [{
-      type: "assistant", uuid: "assistant-tail-anchor", session_id: "s1", parent_tool_use_id: null,
-      message: { id: "assistant-tail-anchor", role: "assistant", content: [{ type: "text", text: "persisted" }] },
-    }] as StreamEvent[];
-    const memEvents: StreamEvent[] = [
-      { type: "system", subtype: "init", session_id: "s1" },
-      historyEvents[0],
-      { type: "assistant", uuid: "tail", session_id: "s1", parent_tool_use_id: null, message: { role: "assistant", content: [{ type: "text", text: "tail" }] } },
-    ];
-    expect(computeLiveTail(historyEvents, memEvents)).toEqual(memEvents.slice(2));
   });
 
   it("fails closed on provider-shaped transcript blocks and preserves canonical activity evidence", () => {

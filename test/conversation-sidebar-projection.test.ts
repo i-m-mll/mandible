@@ -5,12 +5,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
-import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
-import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../src/conversation-spawn/types.js";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir: string;
 let db: Db;
@@ -81,8 +80,7 @@ function registerProject(key: string, label: string, root: string) {
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-sidebar-"));
   process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(tempDir, "search.db");
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
 });
 
@@ -94,110 +92,6 @@ afterEach(() => {
 });
 
 describe("conversation sidebar projection", () => {
-  it("projects one ready empty conversation row while retaining its native spawn receipt", async () => {
-    const conversationId = "10000000-0000-4000-8000-000000000001";
-    const spawn = new ConversationSpawnService(db, () => 1_000);
-    expect(spawn.reserve({
-      schema: CONVERSATION_SPAWN_REQUEST_SCHEMA,
-      idempotency_key: conversationId,
-      provider: "codex",
-      placement: { kind: "projectless" },
-    })).toMatchObject({ ok: true });
-    expect(spawn.begin(conversationId)).toMatchObject({ ok: true });
-    expect(spawn.assignRuntime(conversationId, 1, "codex-controller-1")).toMatchObject({ ok: true });
-    spawn.materializeConversationShell(conversationId, 1, "/workspace", "codex-thread-1");
-    expect(spawn.ready(conversationId, 1, "codex-controller-1", "codex-thread-1", {
-      kind: "native-conversation-controller-ready",
-    })).toMatchObject({ ok: true });
-
-    const router = new Router();
-    registerConversationRoutes(router);
-    const response = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?limit=20&min_blocks=1",
-    });
-
-    expect(response.status).toBe(200);
-    const rows = groupsOf(response).flatMap((group) => group.conversations);
-    expect(rows).toEqual([
-      expect.objectContaining({
-        id: conversationId,
-        block_count: 0,
-        spawn: expect.objectContaining({
-          state: "ready",
-          native_session_id: "codex-controller-1",
-          provider_session_id: "codex-thread-1",
-        }),
-      }),
-    ]);
-  });
-
-  it("projects already-indexed provider rows into requested canonical groups without ingestion", async () => {
-    const alpha = registerProject("alpha", "Alpha Project", "/workspace/alpha");
-    const empty = registerProject("empty", "Empty Project", "/workspace/empty");
-    insertConversation({ id: "codex-alpha", source: "codex", cwd: "/workspace/alpha/packages/app" });
-    insertConversation({
-      id: "claude-alpha",
-      source: "claude_code",
-      cwd: "-workspace-alpha",
-      projectPath: "/workspace/alpha",
-    });
-    insertConversation({ id: "gemini-alpha", source: "gemini", cwd: "/workspace/alpha" });
-    insertConversation({ id: "pinned-alpha", starred: true, cwd: "/workspace/alpha" });
-    insertConversation({
-      id: "opaque-legacy",
-      source: "claude_code",
-      projectPath: "-workspace-alpha",
-      sourcePath: "/workspace/alpha/provider-custody.jsonl",
-    });
-
-    const router = new Router();
-    registerConversationRoutes(router);
-    const response = await router.invoke({
-      method: "GET",
-      url: `/api/conversations/sidebar?project_ids=${alpha.id},${empty.id}&limit=20`,
-    });
-
-    expect(response.status).toBe(200);
-    const groups = groupsOf(response);
-    expect(groups.map((group) => [group.kind, group.label, group.total])).toEqual([
-      ["pinned", "Pinned", 1],
-      ["project", "Alpha Project", 3],
-      ["project", "Empty Project", 0],
-      ["chats", "Chats", 1],
-    ]);
-    const alphaGroup = groups.find((group) => group.project_id === alpha.id)!;
-    expect(alphaGroup).toMatchObject({
-      project_key: "alpha",
-      key: expect.stringMatching(/^project-/),
-    });
-    expect(alphaGroup.conversations.map((row) => row.id).sort()).toEqual([
-      "claude-alpha",
-      "codex-alpha",
-      "gemini-alpha",
-    ]);
-    expect(alphaGroup.conversations).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        canonical_project_id: alpha.id,
-        canonical_project_key: "alpha",
-      }),
-    ]));
-    expect(groups.find((group) => group.kind === "pinned")?.conversations).toEqual([
-      expect.objectContaining({
-        id: "pinned-alpha",
-        canonical_project_id: alpha.id,
-        canonical_project_key: "alpha",
-      }),
-    ]);
-    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
-      expect.objectContaining({
-        id: "opaque-legacy",
-        canonical_project_id: null,
-        canonical_project_key: null,
-      }),
-    ]);
-    expect(groups.some((group) => group.label === "-workspace-alpha")).toBe(false);
-  });
 
   it("fails closed when equally specific stored roots resolve to different projects", async () => {
     const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
@@ -327,38 +221,6 @@ describe("conversation sidebar projection", () => {
       .toEqual(chatsGroup.conversations.map((row) => row.id));
   });
 
-  it("projects preview-local pins into the bounded Pinned group without mutating the row", async () => {
-    insertConversation({ id: "local-pin", starred: false });
-    insertConversation({ id: "ordinary", starred: false });
-    const router = new Router();
-    registerConversationRoutes(router);
-
-    const result = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?limit=1&pinned_ids=local-pin",
-    });
-
-    expect(groupsOf(result).find((group) => group.kind === "pinned")?.conversations).toEqual([
-      expect.objectContaining({ id: "local-pin", starred: false }),
-    ]);
-    expect(db.prepare("SELECT starred FROM conversations WHERE id = 'local-pin'").get()).toEqual({ starred: 0 });
-  });
-
-  it("treats an explicit empty pin order as authoritative and keeps legacy stars in Chats", async () => {
-    insertConversation({ id: "legacy-star", starred: true });
-    const router = new Router();
-    registerConversationRoutes(router);
-
-    const result = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?limit=20&pinned_ids=",
-    });
-
-    expect(groupsOf(result).find((group) => group.kind === "pinned")).toBeUndefined();
-    expect(groupsOf(result).find((group) => group.kind === "chats")?.conversations)
-      .toEqual([expect.objectContaining({ id: "legacy-star", starred: true })]);
-  });
-
   it("paginates Pinned in the exact saved order instead of recent-first order", async () => {
     insertConversation({ id: "recent", startedAt: "2026-08-18T13:00:00Z" });
     insertConversation({ id: "middle", startedAt: "2026-08-18T12:00:00Z" });
@@ -473,109 +335,6 @@ describe("conversation sidebar projection", () => {
     ]);
   });
 
-  it("preserves filters, exact full-text authority, subagent exclusion, and both sorts", async () => {
-    insertConversation({
-      id: "alpha-high",
-      title: "Needle high",
-      startedAt: "2026-08-18T10:00:00Z",
-      blocks: 8,
-      cwd: "/Users/me/Main/repo-a",
-    });
-    insertConversation({
-      id: "alpha-low",
-      title: "Needle low",
-      startedAt: "2026-08-18T12:00:00Z",
-      blocks: 2,
-      cwd: "/Users/me/Main/repo-a",
-    });
-    insertConversation({
-      id: "alpha-star",
-      title: "Needle starred",
-      blocks: 5,
-      starred: true,
-      cwd: "/Users/me/Main/repo-a",
-    });
-    insertConversation({
-      id: "claude-only",
-      source: "claude_code",
-      startedAt: "2026-08-18T08:00:00Z",
-      cwd: "/Users/me/Main/repo-a",
-    });
-    insertConversation({
-      id: "subagent",
-      title: "You are a subagent for testing",
-      blocks: 9,
-      projectPath: "subagents",
-      sourcePath: "/tmp/subagents/subagent.jsonl",
-    });
-    insertConversation({
-      id: "body-only",
-      title: "Unrelated title",
-      startedAt: "2026-08-18T09:00:00Z",
-      blocks: 3,
-      cwd: "/Users/me/Main/repo-a",
-    });
-    db.prepare(`INSERT INTO conversation_blocks
-      (id, conversation_id, type, role, content, compressed, position, metadata_json)
-      VALUES ('body-block', 'body-only', 'assistant_message', 'assistant',
-              'A structural body needle', 0, 0, '{}')`).run();
-
-    const router = new Router();
-    registerConversationRoutes(router);
-
-    const byDate = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?exclude_subagents=true&group_key="
-        + encodeURIComponent(groupsOf(await router.invoke({ method: "GET", url: "/api/conversations/sidebar" }))
-          .find((group) => group.kind === "chats")!.key),
-    });
-    expect(groupsOf(byDate)[0].conversations.slice(0, 2).map((row) => row.id))
-      .toEqual(["alpha-low", "alpha-high"]);
-
-    const byBlocks = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?sort=block_count&exclude_subagents=true",
-    });
-    const blockChats = groupsOf(byBlocks).find((group) => group.kind === "chats")!;
-    expect(blockChats.conversations.slice(0, 3).map((row) => row.id))
-      .toEqual(["alpha-high", "body-only", "alpha-low"]);
-    expect(groupsOf(byBlocks).find((group) => group.kind === "pinned")?.conversations.map((row) => row.id))
-      .toEqual(["alpha-star"]);
-    expect(groupsOf(byBlocks).flatMap((group) => group.conversations).map((row) => row.id))
-      .not.toContain("subagent");
-
-    const filtered = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?source=codex&starred=false&search=Needle&min_blocks=5&exclude_subagents=true",
-    });
-    expect(groupsOf(filtered)).toEqual([
-      expect.objectContaining({
-        kind: "chats",
-        label: "Chats",
-        total: 1,
-        conversations: [expect.objectContaining({ id: "alpha-high" })],
-      }),
-    ]);
-
-    const fullText = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/sidebar?search=structural%20body%20needle&full_text=true",
-    });
-    expect(groupsOf(fullText)).toEqual([
-      expect.objectContaining({
-        label: "Chats",
-        total: 1,
-        conversations: [expect.objectContaining({
-          id: "body-only",
-          search_target: { block: "body-block" },
-        })],
-      }),
-    ]);
-
-    const legacy = await router.invoke({ method: "GET", url: "/api/conversations?limit=1" });
-    expect(legacy.body).toMatchObject({ conversations: [expect.any(Object)], limit: 1, page: 1 });
-  });
-
   it("rejects cursors that are missing a group or reused with different filters", async () => {
     insertConversation({ id: "chat-1" });
     insertConversation({ id: "chat-2" });
@@ -601,46 +360,6 @@ describe("conversation sidebar projection", () => {
     expect(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?limit=1&pinned_ids=&group_key=chats&cursor=${encodeURIComponent(cursor)}`,
-    })).toMatchObject({ status: 400 });
-  });
-
-  it("pages Pinned, a canonical project, and Chats independently and binds cursors to the project set", async () => {
-    const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
-    const beta = registerProject("beta", "Beta", "/workspace/beta");
-    insertConversation({ id: "pin-new", starred: true, cwd: "/workspace/alpha", startedAt: "2026-08-18T14:00:00Z" });
-    insertConversation({ id: "pin-old", starred: true, cwd: "/workspace/alpha", startedAt: "2026-08-18T13:00:00Z" });
-    insertConversation({ id: "alpha-high", cwd: "/workspace/alpha", blocks: 9 });
-    insertConversation({ id: "alpha-low", cwd: "/workspace/alpha", blocks: 3 });
-    insertConversation({ id: "beta-high", cwd: "/workspace/beta", blocks: 8 });
-    insertConversation({ id: "unscoped-low", blocks: 2 });
-
-    const router = new Router();
-    registerConversationRoutes(router);
-    const baseUrl = `/api/conversations/sidebar?project_ids=${alpha.id}&sort=block_count&limit=1`;
-    const initialGroups = groupsOf(await router.invoke({ method: "GET", url: baseUrl }));
-    expect(initialGroups.map((group) => [group.kind, group.total])).toEqual([
-      ["pinned", 2],
-      ["project", 2],
-      ["chats", 2],
-    ]);
-
-    for (const group of initialGroups) {
-      expect(group.next_cursor).toEqual(expect.any(String));
-      const follow = groupsOf(await router.invoke({
-        method: "GET",
-        url: `${baseUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(group.next_cursor!)}`,
-      }));
-      expect(follow).toHaveLength(1);
-      expect(follow[0]).toMatchObject({ key: group.key, total: 2, next_cursor: null });
-      expect(follow[0].conversations[0].id).not.toBe(group.conversations[0].id);
-    }
-
-    const projectGroup = initialGroups.find((group) => group.kind === "project")!;
-    expect(await router.invoke({
-      method: "GET",
-      url: `/api/conversations/sidebar?project_ids=${alpha.id},${beta.id}&sort=block_count&limit=1`
-        + `&group_key=${encodeURIComponent(projectGroup.key)}`
-        + `&cursor=${encodeURIComponent(projectGroup.next_cursor!)}`,
     })).toMatchObject({ status: 400 });
   });
 

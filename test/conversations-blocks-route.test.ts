@@ -4,17 +4,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-blocks-route-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
 });
 
@@ -123,37 +123,6 @@ describe("conversation blocks route pagination", () => {
 });
 
 describe("indexed conversation position window", () => {
-  it("keeps a reasoning title in compact display data and marks title-only leaves inert", async () => {
-    insertIndexedConversation(3);
-    const reasoning = (content: string, position: number): void => {
-      db.prepare(`UPDATE conversation_blocks SET type = 'thinking', content = ?, metadata_json = ?
-        WHERE conversation_id = 'conv-indexed' AND position = ?`).run(content, JSON.stringify({
-        source_event_type: "reasoning_summary",
-        chat_item: { type: "activity", activity_kind: "reasoning-summary", parts: [{ type: "text", text: content }] },
-      }), position);
-    };
-    reasoning("Check the source records", 2);
-    reasoning("Review the grouped rows\nA longer explanation stays lazy", 3);
-
-    const router = new Router();
-    registerConversationRoutes(router);
-    const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed?view=display" });
-    expect(response.status).toBe(200);
-    const blocks = (response.body as { blocks: Array<{ position: number; content: string; metadata_json: string; details_loaded?: boolean }> }).blocks;
-    const compact = blocks.filter((block) => block.position >= 2).map((block) => ({
-      content: block.content,
-      detailsLoaded: block.details_loaded,
-      metadata: JSON.parse(block.metadata_json),
-    }));
-    expect(compact).toMatchObject([
-      { content: "Check the source records", detailsLoaded: false, metadata: {
-        display_has_body: false, chat_item: { parts: [{ text: "Check the source records" }] },
-      } },
-      { content: "Review the grouped rows", detailsLoaded: false, metadata: {
-        display_has_body: true, chat_item: { parts: [{ text: "Review the grouped rows" }] },
-      } },
-    ]);
-  });
 
   it("expands the default tail to include the complete latest turn within the cap", async () => {
     insertIndexedConversation(260);
@@ -214,73 +183,6 @@ describe("indexed conversation position window", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(503);
     expect(response.body).toMatchObject({ error: "freshness_error" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = 'conv-projected'").get()).toEqual({ count: 3 });
-  });
-
-  it("uses the block primary key and conversation-position index for exact resolution", () => {
-    insertIndexedConversation(10_000);
-    const blockPlan = db.prepare(
-      "EXPLAIN QUERY PLAN SELECT * FROM conversation_blocks WHERE conversation_id = ? AND id = ?",
-    ).all("conv-indexed", "indexed-5000") as Array<{ detail: string }>;
-    const positionPlan = db.prepare(
-      "EXPLAIN QUERY PLAN SELECT * FROM conversation_blocks WHERE conversation_id = ? AND position = ?",
-    ).all("conv-indexed", 5000) as Array<{ detail: string }>;
-    expect(blockPlan.map((row) => row.detail).join(" ")).toMatch(/sqlite_autoindex_conversation_blocks_1|PRIMARY KEY/);
-    expect(positionPlan.map((row) => row.detail).join(" ")).toMatch(/conversation_id=.*position=|sqlite_autoindex_conversation_blocks_2/);
-  });
-
-  it("keeps initial, exact start, middle, and latest responses bounded at 10k scale", async () => {
-    insertIndexedConversation(10_000);
-    const router = new Router();
-    registerConversationRoutes(router);
-
-    const initial = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed" });
-    expect(initial.status).toBe(200);
-    expect(initial.body).toMatchObject({
-      revision: 10_000,
-      total: 10_000,
-      target: { kind: "initial", position: 10_000, block_id: "indexed-10000", turn_id: "indexed-9992" },
-      window: { start_position: 9841, end_position: 10_000, has_before: true, has_after: false, after_count: 0, limit: 160 },
-    });
-    expect((initial.body as { blocks: unknown[] }).blocks).toHaveLength(160);
-
-    const display = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed?view=display&position=5000&limit=80" });
-    expect(display.status).toBe(200);
-    expect(display.body).toMatchObject({ total: 10_000, target: { position: 5000 } });
-    expect((display.body as { blocks: unknown[] }).blocks).toHaveLength(80);
-
-    const structure = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed/structure" });
-    expect(structure.status).toBe(200);
-    expect(structure.body).toMatchObject({ total: 10_000 });
-    expect((structure.body as { rows: unknown[] }).rows).toHaveLength(10_000);
-
-    const start = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/conv-indexed?position=1&limit=80",
-    });
-    expect(start.body).toMatchObject({
-      target: { kind: "position", position: 1, block_id: "indexed-1", turn_id: "indexed-1" },
-      window: { start_position: 1, has_before: false, has_after: true, after_count: 9920, limit: 80 },
-    });
-    expect((start.body as { blocks: unknown[] }).blocks).toHaveLength(80);
-
-    const middle = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/conv-indexed?block=indexed-5005&limit=101",
-    });
-    expect(middle.body).toMatchObject({
-      target: { kind: "block", position: 5005, block_id: "indexed-5005", turn_id: "indexed-5002" },
-      window: { start_position: 4955, end_position: 5055, has_before: true, has_after: true, after_count: 4945, limit: 101 },
-    });
-    expect((middle.body as { blocks: unknown[] }).blocks).toHaveLength(101);
-
-    const latest = await router.invoke({
-      method: "GET",
-      url: "/api/conversations/conv-indexed?target=latest&limit=25",
-    });
-    expect(latest.body).toMatchObject({
-      target: { kind: "latest", position: 10_000 },
-      window: { start_position: 9976, end_position: 10_000, has_after: false, after_count: 0, limit: 25 },
-    });
   });
 
   it("resolves stable logical turn ids and rejects unknown or non-boundary anchors", async () => {

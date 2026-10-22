@@ -13,12 +13,13 @@ import { sparseConversationBlockId } from "../src/conversations/structure-cache.
 import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { resetCredentialLeakScanCache } from "../src/credential-leak-scan.js";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { revokeCredential, setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir: string;
 let db: Db;
@@ -67,8 +68,7 @@ beforeEach(() => {
   resetCredentialLeakScanCache();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-search-route-"));
   process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(tempDir, "cache", "search.db");
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   const insertConversation = db.prepare(`INSERT INTO conversations
     (id, source, source_path, source_hash, source_mtime, title, started_at, session_id,
