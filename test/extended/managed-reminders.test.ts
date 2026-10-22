@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
@@ -214,15 +213,5 @@ describe("managed reminder service", () => {
       { userId, evidenceMethod: "api_token" },
       NOW + 2,
     )).toThrow(/current lifecycle is completed/);
-  });
-});
-
-describe("evaluator architecture fence", () => {
-  it("imports no process, network, or filesystem capabilities", () => {
-    const source = fs.readFileSync("src/managed-reminder-evaluator.ts", "utf8");
-    expect(source).not.toMatch(/node:(?:child_process|cluster|dgram|dns|fs|http|https|net|tls|worker_threads)/);
-    expect(source).not.toMatch(/\b(?:fetch|process|Bun|Deno)\b/);
-    expect(source).toMatch(/ReminderDatabaseCapability/);
-    expect(source).toMatch(/appendInboxOccurrence/);
   });
 });

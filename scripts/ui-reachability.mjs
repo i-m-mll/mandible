@@ -8,7 +8,7 @@
 // re-exports and dynamic `import()` calls from the entry and reports every
 // module under `ui/src/` that it never reaches.
 //
-// Used by `test/ui-import-reachability.test.ts`; also runnable directly:
+// Used by `bun run check` (scripts/check.mjs); also runnable directly:
 //   node scripts/ui-reachability.mjs [--json]
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';

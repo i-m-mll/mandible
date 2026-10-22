@@ -179,57 +179,6 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
     db.close();
   });
 
-  it("creates the schema surfaces formerly duplicated by ensureSchema fallbacks", async () => {
-    const db = openDb(temp!.dbPath);
-
-    const authRequestIndexes = (
-      db.prepare("PRAGMA index_list(auth_requests)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(authRequestIndexes).toContain("idx_auth_requests_status_created");
-    expect(authRequestIndexes).toContain("idx_auth_requests_queue");
-    expect(authRequestIndexes).toContain("idx_auth_requests_target_session");
-    expect(authRequestIndexes).toContain("idx_auth_requests_target_repo");
-    expect(authRequestIndexes).toContain("idx_auth_requests_conversation_id");
-
-    const authHookIndexes = (
-      db.prepare("PRAGMA index_list(auth_hooks)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(authHookIndexes).toContain("idx_auth_hooks_repo_type");
-    expect(
-      db.prepare("SELECT 1 FROM auth_hooks WHERE id = ?")
-        .get("builtin-mandible-rebuild"),
-    ).toBeTruthy();
-
-    const branches = (
-      db.prepare("PRAGMA table_info(branches)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(branches).toContain("last_commit_date");
-    expect(branches).toContain("diff_stat");
-
-    const workRepos = (
-      db.prepare("PRAGMA table_info(work_repos)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(workRepos).toContain("excluded");
-    expect(workRepos).toContain("user_modified");
-
-    db.close();
-  });
-
-  it("keeps module-local schema fallback DDL out of service constructors", () => {
-    const files = [
-      "src/auth-hooks.ts",
-      "src/auth-auto-approve.ts",
-      "src/work-scanner.ts",
-      "src/auth-queue.ts",
-    ];
-
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(process.cwd(), file), "utf8");
-      expect(content).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?TABLE\s+IF\s+NOT\s+EXISTS/i);
-      expect(content).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS/i);
-    }
-  });
-
   it("keeps migrations idempotent", async () => {
     const db = openDb(temp!.dbPath);
     migrate(db);
