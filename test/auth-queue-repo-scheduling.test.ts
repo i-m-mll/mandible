@@ -1,6 +1,6 @@
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
-import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
+import { approveFixtureRequest, awaitFixtureResolution, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -193,8 +193,12 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
           (await queue.dispose());
           return "committed";
         }
-        await approveFixtureRequest(queue, request.id);
-        await waitForStatus(queue, request.id, "completed");
+        // Ancestry resolution is Stage 3, admitted after auth:resolved. A
+        // completed row alone does not mean that finalizer drain has work yet.
+        await awaitFixtureResolution(queue, request.id, async () => {
+          await approveFixtureRequest(queue, request.id);
+          await waitForStatus(queue, request.id, "completed");
+        });
         await queue.drainFinalizers();
         const state = (db.prepare("SELECT state FROM work_units WHERE id = 'wu-dot'").get() as { state: string }).state;
         (await queue.dispose());
