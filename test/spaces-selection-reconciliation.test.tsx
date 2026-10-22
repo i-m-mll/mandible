@@ -155,6 +155,30 @@ it('preserves an authoritative full UUID when another accessible space shares it
   expect(screen.queryByText('ambiguous space ref')).toBeNull();
 });
 
+it.each(['row', 'default'])('preserves a known full UUID selected by %s when another accessible space shares its prefix', async (choice) => {
+  const fullA = '12345678-1111-4111-8111-111111111111';
+  const fullB = '12345678-2222-4222-8222-222222222222';
+  const prefix = '12345678';
+  vi.mocked(listSpacesGrouped).mockResolvedValue([{ project_id: null, project_key: null, project_name: null, spaces: [space(fullA), space(fullB)] }]);
+  writeSpacesLastView({ projectId: null, spaceId: 'deleted' });
+  if (choice === 'row') window.history.replaceState(null, '', `#/spaces?space=C&${context}`);
+  const load = vi.fn(async (id: string) => {
+    if (id === 'deleted') throw new ApiError('saved space deleted', 404);
+    if (id === prefix) throw new ApiError('ambiguous space ref', 409);
+    return packet(id);
+  });
+  const navigated = vi.fn();
+  render(<Harness load={load} navigated={navigated} />);
+  if (choice === 'row') fireEvent.click(await screen.findByRole('button', { name: `Space ${fullA} (Document)` }));
+  await waitFor(() => expect(expectContext().get('space')).toBe(fullA));
+  await waitFor(() => expect(readSpacesLastView()?.spaceId).toBe(fullA));
+  expect(screen.getByLabelText('Opened space').textContent).toBe(fullA);
+  expect(load).toHaveBeenCalledWith(fullA);
+  expect(load).not.toHaveBeenCalledWith(prefix);
+  expect(load).not.toHaveBeenCalledWith(fullB);
+  expect(mountedTargets).not.toContain(fullB);
+});
+
 it('leaves a genuine empty collection after a deleted saved target is authoritatively missing', async () => {
   vi.mocked(listSpacesGrouped).mockResolvedValue([]);
   const navigated = vi.fn();

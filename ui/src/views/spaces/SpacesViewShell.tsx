@@ -358,6 +358,7 @@ export function SpacesViewShell({
             projectKey: args.projectKey,
             spaceId: args.spaceId,
             renderer: args.renderer,
+            preserveSpaceId: true,
           });
         }}
       />
