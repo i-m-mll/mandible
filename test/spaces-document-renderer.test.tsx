@@ -1,4 +1,4 @@
-import { render, screen, cleanup } from '@testing-library/preact';
+import { render, screen, cleanup } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {

@@ -2,7 +2,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

@@ -10,7 +10,7 @@
  * predicate is actually wired into the pane, and queries by accessible text
  * rather than markup so it does not pin presentation — see test/README.md.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "./helpers/dom.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { h } from "preact";
 

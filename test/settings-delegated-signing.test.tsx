@@ -1,6 +1,6 @@
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { authMainInstance, bindAuthUiOperations } from './helpers/auth-ui-fixture';
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen, waitFor } from "./helpers/dom.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DelegatedSigningSection } from "../ui/src/views/settings";

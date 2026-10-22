@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/preact';
+import { cleanup, render } from './helpers/dom.js';
 import { afterEach, expect, it } from 'vitest';
 import { UserBubble } from '../ui/src/components/message-blocks/UserBubble';
 

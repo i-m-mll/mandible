@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
@@ -123,7 +124,7 @@ describe("runtime handoff lock gate", () => {
 describe("candidate acceptance gate", () => {
   it("runs acceptance on submission and approves only after the exact current candidate passes", async () => {
     const request = submit();
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     const current = queue.getRequest(request.id)!;
     expect(runs[0]!.input).toMatchObject({ repoRoot: repo, pinSha: current.merge_candidate_pin_sha, workUnitId: "wu-feature/self-update", projectId });
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha,
@@ -139,7 +140,7 @@ describe("candidate acceptance gate", () => {
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
 
     await queue.runCandidateAcceptance(queue.getRequest(request.id)!);
-    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
     expect(acceptanceOf(request.id)).toMatchObject({ state: "passed" });
@@ -150,7 +151,7 @@ describe("candidate acceptance gate", () => {
 
   it("aborts the superseded request's run and runs the replacement's candidate", async () => {
     const original = submit();
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     git(repo, ["checkout", "feature/self-update"]);
     fs.writeFileSync(path.join(repo, "runtime.txt"), "revised\n");
     git(repo, ["commit", "-am", "revise candidate"]);
@@ -159,7 +160,7 @@ describe("candidate acceptance gate", () => {
 
     expect(runs[0]!.input.signal.aborted).toBe(true);
     expect(latestCandidateAcceptance(db, original.id)).toMatchObject({ status: "failed", error: "The request is superseded." });
-    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running'").all();
     expect(open).toEqual([{ auth_request_id: replacement.id }]);
     expect(runs[1]!.input.pinSha).toBe(queue.getRequest(replacement.id)!.merge_candidate_pin_sha);
@@ -168,7 +169,7 @@ describe("candidate acceptance gate", () => {
   it("re-pins a candidate the handoff lock left stale and runs its acceptance once the lock is released, with no approval", async () => {
     commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
     const request = submit();
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
 
@@ -187,14 +188,14 @@ describe("candidate acceptance gate", () => {
     await queue.refreshPendingCandidates();
     const repinned = queue.getRequest(request.id)!;
     expect(repinned).toMatchObject({ status: "pending", merge_preflight_base_sha: git(repo, ["rev-parse", "main"]) });
-    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
     expect(acceptanceOf(request.id)).toMatchObject({ state: "running" });
   });
 
   it("passes over an unchanged candidate on the idle tick without blocking the event loop on Git", async () => {
     const request = submit();
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
     await queue.refreshPendingCandidates();
@@ -213,10 +214,10 @@ describe("candidate acceptance gate", () => {
 
   it("runs a run a restart interrupted again at startup", async () => {
     const request = submit();
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     queue.dispose();
     queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
-    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
     expect(db.prepare("SELECT status, error FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at, rowid").all(request.id))
       .toEqual([{ status: "failed", error: "Interrupted by a daemon restart." }, { status: "running", error: null }]);
@@ -240,7 +241,7 @@ describe("rebuild failure", () => {
       merge_head_sha: git(repo, ["rev-parse", "feature/self-update"]), execution_mode: "daemon" });
     await approveFixtureRequest(queue, request.id);
     await waitForStatus(queue, request.id, "completed");
-    await vi.waitFor(() => expect(events.some((event) => event.event === "mandible:rebuild-failed")).toBe(true));
+    await waitUntilPasses(() => expect(events.some((event) => event.event === "mandible:rebuild-failed")).toBe(true));
     const event = events.find((candidate) => candidate.event === "mandible:rebuild-failed")!;
     expect(event.data).toMatchObject({ request_id: request.id, message: "The merge landed, but Mandible did not update: its rebuild hook exited 1." });
     expect(events.findIndex((candidate) => candidate.event === "mandible:rebuilding")).toBeLessThan(events.indexOf(event));

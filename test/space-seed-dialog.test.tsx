@@ -8,7 +8,7 @@
 //     the selection into the same predicate AST.
 //   - The "label X" and "saved filter" seeds build the shared predicate shape.
 
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the typed api client so we can assert the exact POST body and confirm the

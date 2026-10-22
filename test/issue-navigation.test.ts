@@ -1,5 +1,5 @@
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
-import { screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
+import { screen, fireEvent, waitFor, cleanup, act } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { IssuesView, resolveIssueRepoDeepLink, type IssueRepoSummary } from '../ui/src/views/issues';

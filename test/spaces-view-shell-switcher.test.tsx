@@ -1,6 +1,6 @@
 // An explicit legacy renderer link still mounts that renderer, and the user can
 // navigate back to the Space's primary type.
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

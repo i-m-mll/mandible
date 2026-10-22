@@ -2,7 +2,7 @@
 // durable order preference survives rejected, concurrent and stale writes, and
 // keyboard and Command-F ownership stays with the control the user is in.
 
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from './helpers/dom.js';
 import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

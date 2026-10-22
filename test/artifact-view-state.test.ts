@@ -1,7 +1,7 @@
 import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import { makeArtifactResolution } from "./helpers/artifact-resolution-fixtures";
 import { makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';
-import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
+import { screen, fireEvent, waitFor, act, within } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { ArtifactsView } from '../ui/src/views/artifacts';

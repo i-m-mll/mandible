@@ -90,7 +90,14 @@ describe("watchConversationRoots", () => {
 
     // Two bases, one recursive watch each — the fd budget is O(roots).
     expect(handle.rootCount).toBe(2);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // A watch reports nothing until it is armed; probe each root until it reports.
+    for (const base of [sessions, archived]) {
+      const probe = path.join(base, "armed.jsonl");
+      await waitUntil(() => {
+        fs.writeFileSync(probe, "probe\n");
+        return seen.includes(probe);
+      }, `the watch on ${base} to report a write`, 25);
+    }
 
     // add, in a directory that existed when the watch started
     const nested = path.join(sessions, "2026", "07", "02", "rollout-a.jsonl");

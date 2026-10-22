@@ -4,7 +4,7 @@ import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Routing + shell tests for Spaces nav/route scaffold (umbrella de56ffa,
 // child 22b50f5).
-import { render as testingRender, screen, cleanup, waitFor } from '@testing-library/preact';
+import { render as testingRender, screen, cleanup, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getSpaceFactPacketMock = vi.hoisted(() => vi.fn());

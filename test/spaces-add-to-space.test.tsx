@@ -4,7 +4,7 @@
 // IssueDetail action-gating flip: the menu must appear on an otherwise
 // read-only issue pane once `onAddToSpace` is provided.
 
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock only the API helpers the picker touches; everything else in the module

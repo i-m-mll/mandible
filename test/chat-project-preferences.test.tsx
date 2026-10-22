@@ -1,5 +1,6 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitUntilPasses } from './helpers/wait-until.js';
 
 import * as api from '../ui/src/api.js';
 import { useChatProjectSelection } from '../ui/src/views/conversation-view-state.js';
@@ -63,13 +64,13 @@ describe('Chat project preference migration', () => {
 
     render(<Probe />);
 
-    await vi.waitFor(() => {
+    await waitUntilPasses(() => {
       expect(screen.getByRole('status').getAttribute('data-notice')).toMatch(/unavailable|Reconnect/);
     });
     await vi.advanceTimersByTimeAsync(1500);
     expect(api.getChatShownProjectsPreference).toHaveBeenCalledTimes(1);
     window.dispatchEvent(new Event('focus'));
-    await vi.waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
+    await waitUntilPasses(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
     expect(JSON.parse(screen.getByRole('status').textContent ?? '[]')).toEqual(saved);
     vi.useRealTimers();
   });

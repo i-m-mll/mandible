@@ -142,7 +142,7 @@ it("records every ledger comment while ingestion appends to a live transcript", 
      WHERE source_entity_type = 'comment' AND relationship_type = 'references' AND deleted_at IS NULL`,
   ).get() as { n: number };
   expect(referenceSources.n).toBe(attempts);
-}, 60_000);
+});
 
 it("waits out an ingestion-length write transaction instead of failing", async () => {
   const { source } = makeIssues();
@@ -175,4 +175,4 @@ it("waits out an ingestion-length write transaction instead of failing", async (
   } finally {
     await holder.terminate();
   }
-}, 10_000);
+});

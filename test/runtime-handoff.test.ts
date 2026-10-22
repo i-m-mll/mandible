@@ -9,6 +9,7 @@ import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
 import { bindingDigest, handoffDirectory, readRuntimeHandoff, runtimeLogStartupOffset, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -43,7 +44,6 @@ it('lets the acknowledging daemon answer its own controller health probe', async
   fs.writeFileSync(path.join(dir, 'controller.mjs'), `import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 const request = http.get('http://127.0.0.1:${port}/health', response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => console.log(body)); });
-request.setTimeout(500, () => request.destroy(new Error('health probe timed out')));
 request.on('error', error => { console.error(error.message); process.exitCode = 1; });
 `);
   const completedBinding = { ...binding, mergeCommit: git(repo, ['rev-parse', 'HEAD']) };
@@ -108,7 +108,7 @@ it('runs the staged bundled helper without activating imported command-line entr
   const helper = path.join(dir, 'helper.mjs');
   execFileSync(runtime, ['build', 'scripts/runtime-handoff.mjs', '--target', 'bun', '--outfile', helper], { stdio: 'pipe' });
   // A terminal journal must exit without admission, rebuild or service changes.
-  expect(execFileSync(runtime, [helper, 'worker', path.join(dir, 'journal.json')], { encoding: 'utf8', timeout: 5000 })).toBe('');
+  expect(execFileSync(runtime, [helper, 'worker', path.join(dir, 'journal.json')], { encoding: 'utf8', timeout: STATE_DEADLINE_MS })).toBe('');
   expect(readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId)?.phase).toBe('failed');
 });
 

@@ -9,7 +9,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // criteria: worker_status default columns, custom-column add persisted to
 // spaces.metadata, drag/keyboard moves that write section_id/sort_key, and SSE
 // reconciliation that does not reset selection.
-import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 

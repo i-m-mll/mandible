@@ -2,7 +2,7 @@
 // only issue/comment endpoints are promotable, and SSE reconciliation keeps a
 // label the user is still editing.
 
-import { cleanup } from '@testing-library/preact';
+import { cleanup } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SpaceEdge, SpaceItem, SpaceOccurrence } from '../ui/src/api';

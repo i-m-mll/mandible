@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 import { computeReachability } from './ui-reachability.mjs';
 
@@ -101,6 +102,56 @@ const checks = {
       .filter((file) => file !== launcher && file !== 'scripts/check.mjs')
       .flatMap((file) => read(file).split('\n').flatMap((line, index) =>
         signs.test(line) ? [`${file}:${index + 1}: launches Chrome directly; use ${launcher}`] : []));
+  },
+
+  // A local deadline encodes how fast a machine ought to be, so a loaded
+  // machine turns it red (test/README.md). Gate tests await state through
+  // test/helpers/wait-until.ts and Testing Library through test/helpers/dom.ts,
+  // both bounded just under the vitest.config.ts hang guard.
+  'gate tests wait for state, not a duration'() {
+    const SUITE_CALLS = new Set(['it', 'test', 'describe', 'suite']);
+    const HOOK_CALLS = new Set(['beforeAll', 'beforeEach', 'afterAll', 'afterEach']);
+    const DOM_WAITS = /^(?:waitFor|waitForElementToBeRemoved|find(?:All)?By[A-Z]\w*)$/;
+    const rootName = (expression) => {
+      while (ts.isPropertyAccessExpression(expression) || ts.isCallExpression(expression)) expression = expression.expression;
+      return ts.isIdentifier(expression) ? expression.text : null;
+    };
+    const calleeName = (expression) =>
+      ts.isIdentifier(expression) ? expression.text : ts.isPropertyAccessExpression(expression) ? expression.name.text : null;
+    const hasTimeout = (node) => ts.isObjectLiteralExpression(node)
+      && node.properties.some((property) => property.name && ts.isIdentifier(property.name) && property.name.text === 'timeout');
+    return readdirSync(path.join(REPO_ROOT, 'test'))
+      .filter((name) => /\.test\.tsx?$/.test(name))
+      .flatMap((name) => {
+        const file = path.join('test', name);
+        const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
+        const problems = [];
+        const report = (node, message) =>
+          problems.push(`${file}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${message}`);
+        const visit = (node) => {
+          if (ts.isImportDeclaration(node) && /^@testing-library\/(?:preact|dom)$/.test(node.moduleSpecifier.text)) {
+            report(node, 'imports Testing Library directly; import it from ./helpers/dom.js');
+          }
+          if (ts.isCallExpression(node)) {
+            const root = rootName(node.expression);
+            const args = node.arguments;
+            if (SUITE_CALLS.has(root) && (args.length >= 3 || (args.length >= 2 && hasTimeout(args[1])))) {
+              report(node, `${root}() sets its own timeout; the config hang guard owns that`);
+            } else if (HOOK_CALLS.has(root) && args.length >= 2) {
+              report(node, `${root}() sets its own timeout; the config hang guard owns that`);
+            }
+            if (ts.isPropertyAccessExpression(node.expression) && root === 'vi' && /^wait(?:For|Until)$/.test(node.expression.name.text)) {
+              report(node, `vi.${node.expression.name.text} gives up after 1 s; use waitUntil or waitUntilPasses from ./helpers/wait-until.js`);
+            }
+            if (DOM_WAITS.test(calleeName(node.expression) ?? '') && args.some(hasTimeout)) {
+              report(node, 'passes its own timeout to a Testing Library wait');
+            }
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(source);
+        return problems;
+      });
   },
 
   // Reminder predicates are evaluated against a database capability only, so

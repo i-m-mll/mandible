@@ -1,5 +1,5 @@
 import { establishTestClientAccess } from './helpers/local-client-access';
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "./helpers/dom.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../ui/src/api.js";

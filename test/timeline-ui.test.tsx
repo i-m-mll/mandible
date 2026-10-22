@@ -1,4 +1,4 @@
-import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-library/preact';
+import { render, screen, waitFor, cleanup, fireEvent, act } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';

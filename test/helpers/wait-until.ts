@@ -9,6 +9,8 @@
  *
  * Timers are captured at import so fake-timer tests still poll in real time.
  */
+import { vi } from "vitest";
+
 const realSetTimeout = globalThis.setTimeout;
 const now = performance.now.bind(performance);
 
@@ -26,4 +28,12 @@ export async function waitUntil<T>(
     if (now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
     await new Promise((resolve) => realSetTimeout(resolve, intervalMs));
   }
+}
+
+/**
+ * Await an assertion that passes once the state it checks arrives. With fake
+ * timers installed, each retry advances them, as `vi.waitFor` does.
+ */
+export function waitUntilPasses<T>(assertion: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(assertion, { timeout: STATE_DEADLINE_MS });
 }

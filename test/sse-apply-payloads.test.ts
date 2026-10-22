@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitUntilPasses } from './helpers/wait-until.js';
 import { acquireSharedSse, __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
@@ -143,7 +144,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       current = next;
     });
     handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    await waitUntilPasses(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -158,7 +159,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       });
     }
 
-    await vi.waitFor(() => expect(current.blocks.map((b) => b.id)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5']));
+    await waitUntilPasses(() => expect(current.blocks.map((b) => b.id)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5']));
     expect(refetches).toBe(0);
     expect(current.block_count).toBe(6);
   });
@@ -180,7 +181,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       current = next;
     });
     handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    await waitUntilPasses(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -190,7 +191,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       data: { id: 'conv-1', block_count: 3, append: { from_position: 2, blocks: [block('b2', 2)] } },
     });
 
-    await vi.waitFor(() => expect(refetches).toBe(1));
+    await waitUntilPasses(() => expect(refetches).toBe(1));
     expect(current.blocks.map((b) => b.id)).toEqual(['b0']); // unchanged
   });
 
@@ -210,17 +211,17 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       else if (result.refetch) refetches += 1;
     });
     handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    await waitUntilPasses(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
     es.emit({ type: 'conversation:updated', data: { id: 'conv-1', block_count: 4, title: 'Renamed' } });
-    await vi.waitFor(() => expect(list[0].block_count).toBe(4));
+    await waitUntilPasses(() => expect(list[0].block_count).toBe(4));
     expect(list[0].title).toBe('Renamed');
     expect(refetches).toBe(0);
 
     es.emit({ type: 'conversation:updated', data: { id: 'conv-unknown', block_count: 9 } });
-    await vi.waitFor(() => expect(refetches).toBe(1));
+    await waitUntilPasses(() => expect(refetches).toBe(1));
   });
 
   it('fires the reconnect resync exactly once per real reconnect', async () => {
@@ -232,15 +233,15 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       if (reconnected) resyncs += 1;
     });
     handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    await waitUntilPasses(() => expect(FakeEventSource.instances.length).toBe(1));
     const es1 = FakeEventSource.instances[0];
     es1.open(); // first open: not a reconnect
     expect(resyncs).toBe(0);
 
     es1.error();
     await vi.advanceTimersByTimeAsync(500);
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(2));
+    await waitUntilPasses(() => expect(FakeEventSource.instances.length).toBe(2));
     FakeEventSource.instances[1].open(); // reopen: reconnect
-    await vi.waitFor(() => expect(resyncs).toBe(1));
+    await waitUntilPasses(() => expect(resyncs).toBe(1));
   });
 });

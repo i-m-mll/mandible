@@ -7,6 +7,7 @@ import { afterEach, expect, it } from 'vitest';
 import { WorkScanner, type SqliteDatabase } from '../src/work-scanner.js';
 
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
+import { waitUntil } from './helpers/wait-until.js';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
@@ -32,9 +33,7 @@ it('cancels an in-flight repository probe and drains before the database closes'
   process.env.SCANNER_PROBE_MARKER = marker;
   try {
     const scanning = scanner.scanAllAsync();
-    const deadline = Date.now() + 5000;
-    while (!fs.existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
-    expect(fs.existsSync(marker)).toBe(true);
+    await waitUntil(() => fs.existsSync(marker), 'the repository probe to start');
     const stopping = scanner.stop();
     await stopping;
     closed = true;
@@ -47,7 +46,7 @@ it('cancels an in-flight repository probe and drains before the database closes'
     if (previousMarker === undefined) delete process.env.SCANNER_PROBE_MARKER;
     else process.env.SCANNER_PROBE_MARKER = previousMarker;
   }
-}, 10000);
+});
 
 it('keeps timers responsive during slow Git and preserves the snapshot after a stuck branch probe', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scanner-bounded-')); roots.push(root);
@@ -101,4 +100,4 @@ it('keeps timers responsive during slow Git and preserves the snapshot after a s
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
-}, 10000);
+});

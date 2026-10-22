@@ -1,5 +1,5 @@
 import { ApiError, isApiErrorStatus } from '../ui/src/api';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { useCallback } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 

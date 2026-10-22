@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, render, screen } from "./helpers/dom.js";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   deriveChatUsageSummary,

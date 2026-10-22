@@ -13,7 +13,7 @@ import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 //   - the never-registered empty state says so in those words and offers no
 //     way to create anything.
 //   - a stale executor report is visibly stale in the list.
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, screen, waitFor, within } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

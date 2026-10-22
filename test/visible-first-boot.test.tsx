@@ -1,5 +1,6 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/preact";
+import { cleanup, render, screen, waitFor } from "./helpers/dom.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitUntilPasses } from "./helpers/wait-until.js";
 import { __resetSharedSseForTests } from "../ui/src/sse-shared";
 import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 import { h } from "preact";
@@ -131,7 +132,7 @@ describe("visible-first dashboard boot", () => {
     render(h(App, {}));
     await vi.runAllTicks();
     await Promise.resolve();
-    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    await waitUntilPasses(() => expect(MockEventSource.instances).toHaveLength(1));
     const source = MockEventSource.instances[0];
     expect(source).toBeTruthy();
     // Freshness is now connection health (open socket + a signal within

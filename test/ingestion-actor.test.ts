@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { IngestionActor } from "../src/ingestion-actor.js";
 import { ConversationSourceChangedError } from "../src/conversations/source-store.js";
+import { STATE_DEADLINE_MS } from "./helpers/wait-until.js";
 
 const TEST_WORKER_SOURCE = `
   import { parentPort } from "node:worker_threads";
@@ -98,7 +99,7 @@ it("opens the same pinned SQLite database in the actual ingestion Worker", async
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
-}, 10_000);
+});
 
 
 it.skipIf(process.platform !== "darwin")("rejects an unowned loaded library and a forged Worker selection receipt", () => {
@@ -121,7 +122,7 @@ it.skipIf(process.platform !== "darwin")("rejects an unowned loaded library and 
     await worker.terminate(); unowned.close();
     if (!String(message).includes("Loaded SQLite library does not match")) throw new Error(String(message));
     console.log("unowned and forged identity rejected");
-  `], { encoding: "utf8", timeout: 5_000 });
+  `], { encoding: "utf8", timeout: STATE_DEADLINE_MS });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain("unowned and forged identity rejected");
 });

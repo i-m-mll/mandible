@@ -1,6 +1,6 @@
 import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { QueryClientProvider } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -373,7 +373,7 @@ describe('conversation sidebar groups', () => {
       block_count: canonicalRow.block_count,
       canonical_project_id: null,
     });
-    await waitFor(() => expect(requests.length).toBeGreaterThan(priorRequestCount), { timeout: 1600 });
+    await waitFor(() => expect(requests.length).toBeGreaterThan(priorRequestCount));
     expect(requests.at(-1)).toEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
   });
 
@@ -492,7 +492,6 @@ describe('conversation sidebar groups', () => {
     const indexedRow = await within(projectSection).findByRole(
       'button',
       { name: 'Open conversation Reserved chat' },
-      { timeout: 1600 },
     );
     expect(indexedRow).toBe(provisionalRow);
     expect(indexedRow.getAttribute('aria-current')).toBe('true');
