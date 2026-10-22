@@ -736,7 +736,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     navEnricher.stop();
     fileRpcTransport.stop();
     await closeLocalSocket();
-    authQueue.dispose();
+    await authQueue.dispose();
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for

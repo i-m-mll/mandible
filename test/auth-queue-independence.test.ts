@@ -20,9 +20,9 @@ import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, create
 
 async function submitPausedSibling(queue: AuthQueue, db: Parameters<typeof registerWorkRepo>[0], repo: string, branch = 'feature/a') {
   registerWorkRepo(db, repo);
-  const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge ${branch} --into main`,
+  const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge ${branch} --into main`,
     title: 'Reviewed sibling', repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: branch,
-    merge_head_sha: git(repo, ['rev-parse', branch]) });
+    merge_head_sha: git(repo, ['rev-parse', branch]) }));
   await approvePausedFixtureRequest(queue, request.id);
   return request;
 }
@@ -51,18 +51,18 @@ describe("auth queue", () => {
          ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
         VALUES (?, '8420a44', ?, 'feature/b', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
         .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
-      const pending = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const pending = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/b --into main", title: "Merge b",
         repo: project.project.project_key, base_branch: "main", head_branch: "feature/b",
         merge_head_sha: git(repo, ["rev-parse", "feature/b"]), cwd: repo,
         requester_evidence_method: "api_token", requester_credential_id: credential.id,
         require_delivery_custody: true, issue_references: ["8420a44"],
-      }, operator.id);
+      }, operator.id));
       const sibling = await submitPausedSibling(queue, db, repo);
       await completeFixturePublication(queue, sibling.id);
       const firstMerge = git(repo, ["rev-parse", "main"]);
       await queue.drainFinalizers();
-      const historical = queue.getRequest(pending.id)!;
+      const historical = (await queue.getRequest(pending.id))!;
       expect(historical.merge_preflight_base_sha).toBe(firstMerge);
       // Reproduce the old daemon's missing receipt while preserving its actual
       // refreshed row and candidate ref. This database is disposable test state.
@@ -76,40 +76,40 @@ describe("auth queue", () => {
       git(repo, ["checkout", "main"]);
       const secondMerge = signedMergeIntoMain(repo, "feature/c");
       expect(secondMerge).not.toBe(firstMerge);
-      const proof = queue.inspectPendingCandidateSnapshotRepair(pending.id, actor);
+      const proof = (await queue.inspectPendingCandidateSnapshotRepair(pending.id, actor));
       expect(proof).toMatchObject({ lifecycle_revision: 1, custody_generation: 1,
         current_base_sha: firstMerge });
-      expect(() => queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, "0".repeat(64)))
+      await expect((async () => (await queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, "0".repeat(64)))())).rejects
         .toThrow(AuthQueueError);
       const otherCredential = addCredential(db, operator.id, {
         type: "api_token", fingerprint: `candidate-repair-other-${crypto.randomUUID()}`,
       });
-      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, {
+      await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, {
         ...actor, credential_id: otherCredential.id,
-      })).toThrow(AuthQueueError);
+      }))())).rejects.toThrow(AuthQueueError);
       db.prepare("UPDATE auth_requests SET title = 'Tampered' WHERE id = ?").run(pending.id);
-      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+      await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, actor))())).rejects.toThrow(AuthQueueError);
       db.prepare("UPDATE auth_requests SET title = ? WHERE id = ?").run(pending.title, pending.id);
       db.prepare("UPDATE auth_requests SET merge_atomic_enabled = 1 WHERE id = ?").run(pending.id);
-      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+      await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, actor))())).rejects.toThrow(AuthQueueError);
       db.prepare("UPDATE auth_requests SET merge_atomic_enabled = 0 WHERE id = ?").run(pending.id);
-      queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, proof.current_snapshot_sha256);
+      (await queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, proof.current_snapshot_sha256));
       expect(queue.listLifecycleEvents(pending.id).at(-1)).toMatchObject({
         revision: 2, event_type: "revised", credential_id: credential.id,
       });
-      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+      await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, actor))())).rejects.toThrow(AuthQueueError);
     } finally {
-      queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true });
+      (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true });
     }
   });
-  it("accepts pairwise-independent pending merge requests", () => {
+  it("accepts pairwise-independent pending merge requests", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
     try {
       commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
       commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
 
-      const first = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const first = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/a --into main",
         title: "Merge feature/a",
@@ -117,17 +117,17 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/a",
         cwd: repo,
-      });
-      const check = queue.checkMergeIndependence({
+      }));
+      const check = (await queue.checkMergeIndependence({
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/b",
         cwd: repo,
-      });
+      }));
       expect(check.status).toBe("clean");
       expect(check.checked_requests).toBe(1);
 
-      const second = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const second = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/b --into main",
         title: "Merge feature/b",
@@ -135,23 +135,23 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/b",
         cwd: repo,
-      });
+      }));
 
-      expect(queue.getRequest(first.id)?.status).toBe("pending");
-      expect(queue.getRequest(second.id)?.status).toBe("pending");
+      expect((await queue.getRequest(first.id))?.status).toBe("pending");
+      expect((await queue.getRequest(second.id))?.status).toBe("pending");
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  it("rejects a pending merge request that conflicts with the queued simulation", () => {
+  it("rejects a pending merge request that conflicts with the queued simulation", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
     try {
       commitOnBranch(repo, "feature/a", { "shared.txt": "a\n" });
       commitOnBranch(repo, "feature/b", { "shared.txt": "b\n" });
 
-      const first = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const first = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/a --into main",
         title: "Merge feature/a",
@@ -159,19 +159,19 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/a",
         cwd: repo,
-      });
+      }));
 
-      const check = queue.checkMergeIndependence({
+      const check = (await queue.checkMergeIndependence({
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/b",
         cwd: repo,
-      });
+      }));
       expect(check.status).toBe("conflict");
       expect(check.conflicts[0]?.request_id).toBe(first.id);
       expect(check.conflicts[0]?.files).toContain("shared.txt");
 
-      expect(() => queue.submit({ ...AUTH_MERGE_REVIEW,
+      await expect((async () => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/b --into main",
         title: "Merge feature/b",
@@ -179,41 +179,41 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/b",
         cwd: repo,
-      })).toThrow(AuthQueueError);
+      }))())).rejects.toThrow(AuthQueueError);
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  it("reports merge check infrastructure failures as errors, not conflicts", () => {
+  it("reports merge check infrastructure failures as errors, not conflicts", async () => {
     const queue = createQueue();
     const missingCwd = uniqueMissingPath("mandible-missing-auth-check-cwd");
 
-    const check = queue.checkMergeIndependence({
+    const check = (await queue.checkMergeIndependence({
       repo: "missing-fixture-repo",
       base_branch: "main",
       head_branch: "feature/demo",
       cwd: missingCwd,
-    });
+    }));
 
     expect(check.status).toBe("error");
     expect(check.conflicts).toEqual([]);
     expect(check.reason).toContain("ENOENT");
   });
 
-  it("reports tracked dirty worktree state as a merge preflight error", () => {
+  it("reports tracked dirty worktree state as a merge preflight error", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
     try {
       commitOnBranch(repo, "feature/demo", { "feature.txt": "feature\n" });
       writeFile(repo, "shared.txt", "dirty\n");
 
-      const check = queue.checkMergeIndependence({
+      const check = (await queue.checkMergeIndependence({
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/demo",
         cwd: repo,
-      });
+      }));
 
       expect(check.status).toBe("error");
       expect(check.reason).toContain("tracked worktree changes are present");
@@ -224,14 +224,14 @@ describe("auth queue", () => {
     }
   });
 
-  it("rejects merge request submission when shared preflight reports an error", () => {
+  it("rejects merge request submission when shared preflight reports an error", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
     try {
       commitOnBranch(repo, "feature/demo", { "feature.txt": "feature\n" });
       writeFile(repo, "shared.txt", "dirty\n");
 
-      expect(() => queue.submit({ ...AUTH_MERGE_REVIEW,
+      await expect((async () => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/demo --into main",
         title: "Merge feature/demo",
@@ -239,20 +239,20 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/demo",
         cwd: repo,
-      })).toThrow(/merge preflight failed/);
+      }))())).rejects.toThrow(/merge preflight failed/);
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  it("classifies a queued request whose head branch was torn down as stale, not a conflict (fbf2a58)", () => {
+  it("classifies a queued request whose head branch was torn down as stale, not a conflict (fbf2a58)", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
     try {
       commitOnBranch(repo, "feature/gone", { "gone.txt": "gone\n" });
       commitOnBranch(repo, "feature/live", { "live.txt": "live\n" });
 
-      const queued = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const queued = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/gone --into main",
         title: "Merge feature/gone",
@@ -260,18 +260,18 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/gone",
         cwd: repo,
-      });
+      }));
 
       // Simulate the incident: the merge landed and the head branch was torn
       // down, but the queue row was never finalized.
       git(repo, ["branch", "-D", "feature/gone"]);
 
-      const check = queue.checkMergeIndependence({
+      const check = (await queue.checkMergeIndependence({
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/live",
         cwd: repo,
-      });
+      }));
 
       expect(check.status).toBe("stale_request");
       expect(check.conflicts).toEqual([]);
@@ -285,25 +285,25 @@ describe("auth queue", () => {
     }
   });
 
-  it.each([false, true])('keeps an unreviewed out-of-band merge pending even when its branch is deleted: %s', (deleteBranch) => {
+  it.each([false, true])('keeps an unreviewed out-of-band merge pending even when its branch is deleted: %s', async (deleteBranch) => {
     const repo = createAuthCheckRepo(); const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
       commitOnBranch(repo, 'feature/landed', { 'landed.txt': 'landed\n' });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/landed --into main', title: 'Unreviewed merge',
-        repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/landed', merge_head_sha: git(repo, ['rev-parse', 'feature/landed']) });
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/landed --into main', title: 'Unreviewed merge',
+        repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/landed', merge_head_sha: git(repo, ['rev-parse', 'feature/landed']) }));
       git(repo, ['merge', '--no-ff', 'feature/landed', '-m', 'Out-of-band merge']);
       if (deleteBranch) git(repo, ['branch', '-D', 'feature/landed']);
       const events: SseEvent[] = [];
       const restarted = new AuthQueue({ db, broadcast: event => events.push(event) });
       try {
-        expect(restarted.getRequest(request.id)).toMatchObject({ status: 'pending', exit_code: null, merge_finalized_at: null, execution_evidence_id: null });
+        expect((await restarted.getRequest(request.id))).toMatchObject({ status: 'pending', exit_code: null, merge_finalized_at: null, execution_evidence_id: null });
         expect(events.some(event => event.event === 'auth:merged' || event.event === 'auth:resolved')).toBe(false);
-      } finally { restarted.dispose(); }
-    } finally { queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+      } finally { (await restarted.dispose()); }
+    } finally { (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
-  it("leaves a pending merge whose head is not yet in target untouched (fbf2a58)", () => {
+  it("leaves a pending merge whose head is not yet in target untouched (fbf2a58)", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     try {
@@ -311,7 +311,7 @@ describe("auth queue", () => {
       const headSha = git(repo, ["rev-parse", "feature/unmerged"]);
 
       const queue = new AuthQueue({ db });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/unmerged --into main",
         title: "Merge feature/unmerged",
@@ -321,18 +321,18 @@ describe("auth queue", () => {
         merge_head_sha: headSha,
         cwd: repo,
         target_repo_root: repo,
-      });
-      queue.dispose();
+      }));
+      (await queue.dispose());
 
       // Nothing landed: the head is genuinely absent from main.
       const restarted = new AuthQueue({ db });
       try {
-        const untouched = restarted.getRequest(request.id);
+        const untouched = (await restarted.getRequest(request.id));
         expect(untouched?.status).toBe("pending");
         expect(untouched?.exit_code).toBeNull();
         expect(untouched?.merge_finalized_at ?? null).toBeNull();
       } finally {
-        restarted.dispose();
+        (await restarted.dispose());
       }
     } finally {
       db.close();
@@ -340,7 +340,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("does NOT reconcile when the head branch was recreated at the target sha, disagreeing with the recorded merge_head_sha (fbf2a58 round 2)", () => {
+  it("does NOT reconcile when the head branch was recreated at the target sha, disagreeing with the recorded merge_head_sha (fbf2a58 round 2)", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     try {
@@ -352,7 +352,7 @@ describe("auth queue", () => {
       expect(originalHeadSha).not.toBe(targetSha);
 
       const queue = new AuthQueue({ db });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/recreated --into main",
         title: "Merge feature/recreated",
@@ -362,26 +362,26 @@ describe("auth queue", () => {
         merge_head_sha: originalHeadSha,
         cwd: repo,
         target_repo_root: repo,
-      });
-      expect(queue.getRequest(request.id)?.status).toBe("pending");
+      }));
+      expect((await queue.getRequest(request.id))?.status).toBe("pending");
 
       // The branch is force-recreated at the target tip (T). The unmerged work at
       // A is now abandoned; the live ref points at T. A naive proof taken from the
       // live ref ("T is an ancestor of T") would falsely complete the request.
       git(repo, ["branch", "-f", "feature/recreated", "main"]);
       expect(git(repo, ["rev-parse", "feature/recreated"])).toBe(targetSha);
-      queue.dispose();
+      (await queue.dispose());
 
       const restarted = new AuthQueue({ db });
       try {
-        const row = restarted.getRequest(request.id);
+        const row = (await restarted.getRequest(request.id));
         // Recorded sha is authoritative and disagrees with the live ref: the
         // request is NOT reconcilable and stays pending.
         expect(row?.status).toBe("pending");
         expect(row?.exit_code ?? null).toBeNull();
         expect(row?.merge_finalized_at ?? null).toBeNull();
       } finally {
-        restarted.dispose();
+        (await restarted.dispose());
       }
     } finally {
       db.close();
@@ -389,7 +389,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("fully drops approval attribution and execution evidence when parking a self-merge execution (fbf2a58 round 2)", () => {
+  it("fully drops approval attribution and execution evidence when parking a self-merge execution (fbf2a58 round 2)", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const queue = new AuthQueue({ db });
@@ -402,7 +402,7 @@ describe("auth queue", () => {
         "INSERT INTO attribution_evidence (id, evidence_method, verified_at, details_json) VALUES (?, ?, ?, '{}')"
       ).run("evidence-parked-1", "credential_signature", Date.now());
 
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/parked --into main",
         title: "Merge feature/parked",
@@ -411,7 +411,7 @@ describe("auth queue", () => {
         head_branch: "feature/parked",
         cwd: repo,
         target_repo_root: repo,
-      });
+      }));
       // Stage the row exactly as it would look mid-execution: executing, with the
       // approver and execution evidence attached.
       db.prepare(
@@ -419,10 +419,10 @@ describe("auth queue", () => {
       ).run(Date.now(), operator.id, "evidence-parked-1", request.id);
 
       (queue as unknown as { parkExecutionForRestart(r: unknown): void }).parkExecutionForRestart(
-        queue.getRequest(request.id)!,
+        (await queue.getRequest(request.id))!,
       );
 
-      const parked = queue.getRequest(request.id);
+      const parked = (await queue.getRequest(request.id));
       expect(parked?.status).toBe("pending");
       expect(parked?.approved_at ?? null).toBeNull();
       // The fix: stale approval attribution and evidence are fully cleared so a
@@ -430,7 +430,7 @@ describe("auth queue", () => {
       expect(parked?.approved_by_user_id ?? null).toBeNull();
       expect(parked?.execution_evidence_id ?? null).toBeNull();
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
@@ -441,17 +441,17 @@ describe("auth queue", () => {
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
       commitOnBranch(repo, 'feature/oob', { 'oob.txt': 'out of band\n' });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/oob --into main', title: 'Unproved merge',
-        repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/oob', merge_head_sha: git(repo, ['rev-parse', 'feature/oob']) });
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/oob --into main', title: 'Unproved merge',
+        repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/oob', merge_head_sha: git(repo, ['rev-parse', 'feature/oob']) }));
       git(repo, ['merge', '--no-ff', 'feature/oob', '-m', 'Out-of-band merge']);
       db.prepare('UPDATE auth_requests SET approved_by_user_id = ? WHERE id = ?').run(getOperator(db)!.id, request.id);
       const restarted = new AuthQueue({ db });
       try {
-        (restarted as unknown as { sweepSuccessfulMergeFinalizers(): void }).sweepSuccessfulMergeFinalizers();
+        await (restarted as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
         await restarted.drainFinalizers();
-        expect(restarted.getRequest(request.id)).toMatchObject({ status: 'pending', exit_code: null, merge_finalized_at: null, execution_evidence_id: null });
-      } finally { restarted.dispose(); }
-    } finally { queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+        expect((await restarted.getRequest(request.id))).toMatchObject({ status: 'pending', exit_code: null, merge_finalized_at: null, execution_evidence_id: null });
+      } finally { (await restarted.dispose()); }
+    } finally { (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
   it('refuses a conflicting request while the reviewed sibling is executing', async () => {
@@ -461,13 +461,13 @@ describe("auth queue", () => {
       commitOnBranch(repo, 'feature/a', { 'shared.txt': 'a\n' });
       commitOnBranch(repo, 'feature/b', { 'shared.txt': 'b\n' });
       const sibling = await submitPausedSibling(queue, db, repo);
-      await expect(Promise.resolve().then(() => queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/b --into main',
+      await expect(Promise.resolve().then(async () => (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/b --into main',
         title: 'Conflicting sibling', repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/b',
-        merge_head_sha: git(repo, ['rev-parse', 'feature/b']) }))).rejects.toThrow(/conflicts with pending request/);
-      expect(queue.getRequest(sibling.id)?.status).toBe('executing');
+        merge_head_sha: git(repo, ['rev-parse', 'feature/b']) })))).rejects.toThrow(/conflicts with pending request/);
+      expect((await queue.getRequest(sibling.id))?.status).toBe('executing');
       await completeFixturePublication(queue, sibling.id); await queue.drainFinalizers();
       expect(git(repo, ['rev-parse', 'main'])).not.toBe(sibling.merge_preflight_base_sha);
-    } finally { queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    } finally { (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
   // After an authorized sibling merge, pending siblings are re-pinned onto the
@@ -501,7 +501,7 @@ describe("auth queue", () => {
       }
       registerWorkRepo(db, repo);
       configureSigningCredential(db, repo, "ssh_key");
-      const submit = (branch: string, extra: { depends_on_id?: string } = {}) => queue.submit({ ...AUTH_MERGE_REVIEW,
+      const submit = async (branch: string, extra: { depends_on_id?: string } = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge feature/${branch} --into main`,
         title: `Merge feature/${branch}`,
@@ -511,14 +511,14 @@ describe("auth queue", () => {
         merge_head_sha: git(repo, ["rev-parse", `feature/${branch}`]),
         cwd: repo,
         ...extra,
-      });
+      }));
 
       // Review F1 — the sibling merge is a genuine authorized queue merge.
       const sibling = await submitPausedSibling(queue, db, repo);
       // Submitted first: without prioritization `other` would be revalidated first.
-      const other = submit("other");
-      const dep = submit("dep", { depends_on_id: sibling.id });
-      const drifted = submit("drifted");
+      const other = (await submit("other"));
+      const dep = (await submit("dep", { depends_on_id: sibling.id }));
+      const drifted = (await submit("drifted"));
       for (const request of [other, dep, drifted]) expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
 
       git(repo, ["checkout", "feature/drifted"]);
@@ -538,11 +538,11 @@ describe("auth queue", () => {
       expect(updatedIds.indexOf(dep.id)).toBeLessThan(updatedIds.indexOf(other.id));
       expect(updatedIds).not.toContain(drifted.id);
 
-      const refreshed = queue.getRequest(other.id)!;
+      const refreshed = (await queue.getRequest(other.id))!;
       expect(refreshed.status).toBe("pending");
       expect(refreshed.merge_preflight_base_sha).toBe(newBase);
       expect(refreshed.merge_candidate_pin_sha).not.toBe(other.merge_candidate_pin_sha);
-      expect(queue.getRequest(dep.id)?.merge_preflight_base_sha).toBe(newBase);
+      expect((await queue.getRequest(dep.id))?.merge_preflight_base_sha).toBe(newBase);
       const lifecycle = db.prepare(
         "SELECT revision, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1",
       ).get(other.id) as { revision: number; snapshot_sha256: string };
@@ -553,7 +553,7 @@ describe("auth queue", () => {
       expect(git(repo, ["rev-parse", `${refreshed.merge_candidate_pin_sha}^2`])).toBe(other.merge_head_sha);
 
       // Head drift stays strict: the stale candidate is never re-attested.
-      expect(queue.getRequest(drifted.id)).toMatchObject({
+      expect((await queue.getRequest(drifted.id))).toMatchObject({
         status: "pending",
         merge_preflight_base_sha: drifted.merge_preflight_base_sha,
         merge_candidate_pin_sha: drifted.merge_candidate_pin_sha,
@@ -568,7 +568,7 @@ describe("auth queue", () => {
         MANDIBLE_AUTH_CANDIDATE_PIN_SHA: refreshed.merge_candidate_pin_sha,
       });
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
@@ -586,10 +586,10 @@ describe("auth queue", () => {
     try {
       for (const branch of ['a', 'exec', 'c']) commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
       const sibling = await submitPausedSibling(queue, db, repo);
-      const request = (branch: string) => queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge feature/${branch} --into main`,
+      const request = async (branch: string) => (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge feature/${branch} --into main`,
         title: branch, repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: `feature/${branch}`,
-        merge_head_sha: git(repo, ['rev-parse', `feature/${branch}`]) });
-      const execRequest = request('exec'); const pending = request('c');
+        merge_head_sha: git(repo, ['rev-parse', `feature/${branch}`]) }));
+      const execRequest = (await request('exec')); const pending = (await request('c'));
       const staleBase = pending.merge_preflight_base_sha;
       // Lose only admission to the finalizer queue; the signed publication and normal result remain durable.
       const finalizers = (queue as unknown as { finalizerQueue: { enqueue(id: string): boolean } }).finalizerQueue;
@@ -597,12 +597,12 @@ describe("auth queue", () => {
       await completeFixturePublication(queue, sibling.id);
       admission.mockRestore();
       await approveFixtureRequest(queue, execRequest.id); await started;
-      (queue as unknown as { sweepSuccessfulMergeFinalizers(): void }).sweepSuccessfulMergeFinalizers();
-      expect(queue.getRequest(pending.id)?.merge_preflight_base_sha).toBe(staleBase);
+      void (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
+      expect((await queue.getRequest(pending.id))?.merge_preflight_base_sha).toBe(staleBase);
       await expect(approveFixtureRequest(queue, pending.id)).rejects.toThrow(/Refusal: execution_chain_busy/);
       releaseExec(); await waitForStatus(queue, execRequest.id, 'completed'); await queue.drainFinalizers();
-      expect(queue.getRequest(pending.id)).toMatchObject({ status: 'pending', merge_preflight_base_sha: git(repo, ['rev-parse', 'main']) });
-      expect(queue.getRequest(pending.id)?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
-    } finally { releaseExec?.(); queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+      expect((await queue.getRequest(pending.id))).toMatchObject({ status: 'pending', merge_preflight_base_sha: git(repo, ['rev-parse', 'main']) });
+      expect((await queue.getRequest(pending.id))?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+    } finally { releaseExec?.(); (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 });

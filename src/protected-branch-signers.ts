@@ -20,7 +20,7 @@
  *   outside a Mandible merge.
  */
 
-import { spawnSync } from "node:child_process";
+import { observeChild } from "./child-observation.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,12 +95,12 @@ const RECORD = "\x1e";
  * commits or no trusted ssh-keygen is available; callers decide how to
  * surface that.
  */
-export function readCommitSignatures(
+export async function readCommitSignatures(
   db: Db,
   cwd: string,
   shas: readonly string[],
   use: ProtectedSignerUse,
-): CommitSignature[] {
+): Promise<CommitSignature[]> {
   if (shas.length === 0) return [];
   const sshKeygen = trustedSshKeygenPath();
   if (!sshKeygen) throw new Error("trusted_ssh_keygen_unavailable");
@@ -110,7 +110,7 @@ export function readCommitSignatures(
   const allowedSigners = join(dir, "allowed_signers");
   try {
     writeFileSync(allowedSigners, lines.length ? `${lines.join("\n")}\n` : "", { encoding: "utf8", mode: 0o600 });
-    const result = spawnSync("git", [
+    const result = (await observeChild("git", [
       "-c", "gpg.format=ssh",
       "-c", `gpg.ssh.allowedSignersFile=${allowedSigners}`,
       "-c", `gpg.ssh.program=${sshKeygen}`,
@@ -118,13 +118,14 @@ export function readCommitSignatures(
       "-c", "gpg.minTrustLevel=fully",
       "log", "--no-walk=unsorted", `--format=%H${FIELD}%G?${FIELD}%GS${FIELD}%GF${FIELD}%s${RECORD}`,
       ...shas,
-    ], { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, env: verificationEnv() });
+    ], { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, env: verificationEnv() }));
     if (result.status !== 0) {
       throw new Error(`git log failed: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
     }
+    const currentKeys = operatorSigningCredentials(db, use);
     return result.stdout.split(RECORD).map((record) => record.replace(/^\n/, "")).filter(Boolean).map((record) => {
       const [sha = "", code = "", principal = "", fingerprint = "", subject = ""] = record.split(FIELD);
-      const credential = keys.find((key) => key.credential_id === principal) ?? null;
+      const credential = currentKeys.find((key) => key.credential_id === principal && signerLines([key])[0] === lines.find(line => line.startsWith(`${principal} `))) ?? null;
       const status: CommitSignatureStatus = code === "N"
         ? "unsigned"
         : code === "G" && credential && credential.fingerprint === fingerprint

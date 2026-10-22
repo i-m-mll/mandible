@@ -41,13 +41,13 @@ describe("auth queue", () => {
       });
     }
 
-    function submitPinnedRequest(
+    async function submitPinnedRequest(
       queue: AuthQueue,
       repo: string,
       headBranch: string,
       command = `mandible auth merge ${headBranch} --into main`,
     ) {
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command,
         title: `Merge ${headBranch}`,
@@ -56,7 +56,7 @@ describe("auth queue", () => {
         head_branch: headBranch,
         merge_head_sha: git(repo, ["rev-parse", headBranch]),
         cwd: repo,
-      });
+      }));
       expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
       return request;
     }
@@ -75,31 +75,31 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
 
         // Deleted candidate ref: named as tamper evidence, not blamed on the inputs.
-        const refCorrupt = submitPinnedRequest(queue, repo, "feature/ref-corrupt");
+        const refCorrupt = (await submitPinnedRequest(queue, repo, "feature/ref-corrupt"));
         git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${refCorrupt.id}`]);
         const refusal = approveFixtureRequest(queue, refCorrupt.id);
         await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
         await expect(refusal).rejects.toThrow(/Refusal: retained_candidate_invalid/);
         await expect(refusal).rejects.toThrow(/tamper evidence/);
-        expect(queue.getRequest(refCorrupt.id)?.status).toBe("pending");
+        expect((await queue.getRequest(refCorrupt.id))?.status).toBe("pending");
 
         // A row whose retained pin is missing altogether.
-        const missing = submitPinnedRequest(queue, repo, "feature/pin-missing");
+        const missing = (await submitPinnedRequest(queue, repo, "feature/pin-missing"));
         db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = NULL WHERE id = ?").run(missing.id);
         await expect(approveFixtureRequest(queue, missing.id)).rejects
           .toThrow(/retained candidate|not_recomputable_request|lifecycle snapshot changed/);
-        expect(queue.getRequest(missing.id)?.status).toBe("pending");
+        expect((await queue.getRequest(missing.id))?.status).toBe("pending");
 
         // Re-pointed pin (recorded pin no longer the reviewed candidate).
-        const pinCorrupt = submitPinnedRequest(queue, repo, "feature/pin-corrupt");
+        const pinCorrupt = (await submitPinnedRequest(queue, repo, "feature/pin-corrupt"));
         db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = ?")
           .run(git(repo, ["rev-parse", "main"]), pinCorrupt.id);
         await expect(approveFixtureRequest(queue, pinCorrupt.id)).rejects.toThrow(/lifecycle snapshot changed/);
-        expect(queue.getRequest(pinCorrupt.id)?.status).toBe("pending");
+        expect((await queue.getRequest(pinCorrupt.id))?.status).toBe("pending");
 
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -125,29 +125,29 @@ describe("auth queue", () => {
         configureSigningCredential(db, repo, "ssh_key");
 
         // Plain descendant commit on the protected base.
-        const first = submitPinnedRequest(queue, repo, "feature/unaccounted-a");
+        const first = (await submitPinnedRequest(queue, repo, "feature/unaccounted-a"));
         writeFile(repo, "raw.txt", "raw\n");
         git(repo, ["add", "."]);
         git(repo, ["commit", "-m", "raw direct commit"]);
         await expect(approveFixtureRequest(queue, first.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(first.id)?.status).toBe("pending");
+        expect((await queue.getRequest(first.id))?.status).toBe("pending");
 
         // Signed merge with no completed queue record backing it.
-        const second = submitPinnedRequest(queue, repo, "feature/unaccounted-b");
+        const second = (await submitPinnedRequest(queue, repo, "feature/unaccounted-b"));
         signedMergeIntoMain(repo, "feature/rogue");
         await expect(approveFixtureRequest(queue, second.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(second.id)?.status).toBe("pending");
+        expect((await queue.getRequest(second.id))?.status).toBe("pending");
 
         // A base rewritten to a non-descendant is never treated as sibling drift.
-        const third = submitPinnedRequest(queue, repo, "feature/unaccounted-c");
+        const third = (await submitPinnedRequest(queue, repo, "feature/unaccounted-c"));
         git(repo, ["commit", "--amend", "-m", "rewritten history"]);
         expect(git(repo, ["rev-parse", "main"])).not.toBe(third.merge_preflight_base_sha);
         await expect(approveFixtureRequest(queue, third.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(third.id)?.status).toBe("pending");
+        expect((await queue.getRequest(third.id))?.status).toBe("pending");
 
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -168,55 +168,56 @@ describe("auth queue", () => {
         }
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
-        const expectInvalidated = (id: string) => {
-          expect(queue.getRequest(id)).toMatchObject({
+        const expectInvalidated = async (id: string) => {
+          expect((await queue.getRequest(id))).toMatchObject({
             merge_candidate_pin_sha: null,
             merge_candidate_tree_sha: null,
             merge_preflight_base_sha: null,
           });
+          await (queue as unknown as { candidateChains: Map<string, Promise<void>> }).candidateChains.get(id);
           expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${id}`])).toThrow();
         };
 
-        const mutant = submitPinnedRequest(queue, repo, "feature/mutant");
-        queue.update(mutant.id, { command: "echo pwned && git push --force origin main" });
-        expectInvalidated(mutant.id);
+        const mutant = (await submitPinnedRequest(queue, repo, "feature/mutant"));
+        (await queue.update(mutant.id, { command: "echo pwned && git push --force origin main" }));
+        (await expectInvalidated(mutant.id));
         await expect(approveFixtureRequest(queue, mutant.id)).rejects.toThrow(/does not match the canonical form/);
         // Merge identity cannot be stripped to dodge enforcement either.
-        expect(() => queue.update(mutant.id, { head_branch: null as unknown as string })).toThrow();
-        expect(queue.getRequest(mutant.id)?.head_branch).toBe("feature/mutant");
+        await expect((async () => (await queue.update(mutant.id, { head_branch: null as unknown as string }))())).rejects.toThrow();
+        expect((await queue.getRequest(mutant.id))?.head_branch).toBe("feature/mutant");
 
-        const expansion = submitPinnedRequest(queue, repo, "feature/expansion");
-        queue.update(expansion.id, {
+        const expansion = (await submitPinnedRequest(queue, repo, "feature/expansion"));
+        (await queue.update(expansion.id, {
           command: "X=--hierarchical; mandible auth merge feature/expansion feature/evil --into main $X",
-        });
+        }));
         await expect(approveFixtureRequest(queue, expansion.id)).rejects.toThrow(/does not match the canonical form/);
 
-        const edited = submitPinnedRequest(queue, repo, "feature/edited-head");
+        const edited = (await submitPinnedRequest(queue, repo, "feature/edited-head"));
         git(repo, ["checkout", "feature/edited-head"]);
         writeFile(repo, "edited-head.txt", "revised\n");
         git(repo, ["add", "."]);
         git(repo, ["commit", "-m", "refresh reviewed head"]);
         const revisedHead = git(repo, ["rev-parse", "HEAD"]);
         git(repo, ["checkout", "main"]);
-        queue.update(edited.id, { merge_head_sha: revisedHead });
-        expectInvalidated(edited.id);
+        (await queue.update(edited.id, { merge_head_sha: revisedHead }));
+        (await expectInvalidated(edited.id));
         await expect(approveFixtureRequest(queue, edited.id)).rejects.toThrow(/retained candidate|not_recomputable_request/);
 
-        const hier = submitPinnedRequest(
+        const hier = (await submitPinnedRequest(
           queue,
           repo,
           "feature/hier",
           "mandible auth merge --hierarchical feature/hier feature/evil --into main",
-        );
+        ));
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-hier-sibling");
         await expect(approveFixtureRequest(queue, hier.id)).rejects.toThrow(/Hierarchical merge commands cannot be verified/);
 
         for (const request of [mutant, expansion, edited, hier]) {
-          expect(queue.getRequest(request.id)?.status).toBe("pending");
+          expect((await queue.getRequest(request.id))?.status).toBe("pending");
         }
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -236,7 +237,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/pin-fail");
+        const request = (await submitPinnedRequest(queue, repo, "feature/pin-fail"));
         const originalPin = request.merge_candidate_pin_sha!;
         const originalBase = request.merge_preflight_base_sha!;
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-pin-fail-sibling");
@@ -252,7 +253,7 @@ describe("auth queue", () => {
         await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
         await expect(refusal).rejects.toThrow(/Refusal: repin_failed/);
         await expect(refusal).rejects.toThrow(/injected pin cache failure/);
-        const after = queue.getRequest(request.id);
+        const after = (await queue.getRequest(request.id));
         expect(after?.status).toBe("pending");
         // Prior strictly-blocking state fully intact.
         expect(after?.merge_candidate_pin_sha).toBe(originalPin);
@@ -261,7 +262,7 @@ describe("auth queue", () => {
         expect(calls).toHaveLength(0);
       } finally {
         vi.restoreAllMocks();
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -280,7 +281,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/remote");
+        const request = (await submitPinnedRequest(queue, repo, "feature/remote"));
         db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?").run(request.id);
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-sibling");
 
@@ -288,10 +289,10 @@ describe("auth queue", () => {
         await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
         await expect(refusal).rejects.toThrow(/Refusal: not_recomputable_request/);
         await expect(refusal).rejects.toThrow(/execution_mode=remote/);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect((await queue.getRequest(request.id))?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -311,28 +312,28 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/base-race");
+        const request = (await submitPinnedRequest(queue, repo, "feature/base-race"));
         const originalPin = request.merge_candidate_pin_sha!;
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-race-sibling");
 
         const realCheck = queue.checkMergeIndependence.bind(queue);
-        vi.spyOn(queue, "checkMergeIndependence").mockImplementation((input) => {
+        vi.spyOn(queue, "checkMergeIndependence").mockImplementation(async (input) => {
           // The base moves again after provenance verification but before the
           // recompute preflight resolves it.
           writeFile(repo, "race.txt", "race\n");
           git(repo, ["add", "."]);
           git(repo, ["commit", "-m", "raced base move"]);
-          return realCheck(input);
+          return (await realCheck(input));
         });
 
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        const after = queue.getRequest(request.id);
+        const after = (await queue.getRequest(request.id));
         expect(after?.status).toBe("pending");
         expect(after?.merge_candidate_pin_sha).toBe(originalPin);
         expect(calls).toHaveLength(0);
       } finally {
         vi.restoreAllMocks();
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -355,13 +356,13 @@ describe("auth queue", () => {
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/head-race");
+        const request = (await submitPinnedRequest(queue, repo, "feature/head-race"));
         const reviewedHead = request.merge_head_sha!;
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-head-race-sibling");
 
         const realCheck = queue.checkMergeIndependence.bind(queue);
-        vi.spyOn(queue, "checkMergeIndependence").mockImplementation((input) => {
-          const report = realCheck(input);
+        vi.spyOn(queue, "checkMergeIndependence").mockImplementation(async (input) => {
+          const report = (await realCheck(input));
           // The head ref moves after recompute verification.
           git(repo, ["checkout", "feature/head-race"]);
           writeFile(repo, "late.txt", "late\n");
@@ -372,18 +373,18 @@ describe("auth queue", () => {
         });
 
         const baseBefore = git(repo, ['rev-parse', 'main']);
-        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/Head branch feature\/head-race moved/);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/Reviewed merge inputs or retained candidate changed/);
         expect(calls).toHaveLength(0);
         const liveHead = git(repo, ['rev-parse', 'feature/head-race']);
         expect(liveHead).not.toBe(reviewedHead);
         expect(git(repo, ['rev-parse', 'main'])).toBe(baseBefore);
-        const pending = queue.getRequest(request.id)!;
+        const pending = (await queue.getRequest(request.id))!;
         expect(pending.status).toBe('pending');
         expect(pending.merge_head_sha).toBe(reviewedHead);
         expect(git(repo, ['rev-parse', `${pending.merge_candidate_pin_sha}^2`])).toBe(reviewedHead);
       } finally {
         vi.restoreAllMocks();
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -410,7 +411,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/cas-gone");
+        const request = (await submitPinnedRequest(queue, repo, "feature/cas-gone"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-cas-sib");
         // Simulate mid-flight deletion: the ref vanishes after validation
         // would have passed, immediately before the CAS.
@@ -420,17 +421,17 @@ describe("auth queue", () => {
             r: unknown, sha: string, fp: string | null,
           ) => unknown;
         }).repinMergeCandidate.bind(queue);
-        expect(() => repin(queue.getRequest(request.id), newBase, null))
+        await expect((async () => repin((await queue.getRequest(request.id)), newBase, null))()).rejects
           .toThrow(STRICT_MESSAGE);
         // Recorded pin state is untouched (still the original, now-strict pin).
-        const after = queue.getRequest(request.id)!;
+        const after = (await queue.getRequest(request.id))!;
         expect(after.merge_candidate_pin_sha).toBe(request.merge_candidate_pin_sha);
         expect(after.merge_preflight_base_sha).toBe(request.merge_preflight_base_sha);
         // And approval keeps failing strict rather than proceeding unpinned.
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -450,7 +451,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/cas-db");
+        const request = (await submitPinnedRequest(queue, repo, "feature/cas-db"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-cas-db");
 
         const rawDb = db as unknown as { prepare: (sql: string) => unknown };
@@ -467,14 +468,14 @@ describe("auth queue", () => {
               r: unknown, sha: string, fp: string | null,
             ) => unknown;
           }).repinMergeCandidate.bind(queue);
-          expect(() => repin(queue.getRequest(request.id), newBase, null))
+          await expect((async () => repin((await queue.getRequest(request.id)), newBase, null))()).rejects
             .toThrow(/injected DB failure after CAS/);
         } finally {
           rawDb.prepare = realPrepare;
         }
         // The row and ref both retain the original pin. A later approval can
         // rederive the candidate normally; the failed write legitimized nothing.
-        const after = queue.getRequest(request.id)!;
+        const after = (await queue.getRequest(request.id))!;
         expect(after.merge_candidate_pin_sha).toBe(request.merge_candidate_pin_sha);
         expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${request.id}`]))
           .toBe(request.merge_candidate_pin_sha);
@@ -482,7 +483,7 @@ describe("auth queue", () => {
         await waitForStatus(queue, request.id, "completed");
         expect(calls).toHaveLength(1);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -514,7 +515,7 @@ describe("auth queue", () => {
             "ssh-keygen", ["-lf", `${unregisteredKeyPath}.pub`, "-E", "sha256"], { encoding: "utf8" },
           ).trim().split(/\s+/)[1]!;
 
-          const request = submitPinnedRequest(queue, repo, "feature/unregistered-target");
+          const request = (await submitPinnedRequest(queue, repo, "feature/unregistered-target"));
           git(repo, ["config", "user.signingkey", unregisteredKeyPath]);
           advanceMainViaAuthorizedMerge(db, repo, "feature/unregistered-sib", "merge-unregistered");
 
@@ -531,10 +532,10 @@ describe("auth queue", () => {
           expect(message).toContain(
             `mandible user credential add ${getOperator(db)!.slug} --from-git-signingkey`,
           );
-          expect(queue.getRequest(request.id)?.status).toBe("pending");
+          expect((await queue.getRequest(request.id))?.status).toBe("pending");
           expect(calls).toHaveLength(0);
         } finally {
-          queue.dispose();
+          (await queue.dispose());
           db.close();
           fs.rmSync(repo, { recursive: true, force: true });
         }
@@ -554,7 +555,7 @@ describe("auth queue", () => {
           registerWorkRepo(db, repo);
           configureSigningCredential(db, repo, "ssh_key");
 
-          const request = submitPinnedRequest(queue, repo, "feature/drifted");
+          const request = (await submitPinnedRequest(queue, repo, "feature/drifted"));
           const reviewedHead = request.merge_head_sha!;
           advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-drift-sib");
           git(repo, ["checkout", "feature/drifted"]);
@@ -576,7 +577,7 @@ describe("auth queue", () => {
           expect(message).toContain(newHead);
           expect(calls).toHaveLength(0);
         } finally {
-          queue.dispose();
+          (await queue.dispose());
           db.close();
           fs.rmSync(repo, { recursive: true, force: true });
         }

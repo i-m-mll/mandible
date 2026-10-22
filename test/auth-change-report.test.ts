@@ -249,7 +249,7 @@ describe("auth change reports", () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "echo reviewed",
         title: "Reviewed candidate",
@@ -261,23 +261,23 @@ describe("auth change reports", () => {
         files_changed: captured.totals.files,
         additions: captured.totals.additions,
         deletions: captured.totals.deletions,
-      });
-      const revised = queue.update(request.id, { title: "Edited prose" });
+      }));
+      const revised = (await queue.update(request.id, { title: "Edited prose" }));
       expect(revised.change_report).toEqual(captured);
-      expect(() => queue.update(request.id, { additions: captured.totals.additions + 1 }))
+      await expect((async () => (await queue.update(request.id, { additions: captured.totals.additions + 1 }))())).rejects
         .toThrow(/immutable/);
       expect(() => db.prepare("UPDATE auth_requests SET change_report_json = NULL WHERE id = ?").run(request.id))
         .toThrow(/immutable/);
       expect(() => db.prepare("UPDATE auth_requests SET files_changed = files_changed + 1 WHERE id = ?").run(request.id))
         .toThrow(/immutable/);
-      expect(() => queue.submit({ ...AUTH_COMMAND_REVIEW,
+      await expect((async () => (await queue.submit({ ...AUTH_COMMAND_REVIEW,
         type: "commit",
         command: "echo invalid",
         title: "Non-merge report",
         change_report: captured,
-      })).toThrow(/only to merge requests/);
+      }))())).rejects.toThrow(/only to merge requests/);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -338,7 +338,7 @@ describe("auth change reports", () => {
       const withSpec = await submit({ ...MERGE_CHANGE_MESSAGE, spec_content: "Intent" });
       expect(withSpec.status).toBe(400);
       expect(String((withSpec.body as { error: string }).error)).toContain("spec_content");
-      expect(queue.listActive()).toHaveLength(0);
+      expect((await queue.listActive())).toHaveLength(0);
 
       const accepted = await submit(MERGE_CHANGE_MESSAGE);
       expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
@@ -370,7 +370,7 @@ describe("auth change reports", () => {
       expect(revisedSpec.status).toBe(400);
       expect(String((revisedSpec.body as { error: string }).error)).toContain("spec_content");
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -402,7 +402,7 @@ describe("auth change reports", () => {
       expect((listed.body as { requests: Array<{ id: string; protected_root_dirty_action: { stash: string } | null }> })
         .requests.find((row) => row.id === id)?.protected_root_dirty_action?.stash).toBe(stash);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -435,7 +435,7 @@ describe("auth change reports", () => {
       expect(response.status, JSON.stringify(response.body)).toBe(201);
       const body = response.body as { request_id: string; files_changed: number; additions: number; deletions: number };
       expect(body.files_changed).not.toBe(999);
-      const request = queue.getRequest(body.request_id);
+      const request = (await queue.getRequest(body.request_id));
       expect(request?.diff_summary).not.toContain("caller supplied content");
       expect(request?.diff_summary).toContain("diff --git a/src/app.ts b/src/app.ts");
       expect(request?.change_report?.totals).toMatchObject({
@@ -445,7 +445,7 @@ describe("auth change reports", () => {
       });
       expect(request?.merge_head_sha).toBe(request?.change_report?.comparison.head_sha);
 
-      const revised = queue.update(body.request_id, { title: "Prose only" });
+      const revised = (await queue.update(body.request_id, { title: "Prose only" }));
       expect(revised.change_report).toEqual(request?.change_report);
       const firstReport = revised.change_report;
 
@@ -480,15 +480,15 @@ describe("auth change reports", () => {
       });
       expect(replacementResponse.status, JSON.stringify(replacementResponse.body)).toBe(201);
       const replacementId = (replacementResponse.body as { request_id: string }).request_id;
-      const replacement = queue.getRequest(replacementId);
+      const replacement = (await queue.getRequest(replacementId));
       expect(replacement?.change_report?.comparison.head_sha).not.toBe(firstReport?.comparison.head_sha);
       expect(replacement?.change_report?.files.some((file) => file.new_path === "src/superseding.ts")).toBe(true);
-      expect(queue.getRequest(body.request_id)).toMatchObject({
+      expect((await queue.getRequest(body.request_id))).toMatchObject({
         status: "superseded",
         change_report: firstReport,
       });
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });

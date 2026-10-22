@@ -90,7 +90,7 @@ describe("merge signature verification", () => {
     expect(authorizedMergeSignerLines(db, operator.id, credential.id)).toEqual([]);
   });
 
-  it("verifies a signed merge and resolves its active credential and user", () => {
+  it("verifies a signed merge and resolves its active credential and user", async () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const credential = addCredential(db, operator.id, {
       type: "ssh_key",
@@ -98,7 +98,7 @@ describe("merge signature verification", () => {
       public_material: publicMaterial,
     });
 
-    expect(verifyMergeCommitSignature(db, repo, mergeSha)).toEqual({
+    expect(await verifyMergeCommitSignature(db, repo, mergeSha)).toEqual({
       verified: true,
       commit_sha: mergeSha,
       fingerprint,
@@ -108,7 +108,7 @@ describe("merge signature verification", () => {
     });
   });
 
-  it("reports an unregistered signing key without failing the merge result", () => {
+  it("reports an unregistered signing key without failing the merge result", async () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const otherKeyPath = path.join(tempDir, "other_signing_key");
     execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", otherKeyPath]);
@@ -124,7 +124,7 @@ describe("merge signature verification", () => {
       public_material: otherPublicMaterial,
     });
 
-    expect(verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
+    expect(await verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
       verified: false,
       commit_sha: mergeSha,
       fingerprint,
@@ -134,7 +134,7 @@ describe("merge signature verification", () => {
     });
   });
 
-  it("excludes revoked credentials from generated allowed-signers material", () => {
+  it("excludes revoked credentials from generated allowed-signers material", async () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const credential = addCredential(db, operator.id, {
       type: "ssh_key",
@@ -143,13 +143,13 @@ describe("merge signature verification", () => {
     });
     revokeCredential(db, credential.id);
 
-    expect(verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
+    expect(await verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
       verified: false,
       reason: "no_active_registered_signing_credentials",
     });
   });
 
-  it("rejects a signed commit marker that is not the target branch head", () => {
+  it("rejects a signed commit marker that is not the target branch head", async () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     addCredential(db, operator.id, {
       type: "ssh_key",
@@ -158,14 +158,14 @@ describe("merge signature verification", () => {
     });
     const targetHead = git(repo, ["rev-parse", `${mergeSha}^1`]);
 
-    expect(verifySuccessfulMergeCommitSignature(db, repo, mergeSha, targetHead)).toMatchObject({
+    expect(await verifySuccessfulMergeCommitSignature(db, repo, mergeSha, targetHead)).toMatchObject({
       verified: false,
       commit_sha: mergeSha,
       reason: "merge_commit_not_target_head",
     });
   });
 
-  it("ignores a repository-configured SSH verifier that forges success", () => {
+  it("ignores a repository-configured SSH verifier that forges success", async () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const otherKeyPath = path.join(tempDir, "trusted_other_key");
     execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", otherKeyPath]);
@@ -188,7 +188,7 @@ describe("merge signature verification", () => {
     );
     git(repo, ["config", "gpg.ssh.program", forgedVerifier]);
 
-    expect(verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
+    expect(await verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
       verified: false,
       fingerprint,
       reason: "signature_not_trusted",

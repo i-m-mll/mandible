@@ -90,7 +90,7 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   const events: SseEvent[] = [];
   const queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, broadcast: (event) => { events.push(event); },
     executor: async () => { throw new Error("no command runs"); } });
-  cleanups.push(() => { queue.dispose(); db.close(); });
+  cleanups.push(async () => { (await queue.dispose()); db.close(); });
   // The fixture has no signed merge evidence; this lane is about convergence only.
   vi.spyOn(queue as unknown as { successfulMergeEvidenceFailure: () => string | null }, "successfulMergeEvidenceFailure").mockReturnValue(null);
   const failures = () => events.filter((event) => event.event === DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED);

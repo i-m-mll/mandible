@@ -19,7 +19,7 @@ describe("copied auth preview isolation", () => {
     const sourceDb = createMigratedDb();
     const repo = createAuthCheckRepo();
     const sourceQueue = new AuthQueue({ db: sourceDb, backgroundMaintenance: false });
-    const sourceRequest = sourceQueue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo source", title: "Source" });
+    const sourceRequest = (await sourceQueue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo source", title: "Source" }));
     const candidateRef = `refs/mandible/auth-candidates/${sourceRequest.id}`;
     const candidateSha = git(repo, ["rev-parse", "HEAD"]);
     git(repo, ["update-ref", candidateRef, candidateSha]);
@@ -48,17 +48,17 @@ describe("copied auth preview isolation", () => {
     try {
       const queueRead = await router.invoke({ method: "GET", url: "/api/auth/queue" });
       expect(queueRead.status).toBe(200);
-      expect(preview.getRequest(sourceRequest.id)?.status).toBe("pending");
+      expect((await preview.getRequest(sourceRequest.id))?.status).toBe("pending");
       expect(await router.invoke({
         method: "POST", url: "/api/auth/check",
         body: { cwd: repo, base_branch: "main", head_branch: "main" },
       })).toMatchObject({ status: 403 });
 
-      preview.update(sourceRequest.id, { title: "Edited in copy" });
-      preview.reject(sourceRequest.id, "Preview decision");
-      expect(preview.getRequest(sourceRequest.id)).toMatchObject({ title: "Edited in copy", status: "rejected" });
-      expect(() => preview.approve(sourceRequest.id)).toThrow(/copied auth preview/);
-      expect(() => preview.checkMergeIndependence({ cwd: repo, base_branch: "main", head_branch: "main" }))
+      (await preview.update(sourceRequest.id, { title: "Edited in copy" }));
+      (await preview.reject(sourceRequest.id, "Preview decision"));
+      expect((await preview.getRequest(sourceRequest.id))).toMatchObject({ title: "Edited in copy", status: "rejected" });
+      await expect((async () => (await preview.approve(sourceRequest.id))())).rejects.toThrow(/copied auth preview/);
+      await expect((async () => (await preview.checkMergeIndependence({ cwd: repo, base_branch: "main", head_branch: "main" }))())).rejects
         .toThrow(/copied auth preview/);
 
       expect(executor).not.toHaveBeenCalled();
@@ -69,9 +69,9 @@ describe("copied auth preview isolation", () => {
         .toMatchObject({ status: "pending", title: "Source" });
     } finally {
       process.env.PATH = priorPath;
-      preview.dispose();
+      (await preview.dispose());
       copiedDb.close();
-      sourceQueue.dispose();
+      (await sourceQueue.dispose());
       sourceDb.close();
     }
   });

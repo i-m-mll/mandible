@@ -6,7 +6,7 @@ import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
 import { parseJsonObject } from "../row-coerce.js";
-import { resolveProjectRef } from "./project-registry.js";
+import { resolveProjectRef, resolveProjectRefAsync } from "./project-registry.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -481,7 +481,7 @@ function closeAuthRequestIssue(
  * auth_request.completed, this is not coupled to issue links and remains after
  * the auth request itself is pruned.
  */
-export function recordAuthRequestMergeSucceededFact(db: Db, authRequestId: string): void {
+export async function recordAuthRequestMergeSucceededFact(db: Db, authRequestId: string, guard: () => void = () => {}): Promise<void> {
   if (!tableExists(db, "auth_request_merge_succeeded_facts")) return;
   const request = db.prepare(
     `SELECT id, type, status, exit_code, repo, cwd, target_repo_root,
@@ -503,7 +503,7 @@ export function recordAuthRequestMergeSucceededFact(db: Db, authRequestId: strin
   if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0) {
     return;
   }
-  const projectId = resolveCanonicalProjectId(db, [
+  const projectId = await resolveCanonicalProjectId(db, [
     request.target_repo_root,
     request.cwd,
     request.repo,
@@ -511,6 +511,9 @@ export function recordAuthRequestMergeSucceededFact(db: Db, authRequestId: strin
   if (!projectId) {
     throw new Error(`Cannot resolve canonical project for successful auth request '${authRequestId}'`);
   }
+  const current = db.prepare("SELECT id, type, status, exit_code, repo, cwd, target_repo_root, base_branch, resolved_at, updated_at, commit_message_digest FROM auth_requests WHERE id = ?").get(authRequestId);
+  if (JSON.stringify(current) !== JSON.stringify(request)) throw new Error("Auth execution changed during canonical project observation.");
+  guard();
   const completedAt = request.resolved_at ?? request.updated_at;
   db.prepare(
     `INSERT OR IGNORE INTO auth_request_merge_succeeded_facts (
@@ -847,9 +850,9 @@ export function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
 }
 
 /** The first ref that names a project decides; an ambiguous ref decides "none". */
-function resolveCanonicalProjectId(db: Db, refs: Array<string | null>): string | null {
-  for (const ref of refs) {
-    const resolved = resolveProjectRef(db, ref);
+async function resolveCanonicalProjectId(db: Db, refs: Array<string | null>): Promise<string | null> {
+  for (const ref of new Set(refs)) {
+    const resolved = await resolveProjectRefAsync(db, ref);
     if (resolved.ok) return resolved.project.id;
     if (resolved.reason === "ambiguous") return null;
   }

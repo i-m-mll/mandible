@@ -50,10 +50,10 @@ it('arms one independent helper under the deployed interpreter and survives help
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', 'exit 75', 'builtin-mandible-rebuild');
     const hooks = new AuthHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
-    const request = queue.submit({ type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' });
+    const request = (await queue.submit({ type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' }));
     recordPassingCandidateAcceptance(db, request.id);
     await queue.approveWithOperatorProof(request.id, operator);
-    const published = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    const published = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     db.prepare('UPDATE auth_requests SET output = ? WHERE id = ?').run(published.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);
     const hook = hooks.getRun(request.id, 'builtin-mandible-rebuild')!;
     fs.writeFileSync(path.join(home, 'mandible.db'), db.serialize());
@@ -97,7 +97,7 @@ it('arms one independent helper under the deployed interpreter and survives help
       const helperLabel = `bio.mll.mandible.runtime-handoff.${createHash('sha256').update(`${home}:${requestRef}:${executionRef}`).digest('hex').slice(0, 16)}`;
       control(['bootout', `${domain}/${helperLabel}`]);
     }
-    control(['bootout', `${domain}/${backend}`]); queue?.dispose(); db.close();
+    control(['bootout', `${domain}/${backend}`]); (await queue?.dispose()); db.close();
     fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true });
   }
 }, 60000);

@@ -15,11 +15,11 @@ describe("auth queue", () => {
     const events: SseEvent[] = [];
     const queue = createQueue({ broadcast: (event) => events.push(event) });
 
-    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "node -e \"console.log('ok')\"",
       title: "Run command"
-    });
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    }));
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(events.some((event) => event.event === "auth:new")).toBe(true);
 
     const approved = await approveFixtureRequest(queue, request.id);
@@ -36,22 +36,22 @@ describe("auth queue", () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db });
 
-    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo output", title: "Output" });
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo output", title: "Output" }));
     // Issue 08a5f04 (review F1) — output is execution evidence: appends to a
     // request that is not executing are refused so a marker can never be
     // laundered into a pending or resolved row.
-    expect(() => queue.appendOutput(request.id, "early")).toThrow(AuthQueueError);
+    await expect((async () => (await queue.appendOutput(request.id, "early"))())).rejects.toThrow(AuthQueueError);
 
     db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
-    queue.appendOutput(request.id, "hello");
-    queue.appendOutput(request.id, " world");
+    (await queue.appendOutput(request.id, "hello"));
+    (await queue.appendOutput(request.id, " world"));
 
-    const fetched = queue.getRequest(request.id);
+    const fetched = (await queue.getRequest(request.id));
     expect(fetched?.output).toBe("hello world");
 
     db.prepare("UPDATE auth_requests SET status = 'completed' WHERE id = ?").run(request.id);
-    expect(() => queue.appendOutput(request.id, "late")).toThrow(AuthQueueError);
-    expect(queue.getRequest(request.id)?.output).toBe("hello world");
+    await expect((async () => (await queue.appendOutput(request.id, "late"))())).rejects.toThrow(AuthQueueError);
+    expect((await queue.getRequest(request.id))?.output).toBe("hello world");
   });
 
   it("does not execute in remote mode", async () => {
@@ -63,43 +63,43 @@ describe("auth queue", () => {
       },
     });
 
-    const remote = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo remote", title: "Remote", execution_mode: "remote" });
+    const remote = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo remote", title: "Remote", execution_mode: "remote" }));
     expect((await approveFixtureRequest(queue, remote.id)).status).toBe("executing");
     // A later daemon request executing proves the dispatcher ran past the remote one.
-    const local = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo local", title: "Local" });
+    const local = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo local", title: "Local" }));
     await approveFixtureRequest(queue, local.id);
     await waitForStatus(queue, local.id, "completed");
 
     expect(executed).toEqual([local.id]);
-    expect(queue.getRequest(remote.id)?.status).toBe("executing");
+    expect((await queue.getRequest(remote.id))?.status).toBe("executing");
   });
 
   it("recovers stale executing requests with partial output on restart", async () => {
     let now = 0;
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, now: () => now });
-    const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/partial --into main",
       title: "Partial execution",
       base_branch: "main",
       head_branch: "feature/partial",
       execution_mode: "remote"
-    });
-    seedHistoricalAuthExecution(queue, request.id);
-    queue.appendOutput(request.id, "Executing merge command...\n");
-    queue.dispose();
+    }));
+    (await seedHistoricalAuthExecution(queue, request.id));
+    (await queue.appendOutput(request.id, "Executing merge command...\n"));
+    (await queue.dispose());
 
     now = 6 * 60 * 1000;
     const events: SseEvent[] = [];
     const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
     try {
-      await waitUntil(() => restarted.getRequest(request.id)?.status === "completed", "stale execution recovery");
-      const recovered = restarted.getRequest(request.id);
+      await waitUntil(async () => (await restarted.getRequest(request.id))?.status === "completed", "stale execution recovery");
+      const recovered = (await restarted.getRequest(request.id));
       expect(recovered?.exit_code).toBe(1);
       expect(recovered?.error).toContain("missing repository, base branch, or head branch metadata");
       expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
     } finally {
-      restarted.dispose();
+      (await restarted.dispose());
       db.close();
     }
   });
@@ -107,15 +107,15 @@ describe("auth queue", () => {
   it("leaves copied auth state unchanged when background maintenance is disabled", async () => {
     const db = createMigratedDb();
     const initial = new AuthQueue({ db, now: () => 0 });
-    const request = initial.submit({ ...AUTH_MERGE_REVIEW,
+    const request = (await initial.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/preview",
       title: "Copied preview request",
       execution_mode: "remote",
-    });
+    }));
     db.prepare(
       "UPDATE auth_requests SET status = 'executing', updated_at = 0 WHERE id = ?",
     ).run(request.id);
-    initial.dispose();
+    (await initial.dispose());
 
     const preview = new AuthQueue({
       db,
@@ -123,9 +123,9 @@ describe("auth queue", () => {
       backgroundMaintenance: false,
     });
     try {
-      expect(preview.getRequest(request.id)?.status).toBe("executing");
+      expect((await preview.getRequest(request.id))?.status).toBe("executing");
     } finally {
-      preview.dispose();
+      (await preview.dispose());
       db.close();
     }
   });
@@ -134,9 +134,9 @@ describe("auth queue", () => {
     const events: SseEvent[] = [];
     const queue = createQueue({ broadcast: (event) => events.push(event) });
 
-    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo nope", title: "Reject" });
-    expect(queue.reject(request.id, "No").status).toBe("rejected");
-    expect(queue.getRequest(request.id)?.status).toBe("rejected");
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo nope", title: "Reject" }));
+    expect((await queue.reject(request.id, "No")).status).toBe("rejected");
+    expect((await queue.getRequest(request.id))?.status).toBe("rejected");
     expect(events.find((event) => event.event === "auth:resolved")?.data)
       .toMatchObject({ status: "rejected", outcome: "rejected" });
   });
@@ -145,13 +145,13 @@ describe("auth queue", () => {
     let time = 1;
     const queue = createQueue({ now: () => time++ });
 
-    const first = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo one", title: "One" });
-    const second = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const first = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo one", title: "One" }));
+    const second = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "node -e \"console.log('two')\"",
       title: "Two"
-    });
+    }));
 
-    const pending = queue.listPending();
+    const pending = (await queue.listPending());
     const ids = pending.map((r) => r.id);
     expect(ids).toEqual([first.id, second.id]);
 
@@ -159,55 +159,55 @@ describe("auth queue", () => {
     const resolved = await waitForStatus(queue, second.id, "completed");
     expect(resolved?.exit_code).toBe(0);
 
-    const stillPending = queue.getRequest(first.id);
+    const stillPending = (await queue.getRequest(first.id));
     expect(stillPending?.status).toBe("pending");
   });
 
   it("expires stale requests and refuses to revise them", async () => {
     let now = 0;
     const queue = createQueue({ ttlMs: 10, now: () => now });
-    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo stale", title: "Stale", cwd: "/old/path" });
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo stale", title: "Stale", cwd: "/old/path" }));
 
     now = 20;
-    expect(queue.getRequest(request.id)?.status).toBe("expired");
-    expect(() => queue.update(request.id, { cwd: "/new/path", status: "pending" })).toThrow("Only pending requests");
-    expect(queue.getRequest(request.id)?.cwd).toBe("/old/path");
+    expect((await queue.getRequest(request.id))?.status).toBe("expired");
+    await expect((async () => (await queue.update(request.id, { cwd: "/new/path", status: "pending" }))())).rejects.toThrow("Only pending requests");
+    expect((await queue.getRequest(request.id))?.cwd).toBe("/old/path");
   });
 
   it("refuses to revise approved, succeeded and failed requests", async () => {
     const queue = createQueue();
 
-    const approved = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo approved", title: "Approved", execution_mode: "remote" });
+    const approved = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo approved", title: "Approved", execution_mode: "remote" }));
     await approveFixtureRequest(queue, approved.id);
-    expect(() => queue.update(approved.id, { title: "Changed" })).toThrow("Only pending requests");
-    expect(queue.getRequest(approved.id)?.title).toBe("Approved");
+    await expect((async () => (await queue.update(approved.id, { title: "Changed" }))())).rejects.toThrow("Only pending requests");
+    expect((await queue.getRequest(approved.id))?.title).toBe("Approved");
 
-    const succeeded = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo ok", title: "OK" });
+    const succeeded = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo ok", title: "OK" }));
     await approveFixtureRequest(queue, succeeded.id);
-    queue.setResult(succeeded.id, 0, "success");
-    expect(() => queue.update(succeeded.id, { title: "New title" })).toThrow("Only pending requests");
+    (await queue.setResult(succeeded.id, 0, "success"));
+    await expect((async () => (await queue.update(succeeded.id, { title: "New title" }))())).rejects.toThrow("Only pending requests");
 
-    const failed = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo fail", title: "Fail", cwd: "/wrong/path" });
-    seedHistoricalAuthCompletion(queue, failed.id, "error output", 1, "command failed");
-    expect(() => queue.update(failed.id, { cwd: "/correct/path", status: "pending" })).toThrow("Only pending requests");
-    expect(queue.getRequest(failed.id)?.cwd).toBe("/wrong/path");
+    const failed = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo fail", title: "Fail", cwd: "/wrong/path" }));
+    (await seedHistoricalAuthCompletion(queue, failed.id, "error output", 1, "command failed"));
+    await expect((async () => (await queue.update(failed.id, { cwd: "/correct/path", status: "pending" }))())).rejects.toThrow("Only pending requests");
+    expect((await queue.getRequest(failed.id))?.cwd).toBe("/wrong/path");
   });
 
   it("returns a failed request to pending only through explicit retry, keeping its issues", async () => {
     const events: SseEvent[] = [];
     const queue = createQueue({ broadcast: (event) => events.push(event) });
-    const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/foo --into main",
       title: "Merge foo",
       base_branch: "main",
       head_branch: "feature/foo",
       execution_mode: "remote",
       issues: ["umbrella789"],
-    });
-    seedHistoricalAuthCompletion(queue, request.id, "Not a git repository", 1, "cwd was wrong");
+    }));
+    (await seedHistoricalAuthCompletion(queue, request.id, "Not a git repository", 1, "cwd was wrong"));
 
-    const retried = queue.retry(request.id);
-    const updated = queue.update(retried.id, { cwd: "/correct/repo" });
+    const retried = (await queue.retry(request.id));
+    const updated = (await queue.update(retried.id, { cwd: "/correct/repo" }));
     expect(updated).toMatchObject({
       status: "pending",
       cwd: "/correct/repo",
@@ -225,14 +225,14 @@ describe("auth queue", () => {
   it("stores issue references and closures separately", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo merge",
       title: "Merge with typed issue links",
       issue_references: ["umbrella123"],
       issue_closures: ["done456"]
-    });
+    }));
 
-    const fetched = queue.getRequest(request.id);
+    const fetched = (await queue.getRequest(request.id));
     expect(fetched?.issue_references).toEqual(["umbrella123"]);
     expect(fetched?.issue_closures).toEqual(["done456"]);
     expect(fetched?.issues).toBeNull();
@@ -250,13 +250,13 @@ describe("auth queue", () => {
         finished_at: Date.now(),
       }),
     });
-    const failed = failing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "git merge --gpg-sign feature/x", title: "Merge feature/x" });
+    const failed = (await failing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "git merge --gpg-sign feature/x", title: "Merge feature/x" }));
     await approveFixtureRequest(failing, failed.id);
     expect(await waitForStatus(failing, failed.id, "completed"))
       .toMatchObject({ exit_code: 1, error: expect.stringContaining("fatal: merge failed") });
 
     const throwing = createQueue({ executor: async () => { throw new Error("Spawn failed: ENOENT"); } });
-    const thrown = throwing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "nonexistent-command", title: "Bad command" });
+    const thrown = (await throwing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "nonexistent-command", title: "Bad command" }));
     await approveFixtureRequest(throwing, thrown.id);
     expect(await waitForStatus(throwing, thrown.id, "completed"))
       .toMatchObject({ exit_code: 1, error: "Spawn failed: ENOENT" });

@@ -17,7 +17,7 @@ describe("dashboard badge aggregate", () => {
     db.exec("DELETE FROM sessions; DELETE FROM auth_requests; DELETE FROM branches; DELETE FROM work_repos;");
   });
 
-  it("counts only badge-relevant records from cached database state", () => {
+  it("counts only badge-relevant records from cached database state", async () => {
     db.prepare(
       "INSERT INTO sessions (id, app, status, continuation) VALUES (?, ?, ?, ?)",
     ).run("ended", "codex", "ended", "resume me");
@@ -42,7 +42,7 @@ describe("dashboard badge aggregate", () => {
       ],
     };
 
-    expect(readDashboardBadgeCounts(authQueue as never, db)).toEqual({
+    expect((await readDashboardBadgeCounts(authQueue as never, db))).toEqual({
       auth: 2,
       inbox: 2,
       work: 1,
@@ -52,7 +52,7 @@ describe("dashboard badge aggregate", () => {
     });
   });
 
-  it("dashboard_badges_keep_briefing_and_incidents_separate", () => {
+  it("dashboard_badges_keep_briefing_and_incidents_separate", async () => {
     const insert = db.prepare(
       `INSERT INTO operational_incidents (
          id, executor, task, condition, first_seen, observation_state,
@@ -73,7 +73,7 @@ describe("dashboard badge aggregate", () => {
       3, "operator_closure", 3, "00000000000000000000000000",
       3, "00000000000000000000000000");
 
-    expect(readDashboardBadgeCounts({ listActive: () => [] } as never, db)).toMatchObject({
+    expect((await readDashboardBadgeCounts({ listActive: () => [] } as never, db))).toMatchObject({
       briefing: 0,
       incidents: 1,
     });

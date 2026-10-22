@@ -102,7 +102,7 @@ async function publication(journal) {
   const module = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'proof.mjs')).href);
   const { default: SqliteDatabase } = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'sqlite.mjs')).href);
   const db = new SqliteDatabase(journal.database, { readonly: true, fileMustExist: true });
-  try { return module.verifyRuntimeHandoffPublication(db, journal.binding); } finally { db.close(); }
+  try { return await module.verifyRuntimeHandoffPublication(db, journal.binding); } finally { db.close(); }
 }
 export function legacyHandoffBridge(file, target, deadline) {
   return `// Temporary dependency-free runtime handoff bridge.\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nimport path from 'node:path';\nconst file=${JSON.stringify(file)};\nconst target=${JSON.stringify(target)};\nconst marker=path.join(path.dirname(file),'bridge-process.json');\nconst startedAt=spawnSync('/bin/ps',['-p',String(process.pid),'-o','lstart='],{encoding:'utf8',timeout:1500}).stdout.trim();\nconst temporary=marker+'.'+process.pid+'.tmp';\nfs.writeFileSync(temporary,JSON.stringify({pid:process.pid,startedAt}),{mode:0o600});fs.renameSync(temporary,marker);\nfunction wake(){spawnSync('/bin/launchctl',['kickstart',target],{timeout:1500,stdio:'ignore'});}\nwake();\nconst timer=setInterval(()=>{try{const j=JSON.parse(fs.readFileSync(file,'utf8'));if(j.phase==='acknowledged'){clearInterval(timer);process.exit(0);}if(Date.now()>${deadline}){clearInterval(timer);console.error('Runtime handoff deadline exceeded; preserve convergence evidence.');process.exit(1);}}catch(e){console.error(e.message);}},2000);\n`;

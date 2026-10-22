@@ -13,7 +13,7 @@
  * request.
  */
 
-import { execFileSync } from "node:child_process";
+import { childOutput } from "./child-observation.js";
 
 import type { ProtectedBaseAudit, ProtectedBaseAuditCommit } from "./contracts.js";
 import type { Db } from "./db.js";
@@ -32,7 +32,7 @@ export interface ProtectedBaseAuditInput {
   now: number;
 }
 
-export function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): ProtectedBaseAudit {
+export async function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): Promise<ProtectedBaseAudit> {
   const audit: ProtectedBaseAudit = {
     status: "clean",
     base_sha: input.baseSha,
@@ -45,15 +45,15 @@ export function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): Prot
     checked_at: input.now,
   };
   if (input.recordedMerges.size === 0) return { ...audit, status: "no_baseline" };
-  const git = (args: string[]): string => execFileSync("git", args, {
+  const git = async (args: string[]): Promise<string> => (await childOutput("git", args, {
     cwd: input.cwd,
     encoding: "utf8",
     timeout: 10_000,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  }).trim();
+  })).trim();
   try {
-    const history = git(["rev-list", "--first-parent", "-n", String(PROTECTED_BASE_AUDIT_LIMIT + 1), input.baseSha])
+    const history = (await git(["rev-list", "--first-parent", "-n", String(PROTECTED_BASE_AUDIT_LIMIT + 1), input.baseSha]))
       .split(/\s+/).filter(Boolean);
     const above: string[] = [];
     for (const sha of history) {
@@ -66,7 +66,7 @@ export function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): Prot
     audit.truncated = !audit.baseline_sha && above.length > PROTECTED_BASE_AUDIT_LIMIT;
     const checked = above.slice(0, PROTECTED_BASE_AUDIT_LIMIT);
     audit.checked_commits = checked.length;
-    audit.unexpected = readCommitSignatures(db, input.cwd, checked, "unrecorded_commit").flatMap((commit): ProtectedBaseAuditCommit[] =>
+    audit.unexpected = (await readCommitSignatures(db, input.cwd, checked, "unrecorded_commit")).flatMap((commit): ProtectedBaseAuditCommit[] =>
       commit.status === "operator" ? [] : [{
         sha: commit.sha,
         subject: commit.subject,
@@ -80,7 +80,7 @@ export function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput): Prot
       .slice(0, MISSING_MERGE_CHECK_LIMIT);
     for (const [sha] of newer) {
       try {
-        git(["merge-base", "--is-ancestor", sha, input.baseSha]);
+        (await git(["merge-base", "--is-ancestor", sha, input.baseSha]));
       } catch {
         audit.missing_merges.push(sha);
       }

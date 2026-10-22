@@ -181,23 +181,23 @@ afterEach(() => {
 });
 
 describe("auth request duplicate detection is repo-scoped", () => {
-  it("queues the same branch name from two repos and refuses it twice in one repo", () => {
+  it("queues the same branch name from two repos and refuses it twice in one repo", async () => {
     const queue = createQueue();
     const repoA = createRepo("alpha");
     const repoB = createRepo("beta");
 
-    const first = queue.submit(submission(repoA));
+    const first = (await queue.submit(submission(repoA)));
     // The reported bug: this returned `first` and the second repo's delivery
     // was never queued.
     expect(queue.findDuplicate(submission(repoB))).toBeNull();
-    const second = queue.submit(submission(repoB));
+    const second = (await queue.submit(submission(repoB)));
     expect(second.id).not.toBe(first.id);
-    expect(queue.listActive().filter((request) => request.head_branch === SHARED_BRANCH)).toHaveLength(2);
+    expect((await queue.listActive()).filter((request) => request.head_branch === SHARED_BRANCH)).toHaveLength(2);
 
     expect(queue.findDuplicate(submission(repoA))?.id).toBe(first.id);
   });
 
-  it("matches one repo by canonical identity across names, paths and linked worktrees", () => {
+  it("matches one repo by canonical identity across names, paths and linked worktrees", async () => {
     const queue = createQueue();
     const repoA = createRepo("alpha");
     const worktree = path.join(path.dirname(repoA), `${path.basename(repoA)}-wt`);
@@ -205,7 +205,7 @@ describe("auth request duplicate detection is repo-scoped", () => {
     git(repoA, ["worktree", "add", "--detach", worktree, "main"]);
 
     // One side carries only the repo string, the other only the checkout path.
-    const first = queue.submit(submission(repoA, { cwd: null, target_repo_root: null }));
+    const first = (await queue.submit(submission(repoA, { cwd: null, target_repo_root: null })));
     expect(queue.findDuplicate(submission(repoA, { repo: undefined }))?.id).toBe(first.id);
     // Same physical repo, different path and different basename.
     expect(queue.findDuplicate(submission(repoA, {
@@ -215,7 +215,7 @@ describe("auth request duplicate detection is repo-scoped", () => {
     }))?.id).toBe(first.id);
   });
 
-  it("keeps the fallbacks repo-scoped: session and title, rows without repo evidence, vanished checkouts", () => {
+  it("keeps the fallbacks repo-scoped: session and title, rows without repo evidence, vanished checkouts", async () => {
     const legacy = { ...AUTH_MERGE_REVIEW,
       command: `mandible auth merge ${SHARED_BRANCH} --into main`,
       title: `Merge ${SHARED_BRANCH}`,
@@ -233,20 +233,20 @@ describe("auth request duplicate detection is repo-scoped", () => {
     const repoA = createRepo("alpha");
     const repoB = createRepo("beta");
     const sessionOnly = { session_id: "session-cross-repo", head_branch: undefined, base_branch: undefined };
-    queue.submit(submission(repoA, sessionOnly));
+    (await queue.submit(submission(repoA, sessionOnly)));
     expect(queue.findDuplicate(submission(repoB, sessionOnly))).toBeNull();
 
     // A legacy row with no repo evidence never swallows a repo-identified
     // submission, but two evidence-free submissions still dedup (16985e8).
     queue = fresh();
-    const legacyRow = queue.submit(legacy);
+    const legacyRow = (await queue.submit(legacy));
     expect(queue.findDuplicate(submission(repoA))).toBeNull();
     expect(queue.findDuplicate(legacy)?.id).toBe(legacyRow.id);
 
     // A queued request whose checkout was deleted falls back to repo strings.
     queue = fresh();
     const missing = path.join(os.tmpdir(), "mandible-dedup-deleted-repo");
-    const stale = queue.submit(submission(repoB, { repo: "deleted-repo" }));
+    const stale = (await queue.submit(submission(repoB, { repo: "deleted-repo" })));
     db!.prepare("UPDATE auth_requests SET cwd = ?, target_repo_root = ? WHERE id = ?").run(missing, missing, stale.id);
     clearRepoIdentityCache();
     expect(queue.findDuplicate(submission(repoA))).toBeNull();
