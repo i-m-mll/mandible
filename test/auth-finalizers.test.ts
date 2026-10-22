@@ -1,4 +1,4 @@
-import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -72,7 +72,7 @@ async function submitSuccessfulRequest(
   const repo = createAuthCheckRepo();
   registerWorkRepo((queue as unknown as { db: Db }).db, repo);
   commitOnBranch(repo, "feature/x", { "finalizer.txt": "reviewed\n" });
-  const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+  const request = queue.submit({ ...(type === "merge" ? AUTH_MERGE_REVIEW : AUTH_COMMAND_REVIEW),
     type,
     command: type === "merge" ? "mandible auth merge feature/x --into main" : "mandible auth commit",
     title: "Finalizer test",

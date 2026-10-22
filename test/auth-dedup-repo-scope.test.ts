@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // Issue 608d1db — auth-request duplicate detection is scoped to the repository.
 //
 // A branch name is unique only within a repo. `feature/<issue>-<slug>` naming
@@ -152,7 +153,7 @@ function createQueue(): AuthQueue {
 }
 
 function submission(repoRoot: string, overrides: Record<string, unknown> = {}) {
-  return {
+  return { ...AUTH_MERGE_REVIEW,
     command: `mandible auth merge ${SHARED_BRANCH} --into main`,
     title: `Merge ${SHARED_BRANCH}`,
     repo: path.basename(repoRoot),
@@ -215,7 +216,7 @@ describe("auth request duplicate detection is repo-scoped", () => {
   });
 
   it("keeps the fallbacks repo-scoped: session and title, rows without repo evidence, vanished checkouts", () => {
-    const legacy = {
+    const legacy = { ...AUTH_MERGE_REVIEW,
       command: `mandible auth merge ${SHARED_BRANCH} --into main`,
       title: `Merge ${SHARED_BRANCH}`,
       head_branch: SHARED_BRANCH,
