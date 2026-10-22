@@ -380,7 +380,6 @@
 .auth-detail__body--console {
   gap: 0;
   padding: 0;
-  overflow: hidden;
 }
 
 .auth-detail__body--console > :is(.auth-failure, .auth-yubikey-warning) {
@@ -1854,9 +1853,8 @@
 }
 
 .auth-detail__console-view {
-  flex: 1;
+  flex: 1 0 auto;
   min-height: 100%;
-  overflow: auto;
   background: var(--terminal-bg);
 }
 

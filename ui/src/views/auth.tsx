@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   DiffView,
   type DiffViewClassNames,
@@ -23,7 +23,8 @@ import { DiffIcon, InfoIcon, TerminalIcon } from '../components/icons/TabIcons';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { usePersistedScrollPosition } from '../hooks/usePersistedScrollPosition';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   fetchAuthHooks,
@@ -809,7 +810,13 @@ function AuthRequestDetail({
   );
   const [showSpec, setShowSpec] = useState(false);
   const [showDirtyNote, setShowDirtyNote] = useState(true);
-  const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
+  const [viewMode, setViewMode] = usePersistedViewState<'abstract' | 'console' | 'diff'>(
+    `auth-review-tab:${getAuthId(request)}`,
+    (value, defaults) => value === 'abstract' || value === 'console' || value === 'diff' ? value : defaults,
+    autoShowConsoleOnApproval && isAuthExecutingStatus(getAuthStatus(request)) ? 'console' : 'abstract',
+  );
+  const bodyRef = useRef<HTMLDivElement>(null);
+  usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`);
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -898,13 +905,11 @@ function AuthRequestDetail({
     const selectionChanged = previousRequestIdRef.current !== fullId;
     const previous = previousStatusRef.current;
 
-    if (selectionChanged) {
-      setViewMode(autoShowConsoleOnApproval && isAuthExecutingStatus(status) ? 'console' : 'abstract');
-    } else if (autoShowConsoleOnApproval && isAuthExecutingStatus(status)
+    if (!selectionChanged && autoShowConsoleOnApproval && isAuthExecutingStatus(status)
       && (previous === null || !isAuthExecutingStatus(previous))) {
       setViewMode('console');
     }
-    if (autoReturnToAbstractOnSuccess && status === 'completed'
+    if (!selectionChanged && autoReturnToAbstractOnSuccess && status === 'completed'
       && (request.exit_code == null || request.exit_code === 0)
       && previous !== null && isAuthExecutingStatus(previous)) {
       setViewMode('abstract');
@@ -914,11 +919,25 @@ function AuthRequestDetail({
     previousStatusRef.current = status;
   }, [autoReturnToAbstractOnSuccess, autoShowConsoleOnApproval, fullId, request.exit_code, status]);
 
-  useEffect(() => {
-    if (viewMode === 'console' && consoleEndRef.current) {
+  const previousConsole = useRef<{ key: string; text: string } | null>(null);
+  const consoleKey = `${fullId}:${viewMode}`;
+  const sameConsole = previousConsole.current?.key === consoleKey;
+  const consoleWasAtTail = bodyRef.current
+    ? bodyRef.current.scrollHeight - bodyRef.current.scrollTop - bodyRef.current.clientHeight < 48
+    : true;
+  const hasConsoleReadingPosition = readPersistedViewState<number | null>(
+    `auth-review-scroll:${fullId}:console`,
+    value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null,
+    null,
+  ) !== null;
+  useLayoutEffect(() => {
+    const freshOutput = sameConsole && previousConsole.current?.text !== consoleText;
+    previousConsole.current = { key: consoleKey, text: consoleText };
+    if (viewMode === 'console' && consoleEndRef.current
+      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && consoleWasAtTail))) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [viewMode, consoleText]);
+  }, [consoleKey, consoleText]);
 
   const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
@@ -1045,6 +1064,7 @@ function AuthRequestDetail({
       headerClassName="auth-detail__header"
       headerPrimaryClassName="auth-detail__header-primary"
       subheaderClassName="auth-detail__aux-header"
+      bodyRef={bodyRef}
       bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
       headerRef={headerRef}
       subheader={subheader}
