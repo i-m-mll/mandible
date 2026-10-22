@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { appendAuthLifecycleEvent } from "../src/auth-lifecycle.js";
@@ -207,6 +208,12 @@ for (const stage of ["age", "ssh-add"] as const) {
       if (stage === "ssh-add") {
         const agentPid = Number(fs.readFileSync(agentMarker, "utf8").match(/SSH_AGENT_PID=([0-9]+)/)?.[1]);
         expect(agentPid).toBeGreaterThan(0);
+        // The stop command has completed; detached-agent exit is a separate
+        // kernel observation, unlike the already reaped signing child above.
+        await waitUntil(() => {
+          try { process.kill(agentPid, 0); return false; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+        }, "the owned private signing agent to exit");
         expect(() => process.kill(agentPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
       } else expect(fs.existsSync(agentMarker)).toBe(false);
       f.closeDb();
