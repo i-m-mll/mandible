@@ -35,14 +35,7 @@ import {
   updateSpaceItem,
   updateSpaceOccurrence,
   batchWriteOccurrences,
-  SPACE_ITEM_REF_TYPES,
-  SPACE_OCCURRENCE_RENDERERS,
-  SPACE_RENDERERS,
   type BatchOccurrenceEntry,
-  type SpaceItemRefType,
-  type SpaceOccurrenceRenderer,
-  type SpaceRecord,
-  type SpaceRenderer,
 } from "../ledger/spaces.js";
 import {
   createSpaceBlock,
@@ -63,7 +56,18 @@ import { preparePublication, executePublication, getPublication, listPublication
 import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import { shortestUniquePrefix } from "../ledger/ids.js";
-import type { ResolverRefKind, ResolverResult } from "../contracts.js";
+import {
+  SPACE_ITEM_REF_TYPES,
+  SPACE_OCCURRENCE_RENDERERS,
+  SPACE_RENDERERS,
+  type ResolverRefKind,
+  type ResolverResult,
+  type Space,
+  type SpaceFactPacket,
+  type SpaceItemRefType,
+  type SpaceOccurrenceRenderer,
+  type SpaceRenderer,
+} from "../contracts.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
@@ -186,7 +190,7 @@ function requireRefType(value: unknown): SpaceItemRefType {
   return value as SpaceItemRefType;
 }
 
-function loadSpaceOr404(db: Db, ref: string): SpaceRecord {
+function loadSpaceOr404(db: Db, ref: string): Space {
   const resolved = resolveId(db, "space", ref);
   if (resolved.ok) return getSpace(db, resolved.id)!;
   if (resolved.error === "ambiguous") throw new HttpError(409, `ambiguous space ref '${ref}'`);
@@ -235,7 +239,7 @@ function projectExists(db: Db, projectId: string): boolean {
  */
 function validateItemRef(
   db: Db,
-  space: SpaceRecord,
+  space: Space,
   refType: SpaceItemRefType,
   refId: string,
 ): void {
@@ -1126,12 +1130,7 @@ function enforceEmbedShape(
 }
 
 /** Read-only convenience: full Space fact packet (items/occurrences/edges). */
-export function loadSpaceFactPacket(db: Db, id: string): {
-  space: SpaceRecord;
-  items: ReturnType<typeof listSpaceItems>;
-  occurrences: ReturnType<typeof listSpaceOccurrences>;
-  edges: ReturnType<typeof listSpaceEdges>;
-} | null {
+export function loadSpaceFactPacket(db: Db, id: string): SpaceFactPacket | null {
   const space = getSpace(db, id);
   if (!space) return null;
   return {
