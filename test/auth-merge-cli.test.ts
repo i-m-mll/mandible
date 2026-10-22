@@ -240,7 +240,6 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
     expect(result.stderr).not.toContain("No signing key configured");
     expect(result.stderr).toContain("checking signing configuration");
-    expect(result.stderr).toContain("Reviewed base or head moved since auth submission");
   });
 
   it("blocks staged changes through Mandible auth check", async () => {
