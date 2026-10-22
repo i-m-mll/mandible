@@ -45,11 +45,12 @@ import {
   isAuthMergeCommand,
   liveCommitRefReader,
   readCommitRefs,
+  readCommitRefsSync,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
   type CommitRefReader,
 } from "./auth-context.js";
-import { gitObjectAnswer } from "./git-object-facts.js";
+import { gitCommitFacts, readGitCommitFacts } from "./git-object-facts.js";
 import {
   canonicalizeChangeMessage,
   changeMessageDigest,
@@ -3279,10 +3280,11 @@ export class AuthQueue {
     if (isAuthMergeCommand(request)) {
       if (!request.cwd) throw new AuthQueueError("merge_check_failed", "Protected hook context is unavailable.");
       const quote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
-      for (const [name, args] of [["post-commit", ""], ["post-merge", " 0"]] as const) {
-        const hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
-          cwd: request.cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
-        }).trim();
+      const names = ["post-commit", "post-merge"] as const;
+      const paths = this.nativeHookPaths(request.cwd, names);
+      for (const [index, name] of names.entries()) {
+        const args = name === "post-merge" ? " 0" : "";
+        const hookPath = paths[index]!;
         try { accessSync(hookPath, fsConstants.X_OK); }
         catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
@@ -3866,12 +3868,12 @@ export class AuthQueue {
       !request.merge_head_sha
     ) return false;
     try {
-      const pin = (args: string[]): string => gitObjectAnswer(request.cwd!, args, { timeout: 5_000, env: authGitEnv() });
+      const pin = gitCommitFacts(request.cwd, request.merge_candidate_pin_sha, { timeout: 5_000, env: authGitEnv() });
       return (
-        pin(["cat-file", "-t", request.merge_candidate_pin_sha]) === "commit" &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^{tree}`]) === request.merge_candidate_tree_sha &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^1`]) === request.merge_preflight_base_sha &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^2`]) === request.merge_head_sha &&
+        pin.tree === request.merge_candidate_tree_sha &&
+        pin.parents.length === 2 &&
+        pin.parents[0] === request.merge_preflight_base_sha &&
+        pin.parents[1] === request.merge_head_sha &&
         refs(this.mergeCandidateRef(request.id)) === request.merge_candidate_pin_sha
       );
     } catch {
@@ -3883,15 +3885,19 @@ export class AuthQueue {
     return `refs/mandible/auth-candidates/${requestId}`;
   }
 
+  private nativeHookPaths(cwd: string, names: readonly string[]): string[] {
+    const directory = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], {
+      cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
+    }).replace(/\n$/, "");
+    return names.map(name => join(directory, name));
+  }
+
   private hasNativeMergeHooks(cwd: string | null): boolean {
     if (!cwd) return true;
-    for (const name of ["pre-merge-commit", "prepare-commit-msg", "commit-msg"]) {
-      let hookPath: string;
-      try {
-        hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
-          cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
-        }).trim();
-      } catch { return true; }
+    let paths: string[];
+    try { paths = this.nativeHookPaths(cwd, ["pre-merge-commit", "prepare-commit-msg", "commit-msg"]); }
+    catch { return true; }
+    for (const hookPath of paths) {
       try { accessSync(hookPath, fsConstants.X_OK); return true; }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -4049,7 +4055,14 @@ export class AuthQueue {
    * exactly: pinned, base branch unmoved from the preflighted base, and the
    * retained pin commit intact.
    */
-  private mergeCandidateExact(request: AuthRequest, refs: CommitRefReader = liveCommitRefReader(request.cwd)): boolean {
+  private mergeCandidateExact(request: AuthRequest, refs?: CommitRefReader): boolean {
+    if (!refs) {
+      if (!request.cwd || !request.base_branch) return false;
+      try {
+        const snapshot = readCommitRefsSync(request.cwd, [`refs/heads/${request.base_branch}`, this.mergeCandidateRef(request.id)]);
+        refs = ref => snapshot.get(ref) ?? null;
+      } catch { return false; }
+    }
     return Boolean(
       request.merge_candidate_pin_sha &&
       request.cwd &&
@@ -4234,7 +4247,7 @@ export class AuthQueue {
       const expectedFirstParent = chain[index + 1] ?? oldBase;
       let parents: string[];
       try {
-        parents = git(["show", "-s", "--format=%P", commit]).split(/\s+/).filter(Boolean);
+        parents = [...readGitCommitFacts(cwd, commit, { timeout: 5_000, env: authGitEnv() }).parents];
       } catch {
         return refuse("parents_unresolvable", { commit });
       }
@@ -4845,10 +4858,10 @@ export class AuthQueue {
     if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
     try {
       const options = { timeout: 5_000, env: authGitEnv() };
-      const published = (args: string[]) => gitObjectAnswer(cwd, args, options);
-      const parents = published(["show", "-s", "--format=%P", mergeSha]).split(/\s+/);
-      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published(["rev-parse", `${mergeSha}^{tree}`]) !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
-      if (request.commit_message_digest && canonicalizeChangeMessage(published(["show", "-s", "--format=%B", mergeSha])) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
+      const published = gitCommitFacts(cwd, mergeSha, options);
+      const parents = published.parents;
+      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published.tree !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
+      if (request.commit_message_digest && canonicalizeChangeMessage(published.message) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
       execFileSync("git", ["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`], { cwd, ...options, stdio: "ignore" });
     } catch {
       return "Exact signed candidate publication could not be verified on the protected branch.";

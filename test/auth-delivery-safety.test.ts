@@ -9,7 +9,7 @@ import { mintApiToken } from "../src/client-auth/tokens.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { getAttributionEvidence } from "../src/users/store.js";
 import {
-  commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue,
+  commitOnBranch, configureSigningCredential, tamperLooseGitObject, createAuthCheckRepo, createLedgerIssue,
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
@@ -25,12 +25,8 @@ let executorCalls: number;
 beforeEach(() => {
   repo = createAuthCheckRepo();
   db = createMigratedDb();
-  commitOnBranch(repo, "feature/delivery", { "delivered.txt": "reviewed bytes\n" });
   operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
-  registerWorkRepo(db, repo);
-  createLedgerProject(db, repo);
-  git(repo, ["config", "core.hooksPath", ".git/hooks"]);
   hookCalls = 0;
   executorCalls = 0;
   const hooks = createNoopHookManager();
@@ -40,6 +36,13 @@ beforeEach(() => {
   });
 });
 afterEach(() => { vi.unstubAllEnvs(); queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
+
+function prepareMergeFixture() {
+  commitOnBranch(repo, "feature/delivery", { "delivered.txt": "reviewed bytes\n" });
+  registerWorkRepo(db, repo);
+  createLedgerProject(db, repo);
+  git(repo, ["config", "core.hooksPath", ".git/hooks"]);
+}
 
 function submitMerge(issueClosures: string[] = []) {
   const request = queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
@@ -54,6 +57,7 @@ function protectedState() {
 }
 
 describe("protected delivery evidence", () => {
+  beforeEach(prepareMergeFixture);
   it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
     queue.dispose();
     const installationHome = path.join(repo, ".git", "private-installation");
@@ -145,6 +149,9 @@ describe("protected delivery evidence", () => {
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
     const proof = verifyRuntimeHandoffPublication(db, binding);
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
+    const restore = tamperLooseGitObject(repo, publication.mergeSha, object => { object[object.indexOf(Buffer.from("\n\n")) + 2]! ^= 1; });
+    try { expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("does not match its object id"); }
+    finally { restore(); }
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, commandDigest: "f".repeat(64) })).toThrow("binding differs");
     // An executor checkout never gains destination authority from matching runtime bytes.
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } })).toThrow("unregistered");
@@ -152,33 +159,25 @@ describe("protected delivery evidence", () => {
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("checkout differs");
   });
 
-  it("keeps missing, cancelled, and drifted proof pending without starting execution", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
-    const before = protectedState();
-    expect(() => queue.approve(request.id)).toThrow("signing proof");
-    const cancelled = queue.approveWithOperatorProof(request.id, operatorId);
-    queue.cancelOperatorProof(request.id, operatorId);
-    await expect(cancelled).rejects.toThrow("cancelled");
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
-    const drifted = queue.approveWithOperatorProof(request.id, operatorId);
-    queue.update(request.id, { title: "Changed reviewed action" });
-    await expect(drifted).rejects.toThrow("reviewed request changed");
+
+  it.each(["base", "head", "pin", "hook"] as const)("revalidates %s after asynchronous operator signing", async (changed) => {
+    const request = submitMerge();
+    const approving = queue.approveWithOperatorProof(request.id, operatorId);
+    if (changed === "base") git(repo, ["update-ref", "refs/heads/main", request.merge_head_sha!]);
+    if (changed === "head") {
+      const moved = git(repo, ["commit-tree", request.merge_candidate_tree_sha!, "-p", request.merge_head_sha!, "-m", "Moved source"]);
+      git(repo, ["update-ref", "refs/heads/feature/delivery", moved]);
+    }
+    if (changed === "pin") git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${request.id}`]);
+    if (changed === "hook") fs.writeFileSync(path.join(repo, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const expectedBase = git(repo, ["rev-parse", "main"]);
+    await expect(approving).rejects.toThrow();
     expect(queue.getRequest(request.id)?.status).toBe("pending");
     expect(executorCalls).toBe(0);
     expect(hookCalls).toBe(0);
-    expect(protectedState()).toEqual(before);
+    expect(git(repo, ["rev-parse", "main"])).toBe(expectedBase);
   });
 
-  it("records verified action-bound proof for consequential non-Git approval", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
-    const approved = await queue.approveWithOperatorProof(request.id, operatorId);
-    expect(approved.status).toBe("executing");
-    const evidence = getAttributionEvidence(db, approved.execution_evidence_id!);
-    expect(evidence?.evidence_method).toBe("credential_signature");
-    expect(evidence?.details).toMatchObject({ verified: true, signer_user_id: operatorId, auth_request_id: request.id });
-    expect(JSON.parse(String(evidence?.details.challenge))).toMatchObject({ request_id: request.id });
-    expect(queue.listLifecycleEvents(request.id).find((event) => event.event_type === "approved")?.evidence_method).toBe("credential_signature");
-  });
 
   it("refuses native preparation hooks before proof or protected mutation", async () => {
     const request = submitMerge();
@@ -269,6 +268,7 @@ describe("protected delivery evidence", () => {
 });
 
 describe('runtime convergence recovery', () => {
+  beforeEach(prepareMergeFixture);
   it('refuses absent or conflicting source registration before accepting repository identity', () => {
     const destination = createLedgerProject(db, fs.realpathSync(repo)).project;
     const source = createAuthCheckRepo();
@@ -459,4 +459,34 @@ describe('runtime convergence recovery', () => {
     expect(f.journal.phase).toBe('failed');
     expect(f.ack).not.toHaveBeenCalled();
   });
+});
+
+describe("consequential non-Git approval", () => {
+  it("keeps missing, cancelled, and drifted proof pending without starting execution", async () => {
+    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const before = protectedState();
+    expect(() => queue.approve(request.id)).toThrow("signing proof");
+    const cancelled = queue.approveWithOperatorProof(request.id, operatorId);
+    queue.cancelOperatorProof(request.id, operatorId);
+    await expect(cancelled).rejects.toThrow("cancelled");
+    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    const drifted = queue.approveWithOperatorProof(request.id, operatorId);
+    queue.update(request.id, { title: "Changed reviewed action" });
+    await expect(drifted).rejects.toThrow("reviewed request changed");
+    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect(executorCalls).toBe(0);
+    expect(hookCalls).toBe(0);
+    expect(protectedState()).toEqual(before);
+  });
+  it("records verified action-bound proof for consequential non-Git approval", async () => {
+    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const approved = await queue.approveWithOperatorProof(request.id, operatorId);
+    expect(approved.status).toBe("executing");
+    const evidence = getAttributionEvidence(db, approved.execution_evidence_id!);
+    expect(evidence?.evidence_method).toBe("credential_signature");
+    expect(evidence?.details).toMatchObject({ verified: true, signer_user_id: operatorId, auth_request_id: request.id });
+    expect(JSON.parse(String(evidence?.details.challenge))).toMatchObject({ request_id: request.id });
+    expect(queue.listLifecycleEvents(request.id).find((event) => event.event_type === "approved")?.evidence_method).toBe("credential_signature");
+  });
+
 });

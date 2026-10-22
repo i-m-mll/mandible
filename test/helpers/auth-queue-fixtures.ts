@@ -23,6 +23,7 @@
  * `core.hooksPath`, `init.templateDir` or signing defaults reached the fixture
  * and could change what these tests were actually exercising.
  */
+import { deflateSync, inflateSync } from "node:zlib";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -265,6 +266,21 @@ export function createAuthCheckRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-check-"));
   fs.cpSync(pristineRepo(), repo, { recursive: true });
   return trackTempPath(repo);
+}
+
+/** Change a private loose object's bytes without renaming its content-addressed path. */
+export function tamperLooseGitObject(repo: string, oid: string, edit: (object: Buffer) => void): () => void {
+  const filename = path.join(repo, ".git", "objects", oid.slice(0, 2), oid.slice(2));
+  const original = fs.readFileSync(filename);
+  const mode = fs.statSync(filename).mode & 0o777;
+  const replace = (bytes: Buffer) => {
+    fs.rmSync(filename, { force: true });
+    fs.writeFileSync(filename, bytes, { mode });
+  };
+  const object = inflateSync(original);
+  edit(object);
+  replace(deflateSync(object));
+  return () => replace(original);
 }
 
 export function commitOnBranch(repo: string, branch: string, changes: Record<string, string>): void {

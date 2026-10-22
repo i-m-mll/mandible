@@ -10,6 +10,7 @@
  * missing object can arrive later and a timed-out child said nothing.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const MAX_FACTS = 16_384;
 const facts = new Map<string, unknown>();
@@ -43,4 +44,48 @@ export function gitObjectAnswer(cwd: string, args: readonly string[], options: {
     value: execFileSync("git", args, { cwd, env: options.env, timeout: options.timeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(),
     definitive: true,
   }));
+}
+
+export interface GitCommitFacts {
+  readonly tree: string;
+  readonly parents: readonly string[];
+  readonly message: string;
+}
+
+/** Read immutable commit fields, without allowing mutable revision expressions. */
+export function gitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): GitCommitFacts {
+  return rememberedObjectFact(`commit\0${cwd}\0${oid}`, () => ({ value: readGitCommitFacts(cwd, oid, options), definitive: true }));
+}
+
+/** Observe the original object's bytes anew at a consequential security boundary. */
+export function readGitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): GitCommitFacts {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid)) throw new Error("Commit facts require a full object id.");
+  const output = execFileSync("git", ["--no-replace-objects", "cat-file", "--batch"], {
+    cwd, env: options.env, timeout: options.timeout, input: `${oid}\n`, maxBuffer: 16 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const headerEnd = output.indexOf(10);
+  const header = output.subarray(0, headerEnd).toString("ascii");
+  const match = /^([0-9a-f]{40}|[0-9a-f]{64}) commit ([0-9]+)$/.exec(header);
+  if (!match || match[1] !== oid.toLowerCase()) throw new Error(`Git object is not an available commit: ${oid}`);
+  const size = Number(match[2]);
+  const body = output.subarray(headerEnd + 1, headerEnd + 1 + size);
+  if (body.length !== size || output.length !== headerEnd + size + 2) throw new Error("Incomplete Git commit object.");
+  const actualOid = createHash(oid.length === 64 ? "sha256" : "sha1").update(`commit ${size}\0`).update(body).digest("hex");
+  if (actualOid !== oid.toLowerCase()) throw new Error("Git commit object does not match its object id.");
+  const separator = body.indexOf(Buffer.from("\n\n"));
+  if (separator < 0) throw new Error("Git commit has no message boundary.");
+  const fields = body.subarray(0, separator).toString("utf8").split("\n");
+  const tree = fields.find(line => line.startsWith("tree "))?.slice(5);
+  const parents = fields.filter(line => line.startsWith("parent ")).map(line => line.slice(7));
+  const objectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  if (!tree || !objectId.test(tree) || parents.some(parent => !objectId.test(parent))) throw new Error("Malformed Git commit links.");
+  const encoding = fields.find(line => line.startsWith("encoding "))?.slice(9);
+  // Git, rather than a second encoding implementation, converts legacy commit messages.
+  const message = encoding && !/^utf-?8$/i.test(encoding)
+    ? execFileSync("git", ["--no-replace-objects", "show", "-s", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "--format=%B", oid], {
+      cwd, env: options.env, timeout: options.timeout, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    }).trim()
+    : body.subarray(separator + 2).toString("utf8").trim();
+  return Object.freeze({ tree, parents: Object.freeze(parents), message });
 }
