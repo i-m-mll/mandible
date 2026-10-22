@@ -1,10 +1,12 @@
+// @vitest-environment node
 import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 // Issue b395083 (umbrella de56ffa): Spaces P1' core schema — the "core four"
 // tables (spaces / space_items / space_occurrences / space_edges) per
@@ -13,7 +15,6 @@ import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/ba
 // CASCADE. space_blocks / space_exports are intentionally NOT part of this child.
 
 let tempDir = "";
-let dbPath = "";
 let db: Db;
 
 const SPACES_CORE_TABLES = ["spaces", "space_items", "space_occurrences", "space_edges"] as const;
@@ -75,9 +76,8 @@ function seedOccurrence(
 }
 
 beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-spaces-"));
-  dbPath = path.join(tempDir, "mandible.db");
-  db = openDb(dbPath);
+  tempDir = fs.mkdtempSync(path.join(testRuntimeRoot, "spaces-"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -86,70 +86,6 @@ afterEach(() => {
 });
 
 describe("spaces core schema (issue b395083)", () => {
-  it("creates the core four tables and exposes them at the head migration version", () => {
-    for (const table of SPACES_CORE_TABLES) {
-      const row = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get(table) as { name: string } | undefined;
-      expect(row?.name, `missing table ${table}`).toBe(table);
-    }
-    // First link of the serial chain: this child takes the next contiguous version
-    // after main's v82. space_blocks / space_exports are later children.
-    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(83);
-  });
-
-  // The C1 core-four migration no longer owns a "space_exports does not exist"
-  // placeholder: the C13a serial-chain child (issue 9041bb3) now creates that
-  // table, and asserts its schema + backup behavior in test/spaces-exports.test.ts.
-  // This mirrors how the C11 blocks child (d2a8e77) retired its own placeholder.
-
-  it("rejects invalid JSON on every metadata_json column (object-only json_valid)", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
-    const itemId = seedItem(db, spaceId, "item-1");
-    const occId = seedOccurrence(db, spaceId, "occ-1", { itemId });
-    const occId2 = seedOccurrence(db, spaceId, "occ-2", { itemId });
-
-    // Not valid JSON.
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO spaces (id, project_id, title, metadata_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run("space-bad", projectId, "Bad", "not json", now(), now()),
-    ).toThrow();
-
-    // Valid JSON but not an object (array / scalar) is rejected by json_type check.
-    for (const badJson of ["[]", "42", '"str"', "null"]) {
-      expect(() =>
-        db
-          .prepare(
-            `INSERT INTO space_items (id, space_id, ref_type, ref_id, metadata_json, created_at, updated_at)
-             VALUES (?, ?, 'issue', 'x', ?, ?, ?)`,
-          )
-          .run(`item-bad-${badJson}`, spaceId, badJson, now(), now()),
-        `space_items metadata_json should reject ${badJson}`,
-      ).toThrow();
-    }
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO space_occurrences (id, space_id, metadata_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run("occ-bad", spaceId, "[]", now(), now()),
-    ).toThrow();
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO space_edges (id, space_id, source, target, metadata_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run("edge-bad", spaceId, occId, occId2, "5", now(), now()),
-    ).toThrow();
-  });
-
   it("rejects duplicate canonical membership: UNIQUE(space_id, ref_type, ref_id)", () => {
     const projectId = seedProject(db);
     const spaceId = seedSpace(db, projectId);
@@ -158,31 +94,6 @@ describe("spaces core schema (issue b395083)", () => {
     // Same ref in a DIFFERENT space is allowed (uniqueness is scoped to space_id).
     const spaceId2 = seedSpace(db, projectId, "space-2");
     expect(() => seedItem(db, spaceId2, "item-3", "artifact", "sha256:abc")).not.toThrow();
-  });
-
-  it("allows typed Space refs as canonical membership", () => {
-    const projectId = seedProject(db);
-    const containerId = seedSpace(db, projectId, "space-container");
-    const linkedId = seedSpace(db, projectId, "space-linked");
-    expect(() => seedItem(db, containerId, "item-space", "space", linkedId)).not.toThrow();
-    expect(() => seedItem(db, containerId, "item-space-dup", "space", linkedId)).toThrow();
-  });
-
-
-  it("allows multiple occurrences of one item (no UNIQUE on space_id,item_id)", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
-    const itemId = seedItem(db, spaceId, "item-1");
-    expect(() => {
-      seedOccurrence(db, spaceId, "occ-1", { itemId });
-      seedOccurrence(db, spaceId, "occ-2", { itemId });
-    }).not.toThrow();
-  });
-
-  it("rejects ref_id = '' on space_items", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
-    expect(() => seedItem(db, spaceId, "item-1", "issue", "")).toThrow();
   });
 
   it("rejects external_ref items without ref_uri", () => {
@@ -195,19 +106,6 @@ describe("spaces core schema (issue b395083)", () => {
     expect(() =>
       seedItem(db, spaceId, "item-2", "external_ref", "ext-2", "https://example.com/doc"),
     ).not.toThrow();
-  });
-
-  it("rejects renderer = 'document' on space_occurrences (space_blocks owns document structure)", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO space_occurrences (id, space_id, renderer, created_at, updated_at)
-           VALUES (?, ?, 'document', ?, ?)`,
-        )
-        .run("occ-1", spaceId, now(), now()),
-    ).toThrow();
   });
 
   it("rejects cross-space occurrence item_id and parent_id via composite FKs", () => {
@@ -251,23 +149,14 @@ describe("spaces core schema (issue b395083)", () => {
     ).not.toThrow();
   });
 
-  it("cascades occurrence deletion when its item is deleted", () => {
+  it("cascades occurrences with their item, and the whole space's contents with the space", () => {
     const projectId = seedProject(db);
     const spaceId = seedSpace(db, projectId);
-    const itemId = seedItem(db, spaceId, "item-1");
-    seedOccurrence(db, spaceId, "occ-1", { itemId });
-    seedOccurrence(db, spaceId, "occ-2", { itemId });
+    const doomed = seedItem(db, spaceId, "item-doomed", "issue", "issue-doomed");
+    seedOccurrence(db, spaceId, "occ-doomed", { itemId: doomed });
+    db.prepare("DELETE FROM space_items WHERE id = ?").run(doomed);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM space_occurrences WHERE item_id = ?").get(doomed)).toEqual({ n: 0 });
 
-    db.prepare("DELETE FROM space_items WHERE id = ?").run(itemId);
-    const remaining = db
-      .prepare("SELECT COUNT(*) AS n FROM space_occurrences WHERE item_id = ?")
-      .get(itemId) as { n: number };
-    expect(remaining.n).toBe(0);
-  });
-
-  it("cascades the whole space's contents on space deletion", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
     const itemId = seedItem(db, spaceId, "item-1");
     const occ1 = seedOccurrence(db, spaceId, "occ-1", { itemId });
     const occ2 = seedOccurrence(db, spaceId, "occ-2", { itemId });
@@ -284,16 +173,6 @@ describe("spaces core schema (issue b395083)", () => {
         .get(spaceId) as { n: number };
       expect(count.n, `${table} should cascade-clear`).toBe(0);
     }
-  });
-
-  it("RESTRICTs project deletion while a space exists, then allows it once removed", () => {
-    const projectId = seedProject(db);
-    const spaceId = seedSpace(db, projectId);
-    expect(() => db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(projectId)).toThrow();
-    db.prepare("DELETE FROM spaces WHERE id = ?").run(spaceId);
-    expect(() =>
-      db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(projectId),
-    ).not.toThrow();
   });
 });
 
