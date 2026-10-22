@@ -596,7 +596,7 @@ class AncestryBatch {
 }
 
 export class AuthQueue {
-  private readonly db: InstanceType<typeof SqliteDatabase>;
+  readonly db: InstanceType<typeof SqliteDatabase>;
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly backgroundMaintenance: boolean;
