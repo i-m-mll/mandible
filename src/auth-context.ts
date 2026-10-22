@@ -1,8 +1,7 @@
-import { execFile, execFileSync } from "node:child_process";
+import { childOutput } from "./child-observation.js";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import type { Db } from "./db.js";
 import {
@@ -288,9 +287,9 @@ export interface RepoRootProbe {
   failure: GitFailure | null;
 }
 
-export function probeRepoRootFromGitCommonDir(cwd: string): RepoRootProbe {
+export async function probeRepoRootFromGitCommonDir(cwd: string): Promise<RepoRootProbe> {
   try {
-    const gitCommonDir = execFileSync(
+    const gitCommonDir = (await childOutput(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       {
@@ -300,7 +299,7 @@ export function probeRepoRootFromGitCommonDir(cwd: string): RepoRootProbe {
         env: authGitEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       }
-    ).trim();
+    )).trim();
     return { root: gitCommonDir ? path.dirname(gitCommonDir) : null, failure: null };
   } catch (error) {
     return { root: null, failure: classifyGitFailure(error, GIT_REF_TIMEOUT_MS) };
@@ -318,18 +317,18 @@ export function probeRepoRootFromGitCommonDir(cwd: string): RepoRootProbe {
  * discarded failure visible at the call site.
  */
 
-export function resolveAuthMergeExecutionContext(
+export async function resolveAuthMergeExecutionContext(
   db: Db,
   input: AuthMergeContextInput
-): AuthMergeExecutionContext {
+): Promise<AuthMergeExecutionContext> {
   const baseBranch = requireValidBranch("base_branch", input.base_branch ?? null);
   const headBranch = requireValidBranch("head_branch", input.head_branch ?? null);
-  const repo = resolveRegisteredTargetRepo(db, input);
+  const repo = (await resolveRegisteredTargetRepo(db, input));
 
   validateProtectedBaseBranch(db, repo, baseBranch);
   let refs: Map<string, string>;
   try {
-    refs = readCommitRefsSync(repo.root, [`refs/heads/${baseBranch}`, `refs/heads/${headBranch}`]);
+    refs = (await readCommitRefs(repo.root, [`refs/heads/${baseBranch}`, `refs/heads/${headBranch}`]));
   } catch (error) {
     throw new AuthExecutionContextError(
       `Unable to verify 'base_branch' branch '${baseBranch}' in ${repo.root}: ${describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))}`,
@@ -342,9 +341,9 @@ export function resolveAuthMergeExecutionContext(
   };
   const baseSha = branchCommit("base_branch", baseBranch);
   const headSha = branchCommit("head_branch", headBranch);
-  verifyHeadAheadOfBase(repo.root, baseBranch, headBranch, baseSha, headSha);
+  (await verifyHeadAheadOfBase(repo.root, baseBranch, headBranch, baseSha, headSha));
 
-  const executionCwd = resolveBaseBranchWorktree(repo.root, baseBranch);
+  const executionCwd = (await resolveBaseBranchWorktree(repo.root, baseBranch));
   return {
     targetRepoRoot: repo.root,
     executionCwd,
@@ -356,26 +355,25 @@ export function resolveAuthMergeExecutionContext(
   };
 }
 
-export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
-  return resolveRefCommit(repoRoot, `refs/heads/${branch}`, branch);
+export async function resolveBranchHeadSha(repoRoot: string, branch: string): Promise<string> {
+  return (await resolveRefCommit(repoRoot, `refs/heads/${branch}`, branch));
 }
 
 /** A ref's commit id, or null when the ref does not name a commit. */
-export type CommitRefReader = (ref: string) => string | null;
+export type CommitRefReader = (ref: string) => string | null | Promise<string | null>;
 
 /** Reads each ref with a synchronous Git child when it is asked. */
 export function liveCommitRefReader(repoRoot: string | null | undefined): CommitRefReader {
-  return (ref) => {
+  return async (ref) => {
     if (!repoRoot) return null;
     try {
-      return resolveRefCommit(repoRoot, ref, ref);
+      return (await resolveRefCommit(repoRoot, ref, ref));
     } catch {
       return null;
     }
   };
 }
 
-const execFileAsync = promisify(execFile);
 
 /**
  * The commit ids of `refs` read by one asynchronous Git child, so the event
@@ -383,20 +381,11 @@ const execFileAsync = promisify(execFile);
  * name a commit is absent from the result.
  */
 export async function readCommitRefs(repoRoot: string, refs: readonly string[]): Promise<Map<string, string>> {
-  const { stdout } = await execFileAsync("git", ["for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", ...refs], {
+  const stdout = await childOutput("git", ["for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", ...refs], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: GIT_REF_TIMEOUT_MS,
     env: authGitEnv(),
-  });
-  return commitRefsFromOutput(stdout, refs);
-}
-
-/** A new synchronous ref snapshot for one decision phase. Never retained across awaits. */
-export function readCommitRefsSync(repoRoot: string, refs: readonly string[]): Map<string, string> {
-  const stdout = execFileSync("git", ["for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", ...refs], {
-    cwd: repoRoot, encoding: "utf8", timeout: GIT_REF_TIMEOUT_MS, env: authGitEnv(),
-    stdio: ["ignore", "pipe", "pipe"],
   });
   return commitRefsFromOutput(stdout, refs);
 }
@@ -411,10 +400,10 @@ function commitRefsFromOutput(stdout: string, refs: readonly string[]): Map<stri
   return commits;
 }
 
-function resolveRefCommit(repoRoot: string, ref: string, label: string): string {
+async function resolveRefCommit(repoRoot: string, ref: string, label: string): Promise<string> {
   let sha: string;
   try {
-    sha = execFileSync(
+    sha = (await childOutput(
       "git",
       ["rev-parse", "--verify", `${ref}^{commit}`],
       {
@@ -424,7 +413,7 @@ function resolveRefCommit(repoRoot: string, ref: string, label: string): string 
         env: authGitEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       }
-    ).trim();
+    )).trim();
   } catch (error) {
     // Issue 2205073 — say whether git answered "no such ref" or never ran.
     throw new AuthExecutionContextError(
@@ -470,9 +459,9 @@ export async function computeAuthMergeReviewMetadata(
     diffSummary: true,
   }
 ): Promise<AuthMergeReviewMetadata> {
-  const baseSha = resolveCommitSha(repoRoot, baseRef);
-  const headSha = resolveCommitSha(repoRoot, headRef);
-  const mergeBaseSha = resolveMergeBaseSha(repoRoot, baseSha, headSha);
+  const baseSha = (await resolveCommitSha(repoRoot, baseRef));
+  const headSha = (await resolveCommitSha(repoRoot, headRef));
+  const mergeBaseSha = (await resolveMergeBaseSha(repoRoot, baseSha, headSha));
   const metadata: AuthMergeReviewMetadata = {};
   const collected = await collectAuthMergeReview(
     repoRoot,
@@ -493,15 +482,15 @@ export async function computeAuthMergeReviewMetadata(
   return metadata;
 }
 
-function resolveCommitSha(repoRoot: string, ref: string): string {
+async function resolveCommitSha(repoRoot: string, ref: string): Promise<string> {
   try {
-    const sha = execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+    const sha = (await childOutput("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: GIT_REF_TIMEOUT_MS,
       env: authGitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+    })).trim();
     if (sha) return sha;
   } catch (error) {
     throw new AuthExecutionContextError(
@@ -511,15 +500,15 @@ function resolveCommitSha(repoRoot: string, ref: string): string {
   throw new AuthExecutionContextError(`Unable to resolve auth review commit ${ref}: git returned an empty value.`);
 }
 
-function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string): string {
+async function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string): Promise<string> {
   try {
-    const sha = execFileSync("git", ["merge-base", baseSha, headSha], {
+    const sha = (await childOutput("git", ["merge-base", baseSha, headSha], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: GIT_REF_TIMEOUT_MS,
       env: authGitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+    })).trim();
     if (sha) return sha;
   } catch (error) {
     throw new AuthExecutionContextError(
@@ -543,10 +532,10 @@ function requireValidBranch(field: "base_branch" | "head_branch", value: string 
   return value;
 }
 
-function resolveRegisteredTargetRepo(
+async function resolveRegisteredTargetRepo(
   db: Db,
   input: AuthMergeContextInput
-): { root: string; name: string | null; defaultBranch: string | null } {
+): Promise<{ root: string; name: string | null; defaultBranch: string | null }> {
   const explicitTarget = input.target_repo_root?.trim() || null;
   if (explicitTarget) {
     const normalized = normalizeExistingPath(explicitTarget);
@@ -580,7 +569,7 @@ function resolveRegisteredTargetRepo(
   // (EMFILE from fd exhaustion, EAGAIN, ENOMEM), nothing was learned about this
   // path: saying it is "invalid or unregistered" sends the operator to register
   // an already-registered repo while the real cause is daemon/process health.
-  const cwdProbe = probeRepoRootFromGitCommonDir(cwd);
+  const cwdProbe = (await probeRepoRootFromGitCommonDir(cwd));
   if (cwdProbe.failure && cwdProbe.failure.kind !== "exit") {
     throw new AuthExecutionContextError(
       `Unable to resolve the repository for 'cwd' ${cwd}: ${describeGitFailure(cwdProbe.failure)}`
@@ -692,10 +681,10 @@ function validateProtectedBaseBranch(
   }
 }
 
-function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch: string, baseSha: string, headSha: string): void {
+async function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch: string, baseSha: string, headSha: string): Promise<void> {
   let output: string;
   try {
-    output = execFileSync(
+    output = (await childOutput(
       "git",
       ["rev-list", "--count", `${baseSha}..${headSha}`],
       {
@@ -705,7 +694,7 @@ function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch:
         env: authGitEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       }
-    ).trim();
+    )).trim();
   } catch (error) {
     throw new AuthExecutionContextError(
       `Unable to validate auth merge branch ancestry for ${headBranch} onto ${baseBranch}: ` +
@@ -720,16 +709,16 @@ function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch:
   }
 }
 
-function resolveBaseBranchWorktree(repoRoot: string, baseBranch: string): string {
+async function resolveBaseBranchWorktree(repoRoot: string, baseBranch: string): Promise<string> {
   let porcelain: string;
   try {
-    porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
+    porcelain = (await childOutput("git", ["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf-8",
       timeout: 10000,
       env: authGitEnv(),
       stdio: ["ignore", "pipe", "pipe"],
-    });
+    }));
   } catch (error) {
     // Issue 2205073 — a failed worktree listing is not evidence that the base
     // branch is unchecked-out.

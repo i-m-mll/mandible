@@ -68,8 +68,8 @@ describe("client-auth durable attribution", () => {
     });
   });
 
-  afterEach(() => {
-    authQueue.dispose();
+  afterEach(async () => {
+    (await authQueue.dispose());
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -266,7 +266,7 @@ describe("client-auth durable attribution", () => {
     });
     db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
       .run(executionEvidence.id, requestId);
-    authQueue.update(requestId, { title: "Attributed auth request with signature" });
+    (await authQueue.update(requestId, { title: "Attributed auth request with signature" }));
     expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
       request: {
         execution_evidence: {
@@ -358,7 +358,7 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(mismatched.status).toBe(201);
-    expect(authQueue.getRequest((mismatched.body as { request_id: string }).request_id)?.requested_by_user_id)
+    expect((await authQueue.getRequest((mismatched.body as { request_id: string }).request_id))?.requested_by_user_id)
       .toBe(operatorId);
 
     const conflictingAgent = createUser(db, {
@@ -384,7 +384,7 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(conflicting.status).toBe(201);
-    expect(authQueue.getRequest((conflicting.body as { request_id: string }).request_id)?.requested_by_user_id)
+    expect((await authQueue.getRequest((conflicting.body as { request_id: string }).request_id))?.requested_by_user_id)
       .toBe(agent.id);
   });
 });

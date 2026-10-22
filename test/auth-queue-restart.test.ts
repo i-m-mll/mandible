@@ -60,7 +60,7 @@ describe("auth queue", () => {
           executor: async (options) => publishFixtureExecution(queue!, options),
         });
 
-        const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+        const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
           command: "mandible auth merge feature/self-fix --into main",
           title: "Self-merge",
           repo: "mandible",
@@ -69,7 +69,7 @@ describe("auth queue", () => {
           merge_head_sha: git(repo, ["rev-parse", "feature/self-fix"]),
           cwd: repo,
           execution_mode: "daemon",
-        });
+        }));
 
         await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, "completed");
@@ -82,7 +82,7 @@ describe("auth queue", () => {
         expect(resolvedBeforeShutdown).toBe(true);
         expect(lifecycle).toEqual([`rebuild:${request.id}`, "hooks", `shutdown:${request.id}`, "restart"]);
       } finally {
-        queue?.dispose();
+        (await queue?.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -101,16 +101,16 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, restartFn: restart,
           executor: async options => publishFixtureExecution(queue!, options) });
-        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/build-failure --into main',
+        const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/build-failure --into main',
           title: 'Failed runtime build', repo: 'mandible', cwd: repo, base_branch: 'main', head_branch: 'feature/build-failure',
-          merge_head_sha: git(repo, ['rev-parse', 'feature/build-failure']), execution_mode: 'daemon' });
+          merge_head_sha: git(repo, ['rev-parse', 'feature/build-failure']), execution_mode: 'daemon' }));
         await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, 'completed');
         await waitUntil(() => !queue!.isRebuilding, "the rebuild window to close");
         expect(hooks.getRun(request.id, 'builtin-mandible-rebuild')).toMatchObject({ state: exitCode === 0 ? 'complete' : 'pending', exit_code: exitCode });
         expect(restart).not.toHaveBeenCalled();
         expect(db.prepare('SELECT value FROM meta WHERE key = ?').get('auth_self_merge_shutdown_at')).toBeUndefined();
-      } finally { queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+      } finally { (await queue?.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     });
 
     // Bug: 645f8a8 — the readiness gate relies on mandible:rebuilding being
@@ -149,7 +149,7 @@ describe("auth queue", () => {
           },
         });
 
-        const selfMerge = queue.submit({ ...AUTH_MERGE_REVIEW,
+        const selfMerge = (await queue.submit({ ...AUTH_MERGE_REVIEW,
           command: "mandible auth merge feature/self-park --into main",
           title: "Self-merge",
           repo: "mandible",
@@ -158,20 +158,20 @@ describe("auth queue", () => {
           merge_head_sha: git(repo, ["rev-parse", "feature/self-park"]),
           cwd: repo,
           execution_mode: "daemon",
-        });
+        }));
         await approveFixtureRequest(queue, selfMerge.id);
 
         // Wait for the self-merge to enter its hook phase (admission closed).
         await waitUntil(() => queue.isRebuilding, "the self-merge hook phase");
 
         // A request approved during the rebuild window must be parked, not run.
-        const other = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+        const other = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
           command: "echo other",
           title: "Other",
           execution_mode: "daemon",
-        });
+        }));
         await approveFixtureRequest(queue, other.id);
-        expect(queue.getRequest(other.id)?.status).toBe("pending");
+        expect((await queue.getRequest(other.id))?.status).toBe("pending");
 
         releaseHook?.();
         await waitForStatus(queue, selfMerge.id, "completed");
@@ -179,10 +179,10 @@ describe("auth queue", () => {
 
         // Through the whole window up to the restart, the parked request stayed
         // pending and never reached the executor.
-        expect(queue.getRequest(other.id)?.status).toBe("pending");
+        expect((await queue.getRequest(other.id))?.status).toBe("pending");
         expect(executed).toEqual([selfMerge.id]);
       } finally {
-        queue?.dispose();
+        (await queue?.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -192,12 +192,12 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo work",
         title: "Interrupted",
         execution_mode: "daemon",
-      });
-      q1.dispose();
+      }));
+      (await q1.dispose());
 
       // Approved ~10 s before the daemon exited to rebuild, killed mid-execution
       // (executing, no exit code). Recent enough that the 5-minute threshold path
@@ -224,20 +224,20 @@ describe("auth queue", () => {
       expect(marker).toBeUndefined();
       expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
 
-      q2.dispose();
+      (await q2.dispose());
       db.close();
     });
 
-    it("does not fast-recover a recent stuck execution without a shutdown marker", () => {
+    it("does not fast-recover a recent stuck execution without a shutdown marker", async () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo work",
         title: "Recent",
         execution_mode: "daemon",
-      });
-      q1.dispose();
+      }));
+      (await q1.dispose());
 
       db.prepare(
         "UPDATE auth_requests SET status = 'executing', approved_at = ?, exit_code = NULL WHERE id = ?"
@@ -246,9 +246,9 @@ describe("auth queue", () => {
 
       const q2 = new AuthQueue({ db, now: () => now });
       // Recent (< 5 min) with no marker → left executing for the threshold path.
-      expect(q2.getRequest(req.id)?.status).toBe("executing");
+      expect((await q2.getRequest(req.id))?.status).toBe("executing");
 
-      q2.dispose();
+      (await q2.dispose());
       db.close();
     });
   });

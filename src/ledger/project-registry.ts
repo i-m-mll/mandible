@@ -1,3 +1,4 @@
+import { childOutput } from "../child-observation.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -274,28 +275,48 @@ interface GitPathEvidence {
 const GIT_EVIDENCE_TTL_MS = 60_000;
 const gitEvidenceCache = new Map<string, GitPathEvidence>();
 
-function gitPathEvidence(target: string): GitPathEvidence {
-  const now = Date.now();
-  const cached = gitEvidenceCache.get(target);
-  if (cached && now - cached.at < GIT_EVIDENCE_TTL_MS) return cached;
+function* gitPathQueries(): Generator<string[], GitPathEvidence, string | null> {
   // Ask only the requested repository; probing registered checkouts would let
   // an unrelated mount or OS access gate block resolution.
-  const listing = runGit(target, ["worktree", "list", "--porcelain", "-z"]);
+  const listing = (yield ["worktree", "list", "--porcelain", "-z"]);
   const worktrees = new Set((listing ?? "").split("\0")
     .filter((field) => field.startsWith("worktree "))
     .map((field) => path.resolve(field.slice("worktree ".length))));
   if (listing) {
     // Bare or separate Git directories list the object store as their main
     // path, which is not a checkout; an explicit core.worktree names the real one.
-    const common = runGit(target, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const common = (yield ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     if (common) worktrees.delete(path.resolve(common));
-    const main = runGit(target, ["config", "--path", "--get", "core.worktree"]);
+    const main = (yield ["config", "--path", "--get", "core.worktree"]);
     if (main && common) worktrees.add(path.resolve(common, main));
   }
-  const origin = listing ? normalizeRemoteIdentity(runGit(target, ["remote", "get-url", "origin"])) : "";
-  const evidence = { at: now, worktrees, origin };
-  gitEvidenceCache.set(target, evidence);
-  return evidence;
+  const origin = listing ? normalizeRemoteIdentity((yield ["remote", "get-url", "origin"])) : "";
+  return { at: Date.now(), worktrees, origin };
+}
+
+function gitPathEvidence(target: string): GitPathEvidence {
+  const cached = gitEvidenceCache.get(target);
+  if (cached && Date.now() - cached.at < GIT_EVIDENCE_TTL_MS) return cached;
+  const queries = gitPathQueries();
+  let step = queries.next();
+  while (!step.done) step = queries.next(runGit(target, step.value));
+  gitEvidenceCache.set(target, step.value);
+  return step.value;
+}
+
+async function observeGitPathEvidence(target: string): Promise<GitPathEvidence> {
+  const queries = gitPathQueries();
+  let step = queries.next();
+  while (!step.done) {
+    let answer: string | null;
+    try {
+      answer = (await childOutput("git", ["-C", target, ...step.value], {
+        encoding: "utf8", timeout: 15_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      })).trim();
+    } catch { answer = null; }
+    step = queries.next(answer);
+  }
+  return step.value;
 }
 
 function isPathInside(candidate: string, root: string): boolean {
@@ -342,14 +363,14 @@ function requestedPathEvidence(paths: string[]): { targets: Set<string>; canonic
   };
 }
 
-function resolveProjectPath(db: Db, rows: RefRow[], target: string, observedPath?: string): ProjectRefResolution | null {
+function resolveProjectPath(db: Db, rows: RefRow[], target: string, observedPath?: string, observedGit?: GitPathEvidence): ProjectRefResolution | null {
   const checkouts = rows.filter((row) => row.root);
   const evidence = requestedPathEvidence(observedPath ? [target, observedPath] : [target]);
   const exact = checkouts.filter((row) => evidence.targets.has(evidence.canonicalize(row.root!)));
   const exactResolution = settle(db, exact, "checkout_root", true);
   if (exactResolution) return exactResolution;
 
-  const { worktrees, origin } = gitPathEvidence(target);
+  const { worktrees, origin } = observedGit ?? gitPathEvidence(target);
   const sameRepo = checkouts.filter((row) => worktrees.has(evidence.canonicalize(row.root!)));
   const sameRepoResolution = settle(db, sameRepo, "git_common_dir", true);
   if (sameRepoResolution) return sameRepoResolution;
@@ -385,16 +406,17 @@ function resolveProjectPath(db: Db, rows: RefRow[], target: string, observedPath
  * WorkScanner repo id, checkout name, remote identity, and display name. Keys,
  * names, and display names compare case-insensitively.
  */
-export function resolveProjectRef(
+function resolveProjectRefWithEvidence(
   db: Db,
   ref: string | null | undefined,
   options: { observedPath?: string } = {},
+  observedGit?: GitPathEvidence,
 ): ProjectRefResolution {
   const trimmed = ref?.trim() ?? "";
   if (!trimmed) return { ok: false, reason: "unknown" };
   const rows = refRows(db);
   if (path.isAbsolute(trimmed)) {
-    return resolveProjectPath(db, rows, trimmed, options.observedPath) ?? { ok: false, reason: "unknown" };
+    return resolveProjectPath(db, rows, trimmed, options.observedPath, observedGit) ?? { ok: false, reason: "unknown" };
   }
   const folded = trimmed.toLowerCase();
   const remote = normalizeRemoteIdentity(trimmed);
@@ -414,6 +436,23 @@ export function resolveProjectRef(
     if (resolution) return resolution;
   }
   return { ok: false, reason: "unknown" };
+}
+
+export function resolveProjectRef(db: Db, ref: string | null | undefined, options: { observedPath?: string } = {}): ProjectRefResolution {
+  return resolveProjectRefWithEvidence(db, ref, options);
+}
+
+/** Resolve the same tiers using explicit freshly observed Git evidence. */
+export async function resolveProjectRefAsync(db: Db, ref: string | null | undefined, options: { observedPath?: string } = {}): Promise<ProjectRefResolution> {
+  const target = ref?.trim() ?? "";
+  if (!path.isAbsolute(target)) return resolveProjectRefWithEvidence(db, ref, options);
+  const requested = requestedPathEvidence(options.observedPath ? [target, options.observedPath] : [target]);
+  const exact = settle(db, refRows(db).filter(row => row.root && requested.targets.has(requested.canonicalize(row.root))), "checkout_root", true);
+  if (exact) return exact;
+  const originalPath = safeRealpath(target);
+  const observedGit = await observeGitPathEvidence(target);
+  if (safeRealpath(target) !== originalPath) throw new Error("Requested repository path changed during observation.");
+  return resolveProjectRefWithEvidence(db, ref, options, observedGit);
 }
 
 /** Resolve every ref to its project; any unresolved ref fails the whole set. */

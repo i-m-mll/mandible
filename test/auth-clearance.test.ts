@@ -167,7 +167,7 @@ function fixture() {
       };
     },
   });
-  const submit = (suffix = "", overrides: Record<string, unknown> = {}) => queue.submit({ ...AUTH_MERGE_REVIEW,
+  const submit = async (suffix = "", overrides: Record<string, unknown> = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
     type: "merge",
     command: "mandible auth merge feature/scoped --into main",
     title: `Scoped merge ${suffix}`,
@@ -182,7 +182,7 @@ function fixture() {
     requester_evidence_method: "api_token",
     requester_credential_id: agentCredential.id,
     ...overrides,
-  }, agent.id);
+  }, agent.id));
   return {
     db, repo, project, issue, agent, agentCredential, operator, manager, signer,
     released, submit, queue, executions,
@@ -194,7 +194,7 @@ describe("scoped protected-merge clearance", () => {
   it("refuses a clearance whose head differs from its selected request", async () => {
     const f = fixture();
     try {
-      const request = f.submit();
+      const request = (await f.submit());
       await expect(f.manager.issue({
         requestId: request.id,
         grantee: f.agent.id,
@@ -202,7 +202,7 @@ describe("scoped protected-merge clearance", () => {
         headBranch: "feature/other",
       }, f.operator.id)).rejects.toMatchObject({ code: "scope_mismatch" });
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -211,22 +211,22 @@ describe("scoped protected-merge clearance", () => {
   it("does not consume clearance until the dependency is durably finalized", async () => {
     const f = fixture();
     try {
-      const dependency = f.submit("dependency");
-      const request = f.submit("dependent", { depends_on_id: dependency.id });
+      const dependency = (await f.submit("dependency"));
+      const request = (await f.submit("dependent", { depends_on_id: dependency.id }));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
       }, f.operator.id);
 
-      expect(() => f.queue.approveWithClearance(request.id)).toThrow(/Dependency .* is pending/);
+      await expect((async () => (await f.queue.approveWithClearance(request.id))())).rejects.toThrow(/Dependency .* is pending/);
       expect(f.manager.uses(clearance.id)).toEqual([]);
 
       f.db.prepare(
         "UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_finalized_at = ? WHERE id = ?",
       ).run(10_001, dependency.id);
-      expect(f.queue.approveWithClearance(request.id).status).toBe("executing");
+      expect((await f.queue.approveWithClearance(request.id)).status).toBe("executing");
       expect(f.manager.uses(clearance.id)).toHaveLength(1);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -235,13 +235,13 @@ describe("scoped protected-merge clearance", () => {
   it("executes the exact matching protected merge through a short-id clearance queue path", async () => {
     const f = fixture();
     try {
-      const request = f.submit("queue");
+      const request = (await f.submit("queue"));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
       }, f.operator.id);
-      const executing = f.queue.approveWithClearance(request.id.slice(0, 8));
+      const executing = (await f.queue.approveWithClearance(request.id.slice(0, 8)));
       expect(executing).toMatchObject({ status: "executing", approval_source: "clearance" });
-      await waitUntil(() => f.queue.getRequest(request.id)?.status === "completed", "the cleared merge to complete");
+      await waitUntil(async () => (await f.queue.getRequest(request.id))?.status === "completed", "the cleared merge to complete");
       expect(f.executions).toHaveLength(1);
       expect(f.executions[0]).toMatchObject({ request_id: request.id });
       expect(f.executions[0].released_at_start).toBe(0);
@@ -251,7 +251,7 @@ describe("scoped protected-merge clearance", () => {
         expect.objectContaining({ auth_request_id: request.id, use_ordinal: 1 }),
       ]);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -260,7 +260,7 @@ describe("scoped protected-merge clearance", () => {
   it("issues one fresh bounded grant and atomically freezes and consumes the exact request", async () => {
     const f = fixture();
     try {
-      const request = f.submit();
+      const request = (await f.submit());
       const clearance = await f.manager.issue({
         requestId: request.id,
         grantee: f.agent.id,
@@ -270,15 +270,15 @@ describe("scoped protected-merge clearance", () => {
       expect(clearance.max_uses).toBe(1);
       expect(clearance.expires_at - clearance.issued_at).toBe(60 * 60_000);
       let transitioned = false;
-      const consumed = f.manager.consume(request.id, ({ use }) => {
+      let contender!: ReturnType<AuthClearanceManager['consume']>;
+      const consumed = (await f.manager.consume(request.id, ({ use }) => {
         transitioned = true;
-        // A re-entrant contender observes the append-only use already claimed
-        // inside the same immediate transaction and cannot take the last use.
-        expect(() => f.manager.consume(request.id, () => undefined)).toThrow(/No active/);
+        contender = f.manager.consume(request.id, () => undefined);
         f.db.prepare(
           "UPDATE auth_requests SET status = 'executing', clearance_use_id = ?, execution_evidence_id = ? WHERE id = ?",
         ).run(use.id, use.evidence_id, request.id);
-      });
+      }));
+      await expect(contender).rejects.toThrow(/No active/);
       expect(transitioned).toBe(true);
       expect(consumed.use.request_snapshot_digest).toMatch(/^[0-9a-f]{64}$/);
       expect(f.manager.show(clearance.id).consumed_uses).toBe(1);
@@ -318,7 +318,7 @@ describe("scoped protected-merge clearance", () => {
       expect(() => f.db.prepare("DELETE FROM auth_clearances WHERE id = ?").run(clearance.id))
         .toThrow(/append-only/);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -336,10 +336,10 @@ describe("scoped protected-merge clearance", () => {
         action: "merge",
       }, f.operator.id);
       expect(clearance.created_from_request_id).toBeNull();
-      const request = f.submit("later");
-      expect(f.manager.consume(request.id, () => undefined).clearance.id).toBe(clearance.id);
+      const request = (await f.submit("later"));
+      expect((await f.manager.consume(request.id, () => undefined)).clearance.id).toBe(clearance.id);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -352,14 +352,14 @@ describe("scoped protected-merge clearance", () => {
   ])("refuses unsupported %s", async (_label, overrides, message) => {
     const f = fixture();
     try {
-      const request = f.submit(String(_label), overrides);
+      const request = (await f.submit(String(_label), overrides));
       await expect(f.manager.issue({
         requestId: request.id,
         grantee: f.agent.id,
         headBranch: "feature/scoped",
       }, f.operator.id)).rejects.toThrow(message);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -368,7 +368,7 @@ describe("scoped protected-merge clearance", () => {
   it("fails closed for expiry, revocation, exhaustion, ambiguity, restart, and deferred effects", async () => {
     const f = fixture();
     try {
-      const first = f.submit("first");
+      const first = (await f.submit("first"));
       const clearance = await f.manager.issue({
         requestId: first.id, grantee: f.agent.id, issueRef: f.issue.id, durationMinutes: 1,
       }, f.operator.id);
@@ -377,40 +377,40 @@ describe("scoped protected-merge clearance", () => {
           (id, auth_request_id, ordinal, kind, target_issue_ref, payload, state, staged_at, updated_at)
          VALUES ('effect', ?, 0, 'comment_add', ?, '{}', 'staged', 1, 1)`,
       ).run(first.id, f.issue.id);
-      expect(() => f.manager.consume(first.id, () => undefined)).toThrow(/No active/);
+      await expect((async () => (await f.manager.consume(first.id, () => undefined))())).rejects.toThrow(/No active/);
       f.db.prepare("DELETE FROM auth_request_actions WHERE id = 'effect'").run();
       await f.manager.revoke(clearance.id, f.operator.id);
       await expect(f.manager.revoke(clearance.id, f.operator.id)).resolves.toMatchObject({ id: clearance.id });
       expect(() => f.db.prepare("UPDATE auth_clearances SET revoked_at = revoked_at + 1 WHERE id = ?").run(clearance.id))
         .toThrow(/revocation is immutable/);
-      expect(() => f.manager.consume(first.id, () => undefined)).toThrow(/No active/);
+      await expect((async () => (await f.manager.consume(first.id, () => undefined))())).rejects.toThrow(/No active/);
 
-      const second = f.submit("second");
+      const second = (await f.submit("second"));
       const oneUse = await f.manager.issue({ requestId: second.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id);
-      f.manager.consume(second.id, () => undefined);
-      expect(() => f.manager.consume(second.id, () => undefined)).toThrow(/No active/);
+      (await f.manager.consume(second.id, () => undefined));
+      await expect((async () => (await f.manager.consume(second.id, () => undefined))())).rejects.toThrow(/No active/);
       expect(f.manager.show(oneUse.id).consumed_uses).toBe(1); // execution failure would not refund this use
 
-      const third = f.submit("third");
+      const third = (await f.submit("third"));
       const ambiguousIssue = await f.manager.issue(
         { requestId: third.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id,
       );
       const ambiguousHead = await f.manager.issue(
         { requestId: third.id, grantee: f.agent.id, headBranch: "feature/scoped" }, f.operator.id,
       );
-      expect(() => f.manager.consume(third.id, () => undefined)).toThrow(/Multiple active/);
+      await expect((async () => (await f.manager.consume(third.id, () => undefined))())).rejects.toThrow(/Multiple active/);
 
       const restarted = new AuthClearanceManager(f.db, f.signer as never, "runtime-b", { now: () => 10_000 });
-      expect(() => restarted.consume(third.id, () => undefined)).toThrow(/Multiple active/);
+      await expect((async () => (await restarted.consume(third.id, () => undefined))())).rejects.toThrow(/Multiple active/);
       await f.manager.revoke(ambiguousIssue.id, f.operator.id);
       await f.manager.revoke(ambiguousHead.id, f.operator.id);
 
-      const expiring = f.submit("expiring");
+      const expiring = (await f.submit("expiring"));
       await f.manager.issue({ requestId: expiring.id, grantee: f.agent.id, issueRef: f.issue.id, durationMinutes: 1 }, f.operator.id);
       f.setClock(70_001);
-      expect(() => f.manager.consume(expiring.id, () => undefined)).toThrow(/No active/);
+      await expect((async () => (await f.manager.consume(expiring.id, () => undefined))())).rejects.toThrow(/No active/);
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -419,14 +419,14 @@ describe("scoped protected-merge clearance", () => {
   it("cleans up the fresh signer when durable issuance fails", async () => {
     const f = fixture();
     try {
-      const request = f.submit();
+      const request = (await f.submit());
       f.db.exec("CREATE TRIGGER refuse_clearance BEFORE INSERT ON auth_clearances BEGIN SELECT RAISE(ABORT, 'refused'); END");
       await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id))
         .rejects.toThrow(/refused/);
       expect(f.released).toHaveLength(1);
       expect(f.db.prepare("SELECT COUNT(*) AS count FROM auth_clearances").get()).toEqual({ count: 0 });
     } finally {
-      f.queue.dispose();
+      (await f.queue.dispose());
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
@@ -493,7 +493,7 @@ describe("auth clearance API", () => {
         issueRef: "de690d2", headBranch: "feature/exact", durationMinutes: 30, maxUses: 2,
       }), operator.id);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
       resetDb({ reason: "auth clearance API test ended" });
     }

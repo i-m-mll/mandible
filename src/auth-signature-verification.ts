@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { observeChild } from "./child-observation.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -160,11 +160,11 @@ export function trustedSshKeygenPath(): string | null {
  * Verify one successful merge commit against an ephemeral allowed-signers file
  * derived exclusively from active registry credentials.
  */
-export function verifyMergeCommitSignature(
+export async function verifyMergeCommitSignature(
   db: Db,
   cwd: string | null,
   commitSha: string | null,
-): MergeSignatureVerification {
+): Promise<MergeSignatureVerification> {
   if (!cwd) return unverified(commitSha, "missing_repository_path");
   if (!commitSha) return unverified(null, "missing_merge_commit_sha");
   const sshKeygenPath = trustedSshKeygenPath();
@@ -178,7 +178,7 @@ export function verifyMergeCommitSignature(
   try {
     const signers = `${allowed.join("\n")}\n`;
     const key = ["verify-original-commit", cwd, commitSha, sshKeygenPath, createHash("sha256").update(signers).digest("hex")].join("\0");
-    const result = rememberedObjectFact(key, () => verifyCommitAgainst(cwd, commitSha, sshKeygenPath, signers));
+    const result = (await rememberedObjectFact(key, async () => (await verifyCommitAgainst(cwd, commitSha, sshKeygenPath, signers))));
     const diagnostic = `${result.stdout}\n${result.stderr}`;
     const fingerprint = diagnostic.match(SSH_FINGERPRINT_PATTERN)?.[0] ?? null;
     if (result.status !== 0) {
@@ -192,7 +192,7 @@ export function verifyMergeCommitSignature(
     }
 
     const principal = diagnostic.match(/Good "git" signature for ([^\s]+) with /)?.[1] ?? null;
-    const credential = credentials.find((candidate) => candidate.credential_id === principal) ?? null;
+    const credential = activeSigningCredentials(db).find((candidate) => candidate.credential_id === principal && allowedSignerLine(candidate) === allowed.find(line => line.startsWith(`${principal} `))) ?? null;
     if (!credential) {
       return unverified(commitSha, "verified_principal_not_registered", fingerprint);
     }
@@ -217,12 +217,12 @@ export function verifyMergeCommitSignature(
  * is definitive when Git ran to completion and the commit exists here: exit 1
  * also covers a commit missing from this repository, which may arrive later.
  */
-function verifyCommitAgainst(cwd: string, commitSha: string, sshKeygenPath: string, signers: string) {
+async function verifyCommitAgainst(cwd: string, commitSha: string, sshKeygenPath: string, signers: string) {
   const verificationDir = mkdtempSync(join(tmpdir(), "mandible-allowed-signers-"));
   const allowedSignersPath = join(verificationDir, "allowed_signers");
   try {
     writeFileSync(allowedSignersPath, signers, { encoding: "utf8", mode: 0o600 });
-    const result = spawnSync(
+    const result = (await observeChild(
       "git",
       [
         "-c",
@@ -244,33 +244,33 @@ function verifyCommitAgainst(cwd: string, commitSha: string, sshKeygenPath: stri
         timeout: 10_000,
         env: verificationEnv(),
       },
-    );
+    ));
     const completed = !result.error && result.signal === null && (result.status === 0 || result.status === 1);
     return {
       value: { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" },
-      definitive: completed && (result.status === 0 || commitExists(cwd, commitSha)),
+      definitive: completed && (result.status === 0 || (await commitExists(cwd, commitSha))),
     };
   } finally {
     rmSync(verificationDir, { recursive: true, force: true });
   }
 }
 
-function commitExists(cwd: string, commitSha: string): boolean {
+async function commitExists(cwd: string, commitSha: string): Promise<boolean> {
   try {
-    return gitObjectAnswer(cwd, ["cat-file", "-t", commitSha], { env: verificationEnv(), timeout: 10_000 }) === "commit";
+    return (await gitObjectAnswer(cwd, ["cat-file", "-t", commitSha], { env: verificationEnv(), timeout: 10_000 })) === "commit";
   } catch {
     return false;
   }
 }
 
-export function verifyAuthorizedMergeCommitSignature(
+export async function verifyAuthorizedMergeCommitSignature(
   db: Db,
   cwd: string | null,
   commitSha: string | null,
   approverUserId: string,
   credentialId?: string | null,
-): MergeSignatureVerification {
-  const verification = verifyMergeCommitSignature(db, cwd, commitSha);
+): Promise<MergeSignatureVerification> {
+  const verification = (await verifyMergeCommitSignature(db, cwd, commitSha));
   if (!verification.verified) return verification;
   if (verification.user_id !== approverUserId) {
     return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);
@@ -282,19 +282,19 @@ export function verifyAuthorizedMergeCommitSignature(
 }
 
 /** Bind the recorded merge result to the target branch head before trusting its signature. */
-export function verifySuccessfulMergeCommitSignature(
+export async function verifySuccessfulMergeCommitSignature(
   db: Db,
   cwd: string | null,
   commitSha: string | null,
   targetHeadSha: string | null,
-): MergeSignatureVerification {
+): Promise<MergeSignatureVerification> {
   if (commitSha && !targetHeadSha) {
     return unverified(commitSha, "target_head_unavailable");
   }
   if (commitSha && targetHeadSha && commitSha !== targetHeadSha) {
     return unverified(commitSha, "merge_commit_not_target_head");
   }
-  return verifyMergeCommitSignature(db, cwd, commitSha);
+  return (await verifyMergeCommitSignature(db, cwd, commitSha));
 }
 
 type AtomicMarker = {

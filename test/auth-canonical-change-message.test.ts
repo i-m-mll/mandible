@@ -559,17 +559,17 @@ describe("auth queue canonical message storage", () => {
     };
   }
 
-  it("stores canonical bytes and their digest when the submitter declares one", () => {
+  it("stores canonical bytes and their digest when the submitter declares one", async () => {
     const { db, queue } = newQueue();
     try {
       const raw = message("outcome").replace(/\n/g, "\r\n").concat("\r\n\r\n");
-      const request = queue.submit({ ...canonicalSubmission("outcome"), commit_message: raw });
+      const request = (await queue.submit({ ...canonicalSubmission("outcome"), commit_message: raw }));
       const canonical = canonicalizeChangeMessage(raw);
       expect(request.commit_message).toBe(canonical);
       // The digest binds the stored octets exactly, terminal newline included.
       expect(request.commit_message_digest).toBe(changeMessageDigest(canonical));
       expect(isCanonicalChangeMessage(request.commit_message ?? "")).toBe(true);
-      expect(queue.getRequest(request.id)?.commit_message_digest).toBe(
+      expect((await queue.getRequest(request.id))?.commit_message_digest).toBe(
         request.commit_message_digest,
       );
     } finally {
@@ -577,46 +577,46 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("refuses a canonical submission whose envelope does not match the structured fields", () => {
+  it("refuses a canonical submission whose envelope does not match the structured fields", async () => {
     const { db, queue } = newQueue();
     try {
-      const opaque = queue.submit({
+      const opaque = (await queue.submit({
         ...canonicalSubmission("opaque issue-looking text"),
         commit_message: message("opaque issue-looking text").replace(
           "Mandible-Issue: 7d64d8f", "Closes-Mandible-Issue: deadbee"),
-      });
+      }));
       expect(opaque.issue_references).toEqual(["7d64d8f"]);
       expect(opaque.issue_closures).toBeNull();
       expect(opaque.issue_ids).toBeNull();
 
-      expect(() =>
-        queue.submit({
+      await expect((async () =>
+        (await queue.submit({
           ...canonicalSubmission("outcome"),
           commit_message: message("outcome").replace("Because.", "Because.\n#stripped by git"),
-        }),
-      ).toThrow(expect.objectContaining({ status: 400 }));
+        }))()),
+      ).rejects.toThrow(expect.objectContaining({ status: 400 }));
 
-      expect(() =>
-        queue.submit({ ...canonicalSubmission("outcome"), verification: "Something else." }),
-      ).toThrow(expect.objectContaining({ status: 400 }));
+      await expect((async () =>
+        (await queue.submit({ ...canonicalSubmission("outcome"), verification: "Something else." }))()),
+      ).rejects.toThrow(expect.objectContaining({ status: 400 }));
 
-      expect(() =>
-        queue.submit({ ...canonicalSubmission("outcome"), verification: undefined }),
-      ).toThrow(expect.objectContaining({ status: 400 }));
+      await expect((async () =>
+        (await queue.submit({ ...canonicalSubmission("outcome"), verification: undefined }))()),
+      ).rejects.toThrow(expect.objectContaining({ status: 400 }));
 
-      expect(queue.submit({
+      expect((await queue.submit({
         ...canonicalSubmission("new references"), issue_references: ["7d64d8f", "deadbee"],
-      }).issue_references).toEqual(["7d64d8f", "deadbee"]);
+      })).issue_references).toEqual(["7d64d8f", "deadbee"]);
     } finally {
       db.close();
     }
   });
 
-  it("uses structured fields for reference-only ledger links", () => {
+  it("uses structured fields for reference-only ledger links", async () => {
     const { db, queue } = newQueue();
     try {
       // Reference-only structured fields never create closure links.
-      const request = queue.submit(canonicalSubmission("outcome"));
+      const request = (await queue.submit(canonicalSubmission("outcome")));
 
       const links = db.prepare(
         "SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = ?",
@@ -628,15 +628,15 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("leaves free-form review text undigested", () => {
+  it("leaves free-form review text undigested", async () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit({
+      const request = (await queue.submit({
         type: "config-change",
         command: "echo legacy",
         title: "Legacy",
         commit_message: "- one\n- two",
-      });
+      }));
       expect(request.commit_message).toBe("- one\n- two");
       expect(request.commit_message_digest).toBeNull();
     } finally {
@@ -644,14 +644,14 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("recomputes the digest for a pending edit", () => {
+  it("recomputes the digest for a pending edit", async () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit(canonicalSubmission("first"));
-      const updated = queue.update(request.id, {
+      const request = (await queue.submit(canonicalSubmission("first")));
+      const updated = (await queue.update(request.id, {
         commit_message: message("second"),
         verification: VERIFICATION,
-      });
+      }));
       expect(updated.commit_message).toBe(message("second"));
       expect(updated.commit_message_digest).toBe(changeMessageDigest(message("second")));
       expect(updated.commit_message_digest).not.toBe(request.commit_message_digest);
@@ -660,31 +660,31 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("refuses demoting the exact Git document on a merge", () => {
+  it("refuses demoting the exact Git document on a merge", async () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit(canonicalSubmission("first"));
-      expect(() => queue.update(request.id, { canonical_message: false }))
+      const request = (await queue.submit(canonicalSubmission("first")));
+      await expect((async () => (await queue.update(request.id, { canonical_message: false }))())).rejects
         .toThrow(expect.objectContaining({ status: 400 }));
-      expect(queue.getRequest(request.id)?.commit_message_digest).toBe(request.commit_message_digest);
+      expect((await queue.getRequest(request.id))?.commit_message_digest).toBe(request.commit_message_digest);
     } finally { db.close(); }
   });
 
-  it("refuses to mutate a canonical message once the request leaves pending", () => {
+  it("refuses to mutate a canonical message once the request leaves pending", async () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit(canonicalSubmission("first"));
+      const request = (await queue.submit(canonicalSubmission("first")));
       db.prepare("UPDATE auth_requests SET status = 'approved' WHERE id = ?").run(request.id);
 
-      expect(() =>
-        queue.update(request.id, { commit_message: message("tampered"), verification: VERIFICATION }),
-      ).toThrow(expect.objectContaining({ status: 409 }));
+      await expect((async () =>
+        (await queue.update(request.id, { commit_message: message("tampered"), verification: VERIFICATION }))()),
+      ).rejects.toThrow(expect.objectContaining({ status: 409 }));
       // Demotion is a mutation of the frozen binding too.
-      expect(() => queue.update(request.id, { canonical_message: false })).toThrow(
+      await expect((async () => (await queue.update(request.id, { canonical_message: false }))())).rejects.toThrow(
         expect.objectContaining({ status: 409 }),
       );
 
-      const stored = queue.getRequest(request.id);
+      const stored = (await queue.getRequest(request.id));
       expect(stored?.commit_message).toBe(request.commit_message);
       expect(stored?.commit_message_digest).toBe(request.commit_message_digest);
     } finally {
@@ -692,17 +692,17 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("refuses editing undigested review text after approval", () => {
+  it("refuses editing undigested review text after approval", async () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit({
+      const request = (await queue.submit({
         type: "config-change",
         command: "echo legacy",
         title: "Legacy",
         commit_message: "- one",
-      });
+      }));
       db.prepare("UPDATE auth_requests SET status = 'approved' WHERE id = ?").run(request.id);
-      expect(() => queue.update(request.id, { commit_message: "- two" }))
+      await expect((async () => (await queue.update(request.id, { commit_message: "- two" }))())).rejects
         .toThrow(/Only pending requests can be revised/);
     } finally {
       db.close();

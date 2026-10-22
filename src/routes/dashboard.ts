@@ -18,11 +18,11 @@ export type DashboardBadgeCounts = {
   tasks: number;
 };
 
-export function readDashboardBadgeCounts(
+export async function readDashboardBadgeCounts(
   authQueue: Pick<AuthQueue, "listActive">,
   db: Db = getDb(),
-): DashboardBadgeCounts {
-  const auth = authQueue.listActive().filter((request) => {
+): Promise<DashboardBadgeCounts> {
+  const auth = (await authQueue.listActive()).filter((request) => {
     const status = request.status?.toLowerCase();
     return status === "pending" || status === "needs_rebase";
   }).length;
@@ -52,7 +52,7 @@ export function registerDashboardRoutes(
   authQueue: Pick<AuthQueue, "listActive">,
   db: Db = getDb(),
 ): void {
-  server.get("/api/dashboard/badges", (_req, res) => {
-    sendJson(res, 200, readDashboardBadgeCounts(authQueue, db));
+  server.get("/api/dashboard/badges", async (_req, res) => {
+    sendJson(res, 200, (await readDashboardBadgeCounts(authQueue, db)));
   }, { operation: { id: "get:/api/dashboard/badges", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

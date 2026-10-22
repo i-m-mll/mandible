@@ -68,7 +68,7 @@ export function registerAuthRoutes(
       db, runtimeEpoch: fallbackRuntimeEpoch,
     }), fallbackRuntimeEpoch,
   );
-  app.post("/api/auth/check", (req, res) => {
+  app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({
         error: "Git merge preflight is unavailable in a copied auth preview.",
@@ -81,7 +81,7 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth check payload." });
       return;
     }
-    const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(db, payload));
+    const report = (await authQueue.checkMergeIndependence(resolveAuthCheckPayload(db, payload)));
     res.status(200).json({ check: report });
   }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -149,7 +149,7 @@ export function registerAuthRoutes(
         if (!payload.base_branch && payload.cwd) {
           payload.base_branch = detectProtectedBranch(payload.cwd) ?? undefined;
         }
-        const resolved = resolveAuthMergeExecutionContext(db, payload);
+        const resolved = (await resolveAuthMergeExecutionContext(db, payload));
         payload.cwd = resolved.executionCwd;
         payload.target_repo_root = resolved.targetRepoRoot;
         payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
@@ -213,7 +213,7 @@ export function registerAuthRoutes(
     // without a target_repo_root can be explained after the fact instead of
     // looking like the submitter simply omitted it.
     const cwdRootProbe = authQueue.externalEffectsAllowed && payload.cwd
-      ? probeRepoRootFromGitCommonDir(payload.cwd)
+      ? (await probeRepoRootFromGitCommonDir(payload.cwd))
       : null;
     if (cwdRootProbe?.failure && cwdRootProbe.failure.kind !== "exit") {
       authRouteLog("warn", "auth_cwd_repo_root_probe_failed", {
@@ -278,7 +278,7 @@ export function registerAuthRoutes(
       payload.requester_evidence_method = requester.evidenceMethod;
       payload.requester_credential_id = requester.credentialId;
       payload.require_delivery_custody = isAuthMerge;
-      const request = authQueue.submit(payload, requester.userId);
+      const request = (await authQueue.submit(payload, requester.userId));
       res.status(201).json({
         request_id: request.id,
         files_changed: request.files_changed,
@@ -290,10 +290,10 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.get("/api/auth/request/:id", (req, res) => {
+  app.get("/api/auth/request/:id", async (req, res) => {
     // Issue f59b5bd — getRequest already resolves unambiguous short prefixes
     // (Bug: caa157e), so short-form deep links land here directly.
-    const request = authQueue.getRequest(req.params.id);
+    const request = (await authQueue.getRequest(req.params.id));
     if (!request) {
       // Bug: caa157e — distinguish ambiguous prefix from not-found
       const resolved = resolveId(db, "auth_request", req.params.id);
@@ -346,10 +346,10 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "get:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  app.post("/api/auth/request/:id/actions", (req, res) => {
+  app.post("/api/auth/request/:id/actions", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
@@ -361,10 +361,10 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.put("/api/auth/request/:id/actions/:actionId", (req, res) => {
+  app.put("/api/auth/request/:id/actions/:actionId", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
@@ -382,10 +382,10 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "put:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.delete("/api/auth/request/:id/actions/:actionId", (req, res) => {
+  app.delete("/api/auth/request/:id/actions/:actionId", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
@@ -397,14 +397,14 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "delete:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.post("/api/auth/request/:id/actions/:actionId/veto", (req, res) => {
+  app.post("/api/auth/request/:id/actions/:actionId/veto", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.vetoed !== "boolean") {
       res.status(400).json({ error: "vetoed boolean is required" });
       return;
     }
     try {
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
@@ -416,7 +416,7 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/actions/:actionId/veto", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.put("/api/auth/request/:id", (req, res) => {
+  app.put("/api/auth/request/:id", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     const result = parseAuthRequestUpdatePayload(body);
     if (!result.ok) {
@@ -424,7 +424,7 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) {
         const resolved = resolveId(db, "auth_request", req.params.id);
         if (!resolved.ok && resolved.error === "ambiguous") {
@@ -457,8 +457,8 @@ export function registerAuthRoutes(
           return;
         }
       }
-      const updated = authQueue.update(req.params.id, result.payload, control.actor,
-        numberField(body.expected_revision), numberField(body.expected_custody_generation));
+      const updated = (await authQueue.update(req.params.id, result.payload, control.actor,
+        numberField(body.expected_revision), numberField(body.expected_custody_generation)));
       res.status(200).json({ request_id: updated.id, ...updated });
     } catch (error) {
       if (isHttpError(error)) {
@@ -476,7 +476,7 @@ export function registerAuthRoutes(
     });
   }, { operation: { id: "delete:/api/auth/request/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/withdraw", (req, res) => {
+  app.post("/api/auth/request/:id/withdraw", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.reason !== "string" || !body.reason.trim()) {
       res.status(400).json({ error: "reason is required" });
@@ -490,38 +490,38 @@ export function registerAuthRoutes(
     try {
       const recovery = body.operator_recovery === true;
       if (recovery) requireOperator(db, req);
-      const current = authQueue.getRequest(req.params.id);
+      const current = (await authQueue.getRequest(req.params.id));
       if (!current) {
         res.status(404).json({ error: "Auth request not found." });
         return;
       }
       if (!enforceAuthProjectWrite(db, req, res, current.repo)) return;
-      const request = authQueue.withdraw(req.params.id, body.reason, {
+      const request = (await authQueue.withdraw(req.params.id, body.reason, {
         user_id: requester.userId,
         evidence_method: requester.evidenceMethod,
         credential_id: requester.credentialId,
         authority_path: recovery ? "operator_recovery" : "custodian",
-      }, numberField(body.expected_revision), numberField(body.expected_custody_generation));
+      }, numberField(body.expected_revision), numberField(body.expected_custody_generation)));
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { operation: { id: "post:/api/auth/request/:id/withdraw", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.post("/api/auth/request/:id/candidate-snapshot-repair/inspect", (req, res) => {
+  app.post("/api/auth/request/:id/candidate-snapshot-repair/inspect", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
       const control = authMutationControl(db, req, res, request, body, true);
       if (!control?.actor) return;
-      res.json(authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor));
+      res.json((await authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor)));
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/inspect", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.post("/api/auth/request/:id/candidate-snapshot-repair/apply", (req, res) => {
+  app.post("/api/auth/request/:id/candidate-snapshot-repair/apply", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
       const request = authQueue.getRequestReference(req.params.id);
@@ -533,7 +533,7 @@ export function registerAuthRoutes(
         res.status(400).json({ error: "expected_current_snapshot_sha256 is required." });
         return;
       }
-      const repaired = authQueue.repairPendingCandidateSnapshot(
+      const repaired = await authQueue.repairPendingCandidateSnapshot(
         request.id, control.actor, numberField(body.expected_revision) ?? NaN,
         numberField(body.expected_custody_generation) ?? NaN, expectedDigest,
       );
@@ -625,13 +625,13 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/replay-codex-archives", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.get("/api/auth/queue", (req, res) => {
+  app.get("/api/auth/queue", async (req, res) => {
     const query = req.query ?? {};
     // Bug: dd21c1e — optional ?type=X filter
     const typeFilter = typeof query.type === "string" && AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
       ? (query.type as AuthRequestType)
       : undefined;
-    let requests = authQueue.listActive();
+    let requests = (await authQueue.listActive());
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
@@ -702,7 +702,7 @@ export function registerAuthRoutes(
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/cancel-proof", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", (req, res) => {
+  app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const body = readBody<Record<string, unknown>>(req);
       const reason =
@@ -710,41 +710,41 @@ export function registerAuthRoutes(
           ? body.reason
           : undefined;
       const identity = req.client_identity!;
-      const request = authQueue.reject(req.params.id, reason, {
+      const request = (await authQueue.reject(req.params.id, reason, {
         user_id: identity.user_id,
         evidence_method: identity.method,
         credential_id: identity.credential_id,
-      });
+      }));
       res.json({ request_id: request.id, status: request.status, error: request.error });
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/reject", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/skip", (req, res) => {
+  app.post("/api/auth/request/:id/skip", async (req, res) => {
     try {
       if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = authQueue.skip(req.params.id);
+      const request = (await authQueue.skip(req.params.id));
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { operation: { id: "post:/api/auth/request/:id/skip", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/retry", (req, res) => {
+  app.post("/api/auth/request/:id/retry", async (req, res) => {
     try {
       if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = authQueue.retry(req.params.id);
+      const request = (await authQueue.retry(req.params.id));
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { operation: { id: "post:/api/auth/request/:id/retry", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/requeue", (req, res) => {
+  app.post("/api/auth/request/:id/requeue", async (req, res) => {
     try {
       if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = authQueue.requeue(req.params.id);
+      const request = (await authQueue.requeue(req.params.id));
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -758,7 +758,7 @@ export function registerAuthRoutes(
     });
   }, { operation: { id: "post:/api/auth/request/:id/dismiss", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/output", (req, res) => {
+  app.post("/api/auth/request/:id/output", async (req, res) => {
     if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.chunk !== "string") {
@@ -767,14 +767,14 @@ export function registerAuthRoutes(
     }
     try {
       // Issue 22ace1c — report the canonical id the append landed on.
-      const appended = authQueue.appendOutput(req.params.id, body.chunk);
+      const appended = (await authQueue.appendOutput(req.params.id, body.chunk));
       res.status(202).json({ request_id: appended.id, ok: true });
     } catch (error) {
       handleQueueError(error, res);
     }
   }, { operation: { id: "post:/api/auth/request/:id/output", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/result", (req, res) => {
+  app.post("/api/auth/request/:id/result", async (req, res) => {
     if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.exit_code !== "number" || typeof body.output !== "string") {
@@ -783,12 +783,12 @@ export function registerAuthRoutes(
     }
     const errorText = typeof body.error === "string" ? body.error : undefined;
     try {
-      const request = authQueue.setResult(
+      const request = (await authQueue.setResult(
         req.params.id,
         body.exit_code,
         body.output,
         errorText
-      );
+      ));
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -861,10 +861,10 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/clearances/:id/revoke", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/clearance/execute", (req, res) => {
+  app.post("/api/auth/request/:id/clearance/execute", async (req, res) => {
     try {
       const identity = req.client_identity;
-      const request = authQueue.getRequest(req.params.id);
+      const request = (await authQueue.getRequest(req.params.id));
       const custody = request?.custody_work_unit_id
         ? db.prepare(`
             SELECT wu.owner_user_id, wu.owner_credential_id, uc.status AS credential_status
@@ -884,7 +884,7 @@ export function registerAuthRoutes(
         res.status(403).json({ error: "Verified delivery-work-unit custodian does not match this auth request." });
         return;
       }
-      const executing = authQueue.approveWithClearance(request.id);
+      const executing = (await authQueue.approveWithClearance(request.id));
       res.status(202).json({ request_id: executing.id, status: executing.status, clearance_use_id: executing.clearance_use_id });
     } catch (error) {
       if (error instanceof AuthClearanceError) handleClearanceError(error, res);

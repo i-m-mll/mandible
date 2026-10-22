@@ -41,7 +41,7 @@ describe("auth queue", () => {
       let executionStarted: () => void;
       const started = new Promise<void>(resolve => { executionStarted = resolve; });
       queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async () => { executionStarted(); return new Promise<never>(() => {}); } });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/atomic-recovery --into main",
         title: "Atomic recovery",
@@ -50,7 +50,7 @@ describe("auth queue", () => {
         head_branch: "feature/atomic-recovery",
         merge_head_sha: git(repo, ["rev-parse", "feature/atomic-recovery"]),
         cwd: repo,
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
       await started;
       const pinned = request;
@@ -91,14 +91,14 @@ describe("auth queue", () => {
       if (blockSync) writeFile(repo, "atomic.txt", "local collision\n");
       const order: string[] = [];
       const follower = _phase === "after CAS"
-        ? queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+        ? (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
             command: "echo same-repo follower",
             title: "Same-repo follower",
             cwd: repo,
             target_repo_root: repo,
-          })
+          }))
         : null;
-      queue.dispose();
+      (await queue.dispose());
 
       queue = new AuthQueue({
         db,
@@ -128,8 +128,8 @@ describe("auth queue", () => {
         now: () => 10 * 60 * 1000,
       });
       if (blockSync) {
-        const blocked = await waitUntil(() => {
-          const current = queue.getRequest(request.id)!;
+        const blocked = await waitUntil(async () => {
+          const current = (await queue.getRequest(request.id))!;
           return current.error?.includes("needs recovery") ? current : undefined;
         }, "the collision to be reported as needing recovery");
         expect(blocked.status).toBe("executing");
@@ -159,7 +159,7 @@ describe("auth queue", () => {
         signer_user_id: signing.operatorId,
       });
     } finally {
-      queue?.dispose();
+      (await queue?.dispose());
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
@@ -174,11 +174,11 @@ describe("auth queue", () => {
       try {
         commitOnBranch(repo, "feature/interrupted", { "interrupted.txt": "land me\n" });
         queue = new AuthQueue({ db, now: () => 0, backgroundMaintenance: false });
-        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/interrupted --into main",
+        const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/interrupted --into main",
           title: "Legacy interrupted merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/interrupted",
           merge_head_sha: git(repo, ["rev-parse", "feature/interrupted"]), cwd: repo,
-          target_repo_root: otherRepo ?? repo, execution_mode: "remote" });
-        seedHistoricalAuthExecution(queue, request.id);
+          target_repo_root: otherRepo ?? repo, execution_mode: "remote" }));
+        (await seedHistoricalAuthExecution(queue, request.id));
         git(repo, ["merge", "--no-ff", "--no-commit", "feature/interrupted"]);
         if (kind === "untracked" || kind === "staged") {
           writeFile(repo, "unrelated.txt", "preserve me\n");
@@ -188,7 +188,7 @@ describe("auth queue", () => {
         const tree = git(repo, ["write-tree"]);
         const base = git(repo, ["rev-parse", "main"]);
         const otherState = otherRepo ? git(otherRepo, ["status", "--porcelain"]) : null;
-        queue.dispose();
+        (await queue.dispose());
         queue = new AuthQueue({ db, now: () => 6 * 60 * 1000 });
         const recovered = await waitForStatus(queue, request.id, "completed");
         expect(recovered.exit_code).toBe(1);
@@ -200,7 +200,7 @@ describe("auth queue", () => {
         expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
         if (otherRepo) expect(git(otherRepo, ["status", "--porcelain"])).toBe(otherState);
       } finally {
-        queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true });
+        (await queue?.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true });
         if (otherRepo) fs.rmSync(otherRepo, { recursive: true, force: true });
       }
     });
@@ -218,13 +218,13 @@ describe("auth queue", () => {
       queue = new AuthQueue({ db, now: () => now, executor: async () => {
         markStarted(); return new Promise<never>(() => {});
       } });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/long-running --into main",
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/long-running --into main",
         title: "Long-running merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/long-running",
-        merge_head_sha: git(repo, ["rev-parse", "feature/long-running"]), cwd: repo });
+        merge_head_sha: git(repo, ["rev-parse", "feature/long-running"]), cwd: repo }));
       await approveFixtureRequest(queue, request.id); await started;
-      now = 11 * 60 * 1000; queue.expireStale();
-      expect(queue.getRequest(request.id)).toMatchObject({ status: "executing", exit_code: null, error: null });
+      now = 11 * 60 * 1000; (await queue.expireStale());
+      expect((await queue.getRequest(request.id))).toMatchObject({ status: "executing", exit_code: null, error: null });
       expect(git(repo, ["status", "--porcelain"])).toBe("");
-    } finally { queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    } finally { (await queue?.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 });

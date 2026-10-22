@@ -113,7 +113,7 @@ export class AuthClearanceManager {
       throw new AuthClearanceError("operator_required", "Only the configured active operator can issue a clearance.");
     }
     const request = input.requestId ? this.readRequest(input.requestId) : null;
-    if (request) this.assertIssuableRequest(request);
+    if (request) (await this.assertIssuableRequest(request));
     const project = request
       ? this.resolveRequestProject(request)
       : this.resolveExplicitProject(input.project);
@@ -229,11 +229,15 @@ export class AuthClearanceManager {
     return this.show(clearance.id);
   }
 
-  consume(
+  async consume(
     requestId: string,
-    transition: (input: ClearanceConsumption) => void,
-  ): ClearanceConsumption {
+    transition: (input: ClearanceConsumption) => undefined,
+    observeBeforeCommit?: () => Promise<void>,
+  ): Promise<ClearanceConsumption> {
     const initialRequest = this.readRequest(requestId);
+    const observed = canonicalJson(requestSnapshot(initialRequest));
+    await this.assertConsumableRequest(initialRequest);
+    await observeBeforeCommit?.();
     const initialMatches = this.matchingClearances(initialRequest, this.now());
     if (initialMatches.length !== 1) {
       throw new AuthClearanceError(
@@ -254,6 +258,7 @@ export class AuthClearanceManager {
     }
     const run = this.db.transaction(() => {
       const request = this.readRequest(requestId);
+      if (canonicalJson(requestSnapshot(request)) !== observed) throw new AuthClearanceError("runtime_invalidated", "Request changed during clearance observation.");
       const now = this.now();
       const matches = this.matchingClearances(request, now);
       if (matches.length !== 1) {
@@ -355,7 +360,7 @@ export class AuthClearanceManager {
   }
 
   private matchingClearances(request: AuthRequest, now: number): AuthClearance[] {
-    this.assertConsumableRequest(request);
+    this.assertConsumableShape(request);
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active") return [];
     const project = this.resolveRequestProject(request);
@@ -405,12 +410,18 @@ export class AuthClearanceManager {
     );
   }
 
-  private assertIssuableRequest(request: AuthRequest): void {
-    this.assertConsumableRequest(request);
-    resolveAuthMergeExecutionContext(this.db, request);
+  private async assertIssuableRequest(request: AuthRequest): Promise<void> {
+    (await this.assertConsumableRequest(request));
+    (await resolveAuthMergeExecutionContext(this.db, request));
   }
 
-  private assertConsumableRequest(request: AuthRequest): void {
+  private async assertConsumableRequest(request: AuthRequest): Promise<void> {
+    this.assertConsumableShape(request);
+    const context = await resolveAuthMergeExecutionContext(this.db, request);
+    if (request.merge_head_sha && context.headSha !== request.merge_head_sha || request.merge_preflight_base_sha && context.baseSha !== request.merge_preflight_base_sha) throw new AuthClearanceError("runtime_invalidated", "Reviewed merge revisions changed during clearance observation.");
+  }
+
+  private assertConsumableShape(request: AuthRequest): void {
     if (request.status !== "pending" || request.type !== "merge" || request.execution_mode !== "daemon"
         || !isAuthMergeCommand(request)) {
       throw new AuthClearanceError(
@@ -425,7 +436,6 @@ export class AuthClearanceManager {
         "Clearance requires requester provenance from an active durable API-token credential.",
       );
     }
-    resolveAuthMergeExecutionContext(this.db, request);
   }
 
   private resolveExplicitProject(ref: string | null | undefined) {
@@ -537,4 +547,3 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   }
   return resolved;
 }
-

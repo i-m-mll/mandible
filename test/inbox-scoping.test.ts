@@ -630,7 +630,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
 
       expect(response.statusCode).toBe(201);
       const requestId = (response.body as { request_id: string }).request_id;
-      const request = queue.getRequest(requestId);
+      const request = (await queue.getRequest(requestId));
       expect(request?.files_changed).toBe(1);
       expect(request?.additions).toBe(1);
       expect(request?.deletions).toBe(0);

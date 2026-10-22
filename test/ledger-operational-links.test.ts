@@ -102,7 +102,7 @@ function insertAuthRequest(input: {
 }
 
 describe("ledger operational links", () => {
-  it("records one request-scoped merge success fact without issue links and on retry", () => {
+  it("records one request-scoped merge success fact without issue links and on retry", async () => {
     const project = createProject("unlinked");
     insertAuthRequest({ id: "auth_unlinked", repo: project.checkout.root });
     db.prepare(
@@ -117,8 +117,8 @@ describe("ledger operational links", () => {
       auth_request_id: "auth_unlinked",
       repo_ref: project.checkout.root,
     };
-    recordAuthRequestMergeSucceededFact(db, input.auth_request_id);
-    recordAuthRequestMergeSucceededFact(db, input.auth_request_id);
+    (await recordAuthRequestMergeSucceededFact(db, input.auth_request_id));
+    (await recordAuthRequestMergeSucceededFact(db, input.auth_request_id));
 
     expect(db.prepare(
       `SELECT auth_request_id, project_id, base_branch, completed_at, canonical_message
@@ -140,7 +140,7 @@ describe("ledger operational links", () => {
     ).get("auth_unlinked")).toEqual({ count: 1 });
   });
 
-  it("keeps one merge success fact while preserving per-linked-issue completion events", () => {
+  it("keeps one merge success fact while preserving per-linked-issue completion events", async () => {
     const project = createProject("multi-linked");
     const first = createIssue(project.project.id, "first11");
     const second = createIssue(project.project.id, "second2");
@@ -156,7 +156,7 @@ describe("ledger operational links", () => {
         WHERE id = ?`,
     ).run("auth_multi");
 
-    recordAuthRequestMergeSucceededFact(db, "auth_multi");
+    (await recordAuthRequestMergeSucceededFact(db, "auth_multi"));
     applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_multi",
       repo_ref: project.checkout.root,

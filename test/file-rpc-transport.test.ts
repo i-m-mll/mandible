@@ -44,7 +44,7 @@ it("denies the production approval route over file RPC before request lookup", a
     expect(JSON.parse(fs.readFileSync(path.join(tempDir, "denied.response.json"), "utf8")))
       .toMatchObject({ status: 403 });
   } finally {
-    queue.dispose();
+    (await queue.dispose());
     db.close();
   }
 });

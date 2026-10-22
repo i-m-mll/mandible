@@ -72,7 +72,7 @@ async function submitSuccessfulRequest(
   const repo = createAuthCheckRepo();
   registerWorkRepo((queue as unknown as { db: Db }).db, repo);
   commitOnBranch(repo, "feature/x", { "finalizer.txt": "reviewed\n" });
-  const request = queue.submit({ ...(type === "merge" ? AUTH_MERGE_REVIEW : AUTH_COMMAND_REVIEW),
+  const request = (await queue.submit({ ...(type === "merge" ? AUTH_MERGE_REVIEW : AUTH_COMMAND_REVIEW),
     type,
     command: type === "merge" ? "mandible auth merge feature/x --into main" : "mandible auth commit",
     title: "Finalizer test",
@@ -83,7 +83,7 @@ async function submitSuccessfulRequest(
     merge_head_sha: git(repo, ["rev-parse", "feature/x"]),
     issue_closures: options.issue_closures,
     execution_mode: "daemon",
-  });
+  }));
   await approvePausedFixtureRequest(queue, request.id);
   return request.id;
 }
@@ -155,7 +155,7 @@ describe("staged finalizer lifecycle", () => {
       expect(directStateAtResolved).toBe("resolved");
       expect(eventsFor(events, id, "auth:resolved")).toHaveLength(1);
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
-      expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
+      expect((await queue.getRequest(id))?.merge_finalized_at).toBeNull();
 
       releaseArchive();
       await queue.drainFinalizers();
@@ -166,14 +166,14 @@ describe("staged finalizer lifecycle", () => {
       // At-least-once: the event fires before the durable marker, so a crash
       // between them re-emits rather than drops it.
       expect(markerAtFinalized).toBeNull();
-      const persisted = queue.getRequest(id)?.merge_finalized_at;
+      const persisted = (await queue.getRequest(id))?.merge_finalized_at;
       expect(persisted).not.toBeNull();
       expect(eventsFor(events, id, "auth:finalized")[0].data).toMatchObject({
         merge_finalized_at: persisted,
         archived_thread_count: 1,
       });
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -191,7 +191,7 @@ describe("staged finalizer lifecycle", () => {
       expect(eventsFor(events, id, "auth:resolved")).toHaveLength(1);
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(1);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -214,16 +214,16 @@ describe("staged finalizer lifecycle", () => {
 
       await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
-      expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
+      expect((await queue.getRequest(id))?.merge_finalized_at).toBeNull();
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
 
       sweep(queue);
       await queue.drainFinalizers();
-      expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
+      expect((await queue.getRequest(id))?.merge_finalized_at).toBeNull();
       sweep(queue);
       await queue.drainFinalizers();
 
-      const finalizedRow = queue.getRequest(id);
+      const finalizedRow = (await queue.getRequest(id));
       expect(finalizedRow?.merge_finalized_at).not.toBeNull();
       expect(JSON.parse(finalizedRow?.merge_finalizer_state ?? "{}").archive_worker_threads)
         .toMatchObject({ state: "failed", attempts: 3 });
@@ -234,7 +234,7 @@ describe("staged finalizer lifecycle", () => {
       expect(finalized.steps.find((step) => step.name === "archive_worker_threads"))
         .toMatchObject({ state: "failed" });
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -247,7 +247,7 @@ describe("staged finalizer lifecycle", () => {
     const id = await submitSuccessfulRequest(first);
     await completeFixturePublication(first, id);
     await first.drainFinalizers();
-    first.dispose();
+    (await first.dispose());
     db.prepare("UPDATE auth_requests SET merge_finalized_at = NULL, merge_finalizer_state = ? WHERE id = ?").run(
       JSON.stringify({
         revalidate_pending: { state: "done", attempts: 1, at: 0 },
@@ -267,17 +267,17 @@ describe("staged finalizer lifecycle", () => {
       codexThreadArchiver: recordingArchiver(archived),
     });
     try {
-      await waitUntil(() => recovered.getRequest(id)?.merge_finalized_at, "the startup sweep to finalize");
+      await waitUntil(async () => (await recovered.getRequest(id))?.merge_finalized_at, "the startup sweep to finalize");
       await recovered.drainFinalizers();
       expect(archived).toEqual(["thread-crash"]);
-      expect(JSON.parse(recovered.getRequest(id)?.merge_finalizer_state ?? "{}").archive_worker_threads.state)
+      expect(JSON.parse((await recovered.getRequest(id))?.merge_finalizer_state ?? "{}").archive_worker_threads.state)
         .toBe("done");
       expect(eventsFor(events, id, "auth:finalized")[0].data).toMatchObject({
         resolved_work_unit_ids: ["wu-x", "wu-y"],
         archived_thread_count: 1,
       });
     } finally {
-      recovered.dispose();
+      (await recovered.dispose());
       db.close();
     }
   });
@@ -304,7 +304,7 @@ describe("staged finalizer lifecycle", () => {
       expect(processed).toHaveLength(40);
       expect(new Set(processed).size).toBe(40);
     } finally {
-      owner.dispose();
+      (await owner.dispose());
       db.close();
     }
   });
@@ -495,7 +495,7 @@ describe("work-unit resolution on merge", () => {
       ).run(path.basename(repo));
 
       const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000, backgroundMaintenance: false });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge integration/bf-batch --into main",
         title: "Merge integration",
@@ -505,7 +505,7 @@ describe("work-unit resolution on merge", () => {
         head_branch: "integration/bf-batch",
         merge_head_sha: git(repo, ["rev-parse", "integration/bf-batch"]),
         execution_mode: "daemon",
-      });
+      }));
 
       // A nonexistent target makes the batch build fail: a transient git
       // failure must not cost the stale row its scan eligibility.
@@ -513,10 +513,10 @@ describe("work-unit resolution on merge", () => {
       expect(db.prepare("SELECT merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'").get())
         .toEqual({ merge_scan_retired_at: null });
 
-      await resolveAncestry(queue, queue.getRequest(request.id));
+      await resolveAncestry(queue, (await queue.getRequest(request.id)));
       expect(db.prepare("SELECT state, merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'").get())
         .toEqual({ state: "abandoned", merge_scan_retired_at: now });
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
     }
@@ -548,7 +548,7 @@ describe("work-unit resolution on merge", () => {
       expect(db.prepare("SELECT state, auth_request_id FROM work_units WHERE id = 'wu-same-issue-old-branch'").get())
         .toEqual({ state: "abandoned", auth_request_id: null });
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
@@ -559,7 +559,7 @@ describe("work-unit resolution on merge", () => {
     const repo = createAuthCheckRepo();
     commitOnBranch(repo, "integration/reused", { "first.txt": "first\n" });
     registerWorkRepo(db, repo);
-    const submitWave = (queue: AuthQueue, title: string) => queue.submit({ ...AUTH_MERGE_REVIEW,
+    const submitWave = async (queue: AuthQueue, title: string) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
       type: "merge",
       command: "mandible auth merge integration/reused --into main",
       title,
@@ -569,9 +569,9 @@ describe("work-unit resolution on merge", () => {
       head_branch: "integration/reused",
       merge_head_sha: git(repo, ["rev-parse", "integration/reused"]),
       execution_mode: "daemon",
-    });
+    }));
     const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
-    const completed = submitWave(queue, "First wave");
+    const completed = (await submitWave(queue, "First wave"));
     await approveFixtureRequest(queue, completed.id);
     await waitForStatus(queue, completed.id, "completed");
     await queue.drainFinalizers();
@@ -584,16 +584,16 @@ describe("work-unit resolution on merge", () => {
     git(repo, ["checkout", "main"]);
     now = 2000;
     const secondQueue = new AuthQueue({ db, now: () => now });
-    const pending = submitWave(secondQueue, "Second wave");
-    secondQueue.dispose();
+    const pending = (await submitWave(secondQueue, "Second wave"));
+    (await secondQueue.dispose());
 
     now = 3000;
     const restarted = new AuthQueue({ db, now: () => now });
     try {
-      expect(restarted.getRequest(completed.id)?.merge_finalized_at).toBe(1000);
-      expect(restarted.getRequest(pending.id)).toMatchObject({ status: "pending", error: null });
+      expect((await restarted.getRequest(completed.id))?.merge_finalized_at).toBe(1000);
+      expect((await restarted.getRequest(pending.id))).toMatchObject({ status: "pending", error: null });
     } finally {
-      restarted.dispose();
+      (await restarted.dispose());
       db.close();
     }
   });
@@ -621,11 +621,11 @@ describe("work-unit resolution on merge", () => {
       const queue = new AuthQueue({ db, now: () => 2000 });
       try {
         await queue.drainFinalizers();
-        expect(queue.getRequest("history")).toMatchObject({ status: "completed", merge_finalized_at: null });
-        expect(queue.getRequest("pending"))
+        expect((await queue.getRequest("history"))).toMatchObject({ status: "completed", merge_finalized_at: null });
+        expect((await queue.getRequest("pending")))
           .toMatchObject({ status: "pending", error: null, superseded_by_request_id: null });
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
       }
     },
@@ -741,7 +741,7 @@ describe("worker thread archival", () => {
       });
       expect(archived).toEqual(["thread-explicit"]);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });
