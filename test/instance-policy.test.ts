@@ -5,6 +5,7 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
+import { isPersistentIabPreviewBranch } from "../src/auth-preview-policy.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { authorizeEffects, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
 import { openDb } from "../src/db.js";
@@ -321,5 +322,16 @@ describe("instance effect policy", () => {
       expect(operationForRequest("POST", pathname)).toMatchObject({ effects: ["process:external"] });
       expect(authorizeEffects(preview(), { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", pathname))).toMatchObject({ allowed: false });
     }
+  });
+});
+
+describe("persistent IAB preview delivery policy", () => {
+  it("holds back only the launcher-owned preview branches from delivery", () => {
+    expect([
+      "integration/mandible-iab-preview-20260904-72cb587",
+      "integration/mandible-iab-preview-20260904-72cb587-2",
+      "integration/865a1f3-delivery",
+      "feature/sidebar-fix",
+    ].map(isPersistentIabPreviewBranch)).toEqual([true, true, false, false]);
   });
 });
