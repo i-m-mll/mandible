@@ -68,10 +68,10 @@ type OccurrenceRow = {
 
 export function resolveManagedReminderProject(db: Db, ref: string): { id: string; project_key: string } {
   const resolved = resolveProjectRef(db, ref);
-  if (resolved.ambiguous) {
+  if ((!resolved.ok && resolved.reason === "ambiguous")) {
     throw new ManagedReminderError(`project reference '${ref}' is ambiguous`, 409, "ambiguous_project");
   }
-  if (!resolved.ok || !resolved.project) {
+  if (!resolved.ok) {
     throw new ManagedReminderError(`project not found: ${ref}`, 404, "project_not_found");
   }
   return { id: resolved.project.id, project_key: resolved.project.project_key };

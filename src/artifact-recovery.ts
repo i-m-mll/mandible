@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { canonicalJson } from "./canonical-json.js";
 import { artifactDescriptiveMetadata } from "./artifact-metadata.js";
-import { readCommittedArtifactFiles } from "./artifact-repo-resolution.js";
+import { readCommittedArtifactFiles } from "./artifact-commit-source.js";
 import type { Db } from "./db.js";
 
 /**

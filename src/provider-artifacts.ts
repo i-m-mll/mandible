@@ -11,9 +11,7 @@ import { columnExists, tableExists } from "./db-introspection.js";
 import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
   readCommittedArtifactFiles, retainArtifactCommit, type CommittedArtifactFile,
-  resolveCanonicalArtifactRepoForRoot,
-  resolveCanonicalArtifactRepoRef,
-} from "./artifact-repo-resolution.js";
+} from "./artifact-commit-source.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 import {
@@ -650,17 +648,17 @@ function normalizeRef(ref: string, options: { db?: Db; validateRepo?: boolean } 
     const inputRepoId = repoMatch[1];
     const refName = repoMatch[2];
     const repoPath = repoMatch[3].replace(/^\/+/, "");
-    const resolution = options.db ? resolveCanonicalArtifactRepoRef(options.db, inputRepoId) : null;
+    const resolution = options.db ? resolveProjectRef(options.db, inputRepoId) : null;
     if (resolution && !resolution.ok && options.validateRepo) {
       return {
         scheme: "repo",
         alias,
         normalizedRef: alias,
         locator: { repo_id: inputRepoId, ref: refName ?? null, path: repoPath },
-        invalidReason: resolution.reason,
+        invalidReason: resolution.reason === "ambiguous" ? "ambiguous_repo" : "unknown_repo",
       };
     }
-    const repoId = resolution?.ok ? resolution.project_key : inputRepoId;
+    const repoId = resolution?.ok ? resolution.project.project_key : inputRepoId;
     return {
       scheme: "repo",
       alias,
@@ -956,25 +954,8 @@ function splitProviderIssueRef(rawRef: string): { projectRef?: string; issueRef:
 }
 
 function projectIdForRef(db: Db, projectRef: string | undefined): string | null {
-  const ref = projectRef?.trim();
-  if (!ref || !tableExists(db, "ledger_projects")) return null;
-  const hasProjectKey = columnExists(db, "ledger_projects", "project_key");
-  const projectKeyPredicate = hasProjectKey ? "OR lower(project_key) = lower(@ref)" : "";
-  const checkoutPredicate = tableExists(db, "ledger_project_checkouts")
-    ? `UNION
-       SELECT project_id AS id FROM ledger_project_checkouts
-        WHERE lower(name) = lower(@ref) OR work_repo_id = @ref OR root = @ref`
-    : "";
-  const rows = db.prepare(
-    `SELECT id FROM ledger_projects
-      WHERE lower(display_name) = lower(@ref)
-         ${projectKeyPredicate}
-         OR id = @ref
-         OR remote_identity = @ref
-     ${checkoutPredicate}`
-  ).all({ ref }) as Array<{ id: string }>;
-  const ids = Array.from(new Set(rows.map((row) => row.id)));
-  return ids.length === 1 ? ids[0] : null;
+  const resolved = resolveProjectRef(db, projectRef);
+  return resolved.ok ? resolved.project.id : null;
 }
 
 function issueMatches(db: Db, issueRef: string, projectId: string | null): string[] {
@@ -1680,8 +1661,8 @@ function runGit(cwd: string, args: string[]): string | null {
 
 function repoInfoForRoot(db: Db, root: string, observedRoot?: string): { repo_id: string | null; name: string | null } {
   const realRoot = path.resolve(root);
-  const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot, observedRoot);
-  if (canonical.ok) return { repo_id: canonical.project_key, name: canonical.checkout_name };
+  const canonical = resolveProjectRef(db, realRoot, { observedPath: observedRoot });
+  if (canonical.ok) return { repo_id: canonical.project.project_key, name: canonical.checkout?.name ?? null };
   return { repo_id: null, name: null };
 }
 
@@ -4484,8 +4465,8 @@ export function associateProjectArtifact(
     throw new Error("project_artifact_associations table is not present in this database");
   }
   const project = resolveProjectRef(db, input.project_ref);
-  if (!project.ok || !project.project) {
-    throw new Error(project.ambiguous ? `ambiguous project ref: ${input.project_ref}` : `project not found: ${input.project_ref}`);
+  if (!project.ok) {
+    throw new Error((!project.ok && project.reason === "ambiguous") ? `ambiguous project ref: ${input.project_ref}` : `project not found: ${input.project_ref}`);
   }
   const projectId = project.project.id;
   const target = resolveAssociationTarget(db, input);
@@ -4565,7 +4546,7 @@ export function listProjectArtifactAssociations(
   const bindings: Record<string, unknown> = {};
   if (asString(options.projectRef)) {
     const project = resolveProjectRef(db, options.projectRef!);
-    if (!project.ok || !project.project) return [];
+    if (!project.ok) return [];
     bindings.projectId = project.project.id;
     where.push("project_id = @projectId");
   }
@@ -5095,13 +5076,13 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       if (input.source && sourceKey(input.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Declared source differs from committed source');
     } else if (local) {
       const git = local.git_state;
-      const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path), path.dirname(local.input_path));
-      if (repo && !repo.ok && repo.reason === 'ambiguous_repo') return artifactFailure('invalid_source', 'Repository is ambiguous');
-      if (repo.ok && (git.relative_path || repo.checkout_root)) {
-        projectId = repo.project_id;
-        repoId = repo.project_key;
+      const repo = resolveProjectRef(db, path.resolve(git.repo_root ?? path.dirname(local.resolved_path)), { observedPath: path.dirname(local.input_path) });
+      if (!repo.ok && repo.reason === 'ambiguous') return artifactFailure('invalid_source', 'Repository is ambiguous');
+      if (repo.ok && (git.relative_path || repo.checkout)) {
+        projectId = repo.project.id;
+        repoId = repo.project.project_key;
         repoPath = repo.matched_by === 'checkout_ancestry' || !git.relative_path
-          ? path.relative(safeRealpathSync(repo.checkout_root!), local.resolved_path).split(path.sep).join('/')
+          ? path.relative(safeRealpathSync(repo.checkout!.root), local.resolved_path).split(path.sep).join('/')
           : git.relative_path;
         source = { kind: 'repo', project_id: projectId, path: repoPath };
         seriesKey ??= `repo:${repoId}:${repoPath}`;
@@ -5154,9 +5135,9 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     let ownerProject: string | null = null;
     for (const ref of [input.repo_id, input.project]) {
       if (!ref) continue;
-      const owner = resolveCanonicalArtifactRepoRef(db, ref);
+      const owner = resolveProjectRef(db, ref);
       if (!owner.ok) return artifactFailure('invalid_source', `Artifact project ${ref} is unknown or ambiguous`);
-      ownerProject = owner.project_id;
+      ownerProject = owner.project.id;
     }
     // A selected project names the artifact's project; a repository file's project is its repository.
     if (input.project && source.kind === 'repo' && source.project_id !== ownerProject) return artifactFailure('source_mismatch', 'Selected project differs from source repository');
@@ -5769,14 +5750,14 @@ function artifactBlobFromRow(row: Record<string, unknown>): ArtifactBlobRecord {
 
 function artifactIdentityFromRow(db: Db, row: Record<string, unknown>): ArtifactIdentityRecord {
   const current = getArtifactCurrentSource(db, String(row.id));
-  const repo = current?.source?.kind === "repo" ? resolveCanonicalArtifactRepoRef(db, current.source.project_id) : null;
+  const repo = current?.source?.kind === "repo" ? resolveProjectRef(db, current.source.project_id) : null;
   return {
     id: String(row.id),
     identity_key: String(row.identity_key),
     source_kind: asArtifactIdentitySourceKind(row.source_kind),
     title: nullableString(row.title),
     source_project_id: nullableString(row.source_project_id),
-    source_repo_id: repo?.ok ? repo.project_key : null,
+    source_repo_id: repo?.ok ? repo.project.project_key : null,
     logical_name: nullableString(row.logical_name),
     source_path: current?.source && current.source.kind !== "managed" ? current.source.path : null,
     latest_version_id: nullableString(row.latest_version_id),

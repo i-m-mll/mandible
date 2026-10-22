@@ -831,7 +831,7 @@ export class AuthQueue {
   /** Where and as whom the run executes; a missing project or custody fails the run with the reason. */
   private acceptanceInput(request: AuthRequest, pinSha: string): Omit<CandidateAcceptanceInput, "signal"> {
     const project = request.repo ? resolveProjectRef(this.db, request.repo) : null;
-    if (!project?.ok || !project.project || project.ambiguous) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
+    if (!project?.ok) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
     if (!request.custody_work_unit_id) throw new Error("The request has no delivery work unit in custody.");
     const home = getUserHome();
     const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
@@ -2029,7 +2029,7 @@ export class AuthQueue {
       throw new AuthQueueError("custody_required", "Merge submission requires canonical project and head branch identity.");
     }
     const project = resolveProjectRef(this.db, payload.repo);
-    if (!project.ok || !project.project || project.ambiguous) {
+    if (!project.ok) {
       throw new AuthQueueError("custody_required", "Merge project does not resolve uniquely in the project registry.");
     }
     const issueIds = new Set<string>();
@@ -2042,7 +2042,7 @@ export class AuthQueue {
        WHERE state = 'committed' AND resolved_at IS NULL AND branch = ? AND auth_request_id IS NULL`,
     ).all(payload.head_branch) as WorkUnitCustody[]).filter((row) => {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
-      return wuProject.ok && wuProject.project && !wuProject.ambiguous && wuProject.project.id === project.project!.id;
+      return wuProject.ok && wuProject.project.id === project.project!.id;
     });
     const owned = onBranch.filter((row) => row.owner_user_id === actor.user_id && row.owner_credential_id === actor.credential_id);
     const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));

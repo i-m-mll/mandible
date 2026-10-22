@@ -67,6 +67,10 @@ cmd_show() {
   binding=$(mandible_bind_arguments "project.show" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax project.show)" 2
+  # The daemon resolves only absolute paths, so a relative path ref is made absolute here.
+  if [[ "$ref" == "." || "$ref" == ".." || "$ref" == ./* || "$ref" == ../* ]]; then
+    ref=$(cd "$ref" && pwd -P) || die "No such directory: $ref" 2
+  fi
   require_tools
   local tmp_response status_code response
   tmp_response=$(mktemp)

@@ -400,7 +400,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       requireSelfOrOperator(db, req, user.id);
       const projectRef = req.query.project;
       const project = resolveProjectRef(db, projectRef ?? "");
-      if (!project.ok || !project.project || project.ambiguous) {
+      if (!project.ok) {
         throw new UserRegistryError("not_found", `No project matches '${projectRef ?? ""}'.`);
       }
       const identity = {

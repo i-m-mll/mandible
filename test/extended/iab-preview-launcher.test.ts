@@ -1212,7 +1212,7 @@ describe("iab-preview launcher", () => {
     const review = `# Policy\n\n:::spec-item{key="wording" type="text_variant" required="true"}\n::alternative[One]{key="one"}\nOne.\n::alternative[Two]{key="two"}\nTwo.\n:::`;
     fs.writeFileSync(reviewPath, review); git(["add", "AGENTS.review.md"], repo); git(["commit", "-m", "review"], repo);
     const db = openDb(fixture.db);
-    const projectId = insertRawLedgerProject(db, { name: "review-fixture" });
+    const projectId = insertRawLedgerProject(db, { name: "review-fixture", projectKey: "review-fixture" });
     insertRawLedgerCheckout(db, { projectId, name: "review-fixture", root: fs.realpathSync(repo), conflict: "replace" });
     const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
     setSetting(db, "user.operator_id", operator.id);
@@ -1723,7 +1723,7 @@ describe("iab-preview launcher", () => {
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("dry-run");
-    expect(payload.mode).toBe("current-integration");
+    expect(payload.mode).toBe("current-worktree");
   });
 
   it("requires explicit retirement of the exact legacy preview instead of allocating another origin", async () => {
@@ -1876,7 +1876,7 @@ describe("iab-preview launcher", () => {
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("dry-run");
-    expect(payload.mode).toBe("current-integration");
+    expect(payload.mode).toBe("current-worktree");
     expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
   });
 
@@ -1930,7 +1930,7 @@ describe("iab-preview launcher", () => {
     });
     expect(JSON.parse(reuse.stdout)).toMatchObject({
       status: "dry-run",
-      mode: "current-integration",
+      mode: "current-worktree",
     });
 
     const cleanup = await execFileAsync(process.execPath, [
