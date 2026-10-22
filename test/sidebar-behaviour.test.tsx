@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Shared sidebar behaviour: a reorder never loses hidden or new rows, the
 // durable order preference survives rejected, concurrent and stale writes, and
 // keyboard and Command-F ownership stays with the control the user is in.

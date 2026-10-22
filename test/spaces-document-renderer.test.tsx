@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render, screen, cleanup } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

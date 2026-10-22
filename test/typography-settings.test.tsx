@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { MAIN_CLI_INSTANCE_RESPONSE } from './helpers/cli-instance-response';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';

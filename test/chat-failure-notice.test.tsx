@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { cleanup, fireEvent, screen } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';

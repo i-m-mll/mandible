@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Add-to-Space affordance tests (umbrella de56ffa, child 08c312a).
 //
 // Covers the shared AddToSpace picker (issue/artifact/graph surfaces) and the

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 2cddba2 — a deep-link (`#/auth?request=<id>`) to a resolved/archived
 // request outside the loaded queue/history lists must fetch the request from

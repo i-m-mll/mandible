@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { BRIEFING_EVENT_VALUES } from '../src/contracts';
 import { queryClient } from '../ui/src/query/client';

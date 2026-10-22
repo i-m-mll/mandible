@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Issue cda478c, umbrella 96c5090 — an umbrella's children are `parent_child`
  * relationship edges and nothing else, so the issue detail pane is where a

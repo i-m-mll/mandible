@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 

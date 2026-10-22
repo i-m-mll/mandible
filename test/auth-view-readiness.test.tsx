@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval

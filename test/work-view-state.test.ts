@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 import { render, mainInstance } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act } from './helpers/dom.js';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitUntilPasses } from './helpers/wait-until.js';
 import { acquireSharedSse, __resetSharedSseForTests } from '../ui/src/sse-shared';

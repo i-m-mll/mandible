@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, within } from './helpers/dom.js';
 import { useState } from 'preact/hooks';

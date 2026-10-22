@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { createHash } from 'node:crypto';
 import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { useState } from 'preact/hooks';

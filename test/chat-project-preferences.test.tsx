@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitUntilPasses } from './helpers/wait-until.js';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { renderInlineMarkdown, renderMarkdown } from '../ui/src/lib/markdown';
 import { renderUnifiedDiffFallbackHtml } from '../ui/src/components/DiffView';

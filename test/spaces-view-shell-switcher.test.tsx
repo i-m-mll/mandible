@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // An explicit legacy renderer link still mounts that renderer, and the user can
 // navigate back to the Space's primary type.
 import { screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';

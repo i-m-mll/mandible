@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // SpaceCanvas keeps a user's drag and selection against stale, out-of-order and
 // foreign-space reconciliation input. React Flow is mocked with a deterministic
 // harness so the `onNodesChange` drag/select contract is observable in jsdom.

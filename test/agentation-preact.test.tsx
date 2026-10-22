@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { render, cleanup, fireEvent } from './helpers/dom.js';
 import { Agentation, getStorageKey, loadAnnotations, type Annotation } from 'agentation';

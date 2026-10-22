@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ConversationControlSnapshot } from "../ui/src/api.js";

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { BRIEFING_EVENT_VALUES } from '../src/contracts';
 import { queryClient } from '../ui/src/query/client';
 import { browserResourceKeys } from '../ui/src/query/browserResources';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { ApiError, isApiErrorStatus } from '../ui/src/api';
 import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { useCallback } from 'preact/hooks';

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { railReorderReady, installMemoryLocalStorage, stubEventSource, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, render, reactFlowMockState, previewInstance, writablePreviewInstance } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
