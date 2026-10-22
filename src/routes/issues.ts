@@ -1340,14 +1340,11 @@ export function registerIssueRoutes(
       return;
     }
     const holder = currentParentRoleHolder(db, issueId, sessionAliasResolver);
-    // The caller holds the role when the requested session is the holder (a
-    // re-assume under any alias) or when the caller's own session is: the
-    // holder handing the role to a successor with --session (issue 23a4edf).
-    const callerAliases = new Set([
-      sessionId,
-      ...sessionAliasIds(resolution),
-      ...sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id),
-    ]);
+    // Holder authority comes only from the caller's own session: a re-assume
+    // under any alias, or the holder handing the role to a successor with
+    // --session (issue 23a4edf). Naming the holder's session confers nothing,
+    // since the checkpoint carries the caller's credential.
+    const callerAliases = sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id);
     const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
     if (!decision.ok) {
       sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });

@@ -330,8 +330,17 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
   it("lets the same live agent re-assume under a different alias without an override", async () => {
     expect((await assume(PROVIDER_THREAD)).status).toBe(200);
 
-    const again = await assume(MANDIBLE_SESSION);
+    const again = await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD);
     expect(again.status).toBe(200);
+  });
+
+  it("refuses another agent that names the live holder's session as its own", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-other", "active");
+
+    const impersonation = await assume(MANDIBLE_SESSION, false, "sess-other");
+    expect(impersonation.status).toBe(409);
+    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
   });
 
   it("still refuses a different live agent without an override", async () => {
