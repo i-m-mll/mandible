@@ -60,6 +60,7 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useRegisterInitialRouteLoad } from '../app-shell';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
 
@@ -864,7 +865,7 @@ export async function warmInitialData(
   );
   const selectedKey = params.task?.trim() || persisted.selectedKey;
   const selected = inventory.tasks.find((item) => item.key === selectedKey)
-    ?? inventory.tasks[0]
+    ?? (params.task?.trim() ? null : inventory.tasks[0])
     ?? null;
   if (selected?.source_kind !== 'executor'
       || !canPerformOperation(context.instanceInfo, 'GET', '/api/tasks/commands')) return;
@@ -889,32 +890,39 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const [v2Busy, setV2Busy] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [activeIntent, setActiveIntent] = useState<CommandIntent | null>(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(
-    initialTaskKey ?? selectionState.selectedKey,
-  );
+  const routeKey = initialTaskKey?.trim() || null;
+  const [selection, setSelection] = useState({ routeKey, key: routeKey ?? selectionState.selectedKey });
+  const selectedKey = selection.routeKey === routeKey ? selection.key : routeKey ?? selectionState.selectedKey;
+  const explicitSelection = selection.routeKey === routeKey ? Boolean(routeKey && selection.key === routeKey) : Boolean(routeKey);
+  useEffect(() => {
+    setSelection((current) => current.routeKey === routeKey ? current : { routeKey, key: routeKey ?? selectionState.selectedKey });
+  }, [routeKey, selectionState.selectedKey]);
+  const setSelectedKey = (key: string | null) => setSelection({ routeKey, key });
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<TaskSourceFilter>('all');
   const [freshnessFilter, setFreshnessFilter] = useState<TaskFreshnessFilter>('all');
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const mounted = useRef(true);
+  const inventorySequence = useRef(0);
   // Preserve one client idempotency key across ambiguous transport failures.
   // A retry of the same UI intent must replay rather than create a second
   // disable request merely because the first response was lost.
   const pendingRequestKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (signal?: AbortSignal): Promise<TaskInventory | null> => {
+    const sequence = ++inventorySequence.current;
     try {
       const next = await getTaskInventory(signal);
-      if (!mounted.current) return null;
+      if (!mounted.current || signal?.aborted || sequence !== inventorySequence.current) return null;
       setInventory(next);
       setError(null);
       return next;
     } catch (loadError) {
-      if (!mounted.current) return null;
+      if (!mounted.current || signal?.aborted || sequence !== inventorySequence.current) return null;
       setError(loadError instanceof Error ? loadError.message : String(loadError));
       return null;
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && !signal?.aborted && sequence === inventorySequence.current) setLoading(false);
     }
   }, []);
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
@@ -950,18 +958,19 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const activeFilterCount = Number(sourceFilter !== 'all') + Number(freshnessFilter !== 'all');
 
   const selected = useMemo(
-    () => tasks.find((item) => item.key === selectedKey) ?? tasks[0] ?? null,
-    [tasks, selectedKey],
+    () => tasks.find((item) => item.key === selectedKey) ?? (explicitSelection ? null : tasks[0]) ?? null,
+    [tasks, selectedKey, explicitSelection],
   );
   useEffect(() => {
     if (loading && !inventory) return;
     if (error && !inventory) return;
+    if (explicitSelection && !selected) return;
     const nextKey = selected?.key ?? null;
     if (nextKey !== selectedKey) setSelectedKey(nextKey);
     setSelectionState((current) => current.selectedKey === nextKey
       ? current
       : { selectedKey: nextKey });
-  }, [error, inventory, loading, selected, selectedKey, setSelectionState]);
+  }, [error, inventory, loading, selected, selectedKey, explicitSelection, setSelectionState]);
   const selectedExecutorTask = selected?.source_kind === 'executor' ? selected : null;
   const selectedExecutor = useMemo(
     () => executors.find((entry) => entry.name === selectedExecutorTask?.executor) ?? null,
@@ -1306,7 +1315,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       >
         {loading && !inventory ? (
           <div className="tasks-sidebar__empty">Loading…</div>
-        ) : error ? (
+        ) : error && !inventory ? (
           <div className="tasks-sidebar__empty">Could not load the inventory.</div>
         ) : neverRegistered ? (
           <div className="tasks-sidebar__empty">No executor has registered an inventory.</div>
@@ -1328,7 +1337,12 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               selectionDescription={freshnessTitle(item)}
               selected={selected?.key === item.key}
               ariaCurrent={selected?.key === item.key ? 'true' : undefined}
-              onSelect={() => setSelectedKey(item.key)}
+              onSelect={() => {
+                setSelectedKey(item.key);
+                if (parseRouteFromHash(window.location.hash).tab === 'tasks') {
+                  replaceRouteHash(routeHashWithParams(window.location.hash, 'tasks', { task: item.key }));
+                }
+              }}
               badges={item.source_kind === 'mandible' ? (
                 <>
                   <SidebarItemBadge title={item.reminder.project_key}>
@@ -1418,7 +1432,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
           />
         ) : null}
       >
-        {error ? (
+        {error && !inventory ? (
           <div className="tasks-detail__empty">
             <span className="text-muted">Task inventory unavailable.</span>
           </div>
@@ -1426,6 +1440,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
           <div className="tasks-detail__empty">
             <span className="text-muted">Loading tasks…</span>
           </div>
+        ) : explicitSelection && !selected ? (
+          <div className="tasks-detail__empty" role="status">Task not found: {selectedKey}</div>
         ) : neverRegistered ? (
           <div className="tasks-detail__empty">
             <span className="text-muted">

@@ -559,9 +559,16 @@ describe('SpacesSidebar selection', () => {
     expect(onSelectSpace).not.toHaveBeenCalled();
   });
 
-  it('opens the first ordered space when the route has no valid selection', async () => {
+  it('preserves an explicit absent space instead of choosing another loaded space', async () => {
     const onSelectSpace = vi.fn();
     render(<SpacesSidebar selectedSpaceId="missing" onSelectSpace={onSelectSpace} loadGroups={vi.fn().mockResolvedValue(sampleGroups())} />);
+    await screen.findByText('Global notes');
+    expect(onSelectSpace).not.toHaveBeenCalled();
+  });
+
+  it('opens the first ordered space when the route has no selection', async () => {
+    const onSelectSpace = vi.fn();
+    render(<SpacesSidebar onSelectSpace={onSelectSpace} loadGroups={vi.fn().mockResolvedValue(sampleGroups())} />);
 
     await waitFor(() => expect(onSelectSpace).toHaveBeenCalledWith({
       projectId: null,

@@ -382,10 +382,7 @@ export function SpacesSidebar({
       ...(topLevelGroup?.spaces ?? []),
       ...orderedProjectGroups.flatMap(({ group }) => group.spaces),
     ];
-    const selectionExists = selectedSpaceId && allSpaces.some((space) => (
-      space.id === selectedSpaceId || space.id.startsWith(selectedSpaceId)
-    ));
-    if (selectionExists) {
+    if (selectedSpaceId) {
       lastFallbackSelectionRef.current = null;
       return;
     }

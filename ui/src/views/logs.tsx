@@ -4,7 +4,7 @@ import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
-import { shortRouteId } from '../routing';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
 import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
@@ -113,18 +113,10 @@ export function parseLogsHash(hash = window.location.hash): LogFilters {
 }
 
 function filtersToHash(filters: LogFilters): string {
-  const params = new URLSearchParams();
-  if (!sameLevels(filters.levels, DEFAULT_FILTERS.levels)) {
-    params.set('levels', filters.levels.join(','));
-  }
-  if (filters.subsystem) params.set('subsystem', filters.subsystem);
-  if (filters.event) params.set('event', filters.event);
-  if (filters.q) params.set('q', filters.q);
-  if (filters.related) params.set('related', filters.related);
-  if (filters.since) params.set('since', filters.since);
-  if (filters.until) params.set('until', filters.until);
-  const query = params.toString();
-  return `#/logs${query ? `?${query}` : ''}`;
+  return routeHashWithParams(window.location.hash, 'logs', {
+    ...filters,
+    levels: sameLevels(filters.levels, DEFAULT_FILTERS.levels) ? null : filters.levels.join(','),
+  });
 }
 
 function sameLevels(a: LogLevel[], b: LogLevel[]): boolean {
@@ -132,10 +124,8 @@ function sameLevels(a: LogLevel[], b: LogLevel[]): boolean {
 }
 
 function updateHash(filters: LogFilters): void {
-  const next = filtersToHash(filters);
-  if (window.location.hash !== next) {
-    window.history.replaceState(null, '', next);
-  }
+  if (parseRouteFromHash(window.location.hash).tab !== 'logs') return;
+  replaceRouteHash(filtersToHash(filters));
 }
 
 function entityHref(type: LogEntityFacetValue['type'], id: string, repoId?: string | null): string {

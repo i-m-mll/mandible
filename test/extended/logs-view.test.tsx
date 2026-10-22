@@ -23,7 +23,7 @@ describe('LogsView', () => {
   });
 
   it('renders structured fields, entity links, and refreshes from SSE reconciliation', async () => {
-    window.location.hash = '#/logs?levels=error,warn&q=needle';
+    window.location.hash = '#/logs?levels=error,warn&q=needle&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc';
     let sseHandler: SSEHandler | null = null;
     const client = {
       connect: vi.fn(),
@@ -70,6 +70,12 @@ describe('LogsView', () => {
       q: 'needle',
     })));
     expect(await screen.findByText('auth_failure')).toBeTruthy();
+    fireEvent.input(screen.getByPlaceholderText('message, field, or id'), { target: { value: 'changed' } });
+    await waitFor(() => expect(parseLogsHash().q).toBe('changed'));
+    const context = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(context.get('sidebar')).toBe('hidden');
+    expect(context.get('agent_session')).toBe('bound');
+    expect(context.get('sentinel')).toBe('a&b+c');
 
     fireEvent.click(screen.getByText('auth failed'));
     const issueLink = await screen.findByText('issue-1');
@@ -80,8 +86,9 @@ describe('LogsView', () => {
     expect(screen.getByText('object')).toBeTruthy();
 
     const autoScroll = screen.getByRole('checkbox', { name: 'Auto-scroll' }) as HTMLInputElement;
+    const readsBeforeSse = loadLogs.mock.calls.length;
     sseHandler?.({ type: 'auth:updated' } as SSEPayload);
-    await waitFor(() => expect(loadLogs).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(loadLogs).toHaveBeenCalledTimes(readsBeforeSse + 1));
     expect(screen.getByRole('checkbox', { name: 'Auto-scroll' })).toBe(autoScroll);
     expect(autoScroll.checked).toBe(true);
   });

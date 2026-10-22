@@ -29,6 +29,7 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 import { browserSessionFetch } from '../client-auth-token';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 
 export type WorkRepo = {
   id?: string;
@@ -268,13 +269,8 @@ function updateWorkHash(params: Record<string, string | null | undefined>): void
   if (typeof window === 'undefined') {
     return;
   }
-  const current = new URLSearchParams(window.location.hash.replace(/^#\/?work\??/, ''));
-  Object.entries(params).forEach(([key, value]) => {
-    if (!value) current.delete(key);
-    else current.set(key, value);
-  });
-  const query = current.toString();
-  window.history.replaceState(null, '', `#/work${query ? `?${query}` : ''}`);
+  if (parseRouteFromHash(window.location.hash).tab !== 'work') return;
+  replaceRouteHash(routeHashWithParams(window.location.hash, 'work', params));
 }
 
 // --- Context menu component ---
@@ -791,20 +787,32 @@ export function WorkOverviewView({
   );
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
   const [repoLoadState, setRepoLoadState] = useState<"pending" | "ready" | "error">(initialRepos.length > 0 ? "ready" : "pending");
-  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
-  const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>(
+  const routeIdentity = JSON.stringify([params.repo, params.branch, params.commit, params.compare, params.mode]);
+  const [appliedRoute, setAppliedRoute] = useState(routeIdentity);
+  const routeChanged = appliedRoute !== routeIdentity;
+  const [localRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
+  const selectedRepoId = routeChanged ? params.repo ?? null : localRepoId;
+  const [localBranches, setSelectedBranches] = useState<Record<string, string>>(
     params.repo && params.branch ? { [params.repo]: params.branch } : {},
   );
-  const [selectedCommits, setSelectedCommits] = useState<Record<string, string>>({});
+  const selectedBranches = routeChanged && params.repo && params.branch
+    ? { ...localBranches, [params.repo]: params.branch } : localBranches;
+  const [localCommits, setSelectedCommits] = useState<Record<string, string>>({});
+  const selectedCommits = routeChanged && params.repo && params.branch && params.commit
+    ? { ...localCommits, [commitKey(params.repo, params.branch)]: params.commit } : localCommits;
   const [commitPages, setCommitPages] = useState<Record<string, WorkCommitPage>>({});
   const [commitLoadState, setCommitLoadState] = useState<Record<string, CommitLoadState>>({});
   const initialCompare = parseCompare(params.compare);
-  const [compareFrom, setCompareFrom] = useState<string | null>(initialCompare.from);
-  const [compareTo, setCompareTo] = useState<string | null>(initialCompare.to);
-  const [compareMode, setCompareMode] = useState<WorkCompareMode>(
+  const [localCompareFrom, setCompareFrom] = useState<string | null>(initialCompare.from);
+  const [localCompareTo, setCompareTo] = useState<string | null>(initialCompare.to);
+  const [localCompareMode, setCompareMode] = useState<WorkCompareMode>(
     params.mode === 'range' ? 'range' : 'merge-base',
   );
-  const [compareResult, setCompareResult] = useState<WorkCompareResult | null>(null);
+  const compareFrom = routeChanged ? initialCompare.from : localCompareFrom;
+  const compareTo = routeChanged ? initialCompare.to : localCompareTo;
+  const compareMode = routeChanged ? (params.mode === 'range' ? 'range' : 'merge-base') : localCompareMode;
+  const [localCompareResult, setCompareResult] = useState<WorkCompareResult | null>(null);
+  const [resolvedCompareKey, setResolvedCompareKey] = useState<string | null>(null);
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [audits, setAudits] = useState<Record<string, WorkRepoAudit>>({});
@@ -859,6 +867,7 @@ export function WorkOverviewView({
 
   useEffect(() => {
     const nextCompare = parseCompare(params.compare);
+    setAppliedRoute(routeIdentity);
     setSelectedRepoId(params.repo ?? null);
     if (params.repo && params.branch) {
       setSelectedBranches((prev) => ({ ...prev, [params.repo as string]: params.branch as string }));
@@ -872,7 +881,7 @@ export function WorkOverviewView({
     setCompareFrom(nextCompare.from);
     setCompareTo(nextCompare.to);
     setCompareMode(params.mode === 'range' ? 'range' : 'merge-base');
-  }, [params.repo, params.branch, params.commit, params.compare, params.mode]);
+  }, [routeIdentity]);
 
   // Fetch repos with/without excluded when showExcluded changes
   const fetchRepos = async (withExcluded: boolean) => {
@@ -977,16 +986,12 @@ export function WorkOverviewView({
     return () => window.removeEventListener('work:push', handler);
   }, []);
 
-  const repoRows = useMemo(() => {
+  const allRepoRows = useMemo(() => {
     return repos
       .map((repo) => {
         const repoId = getRepoId(repo);
         const repoTitle = getRepoTitle(repo, repoId);
         return { repo, repoId, repoTitle };
-      })
-      .filter(({ repoTitle }) => {
-        if (!repoFilter) return true;
-        return repoTitle.toLowerCase().includes(repoFilter);
       })
       .map(({ repo, repoId, repoTitle }) => {
         const branches = branchesByRepo[repoId] || [];
@@ -1024,29 +1029,36 @@ export function WorkOverviewView({
   }, [
     repos,
     branchesByRepo,
-    repoFilter,
     globalBranchFilter,
     perRepoFilters,
     perRepoSorts,
     repoSortDirection,
     repoSortKey,
   ]);
+  const repoRows = useMemo(() => allRepoRows.filter(({ repoTitle }) => !repoFilter || repoTitle.toLowerCase().includes(repoFilter)), [allRepoRows, repoFilter]);
+  const explicitRepo = Boolean(params.repo && selectedRepoId === params.repo);
 
   useEffect(() => {
+    if (explicitRepo || routeChanged) return;
     setSelectedRepoId((current) => {
       if (repoRows.length === 0) return repoLoadState === "ready" ? null : current;
       if (current && repoRows.some(row => row.repoId === current)) return current;
       return repoRows[0].repoId;
     });
-  }, [repoRows, selectedRepoId, repoLoadState]);
+  }, [repoRows, selectedRepoId, repoLoadState, explicitRepo, routeChanged]);
 
-  const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
+  const selectedRepo = (explicitRepo ? allRepoRows : repoRows).find((row) => row.repoId === selectedRepoId)
+    ?? (explicitRepo ? null : repoRows[0]) ?? null;
+  const explicitBranch = Boolean(explicitRepo && params.branch && selectedBranches[selectedRepoId!] === params.branch);
   const selectedBranchName = selectedRepo
     ? selectedBranches[selectedRepo.repoId] ?? getBranchName(selectedRepo.branches[0] ?? {})
     : '';
   const selectedBranch = selectedRepo
-    ? selectedRepo.branches.find((branch) => getBranchName(branch) === selectedBranchName) ?? selectedRepo.branches[0] ?? null
+    ? (explicitBranch ? branchesByRepo[selectedRepo.repoId] ?? [] : selectedRepo.branches).find((branch) => getBranchName(branch) === selectedBranchName)
+      ?? (explicitBranch ? null : selectedRepo.branches[0]) ?? null
     : null;
+  const compareKey = JSON.stringify([selectedRepo?.repoId, compareFrom, compareTo, compareMode]);
+  const compareResult = resolvedCompareKey === compareKey ? localCompareResult : null;
 
   const loadAudit = async (repoId: string) => {
     const sequence = (auditRequestSequence.current[repoId] ?? 0) + 1;
@@ -1132,7 +1144,7 @@ export function WorkOverviewView({
   };
 
   useEffect(() => {
-    if (!selectedRepo) {
+    if (!selectedRepo || explicitBranch || routeChanged) {
       return;
     }
     const current = selectedBranches[selectedRepo.repoId];
@@ -1145,7 +1157,7 @@ export function WorkOverviewView({
     }
     setSelectedBranches((prev) => ({ ...prev, [selectedRepo.repoId]: fallback }));
     updateWorkHash({ repo: selectedRepo.repoId, branch: fallback });
-  }, [selectedRepo, selectedBranches]);
+  }, [selectedRepo, selectedBranches, explicitBranch, routeChanged]);
 
   useEffect(() => {
     if (!selectedRepo || !selectedBranch) {
@@ -1169,6 +1181,7 @@ export function WorkOverviewView({
         setCommitPages((prev) => ({ ...prev, [key]: page }));
         setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: null } }));
         setSelectedCommits((prev) => {
+          if (params.repo === selectedRepo.repoId && params.branch === branchName && params.commit) return prev;
           const current = prev[key];
           if (current && page.commits.some((commit) => commit.hash === current)) {
             return prev;
@@ -1185,7 +1198,7 @@ export function WorkOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedRepo?.repoId, selectedBranchName, instance]);
+  }, [selectedRepo?.repoId, selectedBranchName, instance, params.repo, params.branch, params.commit]);
 
   useEffect(() => {
     if (!selectedRepo || !compareFrom || !compareTo) {
@@ -1210,6 +1223,7 @@ export function WorkOverviewView({
     getWorkCompare(selectedRepo.repoId, { from: compareFrom, to: compareTo, mode: compareMode })
       .then((result) => {
         if (cancelled) return;
+        setResolvedCompareKey(compareKey);
         setCompareResult(result);
         setCompareLoading(false);
       })
@@ -1552,7 +1566,7 @@ export function WorkOverviewView({
         </ViewSidebar>
         <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
-            <div className="empty-state">{repoLoadState === "ready" ? "No projects in this view." : "Select a project when it becomes available."}</div>
+            <div className="empty-state">{explicitRepo ? `Project unavailable: ${selectedRepoId}` : repoLoadState === "ready" ? "No projects in this view." : "Select a project when it becomes available."}</div>
           ) : (() => {
             const { repo, repoId, repoTitle, branches, sortKey } = selectedRepo;
             const repoPath = getRepoPath(repo);
@@ -1793,11 +1807,7 @@ export function WorkOverviewView({
                     </select>
                   </div>
                   {(() => {
-                    const activeBranchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
-                    const activeBranch =
-                      branches.find((branch) => getBranchName(branch) === activeBranchName) ??
-                      branches[0] ??
-                      null;
+                    const activeBranch = selectedBranch;
                     const branchName = activeBranch ? getBranchName(activeBranch) : '';
                     const commitsKey = branchName ? commitKey(repoId, branchName) : '';
                     const commitPage = commitsKey ? commitPages[commitsKey] : undefined;
@@ -1805,7 +1815,7 @@ export function WorkOverviewView({
                     const selectedCommitHash = commitsKey ? selectedCommits[commitsKey] : undefined;
                     const selectedCommit =
                       commitPage?.commits.find((commit) => commit.hash === selectedCommitHash) ??
-                      commitPage?.commits[0] ??
+                      (explicitBranch && params.commit && selectedCommitHash === params.commit ? null : commitPage?.commits[0]) ??
                       null;
                                   const compareValue = compareFrom ? `${compareFrom}..${compareTo ?? ''}` : null;
                                   const canReadCommits = Boolean(branchName) && canPerformOperation(
@@ -2069,7 +2079,7 @@ export function WorkOverviewView({
                               </section>
                             </>
                           ) : (
-                            <div className="empty-state">Select a branch to browse commits.</div>
+                            <div className="empty-state">{explicitBranch ? `Branch unavailable: ${params.branch}` : 'Select a branch to browse commits.'}</div>
                           )}
                         </section>
                       </div>

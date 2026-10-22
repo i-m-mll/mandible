@@ -21,7 +21,7 @@ import {
   type SessionOverviewWorkUnit,
   type SessionSummary,
 } from '../api';
-import { shortRouteId } from '../routing';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
 import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
@@ -71,22 +71,8 @@ function shortUuid(value: string): string {
 /** Update the #/overview session param in place so refreshes keep the selection. */
 function writeSessionParamToHash(sessionId: string | null): void {
   if (typeof window === 'undefined') return;
-  try {
-    const hash = window.location.hash || '#/overview';
-    const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
-    if (pathPart.replace(/^\//, '') !== 'overview') return;
-    const params = new URLSearchParams(queryPart ?? '');
-    if (sessionId) params.set('session', shortRouteId(sessionId));
-    else params.delete('session');
-    const query = params.toString();
-    window.history.replaceState(
-      null,
-      '',
-      `${window.location.pathname}${window.location.search}#${pathPart}${query ? `?${query}` : ''}`,
-    );
-  } catch {
-    // Navigation convenience only.
-  }
+  if (parseRouteFromHash(window.location.hash).tab !== 'overview') return;
+  replaceRouteHash(routeHashWithParams(window.location.hash, 'overview', { session: sessionId ? shortRouteId(sessionId) : null }));
 }
 
 function overviewHref(sessionId: string): string {
@@ -351,27 +337,29 @@ export function SessionOverviewView({
   embedded = false,
 }: SessionOverviewViewProps): JSX.Element {
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
-  const [selectedRef, setSelectedRef] = useState<string | null>(initialSessionId ?? agentBinding);
-  const [state, setState] = useState<OverviewState>({ kind: 'idle' });
+  const routeRef = initialSessionId ?? agentBinding;
+  const [selection, setSelection] = useState({ routeRef, value: routeRef });
+  const selectedRef = selection.routeRef === routeRef ? selection.value : routeRef;
+  const setSelectedRef = (value: string | null) => setSelection({ routeRef, value });
+  const [result, setResult] = useState<{ ref: string | null; state: OverviewState; error?: string }>({ ref: null, state: { kind: 'idle' } });
+  const state: OverviewState = result.ref === selectedRef ? result.state : selectedRef ? { kind: 'loading' } : { kind: 'idle' };
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const scrollOwnerRef = useRef<HTMLDivElement>(null);
 
-  // Deep-link/param changes (e.g. clicking a child session row) win over the
-  // in-memory selection.
   useEffect(() => {
-    if (initialSessionId && initialSessionId !== selectedRef) setSelectedRef(initialSessionId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSessionId]);
+    setSelection((current) => current.routeRef === routeRef ? current : { routeRef, value: routeRef });
+  }, [routeRef]);
 
   useEffect(() => {
     if (!selectedRef) {
-      setState({ kind: 'idle' });
       return;
     }
     let cancelled = false;
-    setState((current) => (current.kind === 'resolved' ? current : { kind: 'loading' }));
+    const setState = (state: OverviewState) => setResult({ ref: selectedRef, state });
+    setResult((current) => current.ref === selectedRef && current.state.kind === 'resolved'
+      ? current : { ref: selectedRef, state: { kind: 'loading' } });
     const initialLoad = getSessionOverview(selectedRef)
       .then((payload) => {
         if (cancelled) return;
@@ -385,7 +373,12 @@ export function SessionOverviewView({
       .catch((err: unknown) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 404) setState({ kind: 'not-found' });
-        else setState({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to load overview' });
+        else {
+          const message = err instanceof Error ? err.message : 'Failed to load overview';
+          setResult((current) => current.ref === selectedRef && current.state.kind === 'resolved'
+            ? { ...current, error: message }
+            : { ref: selectedRef, state: { kind: 'error', message } });
+        }
       });
     registerInitialRouteLoad(initialLoad);
     return () => {
@@ -415,12 +408,12 @@ export function SessionOverviewView({
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedRef(sessionId);
     writeSessionParamToHash(sessionId);
-  }, []);
+  }, [routeRef]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedRef(null);
     writeSessionParamToHash(null);
-  }, []);
+  }, [routeRef]);
 
   const session = state.kind === 'resolved' ? state.overview.session : null;
   const sharedHeader = !embedded && session ? (
@@ -449,7 +442,7 @@ export function SessionOverviewView({
     />
   ) : !embedded ? <DetailPaneHeader variant="compact" title="Session Overview" /> : null;
 
-  const errorMessage = state.kind === 'error' ? state.message : pickerError;
+  const errorMessage = state.kind === 'error' ? state.message : (result.ref === selectedRef ? result.error : null) ?? pickerError;
 
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
