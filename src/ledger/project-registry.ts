@@ -900,6 +900,8 @@ export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[
   { table: "managed_task_events", columns: ["project_id"] },
   { table: "ledger_change_feed_state", columns: ["project_id"] },
   { table: "ledger_change_log", columns: ["project_id"] },
+  { table: "conversation_spawn_requests", columns: ["project_id"] },
+  { table: "briefing_destination_mutations", columns: ["project_id"] },
 ];
 
 const PROJECT_MERGE_SPECIAL_TABLES = new Set([
@@ -907,12 +909,15 @@ const PROJECT_MERGE_SPECIAL_TABLES = new Set([
   "ledger_change_log",
 ]);
 
-// Project-id-bearing columns that are DELIBERATELY not repointed on merge (kept
-// as historical records). Currently empty: every project-scoped column moves, so
-// a merge leaves no row pointing at a deleted project. New entries here must be
-// justified (the row is immutable historical provenance whose project id is
-// part of the record, not a live reference).
-export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [];
+// Project-id-bearing columns that are DELIBERATELY not repointed on merge: the
+// row is immutable provenance whose project id is part of the record. Such a row
+// pins its project, so a source project that any of them references cannot be
+// merged away; detectMergeConflicts reports it and force does not override it.
+// Merge clearances are immutable scoped authority (auth_clearances_scope_immutable)
+// and cannot be deleted, so re-scoping one to another project is refused.
+export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+  { table: "auth_clearances", column: "project_id" },
+];
 
 const PROJECT_ID_COLUMN_NAMES = new Set(["project_id", "source_project_id", "target_project_id"]);
 
@@ -946,7 +951,7 @@ function tableHasColumn(db: Db, table: string, column: string): boolean {
 }
 
 export interface MergeConflict {
-  kind: "short_id" | "alias";
+  kind: "short_id" | "alias" | "historical_reference";
   value: string;
   detail?: string;
 }
@@ -969,6 +974,19 @@ export interface RepairReport {
 
 function detectMergeConflicts(db: Db, sourceId: string, targetId: string): MergeConflict[] {
   const conflicts: MergeConflict[] = [];
+  for (const { table, column } of HISTORICAL_PROJECT_ID_COLUMNS) {
+    if (!tableHasColumn(db, table, column)) continue;
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`)
+      .get(sourceId) as { n: number };
+    if (row.n > 0) {
+      conflicts.push({
+        kind: "historical_reference",
+        value: `${table}.${column}`,
+        detail: `${row.n} immutable row(s) pin the source project`,
+      });
+    }
+  }
   if (tableExists(db, "ledger_issues")) {
     const shortIdClashes = db
       .prepare(
@@ -1131,6 +1149,14 @@ export function repairRegistry(
     };
 
     if (apply) {
+      const pinned = conflicts.filter((conflict) => conflict.kind === "historical_reference");
+      if (pinned.length > 0) {
+        throw new ProjectRegistryError(
+          `merge blocked: immutable rows pin the source project (${pinned.map((c) => c.value).join(", ")})`,
+          "merge_conflict",
+          { conflicts: pinned },
+        );
+      }
       if (conflicts.length > 0 && !options.force) {
         throw new ProjectRegistryError(
           `merge blocked by ${conflicts.length} conflict(s); resolve or pass force`,
