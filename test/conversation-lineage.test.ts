@@ -170,7 +170,13 @@ describe("conversation lineage", () => {
       ...extra,
     });
     const agent = write("agent-aaa6e9a.jsonl", [
-      record("a1", "user", { isSidechain: true }),
+      record("a1", "user", {
+        isSidechain: true,
+        message: {
+          role: "user",
+          content: "[mandible child parent=claude:99999999-9999-4999-8999-999999999999 parent-role=coordinator role=worker]\nWork.",
+        },
+      }),
       record("a2", "assistant", { isSidechain: true }),
     ]);
     await ingest(agent);

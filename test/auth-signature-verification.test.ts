@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  authorizedMergeSignerLines,
   extractSuccessfulMergeCommitSha,
   verifyMergeCommitSignature,
   verifySuccessfulMergeCommitSignature,
@@ -14,6 +15,7 @@ import { AttributionReadResolver } from "../src/identity/read-projection.js";
 import {
   addAttributionEvidence,
   addCredential,
+  createUser,
   revokeCredential,
   setupOperator,
 } from "../src/users/store.js";
@@ -76,6 +78,18 @@ afterEach(() => {
 });
 
 describe("merge signature verification", () => {
+  it("refuses another registered user's key for this approver", () => {
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const other = createUser(db, { slug: "other", kind: "human", display_name: "Other" });
+    const credential = addCredential(db, other.id, {
+      type: "ssh_key",
+      fingerprint,
+      public_material: publicMaterial,
+    });
+
+    expect(authorizedMergeSignerLines(db, operator.id, credential.id)).toEqual([]);
+  });
+
   it("verifies a signed merge and resolves its active credential and user", () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const credential = addCredential(db, operator.id, {
