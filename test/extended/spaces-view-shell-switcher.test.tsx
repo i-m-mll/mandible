@@ -3,7 +3,7 @@
 // The home lane adds the home sidebar and typed-primary selected Space header.
 // These tests pin that normal selected Spaces no longer show all renderers as
 // equivalent tabs while explicit legacy renderer links still mount.
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { act, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { render } from './notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
@@ -37,6 +37,25 @@ function makeSpace(defaultRenderer: Space['default_renderer'] = 'document'): Spa
     updated_at: 0,
   };
 }
+
+it('keeps mounted space targets through absent groups and ignores superseded detail responses', async () => {
+  let finishB!: (space: Space) => void;
+  const pendingB = new Promise<Space>((resolve) => { finishB = resolve; });
+  const loadSpace = vi.fn(async (id: string) => id === 'B' ? pendingB : { ...makeSpace(), id, title: `Space ${id}` });
+  const onNavigate = vi.fn();
+  const props = { projectId: 'p1', onNavigate, loadSpace, renderers: { document: Mount } };
+  const view = render(<SpacesViewShell {...props} spaceId="A" />);
+  await screen.findByText('Space A');
+  view.rerender(<SpacesViewShell {...props} spaceId="B" />);
+  expect(screen.queryByText('Space A')).toBeNull();
+  await waitFor(() => expect(loadSpace).toHaveBeenCalledWith('B'));
+  view.rerender(<SpacesViewShell {...props} spaceId="C" />);
+  await screen.findByText('Space C');
+  await act(async () => finishB({ ...makeSpace(), id: 'B', title: 'Space B' }));
+  expect(screen.queryByText('Space B')).toBeNull();
+  expect(screen.getByText('Space C')).toBeTruthy();
+  expect(onNavigate).not.toHaveBeenCalled();
+});
 
 const previewInstance: InstanceInfo = {
   role: 'preview',

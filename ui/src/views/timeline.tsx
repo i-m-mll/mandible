@@ -957,8 +957,9 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   }, [projectRef, projection?.project.id, viewState]);
 
   useEffect(() => {
+    if (!active) return;
     syncFilterRowsToHash(projectRef, viewState.filterRows);
-  }, [projectRef, viewState.filterRows]);
+  }, [active, projectRef, viewState.filterRows]);
 
   useLayoutEffect(() => {
     requestGeneration.current += 1;

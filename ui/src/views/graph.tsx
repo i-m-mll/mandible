@@ -37,7 +37,7 @@ import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
-import { shortRouteId } from '../routing';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
 import { PreviewIcon } from '../components/icons/TabIcons';
 
 type ReactFlowNode = {
@@ -949,7 +949,13 @@ export function GraphView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [spec, setSpec] = useState<GraphSpecState>(() => initialGraphSpec(initialMode));
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const routeFocus = initialFocus?.trim() || null;
+  const [selection, setSelection] = useState<{ focus: string | null; id: string | null }>({ focus: routeFocus, id: routeFocus });
+  const selectedNodeId = selection.focus === routeFocus ? selection.id : routeFocus;
+  const explicitFocus = Boolean(routeFocus && selectedNodeId === routeFocus);
+  useEffect(() => {
+    setSelection((current) => current.focus === routeFocus ? current : { focus: routeFocus, id: routeFocus });
+  }, [routeFocus]);
   const [detailPanelState, updateDetailPanelState] = useAppRightSidebarState('graph', {
     open: true,
     width: DEFAULT_GRAPH_DETAIL_PANEL_WIDTH,
@@ -1003,17 +1009,16 @@ export function GraphView({
         if (!active) return;
         writePersistedDetail('graph', graphRequestKey, data);
         setPayloadState({ requestKey: graphRequestKey, value: data });
-        if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
-          setSelectedNodeId(initialFocus);
-          if (lastFocusedNodeOpenedRef.current !== initialFocus) {
+        if (routeFocus) {
+          if (data.nodes.some((node) => node.id === routeFocus) && lastFocusedNodeOpenedRef.current !== routeFocus) {
             setDetailPanelOpen(true);
-            lastFocusedNodeOpenedRef.current = initialFocus;
+            lastFocusedNodeOpenedRef.current = routeFocus;
           }
-        } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
-          if (!initialFocus) {
-            lastFocusedNodeOpenedRef.current = null;
-          }
-          setSelectedNodeId(data.nodes[0].id);
+        } else {
+          lastFocusedNodeOpenedRef.current = null;
+          setSelection((current) => data.nodes.some((node) => node.id === current.id)
+            ? current
+            : { focus: routeFocus, id: data.nodes[0]?.id ?? null });
         }
       })
       .catch((err: unknown) => {
@@ -1028,7 +1033,7 @@ export function GraphView({
     return () => {
       active = false;
     };
-  }, [graphRequest, graphRequestKey, refreshToken, initialFocus]);
+  }, [graphRequest, graphRequestKey, refreshToken, routeFocus]);
 
   const lenses = (payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
@@ -1100,13 +1105,15 @@ export function GraphView({
     [flowEdgeList, layoutResult.nodes, spec.preset],
   );
   const selectedNode = useMemo(
-    () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
-    [visibleNodes, selectedNodeId],
+    () => payload.nodes.find((node) => node.id === selectedNodeId) ?? (explicitFocus ? null : visibleNodes[0]) ?? null,
+    [payload.nodes, visibleNodes, selectedNodeId, explicitFocus],
   );
 
   const detailPanelContent = useMemo(() => (
-    <GraphDetailPane presentation="sidebar" node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
-  ), [onNavigate, selectedNode, visibleEdges]);
+    explicitFocus && !selectedNode
+      ? <div role="status">{loading ? 'Loading graph focus' : error ? 'Could not load graph focus' : 'Graph focus not found'}: {selectedNodeId}</div>
+      : <GraphDetailPane presentation="sidebar" node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+  ), [onNavigate, selectedNode, visibleEdges, explicitFocus, loading, error, selectedNodeId]);
 
   const detailPanelDescriptor = useMemo(() => ({
     id: 'graph-detail',
@@ -1120,8 +1127,8 @@ export function GraphView({
     maxWidth: MAX_GRAPH_DETAIL_PANEL_WIDTH,
     onOpenChange: (open: boolean) => updateDetailPanelState({ open }),
     onWidthChange: (width: number) => updateDetailPanelState({ width }),
-    content: selectedNode ? detailPanelContent : null,
-  }), [detailPanelContent, detailPanelOpen, detailPanelState.width, selectedNode, updateDetailPanelState]);
+    content: selectedNode || explicitFocus ? detailPanelContent : null,
+  }), [detailPanelContent, detailPanelOpen, detailPanelState.width, selectedNode, explicitFocus, updateDetailPanelState]);
 
   useRegisterAppRightSidebar(detailPanelDescriptor);
 
@@ -1305,7 +1312,11 @@ export function GraphView({
               nodesConnectable={false}
               elementsSelectable
               onNodeClick={(_event, node) => {
-                setSelectedNodeId((node.data as { node: GraphNode }).node.id);
+                const id = (node.data as { node: GraphNode }).node.id;
+                setSelection({ focus: routeFocus, id });
+                if (parseRouteFromHash(window.location.hash).tab === 'graph') {
+                  replaceRouteHash(routeHashWithParams(window.location.hash, 'graph', { focus: id }));
+                }
                 setDetailPanelOpen(true);
               }}
               onNodeDoubleClick={(_event, node) => {
@@ -1343,7 +1354,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
 
   const selectedNode = (params.focus
     ? data.nodes.find((node) => node.id === params.focus)
-    : null) ?? data.nodes[0] ?? null;
+    : data.nodes[0]) ?? null;
   const issueId = selectedNode?.type === 'issue'
     && typeof selectedNode.detail?.ledger_issue_id === 'string'
     ? selectedNode.detail.ledger_issue_id
