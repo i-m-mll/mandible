@@ -57,11 +57,14 @@ function keychain() {
   const log = path.join(dir, "argv.log");
   const home = path.join(dir, "home");
   for (const created of [bin, store, home]) fs.mkdirSync(created);
+  fs.mkdirSync(path.join(store, "items"));
   fs.writeFileSync(log, "");
+  // Provider ambiguity must not depend on the agent running this test.
+  fs.writeFileSync(path.join(bin, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "security"), securityStub(store, log), { mode: 0o755 });
   const kernel = (name: "Darwin" | "Linux") => fs.writeFileSync(
     path.join(bin, "uname"),
-    `#!/usr/bin/env bash\nif [[ "$1" == "-s" ]]; then printf '${name}\\n'; else /usr/bin/uname "$@"; fi\n`,
+    `#!/bin/sh\nif [ "$1" = "-s" ]; then printf '${name}\\n'; else /usr/bin/uname "$@"; fi\n`,
     { mode: 0o755 },
   );
   kernel("Darwin");
@@ -103,15 +106,28 @@ function keychain() {
       const result = spawnSync(shell, [...flags, "-c", `source ${JSON.stringify(API_HELPER)}\n${script}`], { encoding: "utf8", env: env(extra) });
       return { status: result.status, stdout: result.stdout, stderr: result.stderr };
     },
+    /** Independent seam operations share one shell's definitions and temp root. */
+    seams(operations: Array<{ script: string; env?: Record<string, string> }>) {
+      const script = operations.map((operation) => {
+        const exports = Object.entries(operation.env ?? {}).map(([key, value]) => `export ${key}=${shellQuote(value)}`).join("\n");
+        return `(\n${exports}\n${operation.script}\n); printf '\\036'`;
+      }).join("\n");
+      const result = spawnSync("bash", ["-c", `source ${shellQuote(API_HELPER)}\n${script}`], { encoding: "utf8", env: env() });
+      expect(result.status, result.stderr).toBe(0);
+      return { stdout: result.stdout.split("\x1e").slice(0, -1), stderr: result.stderr };
+    },
   };
 }
 type Keychain = ReturnType<typeof keychain>;
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 interface FakeUser {
   slug: string;
   kind: string;
   appNames?: string[];
   whoamiAuthenticated?: boolean;
+  userFields?: Record<string, unknown>;
+  mintFields?: Record<string, unknown>;
 }
 
 async function userDaemon(user: FakeUser): Promise<StubDaemon> {
@@ -127,12 +143,13 @@ async function userDaemon(user: FakeUser): Promise<StubDaemon> {
           user: {
             id: `user-${user.slug}`, slug: user.slug, kind: user.kind, display_name: user.slug, status: "active", credentials: [],
             bindings: (user.appNames ?? []).map((value, index) => ({ id: `binding-${index}`, binding_type: "app_name", value, status: "active" })),
+            ...user.userFields,
           },
         },
       };
     }
     if (method === "POST" && url.endsWith("/tokens")) {
-      return { status: 201, body: { token: MINTED_TOKEN, credential: { id: "credential-1", status: "active", label: "provisioning" } } };
+      return { status: 201, body: { token: MINTED_TOKEN, credential: { id: "credential-1", status: "active", label: "provisioning" }, ...user.mintFields } };
     }
     return undefined;
   });
@@ -163,13 +180,17 @@ describe("secret backend seam", () => {
     chain.seed("svc-rotate", "acct-1", "old-token");
     const awkward = 'has"quote\\slash and space';
 
-    for (const [service, value] of [["svc-plain", "tok-not-in-argv"], ["svc-quoting", awkward], ["svc-rotate", "new-token"]]) {
-      const written = chain.seam(`printf %s ${JSON.stringify(value)} | secret_set ${service} acct-1`);
-      expect(written.status, written.stderr).toBe(0);
+    const writes = [["svc-plain", "tok-not-in-argv"], ["svc-quoting", awkward], ["svc-rotate", "new-token"]];
+    const results = chain.seams([
+      ...writes.map(([service, value]) => ({ script: `printf %s ${shellQuote(value)} | secret_set ${service} acct-1; printf 'rc=%s' "$?"` })),
+      { script: "secret_get svc-plain acct-1" },
+    ]);
+    for (const [index, [service, value]] of writes.entries()) {
+      expect(results.stdout[index], results.stderr).toBe("rc=0");
       expect(chain.item(service)?.secret).toBe(value);
     }
 
-    expect(chain.seam("secret_get svc-plain acct-1").stdout).toBe("tok-not-in-argv");
+    expect(results.stdout[3]).toBe("tok-not-in-argv");
     expect(chain.items().filter((item) => item.service === "svc-rotate")).toHaveLength(1);
     const argv = chain.argv();
     expect(argv).not.toContain("tok-not-in-argv");
@@ -182,24 +203,26 @@ describe("secret backend seam", () => {
     chain.seed("svc-multi", "older", "older-token");
     chain.seed("svc-multi", "newer", "newer-token");
 
-    expect(chain.seam("secret_get svc-multi newer").stdout).toBe("newer-token");
-    expect(chain.seam('secret_get svc-multi absent; printf "rc=%s" "$?"').stdout).toBe("rc=1");
-    expect(chain.seam("secret_get svc-multi").stdout).toBe("older-token");
-    expect(chain.seam("secret_account_for_service svc-multi").stdout).toBe("older");
+    const result = chain.seams([
+      { script: "secret_get svc-multi newer" },
+      { script: 'secret_get svc-multi absent; printf "rc=%s" "$?"' },
+      { script: "secret_get svc-multi" },
+      { script: "secret_account_for_service svc-multi" },
+    ]);
+    expect(result.stdout).toEqual(["newer-token", "rc=1", "older-token", "older"]);
   });
 
   it("reports an absent item quietly and never mistakes an unreadable keychain for absence", () => {
     const chain = keychain();
     chain.seed("svc-present", "acct-1", "token");
-    const lookup = (service: string, extra: Record<string, string> = {}) =>
-      chain.seam(`secret_account_for_service ${service}; printf "rc=%s" "$?"`, extra);
-
-    expect(lookup("svc-present").stdout).toBe("acct-1rc=0");
-    const absent = chain.seam('secret_get svc-absent; printf "rc=%s" "$?"');
-    expect(absent.stdout).toBe("rc=1");
-    expect(absent.stderr).toBe("");
-    expect(lookup("svc-absent").stdout).toBe("rc=1");
-    expect(lookup("svc-present", { MANDIBLE_TEST_SECURITY_FAIL: "attributes" }).stdout).toBe("rc=3");
+    const result = chain.seams([
+      { script: 'secret_account_for_service svc-present; printf "rc=%s" "$?"' },
+      { script: 'secret_get svc-absent; printf "rc=%s" "$?"' },
+      { script: 'secret_account_for_service svc-absent; printf "rc=%s" "$?"' },
+      { script: 'secret_account_for_service svc-present; printf "rc=%s" "$?"', env: { MANDIBLE_TEST_SECURITY_FAIL: "attributes" } },
+    ]);
+    expect(result.stdout).toEqual(["acct-1rc=0", "rc=1", "rc=1", "rc=3"]);
+    expect(result.stderr).toBe("");
   });
 
   it("refuses input it cannot store faithfully, storing nothing", () => {
@@ -229,10 +252,14 @@ describe("secret backend seam", () => {
       ["non-ASCII", 'printf %s "café"'],
       ["an uncountable leftover", 'printf %s "tok"', { PATH: `${brokenWc}:${chain.env().PATH}` }],
     ];
-    for (const [name, input, extra] of cases) {
-      expect(chain.seam(`${input} | secret_set svc-refused acct-1; printf "rc=%s" "$?"`, extra).stdout, name).toBe("rc=2");
+    const refused = chain.seams([
+      ...cases.map(([, input, extra]) => ({ script: `${input} | secret_set svc-refused acct-1; printf "rc=%s" "$?"`, env: extra })),
+      { script: `printf %s "tok" | secret_set "svc-$(printf '\\t')" acct-1; printf "rc=%s" "$?"` },
+    ]);
+    for (const [index, [name]] of cases.entries()) {
+      expect(refused.stdout[index], name).toBe("rc=2");
     }
-    expect(chain.seam(`printf %s "tok" | secret_set "svc-$(printf '\\t')" acct-1; printf "rc=%s" "$?"`).stdout).toBe("rc=2");
+    expect(refused.stdout.at(-1)).toBe("rc=2");
     expect(chain.items()).toEqual([]);
 
     expect(chain.seam('printf "only\\n" | secret_set svc-single acct-1; printf "rc=%s" "$?"').stdout).toBe("rc=0");
@@ -425,6 +452,39 @@ describe("direct CLI agent credential resolution", () => {
 });
 
 describe("user token mint --store", () => {
+  it("rejects non-scalar user and minted credential fields before shell evaluation or storage", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    for (const value of [["safe", "touch", marker], { unexpected: "object" }]) {
+      for (const field of ["slug", "kind", "token", "credential.id"]) {
+        const beforeMint = field === "slug" || field === "kind";
+        const stub = await userDaemon({ slug: "malformed", kind: "human",
+          ...(beforeMint ? { userFields: { [field]: value } } : { mintFields: field === "token" ? { token: value } : { credential: { id: value } } }),
+        });
+        const result = await cli(chain, stub, ["user", "token", "mint", "malformed", "--store", "--service", "malformed-service", "--json"]);
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toMatch(/valid secret-store user fields|malformed token or credential fields/);
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(chain.items()).toEqual([]);
+        if (beforeMint) expect(posted(stub)).toBe(false);
+      }
+    }
+  });
+
+  it("keeps quoted and shell-metacharacter response fields as literal secret-store data", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    const account = `account'; touch ${marker}; #`;
+    const token = `token\"; $(touch ${marker}); \\`;
+    const service = `service'; touch ${marker}; #`;
+    const stub = await userDaemon({ slug: account, kind: "human", mintFields: { token, credential: { id: `credential'; touch ${marker}; #` } } });
+    const result = await cli(chain, stub, ["user", "token", "mint", "operator", "--store", "--service", service, "--json"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(chain.item(service, account)?.secret).toBe(token);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(result.stdout + result.stderr).not.toContain(token);
+  });
+
   const mint = (...args: string[]) => ["user", "token", "mint", ...args];
 
   it("stores an agent token under its shortest app_name binding or an explicit service, and prints no token", async () => {
@@ -559,22 +619,25 @@ set -u
 STORE=${JSON.stringify(store)}
 LOG=${JSON.stringify(log)}
 ITEMS="$STORE/items"
-mkdir -p "$ITEMS"
 printf '%s\\n' "$*" >> "$LOG"
 
 next_index() {
-  local last
-  last="$(ls "$ITEMS" 2>/dev/null | sort | tail -n 1)"
+  local last="" file
+  for file in "$ITEMS"/*; do
+    [ -f "$file" ] || continue
+    last="\${file##*/}"
+  done
   if [ -z "$last" ]; then printf '001'; else printf '%03d' "$((10#$last + 1))"; fi
 }
 
 # Echo the path of the oldest item matching a service and, when given, account.
 find_item() {
-  local svc="$1" acct="$2" name file
-  for name in $(ls "$ITEMS" 2>/dev/null | sort); do
-    file="$ITEMS/$name"
-    [ "$(sed -n 1p "$file")" = "$svc" ] || continue
-    if [ -n "$acct" ] && [ "$(sed -n 2p "$file")" != "$acct" ]; then continue; fi
+  local svc="$1" acct="$2" file item_service item_account
+  for file in "$ITEMS"/*; do
+    [ -f "$file" ] || continue
+    { IFS= read -r item_service; IFS= read -r item_account; } < "$file"
+    [ "$item_service" = "$svc" ] || continue
+    if [ -n "$acct" ] && [ "$item_account" != "$acct" ]; then continue; fi
     printf '%s' "$file"
     return 0
   done
@@ -593,7 +656,7 @@ write_item() {
 handle() {
   local cmd="\${1:-}"
   shift || true
-  local svc="" acct="" inline="" update=0 have_w=0 file
+  local svc="" acct="" inline="" update=0 have_w=0 file item_service item_account item_secret
   while [ $# -gt 0 ]; do
     case "$1" in
       -s) svc="\${2:-}"; shift 2 ;;
@@ -619,11 +682,12 @@ handle() {
         return 1
       fi
       file="$(find_item "$svc" "$acct")" || return 44
+      { IFS= read -r item_service; IFS= read -r item_account; IFS= read -r item_secret; } < "$file"
       if [ "$have_w" -eq 1 ]; then
-        sed -n 3p "$file"
+        printf '%s\\n' "$item_secret"
       else
         printf '    "acct"<blob>="%s"\\n    "svce"<blob>="%s"\\n' \\
-          "$(sed -n 2p "$file")" "$(sed -n 1p "$file")"
+          "$item_account" "$item_service"
       fi
       ;;
     add-generic-password)

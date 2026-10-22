@@ -9,11 +9,30 @@ mandible_bun_runtime() {
   fi
   "$selector"
 }
-# The selector reports its own refusal; stop there rather than exec an empty path.
+mandible_prepare_syntax_runtime() {
+  # Native arrays cannot arrive through the environment. An inherited scalar
+  # never constitutes evidence that this shell qualified the runtime.
+  case "$(builtin typeset -p _MANDIBLE_SYNTAX_RUNTIME 2>/dev/null)" in
+    "declare -a "*|"typeset -a "*|"typeset -g -a "*)
+      if [[ "${_MANDIBLE_SYNTAX_SOURCE:-}" == "$MANDIBLE_COMMAND_SYNTAX_DIR" && "${#_MANDIBLE_SYNTAX_RUNTIME[@]}" == 1 && -n "${_MANDIBLE_SYNTAX_RUNTIME[@]}" ]]; then
+        return 0
+      fi ;;
+
+  esac
+  unset _MANDIBLE_SYNTAX_RUNTIME
+  local selector="$MANDIBLE_COMMAND_SYNTAX_DIR/../scripts/bun-runtime.sh" runtime
+  if [[ -f "$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh" ]]; then
+    selector="$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh"
+  fi
+  runtime="$("$selector" --bun-only)" || return
+  [[ -n "$runtime" ]] || return 1
+  _MANDIBLE_SYNTAX_SOURCE="$MANDIBLE_COMMAND_SYNTAX_DIR"
+  _MANDIBLE_SYNTAX_RUNTIME=("$runtime")
+}
+
 mandible_syntax_tool() {
-  local runtime
-  runtime="$(mandible_bun_runtime)" || return
-  "$runtime" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" "$@"
+  mandible_prepare_syntax_runtime || return
+  "${_MANDIBLE_SYNTAX_RUNTIME[@]}" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" "$@"
 }
 mandible_command_syntax() {
   mandible_syntax_tool syntax "$1"
@@ -40,3 +59,9 @@ mandible_command_help() {
 mandible_parse_command() {
   mandible_syntax_tool parse "$@"
 }
+
+# API-only callers do not parse arguments. Entrypoints qualify in the parent
+# before their command substitutions; repeated sources retain the shell array.
+if [[ "${1:-}" != --mandible-syntax-definitions-only ]]; then
+  mandible_prepare_syntax_runtime || exit $?
+fi

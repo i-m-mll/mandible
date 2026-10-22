@@ -3,6 +3,7 @@
 
 set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+mandible_prepare_syntax_runtime || exit $?
 
 request_id=""
 reason=""

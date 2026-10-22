@@ -15,6 +15,8 @@ if [[ "${1:-}" == "daemon" ]]; then
   exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../src/cli/operational-logs.ts" "$@"
 fi
 
+mandible_prepare_syntax_runtime || exit $?
+
 logs_source() {
   case "$1" in
     claude) echo "claude_code" ;;

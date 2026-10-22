@@ -435,8 +435,8 @@ cmd_token() {
 }
 
 # Default secret-store service name for a user (issue e2cb93f). $1 is the JSON
-# body of GET /api/users/<ref>. Prints the service name, or nothing when no
-# default applies (the caller then requires an explicit --service).
+# body of GET /api/users/<ref>. Emits shell-quoted account, kind, and default
+# service assignments from one response parse.
 #
 #   kind human -> mandible-operator          (the local operator credential)
 #   kind agent -> mandible-agent-<app>, where <app> is the shortest active
@@ -448,17 +448,18 @@ cmd_token() {
 #   any other kind (system, external, …) -> no default. Those identities have no
 #                 established naming contract, and guessing one would create an
 #                 item no reader looks for.
-default_secret_service_for_user() {
-  printf '%s' "$1" | jq -r '
+secret_store_user_fields() {
+  printf '%s' "$1" | api_json_bindings '
     .user as $u
-    | if $u.kind == "human" then "mandible-operator"
+    | (if $u.kind == "human" then "mandible-operator"
       elif $u.kind == "agent" then
         (($u.bindings // [])
           | map(select(.binding_type == "app_name" and .status == "active") | .value)
           | sort_by(length, .)
           | first) as $app
         | if $app == null then "" else "mandible-agent-" + $app end
-      else "" end'
+      else "" end) as $service
+    | {account: ($u.slug // ""), user_kind: ($u.kind // "unknown"), default_service: $service}'
 }
 
 token_mint() {
@@ -480,13 +481,14 @@ token_mint() {
   if (( store )); then
     secret_backend_available \
       || die "${RED}Cannot store the token: $(secret_backend_unavailable_reason).${RESET}" 1
-    local user_json user_kind
+    local user_json user_kind default_service user_bindings
     user_json="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
-    account="$(printf '%s' "$user_json" | jq -r '.user.slug // ""')"
+    user_bindings="$(secret_store_user_fields "$user_json")" \
+      || die "${RED}Could not resolve valid secret-store user fields for '$ref'.${RESET}" 1
+    eval "$user_bindings"
     [[ -n "$account" ]] || die "${RED}Could not resolve the user slug for '$ref'.${RESET}" 1
-    user_kind="$(printf '%s' "$user_json" | jq -r '.user.kind // "unknown"')"
     if (( ! service_set )); then
-      service="$(default_secret_service_for_user "$user_json")"
+      service="$default_service"
       if [[ -z "$service" ]]; then
         case "$user_kind" in
           agent) die "No default secret service name for '$ref': the agent has no active app_name binding. Pass --service <name>." 2 ;;
@@ -549,9 +551,10 @@ token_mint() {
     return 0
   fi
 
-  local token credential_id result
-  token="$(printf '%s' "$response" | jq -r '.token // ""')"
-  credential_id="$(printf '%s' "$response" | jq -r '.credential.id // ""')"
+  local token credential_id result mint_bindings
+  mint_bindings="$(printf '%s' "$response" | api_json_bindings '{token: (.token // ""), credential_id: (.credential.id // "")}')" \
+    || die "${RED}Token minted but the daemon returned malformed token or credential fields; no secret was stored.${RESET}" 1
+  eval "$mint_bindings"
   [[ -n "$token" ]] \
     || die "${RED}Token minted (credential ${credential_id:-unknown}) but the daemon returned no token value to store.${RESET} Revoke it with: mandible user token revoke ${credential_id:-<credential-id>}" 1
   printf '%s' "$token" | secret_set "$service" "$account" \

@@ -53,6 +53,47 @@ afterEach(async () => {
 
 const lines = (requests: RecordedRequest[]) => requests.map((request) => `${request.method} ${request.url}`);
 
+it("refuses non-scalar metadata and inherited identity fields without evaluating response commands", async () => {
+  const marker = path.join(scratchDir("response-eval"), "executed");
+  for (const value of [["safe", "touch", marker], { unexpected: "object" }]) {
+    for (const field of ["db_path", "source_db_path"]) {
+      const target = await listenForInstancePreflight({ instance: { ...MAIN_INSTANCE, [field]: value } });
+      const result = await bash(capture("POST", "/api/ledger/issues/abc/comments"), target.port, { MANDIBLE_NO_KEYCHAIN_TOKEN: "1" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("cli_instance_metadata_unknown");
+      expect(lines(target.requests)).toEqual(["GET /api/instance"]);
+      expect(fs.existsSync(marker)).toBe(false);
+    }
+    for (const field of ["pid", "conversation_id"]) {
+      const target = await listenForInstancePreflight({ routeResponses: [{ method: "GET", url: "/api/sessions/invalid-row", response: {
+        status: 200, body: { pid: 123, conversation_id: "caller", [field]: value },
+      } }] });
+      const result = await bash("set -e; source cli/api.sh; api_scope_inherited_identity; printf reached", target.port, {
+        MANDIBLE_SESSION_ID: "invalid-row", CODEX_THREAD_ID: "caller", CODEX_SESSION_ID: "",
+        CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).not.toContain("reached");
+      expect(fs.existsSync(marker)).toBe(false);
+    }
+  }
+});
+
+it("validates a whole assignment record before output and quotes scalar metacharacters literally", async () => {
+  const marker = path.join(scratchDir("binding-eval"), "executed");
+  const literal = `literal'; touch ${marker}; #`;
+  const json = JSON.stringify({ early: literal, later: ["safe", "touch", marker] });
+  const target = await listenForInstancePreflight({ instance: { ...MAIN_INSTANCE, role: "dev", db_path: literal, source_db_path: literal } });
+  const refusal = await bash(capture("POST", "/api/ledger/issues/abc/comments"), target.port, { MANDIBLE_NO_KEYCHAIN_TOKEN: "1" });
+  expect(refusal.stdout).toContain("cli_instance_mutation_forbidden");
+  expect(JSON.parse(refusal.stdout.slice(refusal.stdout.indexOf("\n") + 1)).message).toContain(literal);
+  const file = path.join(scratchDir("binding-json"), "fields.json"); fs.writeFileSync(file, json);
+  const result = await bash(`source cli/api.sh; api_json_bindings '.' '${file}'`, target.port);
+  expect(result.status).not.toBe(0);
+  expect(result.stdout).toBe("");
+  expect(fs.existsSync(marker)).toBe(false);
+});
+
 /** A bash script that sends one request through api.sh and prints `<status>\n<body>`. */
 function capture(method: string, requestPath: string, body = "{}", strict = true): string {
   return [
