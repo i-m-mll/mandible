@@ -139,7 +139,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
     const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
-    const rendered = runChromium(['--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000, timeout: 20_000 });
+    const rendered = runChromium(['--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));

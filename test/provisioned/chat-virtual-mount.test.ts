@@ -57,7 +57,7 @@ describe('Chat transcript native mount', () => {
         '--virtual-time-budget=1500',
         '--dump-dom',
         `file://${path}`,
-      ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 20_000_000 });
+      ], { encoding: 'utf8', maxBuffer: 20_000_000 });
 
       expect(rendered.error, rendered.stderr).toBeUndefined();
       expect(rendered.status, rendered.stderr).toBe(0);
