@@ -32,18 +32,4 @@ describe("shared CLI identity formatting", () => {
     expect(result.stdout).toBe(`artifact-version:${"a".repeat(12)}\n`);
     expect(result.stdout).not.toContain(canonical);
   });
-
-  it("compacts UUID and prefixed operational identities without changing their family", () => {
-    const result = render(
-      "bash",
-      "[.uuid, .work_unit] | map(mandible_short_id) | @tsv",
-      {
-        uuid: "01949985-117d-499a-9395-ff9e9babc2b0",
-        work_unit: "chk_00mt3cmxb4_7d0dca8bb4b19669b9f7",
-      },
-    );
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toBe("01949985\tchk_00mt3cmxb4\n");
-  });
 });

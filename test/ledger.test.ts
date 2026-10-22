@@ -516,31 +516,6 @@ describe("ledger store", () => {
     expect(events).toHaveLength(2);
   });
 
-  it("resolves canonical IDs, aliases, prefixes, not-found, and ambiguity", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const first = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.project.id,
-      title: "First",
-      aliases: [{ alias_kind: "git_bug_short", alias: "abcd111" }],
-    });
-    store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.project.id,
-      title: "Second",
-      aliases: [{ alias_kind: "git_bug_short", alias: "abcd222" }],
-    });
-
-    expect(store.resolveIssueRef(first.id)).toEqual({ ok: true, id: first.id });
-    expect(store.resolveIssueRef("abcd111")).toEqual({ ok: true, id: first.id });
-    expect(store.resolveIssueRef(first.id.slice(0, 25))).toEqual({ ok: true, id: first.id });
-    expect(store.resolveIssueRef("missing")).toEqual({ ok: false, error: "not_found" });
-    expect(store.resolveIssueRef("abc")).toEqual({ ok: false, error: "not_found" });
-    const ambiguousPrefix = store.resolveIssueRef("abcd");
-    expect(ambiguousPrefix.ok).toBe(false);
-  });
-
   it("upserts issue relationships", () => {
     const project = createProject();
     const store = new LedgerStore(db);

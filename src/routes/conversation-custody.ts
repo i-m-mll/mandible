@@ -1,3 +1,4 @@
+import { entityRefs } from "../entity-refs.js";
 import type { Db } from "../db.js";
 import { getDb } from "../db.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
@@ -62,7 +63,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/conversations/:id/custody", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/custody", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   router.post("/api/conversations/:id/custody/capture", (req, res) => {
     try {
@@ -143,7 +144,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/conversations/:id/custody/capture", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/capture", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   router.post("/api/conversations/:id/custody/verify", (req, res) => {
     try {
@@ -155,7 +156,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/conversations/:id/custody/verify", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/verify", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   router.post("/api/conversations/:id/custody/archive", (req, res) => {
     try {
@@ -172,7 +173,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/conversations/:id/custody/archive", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/archive", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   router.post("/api/conversations/:id/custody/stage-restore", (req, res) => {
     try {
@@ -186,7 +187,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/conversations/:id/custody/stage-restore", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/stage-restore", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   router.post("/api/conversation-custody/import", (req, res) => {
     try {
