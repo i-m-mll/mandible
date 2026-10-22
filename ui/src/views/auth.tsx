@@ -181,7 +181,6 @@ export type AuthQueueViewProps = {
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
-  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
   retainFinalizedSelection?: boolean;
@@ -738,8 +737,6 @@ function AuthRequestDetail({
   actions,
   executionOutput,
   notice,
-  onUpdateField,
-  mutationsAllowed = true,
   autoShowConsoleOnApproval = true,
   autoReturnToAbstractOnSuccess = true,
 }: {
@@ -752,8 +749,6 @@ function AuthRequestDetail({
   actions?: JSX.Element | null;
   executionOutput?: string;
   notice?: JSX.Element | null;
-  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
-  mutationsAllowed?: boolean;
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
 }): JSX.Element {
@@ -762,8 +757,6 @@ function AuthRequestDetail({
   const [showDirtyNote, setShowDirtyNote] = useState(true);
   const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
-  const [editingCommitMsg, setEditingCommitMsg] = useState(false);
-  const [editCommitValue, setEditCommitValue] = useState('');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -1251,65 +1244,12 @@ function AuthRequestDetail({
                 expanded={showCommit}
                 onExpandedChange={setShowCommit}
                 bodyClassName="spec-panel"
-                actions={onUpdateField && mutationsAllowed
-                    && (status === 'pending' || (failedLike && !isCanonicalMessage))
-                    && !editingCommitMsg && (
-                    <button
-                      type="button"
-                      className="panel__edit-btn"
-                      onClick={() => {
-                        setEditCommitValue(commitMsg);
-                        setEditingCommitMsg(true);
-                      }}
-                    >
-                      edit
-                    </button>
-                  )}
               >
-                  {editingCommitMsg ? (
-                    <>
-                      <textarea
-                        className="panel__edit-textarea"
-                        aria-label="Description"
-                        value={editCommitValue}
-                        onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
-                        disabled={!mutationsAllowed}
-                        rows={8}
-                      />
-                      <div className="panel__edit-actions">
-                        <button
-                          type="button"
-                          className="panel__edit-save"
-                          disabled={!mutationsAllowed || editCommitValue.trim() === ''}
-                          onClick={() => {
-                            const id = getAuthId(request);
-                            if (id && onUpdateField && mutationsAllowed) {
-                              void onUpdateField(id, 'commit_message', editCommitValue);
-                            }
-                            setEditingCommitMsg(false);
-                          }}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className="panel__edit-cancel"
-                          onClick={() => setEditingCommitMsg(false)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </>
-                  ) : commitHtml ? (
-                    <div
-                      className="rendered-markdown"
-                      dangerouslySetInnerHTML={{ __html: commitHtml }}
-                    />
-                  ) : (
-                    <div className="spec-panel--empty">
-                      No Description was recorded for this historical request.
-                    </div>
-                  )}
+                {commitHtml ? (
+                  <div className="rendered-markdown" dangerouslySetInnerHTML={{ __html: commitHtml }} />
+                ) : (
+                  <div className="spec-panel--empty">No Description was recorded for this historical request.</div>
+                )}
               </CollapsiblePanel>
               {isCanonicalMessage && request.type === 'merge' && (
                 <details className="auth-detail__git-message">
@@ -1914,7 +1854,6 @@ export function AuthQueueView({
   onApprove,
   onReject,
   onRetry,
-  onUpdateField,
   sidebarHidden = false,
   daemonReady = true,
   instance = null,
@@ -3201,8 +3140,6 @@ export function AuthQueueView({
                 />
               ) : undefined}
               actions={renderDetailActions(request)}
-              onUpdateField={onUpdateField}
-              mutationsAllowed={canPerformOperation(instance, 'PUT', `/api/auth/request/${encodeURIComponent(id)}`)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />

@@ -6,6 +6,8 @@ Every new approval carries one authored Description explaining the action being 
 
 A merge uses the same document as its exact reviewed Git message. The CLI composes the merge subject and structured Verification section, then the daemon canonicalizes and hashes those exact bytes. Description is the readable rendering of that document; Exact Git message exposes the bound bytes. Other actions do not receive an inferred Git message.
 
+The browser displays Description read-only. Ordinary local browser access does not supply the durable credential and custody preconditions required by the existing revision endpoint. Authorized API revisions retain their existing credential, lifecycle and custody checks; the browser does not infer recovery authority.
+
 The API and database retain the historical `commit_message` key as the single Description authority. `commit_message_digest` retains its existing meaning for canonical Git bytes. No additional authored explanation, derived database column or backfill exists. `diff_summary` remains diff content and cannot substitute for Description. Command, working directory, action type and execution context remain separate exact approval evidence.
 
 Historical requests retain their original text, null values, snapshot keys and signed evidence. Reading a historical request never creates or normalizes Description. The approval view explicitly identifies missing historical text. Existing pending or approved requests remain under their original authorization contract; the new requirement applies to new submissions and newly authored Description revisions.

@@ -1,3 +1,10 @@
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { Router } from "../src/server.js";
+import { uniqueMissingPath } from "./helpers/auth-queue-fixtures.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { setDb } from "../src/db.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -59,6 +66,48 @@ function requesterFixture() {
 }
 
 describe("auth request immutable lifecycle", () => {
+  it("refuses the actual local browser identity without changing revision authority", async () => {
+    const { db, queue, submit } = requesterFixture();
+    setDb(db);
+    const request = submit();
+    const authenticator = new ClientAuthenticator(db, {
+      secretsDir: uniqueMissingPath("description-browser-auth"), contextVerificationKeyPem: "",
+    });
+    const identity = authenticator.localBrowserIdentity();
+    expect(identity).toMatchObject({ method: "local_os_user", source: "local_os_user", credential_id: null });
+    const router = new Router({ clientAuth: {
+      authenticate: () => identity, mode: () => "strict", recordUnattributedWrite: () => undefined,
+    } });
+    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }));
+    const before = queue.listLifecycleEvents(request.id);
+    for (const operator_recovery of [false,true]) {
+      const refused = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
+        body: { commit_message: "Browser cannot claim durable custody.", expected_revision: 1,
+          expected_custody_generation: 1, operator_recovery } });
+      expect(refused.status).toBe(401);
+      expect(refused.body).toMatchObject({ code: "durable_credential_required" });
+    }
+    expect(queue.getRequest(request.id)?.commit_message).toBe(request.commit_message);
+    expect(queue.listLifecycleEvents(request.id)).toEqual(before);
+    queue.dispose();
+  });
+
+  it("preserves canonical Description revisions by the existing durable credential owner", async () => {
+    const { db, queue, operator, credential, submit } = requesterFixture();
+    setDb(db);
+    const request = submit();
+    const router = authenticatedTestRouter(operator, { credentialId: credential.id });
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    const edited = "Merge feature/original: Explain the reviewed change\r\n\r\nWhy:\r\nMake the action understandable.\r\n\r\nVerification:\r\nThe edited document's checks pass.\r\n";
+    const result = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
+      body: { commit_message: edited, canonical_message: true, verification: "The edited document's checks pass.", expected_revision: 1, expected_custody_generation: 1 } });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(queue.getRequest(request.id)?.commit_message).toContain("The edited document's checks pass.");
+    expect(queue.getRequest(request.id)?.commit_message).not.toContain("\r");
+    expect(queue.getRequest(request.id)?.commit_message_digest).not.toBe(request.commit_message_digest);
+    queue.dispose();
+  });
+
   // Issue 8ae6b5f — new requests carry no spec, but a spec stored by an older
   // request is part of its reviewed record: it stays readable, its lifecycle
   // receipts still verify, and guarded transitions neither need nor change it.

@@ -86,7 +86,6 @@ function renderView(
   daemonReady: boolean,
   onApprove: (id: string) => void,
   instance?: InstanceInfo | null,
-  onUpdateField?: (requestId: string, field: string, value: string) => void,
   selectedAuthId: string | null = 'req-1',
 ) {
   return render(
@@ -101,7 +100,6 @@ function renderView(
       onReject={() => undefined}
       onRetry={() => undefined}
       onDismiss={() => undefined}
-      onUpdateField={onUpdateField}
     />,
   );
 }
@@ -183,22 +181,17 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
-  it('allows copied-queue metadata edits while keeping approval disabled', () => {
+  it('shows copied Description as read-only while keeping approval disabled', () => {
     const onApprove = vi.fn();
-    const onUpdateField = vi.fn();
-    renderView(true, onApprove, previewInstance, onUpdateField);
+    renderView(true, onApprove, previewInstance);
 
     expect(screen.getByText('Description')).toBeTruthy();
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
 
-    fireEvent.click(screen.getByText('edit'));
-    const textarea = screen.getByRole('textbox', { name: 'Description' }) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'Local copied review text' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    expect(onUpdateField).toHaveBeenCalledWith('req-1', 'commit_message', 'Local copied review text');
+    expect(screen.queryByText('edit')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull();
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
   });
@@ -218,6 +211,7 @@ describe('Auth Description presentation', () => {
       expect(screen.queryByText(/git.*default/i)).toBeNull();
       expect(document.querySelector('.rendered-markdown script')).toBeNull();
       expect(screen.queryByText('Exact Git message')).toBeNull();
+      expect(screen.queryByText('edit')).toBeNull();
     });
   }
 });
