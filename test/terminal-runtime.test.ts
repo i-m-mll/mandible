@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import SqliteDatabase from '../src/sqlite.js';
-import { migrate, setDb } from '../src/db.js';
+import { setDb } from '../src/db.js';
 import { SessionManager } from '../src/session-manager.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 
 it('runs real shell input, resize, and exit without managed provider identity', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mandible-terminal-proof-'));
-  const db = new SqliteDatabase(':memory:'); migrate(db); setDb(db);
+  const db = migratedMemoryDb(); setDb(db);
   const manager = new SessionManager(db, () => {});
   try {
     const session = manager.create({ label:'Owned shell proof', command:'/bin/sh', args:[], cwd:root, backend_type:'pty' });
