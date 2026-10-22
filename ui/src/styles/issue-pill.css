@@ -42,6 +42,7 @@
 
 .issue-reference-row {
   display: flex;
+  min-height: 24px;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
