@@ -26,6 +26,7 @@ import {
 import { chatItemIdentityKey } from '../../src/conversation-control/provider-live.js';
 import type { ChatItem } from '../../src/parsers/types.js';
 import { queryClient } from '../../ui/src/query/client.js';
+import { CHAT_VIEW_STATE_KEY } from '../../ui/src/views/conversation-view-state.js';
 import { conversationKeys } from '../../ui/src/query/conversationKeys.js';
 import type { ConversationTranscriptData } from '../../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
@@ -1666,8 +1667,8 @@ describe('Chat route intent', () => {
       { ...conversation, id, title: `Chat ${id}` },
       [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
     ));
-    const view = (conversationRef: string | null, sessionRef: string | null = null) => (
-      <ConversationsView consoleSessions={[]} initialConversationId={conversationRef} initialSessionId={sessionRef}
+    const view = (conversationRef: string | null, sessionRef: string | null = null, routeParams?: Record<string, string>) => (
+      <ConversationsView consoleSessions={[]} initialConversationId={conversationRef} initialSessionId={sessionRef} routeParams={routeParams}
         onSelectSession={() => undefined} onNewConversation={async () => { throw new Error('unused'); }} />
     );
     return view;
@@ -1741,7 +1742,7 @@ describe('Chat route intent', () => {
       conversations: [{ ...conversation, id: 'A', title: 'Chat A', block_count: 1, canonical_project_id: null, canonical_project_key: null }],
     }] });
     window.history.replaceState(null, '', '#/console?session=B&turn=old&agent_session=agent&sidebar=hidden&context=keep');
-    const mounted = render(view(null, 'B'));
+    let mounted = render(view(null, 'B'));
     const row = await screen.findByRole('button', { name: 'Open conversation Chat A' });
     if (action === 'row') fireEvent.click(row);
     else fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Chat A' } });
@@ -1751,7 +1752,17 @@ describe('Chat route intent', () => {
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     if (action === 'row') {
       expect(Object.fromEntries(params)).toEqual({ conversation: 'A', agent_session: 'agent', sidebar: 'hidden', context: 'keep' });
-    } else expect(params.get('context')).toBe('keep');
+    } else {
+      expect(Object.fromEntries(params)).toEqual({ agent_session: 'agent', sidebar: 'hidden', context: 'keep' });
+      await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').lastSelection)
+        .toEqual({ type: 'conversation', id: 'A' }));
+      const lookupsBeforeRefresh = vi.mocked(api.resolveChatRouteTarget).mock.calls.length;
+      mounted.unmount();
+      queryClient.clear();
+      mounted = render(view(params.get('conversation'), params.get('session')));
+      await screen.findByText('Transcript A');
+      expect(api.resolveChatRouteTarget).toHaveBeenCalledTimes(lookupsBeforeRefresh);
+    }
     vi.mocked(api.resolveChatRouteTarget).mockImplementation(async (target) => ({ status: 'resolved', selection: { type: 'conversation', id: target.id } }));
     window.history.replaceState(null, '', '#/console?session=C');
     mounted.rerender(view(null, 'C'));
@@ -1760,4 +1771,38 @@ describe('Chat route intent', () => {
     mounted.rerender(view(null, 'B'));
     await screen.findByText('Transcript B');
   });
+
+  it.each(['pending', 'cancelled'] as const)('ignores other tabs while Chat intent is %s', async (state) => {
+    const view = setupRouteHistory();
+    const pending = deferred<api.ChatRouteResolution>();
+    vi.mocked(api.resolveChatRouteTarget).mockReturnValue(pending.promise);
+    vi.mocked(api.getConversationSidebar).mockResolvedValue({ limit: 50, groups: [{
+      key: 'chats', kind: 'chats', label: 'Chats', total: 1, next_cursor: null,
+      conversations: [{ ...conversation, id: 'A', title: 'Chat A', block_count: 1, canonical_project_id: null, canonical_project_key: null }],
+    }] });
+    const routeParams = { session: 'B', turn: 'B-block', sidebar: 'hidden', context: 'chat-context' };
+    const scoped = (active: boolean) => <AppShellProvider value={{ active,
+      rightSidebar: null, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined,
+      registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined,
+    }}>{view(null, 'B', routeParams)}</AppShellProvider>;
+    window.history.replaceState(null, '', '#/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
+    const mounted = render(scoped(true));
+    if (state === 'cancelled') {
+      fireEvent.click(await screen.findByRole('button', { name: 'Open conversation Chat A' }));
+      await screen.findByText('Transcript A');
+    }
+    window.history.replaceState(null, '', '#/issues?issue=another&block=foreign-block&context=issues-context');
+    mounted.rerender(scoped(false));
+    await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
+    if (state === 'cancelled') {
+      expect(screen.getByText('Transcript A')).toBeTruthy();
+      expect(screen.queryByText('Transcript B')).toBeNull();
+    } else {
+      await screen.findByText('Transcript B');
+      expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining({ turn: 'B-block' }));
+    }
+    expect(api.getConversationWindow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ block: 'foreign-block' }));
+    expect(window.location.hash).toBe('#/issues?issue=another&block=foreign-block&context=issues-context');
+  });
+
 });

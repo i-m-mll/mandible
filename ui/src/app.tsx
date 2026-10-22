@@ -3084,6 +3084,7 @@ function App(): JSX.Element {
               consoleSessions={state.consoleSessions}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
+              routeParams={tabRoute.params}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
               chatEntityLinkAction={state.settings.chat_entity_link_action === 'open' ? 'open' : 'preview'}

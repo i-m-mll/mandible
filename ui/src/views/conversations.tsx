@@ -143,7 +143,7 @@ import {
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAccessState } from '../client-auth-token';
-import { routeHashWithParams } from '../routing';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 import {
   flattenConversationTranscript,
   reconcileConversationWindow,
@@ -891,6 +891,7 @@ export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
   initialConversationId: string | null;
   initialSessionId: string | null;
+  routeParams?: Record<string, string>;
   sidebarHidden?: boolean;
   sidebarGroupLimit?: number;
   chatEntityLinkAction?: ChatEntityClickAction;
@@ -1879,7 +1880,7 @@ export function ConversationDetail({
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
-      window.history.replaceState(null, '', conversationLatestHref(window.location.hash, conversationId));
+      replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
       setNavigationTarget({
         key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
         kind: 'latest',
@@ -2988,6 +2989,7 @@ export function ConversationsView({
   consoleSessions,
   initialConversationId,
   initialSessionId,
+  routeParams,
   sidebarHidden = false,
   sidebarGroupLimit: rawSidebarGroupLimit,
   chatEntityLinkAction = 'preview',
@@ -2996,12 +2998,19 @@ export function ConversationsView({
   onNewConversation,
 }: ConversationsViewProps): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
+  const { active: chatViewActive } = useAppShell();
   const [chatViewState, setChatViewState] = useChatViewState();
   const routeTarget = useMemo(() => initialConversationId
     ? { type: 'conversation' as const, id: initialConversationId }
     : initialSessionId ? { type: 'session' as const, id: initialSessionId } : null,
   [initialConversationId, initialSessionId]);
-  const routeAnchor = conversationAnchorFromHash(window.location.hash);
+  const routeAnchorRef = useRef<ConversationAnchor | null>(null);
+  if (routeParams) {
+    routeAnchorRef.current = conversationAnchorFromHash(`?${new URLSearchParams(routeParams)}`);
+  } else if (chatViewActive && parseRouteFromHash(window.location.hash).tab === 'console') {
+    routeAnchorRef.current = conversationAnchorFromHash(window.location.hash);
+  }
+  const routeAnchor = routeAnchorRef.current;
   const routeIdentity = JSON.stringify([routeTarget, routeAnchor]);
   const routeIntent = useRef({ identity: routeIdentity, generation: 0 });
   if (routeIntent.current.identity !== routeIdentity) {
@@ -3025,23 +3034,30 @@ export function ConversationsView({
   }, queryClient);
   const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;
   const selection = routeIntentActive ? resolvedRouteSelection : manualSelection;
-  const selectionIntent = useRef({ routeIntentKey, routeTarget, selection });
-  selectionIntent.current = { routeIntentKey, routeTarget, selection };
+  const selectionIntent = useRef({ routeIntentKey, routeTarget, routeParams, selection });
+  selectionIntent.current = { routeIntentKey, routeTarget, routeParams, selection };
   const setSelection = useCallback((next: ChatSelection | ((current: ChatSelection) => ChatSelection)) => {
     setOverriddenIntent(selectionIntent.current.routeIntentKey);
     setManualSelection(typeof next === 'function' ? next(selectionIntent.current.selection) : next);
   }, []);
-  const navigateChatRoute = useCallback((target: { type: 'conversation' | 'session'; id: string }, anchor?: ConversationAnchor) => {
+  const navigateChatRoute = useCallback((target: { type: 'conversation' | 'session'; id: string } | null, anchor?: ConversationAnchor, replace = false) => {
     const anchorParams = anchor && 'position' in anchor ? { position: String(anchor.position) } : anchor;
     const nextHash = routeHashWithParams(window.location.hash, 'console', {
-      [target.type]: target.id,
+      ...(target ? { [target.type]: target.id } : {}),
       ...(anchorParams ?? {}),
     }, ['conversation', 'session', 'block', 'turn', 'position']);
     // The hash changes before the app publishes new target props. Keep that
     // intermediate render inside the deliberate row action's intent.
-    routeIntent.current.identity = JSON.stringify([selectionIntent.current.routeTarget, anchor ?? null]);
-    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+    if (!selectionIntent.current.routeParams) {
+      routeIntent.current.identity = JSON.stringify([selectionIntent.current.routeTarget, anchor ?? null]);
+    }
+    if (replace) replaceRouteHash(nextHash);
+    else if (window.location.hash !== nextHash) window.location.hash = nextHash;
   }, []);
+  const overrideRouteWithFilter = useCallback(() => {
+    setSelection(selectionIntent.current.selection);
+    navigateChatRoute(null, undefined, true);
+  }, [navigateChatRoute, setSelection]);
   const handleNavigateConversation = useCallback((conversationId: string, target?: ConversationAnchor) => {
     queryClient.setQueryData(conversationKeys.routeTarget({ type: 'conversation', id: conversationId }), {
       status: 'resolved', selection: { type: 'conversation', id: conversationId },
@@ -4015,7 +4031,7 @@ export function ConversationsView({
           <>
           <SidebarSearchFilterHeader
             value={search}
-            onValueChange={(value) => { setSelection(selection); setSearch(value); }}
+            onValueChange={(value) => { overrideRouteWithFilter(); setSearch(value); }}
             placeholder="Search chats"
             searchAriaLabel="Search chats"
             clearAriaLabel="Clear chat search"
@@ -4050,7 +4066,7 @@ export function ConversationsView({
                         key={lifecycle}
                         type="button"
                         className={`conv-filter-btn${conversationLifecycle === lifecycle ? ' conv-filter-btn--active' : ''}`}
-                        onClick={() => { setSelection(selection); setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle })); }}
+                        onClick={() => { overrideRouteWithFilter(); setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle })); }}
                       >
                         {lifecycle === 'active' ? 'Active' : 'Archived'}
                       </button>
@@ -4065,7 +4081,7 @@ export function ConversationsView({
                         key={src}
                         type="button"
                         className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
-                        onClick={() => { setSelection(selection); setSourceFilter(src); }}
+                        onClick={() => { overrideRouteWithFilter(); setSourceFilter(src); }}
                       >
                         {src === 'all' ? 'All' : SOURCE_LABELS[src]}
                       </button>
@@ -4077,7 +4093,7 @@ export function ConversationsView({
                     <input
                       type="checkbox"
                       checked={starredOnly}
-                      onChange={() => { setSelection(selection); setStarredOnly((prev) => !prev); }}
+                      onChange={() => { overrideRouteWithFilter(); setStarredOnly((prev) => !prev); }}
                     />
                     <span>Starred only</span>
                   </label>
@@ -4085,7 +4101,7 @@ export function ConversationsView({
                     <input
                       type="checkbox"
                       checked={hideEmpty}
-                      onChange={() => { setSelection(selection); setHideEmpty((prev) => !prev); }}
+                      onChange={() => { overrideRouteWithFilter(); setHideEmpty((prev) => !prev); }}
                     />
                     <span>Hide empty chats</span>
                   </label>
@@ -4096,14 +4112,14 @@ export function ConversationsView({
                     <button
                       type="button"
                       className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
-                      onClick={() => { setSelection(selection); setSearchMode('title'); }}
+                      onClick={() => { overrideRouteWithFilter(); setSearchMode('title'); }}
                     >
                       Title
                     </button>
                     <button
                       type="button"
                       className={`conv-filter-btn${searchMode === 'full' ? ' conv-filter-btn--active' : ''}`}
-                      onClick={() => { setSelection(selection); setSearchMode('full'); }}
+                      onClick={() => { overrideRouteWithFilter(); setSearchMode('full'); }}
                     >
                       Full text
                     </button>
@@ -4114,7 +4130,7 @@ export function ConversationsView({
                   <select
                     className="conv-sort"
                     value={sort}
-                    onChange={(e) => { setSelection(selection); setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks'); }}
+                    onChange={(e) => { overrideRouteWithFilter(); setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks'); }}
                   >
                     <option value="date">Recent activity</option>
                     <option value="blocks">Message count</option>
