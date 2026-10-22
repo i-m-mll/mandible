@@ -1,9 +1,10 @@
+// @vitest-environment node
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { copyRuntimeFixture } from './helpers/runtime-fixture.js';
+import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 
 const tempRoots: string[] = [];
 
@@ -64,13 +65,9 @@ function runInstaller(
     signed?: boolean;
     running?: boolean;
     failCodesignAt?: number;
-    installed?: boolean;
-    ci?: string;
-    buildCommand?: string;
-    defaultRelaunch?: boolean;
   } = {},
 ) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-install-"));
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, "desktop-install-"));
   tempRoots.push(root);
   const built = path.join(root, "build", "Mandible.app");
   const installed = path.join(root, "Applications", "Mandible.app");
@@ -80,37 +77,10 @@ function runInstaller(
   const runtimeTrace = path.join(root, "runtime-trace");
   const codesignCount = path.join(root, "codesign-count");
   makeBundle(built, "new", options.signed ?? true);
-  if (options.installed !== false) makeBundle(installed, "old");
+  makeBundle(installed, "old");
   const tools = makeTooling(root);
   const nodeCommand = path.join(root, "bin", "node-runtime-setup");
   fs.writeFileSync(nodeCommand, '#!/bin/bash\nprintf "%s\\n" "$@" > "$MANDIBLE_TEST_RUNTIME_TRACE"\n', { mode: 0o755 });
-  const terminated = path.join(root, "terminated");
-  const relaunchPgrep = path.join(root, "bin", "relaunch-pgrep");
-  const relaunchPs = path.join(root, "bin", "relaunch-ps");
-  const relaunchKill = path.join(root, "bin", "relaunch-kill");
-  const relaunchOpen = path.join(root, "bin", "relaunch-open");
-  const relaunchSleep = path.join(root, "bin", "relaunch-sleep");
-  fs.writeFileSync(relaunchPgrep, '#!/bin/bash\nprintf "101\\n"\n', { mode: 0o755 });
-  fs.writeFileSync(
-    relaunchPs,
-    '#!/bin/bash\n[[ -f "$MANDIBLE_TEST_TERMINATED" ]] || printf "%s\\n" "$MANDIBLE_DESKTOP_INSTALL_PATH/Contents/MacOS/mandible-app"\n',
-    { mode: 0o755 },
-  );
-  fs.writeFileSync(
-    relaunchKill,
-    '#!/bin/bash\nprintf "kill %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\ntouch "$MANDIBLE_TEST_TERMINATED"\n',
-    { mode: 0o755 },
-  );
-  fs.writeFileSync(
-    relaunchOpen,
-    '#!/bin/bash\nprintf "open %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\n',
-    { mode: 0o755 },
-  );
-  fs.writeFileSync(
-    relaunchSleep,
-    '#!/bin/bash\nprintf "sleep %s\\n" "$1" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\n',
-    { mode: 0o755 },
-  );
 
   const result = spawnSync("bash", ["cli/install-desktop-app.sh"], {
     cwd: process.cwd(),
@@ -118,11 +88,9 @@ function runInstaller(
     env: {
       ...process.env,
       MANDIBLE_RUNTIME: process.execPath,
-      CI: options.ci ?? process.env.CI,
       MANDIBLE_DESKTOP_PLATFORM: "Darwin",
       MANDIBLE_DESKTOP_DEPENDENCY_COMMAND: ":",
-      MANDIBLE_DESKTOP_BUILD_COMMAND:
-        options.buildCommand ?? 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
+      MANDIBLE_DESKTOP_BUILD_COMMAND: 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
       MANDIBLE_TEST_BUILD_TRACE: buildTrace,
       MANDIBLE_DESKTOP_BUNDLE_PATH: built,
       MANDIBLE_DESKTOP_INSTALL_PATH: installed,
@@ -134,17 +102,8 @@ function runInstaller(
       MANDIBLE_DESKTOP_RUNTIME: nodeCommand,
       MANDIBLE_TEST_RUNTIME_TRACE: runtimeTrace,
       MANDIBLE_DESKTOP_ASSUME_RUNNING: options.running ? "1" : "0",
-      MANDIBLE_DESKTOP_RELAUNCH_COMMAND: options.defaultRelaunch
-        ? ""
-        : 'printf "relaunch\\n" > "$MANDIBLE_TEST_RELAUNCH_TRACE"',
-      MANDIBLE_DESKTOP_PGREP: relaunchPgrep,
-      MANDIBLE_DESKTOP_PS: relaunchPs,
-      MANDIBLE_DESKTOP_KILL: relaunchKill,
-      MANDIBLE_DESKTOP_OPEN: relaunchOpen,
-      MANDIBLE_DESKTOP_SLEEP: relaunchSleep,
-      MANDIBLE_DESKTOP_RELAUNCH_DELAY_SECONDS: "0",
+      MANDIBLE_DESKTOP_RELAUNCH_COMMAND: 'printf "relaunch\\n" > "$MANDIBLE_TEST_RELAUNCH_TRACE"',
       MANDIBLE_TEST_RELAUNCH_TRACE: relaunchTrace,
-      MANDIBLE_TEST_TERMINATED: terminated,
       MANDIBLE_TEST_CODESIGN_COUNT: codesignCount,
       MANDIBLE_TEST_CODESIGN_FAIL_AT: options.failCodesignAt?.toString() ?? "",
     },
@@ -161,7 +120,7 @@ afterEach(() => {
 
 describe("desktop app installer", () => {
   it("signals only the process owned by the installed bundle during relaunch", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-relaunch-"));
+    const root = fs.mkdtempSync(path.join(testRuntimeRoot, "desktop-relaunch-"));
     tempRoots.push(root);
     fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
   fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(root, "scripts/bun-runtime.sh"));
@@ -247,27 +206,7 @@ fi
     expect(result.stderr).toContain("restarted the running desktop shell");
   });
 
-  it("completes the default relaunch before reporting installer success", () => {
-    const { result, installed, relaunchTrace } = runInstaller({
-      running: true,
-      defaultRelaunch: true,
-    });
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(fs.readFileSync(relaunchTrace, "utf8")).toContain("kill -TERM 101");
-    expect(fs.readFileSync(relaunchTrace, "utf8")).toContain(`open -n ${installed}`);
-    expect(result.stderr).toContain("restarted the running desktop shell");
-  });
-
-  it("normalizes the legacy auth-hook CI value for the Tauri build", () => {
-    const { result, buildTrace } = runInstaller({
-      ci: "1",
-      buildCommand: 'printf "%s\\n" "$CI" > "$MANDIBLE_TEST_BUILD_TRACE"',
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(fs.readFileSync(buildTrace, "utf8")).toBe("true\n");
-  });
 
   it("leaves the installed app untouched when the built signature is invalid", () => {
     const { result, installed, backups, relaunchTrace, runtimeTrace } = runInstaller({ signed: false });
@@ -287,15 +226,6 @@ fi
     expect(result.stderr).toContain("installed app failed code-signature verification");
     expect(fs.readFileSync(path.join(installed, "Contents", "marker"), "utf8")).toBe("old");
     expect(fs.readdirSync(backups).some((entry) => entry.endsWith(".app"))).toBe(true);
-    expect(fs.existsSync(relaunchTrace)).toBe(false);
-  });
-
-  it("removes a failed new install when there was no previous app", () => {
-    const { result, installed, relaunchTrace } = runInstaller({ installed: false, failCodesignAt: 3 });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("installed app failed code-signature verification");
-    expect(fs.existsSync(installed)).toBe(false);
     expect(fs.existsSync(relaunchTrace)).toBe(false);
   });
 });

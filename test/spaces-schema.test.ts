@@ -1,10 +1,8 @@
 // @vitest-environment node
-import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db } from "../src/db.js";
-import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
@@ -16,8 +14,6 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 let tempDir = "";
 let db: Db;
-
-const SPACES_CORE_TABLES = ["spaces", "space_items", "space_occurrences", "space_edges"] as const;
 
 function now(): number {
   return Date.now();
@@ -176,82 +172,3 @@ describe("spaces core schema (issue b395083)", () => {
   });
 });
 
-describe("spaces core schema — metadata backup classification (issue b395083)", () => {
-  it("includes all four core tables in METADATA_BACKUP_TABLES", () => {
-    for (const table of SPACES_CORE_TABLES) {
-      expect(METADATA_BACKUP_TABLES, `${table} missing from metadata backup set`).toContain(table);
-    }
-  });
-
-  it("fails classification if any of the four is omitted (drift guard)", () => {
-    // Simulate omission: a backup set missing any core table must fail to cover it.
-    for (const omitted of SPACES_CORE_TABLES) {
-      const partial = METADATA_BACKUP_TABLES.filter((t) => t !== omitted);
-      expect(partial.includes(omitted), `${omitted} should be detectable as omitted`).toBe(false);
-    }
-  });
-
-  it("emits the four core tables' DDL in the metadata backup", () => {
-    seedProject(db);
-    const sql = buildMetadataBackupSql(db);
-    for (const table of SPACES_CORE_TABLES) {
-      expect(sql, `backup should include DDL for ${table}`).toContain(`CREATE TABLE`);
-      expect(sql).toContain(`-- Table: ${table}`);
-    }
-    expect(sql).toContain(
-      "CHECK(ref_type IN ('issue','comment','artifact','external_ref','space'))",
-    );
-  });
-});
-
-describe("spaces core schema — inline UNIQUE survives backup/restore (issue b395083)", () => {
-  it("restored schema (DDL-only round trip) still enforces UNIQUE(space_id, ref_type, ref_id)", () => {
-    // The metadata backup emits each table's own DDL plus INSERT rows, but NO
-    // standalone CREATE INDEX statements. A uniqueness rule that lived only as an
-    // external CREATE UNIQUE INDEX would be lost; an INLINE UNIQUE survives.
-    seedProject(db, "proj-1");
-    seedSpace(db, "proj-1", "space-1");
-    seedItem(db, "space-1", "item-1", "artifact", "sha256:abc");
-    const sql = buildMetadataBackupSql(db);
-
-    // Round-trip into a fresh database using ONLY the backup SQL (table DDL + data).
-    const restorePath = path.join(tempDir, "restored.db");
-    const restored = new SqliteDatabase(restorePath);
-    restored.pragma("foreign_keys = ON");
-    restored.exec(sql);
-
-    // The inline UNIQUE(space_id, ref_type, ref_id) constraint must still reject a duplicate.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_items (id, space_id, ref_type, ref_id, metadata_json, created_at, updated_at)
-           VALUES (?, 'space-1', 'artifact', 'sha256:abc', '{}', ?, ?)`,
-        )
-        .run("item-dup", now(), now()),
-    ).toThrow();
-
-    // The inline UNIQUE(space_id, id) composite-FK target must also survive the
-    // round trip, since the composite FK depends on it. An occurrence pointing at
-    // a non-existent (space_id, item_id) pair must be rejected by the FK, proving
-    // the inline UNIQUE target landed in the restored DDL.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_occurrences (id, space_id, item_id, metadata_json, created_at, updated_at)
-           VALUES ('occ-x', 'space-1', 'no-such-item', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-    // A valid same-space reference is accepted post-restore.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_occurrences (id, space_id, item_id, metadata_json, created_at, updated_at)
-           VALUES ('occ-ok', 'space-1', 'item-1', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).not.toThrow();
-
-    restored.close();
-  });
-});

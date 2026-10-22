@@ -110,46 +110,6 @@ it('preserves every legacy variant without touching checkout bytes and is restar
   expect(()=>db.prepare('UPDATE space_document_history SET content=?').run('overwrite')).toThrow('immutable');
 });
 
-it('migration separates clean, managed-only, Git-only, divergent and unreachable legacy documents',()=> {
-  const repo=path.join(root,'repo');fs.writeFileSync(path.join(repo,'doc.md'),'published');git(repo,'add','doc.md');git(repo,'commit','-m','Published');const commit=git(repo,'rev-parse','HEAD');
-  const fixtures=['clean','managed-only','git-only','both','unreachable'] as const;
-  const snapshots=new Map<string,string>();
-  for (const kind of fixtures) {
-    const document=createSpace(db,{project_id:'p',title:kind,default_renderer:'document'});
-    createSpaceBlock(db,document.id,{block_type:'paragraph',markdown:kind==='managed-only' || kind==='both' ? 'managed change':'published',metadata:{fixture:kind}});
-    const branch=`docs/${kind}`,directory=path.join(repo,'.git','mandible-docs-worktrees',`docs_${kind}`);
-    if(kind!=='unreachable') {fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(path.join(directory,'doc.md'),kind==='git-only'||kind==='both' ? 'Git change':'published');fs.writeFileSync(path.join(directory,'unique-ignored'),'retained');}
-    db.prepare(`INSERT INTO space_exports (id,space_id,repo_id,branch,path,authority,status,last_export_commit,created_at,updated_at) VALUES (?,?,?,?,?,'repo','conflict',?,?,?)`).run(kind,document.id,'c',branch,'doc.md',commit,1,1);
-    snapshots.set(document.id,serializeSpaceDocument(db,document.id));
-  }
-  for(const trigger of ['space_publication_snapshot_immutable','space_document_history_immutable'])db.exec(`DROP TRIGGER ${trigger}`);
-  db.exec('DROP TRIGGER auth_publication_reference_immutable');
-  db.exec('DROP TRIGGER space_publication_auth_binding_immutable');
-  db.exec('ALTER TABLE auth_requests DROP COLUMN protected_root_dirty_action_json');
-  db.exec('ALTER TABLE auth_requests DROP COLUMN space_publication_id');
-  db.exec('DROP INDEX idx_conv_declared_parent');
-  db.exec('ALTER TABLE conversations DROP COLUMN parent_session_id');
-  db.exec('ALTER TABLE conversations DROP COLUMN parent_source');
-  db.exec('DROP TABLE space_publications');db.exec('DROP TABLE space_document_history');
-  for(const column of ['opening_lineage','opening_line','agent_created'])db.exec(`ALTER TABLE conversations DROP COLUMN ${column}`);
-  db.exec('DROP TABLE worker_thread_archives');
-  db.prepare("UPDATE meta SET value='189' WHERE key='schema_version'").run();
-  migrate(db);
-  for(const [id,content] of snapshots) {
-    const history=listDocumentHistory(db,id);
-    expect(history.find(value=>value.kind==='managed-before-migration')?.content).toBe(content);
-    expect(history.find(value=>value.kind==='published-git')?.content).toBe('published');
-    expect(serializeSpaceDocument(db,id)).toBe(content);
-    const kind=(db.prepare('SELECT title FROM spaces WHERE id=?').get(id) as {title:string}).title;
-    const working=history.find(value=>value.kind==='checkout-file');
-    expect(working?.content).toBe(kind==='unreachable' ? null:kind==='git-only'||kind==='both' ? 'Git change':'published');
-    if(kind!=='unreachable')expect(fs.readFileSync(path.join(repo,'.git','mandible-docs-worktrees',`docs_${kind}`,'unique-ignored'),'utf8')).toBe('retained');
-  }
-  const before=db.prepare('SELECT * FROM space_document_history ORDER BY id').all();migrate(db);
-  expect(db.prepare('SELECT * FROM space_document_history ORDER BY id').all()).toEqual(before);
-  expect(listDocumentHistory(db,space)).toEqual([]);
-});
-
 it('publication import retains embedded snapshots and metadata independently of the source',()=> {
   const embedded=createSpaceBlock(db,space,{block_type:'artifact_embed',markdown:'embed fallback',item_snapshot:{title:'Frozen attachment',ref_type:'artifact',ref_id:'historical'},metadata:{view:{zoom:2}}});
   const publication=preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'});

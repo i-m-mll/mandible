@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { getMandibleHomePath, getUserHome } from "../platform-paths.js";
 
-export const LEDGER_BACKUP_TABLES = [
+const LEDGER_BACKUP_TABLES = [
   "ledger_projects",
   "ledger_project_checkouts",
   "ledger_issues",
@@ -29,8 +29,6 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_operational_link_reports",
   "ledger_operational_link_mismatches",
 ] as const;
-
-export type LedgerBackupTable = (typeof LEDGER_BACKUP_TABLES)[number];
 
 export const METADATA_BACKUP_TABLES = [
   "meta",
@@ -256,8 +254,6 @@ export const METADATA_BACKUP_TABLES = [
   "operational_incident_workflow_events",
 ] as const;
 
-export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];
-
 // Older installs may retain patch history after self-modification is removed.
 // Include that inert table only when it exists; new databases never create it.
 const HISTORICAL_METADATA_BACKUP_TABLE = "runtime_patches";
@@ -297,10 +293,6 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   "issue_search_docsize",
   "issue_search_idx",
 ] as const;
-
-export type ReproducibleOrRuntimeTable = (typeof REPRODUCIBLE_OR_RUNTIME_TABLES)[number];
-
-export const EXCLUDED_METADATA_BACKUP_TABLES = REPRODUCIBLE_OR_RUNTIME_TABLES;
 
 export type MetadataBackupResult = {
   path: string;
@@ -498,7 +490,17 @@ function* metadataBackupLines(db: Db): Generator<string> {
     yield "";
   }
 
-  yield* ["COMMIT;", "PRAGMA foreign_keys=ON;", ""];
+  // Triggers carry the append-only and immutability guards. They are created
+  // after every row so restoring the rows neither fires nor trips them.
+  const backedUp = new Set(tables);
+  const triggers = db
+    .prepare("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL ORDER BY name")
+    .all() as Array<{ tbl_name: string; sql: string }>;
+  for (const trigger of triggers) {
+    if (backedUp.has(trigger.tbl_name)) yield `${trigger.sql};`;
+  }
+
+  yield* ["", "COMMIT;", "PRAGMA foreign_keys=ON;", ""];
 }
 
 function quoteIdentifier(identifier: string): string {

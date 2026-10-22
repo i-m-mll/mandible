@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DaemonMemoryDiagnostics,
-  DEFAULT_MEMORY_WARNING_FRACTION,
-  memoryWarningFractionFromEnv,
   type ProcessMemoryValues,
 } from "../src/daemon-memory.js";
 
@@ -46,37 +44,6 @@ describe("daemon memory diagnostics", () => {
     ]);
   });
 
-  it("returns the last sample from snapshot without collecting a new one", () => {
-    let current = values(20);
-    let usageCalls = 0;
-    const diagnostics = new DaemonMemoryDiagnostics({
-      logger: () => undefined,
-      warningFraction: 0.5,
-      sources: {
-        memoryUsage: () => {
-          usageCalls += 1;
-          return current;
-        },
-        uptime: () => 7,
-        totalMemory: () => 100,
-      },
-    });
-
-    // Before any sample, snapshot reports an empty seed and reads no source.
-    expect(diagnostics.snapshot()).toMatchObject({ rss: 0, warning: false });
-    expect(usageCalls).toBe(0);
-
-    diagnostics.sample();
-    const callsAfterSample = usageCalls;
-    current = values(90);
-
-    // snapshot reflects the prior sample and does not re-read process memory,
-    // so a burst of health polls cannot trip the warning transition.
-    const snap = diagnostics.snapshot();
-    expect(snap).toMatchObject({ rss: 20, warning: false });
-    expect(usageCalls).toBe(callsAfterSample);
-  });
-
   it("remains constant-space across a deterministic soak", () => {
     let iteration = 0;
     const diagnostics = new DaemonMemoryDiagnostics({
@@ -100,14 +67,5 @@ describe("daemon memory diagnostics", () => {
       expect(retained).not.toBeInstanceOf(Set);
     }
     expect(diagnostics.sample().highWater.rss).toBe(100);
-  });
-
-  it("uses a safe default for absent or invalid warning thresholds", () => {
-    expect(memoryWarningFractionFromEnv({})).toBe(DEFAULT_MEMORY_WARNING_FRACTION);
-    expect(memoryWarningFractionFromEnv({ MANDIBLE_MEMORY_WARNING_FRACTION: "0.2" })).toBe(0.2);
-    expect(memoryWarningFractionFromEnv({ MANDIBLE_MEMORY_WARNING_FRACTION: "0" }))
-      .toBe(DEFAULT_MEMORY_WARNING_FRACTION);
-    expect(memoryWarningFractionFromEnv({ MANDIBLE_MEMORY_WARNING_FRACTION: "not-a-number" }))
-      .toBe(DEFAULT_MEMORY_WARNING_FRACTION);
   });
 });

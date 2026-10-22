@@ -15,13 +15,13 @@ const now = performance.now.bind(performance);
 export const STATE_DEADLINE_MS = 45_000;
 
 export async function waitUntil<T>(
-  probe: () => T,
+  probe: () => T | Promise<T>,
   description: string,
   intervalMs = 10,
 ): Promise<NonNullable<T>> {
   const deadline = now() + STATE_DEADLINE_MS;
   for (;;) {
-    const value = probe();
+    const value = await probe();
     if (value) return value as NonNullable<T>;
     if (now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
     await new Promise((resolve) => realSetTimeout(resolve, intervalMs));

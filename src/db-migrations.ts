@@ -2293,7 +2293,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   applyNormal();
 }
 
-export function migrate(db: Db): void {
+/**
+ * Move a supported database to `through` (head by default). Stopping short of
+ * head exists so tests can build the database a migration starts from by the
+ * same path production takes; a fresh database is only ever created at head.
+ */
+export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void {
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
@@ -2303,8 +2308,12 @@ export function migrate(db: Db): void {
       `Fresh schema baseline v${BASELINE_SCHEMA_VERSION} does not match migration head v${CURRENT_SCHEMA_VERSION}`,
     );
   }
+  if (through < MINIMUM_SUPPORTED_SCHEMA_VERSION || through > CURRENT_SCHEMA_VERSION) {
+    throw new Error(`Cannot migrate to v${through}: this build serves v${MINIMUM_SUPPORTED_SCHEMA_VERSION}-v${CURRENT_SCHEMA_VERSION}`);
+  }
 
   if (isFreshDatabase(db)) {
+    if (through !== CURRENT_SCHEMA_VERSION) throw new Error(`A fresh database is created at head, not v${through}`);
     createFreshSchemaBaseline(db, CURRENT_SCHEMA_VERSION);
     return;
   }
@@ -2319,7 +2328,7 @@ export function migrate(db: Db): void {
 
   found = reconcileCollidedChatPreviewSchema(db, found);
 
-  if (found < 185) {
+  if (found < 185 && through >= 185) {
     applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));
     const recovery = recoverArtifactCustody(db, { retain_git_commit: retainArtifactCommit });
     if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
@@ -2339,5 +2348,5 @@ export function migrate(db: Db): void {
       }
     }
   }
-  applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
+  applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found && migration.version <= through));
 }

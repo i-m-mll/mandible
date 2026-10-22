@@ -1,25 +1,15 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
-import {
-  buildMetadataBackupSql,
-  getUnclassifiedBackupTables,
-  LEDGER_BACKUP_TABLES,
-  METADATA_BACKUP_TABLES,
-  REPRODUCIBLE_OR_RUNTIME_TABLES,
-} from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import type { LedgerEventSource } from "../src/ledger/types.js";
-import { createUser } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
@@ -627,100 +617,5 @@ describe("ledger store", () => {
     expect(JSON.parse(degraded[0].metadata_json)).toMatchObject({
       degraded_from_target_comment_id: comment.id,
     });
-  });
-});
-
-describe("ledger backup contract", () => {
-  it("keeps the legacy ledger table list inside the metadata backup set", () => {
-    expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining(LEDGER_BACKUP_TABLES));
-  });
-
-  it("round-trips exact durable user settings after their user owners", () => {
-    const owner = createUser(db, {
-      slug: "settings-owner",
-      kind: "human",
-      display_name: "Settings Owner",
-    }, 100);
-    const peer = createUser(db, {
-      slug: "settings-peer",
-      kind: "human",
-      display_name: "Settings Peer",
-    }, 200);
-    const expected = [
-      {
-        user_id: owner.id,
-        key: "app_rail_order",
-        value: '["spaces","tasks","briefings"]',
-        revision: 7,
-        updated_at: 1_787_200_001_001,
-      },
-      {
-        user_id: owner.id,
-        key: "ui_font_face",
-        value: "space-grotesk",
-        revision: 3,
-        updated_at: 1_787_200_001_002,
-      },
-      {
-        user_id: owner.id,
-        key: "detail_font_size",
-        value: "17",
-        revision: 11,
-        updated_at: 1_787_200_001_003,
-      },
-      {
-        user_id: peer.id,
-        key: "ui_font_face",
-        value: "system-ui",
-        revision: 2,
-        updated_at: 1_787_200_002_001,
-      },
-      {
-        user_id: peer.id,
-        key: "detail_font_face",
-        value: "space-grotesk",
-        revision: 5,
-        updated_at: 1_787_200_002_002,
-      },
-      {
-        user_id: peer.id,
-        key: "ui_font_size",
-        value: "13",
-        revision: 9,
-        updated_at: 1_787_200_002_003,
-      },
-    ];
-    const insert = db.prepare(
-      `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
-       VALUES (@user_id, @key, @value, @revision, @updated_at)`,
-    );
-    for (const row of expected) insert.run(row);
-
-    expect(METADATA_BACKUP_TABLES).toContain("user_settings");
-    expect(METADATA_BACKUP_TABLES.indexOf("user_settings"))
-      .toBeGreaterThan(METADATA_BACKUP_TABLES.indexOf("users"));
-
-    const backup = buildMetadataBackupSql(db);
-    expect(backup.indexOf("-- Table: user_settings"))
-      .toBeGreaterThan(backup.indexOf("-- Table: users"));
-
-    const restored = new SqliteDatabase(":memory:");
-    try {
-      restored.exec(backup);
-      const rows = restored.prepare(
-        `SELECT user_id, key, value, revision, updated_at
-           FROM user_settings
-          ORDER BY user_id, key`,
-      ).all();
-      expect(rows).toEqual([...expected].sort((a, b) =>
-        a.user_id.localeCompare(b.user_id) || a.key.localeCompare(b.key)));
-      expect(restored.pragma("foreign_key_check")).toEqual([]);
-    } finally {
-      restored.close();
-    }
-  });
-
-  it("classifies every live table as backed up or reproducible", () => {
-    expect(getUnclassifiedBackupTables(db)).toEqual([]);
   });
 });

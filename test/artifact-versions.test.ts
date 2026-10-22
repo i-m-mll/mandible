@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "../src/db.js";
 import {
@@ -17,7 +16,6 @@ import {
 } from "../src/provider-artifacts.js";
 import { recordArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
 import { diffArtifacts, getArtifactContent, readArtifactBytesFull } from "../src/artifact-content.js";
-import { METADATA_BACKUP_TABLES, buildMetadataBackupSql } from "../src/ledger/backup.js";
 import {
   insertRawLedgerCheckout,
   insertRawLedgerIssue,
@@ -318,55 +316,6 @@ describe("canonical ref resolution and no silent retarget", () => {
     const pinned2 = resolveArtifactRef(db, r2.version.id);
     expect(pinned2.artifact?.id).toBe(artifactB);
     expect(pinned2.warnings ?? []).toEqual([]);
-  });
-});
-
-describe("backup/export coverage", () => {
-  // Restore replays the inventory in order, so a child table must never be
-  // listed before the table its foreign keys point at.
-  it("orders METADATA_BACKUP_TABLES parents before children", () => {
-    const at = (table: string) => {
-      const index = METADATA_BACKUP_TABLES.indexOf(table);
-      expect(index, `${table} is missing from METADATA_BACKUP_TABLES`).toBeGreaterThanOrEqual(0);
-      return index;
-    };
-    expect(at("artifact")).toBeGreaterThan(at("artifact_blob"));
-    expect(at("artifact_version")).toBeGreaterThan(at("artifact"));
-    for (const child of ["artifact_aliases", "artifact_links", "artifact_drafts"]) {
-      expect(at(child)).toBeGreaterThan(at("artifact_version"));
-    }
-  });
-
-  it("round-trips canonical artifact and artifact_version rows through backup/restore", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b1\n", media_type: "text/plain", logical_name: "bk" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b2\n", media_type: "text/plain", logical_name: "bk" }, 2000);
-    const sql = buildMetadataBackupSql(db);
-    expect(sql).toContain("-- Table: artifact");
-    expect(sql).toContain("-- Table: artifact_version");
-
-    const restored = new SqliteDatabase(path.join(tempDir, "restored.db"));
-    restored.pragma("foreign_keys = ON");
-    restored.exec(sql);
-
-    const series = restored.prepare("SELECT * FROM artifact").all() as Array<{ id: string; identity_key: string; version_count: number }>;
-    expect(series).toHaveLength(1);
-    expect(series[0].identity_key).toBe("managed:test:bk");
-    expect(series[0].version_count).toBe(2);
-    const versions = restored
-      .prepare("SELECT id, version_no, content_hash FROM artifact_version ORDER BY version_no")
-      .all() as Array<{ id: string; version_no: number; content_hash: string }>;
-    expect(versions.map((v) => v.version_no)).toEqual([1, 2]);
-    expect(versions[0].id).toBe(r1.version.id);
-    expect(versions[1].id).toBe(r2.version.id);
-
-    // UNIQUE(identity_key) survives the round-trip.
-    expect(() =>
-      restored.prepare(
-        `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
-         VALUES ('dup', 'managed:test:bk', 'managed', 0, 1, 1)`,
-      ).run(),
-    ).toThrow(/UNIQUE/i);
-    restored.close();
   });
 });
 

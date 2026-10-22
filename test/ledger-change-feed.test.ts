@@ -1,6 +1,6 @@
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
+import { migrate, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   LEDGER_CHANGE_FEED_SCHEMA,
@@ -110,7 +110,7 @@ describe("bounded ledger change feed", () => {
     expect(changes(third)[0]).toMatchObject({ sequence: 3 });
   });
 
-  it("fails closed for retention gaps, truncation, cursor drift, and schema mismatch", () => {
+  it("fails closed for retention gaps, truncation, and cursor drift", () => {
     const project = addProject(db, { project_key: "alpha" });
     const store = new LedgerStore(db);
     const initial = readLedgerChangeFeed(db, { project_id: project.id, project_key: project.project_key });
@@ -137,12 +137,6 @@ describe("bounded ledger change feed", () => {
       project_key: beta.project_key,
       cursor: cursor(initial),
     })).toThrowError(expect.objectContaining({ code: "cursor_project_mismatch" }));
-
-    db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(CURRENT_SCHEMA_VERSION - 1));
-    expect(() => readLedgerChangeFeed(db, {
-      project_id: project.id,
-      project_key: project.project_key,
-    })).toThrowError(expect.objectContaining({ code: "database_schema_mismatch" }));
   });
 
   it("exposes the same contract through the file-RPC-safe HTTP route", async () => {

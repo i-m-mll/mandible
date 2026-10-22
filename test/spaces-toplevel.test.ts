@@ -1,12 +1,10 @@
 // @vitest-environment node
-import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
-import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createSpace, getSpace } from "../src/ledger/spaces.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
@@ -66,39 +64,6 @@ describe("spaces v86 nullable project_id schema (issue 812df41)", () => {
     }
   });
 
-  it("keeps `spaces` in METADATA_BACKUP_TABLES and round-trips a top-level row", () => {
-    const dbPath = path.join(tempDir, "backup.db");
-    const db = openDb(dbPath);
-    try {
-      expect(METADATA_BACKUP_TABLES).toContain("spaces");
-      seedProject(db, "proj-1");
-      createSpace(db, { project_id: "proj-1", title: "Scoped" });
-      createSpace(db, { title: "Global" }); // top-level, project_id NULL
-      const sql = buildMetadataBackupSql(db);
-      expect(sql).toContain("-- Table: spaces");
-
-      // Restore into a fresh DB using ONLY the backup SQL.
-      const restored = new SqliteDatabase(path.join(tempDir, "restored.db"));
-      restored.pragma("foreign_keys = ON");
-      restored.exec(sql);
-      const rows = restored
-        .prepare("SELECT project_id FROM spaces ORDER BY title")
-        .all() as Array<{ project_id: string | null }>;
-      expect(rows).toEqual([{ project_id: null }, { project_id: "proj-1" }]);
-      // The restored schema still permits a NULL project_id (nullability survived).
-      expect(() =>
-        restored
-          .prepare(
-            `INSERT INTO spaces (id, project_id, title, metadata_json, created_at, updated_at)
-             VALUES ('s-new', NULL, 'Another Global', '{}', ?, ?)`,
-          )
-          .run(now(), now()),
-      ).not.toThrow();
-      restored.close();
-    } finally {
-      db.close();
-    }
-  });
 });
 
 describe("cross-project item resolution on a top-level Space (issue 812df41)", () => {

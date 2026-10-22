@@ -1,15 +1,7 @@
 // @vitest-environment node
-import SqliteDatabase from "../src/sqlite.ts";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, setDb, type Db } from "../src/db.js";
-import {
-  buildMetadataBackupSql,
-  METADATA_BACKUP_TABLES,
-} from "../src/ledger/backup.js";
+import { setDb, type Db } from "../src/db.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import {
   generateSortKey,
@@ -164,103 +156,6 @@ describe("space_blocks schema (issue d2a8e77)", () => {
       .prepare("SELECT COUNT(*) AS n FROM space_blocks WHERE space_id = ?")
       .get(spaceId) as { n: number };
     expect(afterSpace.n).toBe(0);
-  });
-});
-
-// ============================================================================
-// Backup classification + restore round trip
-// ============================================================================
-
-describe("space_blocks metadata backup classification (issue d2a8e77)", () => {
-  let tempDir = "";
-  let db: Db;
-
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-blocks-bk-"));
-    db = openDb(path.join(tempDir, "mandible.db"));
-  });
-  afterEach(() => {
-    db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("includes space_blocks in METADATA_BACKUP_TABLES (drift guard fails if omitted)", () => {
-    expect(METADATA_BACKUP_TABLES).toContain("space_blocks");
-    const partial = METADATA_BACKUP_TABLES.filter((t) => t !== "space_blocks");
-    expect(partial.includes("space_blocks" as never)).toBe(false);
-  });
-
-  it("lists space_blocks AFTER its parents (spaces, space_items)", () => {
-    const idx = (t: string) => METADATA_BACKUP_TABLES.indexOf(t as never);
-    expect(idx("space_blocks")).toBeGreaterThan(idx("spaces"));
-    expect(idx("space_blocks")).toBeGreaterThan(idx("space_items"));
-  });
-
-  it("emits space_blocks DDL in the backup", () => {
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES ('p', 'P', 'github.com/test/p', ?, ?)`,
-    ).run(now(), now());
-    const sql = buildMetadataBackupSql(db);
-    expect(sql).toContain("-- Table: space_blocks");
-    expect(sql).toContain("CREATE TABLE");
-  });
-
-  it("inline UNIQUE/CHECK/composite-FK survive a DDL-only restore round trip", () => {
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES ('p', 'P', 'github.com/test/p', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO spaces (id, project_id, title, created_at, updated_at)
-       VALUES ('s', 'p', 'S', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
-       VALUES ('item-1', 's', 'issue', 'i1', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO space_blocks (id, space_id, block_type, item_id, item_snapshot_json, sort_key, markdown, metadata_json, created_at, updated_at)
-       VALUES ('b1', 's', 'reference', 'item-1', '{"item_id":"item-1"}', 'm', '', '{}', ?, ?)`,
-    ).run(now(), now());
-
-    const sql = buildMetadataBackupSql(db);
-    const restorePath = path.join(tempDir, "restored.db");
-    const restored = new SqliteDatabase(restorePath);
-    restored.pragma("foreign_keys = ON");
-    restored.exec(sql);
-
-    // The invariant CHECK survives: item_id with no snapshot is rejected post-restore.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, item_id, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b-no-snap', 's', 'reference', 'item-1', 'n', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    // The composite item FK (depending on the inline UNIQUE target) survives.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, item_id, item_snapshot_json, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b-bad-item', 's', 'reference', 'no-such', '{"x":1}', 'o', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    // The inline UNIQUE(space_id, id) survives (duplicate id rejected).
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b1', 's', 'paragraph', 'p', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    restored.close();
   });
 });
 

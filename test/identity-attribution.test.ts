@@ -264,6 +264,18 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
     expect(updated.author_display).toBe("Corrected");
     expect(updated.author_user_id).toBe(author.id);
   });
+
+  it("enforces the user foreign key fail-closed", () => {
+    const store = new LedgerStore(db);
+    const projectId = createProject();
+    expect(() =>
+      store.createIssue({
+        project_id: projectId,
+        title: "Bad attribution",
+        attribution: { user_id: "nonexistent-user", evidence_method: "system_internal" },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("evidence_method vocabulary (F3)", () => {
@@ -342,37 +354,6 @@ describe("session binding resolution (F5: fail closed)", () => {
     const external = createUser(db, { slug: "ext-bound", kind: "external", display_name: "External" });
     addBinding(db, external.id, { binding_type: "provider_session_env", value: "ext-session" });
     expect(resolveSessionAttribution(db, { provider_session_env: "ext-session" })).toBeNull();
-  });
-});
-
-describe("migration v108 schema", () => {
-  it("adds nullable parallel attribution columns", () => {
-    const columns = (name: string) =>
-      (db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string; notnull: number }>);
-    const has = (table: string, column: string) =>
-      columns(table).some((c) => c.name === column && c.notnull === 0);
-
-    expect(has("ledger_issues", "author_user_id")).toBe(true);
-    expect(has("ledger_issues", "evidence_method")).toBe(true);
-    expect(has("ledger_issues", "evidence_id")).toBe(true);
-    expect(has("ledger_comments", "author_user_id")).toBe(true);
-    expect(has("ledger_issue_checkpoints", "author_user_id")).toBe(true);
-    expect(has("ledger_events", "actor_user_id")).toBe(true);
-    expect(has("ledger_body_revisions", "actor_user_id")).toBe(true);
-    expect(has("ledger_body_revisions", "redacted_by_user_id")).toBe(true);
-    expect(has("ledger_relationship_edges", "actor_user_id")).toBe(true);
-  });
-
-  it("enforces the user foreign key fail-closed", () => {
-    const store = new LedgerStore(db);
-    const projectId = createProject();
-    expect(() =>
-      store.createIssue({
-        project_id: projectId,
-        title: "Bad attribution",
-        attribution: { user_id: "nonexistent-user", evidence_method: "system_internal" },
-      }),
-    ).toThrow();
   });
 });
 
