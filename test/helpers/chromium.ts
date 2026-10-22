@@ -41,8 +41,14 @@ export function chromiumArgs(args: readonly string[]): string[] {
   return [...ISOLATION_FLAGS, ...args.filter((arg) => !ISOLATION_FLAGS.includes(arg))];
 }
 
-export function runChromium(args: readonly string[], options: SpawnSyncOptions & { encoding: BufferEncoding }) {
-  return spawnSync(chromiumBinary(), chromiumArgs(args), options);
+/**
+ * A hang guard, kept under the 60 s per-test guard so a stuck browser is named.
+ * A loaded machine makes a render slower, not red.
+ */
+const RENDER_DEADLINE_MS = 45_000;
+
+export function runChromium(args: readonly string[], options: Omit<SpawnSyncOptions, 'timeout'> & { encoding: BufferEncoding }) {
+  return spawnSync(chromiumBinary(), chromiumArgs(args), { ...options, timeout: RENDER_DEADLINE_MS });
 }
 
 export function spawnChromium(args: readonly string[], options: SpawnOptions = {}) {

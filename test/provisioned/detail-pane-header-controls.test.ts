@@ -99,7 +99,7 @@ function renderCase(native: boolean): Result {
     const rendered = runChromium([
       '--run-all-compositor-stages-before-draw',
       '--virtual-time-budget=1000', '--dump-dom', '--window-size=900,1100', `file://${path}`,
-    ], { encoding: 'utf8', maxBuffer: 10_000_000, timeout: 20_000 });
+    ], { encoding: 'utf8', maxBuffer: 10_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium header fixture failed: ${rendered.stderr}`);
     const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
     if (!encoded || encoded === 'ready') throw new Error(`Chromium did not emit header results (title=${encoded ?? 'none'}): ${rendered.stdout.slice(-2500)}`);
