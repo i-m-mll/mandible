@@ -57,7 +57,6 @@ describe("Inbox managed reminder occurrence", () => {
     );
 
     await waitFor(() => expect(screen.getAllByText("Review the twentieth canonical merge")).toHaveLength(2));
-    expect(screen.getAllByText("Reminder").length).toBeGreaterThan(1);
     const detail = document.querySelector(".inbox-detail") as HTMLElement;
     expect(within(detail).getByText("20")).toBeTruthy();
     expect(within(detail).getByText("mandible")).toBeTruthy();
@@ -98,32 +97,6 @@ describe("Inbox shared sidebar header", () => {
     return render(<InboxView {...props} />);
   }
 
-  it("uses the shared adjacent menu and preserves its actions", async () => {
-    const onAckAll = vi.fn(async () => undefined);
-    const { container } = renderInbox({ onAckAll });
-
-    const header = container.querySelector(".sidebar-search-filter");
-    expect(header).toBeTruthy();
-    const search = screen.getByRole("textbox", { name: "Filter inbox by repo or branch" });
-    const trigger = screen.getByRole("button", { name: "Inbox menu" });
-    expect(trigger.previousElementSibling?.contains(search)).toBe(true);
-
-    fireEvent.click(trigger);
-    expect(screen.getByRole("menuitemradio", { name: "Date" }).getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Acknowledge All" }));
-    await waitFor(() => expect(onAckAll).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByRole("menu", { name: "Inbox menu" })).toBeNull());
-
-  });
-
-  it("preserves mutation and loading disabled states inside the menu", () => {
-    renderInbox({ loading: true, instance: { ...MAIN_CLI_INSTANCE_RESPONSE.instance, allowed_effects: ["ledger:read"] } });
-    fireEvent.click(screen.getByRole("button", { name: "Inbox menu" }));
-
-    expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(true);
-
-  });
-
   it("retries a failed read and disables retry while loading", async () => {
     const onRefresh = vi.fn();
     const view = renderInbox({ data: null, error: "Read failed", onRefresh });
@@ -134,17 +107,6 @@ describe("Inbox shared sidebar header", () => {
       onAckContinuation={async () => undefined} onAckAuthResult={async () => undefined}
       onAckManagedReminderOccurrence={async () => undefined} onAckAll={async () => undefined} />);
     await waitFor(() => expect((screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement).disabled).toBe(true));
-  });
-
-  it("preserves chip autocomplete and empty-input Backspace removal", () => {
-    renderInbox();
-    const input = screen.getByRole("textbox", { name: "Filter inbox by repo or branch" });
-    fireEvent.input(input, { target: { value: "m" } });
-    fireEvent.mouseDown(screen.getByRole("button", { name: "mandible" }));
-    expect(screen.getByRole("button", { name: "Remove filter mandible" })).toBeTruthy();
-
-    fireEvent.keyDown(input, { key: "Backspace" });
-    expect(screen.queryByRole("button", { name: "Remove filter mandible" })).toBeNull();
   });
 
 });

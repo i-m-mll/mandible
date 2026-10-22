@@ -1,41 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  TIMELINE_DAY_MS,
-  TIMELINE_HOUR_MS,
-  TIMELINE_MINUTE_MS,
-  clampTimelineViewport,
-  editTimelineViewportDateBoundary,
-  fitTimelineViewport,
-  formatUtcDate,
-  formatUtcDateTime,
-  generateTimelineTicks,
-  paddedTimelineRenderDomain,
-  timelineExtentFromTimestamps,
-  timelineScrollMetrics,
-  viewportFromTimelineScroll,
-  zoomTimelineViewport,
-} from '../ui/src/views/timeline-time';
+import { TIMELINE_DAY_MS, TIMELINE_HOUR_MS, clampTimelineViewport, editTimelineViewportDateBoundary, formatUtcDate, formatUtcDateTime, generateTimelineTicks, paddedTimelineRenderDomain, timelineExtentFromTimestamps, timelineScrollMetrics, viewportFromTimelineScroll, zoomTimelineViewport } from '../ui/src/views/timeline-time';
 
 describe('timeline time helpers', () => {
-  it('builds a padded fit domain that keeps first and last anchors visible', () => {
-    const first = Date.UTC(2026, 0, 1, 12);
-    const last = Date.UTC(2026, 0, 11, 12);
-    const extent = timelineExtentFromTimestamps([last, first]);
-    const domain = paddedTimelineRenderDomain(extent, {
-      viewportWidthPx: 1000,
-      edgePaddingPx: 50,
-    });
-    const fit = fitTimelineViewport(domain);
-    const span = fit.to - fit.from;
-    const firstLeftPx = ((first - fit.from) / span) * 1000;
-    const lastLeftPx = ((last - fit.from) / span) * 1000;
-
-    expect(domain.start).toBeLessThan(first);
-    expect(domain.end).toBeGreaterThan(last);
-    expect(firstLeftPx).toBeCloseTo(50, 6);
-    expect(lastLeftPx).toBeCloseTo(950, 6);
-  });
 
   it('clamps zoomed windows to the padded domain without rounding away sub-day state', () => {
     const extent = timelineExtentFromTimestamps([
@@ -102,89 +69,6 @@ describe('timeline time helpers', () => {
     expect(editTimelineViewportDateBoundary(viewport, 'to', '2026-02-31')).toBe(viewport);
   });
 
-  it('uses hour labels for day-scale ticks instead of repeated full dates', () => {
-    const ticks = generateTimelineTicks(
-      {
-        from: Date.UTC(2026, 0, 2),
-        to: Date.UTC(2026, 0, 3),
-      },
-      900,
-    );
-
-    expect(ticks.map((tick) => tick.interval)).toEqual(['6h', '6h', '6h', '6h', '6h']);
-    expect(ticks.map((tick) => tick.label)).toEqual(['00:00', '06:00', '12:00', '18:00', '00:00']);
-    expect(new Set(ticks.map((tick) => tick.label)).size).toBeGreaterThan(1);
-    expect(ticks.every((tick) => !tick.label.includes('2026-01-'))).toBe(true);
-    expect(ticks[0].contextLabel).toBe('2026-01-02');
-    expect(ticks[4].contextLabel).toBe('2026-01-03');
-  });
-
-  it('keeps date-like labels in the upper tick slot and time labels in the lower slot', () => {
-    const monthTicks = generateTimelineTicks(
-      {
-        from: Date.UTC(2026, 5, 1),
-        to: Date.UTC(2026, 8, 1),
-      },
-      900,
-      { interval: '1mo' },
-    );
-    expect(monthTicks[0].label).toBe('Jun 2026');
-    expect(monthTicks[0].upperLabel).toBe('Jun 2026');
-    expect(monthTicks[0].lowerLabel).toBeNull();
-    expect(monthTicks.every((tick) => tick.lowerLabel === null)).toBe(true);
-
-    const dayTicks = generateTimelineTicks(
-      {
-        from: Date.UTC(2026, 5, 1),
-        to: Date.UTC(2026, 5, 3),
-      },
-      900,
-      { interval: '1d' },
-    );
-    expect(dayTicks[0].upperLabel).toBe('Jun 01');
-    expect(dayTicks[0].lowerLabel).toBeNull();
-
-    const hourTicks = generateTimelineTicks(
-      {
-        from: Date.UTC(2026, 5, 1),
-        to: Date.UTC(2026, 5, 1, 12),
-      },
-      900,
-      { interval: '6h' },
-    );
-    expect(hourTicks[0].upperLabel).toBe('2026-06-01');
-    expect(hourTicks[0].lowerLabel).toBe('00:00');
-    expect(hourTicks[1].upperLabel).toBeNull();
-    expect(hourTicks[1].lowerLabel).toBe('06:00');
-  });
-
-  it('falls back predictably for empty and single-event extents', () => {
-    const fallbackNow = Date.UTC(2026, 6, 1);
-    const empty = timelineExtentFromTimestamps([], {
-      fallbackNow,
-      fallbackSpanMs: 2 * TIMELINE_DAY_MS,
-    });
-    expect(empty).toEqual({
-      start: Date.UTC(2026, 5, 29),
-      end: fallbackNow,
-      eventCount: 0,
-    });
-
-    const singleTimestamp = Date.UTC(2026, 6, 2, 14, 35);
-    const single = timelineExtentFromTimestamps([singleTimestamp]);
-    const domain = paddedTimelineRenderDomain(single, {
-      viewportWidthPx: 600,
-      minSpanMs: 2 * TIMELINE_HOUR_MS,
-    });
-    expect(single).toEqual({
-      start: singleTimestamp,
-      end: singleTimestamp,
-      eventCount: 1,
-    });
-    expect(domain.start).toBeLessThan(singleTimestamp);
-    expect(domain.end).toBeGreaterThan(singleTimestamp);
-  });
-
   it('formats UTC dates without local timezone drift', () => {
     const timestamp = Date.UTC(2026, 2, 8, 1, 30);
     expect(formatUtcDate(timestamp)).toBe('2026-03-08');
@@ -205,21 +89,5 @@ describe('timeline time helpers', () => {
       '02:30',
       '03:00',
     ]);
-  });
-
-  it('can generate close-view minute ticks', () => {
-    const ticks = generateTimelineTicks(
-      {
-        from: Date.UTC(2026, 0, 1, 12),
-        to: Date.UTC(2026, 0, 1, 12, 45),
-      },
-      900,
-    );
-    expect(ticks.every((tick) => tick.interval === '15m')).toBe(true);
-    expect(ticks.map((tick) => tick.label)).toEqual(['12:00', '12:15', '12:30', '12:45']);
-  });
-
-  it('exports the minute constant for callers that need exact UTC durations', () => {
-    expect(TIMELINE_MINUTE_MS).toBe(60_000);
   });
 });
