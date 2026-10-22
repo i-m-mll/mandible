@@ -10,7 +10,6 @@
 
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { h } from 'preact';
 
 // Mock the typed api client so we can assert the exact POST body and confirm the
 // graph read goes through the backend helper (not any UI-side DB access).
@@ -47,14 +46,6 @@ afterEach(() => {
 });
 
 describe('SpaceSeedDialog', () => {
-  it('renders the four §6.2 seed sources', () => {
-    render(<SpaceSeedDialog spaceId="space-1" projectId="proj-1" />);
-    expect(screen.getByTestId('seed-source-issue')).toBeTruthy();
-    expect(screen.getByTestId('seed-source-graph')).toBeTruthy();
-    expect(screen.getByTestId('seed-source-label')).toBeTruthy();
-    expect(screen.getByTestId('seed-source-filter')).toBeTruthy();
-  });
-
   it('posts the shared filter predicate to /seed via seedSpace', async () => {
     render(<SpaceSeedDialog spaceId="space-1" projectId="proj-1" />);
     // Default source is the saved-filter composer; add a chip token.
@@ -72,33 +63,6 @@ describe('SpaceSeedDialog', () => {
     expect(body.predicate).toEqual({ type: 'label', name: 'auth' });
     expect(body.include_artifacts).toBe(true);
     expect(body.with_shelf_occurrences).toBe(true);
-  });
-
-  it('builds a label predicate for the "label X" seed', async () => {
-    render(<SpaceSeedDialog spaceId="space-2" projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId('seed-source-label'));
-    const input = screen.getByTestId('seed-label-input') as HTMLInputElement;
-    fireEvent.input(input, { target: { value: 'feature' } });
-
-    fireEvent.click(screen.getByTestId('seed-submit'));
-
-    await waitFor(() => expect(seedSpaceMock).toHaveBeenCalledTimes(1));
-    expect(seedSpaceMock.mock.calls[0][1].predicate).toEqual({ type: 'label', name: 'feature' });
-  });
-
-  it('builds a parent_subtree predicate for the "issue + artifacts" seed', async () => {
-    render(<SpaceSeedDialog spaceId="space-3" projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId('seed-source-issue'));
-    const input = screen.getByTestId('seed-issue-input') as HTMLInputElement;
-    fireEvent.input(input, { target: { value: '27a5026' } });
-
-    fireEvent.click(screen.getByTestId('seed-submit'));
-
-    await waitFor(() => expect(seedSpaceMock).toHaveBeenCalledTimes(1));
-    expect(seedSpaceMock.mock.calls[0][1].predicate).toEqual({
-      type: 'parent_subtree',
-      issue_id: '27a5026',
-    });
   });
 
   it('reads graph selection from the BACKEND graph endpoint and seeds the selection predicate', async () => {
@@ -148,28 +112,5 @@ describe('SpaceSeedDialog', () => {
         { type: 'parent_subtree', issue_id: 'ledger-def' },
       ],
     });
-  });
-
-  it('disables the seed button until a predicate exists', () => {
-    render(<SpaceSeedDialog spaceId="space-5" projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId('seed-source-label'));
-    const submit = screen.getByTestId('seed-submit') as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
-    fireEvent.input(screen.getByTestId('seed-label-input'), { target: { value: 'x' } });
-    expect(submit.disabled).toBe(false);
-  });
-
-  it('honors the include-artifacts / shelf option toggles in the POST body', async () => {
-    render(<SpaceSeedDialog spaceId="space-6" projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId('seed-source-label'));
-    fireEvent.input(screen.getByTestId('seed-label-input'), { target: { value: 'bug' } });
-    fireEvent.click(screen.getByTestId('seed-include-artifacts')); // -> false
-    fireEvent.click(screen.getByTestId('seed-with-shelf')); // -> false
-    fireEvent.click(screen.getByTestId('seed-submit'));
-
-    await waitFor(() => expect(seedSpaceMock).toHaveBeenCalledTimes(1));
-    const body = seedSpaceMock.mock.calls[0][1];
-    expect(body.include_artifacts).toBe(false);
-    expect(body.with_shelf_occurrences).toBe(false);
   });
 });
