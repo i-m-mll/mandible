@@ -17,17 +17,15 @@ import { parseJsonObject } from "../row-coerce.js";
 import { BriefingStoreError } from "./briefings.js";
 import { readBriefingBundle, resolveBundleId, type BriefingBundleViewer } from "./briefing-bundles.js";
 import { briefingIdsForBundles, enforceActivePlacement, type PlacementOverride } from "./briefing-placement.js";
+import { resolveId } from "../entity-refs.js";
 
 export function resolveGroupId(db: Db, groupRef: string): string {
   const trimmed = groupRef.trim();
   const ref = trimmed.startsWith("briefing-group:") ? trimmed.slice("briefing-group:".length) : trimmed;
   if (!ref) throw new BriefingStoreError("group reference must be nonblank");
-  const exact = db.prepare("SELECT id FROM briefing_groups WHERE id = ?").get(ref) as { id: string } | undefined;
-  if (exact) return exact.id;
-  const matches = db.prepare("SELECT id FROM briefing_groups WHERE id LIKE ? ESCAPE '\\' ORDER BY id LIMIT 2")
-    .all(`${ref.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`) as Array<{ id: string }>;
-  if (matches.length === 1) return matches[0].id;
-  if (matches.length > 1) throw new BriefingStoreError("Briefing group reference is ambiguous", 409, "ambiguous_ref");
+  const resolved = resolveId(db, "briefing_group", ref);
+  if (resolved.ok) return resolved.id;
+  if (resolved.error === "ambiguous") throw new BriefingStoreError("Briefing group reference is ambiguous", 409, "ambiguous_ref");
   const activeKey = db.prepare("SELECT id FROM briefing_groups WHERE key = ? AND archived_at IS NULL")
     .get(ref) as { id: string } | undefined;
   if (activeKey) return activeKey.id;
@@ -655,12 +653,9 @@ function resolveAuthRequestId(db: Db, authRequestRef: string): string {
     throw new BriefingStoreError("Auth request schema is unavailable", 409,
       "promotion_authorization_unavailable");
   }
-  const rows = db.prepare("SELECT id FROM auth_requests ORDER BY id").all() as Array<{ id: string }>;
-  const exact = rows.find((row) => row.id === ref);
-  if (exact) return exact.id;
-  const matches = rows.filter((row) => row.id.startsWith(ref));
-  if (matches.length === 1) return matches[0].id;
-  if (matches.length > 1) throw new BriefingStoreError("Auth request reference is ambiguous", 409, "ambiguous_ref");
+  const resolved = resolveId(db, "auth_request", ref);
+  if (resolved.ok) return resolved.id;
+  if (resolved.error === "ambiguous") throw new BriefingStoreError("Auth request reference is ambiguous", 409, "ambiguous_ref");
   throw new BriefingStoreError("Auth request not found", 404, "not_found");
 }
 

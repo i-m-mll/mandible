@@ -1,4 +1,5 @@
-import { getDb, resolvePrefix } from "../db.js";
+import { getDb } from "../db.js";
+import { entityRefs, resolveId, resolveSessionRef } from "../entity-refs.js";
 import { navigateToSession } from "../navigate.js";
 import {
   SessionRegistry,
@@ -18,7 +19,6 @@ import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
 import { checkSessionIdentity } from "../identity/session-mismatch.js";
 import type { Db } from "../db.js";
-import { tableExists } from "../db-introspection.js";
 import {
   resolveSessionAlias,
   sessionAliasIds,
@@ -66,63 +66,7 @@ function resolveCanonicalRepoId(
   return repoId;
 }
 
-// A session is named by any alias `resolveSessionAlias` resolves — a provider
-// session id, a Claude subagent id, a `sessions.id`, a console session id — or
-// by a prefix of one of at least eight characters. Prefix candidates come from
-// indexed range scans; every candidate resolves to its session, and candidates
-// naming the same session collapse, so only distinct sessions are ambiguous.
-export const SESSION_REF_MIN_PREFIX_LENGTH = 8;
-const PREFIX_CANDIDATE_LIMIT = 20;
-const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const OVERVIEW_CONVERSATIONS_LIMIT = 20;
-
-export type SessionRefResolution =
-  | { status: "resolved"; resolution: SessionAliasResolution }
-  | { status: "ambiguous"; candidates: SessionAliasResolution[]; truncated: boolean }
-  | { status: "not_found" };
-
-function escapeLikePrefix(prefix: string): string {
-  return prefix.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-}
-
-function prefixCandidates(db: Db, ref: string): { candidates: string[]; truncated: boolean } {
-  const like = `${escapeLikePrefix(ref)}%`;
-  const fetchLimit = PREFIX_CANDIDATE_LIMIT + 1;
-  const scans: Array<[string, string]> = [
-    ["SELECT DISTINCT session_id AS value FROM conversations WHERE session_id LIKE ? ESCAPE '\\'", "conversations"],
-    ["SELECT DISTINCT agent_id AS value FROM conversations WHERE agent_id LIKE ? ESCAPE '\\' AND parent_session_id = session_id", "conversations"],
-    ["SELECT id AS value FROM sessions WHERE id LIKE ? ESCAPE '\\'", "sessions"],
-    ["SELECT DISTINCT conversation_id AS value FROM sessions WHERE conversation_id LIKE ? ESCAPE '\\'", "sessions"],
-    ["SELECT id AS value FROM console_sessions WHERE id LIKE ? ESCAPE '\\'", "console_sessions"],
-    ["SELECT DISTINCT provider_session_id AS value FROM console_sessions WHERE provider_session_id LIKE ? ESCAPE '\\'", "console_sessions"],
-  ];
-  const candidates = new Set<string>();
-  let truncated = false;
-  for (const [sql, table] of scans) {
-    if (!tableExists(db, table)) continue;
-    const rows = db.prepare(`${sql} LIMIT ${fetchLimit}`).all(like) as Array<{ value: string | null }>;
-    if (rows.length > PREFIX_CANDIDATE_LIMIT) truncated = true;
-    for (const row of rows) if (row.value) candidates.add(row.value);
-  }
-  return { candidates: [...candidates], truncated };
-}
-
-export function resolveSessionRef(db: Db, rawRef: string): SessionRefResolution {
-  const ref = rawRef.trim();
-  const exact = resolveSessionAlias(db, ref);
-  if (exact) return { status: "resolved", resolution: exact };
-  if (ref.length < SESSION_REF_MIN_PREFIX_LENGTH || FULL_UUID_RE.test(ref)) return { status: "not_found" };
-  const { candidates, truncated } = prefixCandidates(db, ref);
-  const sessions = new Map<string, SessionAliasResolution>();
-  for (const candidate of candidates) {
-    const resolution = resolveSessionAlias(db, candidate);
-    if (resolution && !sessions.has(sessionLinkKey(resolution))) sessions.set(sessionLinkKey(resolution), resolution);
-  }
-  const resolved = [...sessions.values()];
-  if (resolved.length === 1 && !truncated) return { status: "resolved", resolution: resolved[0] };
-  if (resolved.length === 0) return { status: "not_found" };
-  return { status: "ambiguous", candidates: resolved, truncated };
-}
 
 function sessionOverview(db: Db, resolution: SessionAliasResolution): Record<string, unknown> {
   const session = summarizeResolvedSession(db, resolution);
@@ -180,13 +124,13 @@ function sessionOverview(db: Db, resolution: SessionAliasResolution): Record<str
 
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
 function resolveSessionId(id: string, res: ResponseLike): string | null {
-  const resolved = resolvePrefix(getDb(), "sessions", "id", id);
+  const resolved = resolveId(getDb(), "session_row", id);
   if (resolved.ok) {
     return resolved.id;
   }
   if (resolved.error === "ambiguous") {
     sendJson(res, 409, {
-      error: `Ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`
+      error: `Ambiguous prefix '${id}' names more than one session (${resolved.matches.join(", ")}); pass a longer prefix.`
     });
   } else {
     sendJson(res, 404, { error: "Session not found" });
@@ -601,7 +545,8 @@ export function registerSessionRoutes(
       ledger_issue_id: link.issue_id,
       identity_warning: identityWarning,
     });
-  }, { operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.session } } });
 
   // GET /api/sessions/:id/issues — the issues linked to a session under any of
   // its aliases.
@@ -628,6 +573,7 @@ export function registerSessionRoutes(
        ORDER BY l.created_at ASC`
     ).all(...aliases);
     sendJson(res, 200, links);
-  }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.session } } });
 
 }

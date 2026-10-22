@@ -16,7 +16,8 @@ import {
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
-import { getDb, resolvePrefix } from "../db.js";
+import { getDb } from "../db.js";
+import { entityRefs, resolveId } from "../entity-refs.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
@@ -289,10 +290,10 @@ export function registerAuthRoutes(
     const request = authQueue.getRequest(req.params.id);
     if (!request) {
       // Bug: caa157e — distinguish ambiguous prefix from not-found
-      const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+      const resolved = resolveId(getDb(), "auth_request", req.params.id);
       if (!resolved.ok && resolved.error === "ambiguous") {
         res.status(409).json({
-          error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`
+          error: `Ambiguous prefix '${req.params.id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`
         });
         return;
       }
@@ -419,10 +420,10 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) {
-        const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+        const resolved = resolveId(getDb(), "auth_request", req.params.id);
         if (!resolved.ok && resolved.error === "ambiguous") {
           res.status(409).json({
-            error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+            error: `Ambiguous prefix '${req.params.id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`,
           });
           return;
         }
@@ -796,7 +797,8 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
+    refs: { query: { request_id: entityRefs.authRequest } } });
 
   // Keep this static path ahead of /:id so "signing" is never interpreted as
   // a clearance reference by order-sensitive HTTP routers.

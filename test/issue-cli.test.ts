@@ -298,7 +298,12 @@ function listen(): Promise<number> {
           res.end(JSON.stringify({ error: "checkpoint not found" }));
           return;
         }
-        if (req.url.includes("latest=true")) {
+        const id = new URL(req.url, "http://stub").searchParams.get("id");
+        if (id) {
+          const pinned = checkpoints.find((candidate) => candidate.id === id);
+          res.statusCode = pinned ? 200 : 404;
+          res.end(JSON.stringify(pinned ?? { error: "checkpoint not found" }));
+        } else if (req.url.includes("latest=true")) {
           res.end(JSON.stringify(checkpoint));
         } else {
           res.end(JSON.stringify({ checkpoints }));
@@ -533,7 +538,7 @@ function listen(): Promise<number> {
         }));
         return;
       }
-      if (req.url === "/api/ledger/comments/comment-2/revisions") {
+      if (["comment-2", "abc%23last", "abc%232"].some((ref) => req.url === `/api/ledger/comments/${ref}/revisions`)) {
         res.end(JSON.stringify({ revisions: [oldCommentRevision, newCommentRevision] }));
         return;
       }
@@ -1642,7 +1647,7 @@ describe("issue CLI body revisions", () => {
     ], port);
 
     expect(result.status).toBe(0);
-    expect(requestedPaths).toContain("/api/ledger/issues/abc/checkpoints?kind=delegation-manifest");
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/checkpoints?id=checkpoint-old&kind=delegation-manifest");
     expect(requestedPaths).toContain("/api/ledger/issues/abc/head?at=1700000010000");
     const body = JSON.parse(result.stdout);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
@@ -1870,8 +1875,7 @@ describe("issue CLI body revisions", () => {
     const result = await run(["issue", "comment", "show", "abc#last"], port);
 
     expect(result.status).toBe(0);
-    expect(requestedPaths).toContain("/api/ledger/issues/abc");
-    expect(requestedPaths).toContain("/api/ledger/comments/comment-2/revisions");
+    expect(requestedPaths).toContain("/api/ledger/comments/abc%23last/revisions");
     expect(result.stdout).toBe("After\n");
   });
 
@@ -1880,8 +1884,7 @@ describe("issue CLI body revisions", () => {
     const result = await run(["issue", "comment", "history", "abc#2", "--with-body"], port);
 
     expect(result.status).toBe(0);
-    expect(requestedPaths).toContain("/api/ledger/issues/abc");
-    expect(requestedPaths).toContain("/api/ledger/comments/comment-2/revisions");
+    expect(requestedPaths).toContain("/api/ledger/comments/abc%232/revisions");
     expect(result.stdout).toContain("#2\trev_comment_2\tedit\tmandible");
     expect(result.stdout).toContain("----- body #2 -----");
     expect(result.stdout).toContain("After");
