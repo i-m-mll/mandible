@@ -132,7 +132,7 @@ describe("protected-base history audit", () => {
 
       const refusal = approveFixtureRequest(f.queue, request.id);
       await expect(refusal).rejects.toThrow(new RegExp(`${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
-      expect(f.queue.getRequest(request.id)?.status).toBe("pending");
+      expect((await f.queue.getRequest(request.id))?.status).toBe("pending");
       expect(f.calls).toHaveLength(0);
       expect(storedAudit(f.db, request.id)?.unexpected.map((commit: { sha: string }) => commit.sha)).toEqual([unsigned]);
 
@@ -157,7 +157,7 @@ describe("protected-base history audit", () => {
       await expect(f.queue.approve(request.id, {
         source: "auto_lease", leaseId: "lease-unattended", approverUserId: operatorId, env: {},
       })).rejects.toThrow(new RegExp(`without a human reviewer[\\s\\S]*${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
-      expect(f.queue.getRequest(request.id)?.status).toBe("pending");
+      expect((await f.queue.getRequest(request.id))?.status).toBe("pending");
       expect(f.calls).toHaveLength(0);
     } finally {
       await f.cleanup();
