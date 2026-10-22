@@ -423,10 +423,10 @@ export async function materializeProjectedAgentsReview(details) {
   try {
     const cacheBust = `?iab-preview-agents-review=${Date.now()}`;
     const [{ openDb }, briefings, artifacts, users] = await Promise.all([
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "briefings.js")).href}${cacheBust}`),
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "provider-artifacts.js")).href}${cacheBust}`),
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "users", "store.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "db.ts")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "feedback", "briefings.ts")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "provider-artifacts.ts")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "users", "store.ts")).href}${cacheBust}`),
     ]);
     db = openDb(custody.db);
     const resolved = artifacts.resolveArtifactIdentity(db, details.artifactVersionRef, "strict-read");
@@ -476,8 +476,8 @@ export async function materializeProjectedBriefingDemo(details) {
   try {
     const cacheBust = `?iab-preview-seed=${Date.now()}`;
     const [{ openDb }, { prepareRichBriefingDemoPreviewCopy }] = await Promise.all([
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
-      import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "rich-briefing-demo.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "db.ts")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "src", "feedback", "rich-briefing-demo.ts")).href}${cacheBust}`),
     ]);
     db = openDb(custody.db);
     const manifest = prepareRichBriefingDemoPreviewCopy(db, {
@@ -1659,7 +1659,7 @@ set -euo pipefail
 cd ${shellQuote(details.worktree)}
 exec env \\
 ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value))} \\`).join("\n")}
-  ${shellQuote(details.nodePath)} dist/index.js >> ${shellQuote(details.stdoutLog)} 2>> ${shellQuote(details.stderrLog)}
+  ${shellQuote(details.nodePath)} src/index.ts >> ${shellQuote(details.stdoutLog)} 2>> ${shellQuote(details.stderrLog)}
 `;
   fs.writeFileSync(runScript, content, { mode: 0o755 });
 }

@@ -1,3 +1,4 @@
+// @provisioned launchd
 // @vitest-environment node
 // This checks the actual old interpreter/launchd admission boundary. The
 // integrated production-daemon and desktop gate remains separately required.
@@ -12,7 +13,7 @@ import { AuthQueue } from '../../src/auth-queue.js';
 import { AuthHookManager } from '../../src/auth-hooks.js';
 import { renderLaunchAgent } from '../../scripts/local-runtime.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
-import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerProject, createMigratedDb, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
+import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerProject, createMigratedDb, git, recordPassingCandidateAcceptance, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { publishTestCandidate } from '../helpers/auth-delivery-fixtures.js';
 import { sqliteRuntimePaths } from '../../src/sqlite-runtime.js';
 
@@ -21,11 +22,11 @@ const wait = async (predicate: () => boolean, timeout = 15000) => {
   while (Date.now() < deadline) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 100)); }
   throw new Error('Isolated launchd fixture did not reach its expected state.');
 };
-it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUNTIME)('arms one independent helper under loaded legacy Node arguments and survives helper death without build mutation', async () => {
-  if (process.platform !== 'darwin') throw new Error('This explicit launchd check requires macOS.');
-  // Opt-in exact legacy binary: no Node acquisition or retained Node backend.
-  const legacy = process.env.MANDIBLE_TEST_LEGACY_RUNTIME;
-  if (!legacy || !fs.existsSync(legacy)) throw new Error('Set MANDIBLE_TEST_LEGACY_RUNTIME to the deployed old interpreter for this check.');
+it('arms one independent helper under the deployed interpreter and survives helper death without build mutation', async () => {
+  if (process.platform !== 'darwin') throw new Error('This launchd check requires macOS.');
+  // The deployed interpreter is the pinned Bun the runner provides.
+  const deployed = process.env.MANDIBLE_RUNTIME;
+  if (!deployed || !fs.existsSync(deployed)) throw new Error('Prerequisite missing: MANDIBLE_RUNTIME, the pinned Bun; run through bun run test:provisioned.');
   const repo = fs.realpathSync(createAuthCheckRepo());
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-handoff-launchd-'));
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
@@ -38,8 +39,8 @@ it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUN
   const control = (args: string[]) => spawnSync('/bin/launchctl', args, { encoding: 'utf8', timeout: 5000 });
   const db = createMigratedDb(); let queue: AuthQueue | undefined; let journal: any; let requestRef = ''; let executionRef = ''; let bridgeChild: ReturnType<typeof spawn> | undefined;
   try {
-    const sources = ['src/sqlite.ts', 'src/sqlite-runtime.ts', 'src/sqlite-bindings.ts', 'scripts/sqlite-runtime-install.mjs', 'scripts/bun-runtime-lock.tsv', 'cli/production-db-guard.cjs', 'cli/mandible-paths.cjs', 'src/runtime-handoff-proof.ts', 'src/ledger/project-registry.ts', 'src/ledger/projects.ts', 'src/ledger/ids.ts', 'src/ledger/project-key.ts', 'src/db-introspection.ts', 'src/canonical-json.ts', 'src/auth-signature-verification.ts', 'src/auth-change-message.ts',
-      'scripts/runtime-environment.mjs', 'scripts/runtime-handoff.mjs', 'scripts/process-group-supervisor.mjs', 'scripts/runtime-log-assessment.mjs', 'scripts/bun-runtime.sh', 'scripts/local-runtime.mjs', 'scripts/canonical-origin.mjs', 'scripts/build-revision.mjs', 'scripts/local-ca-trust.mjs', 'scripts/pinned-caddy.mjs', '.bun-version'];
+    // The candidate carries the checkout's whole runtime source, so the fixture follows its imports as they change.
+    const sources = spawnSync('git', ['ls-files', '-z', '--', 'src', 'scripts', 'cli', '.bun-version'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
     const files: Record<string, string> = Object.fromEntries(sources.map(name => [name, fs.readFileSync(path.join(process.cwd(), name), 'utf8')]));
     files['package.json'] = '{"type":"module"}\n'; files['dist/index.js'] = '// Owned admission-only fixture.\n';
     commitOnBranch(repo, 'feature/handoff', files);
@@ -50,6 +51,7 @@ it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUN
     const hooks = new AuthHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = queue.submit({ type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' });
+    recordPassingCandidateAcceptance(db, request.id);
     await queue.approveWithOperatorProof(request.id, operator);
     const published = publishTestCandidate(repo, queue.getRequest(request.id)!);
     db.prepare('UPDATE auth_requests SET output = ? WHERE id = ?').run(published.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);
@@ -64,7 +66,7 @@ it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUN
     fs.writeFileSync(runner, "import fs from 'node:fs';fs.writeFileSync(process.env.OLD_MARKER,String(process.pid));setInterval(()=>{},1000);\n");
     const marker = path.join(scratch, 'old-started');
     const backendFile = path.join(services, `${backend}.plist`);
-    fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [legacy, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
+    fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [deployed, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
     fs.writeFileSync(path.join(services, `${gateway}.plist`), renderLaunchAgent({ label: gateway, programArguments: ['/usr/bin/true', 'fixture'], workingDirectory: runtimeDir, environment: { HOME: userHome }, stdoutPath: path.join(scratch, 'gateway.log'), stderrPath: path.join(scratch, 'gateway.log') }));
     expect(control(['bootstrap', domain, backendFile]).status).toBe(0); await wait(() => fs.existsSync(marker));
     const sqliteFiles = sqliteRuntimePaths();
@@ -75,9 +77,9 @@ it.skipIf(process.platform !== 'darwin' || !process.env.MANDIBLE_TEST_LEGACY_RUN
     const result = arm(); expect(result.status, result.stderr).toBe(75);
     journal = readRuntimeHandoff(home, request.id, hook.id);
     expect(journal.bridgeInstalled).toBe(true); expect(journal.binding.oldProcess.pid).toBe(Number(fs.readFileSync(marker, 'utf8')));
-    expect(journal.binding.priorBackend.argv[0]).toBe(legacy); expect(journal.binding.mergeCommit).toBe(published.mergeSha);
+    expect(journal.binding.priorBackend.argv[0]).toBe(deployed); expect(journal.binding.mergeCommit).toBe(published.mergeSha);
     expect(journal.stages).toEqual({}); expect(fs.readFileSync(runner, 'utf8')).toContain('dependency-free');
-    bridgeChild = spawn(legacy, [runner, 'run'], { env, stdio: 'ignore' });
+    bridgeChild = spawn(deployed, [runner, 'run'], { env, stdio: 'ignore' });
     const bridgeMarker = path.join(path.dirname(path.join(runtimeDir, 'handoff', `${request.id}-${hook.id}`, 'journal.json')), 'bridge-process.json');
     await wait(() => fs.existsSync(bridgeMarker) && JSON.parse(fs.readFileSync(bridgeMarker, 'utf8')).pid === bridgeChild?.pid);
     expect(bridgeChild.exitCode).toBeNull();

@@ -27,6 +27,6 @@ jobs:
 
       # `bun run test` is the default suite: it must be green on a runner that has
       # nothing beyond `bun install --frozen-lockfile`. `bun run test:provisioned` needs a real
-      # browser, macOS lockf and legacy interpreters, and is deliberately not run here.
+      # browser, macOS lockf and launchd, and is deliberately not run here.
       - name: Test
         run: bun run test

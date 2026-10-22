@@ -1,4 +1,4 @@
-// @provisioned chromium
+// Quarantined: 32cf0c1 — a cold 751-block Chat mounts its last rows at scrollTop 32 of 120,846, so upward traversal starts from block 0.
 import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -212,7 +212,10 @@ async function listen(): Promise<void> {
   const instance = resolveInstanceInfo({ env: {}, dbPath: join(directory, 'mandible.db') });
   const router = new Router({ instance });
   registerConversationRoutes(router);
-  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), { fileRpc: 'deny' });
+  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), {
+    operation: { id: 'fixture:get:/source-backed-history', effects: [], requestSchema: null, reportingCategory: null },
+    fileRpc: 'deny',
+  });
   server = createServer({
     db,
     sse: new SseManager(),

@@ -19,11 +19,16 @@
  *
  * ## Enforcement
  *
- * Always: the relative outlier rule (hardware-independent) and checkout
- * cleanliness — `git status --porcelain --untracked-files=all` must read the
- * same at the end of the run as at the start, so a test that writes into the
- * repository fails the run. With `MANDIBLE_TIMING_GATE=1`, on a controlled
- * machine, also the absolute budget: occupancy sum, slowest file, and wall.
+ * Every suite: checkout cleanliness — `git status --porcelain
+ * --untracked-files=all` must read the same at the end of the run as at the
+ * start, so a test that writes into the repository fails the run — and the
+ * inventory rule: a skipped or todo test, or a file that ran no tests, fails
+ * the run. A run filtered by name (`-t`) or line marks the tests it leaves out
+ * as skipped too, so skips are judged only on unfiltered runs.
+ *
+ * The gate also gets the timing packet: the relative outlier rule
+ * (hardware-independent) always, and with `MANDIBLE_TIMING_GATE=1`, on a
+ * controlled machine, the absolute budget: occupancy sum, slowest file, wall.
  *
  * `MANDIBLE_TIMING_JSON=<path>` additionally writes the full packet, every
  * file's occupancy included.
@@ -87,14 +92,33 @@ function checkoutViolation(before: CheckoutState, after: CheckoutState): string 
     `(testRuntimeRoot in test/helpers/runtime-isolation.ts):\n${changes.map((c) => `        ${c}`).join("\n")}`;
 }
 
-export default class TimingContractReporter implements Reporter {
+function inventoryViolations(testModules: ReadonlyArray<TestModule>, filtered: boolean): string[] {
+  return testModules.flatMap((module) => {
+    const name = module.moduleId.replace(`${process.cwd()}/`, "");
+    const tests = [...module.children.allTests()];
+    if (tests.length === 0) return [`${name} ran no tests; delete it or give it one.`];
+    if (filtered) return [];
+    return tests
+      .filter((test) => test.result().state === "skipped")
+      .map((test) => `${name} > ${test.fullName} is ${test.options.mode === "todo" ? "todo" : "skipped"}; delete it or fix it.`);
+  });
+}
+
+export default class RunContractReporter implements Reporter {
   private startedAt = 0;
   private workers = Math.max(1, availableParallelism() - 1);
   private checkoutAtStart: CheckoutState = { ok: false, error: "reporter was not initialised" };
+  private filtered = false;
+  private readonly timing: boolean;
 
-  onInit(vitest: { config?: { maxWorkers?: number | string } }): void {
+  constructor(options: { timing?: boolean } = {}) {
+    this.timing = options.timing ?? false;
+  }
+
+  onInit(vitest: { config?: { maxWorkers?: number | string; testNamePattern?: unknown; includeTaskLocation?: boolean } }): void {
     this.startedAt = Date.now();
     this.checkoutAtStart = checkoutState();
+    this.filtered = Boolean(vitest?.config?.testNamePattern) || Boolean(vitest?.config?.includeTaskLocation);
     const configured = vitest?.config?.maxWorkers;
     if (typeof configured === "number" && configured > 0) {
       this.workers = configured;
@@ -102,6 +126,19 @@ export default class TimingContractReporter implements Reporter {
   }
 
   onTestRunEnd(testModules: ReadonlyArray<TestModule>): void {
+    const violations = [
+      ...inventoryViolations(testModules, this.filtered),
+      ...[checkoutViolation(this.checkoutAtStart, checkoutState())].filter((v): v is string => v !== null),
+      ...(this.timing ? this.timingPacket(testModules) : []),
+    ];
+    if (violations.length > 0) {
+      process.stdout.write(`${["  RUN CONTRACT FAILED", ...violations.map((v) => `    - ${v}`), ""].join("\n")}\n`);
+      process.exitCode = 1;
+    }
+  }
+
+  /** Prints the packet and returns the timing violations. */
+  private timingPacket(testModules: ReadonlyArray<TestModule>): string[] {
     const wallMs = Date.now() - this.startedAt;
     const files: FileTiming[] = testModules
       .map((module) => ({
@@ -110,7 +147,7 @@ export default class TimingContractReporter implements Reporter {
       }))
       .sort((a, b) => b.occupancyMs - a.occupancyMs);
 
-    if (files.length === 0) return;
+    if (files.length === 0) return [];
 
     const sumMs = files.reduce((total, file) => total + file.occupancyMs, 0);
     const slowest = files[0]!;
@@ -173,9 +210,6 @@ export default class TimingContractReporter implements Reporter {
       );
     }
 
-    const checkout = checkoutViolation(this.checkoutAtStart, checkoutState());
-    if (checkout) violations.push(checkout);
-
     const packetPath = process.env.MANDIBLE_TIMING_JSON;
     if (packetPath) {
       writeFileSync(packetPath, `${JSON.stringify({
@@ -188,11 +222,7 @@ export default class TimingContractReporter implements Reporter {
       }, null, 2)}\n`);
     }
 
-    if (violations.length > 0) {
-      lines.push("  TIMING CONTRACT FAILED", ...violations.map((v) => `    - ${v}`), "");
-      process.exitCode = 1;
-    }
-
     process.stdout.write(`${lines.join("\n")}\n`);
+    return violations;
   }
 }

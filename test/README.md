@@ -1,6 +1,6 @@
 # `test/` — the gate
 
-`bun run test` runs `test/*.test.{ts,tsx}` in parallel forks and takes about a minute. A file is in the gate because it is in this directory. `test/provisioned/` holds tests that need a real browser, macOS `lockf`, a legacy interpreter or a daemon fleet (`bun run test:provisioned`, on demand and before a release). `test/quarantine/` holds red tests, each naming an open issue (`bun run test:quarantine`, must fail while it holds any file; it is normally empty).
+`bun run test` runs `test/*.test.{ts,tsx}` in parallel forks and takes about a minute. A file is in the gate because it is in this directory. `test/provisioned/` holds tests that need a real browser, macOS `lockf` and launchd, or a daemon fleet (`bun run test:provisioned`, on demand and before a release). `test/quarantine/` holds red tests, each naming an open issue (`bun run test:quarantine`, must fail while it holds any file; it is normally empty).
 
 ## Should this test exist?
 

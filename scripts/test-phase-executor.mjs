@@ -59,6 +59,10 @@ export async function executeTestPhase({
   measureRssKiB = (child) => measureTestRssKiB(child, { includeParentRss }),
   rssLimitKiB = 950_000,
   monitorIntervalMs = 100,
+  // How long sampling may fail before the phase is stopped. A loaded machine
+  // can stall one `ps`; stopping a phase skips its own cleanup, so a short
+  // stall must not stop it.
+  unmeasuredGraceMs = 0,
   createRuntime = createTestRuntime,
 }) {
   let runtime;
@@ -66,6 +70,7 @@ export async function executeTestPhase({
   let stop;
   let measurementError;
   let peakKiB = 0;
+  let lastMeasuredAt = performance.now();
   let memoryKilled = false;
   let result;
   let error;
@@ -85,10 +90,12 @@ export async function executeTestPhase({
       try {
         const totalKiB = measureRssKiB(child);
         if (!Number.isFinite(totalKiB) || totalKiB < 0) throw new Error(`Invalid test RSS measurement: ${totalKiB}`);
+        lastMeasuredAt = performance.now();
         peakKiB = Math.max(peakKiB, totalKiB);
         if (totalKiB < rssLimitKiB) return;
         memoryKilled = true;
       } catch (caught) {
+        if (performance.now() - lastMeasuredAt < unmeasuredGraceMs) return;
         measurementError = caught;
       }
       clearInterval(monitor);

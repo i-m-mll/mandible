@@ -118,6 +118,21 @@ const positionWindow = {
   blocks,
 };
 
+const structure = {
+  conversation_id: conversationId,
+  source_version_id: positionWindow.source_version_id,
+  total: blocks.length,
+  rows: blocks.map((block) => ({
+    id: block.id,
+    position: block.position,
+    type: block.type,
+    role: block.role,
+    parent_position: null,
+    record_offset: null,
+    record_length: block.content.length,
+  })),
+};
+
 Object.defineProperty(window, 'EventSource', { value: undefined, configurable: true });
 Object.defineProperty(navigator, 'clipboard', {
   value: { writeText: () => Promise.resolve() },
@@ -136,6 +151,12 @@ window.fetch = ((input: RequestInfo | URL) => {
         effect_ceiling: ['ledger:read', 'ledger:write'],
       },
     }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  }
+  if (url === `/api/conversations/${conversationId}/structure`) {
+    return Promise.resolve(new Response(JSON.stringify(structure), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));

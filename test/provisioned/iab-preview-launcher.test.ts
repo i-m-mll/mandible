@@ -697,9 +697,9 @@ afterEach(async () => {
   previewServers.clear();
   previewServer = null;
   for (const root of tempRoots) {
-    // `dist` inside a fixture repo is a tree of symlinks into the real build.
+    // `src` inside a fixture repo is a tree of symlinks into the real source.
     // Recursive removal unlinks symlinks rather than following them, so the
-    // real dist is never touched.
+    // real source is never touched.
     fs.rmSync(root, { recursive: true, force: true });
   }
   tempRoots = [];
@@ -861,12 +861,12 @@ function previewContractEnv(details: {
 }
 
 /**
- * Give the fixture repo a `dist` the launcher can really execute.
+ * Give the fixture repo a `src` the launcher can really execute.
  *
- * The launcher does two different things with `<worktree>/dist`: it imports the
- * genuine `db.js` and `feedback/rich-briefing-demo.js` to materialize the
- * projected briefing demo, and it executes `index.js` as the preview daemon. So
- * every real entry is symlinked through, and only `index.js` is replaced by a
+ * The launcher does two different things with `<worktree>/src`: it imports the
+ * genuine `db.ts` and `feedback/rich-briefing-demo.ts` to materialize the
+ * projected briefing demo, and it runs `index.ts` as the preview daemon. So
+ * every real entry is symlinked through, and only `index.ts` is replaced by a
  * stand-in.
  *
  * The health file paths are baked in as literals rather than passed through the
@@ -874,30 +874,25 @@ function previewContractEnv(details: {
  * variable from the child, so an env-carried path would arrive empty and the
  * test would pass for the wrong reason.
  */
-function installStandInDaemonDist(repo: string, details: {
+function installStandInDaemonSource(repo: string, details: {
   healthPath: string;
   refreshedHealthPath: string;
   markerPidFile: string;
   proofPath: string;
   startupEpoch: string;
 }): void {
-  const realDist = path.join(process.cwd(), "dist");
-  if (!fs.existsSync(path.join(realDist, "db.js"))) {
-    throw new Error(`the refresh fixture needs a built dist; run the pinned Bun build first (looked in ${realDist})`);
+  const realSrc = path.join(process.cwd(), "src");
+  const repoSrc = path.join(repo, "src");
+  fs.mkdirSync(repoSrc, { recursive: true });
+  for (const entry of fs.readdirSync(realSrc)) {
+    if (entry === "index.ts") continue;
+    fs.symlinkSync(path.join(realSrc, entry), path.join(repoSrc, entry));
   }
-  const repoDist = path.join(repo, "dist");
-  fs.mkdirSync(repoDist, { recursive: true });
-  for (const entry of fs.readdirSync(realDist)) {
-    if (entry === "index.js") continue;
-    fs.symlinkSync(path.join(realDist, entry), path.join(repoDist, entry));
-  }
-  // CommonJS: the fixture repo has no package.json, so `require` is available
-  // and the real dist's ESM modules still resolve through their own package.
-  fs.writeFileSync(path.join(repoDist, "index.js"), [
-    `const fs = require("node:fs");`,
+  fs.writeFileSync(path.join(repoSrc, "index.ts"), [
+    `import fs from "node:fs";`,
     // The pid file is the launcher's stop contract; writing it from the
     // environment proves run.sh actually exported MANDIBLE_PID_FILE.
-    `fs.writeFileSync(process.env.MANDIBLE_PID_FILE, process.pid + "\\n");`,
+    `fs.writeFileSync(process.env.MANDIBLE_PID_FILE!, process.pid + "\\n");`,
     // A marker only this stand-in writes, so teardown never kills a pid the
     // suite does not own.
     `fs.writeFileSync(${JSON.stringify(details.markerPidFile)}, process.pid + "\\n");`,
@@ -967,7 +962,7 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
     instance: { ...health.instance, allowed_effects: newEffects },
   }), "utf8");
   const port = await listenForDynamicHealth(healthPath, proofPath, refreshedHealthPath, markerPidFile, runScript);
-  installStandInDaemonDist(repo, {
+  installStandInDaemonSource(repo, {
     healthPath, refreshedHealthPath, markerPidFile, proofPath, startupEpoch,
   });
   Object.assign(instanceEnv, previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }));
