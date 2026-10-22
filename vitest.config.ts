@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { measuredForks } from './scripts/measured-test-pool.js';
 
 /**
  * The one Vitest configuration. A suite is a directory; `MANDIBLE_TEST_SUITE`
@@ -32,7 +33,7 @@ export default defineConfig({
     // await state through test/helpers/wait-until.ts.
     testTimeout: 60_000,
     hookTimeout: 60_000,
-    pool: 'forks',
+    pool: measuredForks,
     // Constrain the actual Bun forks, not only the Vitest parent process.
     execArgv: ['--smol'],
     fileParallelism: true,
