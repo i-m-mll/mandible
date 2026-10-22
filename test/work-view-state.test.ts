@@ -183,6 +183,8 @@ it('keeps cold and failed project discovery distinct from successful empty resul
   await act(() => window.dispatchEvent(new CustomEvent('work:scan:completed')));
   await screen.findByText('No projects found. Register a session or add a project.');
   expect(screen.queryByRole('button', { name: 'Select project Two' })).toBeNull();
+});
+
 it('preserves mounted compound targets, absent projects and branches, and unrelated route context', async () => {
     const repos = [{ id: 'r1', name: 'Repo One', default_branch: 'main' }, { id: 'r2', name: 'Repo Two', default_branch: 'main' }];
     const branchesByRepo = { r1: [{ name: 'main', status: 'clean' }], r2: [{ name: 'other', status: 'clean' }] };
@@ -216,4 +218,3 @@ it('preserves mounted compound targets, absent projects and branches, and unrela
     await waitFor(() => expect(window.location.hash).toBe('#/tasks?sentinel=retained'));
   });
 
-});
