@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   buildMetadataBackupSql,
@@ -13,23 +13,21 @@ import {
 } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
-import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { LedgerEventSource } from "../src/ledger/types.js";
 import { createUser } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
-let dbPath = "";
 let db: Db;
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-"));
-  dbPath = path.join(tempDir, "mandible.db");
-  db = openDb(dbPath);
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -62,43 +60,6 @@ function createIssue(store: LedgerStore, projectId: string, title = "Ledger issu
 }
 
 describe("ledger schema", () => {
-  it("creates ledger tables, indexes, and enables foreign keys on fresh DBs", () => {
-    const tables = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ledger_%' ORDER BY name",
-    ).all() as Array<{ name: string }>;
-    expect(tables.map((row) => row.name)).toEqual([
-      "ledger_auth_issue_links",
-      "ledger_body_revisions",
-      "ledger_change_feed_state",
-      "ledger_change_log",
-      "ledger_comments",
-      "ledger_commit_issue_links",
-      "ledger_events",
-      "ledger_issue_aliases",
-      "ledger_issue_checkpoints",
-      "ledger_issue_relationship_sources",
-      "ledger_issue_relationships",
-      "ledger_issues",
-      "ledger_labels",
-      "ledger_operational_link_mismatches",
-      "ledger_operational_link_reports",
-      "ledger_project_checkouts",
-      "ledger_projects",
-      "ledger_reconciliation_mismatches",
-      "ledger_reconciliation_reports",
-      "ledger_relationship_edges",
-      "ledger_session_issue_links",
-      "ledger_work_unit_issue_links",
-    ]);
-
-    const indexes = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_ledger_%'",
-    ).all() as Array<{ name: string }>;
-    expect(indexes.map((row) => row.name)).toContain("idx_ledger_issues_project_status_updated");
-    expect(indexes.map((row) => row.name)).toContain("idx_ledger_body_revisions_entity");
-    expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-  });
-
   it("enforces canonical ledger foreign keys", () => {
     expect(() => {
       db.prepare(
@@ -156,152 +117,6 @@ describe("ledger IDs and project identity", () => {
   });
 });
 
-describe("ledger issue heads", () => {
-  it("changes the digest when an issue comment is added", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = createIssue(store, project.project.id, "Digest target");
-    const before = getLedgerIssueHead(db, issue.id);
-
-    store.addComment(issue.id, {
-      ...SYSTEM_ACTOR,
-      body: "New digest-affecting comment",
-      actor_type: "agent",
-      author_display: "Codex",
-      source: "mandible",
-      created_at: (before.last_event_at ?? Date.now()) + 1,
-    });
-
-    const after = getLedgerIssueHead(db, issue.id);
-    expect(before.short_id).toBe(issue.short_id);
-    expect(before.digest).not.toBe(after.digest);
-    expect(after.last_event_kind).toBe("comment.created");
-    expect(after.last_event_at).not.toBeNull();
-  });
-
-  it("changes the digest when an issue checkpoint is added", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = createIssue(store, project.project.id, "Checkpoint digest target");
-    const before = getLedgerIssueHead(db, issue.id);
-
-    store.addIssueCheckpoint(issue.id, {
-      ...SYSTEM_ACTOR,
-      kind: "delegation-manifest",
-      payload: [{ issue: issue.short_id, digest: before.digest, branch: "feature/demo", scope: "demo" }],
-      actor_type: "agent",
-      author_display: "Codex",
-      source: "mandible",
-      created_at: (before.last_event_at ?? Date.now()) + 1,
-    });
-
-    const after = getLedgerIssueHead(db, issue.id);
-    expect(before.digest).not.toBe(after.digest);
-    expect(after.last_event_kind).toBe("issue.checkpoint.created");
-    expect(after.last_event_at).not.toBeNull();
-  });
-  it("can compute an issue head at a historical event cutoff", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = createIssue(store, project.project.id, "Historical digest target");
-    const created = getLedgerIssueHead(db, issue.id);
-
-    store.addIssueCheckpoint(issue.id, {
-      ...SYSTEM_ACTOR,
-      kind: "delegation-manifest",
-      payload: [],
-      actor_type: "agent",
-      author_display: "Codex",
-      source: "mandible",
-      created_at: (created.last_event_at ?? Date.now()) + 1,
-    });
-    const checkpointHead = getLedgerIssueHead(db, issue.id);
-
-    store.addComment(issue.id, {
-      ...SYSTEM_ACTOR,
-      body: "Later umbrella coordination comment",
-      actor_type: "agent",
-      author_display: "Codex",
-      source: "mandible",
-      created_at: (checkpointHead.last_event_at ?? Date.now()) + 1,
-    });
-    const current = getLedgerIssueHead(db, issue.id);
-    const historical = getLedgerIssueHead(db, issue.id, { at: checkpointHead.last_event_at ?? 0 });
-
-    expect(historical.digest).toBe(checkpointHead.digest);
-    expect(historical.digest).not.toBe(current.digest);
-    expect(current.last_event_kind).toBe("comment.created");
-  });
-
-  it("changes both endpoint digests when a structured relationship edge is linked and unlinked", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const source = createIssue(store, project.project.id, "Head source");
-    const target = createIssue(store, project.project.id, "Tail target");
-    const unrelated = createIssue(store, project.project.id, "Idle unrelated");
-    const beforeSource = getLedgerIssueHead(db, source.id);
-    const beforeTarget = getLedgerIssueHead(db, target.id);
-    const beforeUnrelated = getLedgerIssueHead(db, unrelated.id);
-
-    store.linkRelationshipEdges({
-      actor: SYSTEM_ACTOR,
-      source_entity: { entity_type: "issue", entity_id: source.id },
-      target_entities: [{ entity_type: "issue", entity_id: target.id }],
-      link_type: "references",
-      created_at: Math.max(beforeSource.last_event_at ?? 0, beforeTarget.last_event_at ?? 0) + 1,
-    });
-
-    const linkedSource = getLedgerIssueHead(db, source.id);
-    const linkedTarget = getLedgerIssueHead(db, target.id);
-    expect(linkedSource.digest).not.toBe(beforeSource.digest);
-    expect(linkedTarget.digest).not.toBe(beforeTarget.digest);
-    expect(linkedSource.last_event_kind).toBe("relationship.added");
-    expect(linkedTarget.last_event_kind).toBe("relationship.added");
-    expect(getLedgerIssueHead(db, unrelated.id).digest).toBe(beforeUnrelated.digest);
-
-    store.unlinkRelationshipEdges({
-      actor: SYSTEM_ACTOR,
-      source_entity: { entity_type: "issue", entity_id: source.id },
-      target_entities: [{ entity_type: "issue", entity_id: target.id }],
-      link_type: "references",
-      occurred_at: (linkedSource.last_event_at ?? 0) + 1,
-    });
-
-    const unlinkedSource = getLedgerIssueHead(db, source.id);
-    const unlinkedTarget = getLedgerIssueHead(db, target.id);
-    expect(unlinkedSource.digest).not.toBe(linkedSource.digest);
-    expect(unlinkedTarget.digest).not.toBe(linkedTarget.digest);
-    expect(unlinkedSource.last_event_kind).toBe("relationship.removed");
-    expect(unlinkedTarget.last_event_kind).toBe("relationship.removed");
-    expect(getLedgerIssueHead(db, unrelated.id).digest).toBe(beforeUnrelated.digest);
-  });
-
-  it("changes both endpoint digests when a stored issue relationship changes", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const source = createIssue(store, project.project.id, "Stored relationship source");
-    const target = createIssue(store, project.project.id, "Linked relationship target");
-    const beforeSource = getLedgerIssueHead(db, source.id);
-    const beforeTarget = getLedgerIssueHead(db, target.id);
-
-    store.upsertIssueRelationship({
-      actor: SYSTEM_ACTOR,
-      source_issue_id: source.id,
-      target_issue_id: target.id,
-      relationship_type: "blocks",
-      provenance: "manual",
-      created_at: Math.max(beforeSource.last_event_at ?? 0, beforeTarget.last_event_at ?? 0) + 1,
-    });
-
-    const afterSource = getLedgerIssueHead(db, source.id);
-    const afterTarget = getLedgerIssueHead(db, target.id);
-    expect(afterSource.digest).not.toBe(beforeSource.digest);
-    expect(afterTarget.digest).not.toBe(beforeTarget.digest);
-    expect(afterSource.last_event_kind).toBe("relationship.upserted");
-    expect(afterTarget.last_event_kind).toBe("relationship.upserted");
-  });
-});
-
 describe("ledger store", () => {
   it("writes issue current state, alias, event, and SSE atomically without default outbox", () => {
     const project = createProject();
@@ -329,33 +144,6 @@ describe("ledger store", () => {
     });
     expect(JSON.parse(events[0].payload_json)).toMatchObject({ body_revision_id: revisions[0].id });
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
-  });
-
-  it("writes comments with events", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = createIssue(store, project.project.id);
-
-    const comment = store.addComment(issue.id, {
-      ...SYSTEM_ACTOR,
-      body: "A comment",
-      actor_type: "mandible_user",
-      author_display: "Mandible User",
-    });
-
-    expect(comment.id).toMatch(/^[0-9a-f]{64}$/);
-    expect(comment.ordinal).toBe(1);
-    const events = store.listEvents({ entity_type: "comment", entity_id: comment.id });
-    expect(events).toHaveLength(1);
-    expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
-    const revisions = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id });
-    expect(revisions).toHaveLength(1);
-    expect(revisions[0]).toMatchObject({
-      revision_no: 1,
-      reason: "create",
-      snapshot_body: "A comment",
-      event_id: events[0].id,
-    });
   });
 
   it("records body edit revisions, omits body text from event patches, and skips no-op bodies", () => {
@@ -538,24 +326,6 @@ describe("ledger store", () => {
     expect(store.resolveIssueRef("abc")).toEqual({ ok: false, error: "not_found" });
     const ambiguousPrefix = store.resolveIssueRef("abcd");
     expect(ambiguousPrefix.ok).toBe(false);
-  });
-
-  it("upserts issue relationships", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const parent = createIssue(store, project.project.id, "Parent");
-    const child = createIssue(store, project.project.id, "Child");
-
-    const relationship = store.upsertIssueRelationship({
-      actor: SYSTEM_ACTOR,
-      source_issue_id: parent.id,
-      target_issue_id: child.id,
-      relationship_type: "parent_child",
-      provenance: "manual",
-      metadata: { order: 1 },
-    });
-    expect(relationship.id).toMatch(/^rel_/);
-    expect(relationship.relationship_type).toBe("parent_child");
   });
 
   it("parses explicit typed issue references only", () => {
