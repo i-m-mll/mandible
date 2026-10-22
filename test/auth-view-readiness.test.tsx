@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { useLayoutEffect } from 'preact/hooks';
+import * as ScrollPersistence from '../ui/src/hooks/usePersistedScrollPosition';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
@@ -382,3 +384,102 @@ describe('Approval closure targets without recorded actions', () => {
     });
   }
 });
+
+describe('Approval body reading position', () => {
+  it('restores request/tab positions through refetch, A-to-B navigation and reload without overriding console reading', async () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function(this: HTMLElement) {
+      return this.textContent?.includes('Tail append') ? 5000 : 2000;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300);
+    const second = { ...pendingRequest, id: 'req-scroll-b', title: 'Second reading position' };
+    const props = {
+      queue: [pendingRequest, second], historyQueue: [], outputs: { 'req-1': 'Initial console output' },
+      selectedAuthId: 'req-1', daemonReady: true, instance: authMainInstance,
+      onApprove: () => undefined, onReject: () => undefined,
+    };
+    const view = render(<AuthQueueView {...props} />);
+    const body = () => document.querySelector<HTMLDivElement>('.auth-detail__body')!;
+    body().scrollTop = 184;
+    fireEvent.scroll(body());
+    expect(localStorage.getItem('auth-review-scroll:req-1:abstract')).toBe('184');
+    view.rerender(<AuthQueueView {...props} queue={[{ ...pendingRequest, updated_at: 2 }, second]} />);
+    expect(body().scrollTop).toBe(184);
+    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    expect(body().scrollTop).toBe(0);
+    body().scrollTop = 72;
+    fireEvent.scroll(body());
+    view.rerender(<AuthQueueView {...props} selectedAuthId={second.id} />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Info' }).getAttribute('aria-selected')).toBe('true'));
+    expect(body().scrollTop).toBe(0);
+    body().scrollTop = 39;
+    fireEvent.scroll(body());
+    view.rerender(<AuthQueueView {...props} />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Diff' }).getAttribute('aria-selected')).toBe('true'));
+    expect(body().scrollTop).toBe(72);
+    fireEvent.click(screen.getByRole('tab', { name: 'Info' }));
+    expect(body().scrollTop).toBe(184);
+    view.unmount();
+    const reload = render(<AuthQueueView {...props} />);
+    expect(body().scrollTop).toBe(184);
+    fireEvent.click(screen.getByRole('tab', { name: 'Console' }));
+    body().scrollTop = 61;
+    fireEvent.scroll(body());
+    await waitFor(() => expect(localStorage.getItem('auth-review-tab:req-1')).toBe('"console"'));
+    vi.mocked(Element.prototype.scrollIntoView).mockClear();
+    reload.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Initial console output\nNew output while reading' }} />);
+    expect(body().scrollTop).toBe(61);
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    reload.unmount();
+    const consoleReload = render(<AuthQueueView {...props} />);
+    expect(screen.getByRole('tab', { name: 'Console' }).getAttribute('aria-selected')).toBe('true');
+    expect(body().scrollTop).toBe(61);
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    body().scrollTop = 1700;
+    fireEvent.scroll(body());
+    consoleReload.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Tail append with enough output to grow the scroll range' }} />);
+    expect(body().scrollHeight).toBe(5000);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledOnce();
+  });
+});
+
+
+for (const savedOffset of [0, 184]) {
+for (const settleBeforeTailEffect of [false, true]) {
+it(`restores saved Console${savedOffset} when delayed output becomes reachable (settles before tail effect: ${settleBeforeTailEffect})`, async () => {
+  localStorage.setItem('auth-review-tab:req-1', '"console"');
+  localStorage.setItem('auth-review-scroll:req-1:console', String(savedOffset));
+  const resizeCallbacks: Array<() => void> = [];
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(() => callback([], this as unknown as ResizeObserver)); }
+    observe() {}
+    disconnect() {}
+  });
+  let outputReady = false;
+  if (settleBeforeTailEffect) {
+    const realHook = ScrollPersistence.usePersistedScrollPosition;
+    vi.spyOn(ScrollPersistence, 'usePersistedScrollPosition').mockImplementation((ref, key) => {
+      const pending = realHook(ref, key);
+      useLayoutEffect(() => {
+        if (outputReady) for (const notify of resizeCallbacks) notify();
+      });
+      return pending;
+    });
+  }
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function(this: HTMLElement) {
+    return this.querySelector('.console-output__pre') ? 2000 : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300);
+  const props = { queue: [pendingRequest], historyQueue: [], outputs: {}, selectedAuthId: 'req-1',
+    daemonReady: true, instance: authMainInstance, onApprove: () => undefined, onReject: () => undefined };
+  const view = render(<AuthQueueView {...props} />);
+  const body = document.querySelector<HTMLDivElement>('.auth-detail__body')!;
+  expect(body.scrollTop).toBe(0);
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  outputReady = true;
+  view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Long console output arrived after the saved reading position was loaded.' }} />);
+  await waitFor(() => expect(body.scrollTop).toBe(savedOffset));
+  expect(localStorage.getItem('auth-review-scroll:req-1:console')).toBe(String(savedOffset));
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+});
+}
+}

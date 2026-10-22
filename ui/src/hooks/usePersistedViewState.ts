@@ -65,6 +65,18 @@ function loadState<T>(
   return { storageKey, value, serialized: serialize(value) };
 }
 
+/** Synchronously flush browser-local intent, including before page navigation. */
+export function writePersistedViewState(storageKey: string, value: unknown): boolean {
+  const serialized = serialize(value);
+  if (!storageKey || typeof window === 'undefined' || serialized === null) return false;
+  try {
+    window.localStorage.setItem(storageKey, serialized);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Read the same normalized browser-local state used by the hook without writing it back. */
 export function readPersistedViewState<T>(
   storageKey: string,
@@ -134,12 +146,8 @@ export function usePersistedViewState<T>(
     const serialized = serialize(keyedState.value);
     if (serialized === null || serialized === persistedRef.current.serialized) return;
 
-    try {
-      if (typeof window === 'undefined') return;
-      window.localStorage.setItem(storageKey, serialized);
+    if (writePersistedViewState(storageKey, keyedState.value)) {
       persistedRef.current = { storageKey, serialized };
-    } catch {
-      // Browser storage is best-effort (private mode, disabled storage, quota).
     }
   }, [keyedState, storageKey]);
 
