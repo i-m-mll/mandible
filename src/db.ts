@@ -473,7 +473,7 @@ export type PrefixResult =
   | { ok: false; error: "not_found" }
   | { ok: false; error: "ambiguous"; count: number };
 
-const PREFIX_IDENTIFIER_ALLOWLIST = new Set(["auth_requests.id", "sessions.id"]);
+const PREFIX_IDENTIFIER_ALLOWLIST = new Set(["auth_requests.id", "sessions.id", "conversations.id"]);
 
 function requirePrefixIdentifier(table: string, idColumn: string): void {
   const key = `${table}.${idColumn}`;

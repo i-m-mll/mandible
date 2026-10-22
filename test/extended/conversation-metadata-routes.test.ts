@@ -35,6 +35,36 @@ afterEach(() => {
 });
 
 describe("conversation metadata routes", () => {
+  it("resolves Chat canonical, short and session aliases without choosing an ambiguous conversation", async () => {
+    const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
+    registerConversationRoutes(router);
+    const canonical = "abcdef01-0000-4000-8000-000000000001";
+    db.prepare("UPDATE conversations SET id = ?, session_id = ? WHERE id = 'conv-1'").run(canonical, "provider-session-1");
+    db.prepare(`INSERT INTO sessions (id, app, status, conversation_id, created_at)
+      VALUES ('mandible-session-1', 'codex', 'ended', 'provider-session-1', '2026-08-16')`).run();
+    db.prepare(`INSERT INTO console_sessions (id, label, command, status, provider_session_id, mandible_session_id, created_at, updated_at)
+      VALUES ('console-session-1', 'Chat', 'codex', 'stopped', 'provider-session-1', 'mandible-session-1', 1, 1)`).run();
+    const resolve = async (kind: string, ref: string) => (await router.invoke({
+      method: "GET", url: `/api/conversations/resolve-target?${kind}=${encodeURIComponent(ref)}`,
+    })).body;
+    for (const ref of [canonical, "abcdef01", "provider-session-1"]) {
+      expect(await resolve("conversation", ref)).toEqual({ status: "resolved", selection: { type: "conversation", id: canonical } });
+    }
+    for (const ref of ["provider-session-1", "provider-session", "mandible-session-1", "mandible-session", "console-session-1", "console-session"]) {
+      expect(await resolve("session", ref)).toEqual({ status: "resolved", selection: { type: "conversation", id: canonical } });
+    }
+    expect(await resolve("session", "no-such-session")).toEqual({ status: "not_found" });
+    expect(await resolve("conversation", "no-such-conversation")).toEqual({ status: "not_found" });
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title,
+      session_id, started_at, created_at, updated_at) VALUES (?, 'codex', '/tmp/second', 'hash2', 1, 'Second', ?, '2026-08-16', '2026-08-16', '2026-08-16')`)
+      .run("abcdef01-0000-4000-8000-000000000002", "provider-session-1");
+    expect(await resolve("session", "mandible-session-1")).toEqual({ status: "ambiguous" });
+    expect(await resolve("conversation", "abcdef01")).toEqual({ status: "ambiguous" });
+    expect(await resolve("conversation", canonical)).toEqual({ status: "resolved", selection: { type: "conversation", id: canonical } });
+    db.prepare("UPDATE conversations SET session_id = 'provider-session-2' WHERE source_path = '/tmp/second'").run();
+    expect(await resolve("session", "provider-session")).toEqual({ status: "ambiguous" });
+  });
+
   it("returns parsed tags, filters exactly, and atomically applies canonical metadata updates", async () => {
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
     registerConversationRoutes(router);

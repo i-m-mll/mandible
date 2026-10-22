@@ -2191,6 +2191,17 @@ export async function updateBackupSettings(settings: {
 
 // ── Conversations API ──
 
+export type ChatRouteTarget = { type: 'conversation' | 'session'; id: string };
+export type ChatRouteResolution =
+  | { status: 'resolved'; selection: ChatRouteTarget }
+  | { status: 'not_found' | 'ambiguous' };
+
+export async function resolveChatRouteTarget(target: ChatRouteTarget, signal?: AbortSignal): Promise<ChatRouteResolution> {
+  const query = new URLSearchParams({ [target.type]: target.id });
+  const response = await apiGet(`/api/conversations/resolve-target?${query}`, { signal });
+  return await parseMaybeJson(response) as ChatRouteResolution;
+}
+
 export async function getConversations(params?: {
   source?: string;
   starred?: boolean;

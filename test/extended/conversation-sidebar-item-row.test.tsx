@@ -32,6 +32,7 @@ beforeEach(async () => {
   await establishTestClientAccess();
   vi.stubGlobal('ResizeObserver', class { observe(): void {} unobserve(): void {} disconnect(): void {} });
   mockConversationStructureFromWindow();
+  vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockManagedSettings();
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
   vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});

@@ -53,6 +53,7 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose():
 beforeEach(async () => {
   await establishTestClientAccess();
   window.localStorage.clear();
+  vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockConversationStructureFromWindow();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
@@ -1654,5 +1655,109 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Newest true tail')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
     expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);
+  });
+});
+
+
+describe('Chat route intent', () => {
+  function setupRouteHistory() {
+    mockConversationDetail(defaultControl);
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => positionPayload(
+      { ...conversation, id, title: `Chat ${id}` },
+      [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
+    ));
+    const view = (conversationRef: string | null, sessionRef: string | null = null) => (
+      <ConversationsView consoleSessions={[]} initialConversationId={conversationRef} initialSessionId={sessionRef}
+        onSelectSession={() => undefined} onNewConversation={async () => { throw new Error('unused'); }} />
+    );
+    return view;
+  }
+
+  it.each((['session', 'conversation'] as const).flatMap((type) => (
+    [{ block: 'B-block' }, { turn: 'B-block' }, { position: 0 }].map((anchor) => ({ type, anchor }))
+  )))('replaces saved A synchronously with pending B absent from the console list and retains %j', async ({ type, anchor }) => {
+    const view = setupRouteHistory();
+    const pending = deferred<api.ChatRouteResolution>();
+    const mounted = render(view('A'));
+    await screen.findByText('Transcript A');
+    vi.mocked(api.resolveChatRouteTarget).mockReturnValue(pending.promise);
+    window.history.replaceState(null, '', `#/console?${type}=B-ref&${new URLSearchParams(Object.fromEntries(Object.entries(anchor).map(([key, value]) => [key, String(value)])))}&sidebar=hidden&context=keep`);
+    mounted.rerender(type === 'session' ? view(null, 'B-ref') : view('B-ref'));
+    expect(screen.queryByText('Transcript A')).toBeNull();
+    expect(screen.queryByText('No chats in this view')).toBeNull();
+    expect(api.getConversationWindow).not.toHaveBeenCalledWith('B-ref', expect.anything());
+    await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
+    await screen.findByText('Transcript B');
+    expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining(anchor));
+    expect(api.getConversationControl).toHaveBeenCalledWith('B');
+    expect(queryClient.getQueryData(conversationKeys.aggregate('B'))).toBeTruthy();
+    expect(queryClient.getQueryData(conversationKeys.aggregate('B-ref'))).toBeUndefined();
+    expect(window.location.hash).toContain(`${type}=B-ref`);
+    expect(window.location.hash).toContain('context=keep');
+  });
+
+  it.each(['not_found', 'ambiguous', 'error'] as const)('keeps unrelated saved content hidden on %s', async (status) => {
+    const view = setupRouteHistory();
+    const mounted = render(view('A'));
+    await screen.findByText('Transcript A');
+    vi.mocked(api.resolveChatRouteTarget).mockImplementation(async () => {
+      if (status === 'error') throw new Error('offline');
+      return { status };
+    });
+    mounted.rerender(view(null, 'unavailable-target'));
+    expect(screen.queryByText('Transcript A')).toBeNull();
+    await waitFor(() => expect(screen.getByText(status === 'error' ? 'Could not open the requested chat.'
+      : status === 'ambiguous' ? 'This reference matches several chats. Select an exact chat.'
+      : 'The requested chat was not found.')).toBeTruthy());
+    expect(screen.queryByText('Transcript A')).toBeNull();
+  });
+
+  it('rejects B after a newer C intent and keeps C during same-target refetch and query-context changes', async () => {
+    const view = setupRouteHistory();
+    const b = deferred<api.ChatRouteResolution>();
+    const refresh = deferred<api.ChatRouteResolution>();
+    vi.mocked(api.resolveChatRouteTarget).mockImplementation(async (target) => target.id === 'B' ? b.promise
+      : { status: 'resolved', selection: { type: 'conversation', id: 'C' } });
+    const mounted = render(view(null, 'B'));
+    mounted.rerender(view(null, 'C'));
+    await screen.findByText('Transcript C');
+    await act(async () => { b.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
+    expect(screen.queryByText('Transcript B')).toBeNull();
+    vi.mocked(api.resolveChatRouteTarget).mockReturnValue(refresh.promise);
+    await act(async () => { void queryClient.invalidateQueries({ queryKey: conversationKeys.routeTarget({ type: 'session', id: 'C' }) }); });
+    window.history.replaceState(null, '', '#/console?context=changed&session=C&sidebar=hidden');
+    mounted.rerender(view(null, 'C'));
+    expect(screen.getByText('Transcript C')).toBeTruthy();
+    await act(async () => { refresh.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'C' } }); });
+    expect(screen.getByText('Transcript C')).toBeTruthy();
+  });
+
+  it.each(['row', 'filter'])('cancels pending session resolution on a deliberate %s choice and retains query context', async (action) => {
+    const view = setupRouteHistory();
+    const pending = deferred<api.ChatRouteResolution>();
+    vi.mocked(api.resolveChatRouteTarget).mockReturnValue(pending.promise);
+    vi.mocked(api.getConversationSidebar).mockResolvedValue({ limit: 50, groups: [{
+      key: 'chats', kind: 'chats', label: 'Chats', total: 1, next_cursor: null,
+      conversations: [{ ...conversation, id: 'A', title: 'Chat A', block_count: 1, canonical_project_id: null, canonical_project_key: null }],
+    }] });
+    window.history.replaceState(null, '', '#/console?session=B&turn=old&agent_session=agent&sidebar=hidden&context=keep');
+    const mounted = render(view(null, 'B'));
+    const row = await screen.findByRole('button', { name: 'Open conversation Chat A' });
+    if (action === 'row') fireEvent.click(row);
+    else fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Chat A' } });
+    await screen.findByText('Transcript A');
+    await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
+    expect(screen.queryByText('Transcript B')).toBeNull();
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    if (action === 'row') {
+      expect(Object.fromEntries(params)).toEqual({ conversation: 'A', agent_session: 'agent', sidebar: 'hidden', context: 'keep' });
+    } else expect(params.get('context')).toBe('keep');
+    vi.mocked(api.resolveChatRouteTarget).mockImplementation(async (target) => ({ status: 'resolved', selection: { type: 'conversation', id: target.id } }));
+    window.history.replaceState(null, '', '#/console?session=C');
+    mounted.rerender(view(null, 'C'));
+    await screen.findByText('Transcript C');
+    window.history.replaceState(null, '', '#/console?session=B&turn=old');
+    mounted.rerender(view(null, 'B'));
+    await screen.findByText('Transcript B');
   });
 });
