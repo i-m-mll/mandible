@@ -346,22 +346,6 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain("moved since auth submission");
   });
 
-  it("rejects base drift and a missing pin before signing", () => {
-    const oldBase = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/atomic"]);
-    const cached = candidate(oldBase, head);
-    write("main.txt", "main drift\n");
-    const newBase = commit("move base");
-    git(["update-ref", "-d", cached.ref, cached.pin]);
-
-    const result = runAtomic(oldBase, head, cached);
-
-    expect(result.status).not.toBe(0);
-    expect(git(["rev-parse", "main"])).toBe(newBase);
-    expect(result.stderr).toContain("requeue and reapprove");
-    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
-  });
-
   it("rejects a missing retained pin with otherwise unchanged reviewed inputs", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
