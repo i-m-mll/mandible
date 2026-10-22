@@ -498,7 +498,17 @@ function* metadataBackupLines(db: Db): Generator<string> {
     yield "";
   }
 
-  yield* ["COMMIT;", "PRAGMA foreign_keys=ON;", ""];
+  // Triggers carry the append-only and immutability guards. They are created
+  // after every row so restoring the rows neither fires nor trips them.
+  const backedUp = new Set(tables);
+  const triggers = db
+    .prepare("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL ORDER BY name")
+    .all() as Array<{ tbl_name: string; sql: string }>;
+  for (const trigger of triggers) {
+    if (backedUp.has(trigger.tbl_name)) yield `${trigger.sql};`;
+  }
+
+  yield* ["", "COMMIT;", "PRAGMA foreign_keys=ON;", ""];
 }
 
 function quoteIdentifier(identifier: string): string {
