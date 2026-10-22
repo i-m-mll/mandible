@@ -76,6 +76,13 @@ describe("resolveProjectRef", () => {
     expect(resolvedKey("git@github.com:up/repo.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
   });
 
+  it("refuses a remote that is one project's identity and another project's checkout remote", () => {
+    register("alpha", path.join(dir, "alpha"), { remote: "github.com/mll/shared" });
+    register("beta", path.join(dir, "beta"));
+    addOrUpdateCheckout(db, "beta", { root: path.join(dir, "beta"), remote_url: "git@github.com:mll/shared.git" });
+    expect(resolvedKey("https://github.com/mll/shared.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
+  });
+
   it("resolves every worktree of a registered repository to the repository's project", () => {
     const main = path.join(dir, "repo");
     repoWithCommit(main);
