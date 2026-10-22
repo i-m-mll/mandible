@@ -12,6 +12,7 @@ mandible umbrella adopt <umbrella> <children...> [--json]
 mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
+mandible issue parent-role release <umbrella> [--override] [--json]
 mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
 mandible issue search <words>... [--repo R] [--status open|closed|all] [--limit N] [--json]  # titles, bodies, comments; all projects
 mandible issue heads <id>... [--json]
