@@ -5,14 +5,10 @@
  * withdrawal and explicit replacement are the only requester-owned terminal
  * transitions, and every accepted transition leaves a hashed lifecycle receipt.
  */
-import fs from "node:fs";
-import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { appendAuthLifecycleEvent, authSnapshotDigest } from "../src/auth-lifecycle.js";
-import { migrate } from "../src/db.js";
 import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
@@ -62,31 +58,6 @@ function requesterFixture() {
 }
 
 describe("auth request immutable lifecycle", () => {
-  it("migrates historical rows to honest baseline receipts", () => {
-    const db = new SqliteDatabase(":memory:");
-    db.exec(fs.readFileSync(path.join(process.cwd(), "test/fixtures/schema-v158.sql"), "utf8"));
-    db.prepare(`INSERT INTO auth_requests
-      (id, command, title, status, created_at, updated_at, expires_at)
-      VALUES ('legacy-request', 'echo old', 'Old request', 'rejected', 10, 20, 30)`).run();
-    migrate(db);
-
-    const event = db.prepare(
-      "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'legacy-request'",
-    ).get() as Record<string, unknown>;
-    expect(event).toMatchObject({
-      revision: 1,
-      event_type: "legacy_snapshot",
-      prior_status: null,
-      next_status: "rejected",
-      actor_user_id: null,
-      evidence_method: null,
-      credential_id: null,
-      reason: "Baseline captured during migration; earlier transition provenance is unknown.",
-    });
-    expect(event.snapshot_sha256).toBe(authSnapshotDigest(String(event.snapshot_json)));
-    db.close();
-  });
-
   // Issue 8ae6b5f — new requests carry no spec, but a spec stored by an older
   // request is part of its reviewed record: it stays readable, its lifecycle
   // receipts still verify, and guarded transitions neither need nor change it.

@@ -14,7 +14,7 @@ Any one of these is fatal, whatever the test claims to cover:
 - It restates the code: a request-shape echo per CLI command, a store CRUD round-trip, field-by-field projection parity, an enum or lookup table asserted against itself.
 - It reads a source or CSS file and asserts on its text. That is lint; put it in `bun run check`.
 - It asserts a contract another gate test already asserts at a lower layer.
-- It hand-rewinds the schema (`DROP TABLE`, `UPDATE meta SET value=...`) to fake a pre-migration database. Migration tests start from the floor fixture migrated forward to the version under test (`migrateFixtureThrough` in `test/db-migration-convergence.test.ts`), and live in that file.
+- It hand-rewinds the schema (`DROP TABLE`, `UPDATE meta SET value=...`) to fake a pre-migration database. Migration tests start from the floor fixture migrated forward to the version under test (`migrateFixtureThrough` in `test/helpers/schema-snapshot.ts`), and live in `test/db-migration-convergence.test.ts`, whose header gives the floor-bump procedure.
 - It waits for a duration instead of a state, or sets a per-test timeout as a speed check.
 - It writes outside its own temp root (`testRuntimeRoot` in `test/helpers/runtime-isolation.ts`). The timing reporter fails the run if the checkout is not clean afterwards.
 - It is skipped. Delete it or fix it.

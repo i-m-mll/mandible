@@ -6,7 +6,6 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, type Db } from "../src/db.js";
-import { MIGRATIONS } from "../src/db-migrations.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import {
   applyBriefingAnnotations,
@@ -536,14 +535,6 @@ describe("artifact-backed Briefing rounds", () => {
     expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
       ...input, destinationChanges: [],
     }, actor, viewer)).toThrowError(expect.objectContaining({ code: "briefing_review_replay_drift" }));
-    const before = readBriefingGroup(db, group.id, viewer).history;
-    // Rebuild the receipt tables with populated item and destination anchors.
-    db.pragma("foreign_keys = ON");
-    db.transaction(() => {
-      for (const sql of MIGRATIONS.find((migration) => migration.version === 181)!.statements) db.exec(sql);
-    })();
-    expect(readBriefingGroup(db, group.id, viewer).history).toEqual(before);
-    expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(accepted.disposition).toMatchObject({
       base_layout_digest: candidate.base_layout_digest,
       proposal_layout_digest: candidate.proposal_layout_digest,
