@@ -1320,4 +1320,60 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
   });
+
+  it('renames the selected Briefing from the header menu and updates the header and sidebar from the PATCH result', async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url, method, body });
+      if (url === '/api/briefings' && method === 'GET') {
+        return new Response(JSON.stringify({ briefings: [detail().briefing] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefing-bundles') {
+        return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefing-groups') {
+        return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefings/briefing-1' && method === 'GET') {
+        return new Response(JSON.stringify(detail()), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefings/briefing-1' && method === 'PATCH') {
+        return new Response(JSON.stringify({ briefing_id: 'briefing-1', title: 'Renamed policy', changed: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) {
+        const exactSource = source.replace('Intro', 'Later');
+        return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(exactSource).byteLength, source: null, preview: { encoding: 'utf-8', text: exactSource, raw_text: exactSource, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: exactSource.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    }));
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      selectedCollectionId: 'briefing:briefing-1',
+    }));
+
+    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename Briefing' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
+    const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;
+    expect(input.value).toBe('Recurring review');
+    fireEvent.input(input, { target: { value: 'Renamed policy' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename Briefing' })).toBeNull());
+    expect(screen.getByRole('heading', { name: 'Renamed policy' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Select briefing Renamed policy' })).toBeTruthy();
+    expect(calls.filter((call) => call.method === 'PATCH')).toEqual([{
+      url: '/api/briefings/briefing-1', method: 'PATCH', body: { title: 'Renamed policy' },
+    }]);
+  });
 });
