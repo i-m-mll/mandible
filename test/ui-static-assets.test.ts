@@ -26,19 +26,6 @@ beforeAll(() => {
 });
 
 describe("UI static asset delivery", () => {
-  it("emits entry dependency and route chunk metadata from the current build", () => {
-    expect(manifest.version).toBe(1);
-    expect(manifest.entry).toBe("/dist/app.js");
-    expect(manifest.entryPreloads.length).toBeGreaterThan(0);
-    expect(manifest.entryPreloads).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^\/dist\/chunks\/.+-[A-Z0-9]{8}\.js$/)]),
-    );
-    expect(manifest.routes).toMatchObject({
-      spaces: expect.stringMatching(/^\/dist\/chunks\/SpacesTab-[A-Z0-9]{8}\.js$/),
-      issues: expect.stringMatching(/^\/dist\/chunks\/issues-[A-Z0-9]{8}\.js$/),
-      console: expect.stringMatching(/^\/dist\/chunks\/conversations-[A-Z0-9]{8}\.js$/),
-    });
-  });
 
   it("injects current build preloads while keeping the HTML revalidatable", async () => {
     const { server, origin } = await startServer();

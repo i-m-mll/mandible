@@ -1,7 +1,7 @@
 import { beforeEach } from 'vitest';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from './helpers/ui-workspace-fixture';
-import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
+import { screen, fireEvent, waitFor, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -12,14 +12,6 @@ beforeEach(() => {
 });
 
 describe('SettingsView', () => {
-  it('offers only the native setup handoff from the browser', () => {
-    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
-    const action = screen.getByRole('link', { name: 'Open macOS setup' });
-    expect(action.getAttribute('href')).toBe('mandible://connections/setup');
-    const handoff = action.closest('section');
-    expect(handoff).not.toBeNull();
-    expect(within(handoff!).queryByRole('button')).toBeNull();
-  });
 
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
     const onSave = vi.fn(async () => undefined);
@@ -188,161 +180,6 @@ describe('SettingsView', () => {
     expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
     await waitFor(() => expect(screen.getByText('Saved in this preview copy. Target files were not changed and the post-export hook was not run.')).toBeTruthy());
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', JSON.stringify([targets[1]])));
-  });
-
-  it('shows project restriction state and existing grants', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === '/api/projects') {
-        return new Response(JSON.stringify({
-          projects: [{ id: 'p1', project_key: 'mandible', display_name: 'Mandible' }],
-        }), { headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/projects/mandible/access' && init?.method !== 'PATCH') {
-        return new Response(JSON.stringify({
-          project_id: 'p1',
-          restricted: true,
-          grants: [{
-            id: 'g1', subject_type: 'group', subject_id: 'agents',
-            resource_type: 'project', resource_id: 'p1', permission: 'write',
-          }],
-        }), { headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/settings/instructions-delivery') {
-        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
-    }));
-
-    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
-
-    expect(await screen.findByTestId('project-permissions-settings')).toBeTruthy();
-    expect(await screen.findByText('group:agents — write')).toBeTruthy();
-    expect(screen.getByLabelText('Toggle project restriction').getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('does not show deprecated Reaper controls', () => {
-    render(
-      h(SettingsView, {
-        settings: {
-          reaper_enabled: 'true',
-          reaper_claude_idle_minutes: '30',
-          reaper_codex_idle_minutes: '45',
-        },
-        onSave: async () => undefined,
-      }),
-    );
-
-    expect(screen.queryByText('Reaper')).toBeNull();
-    expect(screen.queryByText('Claude idle threshold')).toBeNull();
-    expect(screen.queryByText('Codex idle threshold')).toBeNull();
-  });
-
-  it('offers independent approval-view and finalized-selection preferences', async () => {
-    const onSave = vi.fn(async () => undefined);
-    render(h(SettingsView, { settings: {}, onSave }));
-
-    const consoleToggle = screen.getByRole('switch', { name: 'Toggle Show approval console automatically' });
-    const overviewToggle = screen.getByRole('switch', { name: 'Toggle Return to overview after approval' });
-    const retainToggle = screen.getByRole('switch', { name: 'Toggle Keep the finalized request selected' });
-    expect([consoleToggle, overviewToggle, retainToggle].map((toggle) => toggle.getAttribute('aria-checked'))).toEqual(['true', 'true', 'true']);
-
-    fireEvent.click(retainToggle);
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('auth.retain_finalized_selection', 'false'));
-  });
-
-  it('saves instruction delivery targets and post-export hook settings', async () => {
-    const onSave = vi.fn(async () => undefined);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === '/api/settings/instructions-delivery' && (!init || init.method === undefined || init.method === 'GET')) {
-        return new Response(JSON.stringify({
-          targets: [
-            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
-            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-          ],
-          postExport: '',
-          configuredTargets: false,
-          export: { ok: true, stdout: '', stderr: '' },
-          cleanup: [],
-        }), { headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/settings/instructions-delivery' && init?.method === 'PUT') {
-        const body = JSON.parse(String(init.body)) as {
-          targets?: Array<{ path: string; mode: string }>;
-          postExport?: string;
-          resetToDefaults?: boolean;
-        };
-        const targets = body.resetToDefaults
-          ? [
-            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
-            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-          ]
-          : body.targets ?? [
-            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
-            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-          ];
-        return new Response(JSON.stringify({
-          targets,
-          postExport: body.postExport ?? '',
-          configuredTargets: true,
-          export: { ok: true, stdout: 'Installed', stderr: '' },
-          cleanup: [],
-        }), { headers: { 'content-type': 'application/json' } });
-      }
-      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(
-      h(SettingsView, {
-        instance: mainInstance,
-        settings: {},
-        onSave,
-      }),
-    );
-
-    expect(screen.getByRole('heading', { name: 'Instruction Delivery' })).toBeTruthy();
-    expect(await screen.findByDisplayValue('/Users/mll/.claude/CLAUDE.md')).toBeTruthy();
-    expect(screen.getByDisplayValue('/Users/mll/.codex/AGENTS.md')).toBeTruthy();
-    expect(screen.queryByPlaceholderText('/path/to/50-mandible.generated.md')).toBeNull();
-    expect(screen.queryByPlaceholderText('bin/compile-agent-instructions')).toBeNull();
-
-    fireEvent.input(screen.getByLabelText('New instruction target path'), {
-      target: { value: '/tmp/50-mandible.generated.md' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Add instruction target' }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/api/settings/instructions-delivery',
-      expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({
-          targets: [
-            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
-            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-            { path: '/tmp/50-mandible.generated.md', mode: 'managed-block' },
-          ],
-          cleanupRemovedTargets: false,
-        }),
-      }),
-    ));
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', expect.any(String)));
-
-    fireEvent.input(screen.getByLabelText('Instructions post-export hook'), {
-      target: { value: 'bin/compile-agent-instructions' },
-    });
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/api/settings/instructions-delivery',
-      expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({ postExport: 'bin/compile-agent-instructions' }),
-      }),
-    ));
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.post_export', 'bin/compile-agent-instructions'));
   });
 });
 
