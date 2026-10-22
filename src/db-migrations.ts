@@ -2080,7 +2080,7 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   // Issue 23f8142 — conversations record the parent session their provider
   // declares. Rows already linked declare their parent's session; unlinked
-  // rows wait for `mandible conversations lineage-backfill`.
+  // rows wait for the one-time lineage backfill of the startup reconcile.
   {
     version: 205,
     name: "conversation_declared_parent",

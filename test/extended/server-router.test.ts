@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Router } from "../../src/server.js";
+import { ClientAuthzError } from "../../src/client-auth/authz.js";
 import type { Logger } from "../../src/types.js";
 
 describe("Router error handling", () => {
@@ -26,6 +27,20 @@ describe("Router error handling", () => {
         error: "Error: private details",
       }),
     );
+  });
+
+  it("answers an authorization refusal with its own status and logs no handler error", async () => {
+    const logger: Logger = vi.fn();
+    const router = new Router({ logger });
+
+    router.post("/api/operator-only", () => {
+      throw new ClientAuthzError(403, "operator_required", "Only the local operator may perform this action.");
+    }, { fileRpc: "deny", operation: { id: "fixture.operator", effects: [], reportingCategory: null, requestSchema: null } });
+
+    const response = await router.invoke({ method: "POST", url: "/api/operator-only" });
+
+    expect(response.status).toBe(403);
+    expect(logger).not.toHaveBeenCalledWith("error", expect.anything(), expect.anything());
   });
 });
 

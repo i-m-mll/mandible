@@ -52,8 +52,8 @@ export class IngestionActor {
     return this.request({ kind: "ingest", paths, forceFull, bypassSameMtimeUnchanged, priority });
   }
 
-  reconcile(repairLegacyOrphans = false): Promise<void> {
-    return this.request({ kind: "reconcile", repairLegacyOrphans });
+  reconcile(startupPasses = false): Promise<void> {
+    return this.request({ kind: "reconcile", startupPasses });
   }
 
   fullIngest(): Promise<{ processed: number; errors: number }> {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { triggerTargetedIngest } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
-import { backfillConversationLineage } from "../src/conversations/lineage-backfill.js";
+import { backfillConversationLineageOnce } from "../src/conversations/lineage-backfill.js";
 import SqliteDatabase from "../src/sqlite.js";
 import { Router } from "../src/server.js";
 
@@ -138,13 +138,14 @@ describe("conversation lineage", () => {
     );
     registry.close();
 
-    const result = await backfillConversationLineage(db);
+    const result = await backfillConversationLineageOnce(db);
     expect(result).toMatchObject({
       declared: { codex: 2 },
       lineage_source: { transcript: 2, codex_state_database: 1 },
       linked: 2,
       unresolved_parent: 0,
     });
+    expect(await backfillConversationLineageOnce(db)).toBeNull();
     const rootId = rowsOf(ROOT)[0].id;
     expect(rowsOf(CHILD_A)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Leibniz" });
     expect(rowsOf(CHILD_B)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Locke" });

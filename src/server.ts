@@ -18,6 +18,7 @@ import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
+import { ClientAuthzError } from "./client-auth/authz.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -717,6 +718,10 @@ export class Router implements RouteRegistrar {
             hint: error.hint,
             retryable: error.retryable,
           });
+          return true;
+        }
+        if (error instanceof ClientAuthzError) {
+          response.status(error.status).json({ error: error.message, code: error.code });
           return true;
         }
         this.options.logger?.("error", "route_handler_error", {
