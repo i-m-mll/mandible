@@ -519,6 +519,10 @@ describe("work-unit resolution on merge", () => {
     const now = 10_000;
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
+    const failureDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ancestry-failure-"));
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8", timeout: 5000 }).trim();
+    const previousPath = process.env.PATH;
+    fs.writeFileSync(path.join(failureDir, "git"), `#!/bin/sh\nif [ "$1" = rev-list ]; then echo 'private ancestry read failure' >&2; exit 73; fi\nexec ${JSON.stringify(realGit)} "$@"\n`, { mode: 0o755 });
     try {
       commitOnBranch(repo, "feature/live-candidate", { "live.txt": "live\n" });
       commitOnBranch(repo, "integration/bf-batch", { "bf.txt": "bf\n" });
@@ -545,9 +549,10 @@ describe("work-unit resolution on merge", () => {
         execution_mode: "daemon",
       }));
 
-      // A nonexistent target makes the batch build fail: a transient git
-      // failure must not cost the stale row its scan eligibility.
-      await resolveAncestry(queue, { ...request, merge_head_sha: "b".repeat(40) });
+      // An actual child failure preserves the request's original authority.
+      process.env.PATH = `${failureDir}${path.delimiter}${previousPath ?? ""}`;
+      try { await resolveAncestry(queue, queue.getRequestExact(request.id)!); }
+      finally { process.env.PATH = previousPath; }
       expect(db.prepare("SELECT merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'").get())
         .toEqual({ merge_scan_retired_at: null });
 
@@ -556,7 +561,9 @@ describe("work-unit resolution on merge", () => {
         .toEqual({ state: "abandoned", merge_scan_retired_at: now });
       (await queue.dispose());
     } finally {
+      process.env.PATH = previousPath;
       db.close();
+      fs.rmSync(failureDir, { recursive: true, force: true });
     }
   });
 

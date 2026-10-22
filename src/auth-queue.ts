@@ -4537,16 +4537,24 @@ export class AuthQueue {
    * `reused` and never counts as recorded (review F1).
    */
   private async recordedQueueMerges(request: AuthRequest): Promise<{ recorded: Map<string, AuthRequest>; reused: Set<string>; assertCurrent(): void }> {
-    const completedRows = this.db.prepare(
-      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
-        "AND exit_code = 0 AND base_branch = ? AND id != ?",
+    const read = () => this.db.prepare(
+      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0 AND base_branch = ? AND id != ? ORDER BY id",
     ).all(request.base_branch, request.id) as Record<string, unknown>[];
+    const decision = (rows: Record<string, unknown>[]) => JSON.stringify(rows.map(raw => {
+      const row = mapRow(raw);
+      const evidence = row.execution_evidence_id ? getAttributionEvidence(this.db, row.execution_evidence_id) : null;
+      return [row.id, row.type, row.status, row.exit_code, row.base_branch, row.repo, row.cwd, row.target_repo_root,
+        row.merge_head_sha, row.approved_by_user_id, row.resolved_at, row.execution_evidence_id,
+        evidence?.evidence_method ?? null, evidence?.details.commit_sha ?? null, this.recordedMergeCommitSha(row)];
+    }));
+    const completedRows = read();
+    const snapshot = decision(completedRows);
     const observed = this.observationToken(request.id, request);
     const identity = await observeRepoIdentities(this.db, [request.repo, ...completedRows.map(row => row.repo as string | null)], [], this.phaseAbort.signal);
     const assertCurrent = () => {
       identity.assertCurrent();
       this.assertObservation(request.id, observed);
-      if (JSON.stringify(this.db.prepare("SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0 AND base_branch = ? AND id != ?").all(request.base_branch, request.id)) !== JSON.stringify(completedRows)) throw new RepoIdentityReadSetChanged("Recorded merge evidence changed during identity observation");
+      if (decision(read()) !== snapshot) throw new RepoIdentityReadSetChanged("Recorded merge evidence changed during identity observation");
     };
     assertCurrent();
     const repoKeys = identity.keysForRef(request.repo);
@@ -6190,6 +6198,13 @@ export class AuthQueue {
     }
   }
 
+  private finalizerDecisionSnapshot(requestId: string): string {
+    const snapshot = JSON.parse(authRequestSnapshot(this.db, requestId));
+    delete snapshot.request.updated_at;
+    delete snapshot.request.merge_finalizer_state;
+    return JSON.stringify([snapshot, this.custodyAuthority(this.requireRequest(requestId))]);
+  }
+
   /**
    * Issue 75f52ac — Stage 3 processor run by the FinalizerQueue. Per-step durable
    * state in merge_finalizer_state makes it crash-safe: a daemon restart mid-way
@@ -6233,13 +6248,8 @@ export class AuthQueue {
       this.db.prepare("UPDATE auth_requests SET merge_head_sha = ? WHERE id = ? AND merge_head_sha IS NULL").run(mergeHeadSha, requestId);
     }
     let finalized = this.requireRequest(requestId);
-    const decisionSnapshot = () => {
-      const snapshot = JSON.parse(authRequestSnapshot(this.db, requestId));
-      delete snapshot.request.updated_at;
-      delete snapshot.request.merge_finalizer_state;
-      return JSON.stringify([snapshot, this.custodyAuthority(this.requireRequest(requestId))]);
-    };
-    const validatedDecision = decisionSnapshot();
+    const decisionSnapshot = () => this.finalizerDecisionSnapshot(requestId);
+    let validatedDecision = decisionSnapshot();
     const state = this.readFinalizerState(requestId);
 
     const steps: Array<{ name: FinalizerStepName; run: () => Promise<FinalizerStepOutput | void> }> = [
@@ -6259,7 +6269,7 @@ export class AuthQueue {
         name: "resolve_ancestry_work_units",
         run: async () => {
           if (this.tableExists("work_units")) {
-            const resolved = await this.resolveAncestryWorkUnitsOnMerge(finalized);
+            const resolved = await this.resolveAncestryWorkUnitsOnMerge(finalized, successor => { validatedDecision = successor; });
             return { resolved_work_unit_ids: resolved };
           }
           return { resolved_work_unit_ids: [] };
@@ -7532,7 +7542,7 @@ export class AuthQueue {
    * last_commit_hash snapshot. Idempotent: guarded UPDATEs skip already-resolved
    * rows, and the retirement sweep is NULL-guarded. Returns the resolved ids.
    */
-  private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest): Promise<string[]> {
+  private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest, acceptOwnedSuccessor?: (decision: string) => void): Promise<string[]> {
     const now = this.now();
     const recoverMergedStmt = this.db.prepare(
       `UPDATE work_units
@@ -7561,65 +7571,77 @@ export class AuthQueue {
     // Issue 93d978e — one batch per pass; its per-(root,target) git build
     // outcomes gate the retirement sweep below.
     const batch = new AncestryBatch();
-    for (const row of await this.workUnitsMergedByRequest(completed, batch)) {
-      row.assertCurrent();
-      if (!resolvedIds.has(row.id)) {
-        if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
-          recoverClosedMergedStmt.run(now, completed.id, row.id);
-        } else {
-          recoverMergedStmt.run(now, row.id);
+    const retirementBefore = now - this.workUnitAbandonedScanRetentionMs;
+    const readRetirement = () => this.workUnitsHaveRetirementColumn()
+      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "continuation_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
+      : [];
+    const retirementState = JSON.stringify(readRetirement());
+    const scan = await this.workUnitsMergedByRequest(completed, batch);
+    const committed = this.db.transaction(() => {
+      scan.assertCurrent();
+      if (!batch.hadFailure() && JSON.stringify(readRetirement()) !== retirementState) throw new RepoIdentityReadSetChanged("Retirement authority changed during ancestry observation");
+      for (const row of scan.matches) {
+        if (!resolvedIds.has(row.id)) {
+          if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
+            recoverClosedMergedStmt.run(now, completed.id, row.id);
+          } else {
+            recoverMergedStmt.run(now, row.id);
+          }
+          resolvedIds.add(row.id);
         }
-        resolvedIds.add(row.id);
       }
-    }
 
-    // Issue 93d978e — retire abandoned rows that have aged past the retention
-    // window from future merge-side ancestry scans. Runs AFTER the scan so the
-    // current merge still gets its chance at every stale row. This is a
-    // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
-    // not a deletion — state and provenance are preserved. The NULL guard keeps
-    // it idempotent across finalizer re-runs.
-    //
-    // Integration reconciliation: skip the sweep entirely when the ancestry
-    // batch had any git build failure this pass. A failed rev-list/for-each-ref
-    // makes every ancestry test read as "not an ancestor", so a genuinely merged
-    // deleted-branch snapshot would look unmerged; retiring off those false
-    // negatives could tombstone real merges and exclude them from future
-    // automatic resolution. A transient git failure must not cost data.
-    if (this.workUnitsHaveRetirementColumn()) {
-      if (batch.hadFailure()) {
-        authLog("warn", "auth_work_units_scan_retirement_skipped", {
-          subsystem: "auth",
-          auth_request_id: completed.id,
-          reason: "ancestry_batch_build_failed",
-        });
-      } else {
-        const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
-        const retired = this.db.prepare(
-          `UPDATE work_units SET merge_scan_retired_at = ?
-           WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
-             AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
-        ).run(now, retireCutoff);
-        if (retired.changes > 0) {
-          authLog("info", "auth_work_units_scan_retired", {
+      // Issue 93d978e — retire abandoned rows that have aged past the retention
+      // window from future merge-side ancestry scans. Runs AFTER the scan so the
+      // current merge still gets its chance at every stale row. This is a
+      // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
+      // not a deletion — state and provenance are preserved. The NULL guard keeps
+      // it idempotent across finalizer re-runs.
+      //
+      // Integration reconciliation: skip the sweep entirely when the ancestry
+      // batch had any git build failure this pass. A failed rev-list/for-each-ref
+      // makes every ancestry test read as "not an ancestor", so a genuinely merged
+      // deleted-branch snapshot would look unmerged; retiring off those false
+      // negatives could tombstone real merges and exclude them from future
+      // automatic resolution. A transient git failure must not cost data.
+      if (this.workUnitsHaveRetirementColumn()) {
+        if (batch.hadFailure()) {
+          authLog("warn", "auth_work_units_scan_retirement_skipped", {
             subsystem: "auth",
             auth_request_id: completed.id,
-            retired_count: retired.changes,
+            reason: "ancestry_batch_build_failed",
           });
+        } else {
+          const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
+          const retired = this.db.prepare(
+            `UPDATE work_units SET merge_scan_retired_at = ?
+             WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
+               AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+          ).run(now, retireCutoff);
+          if (retired.changes > 0) {
+            authLog("info", "auth_work_units_scan_retired", {
+              subsystem: "auth",
+              auth_request_id: completed.id,
+              retired_count: retired.changes,
+            });
+          }
         }
       }
-    }
 
-    if (resolvedIds.size > directResolvedCount) {
-      authLog("info", "auth_work_units_resolved", {
-        subsystem: "auth",
-        auth_request_id: completed.id,
-        resolved_count: resolvedIds.size - directResolvedCount,
-        head_branch: completed.head_branch,
-        scope: "ancestry",
-      });
-    }
-    return [...resolvedIds];
+      if (resolvedIds.size > directResolvedCount) {
+        authLog("info", "auth_work_units_resolved", {
+          subsystem: "auth",
+          auth_request_id: completed.id,
+          resolved_count: resolvedIds.size - directResolvedCount,
+          head_branch: completed.head_branch,
+          scope: "ancestry",
+        });
+      }
+      return { ids: [...resolvedIds], decision: this.finalizerDecisionSnapshot(completed.id) };
+    })();
+    // Transfer the successor captured inside the validated transaction, never a fresh post-await token.
+    acceptOwnedSuccessor?.(committed.decision);
+    return committed.ids;
   }
 
   // Issue 93d978e — memoized presence of the merge_scan_retired_at column.
@@ -7643,21 +7665,20 @@ export class AuthQueue {
 
   // Issue 75f52ac — async so the batched ancestry git spawns run off the event
   // loop inside the Stage 3 finalizer queue.
-  private async workUnitsMergedByRequest(completed: AuthRequest, batch: AncestryBatch): Promise<Array<{
-    id: string;
-    issue_id: string;
-    ledger_issue_id: string | null;
+  private async workUnitsMergedByRequest(completed: AuthRequest, batch: AncestryBatch): Promise<{
+    matches: Array<{ id: string; issue_id: string; ledger_issue_id: string | null }>;
     assertCurrent(): void;
-  }>> {
+  }> {
     if (completed.type !== "merge" || !completed.base_branch) {
-      return [];
+      const observed = this.observationToken(completed.id, completed);
+      return { matches: [], assertCurrent: () => this.assertObservation(completed.id, observed) };
     }
     // Issue 93d978e — retired abandoned rows are excluded from merge scans;
     // guarded so DBs without the column behave exactly as before.
     const retirementFilter = this.workUnitsHaveRetirementColumn()
       ? "AND (wu.state != 'abandoned' OR wu.merge_scan_retired_at IS NULL)"
       : "";
-    const candidates = this.db.prepare(
+    const readCandidates = () => this.db.prepare(
       `SELECT
          wu.id,
          wu.issue_id,
@@ -7673,7 +7694,7 @@ export class AuthQueue {
          AND wu.branch IS NOT NULL
          ${retirementFilter}
          AND (wu.auth_request_id IS NULL OR wu.auth_request_id = ?)
-       ORDER BY wu.id`
+       ORDER BY wu.id, b.repo_root`
     ).all(completed.id) as Array<{
       id: string;
       issue_id: string;
@@ -7685,6 +7706,8 @@ export class AuthQueue {
       last_commit_hash: string | null;
     }>;
 
+    const candidates = readCandidates();
+    const candidateState = JSON.stringify(candidates);
     const observed = this.observationToken(completed.id, completed);
     const readAuthority = (id: string) => {
       const row = this.db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
@@ -7708,7 +7731,6 @@ export class AuthQueue {
       id: string;
       issue_id: string;
       ledger_issue_id: string | null;
-      assertCurrent(): void;
     }>();
     for (const row of candidates) {
       if (row.branch === completed.head_branch) {
@@ -7743,15 +7765,15 @@ export class AuthQueue {
           id: row.id,
           issue_id: row.issue_id,
           ledger_issue_id: row.ledger_issue_id,
-          assertCurrent: () => {
-            identity.assertCurrent();
-            this.assertObservation(completed.id, observed);
-            if (readAuthority(row.id) !== authorities.get(row.id) || readBranch(row.branch) !== branchStates.get(row.id)) throw new RepoIdentityReadSetChanged("Work-unit authority or branch snapshot changed during ancestry observation");
-          },
         });
       }
     }
-    return [...resolved.values()];
+    return { matches: [...resolved.values()], assertCurrent: () => {
+      identity.assertCurrent();
+      this.assertObservation(completed.id, observed);
+      if (JSON.stringify(readCandidates()) !== candidateState) throw new RepoIdentityReadSetChanged("Ancestry candidates changed during observation");
+      for (const row of candidates) if (readAuthority(row.id) !== authorities.get(row.id) || readBranch(row.branch) !== branchStates.get(row.id)) throw new RepoIdentityReadSetChanged("Work-unit authority or branch snapshot changed during ancestry observation");
+    } };
   }
 
   private explicitClosureIssueRefs(completed: AuthRequest): Set<string> {

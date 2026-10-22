@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
-import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW, approveFixtureRequest, commitOnBranch, createAuthCheckRepo, createMigratedDb, createLedgerProject, createLedgerIssue, createNoopHookManager, insertWorkUnit, publishFixtureExecution, registerWorkRepo, git } from "./helpers/auth-queue-fixtures.js";
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW, approveFixtureRequest, awaitFixtureResolution, commitOnBranch, createAuthCheckRepo, createMigratedDb, createLedgerProject, createLedgerIssue, createNoopHookManager, insertWorkUnit, publishFixtureExecution, registerWorkRepo, git } from "./helpers/auth-queue-fixtures.js";
 import { canonicalRepoKeyForPath, clearRepoIdentityCache, observeRepoIdentities } from "../src/repo-identity.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -13,7 +13,7 @@ import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
-import { addCredential, getOperator } from "../src/users/store.js";
+import { addAttributionEvidence, addCredential, createUser, getAttributionEvidence, getOperator } from "../src/users/store.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 
 vi.setConfig({ testTimeout: 5000 });
@@ -485,4 +485,79 @@ it("rejects a captured registry decision after a checkout binding changes", asyn
     const identity = await pending;
     expect(() => identity.assertCurrent()).toThrow("registry changed");
   } finally { hold.release(); await pending; db.close(); }
+});
+
+it.each(["bookkeeping", "reviewed head", "approver", "recorded SHA"])("guards recorded merge evidence while allowing unrelated finalizer progress: %s", async change => {
+  const db = createMigratedDb();
+  const historyRepo = createAuthCheckRepo();
+  const probeRepo = createAuthCheckRepo();
+  for (const repo of [historyRepo, probeRepo]) { registerWorkRepo(db, repo); createLedgerProject(db, repo); }
+  const queue = new AuthQueue({ db, backgroundMaintenance: false, hookManager: createNoopHookManager(), executor: options => publishFixtureExecution(queue, options) });
+  let hold: ReturnType<typeof holdIdentity> | undefined;
+  let pending: Promise<any> | undefined;
+  try {
+    const submit = async (repo: string, branch: string) => {
+      commitOnBranch(repo, branch, { "evidence.txt": `${branch}\n` });
+      return queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", title: branch, command: `mandible auth merge ${branch} --into main`,
+        repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch, merge_head_sha: git(repo, ["rev-parse", branch]) });
+    };
+    const historical = await submit(historyRepo, "feature/history");
+    await awaitFixtureResolution(queue, historical.id, () => approveFixtureRequest(queue, historical.id));
+    await queue.drainFinalizers();
+    const completed = queue.getRequestExact(historical.id)!;
+    expect(completed).toMatchObject({ status: "completed", exit_code: 0 });
+    const probe = await submit(probeRepo, "feature/probe");
+    clearRepoIdentityCache();
+    hold = holdIdentity(probeRepo);
+    pending = (queue as any).recordedQueueMerges(queue.getRequestExact(probe.id)!);
+    void pending!.catch(() => undefined);
+    await hold.reached(pending!);
+    if (change === "bookkeeping") db.prepare("UPDATE auth_requests SET merge_finalizer_state = ?, updated_at = ? WHERE id = ?")
+      .run('{"archive_worker_threads":{"state":"done","attempts":2}}', Date.now() + 1, historical.id);
+    if (change === "reviewed head") db.prepare("UPDATE auth_requests SET merge_head_sha = ? WHERE id = ?").run("b".repeat(40), historical.id);
+    if (change === "approver") {
+      const other = createUser(db, { slug: "other-historical-approver", kind: "human", display_name: "Other approver" });
+      db.prepare("UPDATE auth_requests SET approved_by_user_id = ? WHERE id = ?").run(other.id, historical.id);
+    }
+    if (change === "recorded SHA") {
+      const previous = getAttributionEvidence(db, completed.execution_evidence_id!)!;
+      const replacement = addAttributionEvidence(db, { evidence_method: "credential_signature", credential_id: previous.credential_id,
+        details: { commit_sha: "b".repeat(40) } });
+      db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?").run(replacement.id, historical.id);
+    }
+    hold.release();
+    if (change === "bookkeeping") {
+      const evidence = await pending;
+      expect(() => evidence.assertCurrent()).not.toThrow();
+      db.prepare("UPDATE auth_requests SET updated_at = ? WHERE id = ?").run(Date.now() + 2, historical.id);
+      expect(() => evidence.assertCurrent()).not.toThrow();
+    } else await expect(pending).rejects.toThrow("Recorded merge evidence changed");
+  } finally { hold?.release(); await pending?.catch(() => undefined); await queue.dispose(); db.close(); }
+});
+
+it("does not retire a negative ancestry candidate whose authority changes while identity is held", async () => {
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  registerWorkRepo(db, repo); createLedgerProject(db, repo);
+  commitOnBranch(repo, "feature/negative", { "negative.txt": "not merged\n" });
+  commitOnBranch(repo, "feature/candidate", { "candidate.txt": "candidate\n" });
+  const queue = new AuthQueue({ db, now: () => 10_000, backgroundMaintenance: false, workUnitAbandonedScanRetentionMs: 1000, hookManager: createNoopHookManager() });
+  const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", title: "Negative ancestry", command: "mandible auth merge feature/candidate --into main",
+    repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/candidate", merge_head_sha: git(repo, ["rev-parse", "feature/candidate"]) });
+  db.prepare(`INSERT INTO work_units (id,issue_id,repo_id,branch,kind,state,created_at) VALUES ('negative-unit','private',?,'feature/negative','solo','abandoned',0)`).run(path.basename(repo));
+  clearRepoIdentityCache();
+  const hold = holdIdentity(repo);
+  const scan = (queue as any).resolveAncestryWorkUnitsOnMerge(queue.getRequestExact(request.id)!) as Promise<string[]>;
+  void scan.catch(() => undefined);
+  try {
+    await hold.reached(scan);
+    db.prepare("UPDATE work_units SET branch = 'feature/changed-negative', custody_generation = custody_generation + 1 WHERE id = 'negative-unit'").run();
+    hold.release();
+    await expect(scan).rejects.toThrow("changed during");
+    expect(db.prepare("SELECT state,merge_scan_retired_at FROM work_units WHERE id = 'negative-unit'").get())
+      .toEqual({ state: "abandoned", merge_scan_retired_at: null });
+    await (queue as any).resolveAncestryWorkUnitsOnMerge(queue.getRequestExact(request.id)!);
+    expect(db.prepare("SELECT state,merge_scan_retired_at FROM work_units WHERE id = 'negative-unit'").get())
+      .toEqual({ state: "abandoned", merge_scan_retired_at: 10_000 });
+  } finally { hold.release(); await scan.catch(() => undefined); await queue.dispose(); db.close(); }
 });
