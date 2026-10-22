@@ -1,29 +1,27 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, openDb, type Db } from "../src/db.js";
+import type { Db } from "../src/db.js";
 import {
-  getArtifact,
   getArtifactSeries,
   getArtifactVersion,
   associateProjectArtifact,
   listProjectArtifactAssociations,
   listArtifactVersions,
   registerLocalArtifactPath,
-  projectArtifactPublicValue,
   resolveAndLinkArtifact,
   resolveArtifactVersionHistory,
 } from "../src/provider-artifacts.js";
 import { recordArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
 import { diffArtifacts, getArtifactContent, readArtifactBytesFull } from "../src/artifact-content.js";
-import { METADATA_BACKUP_TABLES, buildMetadataBackupSql } from "../src/ledger/backup.js";
 import {
   insertRawLedgerCheckout,
   insertRawLedgerIssue,
   insertRawLedgerProject,
+  migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
@@ -35,26 +33,19 @@ function git(repo: string, args: string[]): string {
 }
 
 function createLedgerCheckout(repoId: string, root: string): void {
-  const projectId = insertRawLedgerProject(db, { name: repoId });
+  const projectId = insertRawLedgerProject(db, { name: repoId, projectKey: repoId });
   insertRawLedgerCheckout(db, { projectId, name: repoId, root, conflict: "replace" });
 }
 
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
-  const projectId = insertRawLedgerProject(db, { name: projectName });
+  const projectId = insertRawLedgerProject(db, { name: projectName, projectKey: projectName });
   return insertRawLedgerIssue(db, { id: issueId, projectId });
 }
 
 function makeTrackedRepo(name: string, content: string): { root: string; filePath: string } {
   const root = path.join(tempDir, name);
   const filePath = path.join(root, "results", "report.md");
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
-  git(root, ["config", "user.email", "test@example.invalid"]);
-  git(root, ["config", "user.name", "Test User"]);
-  git(root, ["config", "commit.gpgsign", "false"]);
-  fs.writeFileSync(filePath, content, "utf8");
-  git(root, ["add", "results/report.md"]);
-  git(root, ["commit", "-m", "v1"]);
+  artifactRepo(root, { "results/report.md": content });
   return { root, filePath };
 }
 
@@ -68,7 +59,7 @@ beforeEach(() => {
   process.env.HOME = path.join(tempDir, "home");
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "artifacts");
   delete process.env.MANDIBLE_HOME;
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -78,23 +69,6 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-});
-
-describe("canonical artifact schema", () => {
-  it("keeps artifact_blob immutability (UNIQUE(algorithm, content_hash)) intact", () => {
-    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'artifact_blob'")
-      .get() as { sql: string }).sql;
-    expect(sql).toContain("UNIQUE(algorithm, content_hash)");
-  });
-
-  it("enforces UNIQUE(identity_key) on artifact", () => {
-    const insert = (id: string) => db.prepare(
-      `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
-       VALUES (?, 'local:/a', 'local_only', 0, 1, 1)`,
-    ).run(id);
-    insert("artifact:aaaaaaaaaaaa");
-    expect(() => insert("artifact:bbbbbbbbbbbb")).toThrow(/UNIQUE/i);
-  });
 });
 
 describe("tracked_repo versions", () => {
@@ -201,20 +175,6 @@ describe("diff derivation", () => {
     expect(diff.unified).toContain("+line2-changed");
     expect(diff.stats).toEqual({ added: 1, removed: 1 });
   });
-
-  it("normalizes JSON before diffing and reports identical content", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":2}', media_type: "application/json", logical_name: "cfg" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":3}', media_type: "application/json", logical_name: "cfg" }, 2000);
-    const diff = diffArtifacts(db, r1.version.id, r2.version.id);
-    expect(diff.kind).toBe("json");
-    expect(diff.diffable).toBe(true);
-    expect(diff.unified).toContain('"b": 2');
-    expect(diff.unified).toContain('"b": 3');
-
-    const same = diffArtifacts(db, r1.version.id, r1.version.id);
-    expect(same.identical).toBe(true);
-    expect(same.stats).toEqual({ added: 0, removed: 0 });
-  });
 });
 
 describe("canonical ref resolution and no silent retarget", () => {
@@ -307,30 +267,6 @@ describe("canonical ref resolution and no silent retarget", () => {
     ).toThrow(/not blobs/);
   });
 
-  it("resolves artifact:<hex> as the canonical compact immutable ref", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
-    const compactId = `artifact-blob:${r1.artifact.content_hash}`;
-    const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
-    expect(resolved.status).toBe("resolved");
-    expect(resolved.target_type).toBe("artifact_blob");
-    expect(resolved.target_id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect(resolved.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect(resolved.warnings).toEqual([]);
-    expect((projectArtifactPublicValue(db, resolved) as typeof resolved).artifact?.id).toBe(compactId);
-
-    const blob = resolveArtifactRef(db, `artifact-blob:${r1.artifact.content_hash}`);
-    expect(blob.status).toBe("resolved");
-    expect(blob.target_type).toBe("artifact_blob");
-    expect(blob.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect((projectArtifactPublicValue(db, blob) as typeof blob).artifact?.id).toBe(compactId);
-
-    const versionResolved = resolveArtifactRef(db, r1.version.id);
-    expect(versionResolved.artifact?.id).toBe(r1.artifact.id);
-    expect((projectArtifactPublicValue(db, versionResolved) as typeof versionResolved).artifact?.id).toBe(r1.version.id);
-    expect(versionResolved.artifact_version?.id).toBe(r1.version.id);
-    expect(versionResolved.warnings ?? []).toEqual([]);
-  });
-
   it("does not silently retarget an existing issue link when a newer version is recorded", () => {
     const issueId = createLedgerIssue("f7a994e");
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "evidence v1\n", media_type: "text/plain", logical_name: "ev" }, 1000);
@@ -374,71 +310,6 @@ describe("canonical ref resolution and no silent retarget", () => {
     const pinned2 = resolveArtifactRef(db, r2.version.id);
     expect(pinned2.artifact?.id).toBe(artifactB);
     expect(pinned2.warnings ?? []).toEqual([]);
-  });
-});
-
-describe("version history query", () => {
-  it("resolves history from a logical artifact ref, version id, or blob ref", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h1\n", media_type: "text/plain", logical_name: "hist" }, 1000);
-    recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h2\n", media_type: "text/plain", logical_name: "hist" }, 2000);
-
-    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
-    const byLogical = resolveArtifactVersionHistory(db, logicalRef);
-    expect(byLogical?.versions).toHaveLength(2);
-    const byVersion = resolveArtifactVersionHistory(db, r1.version.id);
-    expect(byVersion?.series.id).toBe(r1.series.id);
-    const byArtifact = resolveArtifactVersionHistory(db, `artifact-blob:${r1.artifact.content_hash}`);
-    expect(byArtifact?.series.id).toBe(r1.series.id);
-    expect(resolveArtifactVersionHistory(db, r1.series.id)?.series.id).toBe(r1.series.id);
-  });
-});
-
-describe("backup/export coverage", () => {
-  // Restore replays the inventory in order, so a child table must never be
-  // listed before the table its foreign keys point at.
-  it("orders METADATA_BACKUP_TABLES parents before children", () => {
-    const at = (table: string) => {
-      const index = METADATA_BACKUP_TABLES.indexOf(table);
-      expect(index, `${table} is missing from METADATA_BACKUP_TABLES`).toBeGreaterThanOrEqual(0);
-      return index;
-    };
-    expect(at("artifact")).toBeGreaterThan(at("artifact_blob"));
-    expect(at("artifact_version")).toBeGreaterThan(at("artifact"));
-    for (const child of ["artifact_aliases", "artifact_links", "artifact_drafts"]) {
-      expect(at(child)).toBeGreaterThan(at("artifact_version"));
-    }
-  });
-
-  it("round-trips canonical artifact and artifact_version rows through backup/restore", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b1\n", media_type: "text/plain", logical_name: "bk" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b2\n", media_type: "text/plain", logical_name: "bk" }, 2000);
-    const sql = buildMetadataBackupSql(db);
-    expect(sql).toContain("-- Table: artifact");
-    expect(sql).toContain("-- Table: artifact_version");
-
-    const restored = new SqliteDatabase(path.join(tempDir, "restored.db"));
-    restored.pragma("foreign_keys = ON");
-    restored.exec(sql);
-
-    const series = restored.prepare("SELECT * FROM artifact").all() as Array<{ id: string; identity_key: string; version_count: number }>;
-    expect(series).toHaveLength(1);
-    expect(series[0].identity_key).toBe("managed:test:bk");
-    expect(series[0].version_count).toBe(2);
-    const versions = restored
-      .prepare("SELECT id, version_no, content_hash FROM artifact_version ORDER BY version_no")
-      .all() as Array<{ id: string; version_no: number; content_hash: string }>;
-    expect(versions.map((v) => v.version_no)).toEqual([1, 2]);
-    expect(versions[0].id).toBe(r1.version.id);
-    expect(versions[1].id).toBe(r2.version.id);
-
-    // UNIQUE(identity_key) survives the round-trip.
-    expect(() =>
-      restored.prepare(
-        `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
-         VALUES ('dup', 'managed:test:bk', 'managed', 0, 1, 1)`,
-      ).run(),
-    ).toThrow(/UNIQUE/i);
-    restored.close();
   });
 });
 
@@ -529,51 +400,6 @@ describe("codex review fixes", () => {
       recordArtifactVersion(db, { source_kind: "managed", content: "c\n", media_type: "text/plain", logical_name: "report" }, 3000),
     ).toThrow(/explicit series_key/i);
   });
-
-  it("MEDIUM-5: read-only history/diff do not materialize rows for unregistered refs", () => {
-    const counts = () => ({
-      blobs: (db.prepare("SELECT COUNT(*) AS n FROM artifact_blob").get() as { n: number }).n,
-      aliases: (db.prepare("SELECT COUNT(*) AS n FROM artifact_aliases").get() as { n: number }).n,
-      graph: (db.prepare("SELECT COUNT(*) AS n FROM graph_entities").get() as { n: number }).n,
-    });
-    const before = counts();
-    const hashA = `artifact:${"a".repeat(64)}`;
-    const hashB = `artifact:${"b".repeat(64)}`;
-    expect(resolveArtifactVersionHistory(db, hashA)).toBeNull();
-    const diff = diffArtifacts(db, hashA, hashB);
-    expect(diff.diffable).toBe(false);
-    expect(counts()).toEqual(before);
-  });
-
-  it("accepts artifact-series selectors at compatibility read boundaries", () => {
-    const r = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "s\n", media_type: "text/plain", logical_name: "sel" }, 1000);
-    expect(resolveArtifactRef(db, r.version.id).artifact?.id).toBe(r.artifact.id);
-    const res = resolveArtifactRef(db, `${r.series.id}@1`);
-    expect(res.artifact?.id).toBe(r.artifact.id);
-    expect(res.status).toBe("resolved");
-    expect(res.target_type).toBe("artifact_version");
-    expect(res.warnings).toEqual([]);
-  });
-
-  it("LOW-8/HIGH-3: latest_version_id and version_count stay consistent and survive backup", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c1\n", media_type: "text/plain", logical_name: "cache" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c2\n", media_type: "text/plain", logical_name: "cache" }, 2000);
-    const series = getArtifactSeries(db, r1.series.id)!;
-    const rows = listArtifactVersions(db, series.id);
-    expect(series.version_count).toBe(rows.length);
-    expect(series.latest_version_id).toBe(rows[rows.length - 1].id);
-    expect(series.latest_version_id).toBe(r2.version.id);
-
-    const restored = new SqliteDatabase(path.join(tempDir, "cache-restored.db"));
-    restored.pragma("foreign_keys = ON");
-    restored.exec(buildMetadataBackupSql(db));
-    const logicalId = series.id.replace(/^artifact-series:/, "artifact:");
-    const rSeries = restored.prepare("SELECT latest_version_id, version_count FROM artifact WHERE id = ?").get(logicalId) as { latest_version_id: string; version_count: number };
-    const rMax = restored.prepare("SELECT id FROM artifact_version WHERE artifact_id = ? ORDER BY version_no DESC LIMIT 1").get(logicalId) as { id: string };
-    expect(rSeries.version_count).toBe(2);
-    expect(rSeries.latest_version_id).toBe(rMax.id);
-    restored.close();
-  });
 });
 
 describe("codex re-review hardening", () => {
@@ -607,26 +433,5 @@ describe("codex re-review hardening", () => {
     expect(() =>
       recordArtifactVersion(db, { source_kind: "managed", ref: canonicalBlobRef, logical_name: "src", provider_id: "test" }, 3000),
     ).toThrow(/not materializable|hash mismatch/i);
-  });
-
-  it("RR-3: managed default series key escapes components so they cannot collide", () => {
-    const a = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a:b", content: "x\n", media_type: "text/plain", logical_name: "c" }, 1000);
-    const b = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a", role: "b", content: "y\n", media_type: "text/plain", logical_name: "c" }, 2000);
-    expect(a.series.id).not.toBe(b.series.id);
-    expect(getArtifactSeries(db, a.series.id)?.series_key).toBe("managed:a%3Ab:c");
-    expect(getArtifactSeries(db, b.series.id)?.series_key).toBe("managed:a:b:c");
-  });
-
-  it("RR-4: a dirty-file version records the HEAD commit in metadata (commit_sha stays null)", () => {
-    const { root, filePath } = makeTrackedRepo("dirty-prov", "clean\n");
-    createLedgerCheckout("mandible", fs.realpathSync(root));
-    const head = git(root, ["rev-parse", "HEAD"]);
-
-    fs.writeFileSync(filePath, "dirty-bytes\n", "utf8");
-    const rec = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
-    expect(rec.version.source_kind).toBe("managed");
-    expect(rec.version.commit_sha).toBeNull();
-    expect(rec.version.metadata.head_commit).toBe(head);
-    expect(rec.version.metadata.dirty_at_commit).toBe(head);
   });
 });

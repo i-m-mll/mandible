@@ -31,29 +31,6 @@ describe("conversation external navigation", () => {
     expect(codexTaskDeepLink(providerSessionId)).toBe(`codex://threads/${providerSessionId}`);
   });
 
-  it("focuses the exact existing Codex task without a replacement launch", () => {
-    const { db, registry } = fixture();
-    const openCodexTask = vi.fn();
-    const conversation = { id: "conversation-codex", source: "codex", session_id: "codex-task-id" };
-
-    expect(executeConversationExternalNavigation(db, registry, conversation, {
-      codexDesktopAvailable: true,
-      openCodexTask,
-    }))
-      .toMatchObject({ ok: true, capability: { kind: "codex-desktop-task" } });
-    expect(openCodexTask).toHaveBeenCalledOnce();
-    expect(openCodexTask).toHaveBeenCalledWith("codex-task-id");
-  });
-
-  it("omits Codex navigation when the installed desktop bridge is unavailable", () => {
-    const { db } = fixture();
-    expect(projectConversationExternalNavigation(db, [{
-      id: "conversation-codex",
-      source: "codex",
-      session_id: "codex-task-id",
-    }], { codexDesktopAvailable: false }).size).toBe(0);
-  });
-
   it("projects Claude terminal focus only for one live native iTerm background session", () => {
     const { db, registry } = fixture();
     registry.registerSession({

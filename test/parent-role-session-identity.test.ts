@@ -8,22 +8,20 @@
  *
  * These tests pin the boundary that fixes it — the daemon refuses an id it
  * cannot verify, accepts every registered alias form, and records both
- * identities — plus the invariant that must NOT change: the Codex archive path
- * still refuses to archive a live thread.
+ * identities. The liveness rule itself is in session-liveness.test.ts.
  */
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { archiveFinishedWorkerThreads } from "../src/codex-thread-archive.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { SessionRegistry } from "../src/registry.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
-import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
+import { resolveSessionAlias } from "../src/session-liveness.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const fakeScanner = {
   getRepos: () => [],
@@ -84,11 +82,21 @@ function seedCodexConversation(sessionId = DESKTOP_TASK): void {
   );
 }
 
-async function assume(sessionId: string, override = false) {
+/** `caller` is the calling agent's own session, as its ambient provider identity. */
+async function assume(sessionId: string, override = false, caller?: string) {
   return router.invoke({
     method: "POST",
     url: `/api/ledger/issues/${umbrellaId}/parent-role`,
     body: { session_id: sessionId, mechanism: "codex", override },
+    ambient_identity: caller ? { provider: "codex", provider_session_id: caller } : undefined,
+  });
+}
+
+async function release(caller: string) {
+  return router.invoke({
+    method: "DELETE",
+    url: `/api/ledger/issues/${umbrellaId}/parent-role`,
+    ambient_identity: { provider: "codex", provider_session_id: caller },
   });
 }
 
@@ -100,7 +108,6 @@ async function parentRoleStatus() {
   return response.body as {
     holder: Record<string, unknown> | null;
     live_holder: Record<string, unknown> | null;
-    unknown_holders: Array<Record<string, unknown>>;
   };
 }
 
@@ -110,8 +117,7 @@ function holderPayload(body: unknown): Record<string, unknown> {
 }
 
 beforeEach(async () => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setupOperator(db, { display_name: "Parent role identity operator" });
   const coordinator = createUser(db, {
     slug: "parent-role-test-agent",
@@ -324,8 +330,17 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
   it("lets the same live agent re-assume under a different alias without an override", async () => {
     expect((await assume(PROVIDER_THREAD)).status).toBe(200);
 
-    const again = await assume(MANDIBLE_SESSION);
+    const again = await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD);
     expect(again.status).toBe(200);
+  });
+
+  it("refuses another agent that names the live holder's session as its own", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-other", "active");
+
+    const impersonation = await assume(MANDIBLE_SESSION, false, "sess-other");
+    expect(impersonation.status).toBe(409);
+    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
   });
 
   it("still refuses a different live agent without an override", async () => {
@@ -335,15 +350,39 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     const conflict = await assume("sess-other");
     expect(conflict.status).toBe(409);
     const body = conflict.body as { error: string; blocking_holder: Record<string, unknown> };
-    expect(body.error).toContain("only the operator may displace it");
+    expect(body.error).toContain("only the operator can displace it");
     // The conflict names the holder, so a coordinator can decide rather than
     // guess (issue 7a97e2c's `- (-)` was unactionable).
     expect(body.blocking_holder.session_id).toBe(PROVIDER_THREAD);
     expect(body.blocking_holder.mechanism).toBe("codex");
 
-    const deniedOverride = await assume("sess-other", true);
+    const deniedOverride = await assume("sess-other", true, "sess-other");
     expect(deniedOverride.status).toBe(409);
-    expect((deniedOverride.body as { error: string }).error).toContain("only the operator");
+    expect((deniedOverride.body as { error: string }).error).toContain("only for the operator");
+  });
+
+  it("lets the live holder hand the role to a successor from its own session", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-successor", "active");
+
+    const handoff = await assume("sess-successor", false, PROVIDER_THREAD);
+    expect(handoff.status).toBe(200);
+    // The predecessor stays live but no longer holds the role.
+    expect((await parentRoleStatus()).live_holder).toMatchObject({ session_id: "sess-successor" });
+    expect((await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD)).status).toBe(409);
+  });
+
+  it("lets only the holder release the role", async () => {
+    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
+    seedSession("sess-other", "active");
+
+    expect((await release("sess-other")).status).toBe(409);
+    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
+
+    const released = await release(PROVIDER_THREAD);
+    expect(released.status).toBe(200);
+    expect((await parentRoleStatus()).holder).toBeNull();
+    expect((await assume("sess-other")).status).toBe(200);
   });
 
   it("does not block on a stale holder", async () => {
@@ -359,7 +398,7 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     expect((await assume(OUTAGE_TASK)).status).toBe(200);
     const status = await parentRoleStatus();
     expect(status.live_holder).toBeNull();
-    expect(status.unknown_holders).toEqual([expect.objectContaining({ session_id: OUTAGE_TASK })]);
+    expect(status.holder).toMatchObject({ session_id: OUTAGE_TASK, liveness: { state: "unknown" } });
 
     seedSession("sess-other", "active");
     const conflict = await assume("sess-other");
@@ -367,145 +406,5 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     expect(conflict.body).toMatchObject({
       blocking_holder: { session_id: OUTAGE_TASK, liveness: { state: "unknown" } },
     });
-  });
-});
-
-describe("canonical session liveness", () => {
-  it("resolves each alias to the same agent and agrees on liveness", () => {
-    seedSession(MANDIBLE_SESSION, "idle");
-    seedConsoleSession({
-      id: CONSOLE_SESSION,
-      status: "stopped",
-      mandibleSessionId: MANDIBLE_SESSION,
-      providerSessionId: PROVIDER_THREAD,
-    });
-
-    for (const alias of [MANDIBLE_SESSION, CONSOLE_SESSION, PROVIDER_THREAD]) {
-      const resolved = resolveSessionAlias(db, alias);
-      expect(resolved).not.toBeNull();
-      expect(resolved).toMatchObject({
-        supplied_id: alias,
-        mandible_session_id: MANDIBLE_SESSION,
-        console_session_id: CONSOLE_SESSION,
-        provider_session_id: PROVIDER_THREAD,
-        liveness: "live",
-      });
-      expect(sessionAliasLiveness(db, alias)).toBe("live");
-    }
-
-    expect(resolveSessionAlias(db, "never-registered")).toBeNull();
-    expect(sessionAliasLiveness(db, "never-registered")).toBe("stopped");
-  });
-
-  it("counts a live console session whose Mandible session has ended", () => {
-    seedSession(MANDIBLE_SESSION, "ended");
-    seedConsoleSession({
-      id: CONSOLE_SESSION,
-      status: "running",
-      mandibleSessionId: MANDIBLE_SESSION,
-      providerSessionId: PROVIDER_THREAD,
-    });
-
-    expect(sessionAliasLiveness(db, PROVIDER_THREAD)).toBe("live");
-    expect(resolveSessionAlias(db, PROVIDER_THREAD)?.liveness).toBe("live");
-  });
-
-  it("reports a fully stopped agent as resolved but not live", () => {
-    seedSession(MANDIBLE_SESSION, "ended");
-    seedConsoleSession({
-      id: CONSOLE_SESSION,
-      status: "stopped",
-      mandibleSessionId: MANDIBLE_SESSION,
-      providerSessionId: PROVIDER_THREAD,
-    });
-
-    const resolved = resolveSessionAlias(db, PROVIDER_THREAD);
-    expect(resolved?.mandible_session_id).toBe(MANDIBLE_SESSION);
-    expect(resolved?.liveness).toBe("stopped");
-  });
-});
-
-/**
- * The archive path is the one place a liveness regression is destructive: a
- * false "not live" archives a Codex thread whose agent is still working. It now
- * calls the shared predicate, so this pins its behaviour through the real entry
- * point rather than through the helper.
- */
-describe("Codex worker thread archival still excludes live threads", () => {
-  function archiveDb(): InstanceType<typeof SqliteDatabase> {
-    const archive = new SqliteDatabase(":memory:");
-    archive.exec(`
-      CREATE TABLE work_units (
-        id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL,
-        ledger_issue_id TEXT,
-        state TEXT NOT NULL,
-        assigned_session_id TEXT,
-        provider_session_id TEXT,
-        worker_provider_session_id TEXT,
-        auth_request_id TEXT
-      );
-      CREATE TABLE sessions (id TEXT PRIMARY KEY, status TEXT);
-      CREATE TABLE console_sessions (
-        id TEXT PRIMARY KEY,
-        mandible_session_id TEXT,
-        provider_session_id TEXT,
-        command TEXT,
-        status TEXT
-      );
-      CREATE TABLE worker_thread_archives (
-        work_unit_id TEXT NOT NULL,
-        thread_id TEXT NOT NULL,
-        archived_at INTEGER,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT,
-        next_retry_at INTEGER,
-        PRIMARY KEY (work_unit_id, thread_id)
-      );
-    `);
-    archive.prepare(
-      `INSERT INTO work_units (id, issue_id, state, worker_provider_session_id, auth_request_id)
-       VALUES ('wu-live', 'issue-live', 'resolved', 'thread-live', 'auth-1'),
-              ('wu-done', 'issue-done', 'resolved', 'thread-done', 'auth-1')`,
-    ).run();
-    return archive;
-  }
-
-  async function archivedThreads(archive: InstanceType<typeof SqliteDatabase>): Promise<string[]> {
-    const archived: string[] = [];
-    await archiveFinishedWorkerThreads(archive as unknown as Db, {
-      archiver: { archive: async (threadId) => { archived.push(threadId); }, unarchive: async () => undefined },
-      liveness: sessionAliasLiveness,
-      resolveAlias: resolveSessionAlias,
-      now: () => 0,
-    });
-    return archived;
-  }
-
-  it("skips a thread whose console session is still running", async () => {
-    const archive = archiveDb();
-    archive.prepare(
-      `INSERT INTO console_sessions (id, provider_session_id, command, status)
-       VALUES ('cs-live', 'thread-live', 'codex', 'running'),
-              ('cs-done', 'thread-done', 'codex', 'stopped')`,
-    ).run();
-
-    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
-    archive.close();
-  });
-
-  it("skips a thread whose linked Mandible session is still active", async () => {
-    const archive = archiveDb();
-    archive.prepare(
-      "INSERT INTO sessions (id, status) VALUES ('mandible-live', 'active')",
-    ).run();
-    archive.prepare(
-      `INSERT INTO console_sessions (id, mandible_session_id, provider_session_id, command, status)
-       VALUES ('cs-live', 'mandible-live', 'thread-live', 'codex', 'stopped'),
-              ('cs-done', NULL, 'thread-done', 'codex', 'stopped')`,
-    ).run();
-
-    expect(await archivedThreads(archive)).toEqual(["thread-done"]);
-    archive.close();
   });
 });

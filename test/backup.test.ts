@@ -4,8 +4,19 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
-import { setupOperator } from "../src/users/store.js";
+import {
+  buildMetadataBackupSql,
+  getUnclassifiedBackupTables,
+  listUserTables,
+  METADATA_BACKUP_TABLES,
+  REPRODUCIBLE_OR_RUNTIME_TABLES,
+} from "../src/ledger/backup.js";
+import { issueSearchExpression, searchLedgerIssues } from "../src/ledger/issue-search.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
+import { migratedMemoryDb, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -269,40 +280,6 @@ describe("backup routes", () => {
     expect(fs.existsSync(destination)).toBe(true);
   });
 
-  it("includes artifact identity tables and secondary indexes in metadata backup", async () => {
-    const { db } = await setupBackupRoutes();
-    const { METADATA_BACKUP_TABLES, buildMetadataBackupSql } = await import("../src/ledger/backup.js");
-
-    const idx = (table: string) => METADATA_BACKUP_TABLES.indexOf(table as never);
-    expect(idx("artifact_blob")).toBeGreaterThan(idx("artifacts"));
-    expect(idx("artifact")).toBeGreaterThan(idx("artifact_blob"));
-    expect(idx("artifact_version")).toBeGreaterThan(idx("artifact"));
-    expect(idx("artifact_links")).toBeGreaterThan(idx("artifact_version"));
-    expect(idx("project_artifact_associations")).toBeGreaterThan(idx("artifact_versions"));
-
-    db.prepare(
-      `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, created_at)
-       VALUES ('artifact-blob:hash-bk', 'sha256', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'file:///tmp/hash-bk', 1)`,
-    ).run();
-    db.prepare(
-      `INSERT INTO artifact (id, identity_key, source_kind, title, version_count, created_at, updated_at)
-       VALUES ('artifact:bk', 'managed:test:bk', 'managed', 'Backup artifact', 1, 1, 1)`,
-    ).run();
-    db.prepare(
-      `INSERT INTO artifact_version (
-        id, artifact_id, version_no, blob_id, source_kind, content_hash, custody_mode, created_at
-      ) VALUES ('artifact-version:bk-v1', 'artifact:bk', 1, 'artifact-blob:hash-bk', 'managed', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'managed', 1)`,
-    ).run();
-
-    const dump = buildMetadataBackupSql(db);
-    expect(dump).toContain("-- Table: artifact_blob");
-    expect(dump).toContain("-- Table: artifact");
-    expect(dump).toContain("-- Table: artifact_version");
-    expect(dump).toContain("-- Table: project_artifact_associations");
-    expect(dump).toContain("idx_artifact_version_blob");
-    expect(dump).toContain("idx_project_artifact_assoc_target");
-  });
-
   it("streams the same restorable SQL through an atomic backup file", async () => {
     const { db } = await setupBackupRoutes();
     const { buildMetadataBackupSql, writeMetadataBackup } = await import("../src/ledger/backup.js");
@@ -326,74 +303,71 @@ describe("backup routes", () => {
     }
   });
 
-  it("round-trips an actual trash custody row with canonical parents", async () => {
-    const { db } = await setupBackupRoutes();
-    const { buildMetadataBackupSql } = await import("../src/ledger/backup.js");
-    db.prepare(
-      `INSERT INTO ledger_projects
-        (id, project_key, display_name, remote_identity, upstream_identity,
-         namespace_policy, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run("prj_trash_backup", "trash-backup", "Trash Backup", "local:trash", "", "local", 1, 1);
-    db.prepare(
-      `INSERT INTO ledger_project_checkouts
-        (id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "checkout_trash_backup",
-      "prj_trash_backup",
-      "trash-backup-local",
-      "/registered/trash-backup",
-      "trash-backup",
-      "main",
-      "",
-      1,
-      1,
-    );
-    db.prepare(
-      `INSERT INTO trash_entries (
-        id, project_id, checkout_id, repo_root, branch, issue_refs_json,
-        reason, actor, snapshot_ref, snapshot_oid, original_oid,
-        retention_policy, retention_days, state, created_at, expires_at, outcome_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "trash-backup-row",
-      "prj_trash_backup",
-      "checkout_trash_backup",
-      "/registered/trash-backup",
-      "feature/custodied",
-      '["5cb1eb3"]',
-      "superseded",
-      "backup-test",
-      "refs/mandible/trash/trash-backup-row",
-      "a".repeat(40),
-      "b".repeat(40),
-      "trash-retention.v1",
-      30,
-      "gc_pending",
-      1,
-      2,
-      '{"worktree_removed":true,"branch_removed":true}',
-    );
+});
 
-    const restored = new SqliteDatabase(":memory:");
+describe("metadata backup coverage", () => {
+  const backedUp = new Set<string>(METADATA_BACKUP_TABLES);
+
+  it("classifies every table at head once and backs up every parent a backed-up table references", () => {
+    const db = migratedMemoryDb();
     try {
-      restored.exec(buildMetadataBackupSql(db));
-      expect(restored.prepare(
-        `SELECT project_id, checkout_id, branch, snapshot_ref, state, outcome_json
-           FROM trash_entries WHERE id = ?`,
-      ).get("trash-backup-row")).toEqual({
-        project_id: "prj_trash_backup",
-        checkout_id: "checkout_trash_backup",
-        branch: "feature/custodied",
-        snapshot_ref: "refs/mandible/trash/trash-backup-row",
-        state: "gc_pending",
-        outcome_json: '{"worktree_removed":true,"branch_removed":true}',
-      });
-      expect(restored.pragma("foreign_key_check")).toEqual([]);
+      const tables = new Set(listUserTables(db));
+      expect(getUnclassifiedBackupTables(db)).toEqual([]);
+      expect(METADATA_BACKUP_TABLES.filter((table) => (REPRODUCIBLE_OR_RUNTIME_TABLES as readonly string[]).includes(table))).toEqual([]);
+      expect([...METADATA_BACKUP_TABLES, ...REPRODUCIBLE_OR_RUNTIME_TABLES].filter((table) => !tables.has(table))).toEqual([]);
+      const danglingParents = METADATA_BACKUP_TABLES.flatMap((table) =>
+        (db.prepare('SELECT DISTINCT "table" AS parent FROM pragma_foreign_key_list(?)').all(table) as Array<{ parent: string }>)
+          .filter(({ parent }) => !backedUp.has(parent))
+          .map(({ parent }) => `${table} -> ${parent}`));
+      expect(danglingParents).toEqual([]);
     } finally {
-      restored.close();
+      db.close();
     }
   });
 
+  it("restores the schema, triggers and rows of every backed-up table exactly", () => {
+    const db = migratedMemoryDb();
+    const restored = new SqliteDatabase(":memory:");
+    try {
+      const operator = setupOperator(db, { display_name: "Backup operator" });
+      const peer = createUser(db, { slug: "peer", kind: "human", display_name: "Peer" }, 100);
+      const settings = db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, ?, ?, ?, ?)");
+      settings.run(operator.id, "app_rail_order", '["spaces","tasks"]', 7, 1_787_200_001_001);
+      settings.run(peer.id, "ui_font_face", "it's quoted", 2, 1_787_200_002_001);
+      const project = addProject(db, { project_key: "backup", display_name: "Backup" });
+      const store = new LedgerStore(db);
+      const issue = store.createIssue({ ...SYSTEM_ACTOR, project_id: project.id, title: "Backed up", body: "line one\nline two" });
+      store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "a comment with 'quotes' and unicode \u00e9" });
+
+      const schema = (target: SqliteDatabase) => (target.prepare(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name",
+      ).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>)
+        .filter((row) => backedUp.has(row.tbl_name));
+      const rows = (target: SqliteDatabase, table: string) =>
+        target.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all();
+
+      restored.exec(buildMetadataBackupSql(db));
+
+      expect(schema(restored)).toEqual(schema(db));
+      for (const table of METADATA_BACKUP_TABLES) expect(rows(restored, table), table).toEqual(rows(db, table));
+      expect(rows(restored, "ledger_comments")).toHaveLength(1);
+      expect(restored.pragma("foreign_key_check")).toEqual([]);
+      expect(restored.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+
+      const restoredStore = new LedgerStore(restored);
+      restoredStore.updateIssue(issue.id, { title: "Restored and renamed" }, SYSTEM_ACTOR);
+      restoredStore.addComment(issue.id, { ...SYSTEM_ACTOR, body: "written after restore" });
+      const hits = (words: string) => searchLedgerIssues(restored, {
+        expression: issueSearchExpression(words)!,
+        projectIds: [project.id],
+        status: "all",
+        limit: 10,
+      }).map((hit) => hit.id);
+      expect(hits("line two")).toEqual([issue.id]);
+      expect(hits("renamed after restore")).toEqual([issue.id]);
+    } finally {
+      restored.close();
+      db.close();
+    }
+  });
 });

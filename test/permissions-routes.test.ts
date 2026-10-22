@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitUntilPasses } from "./helpers/wait-until.js";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -25,6 +25,7 @@ import { Router } from "../src/server.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -42,8 +43,7 @@ describe("restricted project route enforcement", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-permission-routes-"));
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
+    db = migratedMemoryDb();
     setDb(db);
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });
@@ -235,7 +235,7 @@ describe("restricted project route enforcement", () => {
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
     });
     expect(failed.status).toBe(202);
-    await vi.waitFor(() => {
+    await waitUntilPasses(() => {
       const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
         .get("10000000-0000-4000-8000-000000000002") as { state: string; error_json: string };
       expect(row.state).toBe("failed");

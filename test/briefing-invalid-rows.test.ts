@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { getBriefingSidebarSnapshot, invalidateApiGetCache } from '../ui/src/api';

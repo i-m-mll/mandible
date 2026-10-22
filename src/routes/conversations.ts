@@ -1,3 +1,4 @@
+import { entityRefs } from "../entity-refs.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 // API routes for the chat log / conversation system.
 
@@ -43,7 +44,6 @@ import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
 import { childrenOfConversationSql, listLineageGaps } from "../conversation-lineage.js";
-import { backfillConversationLineage } from "../conversations/lineage-backfill.js";
 import type { SessionRegistry } from "../registry.js";
 import {
   executeConversationExternalNavigation,
@@ -677,14 +677,6 @@ export function registerConversationRoutes(
       });
     }
   }, { operation: { id: "post:/api/conversations/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
-
-  // POST /api/conversations/lineage-backfill — issue 23f8142. Operator-only,
-  // run once: declares and links the parent of conversations indexed before
-  // their parsers recorded one.
-  server.post("/api/conversations/lineage-backfill", async (req, res) => {
-    requireOperator(getDb(), req);
-    sendJson(res, 200, await backfillConversationLineage(getDb()));
-  }, { operation: { id: "post:/api/conversations/lineage-backfill", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   // POST /api/conversations/scan-credentials — issue 71a287e.
   // On-demand sweep of the normalized index for leaked Mandible credentials.
@@ -1326,7 +1318,7 @@ export function registerConversationRoutes(
     }
     const result = executeConversationExternalNavigation(db, sessionRegistry, conversation);
     sendJson(res, result.ok ? 200 : 409, result.ok ? result : { error: result.message });
-  }, { operation: { id: "post:/api/conversations/:id/open-external", effects: ["process:external"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/conversations/:id/open-external", effects: ["process:external"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
   server.get("/api/conversations/:id/structure", async (req, res) => {
     const requestedRef = req.params.id;
@@ -1388,7 +1380,7 @@ export function registerConversationRoutes(
         record_offset: "recordOffset" in row ? row.recordOffset : row.record_offset,
         record_length: "recordLength" in row ? row.recordLength : row.record_length,
       })) });
-  }, { operation: { id: "get:/api/conversations/:id/structure", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/structure", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
@@ -1748,7 +1740,7 @@ export function registerConversationRoutes(
         ? projectDisplayBlock(mapReadableBlock(block) as SourceBackedConversationBlock)
         : mapReadableBlock(block)),
     });
-  }, { operation: { id: "get:/api/conversations/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // GET /api/conversations/:id/forks — Fork points in the conversation DAG
   // Bug: 40f0298 — DAG branching: identify points where the conversation branches
@@ -1905,7 +1897,7 @@ export function registerConversationRoutes(
     }));
 
     sendJson(res, 200, { forks });
-  }, { operation: { id: "get:/api/conversations/:id/forks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/forks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // POST /api/conversations/:id/fork — Fork a conversation at a specific message
   // Bug: 40f0298 — DAG branching: create a new session by forking at a message
@@ -1950,7 +1942,7 @@ export function registerConversationRoutes(
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  }), { operation: { id: "post:/api/conversations/:id/fork", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
+  }), { operation: { id: "post:/api/conversations/:id/fork", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", async (req, res) => {
@@ -2043,7 +2035,7 @@ export function registerConversationRoutes(
       pages: Math.ceil(total / limit),
       truncated: offset + blocks.length < total,
     });
-  }, { operation: { id: "get:/api/conversations/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // PATCH /api/conversations/:id — Update durable Mandible-owned metadata.
   server.patch("/api/conversations/:id", (req, res) => {
@@ -2141,7 +2133,7 @@ export function registerConversationRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });
     }
-  }, { operation: { id: "patch:/api/conversations/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/conversations/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON.
   // File RPC is allowed only on this exact read-only projection; POST carries
@@ -2232,6 +2224,6 @@ export function registerConversationRoutes(
         : blocks.length,
       body_source: readable?.bodySource ?? "legacy",
     });
-  }, { operation: { id: "post:/api/conversations/:id/export", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/export", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
 }

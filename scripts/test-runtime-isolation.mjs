@@ -10,7 +10,7 @@ function pinnedRuntime() {
   if (!pinned) {
     const selector = fileURLToPath(new URL('./bun-runtime.sh', import.meta.url));
     const result = spawnSync('/bin/sh', [selector], {
-      env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+      env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 30_000,
     });
     pinned = result.status === 0 ? result.stdout.trim() : '';
     if (!pinned) {
@@ -26,7 +26,7 @@ function verifiedSqliteArchive() {
   if (!sqliteArchive) {
     const installer = fileURLToPath(new URL('./sqlite-runtime-install.mjs', import.meta.url));
     sqliteArchive = execFileSync(pinnedRuntime(), [installer, '--archive'], {
-      env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+      env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 30_000,
     }).trim();
     if (!sqliteArchive) throw new Error('SQLite installer returned no verified archive');
   }

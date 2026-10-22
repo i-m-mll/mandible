@@ -1,5 +1,4 @@
-import SqliteDatabase from "../src/sqlite.ts";
-import { MIGRATIONS } from '../src/db-migrations.js';
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,16 +14,11 @@ import {
 } from "../src/artifact-recovery.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
 import type { Db } from "../src/db.js";
+import { migrateFixtureThrough } from "./helpers/schema-snapshot.js";
 
 function createMigratedDb(): Db {
-  const db=new SqliteDatabase(':memory:');
-  db.exec(fs.readFileSync('test/fixtures/schema-v158.sql','utf8'));
-  db.function('mandible_sha256',{deterministic:true},(value:unknown)=>crypto.createHash('sha256').update(String(value)).digest('hex'));
-  for(const migration of MIGRATIONS.filter(m=>m.version>158 && m.version<=184)) {
-    db.transaction(()=>{for(const sql of migration.statements) db.exec(sql);})();
-  }
-  db.prepare("UPDATE meta SET value='184' WHERE key='schema_version'").run();
-  db.pragma('foreign_keys=ON');
+  const db = migrateFixtureThrough(184);
+  db.pragma("foreign_keys=ON");
   return db;
 }
 
@@ -39,14 +33,8 @@ function git(root: string, ...args: string[]): string {
 }
 
 function makeRepo(root: string, content = "tracked bytes\n"): { project: string; commit: string; file: string } {
-  fs.mkdirSync(root, { recursive: true });
-  git(root, "init", "-b", "main");
-  git(root, "config", "user.name", "Artifact Recovery Test");
-  git(root, "config", "user.email", "artifact-recovery@example.invalid");
+  artifactRepo(root, { "report.md": content });
   const file = path.join(root, "report.md");
-  fs.writeFileSync(file, content);
-  git(root, "add", "report.md");
-  git(root, "commit", "-m", "record artifact");
   return { project: "", commit: git(root, "rev-parse", "HEAD"), file };
 }
 

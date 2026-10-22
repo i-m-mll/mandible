@@ -31,6 +31,17 @@ installed desktop provenance, and a full 31-second daemon health/log
 observation. Each observation sample must answer from the same process and
 definitions, ready at that generation, without event-loop or memory warnings. The candidate hook manager verifies this receipt and publication
 proof before settling convergence or releasing deferred delivery actions.
+The log assessment fails on any `error` line from the current process and on
+any one event or route that exceeds 100 lines in a 10-second window. That rate
+rule detects runaway loops. Scheduled work that goes through a backlog, such as
+reconciler passes, startup backfills, ingestion reconcile and full ingest,
+therefore logs one summary event per pass, with counts and a bounded sample of
+identifiers. The per-item record stays in its durable rows, such as
+`worker_thread_archives`, source aliases, or `meta`. A pass that logged one
+line per item would fail the handoff that first runs it. A refusal of a client
+request (an authorization error) answers with its own status and is not logged
+as a handler error.
+
 Acknowledgment removes only this helper's scoped job and regenerated files;
 the compact journal and receipt remain. Interrupted cleanup is retried without
 another merge, build, or hook attempt.
@@ -63,106 +74,49 @@ with the message "The merge landed, but Mandible did not update: <reason>." A
 rebuild hook that exited 75 belongs to its handoff and is pending, never a
 failure, until that handoff's journal fails.
 
-## Focused verification
+## Verification
 
-The explicit macOS fixture uses the deployed legacy interpreter with a private
-installation directory and unique launchd labels. It verifies independent
-supervision, bridge ordering, helper crash recovery and repeated admission
-without dependency mutation:
+Two provisioned tests cover the handoff on macOS. Each derives its inputs from
+the machine and throws, naming the prerequisite, when one is missing.
 
 ```bash
-runtime="$(scripts/bun-runtime.sh)"
-MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
-  "$runtime" scripts/run-vitest.js run \
-  --config vitest.extended.config.ts \
-  test/extended/runtime-handoff-launchd.test.ts
+bun run test:provisioned test/provisioned/runtime-handoff-launchd.test.ts
+bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
 ```
 
-This fixture runs a minimal old-interpreter process. It does not replace the
-integrated acceptance gate using the actual old daemon, candidate daemon and
-packaged desktop. The coordinator runs that gate after all source inputs
-stabilize. The isolated candidate command is documented in
-[candidate acceptance](candidate-acceptance.md).
+`runtime-handoff-launchd` arms the independent helper under launchd with a
+private installation directory and unique labels, using a stub old daemon and a
+stub rebuild hook. It verifies supervision, bridge ordering, helper crash
+recovery and repeated admission without dependency mutation.
 
-## Full daemon transition gate
+`runtime-handoff-full` is the one pre-merge run of the real post-merge handoff.
+It archives the deployed revision named by the canonical root's
+`dist/build-revision.json`, clones that root's installed dependencies, and
+starts the actual old daemon on the pinned Bun in a private installation. The
+candidate is `HEAD` of the checkout under test, committed on a `wt` branch of
+the private canonical root. A durable private agent submits one issue-linked
+request through the normal HTTP API, candidate acceptance runs, and the
+private operator approves through the ordinary action-bound signing challenge.
+The old protected-root executor keeps serving until the reviewed request merges
+the candidate; then `cli/post-merge-build-dist.sh` hands off independently
+under launchd. The test verifies the canonical independent handoff, the exact
+new health generation, the loaded service definition, durable acknowledgment,
+native `xattr` precedence over a poisoned PATH entry, and that a poisoned old
+CLI shim is never used. Every managed self-update follows this sequence.
 
-The full fixture archives the deployed old source revision from its build
-marker, clones its installed dependencies, and starts the actual old daemon in
-a private installation. It creates a candidate checkout through `wt`, builds
-its complete daemon and desktop package, drains the exact old backend, and
-installs the candidate using the existing local installer. This bootstrap
-includes the candidate's ordinary database migrations.
-
-The candidate service has an explicit reviewed PATH starting at its retained
-CLI. A poisoned old shim proves that this selection overrides an older CLI.
-A durable private agent then submits one issue-linked request through the
-normal HTTP API, and the private configured operator approves it through the
-ordinary action-bound signing challenge. The exact configured native Git hook
-bytes are copied into the private repository and must finish before the build
-hook. The executor must produce the atomic preparation, application and result
-receipts; no auth row or receipt is manually published.
-
-The build hook independently supervises the retained candidate source to
-canonical destination transition. Admission binds one installation, canonical
-project and Git common directory, the reviewed source head, verified build
-marker, every generated daemon module and installed dependency, and exact
-runtime and CLI bytes. The source checkout and its independent dependencies
-remain intact until the request and convergence receipt are terminal. Final
-readiness proves the canonical root, actual merge generation and canonical
-CLI PATH. No request is submitted to the production ledger.
-
-```bash
-runtime="$(scripts/bun-runtime.sh)"
-MANDIBLE_TEST_OLD_CHECKOUT="/absolute/path/to/deployed/old/checkout" \
-MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
-MANDIBLE_TEST_CANDIDATE_REVISION="<committed candidate SHA>" \
-MANDIBLE_TEST_CA_HOME="/absolute/path/to/existing/trusted/installation" \
-MANDIBLE_TEST_BUILD_HOME="/absolute/path/to/existing/build/user/home" \
-MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
-MANDIBLE_SQLITE_LIBRARY_ARCHIVE="/absolute/path/to/verified/sqlite.tar.gz" \
-  "$runtime" scripts/run-vitest.js run \
-  --config vitest.extended.config.ts \
-  test/extended/runtime-handoff-full.test.ts
-```
-
-Pass the qualified stock SQLite library inputs when required by its canonical
-startup contract. `MANDIBLE_TEST_OLD_REVISION` may explicitly select the retained
-old commit; otherwise the old build marker supplies it. The old checkout must
-retain its compatible dependencies. The fixture clones the qualified Bun
-dependency cache into its private home and references the existing Cargo and
-Rustup toolchain directories. These prerequisites come from the established
-frozen dependency install and native build setup; the fixture does not edit
-user toolchain configuration. The candidate revision must include every
-runtime, storage and handoff source change being qualified.
-
-Isolation transforms only the fixture copies: generated frontend/backend
-ports, the generator's exact expected frontend port, and the Caddy admin port.
-The fixture copies the existing trusted CA snapshot into private storage and
-preserves its certificate and key digests; it changes no OS trust store.
-Unique installation-directory hashes produce distinct launchd labels. Its
-native install path is private and explicitly frozen in the fixture hook
-command. Provider secrets and test-mode variables are absent from subprocess
-environments. The receipt records both source revisions and the transforms.
-
-Compact success or failure evidence goes to the explicit build home's
-`.cache/mandible/acceptance/upgrade-evidence`. Teardown stops only declared
-fixture jobs and deletes their generated data. The separate paired daemon and
-desktop gate still runs on the exact unmodified integration candidate; this
-transition fixture does not claim identical source bytes after its necessary
-port transforms.
-
-For the next update from an installed canonical-root Bun daemon, use the same
-fixture with `MANDIBLE_TEST_INSTALLED_UPDATE=1` and set
-`MANDIBLE_TEST_LEGACY_RUNTIME` to that installation's pinned Bun. This mode
-keeps the old protected-root executor serving until the ordinary reviewed
-request merges the candidate. It skips candidate bootstrap and the preliminary
-native build, then verifies the canonical independent handoff, exact new
-health generation, loaded service definition, durable acknowledgment, and native
-`xattr` precedence under the real launchd executor. Same-root admission has no
-separate source-checkout binding. Every managed self-update uses this sequence;
-standalone builds outside managed auth retain their existing build guard.
-The default mode retains coverage of the feature-checkout to canonical-root
-handoff. Evidence records the topology that actually ran.
+The operator's installation and toolchain are read, never changed: the trusted
+CA snapshot under `~/.mandible` is copied into private storage with its digests
+preserved, the Bun dependency cache is cloned, and the Cargo and Rustup
+directories are referenced. The configured native Git hooks are copied into
+the private repository. Isolation transforms only the fixture copies: the
+generated frontend and backend ports, the generator's expected frontend port,
+and the Caddy admin port. Unique installation-directory hashes give distinct
+launchd labels, the desktop install path is private, and the OS trust store and
+Keychain search list are unchanged. Teardown stops only the fixture's jobs and
+deletes its data. Compact success or failure evidence goes to
+`~/.cache/mandible/acceptance/upgrade-evidence`. The paired production daemon
+and desktop gate still runs on the exact unmodified candidate; this fixture
+does not claim identical source bytes after its port transforms.
 
 Verification-only recovery uses the same retained hook row, publication proof,
 failed handoff journal, receipt verifier, and convergence settlement. It never

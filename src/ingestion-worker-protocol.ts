@@ -9,7 +9,7 @@ export type IngestionWorkerCommand =
       bypassSameMtimeUnchanged?: boolean;
       priority?: boolean;
     }
-  | { kind: "reconcile"; repairLegacyOrphans?: boolean }
+  | { kind: "reconcile"; startupPasses?: boolean }
   | { kind: "full-ingest" };
 
 export type IngestionWorkerRequest = IngestionWorkerCommand & { id: number };

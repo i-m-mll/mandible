@@ -199,7 +199,7 @@ export function projectDatabaseSnapshot(options) {
 
 function convergeProjectedConversationTitles(dbPath, structureCachePath) {
   const entrypoint = fileURLToPath(new URL(
-    "../dist/cli/projected-conversation-convergence.js",
+    "../src/cli/projected-conversation-convergence.ts",
     import.meta.url,
   ));
   if (!fs.existsSync(entrypoint)) {

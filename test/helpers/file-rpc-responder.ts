@@ -63,7 +63,17 @@ export function startFileRpcResponder(
 
   const timer = setInterval(() => {
     if (stopped) return;
-    for (const file of fs.readdirSync(spoolDir)) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(spoolDir);
+    } catch {
+      // The owning test already tore its spool down (for example after a
+      // timeout); there is nothing left to answer.
+      stopped = true;
+      clearInterval(timer);
+      return;
+    }
+    for (const file of files) {
       if (!file.endsWith(".request.json")) continue;
       const requestPath = path.join(spoolDir, file);
       let request: FileRpcRequest;

@@ -1032,6 +1032,11 @@ function listAuthRequests(
   });
 }
 
+/** The project's route and display identity: the `<project>` of `<project>/<id>` issue refs. */
+export function projectRouteRef(db: Db, projectId: string): string {
+  return getProjectInfo(db, projectId).repo_id ?? projectId;
+}
+
 function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
   const project = db.prepare(
     `SELECT id, project_key, display_name, remote_identity, upstream_identity
@@ -1094,6 +1099,7 @@ function getIssueSummary(db: Db, issueId: string): LedgerIssueSummaryRef | null 
     id: row.id,
     display_id: displayIssueId(row, aliases),
     project_id: row.project_id,
+    project_ref: projectRouteRef(db, row.project_id),
     title: row.title,
     status: row.status,
     resolution: row.resolution,

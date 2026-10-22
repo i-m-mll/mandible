@@ -1,193 +1,50 @@
 /**
- * Tests for shared normalizers and SpawnBackend.
- * Bug: 8d3328c
+ * Provider stream lines normalize to the shared event stream (bug 8d3328c).
  */
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
-  normalizeGeminiStreamLine,
   normalizeCodexStreamLine,
+  normalizeGeminiStreamLine,
   type CodexNormalizerState,
 } from "../src/backends/normalizers.js";
 
-describe("normalizeGeminiStreamLine", () => {
-  it("returns null for invalid JSON", () => {
-    expect(normalizeGeminiStreamLine("not json")).toBeNull();
-  });
+const line = (record: unknown) => JSON.stringify(record);
 
-  it("parses init event", () => {
-    const line = JSON.stringify({ type: "init", session_id: "s1", model: "pro" });
-    const event = normalizeGeminiStreamLine(line);
-    expect(event).toEqual({
-      type: "system",
-      subtype: "init",
-      session_id: "s1",
-      model: "pro",
-    });
-  });
-
-  it("parses assistant message", () => {
-    const line = JSON.stringify({
-      type: "message",
-      role: "assistant",
-      session_id: "s1",
-      content: "hello",
-      model: "flash",
-    });
-    const event = normalizeGeminiStreamLine(line);
-    expect(event).toEqual({
-      type: "assistant",
-      session_id: "s1",
-      parent_tool_use_id: null,
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "hello" }],
-        model: "flash",
-      },
-    });
-  });
-
-  it("parses user message", () => {
-    const line = JSON.stringify({
-      type: "message",
-      role: "user",
-      session_id: "s1",
-      content: "hi",
-    });
-    const event = normalizeGeminiStreamLine(line);
-    expect(event?.type).toBe("user");
-  });
-
-  it("parses success result", () => {
-    const line = JSON.stringify({
-      type: "result",
-      status: "success",
-      session_id: "s1",
-      stats: { duration_ms: 1234 },
-    });
-    const event = normalizeGeminiStreamLine(line);
-    expect(event).toEqual({
-      type: "result",
-      subtype: "success",
-      session_id: "s1",
-      duration_ms: 1234,
-      num_turns: 1,
-      total_cost_usd: 0,
-      is_error: false,
-    });
-  });
-
-  it("parses error result", () => {
-    const line = JSON.stringify({
-      type: "result",
-      status: "failed",
-      session_id: "s1",
-      stats: {},
-    });
-    const event = normalizeGeminiStreamLine(line);
-    expect(event?.type).toBe("result");
-    expect(event?.is_error).toBe(true);
-    expect(event?.errors).toContain("failed");
-  });
-
-  it("returns null for unrecognized type", () => {
-    const line = JSON.stringify({ type: "unknown", session_id: "s1" });
-    expect(normalizeGeminiStreamLine(line)).toBeNull();
-  });
-});
-
-describe("normalizeCodexStreamLine", () => {
-  function freshState(): CodexNormalizerState {
-    return { threadId: null, turnCount: 0, model: null };
+it("normalizes every recognized provider event, carrying Codex thread state across lines", () => {
+  const gemini: Array<[unknown, Record<string, unknown>]> = [
+    [{ type: "init", session_id: "s1", model: "pro" }, { type: "system", subtype: "init", session_id: "s1", model: "pro" }],
+    [{ type: "message", role: "assistant", session_id: "s1", content: "hello", model: "flash" },
+      { type: "assistant", session_id: "s1", message: { role: "assistant", content: [{ type: "text", text: "hello" }] } }],
+    [{ type: "message", role: "user", session_id: "s1", content: "hi" }, { type: "user", session_id: "s1" }],
+    [{ type: "result", status: "success", session_id: "s1", stats: { duration_ms: 1234 } },
+      { type: "result", subtype: "success", is_error: false, duration_ms: 1234 }],
+    [{ type: "result", status: "failed", session_id: "s1", stats: {} }, { type: "result", is_error: true, errors: ["failed"] }],
+  ];
+  for (const [input, expected] of gemini) {
+    expect(normalizeGeminiStreamLine(line(input)), line(input)).toMatchObject(expected);
   }
 
-  it("returns null for invalid JSON", () => {
-    expect(normalizeCodexStreamLine("bad", freshState())).toBeNull();
-  });
+  const state: CodexNormalizerState = { threadId: null, turnCount: 0, model: "gpt-5" };
+  const codex: Array<[unknown, Record<string, unknown>]> = [
+    [{ type: "thread.started", thread_id: "t1" }, { type: "system", subtype: "init", session_id: "t1", model: "gpt-5" }],
+    [{ type: "item.completed", item: { type: "agent_message", text: "done" } },
+      { type: "assistant", session_id: "t1", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }],
+    [{ type: "turn.completed", usage: { input_tokens: 100 } }, { type: "result", subtype: "success", is_error: false }],
+    [{ type: "error", message: "rate limited" }, { type: "result", is_error: true, errors: ["rate limited"] }],
+    [{ type: "turn.failed", error: { message: "timeout" } }, { type: "result", is_error: true, errors: ["timeout"] }],
+  ];
+  for (const [input, expected] of codex) {
+    expect(normalizeCodexStreamLine(line(input), state), line(input)).toMatchObject(expected);
+  }
+  expect(state).toMatchObject({ threadId: "t1", turnCount: 1 });
+});
 
-  it("parses thread.started", () => {
-    const state = freshState();
-    const line = JSON.stringify({ type: "thread.started", thread_id: "t1" });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event).toEqual({
-      type: "system",
-      subtype: "init",
-      session_id: "t1",
-    });
-    expect(state.threadId).toBe("t1");
-  });
-
-  it("parses thread.started with model", () => {
-    const state: CodexNormalizerState = { threadId: null, turnCount: 0, model: "gpt-5" };
-    const line = JSON.stringify({ type: "thread.started", thread_id: "t2" });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event?.model).toBe("gpt-5");
-  });
-
-  it("parses item.completed agent_message", () => {
-    const state: CodexNormalizerState = { threadId: "t1", turnCount: 0, model: null };
-    const line = JSON.stringify({
-      type: "item.completed",
-      item: { type: "agent_message", text: "done" },
-    });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event).toEqual({
-      type: "assistant",
-      session_id: "t1",
-      parent_tool_use_id: null,
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "done" }],
-      },
-    });
-  });
-
-  it("returns null for item.completed with non-agent_message type", () => {
-    const state = freshState();
-    const line = JSON.stringify({
-      type: "item.completed",
-      item: { type: "tool_call" },
-    });
-    expect(normalizeCodexStreamLine(line, state)).toBeNull();
-  });
-
-  it("parses turn.completed", () => {
-    const state: CodexNormalizerState = { threadId: "t1", turnCount: 0, model: null };
-    const line = JSON.stringify({
-      type: "turn.completed",
-      usage: { input_tokens: 100 },
-    });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event?.type).toBe("result");
-    expect(event?.subtype).toBe("success");
-    expect(event?.is_error).toBe(false);
-    expect(state.turnCount).toBe(1);
-  });
-
-  it("parses error event", () => {
-    const state = freshState();
-    const line = JSON.stringify({
-      type: "error",
-      message: "rate limited",
-    });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event?.type).toBe("result");
-    expect(event?.is_error).toBe(true);
-    expect(event?.errors).toContain("rate limited");
-  });
-
-  it("parses turn.failed event", () => {
-    const state = freshState();
-    const line = JSON.stringify({
-      type: "turn.failed",
-      error: { message: "timeout" },
-    });
-    const event = normalizeCodexStreamLine(line, state);
-    expect(event?.type).toBe("result");
-    expect(event?.is_error).toBe(true);
-    expect(event?.errors).toContain("timeout");
-  });
-
-  it("returns null for unrecognized type", () => {
-    expect(normalizeCodexStreamLine(JSON.stringify({ type: "unknown" }), freshState())).toBeNull();
-  });
+it("drops invalid and unrecognized lines instead of inventing events", () => {
+  const fresh = (): CodexNormalizerState => ({ threadId: null, turnCount: 0, model: null });
+  for (const input of ["not json", line({ type: "unknown", session_id: "s1" })]) {
+    expect(normalizeGeminiStreamLine(input), input).toBeNull();
+  }
+  for (const input of ["bad", line({ type: "unknown" }), line({ type: "item.completed", item: { type: "tool_call" } })]) {
+    expect(normalizeCodexStreamLine(input, fresh()), input).toBeNull();
+  }
 });

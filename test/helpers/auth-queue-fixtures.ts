@@ -15,16 +15,15 @@
  *   no hook installed, no ref rewritten and no linked worktree registered.
  *   Everything after that point is a clone-local mutation and must never reach
  *   the template.
- * - The migrated SQLite schema. `createMigratedDb()` used to run `migrate()`
- *   against a fresh `:memory:` database ~92 times per run. It now deserialises
- *   one serialised template. This is hygiene, not a lever: measurement puts the
- *   whole migration load near 1s of a 101.5s file.
+ * - The migrated SQLite schema, through `ledger-fixtures.ts`, which migrates
+ *   once per test process and hands out deserialised copies.
  *
  * Git configuration is isolated here rather than inherited. The previous
  * wrapper stripped only `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, so a developer's
  * `core.hooksPath`, `init.templateDir` or signing defaults reached the fixture
  * and could change what these tests were actually exercising.
  */
+import { deflateSync, inflateSync } from "node:zlib";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -46,6 +45,7 @@ import {
   addDelegatedSigningLease,
   getOperator,
 } from "../../src/users/store.js";
+import { waitUntil } from "./wait-until.js";
 
 // --- temp-path custody -----------------------------------------------------
 //
@@ -110,7 +110,6 @@ afterAll(() => {
   pristineRepoTemplate = null;
   pristineRepoDigest = null;
   emptyGitTemplateDir = null;
-  migratedDbTemplate = null;
 });
 
 // --- git -------------------------------------------------------------------
@@ -269,6 +268,21 @@ export function createAuthCheckRepo(): string {
   return trackTempPath(repo);
 }
 
+/** Change a private loose object's bytes without renaming its content-addressed path. */
+export function tamperLooseGitObject(repo: string, oid: string, edit: (object: Buffer) => void): () => void {
+  const filename = path.join(repo, ".git", "objects", oid.slice(0, 2), oid.slice(2));
+  const original = fs.readFileSync(filename);
+  const mode = fs.statSync(filename).mode & 0o777;
+  const replace = (bytes: Buffer) => {
+    fs.rmSync(filename, { force: true });
+    fs.writeFileSync(filename, bytes, { mode });
+  };
+  const object = inflateSync(original);
+  edit(object);
+  replace(deflateSync(object));
+  return () => replace(original);
+}
+
 export function commitOnBranch(repo: string, branch: string, changes: Record<string, string>): void {
   git(repo, ["checkout", "-b", branch, "main"]);
   for (const [file, content] of Object.entries(changes)) {
@@ -281,20 +295,11 @@ export function commitOnBranch(repo: string, branch: string, changes: Record<str
 
 // --- databases -------------------------------------------------------------
 
-let migratedDbTemplate: Buffer | null = null;
-
 export function createMigratedDb(): Db {
-  if (!migratedDbTemplate) {
-    const seed = createSharedMigratedDb({
-      operator: { slug: "auth-test-operator", display_name: "Auth Test Operator" },
-      now: 1,
-    });
-    migratedDbTemplate = seed.serialize();
-    seed.close();
-  }
-  // Deserialise from a copy: the template buffer is reused for every case and
-  // must not observe a test's writes.
-  return SqliteDatabase.fromSnapshot(Buffer.from(migratedDbTemplate)) as unknown as Db;
+  return createSharedMigratedDb({
+    operator: { slug: "auth-test-operator", display_name: "Auth Test Operator" },
+    now: 1,
+  });
 }
 
 export function createLedgerProject(db: Db, root: string) {
@@ -490,16 +495,11 @@ export function createNoopHookManager(): AuthHookManager {
   } as unknown as AuthHookManager;
 }
 
-export async function waitForStatus(queue: AuthQueue, id: string, status: string, timeoutMs = 2000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+export async function waitForStatus(queue: AuthQueue, id: string, status: string) {
+  return waitUntil(() => {
     const request = queue.getRequest(id);
-    if (request?.status === status) {
-      return request;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Timed out waiting for status ${status}`);
+    return request?.status === status ? request : undefined;
+  }, `request ${id} to reach status ${status}`, 20);
 }
 
 export function insertMandibleSession(

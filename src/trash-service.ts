@@ -237,12 +237,12 @@ function validateBranch(repoRoot: string, branch: string): string {
 
 function resolveProject(db: Db, ref: string): RegistryProject {
   const result = resolveProjectRef(db, ref);
-  if (result.ambiguous) {
+  if ((!result.ok && result.reason === "ambiguous")) {
     throw new TrashServiceError(`ambiguous project ref: ${ref}`, "ambiguous_project", 409, {
       candidates: result.candidates ?? [],
     });
   }
-  if (!result.ok || !result.project) {
+  if (!result.ok) {
     throw new TrashServiceError(`project not found: ${ref}`, "project_not_found", 404);
   }
   if (result.matched_by === "work_repo_id") {

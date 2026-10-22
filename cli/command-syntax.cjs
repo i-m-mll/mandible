@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+class CommandArgumentError extends Error {}
+
 function validateNode(node) {
   if (!node || typeof node !== 'object') return false;
   if (node.hint !== undefined && (typeof node.hint !== 'string' || node.hint.length === 0)) return false;
@@ -44,7 +46,7 @@ function renderNode(node) {
   }
 }
 function commandSyntax(key, commands = loadCommands()) {
-  if (!Object.hasOwn(commands, key)) throw new Error(`Unknown command insertion: ${key}`);
+  if (!Object.hasOwn(commands, key)) throw new CommandArgumentError(`Unknown command insertion: ${key}`);
   const entry = commands[key];
   return `mandible ${entry.route.join(' ')}${entry.grammar.items?.length === 0 ? '' : ' ' + renderNode(entry.grammar)}`;
 }
@@ -59,7 +61,7 @@ function renderCommands(source, { markdown = true, commands = loadCommands() } =
 function help(route, commands = loadCommands()) {
   const matches = Object.entries(commands).filter(([, entry]) =>
     route.every((part, index) => entry.route[index]?.split('|').includes(part)));
-  if (!matches.length) throw new Error(`Unknown command: ${route.join(' ')}`);
+  if (!matches.length) throw new CommandArgumentError(`Unknown command: ${route.join(' ')}`);
   return `Usage:\n${matches.map(([key]) => `  ${commandSyntax(key, commands)}`).join('\n')}\n`;
 }
 function walk(node, fn) {
@@ -89,7 +91,7 @@ function validValue(spec, value) {
 }
 function parseEntry(key, argv, commands = loadCommands()) {
   const entry = commands[key];
-  if (!entry) throw new Error(`Unknown command: ${key}`);
+  if (!entry) throw new CommandArgumentError(`Unknown command: ${key}`);
   const specs = new Map();
   walk(entry.grammar, node => {
     if (node.kind === 'option') for (const name of node.names) {
@@ -108,13 +110,13 @@ function parseEntry(key, argv, commands = loadCommands()) {
       const equal = token.indexOf('=');
       const name = equal < 0 ? token : token.slice(0, equal);
       const spec = specs.get(name);
-      if (!spec) throw new Error(`Unknown option: ${name}`);
-      if (equal >= 0 && spec.length !== 1) throw new Error(`Option ${name} does not accept an inline value`);
+      if (!spec) throw new CommandArgumentError(`Unknown option: ${name}`);
+      if (equal >= 0 && spec.length !== 1) throw new CommandArgumentError(`Option ${name} does not accept an inline value`);
       const values = [];
       for (let v = 0; v < spec.length; v++) {
         const value = equal >= 0 ? token.slice(equal + 1) : argv[++index];
-        if (value === undefined || (value.startsWith('-') && value !== '-')) throw new Error(`Missing value for ${name}`);
-        if (!validValue(spec[v].value, value)) throw new Error(`Invalid value for ${name}: ${value}`);
+        if (value === undefined || (value.startsWith('-') && value !== '-')) throw new CommandArgumentError(`Missing value for ${name}`);
+        if (!validValue(spec[v].value, value)) throw new CommandArgumentError(`Invalid value for ${name}: ${value}`);
         values.push(value);
       }
       const occurrences = options.get(name) ?? [];
@@ -126,6 +128,9 @@ function parseEntry(key, argv, commands = loadCommands()) {
   const initial = { index: 0, used: {}, arguments: {} };
   const append = (args, name, value) => ({ ...args, [name]: Object.hasOwn(args, name)
     ? [...(Array.isArray(args[name]) ? args[name] : [args[name]]), value] : value });
+  const stateKey = state => JSON.stringify([state.index,
+    Object.keys(state.used).sort().map(key => [key, state.used[key]]),
+    Object.keys(state.arguments).sort().map(key => [key, state.arguments[key]])]);
   function match(node, state) {
     switch (node.kind) {
       case 'argument': {
@@ -153,10 +158,21 @@ function parseEntry(key, argv, commands = loadCommands()) {
       case 'repeat': {
         let current = [state], accepted = node.min === 0 ? [state] : [];
         for (let n = 1; n <= argv.length + 1; n++) {
-          current = current.flatMap(s => match(node.item, s).filter(next => next.index !== s.index
-            || JSON.stringify(next.used) !== JSON.stringify(s.used)));
+          const distinct = new Map();
+          for (const previous of current) {
+            const before = stateKey(previous);
+            for (const next of match(node.item, previous)) {
+              const key = stateKey(next);
+              if (key !== before) {
+                // accepted.reverse() prefers later paths, so keep the last occurrence order.
+                distinct.delete(key);
+                distinct.set(key, next);
+              }
+            }
+          }
+          current = [...distinct.values()];
           if (!current.length) break;
-          if (n >= node.min) accepted.push(...current);
+          if (n >= node.min) for (const state of current) accepted.push(state);
         }
         return accepted.reverse();
       }
@@ -174,11 +190,11 @@ function parseEntry(key, argv, commands = loadCommands()) {
     const missing = entry.grammar.kind === 'sequence' ? entry.grammar.items.filter(relaxable) : [];
     const relaxed = { ...entry.grammar, items: entry.grammar.items?.map(item => missing.includes(item) ? { kind: 'optional', item } : item) };
     if (missing.length && match(relaxed, initial).some(complete)) {
-      throw Object.assign(new Error(`Arguments do not match: ${commandSyntax(key, commands)}\n`
+      throw Object.assign(new CommandArgumentError(`Arguments do not match: ${commandSyntax(key, commands)}\n`
         + `Missing required option${missing.length > 1 ? 's' : ''}:\n`
         + missing.map(item => `  ${renderNode(item)}${item.hint ? `: ${item.hint}` : ''}`).join('\n')), { missingRequired: true });
     }
-    throw new Error(`Arguments do not match: ${commandSyntax(key, commands)}`);
+    throw new CommandArgumentError(`Arguments do not match: ${commandSyntax(key, commands)}`);
   }
   const parsedOptions = Object.fromEntries([...options].map(([name, values]) => [name.replace(/^-+/, ''),
     values.length > 1 ? values.map(v => v.length === 0 ? true : v.length === 1 ? v[0] : v)
@@ -191,11 +207,14 @@ function parse(argv, commands = loadCommands()) {
   const errors = [];
   for (const [key, entry] of candidates.filter(([, c]) => c.route.length === length)) {
     try { return parseEntry(key, argv.slice(entry.route.length), commands); }
-    catch (error) { errors.push(error); }
+    catch (error) {
+      if (!(error instanceof CommandArgumentError)) throw error;
+      errors.push(error);
+    }
   }
   // A form that only lacks required options is the one the caller meant.
   const missing = errors.filter(error => error.missingRequired);
-  throw new Error((missing.length ? missing : errors).map(error => error.message).join('\n') || `Unknown command: ${argv.join(' ')}`);
+  throw new CommandArgumentError((missing.length ? missing : errors).map(error => error.message).join('\n') || `Unknown command: ${argv.join(' ')}`);
 }
 
 function shellQuote(value) { return "'" + String(value).replaceAll("'", "'\\''") + "'"; }
@@ -210,7 +229,7 @@ function bindEntry(key, bindings, argv, commands = loadCommands(), main = false)
     [source.option, source.whenOption, source.unlessOption].flat().filter(Boolean)));
   const unbound = Object.keys(parsed.options).filter(name => !referenced.has(name));
   if (unbound.length) {
-    throw new Error(`Not implemented by mandible ${commands[parsed.command].route.join(' ')}: `
+    throw new CommandArgumentError(`Not implemented by mandible ${commands[parsed.command].route.join(' ')}: `
       + unbound.map(name => (name.length === 1 ? '-' : '--') + name).join(', '));
   }
   return Object.entries(bindings).flatMap(([variable, source]) => {
@@ -256,9 +275,10 @@ if (require.main === module) {
     else if (op === 'parse-entry') process.stdout.write(JSON.stringify(parseEntry(args[0], args.slice(1))) + '\n');
     else if (op === 'render' && args.length <= 1) process.stdout.write(renderCommands(fs.readFileSync(args[0] || 0, 'utf8')));
     else if (op === 'render-cli' && args.length === 0) process.stdout.write(renderCommands(fs.readFileSync(0, 'utf8'), { markdown: false }));
-    else throw new Error('Usage: command-syntax.cjs syntax <key> | help [command...] | parse <command...> | parse-entry <key> [args...] | render [file] | render-cli');
+    else throw new CommandArgumentError('Usage: command-syntax.cjs syntax <key> | help [command...] | parse <command...> | parse-entry <key> [args...] | render [file] | render-cli');
   } catch (error) {
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = 2;
+    const argumentError = error instanceof CommandArgumentError;
+    process.stderr.write(`${argumentError ? '' : 'Command parser internal error: '}${error.message}\n`);
+    process.exitCode = argumentError ? 2 : 1;
   }
 }

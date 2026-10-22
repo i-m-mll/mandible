@@ -401,31 +401,12 @@ fi
 case "${1:-}" in
   storage)
     shift
-    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
+    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/src/cli/conversation-storage.ts" "$@" --db "$MANDIBLE_DB"
     ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;
   lineage-gaps) shift; lineage_gaps_command "$@"; exit $? ;;
 esac
-
-# Issue 23f8142 — one-time declaration and linking of conversation parents for
-# conversations indexed before their parsers recorded one.
-if [[ "${1:-}" == "lineage-backfill" ]]; then
-  shift
-  json=0
-  binding=$(mandible_bind_arguments "conversations.lineage-backfill" '{"json":{"option":"json","constant":"1"}}' "$@") || exit $?
-  eval "$binding"
-  response=$(api_send POST "/api/conversations/lineage-backfill" '{}') || exit $?
-  if (( json )); then
-    printf '%s\n' "$response" | jq .
-  else
-    printf '%s\n' "$response" | jq -r '
-      "Examined \(.examined) conversations without a declared parent."
-      + "\nDeclared parents: \(.declared.claude_code) Claude, \(.declared.codex) Codex, \(.declared.gemini) Gemini; linked \(.linked), parent not indexed \(.unresolved_parent)."
-      + "\nLineage read from transcripts \(.lineage_source.transcript), from the Codex state database \(.lineage_source.codex_state_database), from neither \(.lineage_source.none)."'
-  fi
-  exit 0
-fi
 
 # Issue 71a287e — scan-credentials is daemon-side in every transport: only the
 # daemon holds the token pepper needed to verify a candidate.

@@ -6,6 +6,7 @@ import path from 'node:path';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
 import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs } from '../scripts/candidate-acceptance.mjs';
+import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
   it('rejects closed-database shutdown errors and event storms', () => {
@@ -33,7 +34,7 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     for (const name of ['root', 'unrelated']) {
       const result = spawnSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
         '-subj', '/CN=app.mandible.localhost', '-addext', 'subjectAltName=DNS:app.mandible.localhost',
-        '-keyout', path.join(home, `${name}.key`), '-out', path.join(home, `${name}.crt`)], { encoding: 'utf8', timeout: 10_000 });
+        '-keyout', path.join(home, `${name}.key`), '-out', path.join(home, `${name}.crt`)], { encoding: 'utf8', timeout: STATE_DEADLINE_MS });
       expect(result.status, result.stderr).toBe(0);
     }
     server = https.createServer({ key: fs.readFileSync(path.join(home, 'root.key')), cert: fs.readFileSync(path.join(home, 'root.crt')) }, (request, response) => {

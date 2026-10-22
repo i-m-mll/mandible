@@ -136,6 +136,7 @@ export function verificationEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_SYSTEM: "/dev/null",
@@ -176,7 +177,7 @@ export function verifyMergeCommitSignature(
   });
   try {
     const signers = `${allowed.join("\n")}\n`;
-    const key = ["verify-commit", cwd, commitSha, sshKeygenPath, createHash("sha256").update(signers).digest("hex")].join("\0");
+    const key = ["verify-original-commit", cwd, commitSha, sshKeygenPath, createHash("sha256").update(signers).digest("hex")].join("\0");
     const result = rememberedObjectFact(key, () => verifyCommitAgainst(cwd, commitSha, sshKeygenPath, signers));
     const diagnostic = `${result.stdout}\n${result.stderr}`;
     const fingerprint = diagnostic.match(SSH_FINGERPRINT_PATTERN)?.[0] ?? null;

@@ -50,6 +50,7 @@ import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.
 import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
 import { parseJsonObjectStrict } from "./row-coerce.js";
+import { backfillConversationLineageOnce } from "./conversations/lineage-backfill.js";
 import { getConversationStructureCache } from "./conversations/structure-cache.js";
 
 // --- Watch configuration ---
@@ -938,7 +939,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
     if (!fs.existsSync(config.base)) continue;
     for await (const filePath of walkFiles(config.base, config.glob)) {
       try {
-        await ingestFile(filePath, { forceFull: true });
+        await ingestFile(filePath, { forceFull: true, withinPass: true });
         processed++;
       } catch (error) {
         if (isSqliteBusy(error)) throw error;
@@ -951,6 +952,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
     }
   }
 
+  logger("info", "ingestion_full_pass", { processed, errors });
   return { processed, errors };
 }
 
@@ -1552,7 +1554,7 @@ export async function triggerReconcileForTest(
     await reconcile(runToken, {
       ingestChanged: (filePath) => ingestFile(filePath),
       watchConfigs: options.watchConfigs,
-      repairLegacyOrphans: true,
+      startupPasses: true,
     });
   } finally {
     ingestionActive = previousActive;
@@ -1808,7 +1810,9 @@ async function relocateMovedCodexSource(
     if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
     const stat = await fs.promises.stat(candidate);
     await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
-    logger("info", "ingestion_source_relocated", {
+    // A bulk archive moves many rollouts at once. The durable source alias is
+    // the record of each move; reconcile summarizes its relocations per pass.
+    logger("debug", "ingestion_source_relocated", {
       from: filePath,
       to: candidate,
       conversation_id: match.id,
@@ -2457,6 +2461,8 @@ type IngestFileOptions = {
   fallbackReason?: string;
   bypassSameMtimeUnchanged?: boolean;
   strictParseErrors?: boolean;
+  /** Part of a pass that logs its own summary; per-file completion logs at debug. */
+  withinPass?: boolean;
 };
 
 async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
@@ -2467,7 +2473,7 @@ async function ingestFile(filePath: string, options: IngestFileOptions = {}): Pr
     ranges: [],
   };
   while (await ingestFilePass(filePath, passOptions, pendingAppendProof)) {
-    passOptions = { bypassSameMtimeUnchanged: true, strictParseErrors: options.strictParseErrors };
+    passOptions = { bypassSameMtimeUnchanged: true, strictParseErrors: options.strictParseErrors, withinPass: options.withinPass };
   }
 }
 
@@ -3658,7 +3664,7 @@ async function ingestFilePass(
     await ingestWorkflowArtifact(filePath);
   }
 
-  logger("info", "ingestion_complete", {
+  logger(options.withinPass ? "debug" : "info", "ingestion_complete", {
     file: filePath,
     source: result.conversation.source,
     blocks: newBlocks.length,
@@ -3916,11 +3922,11 @@ let reconcilePromise: Promise<void> | null = null;
 type ReconcileOptions = {
   ingestChanged?: (filePath: string) => void | Promise<void>;
   watchConfigs?: Array<{ base: string; glob: string }>;
-  repairLegacyOrphans?: boolean;
+  startupPasses?: boolean;
   cooperate?: () => Promise<void>;
 };
 
-function scheduleReconcile(repairLegacyOrphans = false): void {
+function scheduleReconcile(startupPasses = false): void {
   const runToken = ingestionRunToken;
   if (!isCurrentIngestionRun(runToken)) {
     return;
@@ -3928,8 +3934,8 @@ function scheduleReconcile(repairLegacyOrphans = false): void {
   if (reconciling) return;
   reconciling = true;
   const operation = ingestionActor
-    ? ingestionActor.reconcile(repairLegacyOrphans)
-    : reconcile(runToken, { repairLegacyOrphans });
+    ? ingestionActor.reconcile(startupPasses)
+    : reconcile(runToken, { startupPasses });
   const scheduled = operation
     .catch((error) => {
       if (isCurrentIngestionRun(runToken)) {
@@ -3953,7 +3959,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   const db = getDb();
   const ingestChanged = options.ingestChanged ?? ((filePath: string) => debouncedIngest(filePath));
 
-  if (options.repairLegacyOrphans) {
+  if (options.startupPasses) {
     repairLegacyOrphanConversations(db);
   }
 
@@ -3989,9 +3995,12 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   // the moved rollout is recognized as the conversation it already is instead
   // of being ingested as a new row and then deleted as a missing source.
   // Bug: c927726.
+  let relocatedCount = 0;
+  let changedCount = 0;
   for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
     const relocated = await relocateMovedCodexSource(db, sourcePath);
     if (!relocated) continue;
+    relocatedCount += 1;
     const remaining = db.prepare(
       "SELECT MAX(source_mtime) AS source_mtime FROM conversations WHERE source_path = ?",
     ).get(sourcePath) as { source_mtime: number | null };
@@ -4095,6 +4104,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         if (needsIngest) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
+          changedCount += 1;
         }
       } catch {
         // File inaccessible — skip
@@ -4111,13 +4121,18 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     // deletion; relocate it before recording missing-source tombstones.
     let unavailableCount = 0;
     for (const sourcePath of missingPaths) {
-      if (!(await removeConversationForMissingSource(db, sourcePath))) {
-        unavailableCount += 1;
-      }
+      if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
+      else unavailableCount += 1;
     }
     if (unavailableCount > 0) {
       logger("info", "ingestion_sources_unavailable", { count: unavailableCount });
     }
+  }
+  if (relocatedCount > 0) {
+    logger("info", "ingestion_sources_relocated", { count: relocatedCount });
+  }
+  if (changedCount > 0) {
+    logger("info", "ingestion_reconcile_changed", { count: changedCount });
   }
 
   const missingWorkflowPaths = Array.from(workflowPaths.keys()).filter((sourcePath) =>
@@ -4147,16 +4162,22 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     });
     cleanupMissingAppend();
   }
+
+  // After relocations are followed, so moved rollouts are read where they are.
+  if (options.startupPasses && isCurrentIngestionRun(runToken)) {
+    const backfill = await backfillConversationLineageOnce(db);
+    if (backfill) logger("info", "conversation_lineage_backfill", { ...backfill });
+  }
 }
 
 export async function reconcileForWorker(
-  repairLegacyOrphans = false,
+  startupPasses = false,
   cooperate?: () => Promise<void>,
 ): Promise<void> {
   const runToken = ingestionRunToken;
   await reconcile(runToken, {
-    repairLegacyOrphans,
-    ingestChanged: (filePath) => ingestFile(filePath),
+    startupPasses,
+    ingestChanged: (filePath) => ingestFile(filePath, { withinPass: true }),
     cooperate,
   });
 }

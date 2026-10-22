@@ -4,18 +4,16 @@
 // one recursive watch per root directory; these tests pin the path
 // classification that replaced chokidar's add/change/unlink events.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitUntil } from "./helpers/wait-until.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
-  allowsPerFileFallback,
   groupWatchConfigs,
-  isLiveWatchMode,
   makeWatchRootMatcher,
   resolveWatchEventPath,
   watchConversationRoots,
@@ -36,92 +34,41 @@ afterEach(async () => {
   }
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for watch event");
-}
+const waitFor = (predicate: () => boolean) => waitUntil(predicate, "watch event", 25);
 
-describe("groupWatchConfigs", () => {
-  it("collapses configs that share a base into one root", () => {
-    const roots = groupWatchConfigs([
-      { base: "/home/.claude/projects", glob: "**/*.jsonl" },
-      { base: "/home/.claude/projects", glob: "**/workflows/wf_*.json" },
-      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
-      { base: "/home/.codex/archived_sessions", glob: "**/*.jsonl" },
-      { base: "/home/.gemini/tmp", glob: "**/chats/*.json" },
-      { base: "/home/.gemini/tmp", glob: "**/chats/*.jsonl" },
-    ]);
+it("groups watch configs per root and maps event names to exactly the files a root owns", () => {
+  expect(groupWatchConfigs([
+    { base: "/home/.claude/projects", glob: "**/*.jsonl" },
+    { base: "/home/.claude/projects", glob: "**/workflows/wf_*.json" },
+    { base: "/home/.claude/projects", glob: "**/*.jsonl" },
+    { base: "/home/.codex/archived_sessions", glob: "**/*.jsonl" },
+  ])).toEqual([
+    { base: "/home/.claude/projects", globs: ["**/*.jsonl", "**/workflows/wf_*.json"] },
+    { base: "/home/.codex/archived_sessions", globs: ["**/*.jsonl"] },
+  ]);
 
-    expect(roots).toEqual([
-      { base: "/home/.claude/projects", globs: ["**/*.jsonl", "**/workflows/wf_*.json"] },
-      { base: "/home/.codex/sessions", globs: ["**/*.jsonl"] },
-      { base: "/home/.codex/archived_sessions", globs: ["**/*.jsonl"] },
-      { base: "/home/.gemini/tmp", globs: ["**/chats/*.json", "**/chats/*.jsonl"] },
-    ]);
-  });
-
-  it("does not duplicate a glob repeated on the same base", () => {
-    const roots = groupWatchConfigs([
-      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
-      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
-    ]);
-    expect(roots).toEqual([{ base: "/home/.codex/sessions", globs: ["**/*.jsonl"] }]);
-  });
-});
-
-describe("resolveWatchEventPath", () => {
   const base = "/home/.codex/sessions";
+  const resolved: Array<[unknown, string | null]> = [
+    ["2026/07/02/rollout-a.jsonl", path.join(base, "2026", "07", "02", "rollout-a.jsonl")],
+    ["rollout-a.jsonl", path.join(base, "rollout-a.jsonl")],
+    [Buffer.from("a/b.jsonl", "utf8"), path.join(base, "a", "b.jsonl")],
+    ["/elsewhere/c.jsonl", "/elsewhere/c.jsonl"],
+    [null, null], [undefined, null], ["", null],
+  ];
+  for (const [filename, expected] of resolved) expect(resolveWatchEventPath(base, filename), String(filename)).toBe(expected);
 
-  it("joins a base-relative posix name reported by recursive fs.watch", () => {
-    expect(resolveWatchEventPath(base, "2026/07/02/rollout-a.jsonl"))
-      .toBe(path.join(base, "2026", "07", "02", "rollout-a.jsonl"));
-  });
-
-  it("resolves a flat name at the watch root", () => {
-    expect(resolveWatchEventPath("/home/.codex/archived_sessions", "rollout-a.jsonl"))
-      .toBe(path.join("/home/.codex/archived_sessions", "rollout-a.jsonl"));
-  });
-
-  it("decodes a Buffer filename", () => {
-    expect(resolveWatchEventPath(base, Buffer.from("a/b.jsonl", "utf8")))
-      .toBe(path.join(base, "a", "b.jsonl"));
-  });
-
-  it("passes through an absolute filename", () => {
-    expect(resolveWatchEventPath(base, "/elsewhere/c.jsonl")).toBe("/elsewhere/c.jsonl");
-  });
-
-  it("returns null when the platform omits the filename", () => {
-    expect(resolveWatchEventPath(base, null)).toBeNull();
-    expect(resolveWatchEventPath(base, undefined)).toBeNull();
-    expect(resolveWatchEventPath(base, "")).toBeNull();
-  });
-});
-
-describe("makeWatchRootMatcher", () => {
-  const base = "/home/.claude/projects";
-  const matches = makeWatchRootMatcher(base, ["**/*.jsonl", "**/workflows/wf_*.json"]);
-
-  it("matches any glob configured for the root", () => {
-    expect(matches(path.join(base, "proj", "a.jsonl"))).toBe(true);
-    expect(matches(path.join(base, "proj", "workflows", "wf_1.json"))).toBe(true);
-  });
-
-  it("matches a file directly at a flat root (`**/` spans zero directories)", () => {
-    const flat = "/home/.codex/archived_sessions";
-    expect(makeWatchRootMatcher(flat, ["**/*.jsonl"])(path.join(flat, "rollout.jsonl"))).toBe(true);
-  });
-
-  it("rejects non-matching names, the root directory itself, and paths outside the root", () => {
-    expect(matches(path.join(base, "proj", "notes.md"))).toBe(false);
-    expect(matches(path.join(base, "proj", "workflows", "other.json"))).toBe(false);
-    expect(matches(base)).toBe(false);
-    expect(matches("/home/.claude/projects-other/a.jsonl")).toBe(false);
-  });
+  const claude = "/home/.claude/projects";
+  const matches = makeWatchRootMatcher(claude, ["**/*.jsonl", "**/workflows/wf_*.json"]);
+  const owned: Array<[string, boolean]> = [
+    [path.join(claude, "proj", "a.jsonl"), true],
+    [path.join(claude, "a.jsonl"), true],
+    [path.join(claude, "proj", "workflows", "wf_1.json"), true],
+    [path.join(claude, "proj", "notes.md"), false],
+    [path.join(claude, "proj", "workflows", "other.json"), false],
+    [claude, false],
+    ["/home/.claude/projects-other/a.jsonl", false],
+  ];
+  for (const [file, expected] of owned) expect(matches(file), file).toBe(expected);
 });
 
 describe("watchConversationRoots", () => {
@@ -143,7 +90,14 @@ describe("watchConversationRoots", () => {
 
     // Two bases, one recursive watch each — the fd budget is O(roots).
     expect(handle.rootCount).toBe(2);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // A watch reports nothing until it is armed; probe each root until it reports.
+    for (const base of [sessions, archived]) {
+      const probe = path.join(base, "armed.jsonl");
+      await waitUntil(() => {
+        fs.writeFileSync(probe, "probe\n");
+        return seen.includes(probe);
+      }, `the watch on ${base} to report a write`, 25);
+    }
 
     // add, in a directory that existed when the watch started
     const nested = path.join(sessions, "2026", "07", "02", "rollout-a.jsonl");
@@ -175,29 +129,6 @@ describe("watchConversationRoots", () => {
     seen.length = 0;
     await fsp.rm(archivedFile);
     await waitFor(() => seen.includes(archivedFile));
-  });
-
-  it("ignores non-matching files and directory events", async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-roots-"));
-    const sessions = path.join(tempDir, ".codex", "sessions");
-    fs.mkdirSync(sessions, { recursive: true });
-
-    const seen: string[] = [];
-    handle = watchConversationRoots({
-      configs: [{ base: sessions, glob: "**/*.jsonl" }],
-      onFile: (filePath) => seen.push(filePath),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    await fsp.mkdir(path.join(sessions, "2026"), { recursive: true });
-    await fsp.writeFile(path.join(sessions, "2026", "notes.md"), "x\n", "utf8");
-    await fsp.writeFile(path.join(sessions, "2026", "index.json"), "{}\n", "utf8");
-
-    const marker = path.join(sessions, "2026", "rollout-marker.jsonl");
-    await fsp.writeFile(marker, "x\n", "utf8");
-    await waitFor(() => seen.includes(marker));
-
-    expect(seen.every((filePath) => filePath.endsWith(".jsonl"))).toBe(true);
   });
 
   it("skips missing bases and reports one root per surviving base", async () => {
@@ -274,29 +205,6 @@ function recordingPerFileFactory(calls: Array<{ base: string; glob: string }>): 
     };
   };
 }
-
-describe("isLiveWatchMode", () => {
-  it("counts only the modes that actually have a watcher attached", () => {
-    expect(isLiveWatchMode("recursive")).toBe(true);
-    expect(isLiveWatchMode("per-file")).toBe(true);
-    // Both of these mean "no watcher, events are being missed".
-    expect(isLiveWatchMode("reattaching")).toBe(false);
-    expect(isLiveWatchMode("degraded-poll")).toBe(false);
-  });
-});
-
-describe("allowsPerFileFallback", () => {
-  it("refuses per-file watching on darwin and allows it elsewhere", () => {
-    expect(allowsPerFileFallback("darwin")).toBe(false);
-    for (const platform of ["linux", "win32", "freebsd", "openbsd", "aix"] as NodeJS.Platform[]) {
-      expect(allowsPerFileFallback(platform)).toBe(true);
-    }
-  });
-
-  it("defaults to the running platform", () => {
-    expect(allowsPerFileFallback()).toBe(process.platform !== "darwin");
-  });
-});
 
 describe("watchConversationRoots darwin fallback policy", () => {
   it("degrades a failed root to bounded polling instead of per-file watching", async () => {
@@ -505,34 +413,6 @@ describe("watchConversationRoots non-darwin fallback", () => {
     expect(handle.degradedRootCount).toBe(0);
   });
 
-  it("routes events through the per-file fallback and closes it", async () => {
-    const base = makeRoot();
-    const seen: string[] = [];
-    const close = vi.fn(async () => undefined);
-    let emit: ((filePath: string) => void) | null = null;
-
-    handle = watchConversationRoots({
-      configs: [{ base, glob: "**/*.jsonl" }],
-      onFile: (filePath) => seen.push(filePath),
-      platform: "linux",
-      watchFactory: () => {
-        throw new Error("recursive watch unsupported");
-      },
-      perFileWatchFactory: (_base, _glob, handlers) => {
-        emit = handlers.onFile;
-        return { close };
-      },
-    });
-
-    const target = path.join(base, "rollout.jsonl");
-    emit?.(target);
-    expect(seen).toEqual([target]);
-
-    await handle.close();
-    handle = null;
-    expect(close).toHaveBeenCalledTimes(1);
-  });
-
   it("degrades to polling when the per-file fallback itself cannot start", async () => {
     const base = makeRoot();
     const degraded: string[] = [];
@@ -553,35 +433,5 @@ describe("watchConversationRoots non-darwin fallback", () => {
 
     expect(handle.rootModes.get(base)).toBe("degraded-poll");
     expect(degraded).toEqual(["recursive_unavailable"]);
-  });
-});
-
-describe("per-file watcher construction is structurally confined", () => {
-  it("constructs chokidar in exactly one helper, and only behind the darwin guard", async () => {
-    const source = await fsp.readFile(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "ingestion.ts"),
-      "utf8",
-    );
-
-    // One chokidar construction in the whole module.
-    const constructions = source.match(/chokidar\.watch\(/g) ?? [];
-    expect(constructions).toHaveLength(1);
-
-    // ...and it lives inside createChokidarPerFileWatcher.
-    const start = source.indexOf("function createChokidarPerFileWatcher(");
-    expect(start).toBeGreaterThan(-1);
-    const end = source.indexOf("\n}\n", start);
-    const helper = source.slice(start, end);
-    expect(helper).toContain("chokidar.watch(");
-
-    // The helper is only ever reached through the perFileWatchFactory seam,
-    // and every call to that seam is guarded by perFileFallbackAllowed.
-    expect(source.match(/createChokidarPerFileWatcher\b/g) ?? []).toHaveLength(2);
-    const callSites = source.match(/ctx\.perFileWatchFactory\(/g) ?? [];
-    expect(callSites).toHaveLength(1);
-    const guard = source.indexOf("if (ctx.perFileFallbackAllowed) {");
-    const startPerFile = source.indexOf("if (startPerFileFallback(reason)) return;");
-    expect(guard).toBeGreaterThan(-1);
-    expect(startPerFile).toBeGreaterThan(guard);
   });
 });

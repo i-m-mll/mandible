@@ -11,6 +11,7 @@ import {
   type TrashState,
 } from "../trash-service.js";
 import { bodyRecord, queryString, sendJson } from "./http.js";
+import { entityRefs } from "../entity-refs.js";
 function handleError(res: ResponseLike, error: unknown, removal = false): void {
   if (error instanceof TrashServiceError) {
     sendJson(res, error.status, {
@@ -103,5 +104,6 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/v1/trash/:id/restore", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/v1/trash/:id/restore", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.trashEntry } } });
 }

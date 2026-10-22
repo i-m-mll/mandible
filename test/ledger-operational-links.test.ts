@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -18,6 +18,8 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { LEDGER_EVENT_CREATED, ledgerSseTypeForEvent } from "../src/ledger/event-contract.js";
 import { SseManager, setSseManager } from "../src/sse.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 let tempDir = "";
 let db: Db;
@@ -25,7 +27,7 @@ const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-operational-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -439,7 +441,7 @@ describe("ledger operational links", () => {
       "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = 0 WHERE id = ?",
     ).run(resolvedAt, resolvedAt, "auth_replay");
 
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await waitUntil(() => Date.now() > resolvedAt, "the clock to pass the resolution time", 1);
     store.setIssueStatus(
       resolvedIssue.id,
       "open",

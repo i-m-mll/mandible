@@ -51,6 +51,7 @@ import {
   discoverConfiguredPublicSigningKey,
   resolveOpenSshPublicKey,
 } from "../signing-credential-audit.js";
+import { entityRefs } from "../entity-refs.js";
 
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
@@ -231,7 +232,8 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/credentials/:id/revoke", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/credentials/:id/revoke", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.credential } } });
 
   // Issue b3e4a09 — retroactive credential redaction.
   //
@@ -258,7 +260,8 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/credentials/:id/redact", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/credentials/:id/redact", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.credential } } });
 
   router.delete("/api/users/bindings/:id", (req, res) => {
     try {
@@ -271,7 +274,8 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/users/bindings/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/bindings/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.binding } } });
 
   router.get("/api/users/groups", (_req, res) => {
     try {
@@ -391,7 +395,8 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/users/grants/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/grants/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.grant } } });
 
   router.get("/api/users/:ref/access", (req, res) => {
     try {
@@ -400,7 +405,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       requireSelfOrOperator(db, req, user.id);
       const projectRef = req.query.project;
       const project = resolveProjectRef(db, projectRef ?? "");
-      if (!project.ok || !project.project || project.ambiguous) {
+      if (!project.ok) {
         throw new UserRegistryError("not_found", `No project matches '${projectRef ?? ""}'.`);
       }
       const identity = {

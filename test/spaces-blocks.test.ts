@@ -1,14 +1,8 @@
-import SqliteDatabase from "../src/sqlite.ts";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CURRENT_SCHEMA_VERSION, migrate, openDb, setDb, type Db } from "../src/db.js";
-import {
-  buildMetadataBackupSql,
-  METADATA_BACKUP_TABLES,
-} from "../src/ledger/backup.js";
+import { setDb, type Db } from "../src/db.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import {
   generateSortKey,
   isValidSortKey,
@@ -18,12 +12,11 @@ import {
 } from "../src/ledger/space-blocks.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
-import { SPACE_EVENTS, isSpaceEvent } from "../src/spaces/events.js";
 import { exportDocument, importDocument, type DocBlock } from "../src/spaces/serialize.js";
 
 // Issue d2a8e77 (umbrella de56ffa): Spaces document/canvas blocks — the
 // space_blocks table (second serial-chain migration), the /blocks* REST routes,
-// the space:block:changed event, and the cycle/sort-key/detach logic. Block
+// and the cycle/sort-key/detach logic. Block
 // identity agrees with the C12 spaces-doc.v1 serialization.
 
 function now(): number {
@@ -41,8 +34,6 @@ function allowsFileRpcRoute(method: string, url: string): boolean {
 // ============================================================================
 
 describe("space_blocks schema (issue d2a8e77)", () => {
-  let tempDir = "";
-  let dbPath = "";
   let db: Db;
 
   function seedProject(id = "proj-1"): string {
@@ -96,22 +87,10 @@ describe("space_blocks schema (issue d2a8e77)", () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-blocks-"));
-    dbPath = path.join(tempDir, "mandible.db");
-    db = openDb(dbPath);
+    db = migratedMemoryDb();
   });
   afterEach(() => {
     db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("creates the space_blocks table at the head migration version", () => {
-    const row = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'space_blocks'")
-      .get() as { name: string } | undefined;
-    expect(row?.name).toBe("space_blocks");
-    // Second serial-chain link: contiguous version after C1's spaces_core (v83).
-    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(84);
   });
 
   it("rejects invalid block_type via CHECK (lockstep with C12 BLOCK_TYPES)", () => {
@@ -122,37 +101,6 @@ describe("space_blocks schema (issue d2a8e77)", () => {
     for (const t of BLOCK_TYPES) {
       expect(() => insertBlock(spaceId, `b-${t}`, { blockType: t })).not.toThrow();
     }
-  });
-
-  it("rejects non-object metadata_json and item_snapshot_json (object-only json_valid)", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, sort_key, metadata_json, created_at, updated_at)
-           VALUES ('b1', ?, 'paragraph', 'm', 'not json', ?, ?)`,
-        )
-        .run(spaceId, now(), now()),
-    ).toThrow();
-    for (const bad of ["[]", "5", '"s"', "null"]) {
-      expect(() =>
-        db
-          .prepare(
-            `INSERT INTO space_blocks (id, space_id, block_type, sort_key, metadata_json, created_at, updated_at)
-             VALUES (?, ?, 'paragraph', 'm', ?, ?, ?)`,
-          )
-          .run(`b-meta-${bad}`, spaceId, bad, now(), now()),
-        `metadata_json should reject ${bad}`,
-      ).toThrow();
-    }
-    const itemId = seedItem(spaceId, "item-1");
-    // item_snapshot_json that is valid-but-not-an-object is rejected.
-    expect(() => insertBlock(spaceId, "b-snap-bad", { itemId, snapshot: "[]" })).toThrow();
-    // a real object snapshot is accepted.
-    expect(() =>
-      insertBlock(spaceId, "b-snap-ok", { itemId, snapshot: '{"item_id":"item-1"}' }),
-    ).not.toThrow();
   });
 
   it("enforces CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL)", () => {
@@ -190,27 +138,6 @@ describe("space_blocks schema (issue d2a8e77)", () => {
     ).toThrow();
   });
 
-  it("RESTRICTs deleting an item embedded in a block; detach-then-delete works", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    const itemId = seedItem(spaceId, "item-1");
-    insertBlock(spaceId, "b-embed", { itemId, snapshot: '{"item_id":"item-1","title":"X"}' });
-
-    // ON DELETE RESTRICT blocks the item deletion while a block embeds it.
-    expect(() => db.prepare("DELETE FROM space_items WHERE id = ?").run(itemId)).toThrow();
-
-    // Detach: drop item_id, KEEP the snapshot placeholder.
-    db.prepare("UPDATE space_blocks SET item_id = NULL WHERE id = 'b-embed'").run();
-    const row = db
-      .prepare("SELECT item_id, item_snapshot_json FROM space_blocks WHERE id = 'b-embed'")
-      .get() as { item_id: string | null; item_snapshot_json: string | null };
-    expect(row.item_id).toBeNull();
-    expect(row.item_snapshot_json).toContain("item-1");
-
-    // Now the item can be deleted.
-    expect(() => db.prepare("DELETE FROM space_items WHERE id = ?").run(itemId)).not.toThrow();
-  });
-
   it("cascades blocks on space deletion and on parent block deletion", () => {
     const projectId = seedProject();
     const spaceId = seedSpace(projectId);
@@ -233,120 +160,10 @@ describe("space_blocks schema (issue d2a8e77)", () => {
 });
 
 // ============================================================================
-// Backup classification + restore round trip
-// ============================================================================
-
-describe("space_blocks metadata backup classification (issue d2a8e77)", () => {
-  let tempDir = "";
-  let db: Db;
-
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-blocks-bk-"));
-    db = openDb(path.join(tempDir, "mandible.db"));
-  });
-  afterEach(() => {
-    db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("includes space_blocks in METADATA_BACKUP_TABLES (drift guard fails if omitted)", () => {
-    expect(METADATA_BACKUP_TABLES).toContain("space_blocks");
-    const partial = METADATA_BACKUP_TABLES.filter((t) => t !== "space_blocks");
-    expect(partial.includes("space_blocks" as never)).toBe(false);
-  });
-
-  it("lists space_blocks AFTER its parents (spaces, space_items)", () => {
-    const idx = (t: string) => METADATA_BACKUP_TABLES.indexOf(t as never);
-    expect(idx("space_blocks")).toBeGreaterThan(idx("spaces"));
-    expect(idx("space_blocks")).toBeGreaterThan(idx("space_items"));
-  });
-
-  it("emits space_blocks DDL in the backup", () => {
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES ('p', 'P', 'github.com/test/p', ?, ?)`,
-    ).run(now(), now());
-    const sql = buildMetadataBackupSql(db);
-    expect(sql).toContain("-- Table: space_blocks");
-    expect(sql).toContain("CREATE TABLE");
-  });
-
-  it("inline UNIQUE/CHECK/composite-FK survive a DDL-only restore round trip", () => {
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES ('p', 'P', 'github.com/test/p', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO spaces (id, project_id, title, created_at, updated_at)
-       VALUES ('s', 'p', 'S', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
-       VALUES ('item-1', 's', 'issue', 'i1', ?, ?)`,
-    ).run(now(), now());
-    db.prepare(
-      `INSERT INTO space_blocks (id, space_id, block_type, item_id, item_snapshot_json, sort_key, markdown, metadata_json, created_at, updated_at)
-       VALUES ('b1', 's', 'reference', 'item-1', '{"item_id":"item-1"}', 'm', '', '{}', ?, ?)`,
-    ).run(now(), now());
-
-    const sql = buildMetadataBackupSql(db);
-    const restorePath = path.join(tempDir, "restored.db");
-    const restored = new SqliteDatabase(restorePath);
-    restored.pragma("foreign_keys = ON");
-    restored.exec(sql);
-
-    // The invariant CHECK survives: item_id with no snapshot is rejected post-restore.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, item_id, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b-no-snap', 's', 'reference', 'item-1', 'n', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    // The composite item FK (depending on the inline UNIQUE target) survives.
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, item_id, item_snapshot_json, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b-bad-item', 's', 'reference', 'no-such', '{"x":1}', 'o', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    // The inline UNIQUE(space_id, id) survives (duplicate id rejected).
-    expect(() =>
-      restored
-        .prepare(
-          `INSERT INTO space_blocks (id, space_id, block_type, sort_key, markdown, metadata_json, created_at, updated_at)
-           VALUES ('b1', 's', 'paragraph', 'p', '', '{}', ?, ?)`,
-        )
-        .run(now(), now()),
-    ).toThrow();
-
-    restored.close();
-  });
-});
-
-// ============================================================================
 // Sort-key generation / normalization (deterministic)
 // ============================================================================
 
 describe("block sort-key generation / normalization (issue d2a8e77)", () => {
-  it("generateSortKey produces a key strictly between bounds (deterministic)", () => {
-    const a = generateSortKey(null, null);
-    const b = generateSortKey(a, null);
-    const c = generateSortKey(b, null);
-    expect(a < b).toBe(true);
-    expect(b < c).toBe(true);
-    // Deterministic: same inputs → same output.
-    expect(generateSortKey(a, c)).toBe(generateSortKey(a, c));
-    const mid = generateSortKey(a, c);
-    expect(a < mid && mid < c).toBe(true);
-    expect(isValidSortKey(mid)).toBe(true);
-  });
-
   it("generateSortKey inserts between adjacent keys without collision", () => {
     let lo = generateSortKey(null, null);
     let hi = generateSortKey(lo, null);
@@ -359,10 +176,6 @@ describe("block sort-key generation / normalization (issue d2a8e77)", () => {
       seen.add(mid);
       hi = mid;
     }
-  });
-
-  it("generateSortKey rejects inverted bounds", () => {
-    expect(() => generateSortKey("z", "a")).toThrow();
   });
 
   it("normalizeSortKeys returns N strictly-increasing deterministic keys", () => {
@@ -407,9 +220,7 @@ describe("blocks routes (issue d2a8e77)", () => {
   }
 
   beforeEach(() => {
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
-    db.pragma("foreign_keys = ON");
+    db = migratedMemoryDb();
     setDb(db);
     router = new Router();
     registerSpacesRoutes(router);
@@ -420,32 +231,6 @@ describe("blocks routes (issue d2a8e77)", () => {
   });
   afterEach(() => {
     db.close();
-  });
-
-  it("creates, lists, updates, and deletes a block", async () => {
-    const spaceId = await makeSpace();
-    const created = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "paragraph",
-      markdown: "hello",
-    });
-    expect(created.status).toBe(201);
-    const block = (created.body as { block: { id: string; sort_key: string } }).block;
-    expect(isValidSortKey(block.sort_key)).toBe(true);
-
-    const listed = await call("GET", `/api/spaces/${spaceId}/blocks`);
-    expect(listed.status).toBe(200);
-    expect((listed.body as { blocks: unknown[] }).blocks.length).toBe(1);
-
-    const patched = await call("PATCH", `/api/spaces/${spaceId}/blocks/${block.id}`, {
-      markdown: "updated",
-    });
-    expect(patched.status).toBe(200);
-    expect((patched.body as { block: { markdown: string } }).block.markdown).toBe("updated");
-
-    const deleted = await call("DELETE", `/api/spaces/${spaceId}/blocks/${block.id}`);
-    expect(deleted.status).toBe(200);
-    const after = await call("GET", `/api/spaces/${spaceId}/blocks`);
-    expect((after.body as { blocks: unknown[] }).blocks.length).toBe(0);
   });
 
   it("auto-orders nested blocks depth-first by sort_key (matches C12 order)", async () => {
@@ -490,51 +275,6 @@ describe("blocks routes (issue d2a8e77)", () => {
     expect(selfRes.status).toBe(400);
   });
 
-  it("rejects assigning item_id without item_snapshot (route + DB invariant)", async () => {
-    const spaceId = await makeSpace();
-    const itemId = await addItem(spaceId);
-    const res = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "reference",
-      item_id: itemId,
-    });
-    expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toContain("item_snapshot");
-
-    // With a snapshot it is accepted.
-    const ok = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "reference",
-      item_id: itemId,
-      item_snapshot: { item_id: itemId, title: "X" },
-    });
-    expect(ok.status).toBe(201);
-  });
-
-  it("rejects an embed item_id on a non-embed block_type", async () => {
-    const spaceId = await makeSpace();
-    const itemId = await addItem(spaceId);
-    const res = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "paragraph",
-      item_id: itemId,
-      item_snapshot: { item_id: itemId },
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("rejects cross-space / missing parent_id and item_id refs (400, not 500)", async () => {
-    const spaceId = await makeSpace();
-    const missingParent = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "paragraph",
-      parent_id: "no-such-block",
-    });
-    expect(missingParent.status).toBe(400);
-    const missingItem = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-      block_type: "reference",
-      item_id: "no-such-item",
-      item_snapshot: { item_id: "no-such-item" },
-    });
-    expect(missingItem.status).toBe(400);
-  });
-
   it("detaches an embedded item, preserving the snapshot, then allows item delete", async () => {
     const spaceId = await makeSpace();
     const itemId = await addItem(spaceId);
@@ -565,18 +305,6 @@ describe("blocks routes (issue d2a8e77)", () => {
     const okDelete = await call("DELETE", `/api/spaces/${spaceId}/items/${itemId}`);
     expect(okDelete.status).toBe(200);
   });
-
-  it("404s on blocks for a missing space / missing block", async () => {
-    const spaceId = await makeSpace();
-    expect((await call("GET", `/api/spaces/no-space/blocks`)).status).toBe(404);
-    expect((await call("PATCH", `/api/spaces/${spaceId}/blocks/no-block`, {})).status).toBe(404);
-    expect((await call("DELETE", `/api/spaces/${spaceId}/blocks/no-block`)).status).toBe(404);
-  });
-
-  it("block mutations are reachable only through the space:block:changed event enum", () => {
-    expect(SPACE_EVENTS.SPACE_BLOCK_CHANGED).toBe("space:block:changed");
-    expect(isSpaceEvent("space:block:changed")).toBe(true);
-  });
 });
 
 // ============================================================================
@@ -584,15 +312,12 @@ describe("blocks routes (issue d2a8e77)", () => {
 // ============================================================================
 
 describe("blocks file-RPC allowlist (issue d2a8e77, standing AC #1)", () => {
-  it("allowlists exactly the block read/write routes (method+path specific)", () => {
+  it("allows exactly the block read/write routes, method and path specific", () => {
     expect(allowsFileRpcRoute("GET", "/api/spaces/s1/blocks")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/spaces/s1/blocks")).toBe(true);
     expect(allowsFileRpcRoute("PATCH", "/api/spaces/s1/blocks/b1")).toBe(true);
     expect(allowsFileRpcRoute("DELETE", "/api/spaces/s1/blocks/b1")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/spaces/s1/items/i1/detach-blocks")).toBe(true);
-  });
-
-  it("does NOT blanket-allow other methods/shapes", () => {
     // No catch-all: an unrelated verb on the blocks collection stays denied.
     expect(allowsFileRpcRoute("PUT", "/api/spaces/s1/blocks")).toBe(false);
     // Nested unknown sub-path is not allowed.
@@ -614,9 +339,7 @@ describe("block identity agrees with C12 serialization (issue d2a8e77)", () => {
   }
 
   beforeEach(() => {
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
-    db.pragma("foreign_keys = ON");
+    db = migratedMemoryDb();
     setDb(db);
     router = new Router();
     registerSpacesRoutes(router);

@@ -127,4 +127,45 @@ describe("conversation metadata CLI", () => {
       responder.stop();
     }
   });
+
+  it("resolves a provider session with linked sidechains to its sole parent", async () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-parent-cli-"));
+    tempRoots.push(spool);
+    const parent = {
+      id: "parent", source: "claude_code", session_id: "thread-1", title: "Parent",
+      parent_conversation_id: null, is_sidechain: false, starred: false, tags: [], notes: null,
+    };
+    const children = ["child-1", "child-2"].map((id) => ({
+      id, source: "claude_code", session_id: "thread-1", title: id,
+      parent_conversation_id: "parent", is_sidechain: true,
+    }));
+    const responder = startFileRpcResponder(spool, (request) => {
+      if (request.method === "GET" && request.path === "/api/conversations/thread-1") {
+        return { status: 404, body: { error: "not found" } };
+      }
+      if (request.method === "GET" && String(request.path).includes("session_id=thread-1")) {
+        return { status: 200, body: { conversations: [parent, ...children] } };
+      }
+      if (request.method === "PATCH" && request.path === "/api/conversations/parent") {
+        return { status: 200, body: { ...parent, starred: true } };
+      }
+      return { status: 500, body: { error: "unexpected request" } };
+    });
+    try {
+      const baseEnv = {
+        MANDIBLE_BASE: `file://${spool}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        CODEX_THREAD_ID: "",
+      };
+      expect((await run(["conversations", "star", "thread-1", "--json"], baseEnv)).status).toBe(0);
+      expect((await run(["conversations", "star", "--current", "--json"], {
+        ...baseEnv,
+        CLAUDE_SESSION_ID: "thread-1",
+      })).status).toBe(0);
+      expect(responder.requests.filter((request) => request.method === "PATCH").map((request) => request.path))
+        .toEqual(["/api/conversations/parent", "/api/conversations/parent"]);
+    } finally {
+      responder.stop();
+    }
+  });
 });

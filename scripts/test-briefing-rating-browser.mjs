@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawnChromium } from '../test/helpers/chromium.ts';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -12,10 +12,8 @@ const checkoutRoot = path.resolve(repoRoot, '../..');
 const dependencyRoot = [repoRoot, checkoutRoot]
   .map((root) => path.join(root, 'node_modules'))
   .find((candidate) => existsSync(path.join(candidate, 'esbuild', 'lib', 'main.js')));
-const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 if (!dependencyRoot) throw new Error('Unable to locate the existing repository node_modules toolchain.');
-if (!existsSync(chrome)) throw new Error(`Chrome is unavailable at ${chrome}`);
 
 const { build } = await import(pathToFileURL(path.join(dependencyRoot, 'esbuild', 'lib', 'main.js')).href);
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mandible-briefing-rating-'));
@@ -322,8 +320,7 @@ try {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Failed to allocate the isolated harness port.');
 
-  browser = spawn(chrome, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+  browser = spawnChromium([
     `--user-data-dir=${profile}`, '--remote-debugging-port=0',
     `http://127.0.0.1:${address.port}/`,
   ], { stdio: 'ignore' });

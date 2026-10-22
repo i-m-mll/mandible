@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Issue cda478c, umbrella 96c5090 — an umbrella's children are `parent_child`
  * relationship edges and nothing else, so the issue detail pane is where a
@@ -10,7 +11,7 @@
  * predicate is actually wired into the pane, and queries by accessible text
  * rather than markup so it does not pin presentation — see test/README.md.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "./helpers/dom.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { h } from "preact";
 
@@ -29,6 +30,7 @@ function childRef(overrides: Partial<LedgerIssueSummaryRef> = {}): LedgerIssueSu
     id: "issue-child-canonical",
     display_id: "d894231",
     project_id: "project-1",
+    project_ref: "mandible",
     title: "Umbrella surfaces stop reading the body table",
     status: "open",
     resolution: null,

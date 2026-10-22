@@ -1,6 +1,7 @@
 import type { Db } from "../db.js";
 import { LedgerStore } from "./store.js";
 import type { LedgerActorInput } from "./types.js";
+import { resolveProjectRef } from "./project-registry.js";
 
 export interface IssueReferenceBackfillOptions {
   project?: string;
@@ -113,27 +114,17 @@ export function runIssueReferenceBackfill(
 }
 
 function resolveProjectId(db: Db, ref: string): string {
-  const rows = db.prepare(
-    `SELECT DISTINCT p.id
-     FROM ledger_projects p
-     LEFT JOIN ledger_project_checkouts c ON c.project_id = p.id
-     WHERE p.id = ?
-        OR lower(p.display_name) = lower(?)
-        OR lower(c.name) = lower(?)
-        OR c.root = ?`,
-  ).all(ref, ref, ref, ref) as Array<{ id: string }>;
-  if (rows.length === 1) return rows[0].id;
-  if (rows.length === 0) {
-    throw new Error(`No ledger project matches repo/project scope '${ref}'.`);
-  }
-  throw new Error(`Ambiguous repo/project scope '${ref}' matched ${rows.length} projects.`);
+  const resolved = resolveProjectRef(db, ref);
+  if (resolved.ok) return resolved.project.id;
+  if (resolved.reason === "unknown") throw new Error(`No ledger project matches repo/project scope '${ref}'.`);
+  throw new Error(`Ambiguous repo/project scope '${ref}' matched projects: ${resolved.candidates.join(", ")}.`);
 }
 
 function resolveIssueId(store: LedgerStore, ref: string, projectId?: string): string {
   const resolved = store.resolveIssueRef(ref, projectId ? { project_id: projectId } : undefined);
   if (resolved.ok) return resolved.id;
   if (resolved.error === "ambiguous") {
-    throw new Error(`Ambiguous issue scope '${ref}' matched ${resolved.count} issues.`);
+    throw new Error(`Ambiguous issue scope '${ref}' matched issues: ${resolved.matches.join(", ")}.`);
   }
   throw new Error(`No issue matches scope '${ref}'.`);
 }

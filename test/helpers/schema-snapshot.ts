@@ -1,4 +1,7 @@
-import type { Db } from "../../src/db.js";
+import fs from "node:fs";
+import path from "node:path";
+import { MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, type Db } from "../../src/db.js";
+import SqliteDatabase from "../../src/sqlite.ts";
 
 /**
  * Comparable views of a database's schema and seeded rows, shared by the
@@ -126,4 +129,28 @@ export function schemaVersion(db: Db): string | undefined {
   return (db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
     | { value: string }
     | undefined)?.value;
+}
+
+export const FLOOR_FIXTURE = fs.readFileSync(
+  path.join(process.cwd(), "test", "fixtures", `schema-v${MINIMUM_SUPPORTED_SCHEMA_VERSION}.sql`),
+  "utf8",
+);
+
+const fixtureSnapshots = new Map<number, Buffer>();
+
+/**
+ * A private in-memory database at `version`: the floor fixture moved forward by
+ * the production runner. Each version is built once per test process from the
+ * nearest one already built, so a caller pays only for the migrations it adds.
+ * Migration tests live in test/db-migration-convergence.test.ts.
+ */
+export function migrateFixtureThrough(version: number): Db {
+  if (version === MINIMUM_SUPPORTED_SCHEMA_VERSION) return new SqliteDatabase(":memory:").exec(FLOOR_FIXTURE);
+  const nearest = Math.max(MINIMUM_SUPPORTED_SCHEMA_VERSION, ...[...fixtureSnapshots.keys()].filter((built) => built <= version));
+  const db = nearest === MINIMUM_SUPPORTED_SCHEMA_VERSION
+    ? new SqliteDatabase(":memory:").exec(FLOOR_FIXTURE)
+    : SqliteDatabase.fromSnapshot(fixtureSnapshots.get(nearest)!);
+  migrate(db, version);
+  if (!fixtureSnapshots.has(version)) fixtureSnapshots.set(version, db.serialize());
+  return db;
 }

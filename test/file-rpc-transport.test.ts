@@ -5,10 +5,13 @@ import { spawn } from "node:child_process";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
+import { AuthQueue } from "../src/auth-queue.js";
 import { FileRpcTransport, defaultFileRpcDirForInstance } from "../src/file-rpc-transport.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router, type RouteHandler } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let policyRouter: Router | null = null;
@@ -20,6 +23,30 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+it("denies the production approval route over file RPC before request lookup", async () => {
+  const db = migratedMemoryDb();
+  setDb(db);
+  const queue = new AuthQueue({ db, backgroundMaintenance: false });
+  try {
+    const router = new Router();
+    registerAuthRoutes(router, queue, {} as never, {} as never);
+    const transport = new FileRpcTransport({ router, dir: tempDir });
+    fs.writeFileSync(path.join(tempDir, "denied.request.json"), JSON.stringify({
+      id: "denied",
+      method: "POST",
+      path: "/api/auth/request/not-a-request/approve",
+    }));
+
+    await transport.processOnce();
+
+    expect(JSON.parse(fs.readFileSync(path.join(tempDir, "denied.response.json"), "utf8")))
+      .toMatchObject({ status: 403 });
+  } finally {
+    queue.dispose();
+    db.close();
+  }
 });
 
 const noop: RouteHandler = (_req, res) => {

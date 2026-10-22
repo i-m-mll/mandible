@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/command-syntax.sh"
+source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/command-syntax.sh" --mandible-syntax-definitions-only
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/canonical-origin.sh"
 : "${MANDIBLE_PORT:=${MANDIBLE_DEFAULT_BACKEND_PORT}}"
 if [[ -z "${MANDIBLE_BASE:-}" || ( "${MANDIBLE_BASE%/}" == "${MANDIBLE_CANONICAL_ORIGIN%/}" && "${MANDIBLE_TRANSPORT:-}" != "http" ) ]]; then
@@ -26,6 +26,18 @@ api_jq_human() {
 
 api_short_id() {
   printf '%s\n' "$1" | api_jq_human 'mandible_short_id' -R
+}
+
+# Filters select fixed shell variable names and string values. Validate the
+# complete record before emitting anything; jq's @sh accepts arrays as several
+# words, which are not a valid single assignment value.
+api_json_bindings() {
+  local filter="$1"
+  shift
+  jq -er "$filter | if type == \"object\" and all(to_entries[];
+      (.key | test(\"^[a-zA-Z_][a-zA-Z_0-9]*$\")) and (.value | type == \"string\"))
+    then to_entries | map(.key + \"=\" + (.value | @sh)) | join(\"\\n\")
+    else error(\"Invalid scalar response fields\") end" "$@"
 }
 
 # Issue 24f0316 — Mandible splits its state by lifetime, and the CLI must agree
@@ -285,6 +297,30 @@ api_agent_provider() {
   printf '%s' "$provider"
 }
 
+# api_durable_credential_missing_reason <reason> [service]
+# The sentence a refused credential-gated call prints: why no durable
+# credential was attached, and what to do about it.
+api_durable_credential_missing_reason() {
+  local reason="$1" service="${2:-}" name markers=()
+  case "$reason" in
+    keychain_disabled)
+      printf 'MANDIBLE_NO_KEYCHAIN_TOKEN=1 disables the Keychain lookup; unset it to use the stored credential.' ;;
+    codex_sandbox)
+      printf 'This command runs inside the Codex sandbox (CODEX_SANDBOX=%s), which hides the Keychain and the Mandible socket. Rerun it outside the sandbox: request escalated permissions, or run Codex with sandbox_mode = "danger-full-access".' \
+        "${CODEX_SANDBOX:-}" ;;
+    provider_unresolved)
+      for name in CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID MANDIBLE_SESSION_ID MANDIBLE_MANAGED_CLIENT; do
+        [[ -z "$(printenv "$name")" ]] || markers+=("$name")
+      done
+      printf 'This is an agent process, but its markers (%s) name no single provider, so neither an agent nor the operator credential applies. Run the command from the agent'"'"'s own shell, where exactly one provider'"'"'s session id is set.' \
+        "${markers[*]}" ;;
+    keychain_item_missing)
+      printf 'No Keychain item exists for service %s. The operator can store one with: mandible user token mint <user> --store' "$service" ;;
+    *)
+      printf 'The Keychain lookup for service %s failed: the keychain may be locked, or this process was denied access to the item.' "$service" ;;
+  esac
+}
+
 # ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
 # One place that knows how OS secret storage is reached, so readers (this file's
 # operator and per-agent token resolver) and the writer
@@ -469,8 +505,7 @@ secret_account_for_service() {
     return 3
   fi
   account=$(printf '%s\n' "$attributes" \
-    | sed -n 's/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/p' \
-    | sed -n '1p')
+    | sed -n '/^[[:space:]]*"acct"<blob>=".*"$/ { s/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/; p; q; }')
   [[ -n "$account" ]] || return 3
   printf '%s' "$account"
 }
@@ -762,11 +797,11 @@ api_http_sleep_before_retry() {
 
 api_http_probe_health() {
   local health_base="${1:-$(api_base)}"
-  local health_tmp http_status curl_exit=0 ready rebuilding
+  local health_tmp http_status curl_exit=0 ready rebuilding bindings
   health_tmp=$(api_temp_file)
   local socket_args=()
   api_is_local_socket && socket_args=(--unix-socket "$MANDIBLE_SOCKET")
-  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" "${socket_args[@]}" -o "$health_tmp" \
+  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" ${socket_args[@]+"${socket_args[@]}"} -o "$health_tmp" \
       -w "%{http_code}" "${health_base}/api/health" 2>/dev/null); then
     :
   else
@@ -774,8 +809,10 @@ api_http_probe_health() {
   fi
   http_status="${http_status:-000}"
   if [[ "$curl_exit" -eq 0 && "$http_status" =~ ^2 ]]; then
-    ready=$(jq -r 'if has("ready") then (.ready | tostring) else "unknown" end' "$health_tmp" 2>/dev/null || printf 'unknown')
-    rebuilding=$(jq -r '.rebuilding // false' "$health_tmp" 2>/dev/null || printf 'false')
+    ready=unknown rebuilding=false
+    if bindings=$(api_json_bindings '{ready: (if has("ready") then (.ready | tostring) else "unknown" end), rebuilding: ((.rebuilding // false) | tostring)}' "$health_tmp" 2>/dev/null); then
+      eval "$bindings"
+    fi
     rm -f "$health_tmp"
     if [[ "$ready" == "false" || "$rebuilding" == "true" ]]; then
       printf 'busy_not_ready'
@@ -817,8 +854,13 @@ api_report_final_http_failure() {
         "$request_path" "$http_status" "$curl_exit" >&2
       ;;
     *)
-      printf 'Mandible request failed after bounded retries: daemon is down or unreachable (path=%s, status=%s, curl=%s).\n' \
-        "$request_path" "$http_status" "$curl_exit" >&2
+      if [[ -n "${CODEX_SANDBOX:-}" ]] && api_is_local_socket; then
+        printf 'Mandible request failed: this command runs inside the Codex sandbox (CODEX_SANDBOX=%s), which blocks the Mandible socket (path=%s, curl=%s). Rerun it outside the sandbox: request escalated permissions, or run Codex with sandbox_mode = "danger-full-access".\n' \
+          "$CODEX_SANDBOX" "$request_path" "$curl_exit" >&2
+      else
+        printf 'Mandible request failed after bounded retries: daemon is down or unreachable (path=%s, status=%s, curl=%s).\n' \
+          "$request_path" "$http_status" "$curl_exit" >&2
+      fi
       ;;
   esac
 }
@@ -838,7 +880,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service account
+  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -875,23 +917,33 @@ api_http_exchange() {
     fi
     if (( gated )); then
       if [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]]; then
-        token=""
+        missing="keychain_disabled"
       elif provider="$(api_agent_provider)"; then
         service="mandible-agent-$provider"
-        account="$(secret_account_for_service "$service")" || account=""
+        account="$(secret_account_for_service "$service")" || lookup_status=$?
         if [[ -n "$account" ]]; then
           token="$(secret_get "$service" "$account")" || token=""
         fi
       elif ! api_managed_client_markers_present; then
         service="mandible-operator"
         token="$(api_keychain_operator_token)"
+        [[ -n "$token" ]] || lookup_status=1
+      else
+        missing="provider_unresolved"
       fi
       if [[ -z "$token" && "$optional_gate" == 0 ]]; then
-        printf 'Mandible durable credential required for %s %s; no Keychain item%s was found, so nothing was sent. The operator can store one with: mandible user token mint <user> --store\n' \
-          "$method" "$request_path" "${service:+ for service $service}" >&2
+        if [[ "$missing" != "keychain_disabled" && -n "${CODEX_SANDBOX:-}" ]]; then
+          missing="codex_sandbox"
+        elif [[ -z "$missing" ]]; then
+          missing="keychain_lookup_failed"
+          (( lookup_status != 1 )) || missing="keychain_item_missing"
+        fi
+        printf 'Mandible durable credential required for %s %s; nothing was sent. %s\n' \
+          "$method" "$request_path" "$(api_durable_credential_missing_reason "$missing" "$service")" >&2
         (( token_traced == 0 )) || set -x
         rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
-        jq -n '{error:"cli_durable_credential_missing", request_sent:false}' > "$output_file"
+        jq -n --arg reason "$missing" --arg service "$service" \
+          '{error:"cli_durable_credential_missing", reason:$reason, service:($service | select(length > 0)), request_sent:false}' > "$output_file"
         printf '401'
         return 0
       fi
@@ -980,10 +1032,10 @@ api_http_exchange() {
 # unset here. A matching provider session proves the same process without a
 # process-tree walk.
 api_scope_inherited_identity() {
-  local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status
+  local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status bindings
 
   if (( $(api_provider_marker_count) > 1 )); then
-    processes=$(ps -axo pid=,ppid=,comm=)
+    processes=$(api_process_table)
     nearest=$(api_nearest_agent "$processes" "")
     case "${nearest#* }" in
       claude) unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID ;;
@@ -999,8 +1051,11 @@ api_scope_inherited_identity() {
   row_path="/api/sessions/$(urlencode "$MANDIBLE_SESSION_ID")"
   http_status=$(unset MANDIBLE_SESSION_ID; api_capture GET "$row_path" "" "$row_file")
   if [[ "$http_status" == 200 ]]; then
-    row_pid=$(jq -r '.pid // empty' "$row_file")
-    row_conversation=$(jq -r '.conversation_id // empty' "$row_file")
+    if ! bindings=$(api_json_bindings '{row_pid: ((.pid // "") | if type == "number" then tostring else . end), row_conversation: (.conversation_id // "")}' "$row_file"); then
+      rm -f "$row_file"
+      return 1
+    fi
+    eval "$bindings"
   fi
   rm -f "$row_file"
   # 404 binds nothing; without the daemon there is nothing to attribute to, and
@@ -1009,9 +1064,16 @@ api_scope_inherited_identity() {
 
   (( $(api_provider_marker_count) == 1 )) && own_marker="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${GEMINI_SESSION_ID:-}}}}}"
   [[ -z "$own_marker" || "$own_marker" != "$row_conversation" ]] || return 0
-  [[ -n "$processes" ]] || processes=$(ps -axo pid=,ppid=,comm=)
+  [[ -n "$processes" ]] || processes=$(api_process_table)
   nearest=$(api_nearest_agent "$processes" "$row_pid")
   [[ "${nearest%% *}" == "$row_pid" ]] || unset MANDIBLE_SESSION_ID
+}
+
+# A sandbox may deny `ps` (the Codex seatbelt does). An empty table finds no
+# agent, so inherited markers stay ambiguous and an inherited session id is
+# dropped: nothing is attributed that the process tree could not confirm.
+api_process_table() {
+  ps -axo pid=,ppid=,comm= 2>/dev/null || :
 }
 
 api_provider_marker_count() {
@@ -1219,16 +1281,19 @@ api_restart_availability_preflight() {
     return 1
   fi
 
-  phase=$(jq -r '.phase' "$notice_file")
+  local bindings
+  if ! bindings=$(api_json_bindings '{phase, sample_count: (.sample_count | tostring),
+    retry_after: ((.retry_after_seconds // "") | tostring),
+    exceeded: ((.eta_exceeded_seconds // "") | tostring), average: ((.average_seconds // "") | tostring)}' "$notice_file"); then
+    rm -f "$notice_file"
+    return 1
+  fi
+  eval "$bindings"
   case "$phase" in
     rebuilding) phase_word="rebuilding" ;;
     shutdown) phase_word="restarting" ;;
     *) rm -f "$notice_file"; return 1 ;;
   esac
-  sample_count=$(jq -r '.sample_count' "$notice_file")
-  retry_after=$(jq -r '.retry_after_seconds // empty' "$notice_file")
-  exceeded=$(jq -r '.eta_exceeded_seconds // empty' "$notice_file")
-  average=$(jq -r '.average_seconds // empty' "$notice_file")
 
   if [[ -n "$retry_after" ]]; then
     timing_text="about ${retry_after} s remaining"
@@ -1345,7 +1410,7 @@ api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response fetch_status role policy db_path source_db_path message
+  local category tmp_response fetch_status role policy db_path source_db_path message bindings
 
   case "$method" in
     POST|PUT|PATCH|DELETE) ;;
@@ -1399,10 +1464,17 @@ api_preflight_operational_mutation() {
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
-  role=$(jq -r '.instance.role' "$tmp_response")
-  policy=$(jq -r 'if (.instance | has("allowed_effects")) then
-    if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
-  else .instance.operational_mutations end' "$tmp_response")
+  if ! bindings=$(api_json_bindings '{
+    role: .instance.role,
+    policy: (if (.instance | has("allowed_effects")) then
+      if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
+      else .instance.operational_mutations end),
+    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}' "$tmp_response"); then
+    rm -f "$tmp_response"
+    api_write_instance_metadata_unknown "$category" "$output_file"
+    return 22
+  fi
+  eval "$bindings"
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0
@@ -1421,8 +1493,6 @@ api_preflight_operational_mutation() {
     return 0
   }
 
-  db_path=$(jq -r '.instance.db_path // ""' "$tmp_response")
-  source_db_path=$(jq -r '.instance.source_db_path // ""' "$tmp_response")
   rm -f "$tmp_response"
 
   message="Refusing ${category} mutation against Mandible ${role} instance (${policy}). This target is not the main operational daemon"
@@ -1510,10 +1580,10 @@ api_file_rpc_cleanup() {
 
 api_file_rpc_consume_response() {
   local response_file="$1" output_file="$2" response response_status
-  response=$(cat "$response_file")
+  response=$(jq -r '(.status // 500), (.body | tojson)' "$response_file")
   api_file_rpc_cleanup "$response_file"
-  response_status=$(printf '%s' "$response" | jq -r '.status // 500')
-  printf '%s' "$response" | jq -c '.body' > "$output_file"
+  response_status="${response%%$'\n'*}"
+  printf '%s\n' "${response#*$'\n'}" > "$output_file"
   printf '%s' "$response_status"
 }
 

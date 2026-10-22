@@ -1,13 +1,12 @@
+// @vitest-environment node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
   inspectBriefingDestinationRoutes,
   parseBriefingDestinationRouteManifest,
@@ -21,6 +20,8 @@ import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { createUser } from "../src/users/store.js";
 
 let db: Db;
@@ -79,9 +80,8 @@ function request(routeKey: string, baseVersionId: string, overrides: Record<stri
 }
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-composer-"));
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  root = fs.mkdtempSync(path.join(testRuntimeRoot, "composer-"));
+  db = migratedMemoryDb();
   setSetting(db, "artifact_root", root);
   publisherId = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" }).id;
   humanId = createUser(db, { slug: "human", kind: "human", display_name: "Human" }).id;

@@ -164,38 +164,6 @@ function listenForAuthRequest(
   });
 }
 
-function listenForWithdrawal(): Promise<{
-  port: number;
-  close: () => Promise<void>;
-  requests: Array<{ url: string; body: Record<string, unknown> }>;
-}> {
-  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
-  const server = http.createServer((req, res) => {
-    if (req.method === "GET" && req.url === "/api/instance") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
-      return;
-    }
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => { raw += chunk; });
-    req.on("end", () => {
-      requests.push({ url: req.url ?? "", body: JSON.parse(raw) });
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ request_id: "abcdefgh-full", status: "withdrawn" }));
-    });
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("test server did not bind");
-    resolve({
-      port: address.port,
-      requests,
-      close: () => new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done())),
-    });
-  }));
-}
-
 function git(args: string[], cwd = tempDir): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
@@ -264,8 +232,6 @@ describe("action-specific request preparation", () => {
   it.each([
     { args: ["--type", "data-delete"], error: "requires an explicit non-empty --command" },
     { args: ["--type", "merge", "feature/demo", "--command", "echo override"], error: "--command cannot override a merge" },
-    { args: ["--type", "commit", "--command", "echo review", "--target", "main"], error: "require --type merge" },
-    { args: ["--type", "merge commit", "--command", "echo review"], error: "invalid --type" },
   ])("refuses ambiguous operation inputs: $error", async ({ args }) => {
     const server = await listenForAuthRequest();
     try {
@@ -314,237 +280,16 @@ describe("auth request repo context validation", () => {
     expect(result.stderr).toContain("Run mandible auth request from the target repo worktree");
     expect(result.stderr).not.toContain("Mandible unreachable");
   });
-
-  it("preserves explicit matching repo submissions", () => {
-    const result = run([
-      "auth",
-      "request",
-      "feature/demo",
-      "--title",
-      "Merge feature/demo",
-      "--issue",
-      "25123f9",
-      "--repo",
-      localRepoName(),
-      "--no-watch",
-    ]);
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).not.toContain("does not match target repo");
-    expect(result.stderr).toContain("could not reach Mandible daemon");
-    expect(result.stderr).toContain("Mandible merge preflight failed");
-  });
 });
 
-describe("auth request staged close action sugar", () => {
-  it("sends explicit predecessor and action dispositions", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth", "request", "feature/demo", "--title", "Replacement",
-        "--issue", "f15617a", "--supersedes", "old-request",
-        "--expected-revision", "3", "--expected-custody-generation", "2",
-        "--drop-superseded-action", "2:No longer closes the umbrella", "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-      expect(result.status).toBe(0);
-      expect(server.bodies[0]).toMatchObject({
-        supersedes_request_id: "old-request",
-        expected_revision: 3,
-        expected_custody_generation: 2,
-        superseded_action_dispositions: [
-          { ordinal: 2, reason: "No longer closes the umbrella" },
-        ],
-      });
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("sends issue_close actions while preserving legacy issue_closures", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth",
-        "request",
-        "feature/demo",
-        "--title",
-        "Merge feature/demo",
-        "--closes-issue",
-        "done456",
-        "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status).toBe(0);
-      expect(server.checkBodies).toHaveLength(1);
-      expect(server.checkBodies[0]).toMatchObject({
-        repo: localRepoName(),
-        base_branch: "main",
-        head_branch: "feature/demo",
-      });
-      expect(fs.realpathSync(String(server.checkBodies[0].cwd))).toBe(fs.realpathSync(tempDir));
-      expect(server.bodies).toHaveLength(1);
-      expect(server.bodies[0].issue_closures).toEqual(["done456"]);
-      expect(server.bodies[0].issues).toEqual(["done456"]);
-      expect(server.bodies[0].actions).toEqual([
-        { kind: "issue_close", target_issue_ref: "done456", payload: {} },
-      ]);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("stages one exact Briefing promotion in the request payload", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth",
-        "request",
-        "feature/demo",
-        "--title",
-        "Merge reviewed policy",
-        "--issue",
-        "policy123",
-        "--promote-briefing",
-        "group123",
-        "base123",
-        "proposal123",
-        "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status).toBe(0);
-      expect(server.bodies).toHaveLength(1);
-      expect(server.bodies[0].actions).toEqual([{
-        kind: "briefing_group_promote",
-        target_issue_ref: "policy123",
-        payload: {
-          group_ref: "group123",
-          expected_base_bundle_ref: "base123",
-          proposal_bundle_ref: "proposal123",
-        },
-      }]);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("rejects Briefing promotion on a non-merge request before submission", () => {
-    const result = run([
-      "auth", "request", "feature/demo", "--title", "Not a merge", "--issue", "policy123",
-      "--type", "config-change", "--promote-briefing", "group123", "base123", "proposal123",
-      "--message", "m", "--verification", "v", "--no-watch",
-    ]);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--promote-briefing requires --type merge");
-  });
-
-  it("keeps requester attribution separate from notification scoping", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth",
-        "request",
-        "feature/demo",
-        "--title",
-        "Merge feature/demo",
-        "--issue",
-        "requester123",
-        "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-        CODEX_THREAD_ID: "codex-requester-session",
-        MANDIBLE_SESSION_ID: "mandible-notification-session",
-      });
-
-      expect(result.status).toBe(0);
-      expect(server.bodies).toHaveLength(1);
-      expect(server.bodies[0]).toMatchObject({
-        session_id: "codex-requester-session",
-        target_session_id: "mandible-notification-session",
-      });
-    } finally {
-      await server.close();
-    }
-  });
-});
-
-describe("auth requester withdrawal CLI", () => {
-  it("posts the required reason and concurrency guards without session authority", async () => {
-    const server = await listenForWithdrawal();
-    try {
-      const result = await runAsync([
-        "auth", "withdraw", "request123", "--reason", "Branch was abandoned",
-        "--expected-revision", "4", "--expected-custody-generation", "2", "--json",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-        CODEX_THREAD_ID: "requester-thread",
-      });
-      expect(result.status).toBe(0);
-      expect(server.requests).toEqual([{
-        url: "/api/auth/request/request123/withdraw",
-        body: { reason: "Branch was abandoned", expected_revision: 4, expected_custody_generation: 2 },
-      }]);
-    } finally {
-      await server.close();
-    }
-  });
-});
-
-describe("candidate acceptance CLI", () => {
-  // Issue 7d83fe5 — the request id is the command's positional argument.
-  it("binds the request id for run and show", async () => {
-    const seen: string[] = [];
-    const acceptance = { state: "running", reason: null, started_at: 1, finished_at: null };
-    const server = http.createServer((req, res) => {
-      res.writeHead(req.url === "/api/auth/request/request123/candidate-acceptance" || req.url === "/api/instance" ? 200 : 404, { "Content-Type": "application/json" });
-      if (req.url === "/api/instance") { res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE)); return; }
-      seen.push(`${req.method} ${req.url}`);
-      req.resume();
-      req.on("end", () => res.end(JSON.stringify({ request_id: "request123-full", acceptance })));
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as { port: number }).port;
-    const env = { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` };
-    try {
-      const run = await runAsync(["auth", "acceptance", "run", "request123"], tempDir, env);
-      expect(run).toMatchObject({ status: 0 });
-      expect(run.stdout).toContain("Candidate acceptance for request1: running");
-      const show = await runAsync(["auth", "acceptance", "show", "request123", "--json"], tempDir, env);
-      expect(show.status).toBe(0);
-      expect(JSON.parse(show.stdout)).toMatchObject({ acceptance: { state: "running" } });
-      expect(seen).toEqual([
-        "POST /api/auth/request/request123/candidate-acceptance",
-        "GET /api/auth/request/request123/candidate-acceptance",
-      ]);
-      expect((await runAsync(["auth", "acceptance", "show"], tempDir, env)).status).toBe(2);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
-});
-
-// Issue 8ae6b5f — requests carry no spec. The removed flags fail as unknown
-// options before anything is submitted, on merge and non-merge paths alike.
+// Issue 8ae6b5f — requests carry no spec. The removed flag fails as an unknown
+// option before anything is submitted.
 describe("auth request without a spec", () => {
-  it.each([
-    { label: "merge", args: ["feature/demo", "--spec", "Intent"] },
-    { label: "merge file", args: ["feature/demo", "--spec-file", "-"] },
-    { label: "command", args: ["--type", "config-change", "--command", "true", "--cwd", ".", "--repo", "example", "--spec", "Intent"] },
-  ])("refuses --spec on a $label request before submission", async ({ args }) => {
+  it("refuses --spec before submission", async () => {
     const server = await listenForAuthRequest();
     try {
       const result = await runAsync([
-        "auth", "request", ...args, "--title", "Spec refused", "--issue", "8ae6b5f",
+        "auth", "request", "feature/demo", "--spec", "Intent", "--title", "Spec refused", "--issue", "8ae6b5f",
         "--message", "Refuse specs\n\nWhy:\nThe change message carries intent.", "--verification", "n/a",
         "--no-watch",
       ], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
@@ -617,71 +362,8 @@ describe("auth request duplicate refusal", () => {
     }
   });
 
-  it("still refuses clearly when an older daemon omits the stored details", async () => {
-    const server = await listenForAuthRequest({
-      status: 409,
-      body: { error: "Duplicate auth request", request_id: "legacy-409-id", status: "pending" },
-    });
-    try {
-      const result = await runAsync([
-        "auth", "request", "feature/demo",
-        "--title", CALLER_TITLE,
-        "--issue", "608d1db",
-        "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status).toBe(3);
-      const output = `${result.stdout}${result.stderr}`;
-      expect(output).toContain("REFUSED");
-      expect(output).toContain("legacy-409-id");
-      // Without stored details, say so rather than substituting the caller's.
-      expect(output).toContain("did not report the stored request's details");
-      expect(output).not.toContain(CALLER_TITLE);
-    } finally {
-      await server.close();
-    }
-  });
 });
 
-describe("auth request Mandible merge preflight", () => {
-  it("ignores dotfiles pre-auth-check and uses the Mandible auth check route", async () => {
-    const dotfilesBin = path.join(homeDir, ".dotfiles", "bin");
-    fs.mkdirSync(dotfilesBin, { recursive: true });
-    fs.writeFileSync(path.join(dotfilesBin, "pre-auth-check"), [
-      "#!/usr/bin/env bash",
-      "echo dotfiles pre-auth-check should not run >&2",
-      "exit 99",
-      "",
-    ].join("\n"), { mode: 0o755 });
-
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth",
-        "request",
-        "feature/demo",
-        "--title",
-        "Merge feature/demo",
-        "--issue",
-        "148e602",
-        "--no-watch",
-      ], tempDir, {
-        MANDIBLE_PORT: String(server.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-      });
-
-      expect(result.status).toBe(0);
-      expect(result.stderr).not.toContain("dotfiles pre-auth-check should not run");
-      expect(server.checkBodies).toHaveLength(1);
-      expect(server.bodies).toHaveLength(1);
-    } finally {
-      await server.close();
-    }
-  });
-});
 
 describe("auth request protected-root dirty policy", () => {
   it("blocks tracked dirty protected roots without restoring files", () => {

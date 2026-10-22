@@ -109,6 +109,8 @@ export interface LedgerIssueSummaryRef {
   id: string;
   display_id: string;
   project_id: string;
+  /** The `<project>` of a `<project>/<id>` ref to this issue. */
+  project_ref: string;
   title: string;
   status: LedgerIssueStatus;
   resolution: LedgerIssueResolution | null;

@@ -2,18 +2,24 @@
 set -eu
 
 mode=${1:-runtime}
-case "$mode" in runtime|--archive) ;; *) echo "Usage: bun-runtime.sh [--archive]" >&2; exit 1 ;; esac
+case "$mode" in runtime|--bun-only|--archive) ;; *) echo "Usage: bun-runtime.sh [--bun-only|--archive]" >&2; exit 1 ;; esac
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-version=$(cat "$root/.bun-version")
+selector_dir=${0%/*}
+[ "$selector_dir" != "$0" ] || selector_dir=.
+root=$(CDPATH= cd -- "$selector_dir/.." && pwd)
+IFS= read -r version < "$root/.bun-version"
 lock="$root/scripts/bun-runtime-lock.tsv"
-revision=$(awk -F '\t' '$1 == "revision" { print $2 }' "$lock")
 platform="$(uname -s)-$(uname -m)"
-row=$(awk -F '\t' -v platform="$platform" '$1 == platform { print }' "$lock")
-[ -n "$row" ] || { echo "No pinned Bun runtime for $platform" >&2; exit 1; }
-IFS="$(printf '\t')" read -r platform asset archive_sha binary_sha url evidence <<EOF
-$row
-EOF
+revision= asset= archive_sha= binary_sha= url= evidence=
+tab=$(printf '\t')
+while IFS="$tab" read -r key value third fourth fifth sixth; do
+  case "$key" in
+    revision) revision=$value ;;
+    "$platform") asset=$value archive_sha=$third binary_sha=$fourth url=$fifth evidence=$sixth ;;
+  esac
+done < "$lock"
+[ -n "$asset" ] || { echo "No pinned Bun runtime for $platform" >&2; exit 1; }
+[ -n "$revision" ] && [ -n "$archive_sha" ] && [ -n "$binary_sha" ] && [ -n "$url" ] || { echo "Incomplete pinned Bun runtime identity for $platform" >&2; exit 1; }
 
 # These upstream x64 archives require AVX2; this build has no baseline asset.
 case "$platform" in
@@ -52,7 +58,9 @@ check_binary() {
 check_archive() { [ "$(hash "$1")" = "$archive_sha" ]; }
 verify() { [ -x "$1" ] && receipted "$1" "$binary_sha $revision" check_binary; }
 emit_runtime() {
-  "$1" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
+  if [ "$mode" != --bun-only ]; then
+    "$1" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
+  fi
   printf '%s\n' "$1"
 }
 if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
@@ -60,7 +68,7 @@ if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
     echo "MANDIBLE_RUNTIME must match the pinned Bun $version revision and binary checksum" >&2
     exit 1
   fi
-  if [ "$mode" = runtime ]; then
+  if [ "$mode" != --archive ]; then
     emit_runtime "$MANDIBLE_RUNTIME"
     exit 0
   fi
@@ -77,13 +85,14 @@ if [ -z "${MANDIBLE_RUNTIME_STORE:-}" ]; then
 fi
 export MANDIBLE_RUNTIME_STORE
 runtime="$MANDIBLE_RUNTIME_STORE/bun/$revision/$binary_sha/bun"
-archive_cache="$(dirname "$runtime")/runtime.zip"
+runtime_dir=${runtime%/*}
+archive_cache="$runtime_dir/runtime.zip"
 if [ -e "$archive_cache" ]; then
   receipted "$archive_cache" "$archive_sha" check_archive || { echo "Pinned Bun archive cache is corrupt: $archive_cache" >&2; exit 1; }
 fi
 if [ -e "$runtime" ]; then
   verify "$runtime" || { echo "Pinned Bun cache is corrupt: $runtime; preserve it and supply a verified runtime archive" >&2; exit 1; }
-  if [ "$mode" = runtime ]; then
+  if [ "$mode" != --archive ]; then
     emit_runtime "$runtime"
     exit 0
   elif [ -f "$archive_cache" ]; then
@@ -91,8 +100,8 @@ if [ -e "$runtime" ]; then
     exit 0
   fi
 fi
-mkdir -p "$(dirname "$runtime")"
-scratch=$(mktemp -d "$(dirname "$runtime")/install.XXXXXX")
+mkdir -p "$runtime_dir"
+scratch=$(mktemp -d "$runtime_dir/install.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 archive="${MANDIBLE_RUNTIME_ARCHIVE:-$root/runtime/$asset.zip}"
 if [ -z "${MANDIBLE_RUNTIME_ARCHIVE:-}" ] && [ -f "$archive_cache" ]; then archive="$archive_cache"; fi
