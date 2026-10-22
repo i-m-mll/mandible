@@ -19,11 +19,11 @@ export function feedbackCollectionIdentity(briefingId: string): string {
 export function resolveFeedbackCollection(
   briefings: readonly FeedbackCollection[],
   briefingRef: string,
-): FeedbackCollection | null {
-  const exact = briefings.find((briefing) => briefing.collectionId === briefingRef);
-  if (exact) return exact;
-  const matches = briefings.filter((briefing) => briefing.collectionId.startsWith(briefingRef));
-  return matches.length === 1 ? matches[0] : null;
+): { status: 'resolved'; collection: FeedbackCollection } | { status: 'not-found' | 'ambiguous'; collection: null } {
+  const exact = briefings.filter((briefing) => briefing.collectionId === briefingRef);
+  const matches = exact.length ? exact : briefings.filter((briefing) => briefing.collectionId.startsWith(briefingRef));
+  return matches.length === 1 ? { status: 'resolved', collection: matches[0] }
+    : { status: matches.length ? 'ambiguous' : 'not-found', collection: null };
 }
 
 export function filterFeedbackCollections(briefings: readonly FeedbackCollection[], search: string): FeedbackCollection[] {

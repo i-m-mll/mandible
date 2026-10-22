@@ -15,7 +15,7 @@ import {
 } from '../api';
 
 import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
-import { briefingGroupRoute, briefingRoute } from '../routing';
+import { briefingGroupRoute, briefingRoute, replaceRouteHash } from '../routing';
 import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
@@ -45,14 +45,11 @@ export type BriefingViewProps = {
 };
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
-  window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
+  replaceRouteHash(briefingRoute(briefingId, roundId, window.location.hash).slice(1));
 }
 
-function resolveBriefingRouteGroup(groups: readonly BriefingGroup[], groupId?: string | null): BriefingGroup | null {
-  if (!groupId) return null;
-  const exact = groups.find((group) => group.id === groupId);
-  const prefixMatches = exact ? [] : groups.filter((group) => group.id.startsWith(groupId));
-  return exact ?? (prefixMatches.length === 1 ? prefixMatches[0] : null);
+function replaceBriefingGroupRoute(groupKey: string): void {
+  replaceRouteHash(briefingGroupRoute(groupKey, window.location.hash).slice(1));
 }
 
 function defaultBriefingGroup(
@@ -67,37 +64,41 @@ function resolveBriefingSelection(
   sidebar: BriefingSidebarSnapshot,
   viewState: BriefingCollectionViewState,
   params: Record<string, string | null | undefined>,
-): { briefing: FeedbackCollection | null; group: BriefingGroup | null; roundId: string | null } {
-  const routeGroup = resolveBriefingRouteGroup(sidebar.groups, params.group);
-  if (routeGroup) return { briefing: null, group: routeGroup, roundId: null };
-
-  const routeBriefing = params.briefing
-    ? resolveFeedbackCollection(sidebar.briefings, params.briefing)
-    : null;
-  if (routeBriefing) {
+): { status: 'resolved' | 'not-found' | 'ambiguous' | 'empty'; briefing: FeedbackCollection | null; group: BriefingGroup | null; roundId: string | null } {
+  if (params.briefing) {
+    const resolved = resolveFeedbackCollection(sidebar.briefings, params.briefing);
     return {
-      briefing: routeBriefing,
+      status: resolved.status,
+      briefing: resolved.collection,
       group: null,
-      roundId: params.round || viewState.selectedRoundIds[routeBriefing.id] || null,
+      roundId: params.round || null,
     };
+  }
+  if (params.group) {
+    const groupRef = params.group;
+    const exact = sidebar.groups.filter((group) => group.id === groupRef || group.key === groupRef);
+    const matches = exact.length ? exact : sidebar.groups.filter((group) => group.id.startsWith(groupRef));
+    return { status: matches.length > 1 ? 'ambiguous' : matches.length ? 'resolved' : 'not-found',
+      briefing: null, group: matches.length === 1 ? matches[0] : null, roundId: null };
   }
 
   const savedGroup = sidebar.groups.find((group) => group.id === viewState.selectedGroupId) ?? null;
-  if (savedGroup) return { briefing: null, group: savedGroup, roundId: null };
+  if (savedGroup) return { status: 'resolved', briefing: null, group: savedGroup, roundId: null };
   const savedBriefing = sidebar.briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null;
   if (savedBriefing) {
     return {
+      status: 'resolved',
       briefing: savedBriefing,
       group: null,
       roundId: viewState.selectedRoundIds[savedBriefing.id] ?? null,
     };
   }
 
-  if (params.group || params.briefing) return { briefing: null, group: null, roundId: null };
   const fallbackGroup = defaultBriefingGroup(sidebar.groups, viewState.collectionLifecycle);
-  if (fallbackGroup) return { briefing: null, group: fallbackGroup, roundId: null };
+  if (fallbackGroup) return { status: 'resolved', briefing: null, group: fallbackGroup, roundId: null };
   const fallbackBriefing = sidebar.briefings[0] ?? null;
   return {
+    status: fallbackBriefing ? 'resolved' : 'empty',
     briefing: fallbackBriefing,
     group: null,
     roundId: fallbackBriefing ? viewState.selectedRoundIds[fallbackBriefing.id] ?? null : null,
@@ -164,57 +165,35 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     if (appShell.active) registerInitialRouteLoad(sidebarQuery.refetch());
   }, [appShell.active, registerInitialRouteLoad]);
 
+  const hasExplicitTarget = Boolean(initialBriefingId || initialGroupId);
+  const selection = resolveBriefingSelection(sidebar, viewState, {
+    briefing: initialBriefingId, group: initialGroupId, round: initialRoundId,
+  });
+  const routeStatus = hasExplicitTarget && selection.status !== 'resolved'
+    ? sidebarQuery.error ? 'error' : !sidebarLoaded || sidebarQuery.isFetching ? 'resolving' : selection.status
+    : selection.status;
+  const selected = selection.briefing;
+  const selectedGroup = selection.group;
+  const explicitRoundId = selection.roundId;
+  const selectedCollectionId = selected?.id ?? null;
+  const selectedGroupId = selectedGroup?.id ?? null;
   useEffect(() => {
-    if (!initialBriefingId) return;
-    const briefing = resolveFeedbackCollection(briefings, initialBriefingId);
-    if (!briefing) return;
-    const id = briefing.id;
-    setViewState((current) => ({
-      ...current,
-      selectedCollectionId: id,
-      selectedGroupId: null,
-      selectedRoundIds: initialRoundId
-        ? { ...current.selectedRoundIds, [id]: initialRoundId }
-        : current.selectedRoundIds,
-    }));
-  }, [briefings, initialBriefingId, initialRoundId, setViewState]);
-
-  useEffect(() => {
-    if (!initialGroupId) return;
-    const group = resolveBriefingRouteGroup(groups, initialGroupId);
-    if (!group) return;
-    setViewState((current) => ({ ...current, selectedGroupId: group.id, selectedCollectionId: null }));
-  }, [groups, initialGroupId, setViewState]);
-
-  const selected = useMemo(() => briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null, [briefings, viewState.selectedCollectionId]);
-  const selectedGroup = useMemo(() => groups.find((group) => group.id === viewState.selectedGroupId) ?? null, [groups, viewState.selectedGroupId]);
-  useEffect(() => {
-    const hasResolvedCollection = sidebarLoaded || groups.length > 0 || briefings.length > 0;
-    if (!appShell.active || !hasResolvedCollection || initialBriefingId || initialGroupId || selected || selectedGroup) return;
-    const fallbackGroup = defaultBriefingGroup(groups, viewState.collectionLifecycle);
-    if (fallbackGroup) {
-      setViewState((current) => ({
-        ...current,
-        selectedGroupId: fallbackGroup.id,
-        selectedCollectionId: null,
-      }));
-      window.history.replaceState(null, '', briefingGroupRoute(fallbackGroup.key));
-      return;
+    if (!appShell.active || routeStatus !== 'resolved') return;
+    setViewState((current) => {
+      const roundMatches = !selectedCollectionId || (current.selectedRoundIds[selectedCollectionId] ?? null) === explicitRoundId;
+      if (current.selectedCollectionId === selectedCollectionId && current.selectedGroupId === selectedGroupId && roundMatches) return current;
+      const selectedRoundIds = { ...current.selectedRoundIds };
+      if (selectedCollectionId) {
+        if (explicitRoundId) selectedRoundIds[selectedCollectionId] = explicitRoundId;
+        else delete selectedRoundIds[selectedCollectionId];
+      }
+      return { ...current, selectedCollectionId, selectedGroupId, selectedRoundIds };
+    });
+    if (!hasExplicitTarget) {
+      if (selectedGroup) replaceBriefingGroupRoute(selectedGroup.key);
+      else if (selected) replaceBriefingRoute(selected.collectionId, explicitRoundId);
     }
-    const fallbackBriefing = briefings[0];
-    if (!fallbackBriefing) return;
-    setViewState((current) => ({
-      ...current,
-      selectedCollectionId: fallbackBriefing.id,
-      selectedGroupId: null,
-    }));
-    replaceBriefingRoute(fallbackBriefing.collectionId);
-  }, [appShell.active, briefings, groups, initialBriefingId, initialGroupId, selected, selectedGroup, setViewState, sidebarLoaded, viewState.collectionLifecycle]);
-  useEffect(() => {
-    if (!appShell.active || initialBriefingId || initialGroupId) return;
-    if (selectedGroup) window.history.replaceState(null, '', briefingGroupRoute(selectedGroup.key));
-    else if (selected) replaceBriefingRoute(selected.collectionId, viewState.selectedRoundIds[selected.id] ?? null);
-  }, [appShell.active, initialBriefingId, initialGroupId, selected, selectedGroup, viewState.selectedRoundIds]);
+  }, [appShell.active, routeStatus, selectedCollectionId, selectedGroupId, explicitRoundId, hasExplicitTarget, setViewState]);
   const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
   const selectedGroupUpdateId = selectedGroup
     ? resolveBriefingGroupProjection(
@@ -223,7 +202,6 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
       groupBundleOwners,
     ).selectedUpdate?.id ?? null
     : null;
-  const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
   const selectedDisplayContext = useMemo(
     () => briefingDisplayContext(selected, groups, viewState),
     [groups, selected, viewState.selectedGroupUpdateIds],
@@ -236,7 +214,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
   const selectGroup = (group: BriefingGroup) => {
     setViewState((current) => ({ ...current, selectedGroupId: group.id, selectedCollectionId: null }));
-    window.history.replaceState(null, '', briefingGroupRoute(group.key));
+    replaceBriefingGroupRoute(group.key);
   };
 
   const selectGroupUpdate = (ownerGroupId: string, updateId: string | null) => {
@@ -301,13 +279,20 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   };
 
   return (
-    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={<>
+    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={{ ...viewState, selectedCollectionId, selectedGroupId }} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={<>
       {error ? (
         <DetailPaneNotice source="briefing:refresh" severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
       ) : null}
       <InvalidBriefingsNotice rows={invalidBriefings} />
     </>}>
-      {selectedGroup ? (
+      {hasExplicitTarget && routeStatus !== 'resolved' ? (
+        <div role={routeStatus === 'resolving' ? 'status' : 'alert'} data-route-state={routeStatus}>
+          {routeStatus === 'resolving' ? 'Resolving Briefing link…'
+            : routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
+              : routeStatus === 'error' ? `The Briefing link could not be resolved: ${sidebarQuery.error?.message}`
+                : 'The linked Briefing could not be found.'}
+        </div>
+      ) : selectedGroup ? (
         <BriefingGroupDetail
           key={selectedGroup.id}
           group={selectedGroup}
