@@ -728,6 +728,25 @@ async function copyAuthText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
+type AuthDescriptionViewState = {
+  descriptionExpanded: boolean;
+  exactGitExpanded: boolean;
+};
+
+const DEFAULT_AUTH_DESCRIPTION_VIEW_STATE: AuthDescriptionViewState = {
+  descriptionExpanded: true,
+  exactGitExpanded: false,
+};
+
+function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<AuthDescriptionViewState>): AuthDescriptionViewState {
+  const stored = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  return {
+    descriptionExpanded: typeof stored.descriptionExpanded === 'boolean' ? stored.descriptionExpanded : defaults.descriptionExpanded,
+    exactGitExpanded: typeof stored.exactGitExpanded === 'boolean' ? stored.exactGitExpanded : defaults.exactGitExpanded,
+  };
+}
+
 function AuthRequestDetail({
   request,
   history,
@@ -752,7 +771,11 @@ function AuthRequestDetail({
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
 }): JSX.Element {
-  const [showCommit, setShowCommit] = useState(true);
+  const [descriptionView, setDescriptionView] = usePersistedViewState(
+    `auth-description-view:${getAuthId(request)}`,
+    normalizeAuthDescriptionViewState,
+    DEFAULT_AUTH_DESCRIPTION_VIEW_STATE,
+  );
   const [showSpec, setShowSpec] = useState(false);
   const [showDirtyNote, setShowDirtyNote] = useState(true);
   const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
@@ -1241,8 +1264,8 @@ function AuthRequestDetail({
             <div className="auth-detail__left-col">
               <CollapsiblePanel
                 title="Description"
-                expanded={showCommit}
-                onExpandedChange={setShowCommit}
+                expanded={descriptionView.descriptionExpanded}
+                onExpandedChange={descriptionExpanded => setDescriptionView(current => ({ ...current, descriptionExpanded }))}
                 bodyClassName="spec-panel"
               >
                 {commitHtml ? (
@@ -1252,10 +1275,14 @@ function AuthRequestDetail({
                 )}
               </CollapsiblePanel>
               {isCanonicalMessage && request.type === 'merge' && (
-                <details className="auth-detail__git-message">
-                  <summary>Exact Git message</summary>
+                <CollapsiblePanel
+                  title="Exact Git message"
+                  expanded={descriptionView.exactGitExpanded}
+                  onExpandedChange={exactGitExpanded => setDescriptionView(current => ({ ...current, exactGitExpanded }))}
+                  className="auth-detail__git-message"
+                >
                   <pre>{commitMsg}</pre>
-                </details>
+                </CollapsiblePanel>
               )}
               {dirtyAction && (
                 <CollapsiblePanel
