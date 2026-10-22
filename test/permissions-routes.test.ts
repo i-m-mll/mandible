@@ -1,12 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -25,6 +24,7 @@ import { Router } from "../src/server.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -42,8 +42,7 @@ describe("restricted project route enforcement", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-permission-routes-"));
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
+    db = migratedMemoryDb();
     setDb(db);
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });

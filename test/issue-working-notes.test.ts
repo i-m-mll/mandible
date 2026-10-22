@@ -8,7 +8,7 @@ import { openDb, type Db } from "../src/db.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { systemAction } from "../src/identity/resolver.js";
-import { createLedgerProject, createLedgerIssue } from "./helpers/ledger-fixtures.js";
+import { createLedgerProject, createLedgerIssue, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const ACTOR = { actor_type: "system" as const, author_display: "System", attribution: systemAction() };
 let tempDir = "";
@@ -16,7 +16,7 @@ let db: Db;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-working-notes-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {

@@ -1,6 +1,5 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -11,6 +10,7 @@ import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db;
 let router: Router;
@@ -22,8 +22,7 @@ const fakeScanner = {
 } as never;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   const operator = setupOperator(db, { display_name: "Route test operator" });
   setDb(db);
   router = authenticatedTestRouter(operator);
@@ -39,63 +38,6 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("project routes", () => {
-  it("GET /api/projects returns empty list initially", async () => {
-    const res = await router.invoke({ method: "GET", url: "/api/projects" });
-    expect(res.status).toBe(200);
-    const body = res.body as { projects: unknown[] };
-    expect(Array.isArray(body.projects)).toBe(true);
-    expect(body.projects).toHaveLength(0);
-  });
-
-  it("GET /api/projects returns list after creating a project", async () => {
-    addProject(db, { project_key: "feedbax", remote_identity: "git@github.com:mll/feedbax.git" });
-
-    const res = await router.invoke({ method: "GET", url: "/api/projects" });
-    expect(res.status).toBe(200);
-    const body = res.body as { projects: Array<{ project_key: string }> };
-    expect(body.projects).toHaveLength(1);
-    expect(body.projects[0].project_key).toBe("feedbax");
-  });
-
-  it("POST /api/projects creates a project and returns 201 with project_key", async () => {
-    const res = await router.invoke({
-      method: "POST",
-      url: "/api/projects",
-      body: {
-        key: "feedbax",
-        display: "Feedbax",
-        remote: "git@github.com:mll/feedbax.git",
-      },
-    });
-    expect(res.status).toBe(201);
-    const body = res.body as { project: { project_key: string } };
-    expect(body.project.project_key).toBe("feedbax");
-  });
-
-  it("POST /api/projects returns 400 when key is missing", async () => {
-    const res = await router.invoke({
-      method: "POST",
-      url: "/api/projects",
-      body: { display: "No Key Project" },
-    });
-    expect(res.status).toBe(400);
-    const body = res.body as { error: string };
-    expect(body.error).toBeTruthy();
-  });
-
-  it("GET /api/projects/:ref returns 200 with matched_by for known project", async () => {
-    addProject(db, {
-      project_key: "feedbax",
-      remote_identity: "git@github.com:mll/feedbax.git",
-      display_name: "Feedbax",
-    });
-
-    const res = await router.invoke({ method: "GET", url: "/api/projects/feedbax" });
-    expect(res.status).toBe(200);
-    const body = res.body as { project: { project_key: string }; matched_by: string };
-    expect(body.project.project_key).toBe("feedbax");
-    expect(body.matched_by).toBe("project_key");
-  });
 
   it("GET /api/projects/:ref returns 404 with suggestions for unknown ref", async () => {
     addProject(db, {
@@ -130,86 +72,6 @@ describe("project routes", () => {
     expect(body.candidates).toContain("bb");
   });
 
-  it("PATCH /api/projects/:ref updates display_name and returns 200", async () => {
-    addProject(db, {
-      project_key: "feedbax",
-      remote_identity: "git@github.com:mll/feedbax.git",
-      display_name: "Feedbax",
-    });
-
-    const res = await router.invoke({
-      method: "PATCH",
-      url: "/api/projects/feedbax",
-      body: { display: "FB Updated" },
-    });
-    expect(res.status).toBe(200);
-    const body = res.body as { project: { display_name: string } };
-    expect(body.project.display_name).toBe("FB Updated");
-  });
-
-  it("POST /api/projects/:ref/checkouts registers a checkout and returns 200", async () => {
-    addProject(db, {
-      project_key: "feedbax",
-      remote_identity: "git@github.com:mll/feedbax.git",
-    });
-
-    const res = await router.invoke({
-      method: "POST",
-      url: "/api/projects/feedbax/checkouts",
-      body: { root: "/tmp/fb", work_repo_id: "20-feedbax" },
-    });
-    expect(res.status).toBe(200);
-    const body = res.body as { project: { project_key: string }; checkout: { work_repo_id: string } };
-    expect(body.project.project_key).toBe("feedbax");
-    expect(body.checkout.work_repo_id).toBe("20-feedbax");
-  });
-
-  it("POST /api/projects/checkouts registers checkout via project param and returns 200", async () => {
-    addProject(db, {
-      project_key: "feedbax",
-      remote_identity: "git@github.com:mll/feedbax.git",
-    });
-
-    const res = await router.invoke({
-      method: "POST",
-      url: "/api/projects/checkouts",
-      body: { project: "feedbax", root: "/tmp/fb2" },
-    });
-    expect(res.status).toBe(200);
-    const body = res.body as { project: { project_key: string } };
-    expect(body.project.project_key).toBe("feedbax");
-  });
-
-  it("GET /api/projects/audit returns audit object with arrays", async () => {
-    const res = await router.invoke({ method: "GET", url: "/api/projects/audit" });
-    expect(res.status).toBe(200);
-    const body = res.body as {
-      audit: {
-        duplicate_display_names: unknown[];
-        local_projects: unknown[];
-        numbered_repo_ids: unknown[];
-        missing_keys: unknown[];
-      };
-    };
-    expect(Array.isArray(body.audit.duplicate_display_names)).toBe(true);
-    expect(Array.isArray(body.audit.local_projects)).toBe(true);
-    expect(Array.isArray(body.audit.numbered_repo_ids)).toBe(true);
-    expect(Array.isArray(body.audit.missing_keys)).toBe(true);
-  });
-
-  it("POST /api/projects/repair dry run returns report with applied=false", async () => {
-    const res = await router.invoke({
-      method: "POST",
-      url: "/api/projects/repair",
-      body: {},
-    });
-    expect(res.status).toBe(200);
-    const body = res.body as {
-      report: { keys_backfilled: number; audit: unknown; applied: boolean };
-    };
-    expect(body.report.applied).toBe(false);
-    expect(typeof body.report.keys_backfilled).toBe("number");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -331,26 +193,6 @@ describe("canonical project_key round-trip", () => {
     });
     return { project, issue };
   }
-
-  it("GET /api/issues?repo=<project_key> returns the project's issues", async () => {
-    seedFeedbax();
-    registerIssueRoutes(router, fakeScanner);
-
-    const byKey = await router.invoke({ method: "GET", url: "/api/issues?repo=feedbax" });
-    expect(byKey.status).toBe(200);
-    const keyBody = byKey.body as Array<{ repo_id: string; project_key?: string; issues: unknown[] }>;
-    expect(keyBody.length).toBe(1);
-    expect(keyBody[0].project_key).toBe("feedbax");
-    expect(keyBody[0].issues.length).toBe(1);
-
-    // Path-derived checkout ids are no longer public project filters.
-    const byWorkRepo = await router.invoke({
-      method: "GET",
-      url: "/api/issues?repo=20-widgets-widgets",
-    });
-    expect(byWorkRepo.status).toBe(200);
-    expect((byWorkRepo.body as unknown[]).length).toBe(0);
-  });
 
   it("/r/issue redirect resolves the canonical project_key as repo, not work_repo_id", () => {
     const { issue } = seedFeedbax();

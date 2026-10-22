@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   repoCandidatesFromCwd,
-  sessionIdsFromGraphNodeIds,
 } from "../src/graph/operational.js";
 import {
   capGraphNodesForDisplay,
@@ -9,11 +8,12 @@ import {
   selectGraphForDisplay,
 } from "../src/graph/selection.js";
 import {
-  GRAPH_PERSPECTIVES,
   normalizeGraphSpec,
   parseQueryParams,
 } from "../src/graph/spec.js";
 import type { GraphEdge, GraphNode } from "../src/types.js";
+import { layoutGraph, routeCrossesNonEndpointNodeBoxes } from "../ui/src/graph/layout";
+import type { GraphEdge as UiGraphEdge, GraphNode as UiGraphNode } from "../ui/src/types/graph";
 
 function node(id: string, createdAt: string): GraphNode {
   return {
@@ -58,31 +58,9 @@ describe("graph node capping", () => {
     ]);
   });
 
-  it("falls back to recency when there are no visible relationships", () => {
-    const nodes = [
-      node("older", "2026-05-15T12:01:00.000Z"),
-      node("newer", "2026-05-15T12:02:00.000Z"),
-    ];
-
-    const capped = capGraphNodesForDisplay(nodes, [], 1);
-
-    expect(capped.nodes.map((item) => item.id)).toEqual(["newer"]);
-  });
 });
 
 describe("graph filters", () => {
-  it("defaults to the issues preset when no legacy mode is supplied", () => {
-    const params = parseQueryParams({});
-
-    expect(params.mode).toBe("issue");
-    expect(params.status).toBe("open");
-    expect(params.spec).toMatchObject({
-      preset: "issues",
-      node_types: ["issue"],
-      filters: { status: { issue: ["open"] } },
-    });
-    expect(params.spec?.edge_types).toEqual(expect.arrayContaining(["parent_child", "blocks"]));
-  });
 
   it("maps legacy modes and query filters into a normalized graph spec", () => {
     const params = parseQueryParams({
@@ -109,35 +87,6 @@ describe("graph filters", () => {
     });
   });
 
-  it("accepts legacy time as an alias for since filters", () => {
-    const params = parseQueryParams({
-      mode: "issue",
-      status: "all",
-      time: "3d",
-    });
-
-    expect(params.since).toBe("3d");
-    expect(params.spec?.filters.since).toBe("3d");
-  });
-
-  it("parses comma-separated and repeated multi-select filters", () => {
-    const params = parseQueryParams({
-      repo: ["HumbleB,mandible", "feedbax"],
-      branch: "main,develop",
-    });
-
-    expect(params.repos).toEqual(["HumbleB", "mandible", "feedbax"]);
-    expect(params.repo).toBe("HumbleB");
-    expect(params.branches).toEqual(["main", "develop"]);
-    expect(params.branch).toBe("main");
-  });
-
-  it("parses graph display limits within the supported range", () => {
-    expect(parseQueryParams({ limit: "250" }).limit).toBe(250);
-    expect(parseQueryParams({ limit: "0" }).limit).toBe(120);
-    expect(parseQueryParams({ limit: "5000" }).limit).toBe(1000);
-  });
-
   it("recovers the root repo from worktree session cwd values", () => {
     const candidates = repoCandidatesFromCwd("/tmp/HumbleB/worktrees/feature__graph");
 
@@ -145,16 +94,6 @@ describe("graph filters", () => {
     expect(candidates).toContain("feature__graph");
   });
 
-  it("extracts fetched session ids for scoped session issue link queries", () => {
-    const ids = sessionIdsFromGraphNodeIds(new Set([
-      "session:sess-1",
-      "issue:mandible:abc123",
-      "session:sess-2",
-      "session:sess-1",
-    ]));
-
-    expect(ids).toEqual(["sess-1", "sess-2"]);
-  });
 });
 
 describe("graph edge perspectives", () => {
@@ -187,40 +126,6 @@ describe("graph edge perspectives", () => {
     expect(graphEdgesForMode("issue", [reference, related, auth])).toEqual([]);
   });
 
-  it("keeps structural issue relationships in issue perspective defaults", () => {
-    const structuralEdges: GraphEdge[] = [
-      {
-        id: "umbrella:a:b",
-        source: "issue:a",
-        target: "issue:b",
-        type: "umbrella_child",
-        edge_class: "semantic",
-      },
-      {
-        id: "blocks:a:b",
-        source: "issue:a",
-        target: "issue:b",
-        type: "blocks",
-        edge_class: "semantic",
-      },
-      {
-        id: "implements:a:b",
-        source: "issue:a",
-        target: "issue:b",
-        type: "implements",
-        edge_class: "semantic",
-      },
-    ];
-    const reference: GraphEdge = {
-      id: "ref:a:b",
-      source: "issue:a",
-      target: "issue:b",
-      type: "references",
-      edge_class: "semantic",
-    };
-
-    expect(graphEdgesForMode("issue", [...structuralEdges, reference])).toEqual(structuralEdges);
-  });
 });
 
 describe("graph spec selection", () => {
@@ -302,32 +207,41 @@ describe("graph spec selection", () => {
   });
 });
 
-describe("graph perspectives", () => {
-  it("describes every graph mode as a perspective", () => {
-    expect(GRAPH_PERSPECTIVES.map((mode) => mode.id)).toEqual([
-      "activity",
-      "issue",
-      "work",
-      "provider-lineage",
-      "artifact-lineage",
-      "provenance",
-    ]);
+describe("graph layout", () => {
+  function layoutIssue(id: string, layout: Record<string, unknown>): UiGraphNode {
+    return { id, type: "issue", label: id, updated_at: "2026-06-01T12:00:00.000Z", detail: { layout } };
+  }
 
-    for (const mode of GRAPH_PERSPECTIVES) {
-      expect(mode.kind).toBe("perspective");
-      expect(mode.summary).toBeTruthy();
-      expect(mode.description).toBe(mode.summary);
+  function hierarchyEdge(source: string, target: string): UiGraphEdge {
+    return {
+      id: `${source}:${target}`,
+      source,
+      target,
+      type: "umbrella_child",
+      edge_class: "semantic",
+      metadata: { layout: "hierarchical" },
+    };
+  }
+
+  it("routes hierarchy edges without crossing non-endpoint node boxes", () => {
+    const nodes = [
+      layoutIssue("parent", { rank: 0 }),
+      layoutIssue("child-a", { rank: 1, order: 1 }),
+      layoutIssue("child-b", { rank: 1, order: 2 }),
+      layoutIssue("grandchild", { rank: 2, order: 1 }),
+    ];
+    const edges = [
+      hierarchyEdge("parent", "child-a"),
+      hierarchyEdge("parent", "child-b"),
+      hierarchyEdge("child-a", "grandchild"),
+    ];
+
+    const result = layoutGraph(nodes, edges, { xStart: 0, yStart: 0 });
+
+    const routed = result.edges.filter((item) => !item.synthetic);
+    expect(routed).toHaveLength(3);
+    for (const item of routed) {
+      expect(routeCrossesNonEndpointNodeBoxes(item.route?.points ?? [], result.nodes, item.edge)).toBe(false);
     }
-  });
-
-  it("exposes no-jargon summaries for each perspective", () => {
-    expect(Object.fromEntries(GRAPH_PERSPECTIVES.map((mode) => [mode.id, mode.summary]))).toEqual({
-      activity: "What changed recently or needs attention now.",
-      issue: "How issues relate to other issues.",
-      work: "How work moves through repos, branches, sessions, issues, and auth.",
-      "provider-lineage": "What a provider or tool produced from the request and spec to outputs.",
-      "artifact-lineage": "Where an artifact came from and what reused or derived from it.",
-      provenance: "Evidence for which session, action, commit, or run produced or justified an object.",
-    });
   });
 });

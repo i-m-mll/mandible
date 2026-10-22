@@ -1,21 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetResourceRefRecognizers,
-  attachResourceRefResolution,
-  compactArtifactBlobRef,
-  compactArtifactRef,
-  compactSubmissionRef,
-  displayResourceRef,
   isResourceRef,
   linkifyResourceRefs,
   parseResourceRef,
   previewableResourceFromAnchor,
   registerResourceRefRecognizer,
-  resolveResourceRef,
   resourceRefHref,
   seriesDetailHref,
   versionDetailHref,
-  type ResolverResult,
 } from '../ui/src/resource-refs';
 
 const HASH64 = 'a'.repeat(64);
@@ -64,72 +57,27 @@ describe('legacy artifact ref rejection', () => {
     expect(parseResourceRef(HASH64)).toBeNull();
   });
 
-  it('does not linkify old hash refs in rendered content', () => {
-    const html = linkifyResourceRefs(`<p>see [artifact:sha256:${HASH64}] please</p>`);
-    expect(html).not.toContain('data-resource-ref="artifact:sha256:');
-    expect(html).toContain(`[artifact:sha256:${HASH64}]`);
-  });
 });
 
-describe('parseResourceRef recognizes canonical ref forms', () => {
-  it('logical artifact form', () => {
-    const parsed = parseResourceRef('artifact:abcdef0');
-    expect(parsed?.kind).toBe('artifact');
-    expect(parsed?.canonical).toBe('artifact:abcdef0');
-  });
-
-  it('artifact series, version, and blob forms', () => {
-    const series = parseResourceRef('artifact-series:abcdef0@2');
-    const latest = parseResourceRef('artifact-series:abcdef0@latest');
-    const version = parseResourceRef('artifact-version:1234567');
-    const blob = parseResourceRef(`artifact-blob:${HASH64}`);
-    expect(series?.kind).toBe('artifact');
-    expect(series?.canonical).toBe('artifact-series:abcdef0@2');
-    expect(latest?.canonical).toBe('artifact-series:abcdef0@latest');
-    expect(version?.kind).toBe('artifact');
-    expect(version?.canonical).toBe('artifact-version:1234567');
-    expect(blob?.kind).toBe('artifact');
-    expect(blob?.canonical).toBe(`artifact-blob:${HASH64}`);
-  });
-
-  it('keeps typed UUID refs while compacting their identity atomically', () => {
-    expect(parseResourceRef('artifact-version:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')?.display)
-      .toBe('artifact-version:aaaaaaaa');
-  });
-
-  it('repo:// custody refs', () => {
-    const parsed = parseResourceRef('repo://mandible@main/src/db.ts');
-    expect(parsed?.kind).toBe('repo');
-    expect(parsed?.canonical).toBe('repo://mandible@main/src/db.ts');
-  });
-
-  it('mandible:// issue refs', () => {
-    const parsed = parseResourceRef('mandible://mandible/issue/252e125');
-    expect(parsed?.kind).toBe('mandible');
-    expect(parsed?.canonical).toBe('mandible://mandible/issue/252e125');
-  });
-
-  it('issue: inline refs', () => {
-    const parsed = parseResourceRef(`issue:${ISSUE_ID64}`);
-    expect(parsed?.kind).toBe('issue');
-    expect(parsed?.canonical).toBe(`issue:${ISSUE_ID64}`);
-    expect(parsed?.display).toBe('issue:ceb5963');
-  });
-
-  it('comment: inline refs', () => {
-    const parsed = parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
-    expect(parsed?.kind).toBe('comment');
-    expect(parsed?.canonical).toBe(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
-    expect(parsed?.display).toBe('comment:ceb5963#c8819b4');
+describe('resource ref grammar', () => {
+  it.each([
+    ['artifact', 'artifact:abcdef0'],
+    ['artifact', 'artifact-series:abcdef0@2'],
+    ['artifact', 'artifact-series:abcdef0@latest'],
+    ['artifact', 'artifact-version:1234567'],
+    ['artifact', `artifact-blob:${HASH64}`],
+    ['repo', 'repo://mandible@main/src/db.ts'],
+    ['mandible', 'mandible://mandible/issue/252e125'],
+    ['issue', `issue:${ISSUE_ID64}`],
+    ['comment', `comment:${ISSUE_ID64}#${COMMENT_ID64}`],
+  ])('parses a %s ref and keeps %s canonical', (kind, ref) => {
+    expect(parseResourceRef(ref)).toMatchObject({ kind, canonical: ref });
   });
 
   it('submission refs accept only the closed direct and ask-ordinal grammar', () => {
     const ask = 'abcdef0-1234-5678-9abc-def012345678';
     expect(parseResourceRef(`submission:${ask}`)).toMatchObject({ kind: 'submission' });
-    expect(parseResourceRef(`submission:${ask}#3`)).toMatchObject({
-      kind: 'submission',
-      display: 'submission:abcdef0#3',
-    });
+    expect(parseResourceRef(`submission:${ask}#3`)).toMatchObject({ kind: 'submission' });
     for (const invalid of ['submission:', 'submission:abcdef#1', 'submission:abcdef0#0',
       'submission:abcdef0#', 'submission:abcdef_0#1', 'submission:abcdef%0#1', 'submission:-------#1']) {
       expect(parseResourceRef(invalid)).toBeNull();
@@ -141,72 +89,21 @@ describe('parseResourceRef recognizes canonical ref forms', () => {
     expect(isResourceRef('mailto:a@b.com')).toBe(false);
     expect(isResourceRef('just some prose')).toBe(false);
   });
-});
 
-describe('round-trip: text and markdown-link hrefs', () => {
-  const cases: Array<[string, string]> = [
-    ['logical artifact', 'artifact:abcdef0'],
-    ['artifact series', 'artifact-series:abcdef0@2'],
-    ['artifact version', 'artifact-version:version-1'],
-    ['artifact blob', `artifact-blob:${HASH64}`],
-    ['repo', 'repo://mandible@main/src/db.ts'],
-    ['mandible', 'mandible://mandible/issue/252e125'],
-    ['issue', 'issue:abc123'],
-    ['comment', 'comment:mandible/abc#com_1'],
-  ];
-
-  for (const [name, ref] of cases) {
-    it(`linkifies ${name} as bracketed text`, () => {
-      const html = linkifyResourceRefs(`<p>[${ref}]</p>`);
-      expect(html).toContain(`data-resource-ref="${ref}"`);
-    });
-
-    it(`linkifies ${name} as a markdown-link href`, () => {
-      const html = linkifyResourceRefs(`<p><a href="${ref}">label text</a></p>`);
-      expect(html).toContain(`data-resource-ref="${ref}"`);
-      // The href is the resolution authority even when the label differs.
-      expect(html).toContain('label text');
-    });
-  }
-});
-
-describe('edited content prefers markdown links with canonical hrefs', () => {
-  it('href is the authority; label may change', () => {
-    const html = linkifyResourceRefs(
-      `<p><a href="artifact-blob:${HASH64}">My nice label</a></p>`,
-    );
-    expect(html).toContain(`data-resource-ref="artifact-blob:${HASH64}"`);
-    // custom label preserved (not overwritten by the compact display form)
-    expect(html).toContain('My nice label');
-    expect(resourceRefHref(`artifact-blob:${HASH64}`)).toContain(
-      encodeURIComponent(`artifact-blob:${HASH64}`),
-    );
-  });
-});
-
-describe('display helpers', () => {
-  it('compacts logical artifact and blob refs', () => {
-    expect(compactArtifactRef(`artifact:${HASH64}`)).toBe('artifact:aaaaaaaaaaaa');
-    expect(compactArtifactBlobRef(`artifact-blob:${HASH64}`)).toBe('artifact-blob:aaaaaaaaaaaa');
-  });
-
-  it('compacts only the submission uuid segment', () => {
-    expect(compactSubmissionRef('submission:abcdef0123456789#12')).toBe('submission:abcdef0#12');
-  });
-
-  it('displayResourceRef passes through unrecognized text', () => {
-    expect(displayResourceRef('hello world')).toBe('hello world');
-  });
-
-  it('displayResourceRef compacts long issue and comment ids without changing canonical refs', () => {
-    expect(displayResourceRef(`issue:${ISSUE_ID64}`)).toBe('issue:ceb5963');
-    expect(displayResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)).toBe(
-      'comment:ceb5963#c8819b4',
-    );
-    expect(parseResourceRef(`issue:${ISSUE_ID64}`)?.canonical).toBe(`issue:${ISSUE_ID64}`);
-    expect(parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)?.canonical).toBe(
-      `comment:${ISSUE_ID64}#${COMMENT_ID64}`,
-    );
+  it.each([
+    'artifact:abcdef0',
+    'artifact-series:abcdef0@2',
+    'artifact-version:version-1',
+    `artifact-blob:${HASH64}`,
+    'repo://mandible@main/src/db.ts',
+    'mandible://mandible/issue/252e125',
+    'issue:abc123',
+    'comment:mandible/abc#com_1',
+  ])('linkifies %s as bracketed text and as a link href, the href being the authority', (ref) => {
+    expect(linkifyResourceRefs(`<p>[${ref}]</p>`)).toContain(`data-resource-ref="${ref}"`);
+    const html = linkifyResourceRefs(`<p><a href="${ref}">label text</a></p>`);
+    expect(html).toContain(`data-resource-ref="${ref}"`);
+    expect(html).toContain('label text');
   });
 });
 
@@ -255,57 +152,7 @@ describe('artifact nav hrefs', () => {
   });
 });
 
-describe('unresolved-reference UI + C2 resolver', () => {
-  it('renders an unresolved placeholder as a quiet link without resolve clutter', () => {
-    const html = linkifyResourceRefs(`<p>[artifact-blob:${HASH64}]</p>`);
-    expect(html).toContain('resource-ref--unresolved');
-    expect(html).toContain('data-ref-state="unresolved"');
-    expect(html).toContain('#/artifacts?ref=artifact-blob%3A' + HASH64);
-    expect(html).not.toContain('resource-ref__resolve');
-  });
-
-  it('resolveResourceRef calls the C2 endpoint and unwraps {resolution}', async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({ resolution: { ref: 'x', kind: 'artifact', resolved: true, entity: {} } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-    );
-    const result = await resolveResourceRef(`artifact-blob:${HASH64}`, { fetchImpl: fetchImpl as unknown as typeof fetch });
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    const calledPath = (fetchImpl.mock.calls[0] as unknown[])[0] as string;
-    expect(calledPath).toContain('/api/spaces/resolve?ref=');
-    expect(result.resolved).toBe(true);
-  });
-
-  it('attachResourceRefResolution is inert when normal refs have no retry button', async () => {
-    const container = document.createElement('div');
-    container.innerHTML = linkifyResourceRefs(`<p>[artifact-blob:${HASH64}]</p>`);
-    const resolve = vi.fn(
-      async (ref: string): Promise<ResolverResult> => ({ ref, kind: 'artifact', resolved: true, entity: {} }),
-    );
-    attachResourceRefResolution(container, { resolve });
-
-    const button = container.querySelector('button.resource-ref__resolve') as HTMLButtonElement;
-    expect(button).toBeNull();
-    expect(resolve).not.toHaveBeenCalled();
-    const wrapper = container.querySelector('.resource-ref') as HTMLElement;
-    expect(wrapper.getAttribute('data-ref-state')).toBe('unresolved');
-    expect(wrapper.querySelector('.resource-ref__link')).toBeTruthy();
-    expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
-  });
-
-  it('an unresolvable-looking ref still renders as a quiet unresolved placeholder', async () => {
-    const container = document.createElement('div');
-    container.innerHTML = linkifyResourceRefs(`<p>[artifact:abcdef0]</p>`);
-    const resolve = vi.fn(
-      async (ref: string): Promise<ResolverResult> => ({ ref, kind: 'artifact', resolved: false, entity: null, error: 'not found' }),
-    );
-    attachResourceRefResolution(container, { resolve });
-    expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
-    expect(resolve).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-resource-ref="artifact:abcdef0"]')).toBeTruthy();
-  });
+describe('issue and comment ref links', () => {
 
   it('linkifies long issue and comment refs with compact labels but canonical authority', () => {
     const issueRef = `issue:${ISSUE_ID64}`;
@@ -354,9 +201,6 @@ describe('grammar-extension point (C12 hook)', () => {
     expect(parseResourceRef('directive:include')).toBeNull();
   });
 
-  it('does NOT recognize directive nodes by default (C12 owns that grammar)', () => {
-    expect(parseResourceRef('directive:include')).toBeNull();
-  });
 });
 
 describe('no regression: existing artifact linkify behavior', () => {

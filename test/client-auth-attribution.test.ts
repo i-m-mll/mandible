@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureSigningCredential, git } from "./helpers/auth-queue-fixtures.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -21,6 +21,7 @@ import {
   setupAgentUsers,
   setupOperator,
 } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 describe("client-auth durable attribution", () => {
   let tempDir: string;
@@ -36,7 +37,7 @@ describe("client-auth durable attribution", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-attribution-"));
-    db = openDb(path.join(tempDir, "mandible.db"));
+    db = migratedMemoryDb();
     setDb(db);
     const operator = setupOperator(db, {
       display_name: "Operator",

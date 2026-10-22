@@ -1,9 +1,8 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/sse", () => ({ broadcast: vi.fn() }));
 
-import { migrate, setDb, type Db } from "../src/db";
+import { setDb, type Db } from "../src/db";
 import { buildWorkAudit } from "../src/work-audit";
 import {
   deriveReapingSafety,
@@ -13,6 +12,7 @@ import {
 } from "../src/work-scanner";
 import { registerWorkRoutes } from "../src/routes/work";
 import { Router } from "../src/server";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // The audit route resolves repo access through the process-global DB singleton
 // (getDb()), which falls through to opening the real database when nothing has
@@ -21,8 +21,7 @@ import { Router } from "../src/server";
 let db: Db;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
 });
 

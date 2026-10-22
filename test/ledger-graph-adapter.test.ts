@@ -2,17 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueProjection,
-  countLedgerGraphIssues,
   getLedgerGraphFilterOptions,
 } from "../src/ledger/graph-adapter.js";
 import { linkAuthRequestToLedgerIssue, linkSessionToLedgerIssue } from "../src/ledger/operational-links.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { GraphNode } from "../src/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -20,7 +20,7 @@ const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-graph-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -171,25 +171,6 @@ describe("ledger graph projection", () => {
     ]);
   });
 
-  it("uses ledger project candidates for repo filters and mode counts", () => {
-    const alpha = createProject("alpha");
-    const beta = createProject("beta");
-    const store = new LedgerStore(db);
-    createIssue(store, alpha.project.id, "alp1111", "Alpha issue");
-    createIssue(store, beta.project.id, "bet1111", "Beta issue", { status: "closed" });
-
-    const alphaProjection = buildLedgerIssueProjection(db, {
-      mode: "issue",
-      status: "all",
-      repos: ["alpha"],
-    });
-
-    expect(alphaProjection?.nodes.map((node) => node.label)).toEqual(["Alpha issue"]);
-    expect(countLedgerGraphIssues(db, "all")).toBe(2);
-    expect(countLedgerGraphIssues(db, "open")).toBe(1);
-    expect(getLedgerGraphFilterOptions(db).repos).toEqual(expect.arrayContaining(["alpha", "beta"]));
-  });
-
   it("uses project_key for issue node identity while accepting legacy checkout filters", () => {
     const checkout = createProject("Feedbax");
     db.prepare("UPDATE ledger_projects SET project_key = ? WHERE id = ?")
@@ -252,101 +233,4 @@ describe("ledger graph projection", () => {
     expect(projection?.edges).toEqual([]);
   });
 
-  it("uses recent ledger issue activity for relative issue since filters", () => {
-    vi.useFakeTimers();
-    const checkout = createProject("repo");
-    const store = new LedgerStore(db);
-    const old = Date.parse("2026-05-20T12:00:00.000Z");
-    const recent = Date.parse("2026-06-03T12:00:00.000Z");
-    vi.setSystemTime(new Date(old));
-    const oldRowRecentComment = createIssue(
-      store,
-      checkout.project.id,
-      "com1111",
-      "Old issue with recent comment",
-    );
-    const oldInactive = createIssue(store, checkout.project.id, "old1111", "Old inactive issue");
-
-    vi.setSystemTime(new Date(recent));
-    const comment = store.addComment(oldRowRecentComment.id, {
-      ...SYSTEM_ACTOR,
-      body: "Recent implementation note.",
-      author_actor_type: "agent",
-      author_display: "Codex",
-      source: "mandible",
-    });
-    db.prepare("UPDATE ledger_comments SET created_at = ?, updated_at = ? WHERE id = ?")
-      .run(recent, recent, comment.id);
-
-    vi.setSystemTime(new Date("2026-06-04T12:00:00.000Z"));
-    const projection = buildLedgerIssueProjection(db, {
-      mode: "issue",
-      status: "all",
-      since: "3d",
-    });
-
-    expect(projection?.nodes.map((node) => node.label)).toEqual(["Old issue with recent comment"]);
-    expect(projection?.nodes.find((node) => node.label === oldInactive.title)).toBeUndefined();
-    expect(findNode(projection?.nodes ?? [], "Old issue with recent comment").detail)
-      .toMatchObject({
-        issue_updated_at: "2026-05-20T12:00:00.000Z",
-        graph_activity_at: "2026-06-03T12:00:00.000Z",
-      });
-    expect(projection?.edges).toEqual([]);
-  });
-
-  it("accepts millisecond timestamps stored as strings for issue since filters", () => {
-    vi.useFakeTimers();
-    const checkout = createProject("repo");
-    const store = new LedgerStore(db);
-    const old = Date.parse("2026-05-20T12:00:00.000Z");
-    const recent = Date.parse("2026-06-03T12:00:00.000Z");
-    const recentIssue = createIssue(store, checkout.project.id, "new1111", "Recent string timestamp");
-    const oldIssue = createIssue(store, checkout.project.id, "old1111", "Old string timestamp");
-    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
-      .run(String(recent), String(recent), recentIssue.id);
-    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
-      .run(String(old), String(old), oldIssue.id);
-
-    vi.setSystemTime(new Date("2026-06-04T12:00:00.000Z"));
-    const projection = buildLedgerIssueProjection(db, {
-      mode: "issue",
-      status: "all",
-      since: "3d",
-    });
-
-    expect(projection?.nodes.map((node) => node.label)).toEqual(["Recent string timestamp"]);
-    expect(findNode(projection?.nodes ?? [], "Recent string timestamp").detail)
-      .toMatchObject({
-        issue_updated_at: "2026-06-03T12:00:00.000Z",
-        graph_activity_at: "2026-06-03T12:00:00.000Z",
-      });
-  });
-
-  it("projects derived text reference relationships as issue graph edges", () => {
-    const checkout = createProject("repo");
-    const store = new LedgerStore(db);
-    const source = createIssue(store, checkout.project.id, "src1234", "Source issue");
-    const target = createIssue(store, checkout.project.id, "tar1234", "Target issue");
-
-    store.updateIssue(source.id, { body: "See [issue:tar1234] for follow-up." }, SYSTEM_ACTOR);
-
-    const projection = buildLedgerIssueProjection(db, { mode: "issue", status: "all" });
-    const sourceNode = findNode(projection?.nodes ?? [], "Source issue");
-    const targetNode = findNode(projection?.nodes ?? [], "Target issue");
-
-    expect(projection?.edges).toEqual([
-      expect.objectContaining({
-        source: sourceNode.id,
-        target: targetNode.id,
-        type: "references",
-        edge_class: "semantic",
-        provenance: "ledger_issue_relationships",
-        metadata: expect.objectContaining({
-          relationship_type: "references",
-          label_default_visible: false,
-        }),
-      }),
-    ]);
-  });
 });

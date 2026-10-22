@@ -1,9 +1,8 @@
 import http from "node:http";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { Router, type ClientAuthGate } from "../src/server.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
@@ -11,7 +10,7 @@ import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addGrant } from "../src/permissions/store.js";
-import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
+import { createLedgerIssue, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { addCredential, createUser } from "../src/users/store.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import {
@@ -24,8 +23,7 @@ let db: Db;
 let router: Router;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   const fixtures = addProject(db, { project_key: "work-unit-fixtures", display_name: "Work-unit fixtures" });
   for (const alias of [

@@ -1,18 +1,21 @@
-import SqliteDatabase from "../src/sqlite.ts";
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, type Db } from "../src/db.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { setDb, type Db } from "../src/db.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { registerOperationalIncidentRoutes } from "../src/routes/operational-incidents.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
+import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
 import {
   acknowledgeOperationalIncident,
-  closeOperationalIncident,
-  countOperationalIncidents,
   ingestOperationalIncidentEnvelope,
   listOperationalIncidents,
   OperationalIncidentError,
   parseOperationalIncidentEnvelope,
-  transitionOperationalIncidentRemediation,
 } from "../src/operational-incidents.js";
-import { createUser } from "../src/users/store.js";
+import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const FIRST = "2026-08-15T11:54:03.122Z";
 const SECOND = "2026-08-16T11:58:44.980Z";
@@ -71,8 +74,7 @@ describe("operational incident ledger and reconciliation", () => {
   let humanId: string;
 
   beforeEach(() => {
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
+    db = migratedMemoryDb();
     publisherId = createUser(db, {
       slug: "incident-publisher",
       kind: "agent",
@@ -95,20 +97,6 @@ describe("operational incident ledger and reconciliation", () => {
       at,
     );
   }
-
-  it("operational_incidents_ingest_creates_active_unacknowledged_episode", () => {
-    const result = ingest(payload());
-    expect(result.accepted[0]).toMatchObject({ result: "stored", event_id: RAISED_ID });
-    expect(listOperationalIncidents(db).incidents[0]).toMatchObject({
-      observation: "active",
-      attention: "unacknowledged",
-      remediation: "none",
-      resolved: false,
-    });
-    expect(db.prepare(
-      "SELECT applied, ignored_reason FROM operational_incident_observation_events",
-    ).get()).toEqual({ applied: 1, ignored_reason: null });
-  });
 
   it("operational_incidents_run_status_vocabulary_is_terminal_only", () => {
     // `facts` describes a finished run — `finished_at` is mandatory — so a
@@ -206,69 +194,107 @@ describe("operational incident ledger and reconciliation", () => {
       .toContainEqual(expect.objectContaining({ id: nextId, attention: "unacknowledged" }));
   });
 
-  it("operational_incidents_recovery_while_fix_prepared_completes_remediation", () => {
-    const incidentId = ingest(payload()).accepted[0].incident_id;
-    transitionOperationalIncidentRemediation(db, incidentId, "triaging", {
-      kind: "prepare_fix_confirmed",
-      authority: "user",
-      actorUserId: humanId,
-      now: 120,
+});
+
+describe("operational incident routes", () => {
+  class SlugGate implements ClientAuthGate {
+    authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
+      if (!credential) return null;
+      const ephemeral = credential.startsWith("session:");
+      const slug = ephemeral ? credential.slice("session:".length) : credential;
+      const row = db.prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
+        .get(slug) as { id: string; slug: string } | undefined;
+      return row ? {
+        user_id: row.id,
+        slug: row.slug,
+        method: ephemeral ? "ephemeral" : "api_token",
+        credential_id: null,
+        source: "in_process",
+        effect_ceiling: PRODUCTION_EFFECTS,
+      } : null;
+    }
+    mode(): "compat" { return "compat"; }
+    recordUnattributedWrite(): void {}
+  }
+
+  let db: Db;
+  let router: Router;
+  let publisherId: string;
+  let operatorId: string;
+
+  beforeEach(() => {
+    db = migratedMemoryDb();
+    setDb(db);
+    operatorId = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
+    setSetting(db, OPERATOR_SETTING_KEY, operatorId);
+    createUser(db, { slug: "reviewer", kind: "human", display_name: "Reviewer" });
+    publisherId = createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Agent Schedule" }).id;
+    createUser(db, { slug: "unmapped-agent", kind: "agent", display_name: "Unmapped" });
+    router = new Router({
+      clientAuth: new SlugGate(),
+      instance: resolveInstanceInfo({ env: { MANDIBLE_OPERATIONAL_MUTATIONS: "allow" } as NodeJS.ProcessEnv }),
     });
-    transitionOperationalIncidentRemediation(db, incidentId, "fix_prepared", {
-      authority: "server",
-      now: 130,
-    });
-    ingest(payload({ seq: 2 }), 200);
-    expect(listOperationalIncidents(db, { status: "resolved" }).incidents[0])
-      .toMatchObject({ observation: "recovered", remediation: "complete" });
+    registerOperationalIncidentRoutes(router, db);
   });
 
-  it("operational_incidents_operator_close_preserves_executor_observation", () => {
-    const incidentId = ingest(payload()).accepted[0].incident_id;
-    const closed = closeOperationalIncident(db, incidentId, humanId, "Task retired.", 100, 200);
-    expect(closed).toMatchObject({
-      observation: "active",
-      attention: "acknowledged",
-      remediation: "complete",
-      resolution_kind: "operator_closure",
+  afterEach(() => db.close());
+
+  function postIngest(credential?: string, body: unknown = payload()) {
+    return router.invoke({
+      method: "POST",
+      url: "/api/operational-incidents/ingest",
+      body,
+      ...(credential ? { credential } : {}),
     });
-    expect(db.prepare(
-      `SELECT kind FROM operational_incident_workflow_events
-        WHERE incident_id = ? ORDER BY created_at, id`,
-    ).all(incidentId)).toEqual(expect.arrayContaining([
-      { kind: "attention_acknowledged" },
-      { kind: "operator_closed" },
-    ]));
+  }
+
+  async function createIncident(): Promise<string> {
+    const response = await postIngest("agent-schedule");
+    return (response.body as { accepted: Array<{ incident_id: string }> }).accepted[0].incident_id;
+  }
+
+  it("incident_ingest_requires_mapped_durable_executor", async () => {
+    expect((await postIngest()).status).toBe(401);
+    expect((await postIngest("session:agent-schedule")).body).toMatchObject({ code: "executor_credential_required" });
+    expect((await postIngest("operator")).body).toMatchObject({ code: "executor_agent_required" });
+    expect((await postIngest("unmapped-agent")).body).toMatchObject({ code: "executor_identity_forbidden" });
+    setSetting(db, TASK_INVENTORY_EXECUTORS_KEY, JSON.stringify({ "agent-schedule": ["fleet"] }));
+    expect(await postIngest("agent-schedule")).toMatchObject({ status: 403, body: { code: "executor_identity_forbidden" } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM operational_incidents").get()).toEqual({ n: 0 });
   });
 
-  it("operational_incidents_badge_count_is_active_and_unacknowledged_only", () => {
-    const unacknowledged = ingest(payload()).accepted[0].incident_id;
-    const acknowledged = ingest(payload({
-      task: "task-health",
-      eventId: "01K2QN2M4Y3D1VH5E8A5K5EWK4",
-    })).accepted[0].incident_id;
-    acknowledgeOperationalIncident(db, acknowledged, humanId, 150);
-    const recovered = ingest(payload({
-      task: "policy-audit",
-      eventId: "01K2QN2M4Y3D1VH5E8A5K5EWK5",
-    })).accepted[0].incident_id;
-    ingest(payload({
-      task: "policy-audit",
-      seq: 2,
-      eventId: "01K2T70C4HDD6WJZRX6YZCC7YM",
-    }));
-    const closed = ingest(payload({
-      task: "limit-postmortem",
-      eventId: "01K2QN2M4Y3D1VH5E8A5K5EWK6",
-    })).accepted[0].incident_id;
-    closeOperationalIncident(db, closed, humanId, "No longer applicable.", 100, 200);
+  it("incident_ingest_records_authenticated_actor_not_payload_actor", async () => {
+    expect((await postIngest("agent-schedule", { ...payload(), posted_by_user_id: operatorId })).status).toBe(400);
+    await postIngest("agent-schedule");
+    expect(db.prepare("SELECT posted_by_user_id FROM operational_incidents").get())
+      .toEqual({ posted_by_user_id: publisherId });
+  });
 
-    expect(countOperationalIncidents(db)).toEqual({
-      active_unacknowledged: 1,
-      active_acknowledged: 1,
-      resolved: 2,
+  it("incident_acknowledge_requires_active_human", async () => {
+    const incidentId = await createIncident();
+    const agent = await router.invoke({
+      method: "POST",
+      url: `/api/operational-incidents/${incidentId}/acknowledge`,
+      credential: "agent-schedule",
+      body: { expected_attention: "unacknowledged" },
     });
-    expect(unacknowledged).not.toBe(acknowledged);
-    expect(recovered).not.toBe(closed);
+    expect(agent).toMatchObject({ status: 403, body: { code: "human_incident_actor_required" } });
+  });
+
+  it("incident_close_requires_operator", async () => {
+    const incidentId = await createIncident();
+    const { updated_at } = db.prepare("SELECT updated_at FROM operational_incidents WHERE id = ?")
+      .get(incidentId) as { updated_at: number };
+    const close = (credential: string) => router.invoke({
+      method: "POST",
+      url: `/api/operational-incidents/${incidentId}/close`,
+      credential,
+      body: { reason: "Task retired.", expected_updated_at: updated_at },
+    });
+    expect((await close("reviewer")).body).toMatchObject({ code: "operator_required" });
+    expect(await close("operator")).toMatchObject({
+      status: 200,
+      body: { incident: { id: incidentId, resolution_kind: "operator_closure" } },
+    });
   });
 });

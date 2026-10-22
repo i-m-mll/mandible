@@ -1,7 +1,6 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import {
   addGrant,
@@ -17,6 +16,7 @@ import {
 import { createUser, setupOperator } from "../src/users/store.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
 import type { ResolvedClientIdentity } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function identity(user: { id: string; slug: string }): ResolvedClientIdentity {
   return {
@@ -32,8 +32,7 @@ describe("permission evaluator", () => {
   let db: Db;
 
   beforeEach(() => {
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
+    db = migratedMemoryDb();
   });
 
   afterEach(() => db.close());

@@ -2,12 +2,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { registerIssueRoutes } from "../src/routes/issues.js";
+import { registerUserRoutes } from "../src/routes/users.js";
 import { Router } from "../src/server.js";
-import { createUser } from "../src/users/store.js";
+import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
 
 let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
 beforeEach(() => {
@@ -48,5 +53,32 @@ describe("strict client-auth boundary", () => {
     const user = createUser(db, { slug: "agent-y", kind: "agent", display_name: "Agent Y" });
     const issued = auth.mintApiToken(user.id);
     expect((await fileRpc(issued.token)).status).toBe(200);
+  });
+});
+
+describe("operator bootstrap ledger boundary", () => {
+  it("rejects a tokenless HTTP write while no operator exists (issue a64d2de)", async () => {
+    expect(db.prepare("SELECT id, kind FROM users").all()).toEqual([{ id: SYSTEM_USER_ID, kind: "system" }]);
+    const project = resolveProjectForCheckout(db, { root, name: "mandible", workRepoId: "mandible" }).project;
+    const issueId = new LedgerStore(db).createIssue({
+      project_id: project.id,
+      title: "Bootstrap boundary",
+      attribution: systemAction(),
+    }).id;
+    const logger = vi.fn();
+    const bootstrap = new Router({ logger });
+    registerUserRoutes(bootstrap);
+    registerIssueRoutes(bootstrap, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never);
+
+    const written = await bootstrap.invoke({
+      method: "POST",
+      url: `/api/ledger/issues/${issueId}/comments`,
+      body: { message: "Tokenless HTTP comment." },
+      transport: "http",
+    });
+
+    expect(written.status).toBe(401);
+    expect(logger).not.toHaveBeenCalledWith("error", "route_handler_error", expect.anything());
+    expect(db.prepare("SELECT 1 FROM ledger_comments WHERE issue_id = ?").get(issueId)).toBeUndefined();
   });
 });
