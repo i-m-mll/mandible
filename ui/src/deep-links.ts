@@ -64,6 +64,7 @@ function singleParamRouteFromUrl(url: URL, routeName: string, param: string): st
   if (!value) return null;
 
   const params = new URLSearchParams({ [param]: value });
+  if (routeName === 'briefing') url.searchParams.delete('group');
   return `#/${routeName}?${appendExtraParams(params, url).toString()}`;
 }
 

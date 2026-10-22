@@ -7,6 +7,18 @@ import {
 import { Router } from "../src/server.js";
 
 describe("redirect routes", () => {
+  it.each(['', '/r'])('keeps path-owned identity through %s redirects despite conflicting alias selectors', async (prefix) => {
+    const router = new Router();
+    registerRedirectRoutes(router, { resolveBriefingLink: () => ({ ok: true, briefingId: 'target' }) });
+    const targetPrefix = prefix ? 'mandible:///' : '/#/';
+    const artifact = await router.invoke({ method: 'GET',
+      url: `${prefix}/artifact/artifact-version%3Aexact?ref=wrong&artifact=wrong&series=wrong&version=2&sidebar=hidden&agent_session=worker&unknown=keep` });
+    expect(String(artifact.body)).toContain(JSON.stringify(`${targetPrefix}artifacts?sidebar=hidden&agent_session=worker&unknown=keep&ref=artifact-version%3Aexact`));
+    const briefing = await router.invoke({ method: 'GET',
+      url: `${prefix}/briefing/target?briefing=wrong&group=wrong&round=one&sidebar=hidden&unknown=keep` });
+    expect(String(briefing.body)).toContain(JSON.stringify(`${targetPrefix}briefing?round=one&sidebar=hidden&unknown=keep&briefing=target`));
+  });
+
   it("serves a ledger-resolved issue redirect page with a visible fallback link", async () => {
     const router = new Router();
     registerRedirectRoutes(router, {

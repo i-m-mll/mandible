@@ -3,6 +3,7 @@ import { resolveBriefingId } from "../feedback/briefings.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { briefingReadViewer } from "./briefing.js";
+import { ARTIFACT_ROUTE_SELECTORS, patchRouteQuery } from "../route-query.js";
 
 type RedirectKind = "issue" | "auth" | "artifact" | "briefing";
 type RedirectFailure = { ok: false; status: number; message: string };
@@ -80,7 +81,8 @@ export function registerRedirectRoutes(
           });
           return;
         }
-        const query = buildTargetQuery(req.query ?? {}, resolved.params);
+        const query = patchRouteQuery(new URLSearchParams(req.query ?? {}), resolved.params,
+          kind === 'artifact' ? ARTIFACT_ROUTE_SELECTORS : kind === 'briefing' ? ['group', 'briefing'] : Object.keys(resolved.params));
         sendRedirectPage(res, {
           label: config.label,
           target: `${form.targetPrefix}${config.targetPath}?${query.toString()}`,
@@ -88,25 +90,6 @@ export function registerRedirectRoutes(
       }, { operation: { id: `${form.operationPrefix}.${kind}`, effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
     }
   }
-}
-
-// Issue f59b5bd — /r/ redirects preserve extra query params (notably
-// agent_session) so session-bound links compose: the caller's params carry
-// through into the deep-link target, but the params the redirect itself owns
-// always win.
-function buildTargetQuery(
-  extraQuery: Record<string, string>,
-  ownParams: Record<string, string>,
-): URLSearchParams {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(extraQuery)) {
-    if (key in ownParams) continue;
-    query.set(key, value);
-  }
-  for (const [key, value] of Object.entries(ownParams)) {
-    query.set(key, value);
-  }
-  return query;
 }
 
 // Briefing refs resolve server-side because agents may hold a typed

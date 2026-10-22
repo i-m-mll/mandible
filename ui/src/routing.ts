@@ -1,4 +1,7 @@
 import { compactLongIdSegments } from './resource-refs';
+import { BRIEFING_ROUTE_SELECTORS, patchRouteQuery } from '../../src/route-query';
+
+export { ARTIFACT_ROUTE_SELECTORS, BRIEFING_ROUTE_SELECTORS } from '../../src/route-query';
 
 export type Route = {
   tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces' | 'overview' | 'briefing' | 'tasks';
@@ -54,14 +57,32 @@ export function spacesRouteFromHash(hashValue: string, target: SpacesRouteTarget
   return `#/spaces${query ? `?${query}` : ''}`;
 }
 
-export function briefingRoute(briefingId: string, roundId?: string | null): string {
-  const params = new URLSearchParams({ briefing: shortRouteId(briefingId) });
-  if (roundId) params.set('round', shortRouteId(roundId));
-  return `/#/briefing?${params.toString()}`;
+export function routeHashWithParams(
+  hashValue: string,
+  tab: Route['tab'],
+  updates: Record<string, string | null | undefined>,
+  ownedParams: readonly string[] = [],
+): string {
+  const query = hashValue.split('?')[1] ?? '';
+  const params = patchRouteQuery(new URLSearchParams(query), updates, ownedParams);
+  return `#/${tab}${params.size ? `?${params.toString()}` : ''}`;
 }
 
-export function briefingGroupRoute(groupKey: string): string {
-  return `/#/briefing?${new URLSearchParams({ group: groupKey }).toString()}`;
+/** Keep the mounted router synchronized with a selection written without a history entry. */
+export function replaceRouteHash(hash: string): void {
+  if (window.location.hash === hash) return;
+  window.history.replaceState(null, '', hash);
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+}
+
+export function briefingRoute(briefingId: string, roundId?: string | null, hashValue = ''): string {
+  return `/${routeHashWithParams(hashValue, 'briefing', {
+    briefing: shortRouteId(briefingId), round: roundId ? shortRouteId(roundId) : null,
+  }, BRIEFING_ROUTE_SELECTORS)}`;
+}
+
+export function briefingGroupRoute(groupKey: string, hashValue = ''): string {
+  return `/${routeHashWithParams(hashValue, 'briefing', { group: groupKey }, BRIEFING_ROUTE_SELECTORS)}`;
 }
 
 export function parseArtifactVersionParam(value: string | undefined): number | null {
