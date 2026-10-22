@@ -120,13 +120,34 @@ export function createMigratedDb(options: CreateMigratedDbOptions = {}): Db {
 export function createMigratedDbWithSeeds(
   options: CreateMigratedDbOptions = {},
 ): { db: Db; seeds: MigratedDbSeeds } {
-  const db = new SqliteDatabase(options.path ?? ":memory:");
-  for (const pragma of options.pragmas ?? []) {
-    db.pragma(pragma);
-  }
-  migrate(db);
+  const db = options.path === undefined && options.pragmas === undefined
+    ? migratedMemoryDb()
+    : migratedDb(options.path ?? ":memory:", options.pragmas ?? []);
   if (options.setGlobal) setDb(db);
   return { db, seeds: seedUsers(db, options) };
+}
+
+function migratedDb(filename: string, pragmas: string[]): Db {
+  const db = new SqliteDatabase(filename);
+  for (const pragma of pragmas) db.pragma(pragma);
+  migrate(db);
+  return db as unknown as Db;
+}
+
+let migratedTemplate: Buffer | null = null;
+
+/**
+ * A fresh in-memory database at head. Migrating costs about a second under
+ * load, so each test process migrates once and every caller deserializes a
+ * copy of that snapshot.
+ */
+export function migratedMemoryDb(): Db {
+  if (!migratedTemplate) {
+    const seed = migratedDb(":memory:", []);
+    migratedTemplate = (seed as unknown as SqliteDatabase).serialize();
+    seed.close();
+  }
+  return SqliteDatabase.fromSnapshot(Buffer.from(migratedTemplate)) as unknown as Db;
 }
 
 // --- production-path ledger factories --------------------------------------
