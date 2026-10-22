@@ -6,7 +6,7 @@ import {
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { EntityPill } from '../components/shared/EntityPill';
+import { IssuePill } from '../components/shared/IssuePill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
@@ -29,7 +29,6 @@ import {
   fetchAuthHooks,
   cancelApprovalProof,
   canPerformOperation,
-  findIssue,
   getAuthRequestActions,
   getAuthRequestDetail,
   isApiErrorStatus,
@@ -505,17 +504,6 @@ function actionStateLabel(state: AuthRequestAction['state']): string {
   }
 }
 
-function issueTitleFromDetail(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const record = payload as Record<string, unknown>;
-  if (typeof record.title === 'string') return record.title;
-  const issue = record.issue;
-  if (issue && typeof issue === 'object' && typeof (issue as { title?: unknown }).title === 'string') {
-    return (issue as { title: string }).title;
-  }
-  return null;
-}
-
 function truncateSummary(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
@@ -549,28 +537,8 @@ function AuthActionBundle({
     DEFAULT_EXPANDED_ACTION_IDS,
   );
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
-  const [targetTitles, setTargetTitles] = useState<Record<string, string>>({});
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
-
-  useEffect(() => {
-    const refs = uniqueStrings(actions.map((action) => action.target_issue_ref));
-    let active = true;
-    for (const ref of refs) {
-      if (targetTitles[ref]) continue;
-      findIssue(ref)
-        .then((detail) => {
-          if (!active) return;
-          const title = issueTitleFromDetail(detail);
-          if (!title) return;
-          setTargetTitles((prev) => ({ ...prev, [ref]: title }));
-        })
-        .catch(() => undefined);
-    }
-    return () => {
-      active = false;
-    };
-  }, [actions, targetTitles]);
 
   if (actions.length === 0) {
     return null;
@@ -593,16 +561,13 @@ function AuthActionBundle({
       </div>
       <div className="auth-action-bundle__rows">
         {actions.map((action) => {
-          const title = (action as AuthRequestAction & { target_issue_title?: string }).target_issue_title
-            ?? targetTitles[action.target_issue_ref]
-            ?? '';
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
           const detail = action.outcome_detail || actionPayloadSummary(action);
           const canExpand = Boolean(detail) && (action.kind !== 'issue_close' || action.state !== 'staged');
           const expanded = canExpand && expandedIds.has(action.id);
-          const summary = action.kind === 'issue_close' ? title : actionPayloadSummary(action);
+          const summary = action.kind === 'issue_close' ? null : actionPayloadSummary(action);
           return (
             <div
               key={action.id}
@@ -623,11 +588,7 @@ function AuthActionBundle({
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
                   <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
-                  <EntityPill
-                    type="issue"
-                    id={action.target_issue_ref}
-                    repoId={repoId}
-                  />
+                  <IssuePill issueRef={action.target_issue_ref} context={repoId} />
                   {action.state !== 'staged' && (
                     <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
                       {actionStateLabel(action.state)}
@@ -1162,7 +1123,7 @@ function AuthRequestDetail({
                     <span className="auth-card__issue-group">
                       <span className="auth-card__issue-group-label">References</span>
                       {referenceRefs.map((ref) => (
-                        <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                        <IssuePill key={ref} issueRef={ref} context={repoId} />
                       ))}
                     </span>
                   )}
@@ -1170,7 +1131,7 @@ function AuthRequestDetail({
                     <span className="auth-card__issue-group">
                       <span className="auth-card__issue-group-label">Closes</span>
                       {closureRefs.map((ref) => (
-                        <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                        <IssuePill key={ref} issueRef={ref} context={repoId} />
                       ))}
                     </span>
                   )}

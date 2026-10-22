@@ -273,14 +273,17 @@ export function displayResourceRef(ref: string): string {
 
 // --- nav hrefs ---------------------------------------------------------------
 
+/** App route for an issue, optionally scoped to its project and a comment ordinal. */
+export function issueRouteHref(issue: string, repo?: string | null, comment?: string | null): string {
+  const params = new URLSearchParams({ issue });
+  if (repo) params.set('repo', repo);
+  if (comment) params.set('comment', comment);
+  return `#/issues?${params.toString()}`;
+}
+
 export function resourceRefHref(ref: string): string {
   const issue = issueAuthorityFromResourceRef(ref) ?? commentAuthorityFromResourceRef(ref);
-  if (issue) {
-    const params = new URLSearchParams({ issue: issue.ref });
-    if (issue.repoId) params.set('repo', issue.repoId);
-    if (issue.comment) params.set('comment', issue.comment);
-    return `#/issues?${params.toString()}`;
-  }
+  if (issue) return issueRouteHref(issue.ref, issue.repoId, issue.comment);
   const auth = AUTH_REF.exec(ref.trim());
   if (auth) {
     // The auth view resolves prefixes; inbound refs pass through untouched so a
@@ -444,9 +447,12 @@ export type { ResolverRefKind, ResolverResult };
  */
 export async function resolveResourceRef(
   ref: string,
-  fetchImpl: typeof fetch = fetch,
+  options: { project?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<ResolverResult> {
-  const path = `/api/spaces/resolve?ref=${encodeURIComponent(ref)}`;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const params = new URLSearchParams({ ref });
+  if (options.project) params.set('project', options.project);
+  const path = `/api/spaces/resolve?${params.toString()}`;
   const response = await fetchImpl(path, { headers: { Accept: 'application/json' } });
   if (!response.ok) {
     throw new Error(`resolve ${ref} failed: ${response.status}`);

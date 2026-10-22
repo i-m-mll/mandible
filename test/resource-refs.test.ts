@@ -271,7 +271,7 @@ describe('unresolved-reference UI + C2 resolver', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
     );
-    const result = await resolveResourceRef(`artifact-blob:${HASH64}`, fetchImpl as unknown as typeof fetch);
+    const result = await resolveResourceRef(`artifact-blob:${HASH64}`, { fetchImpl: fetchImpl as unknown as typeof fetch });
     expect(fetchImpl).toHaveBeenCalledOnce();
     const calledPath = (fetchImpl.mock.calls[0] as unknown[])[0] as string;
     expect(calledPath).toContain('/api/spaces/resolve?ref=');

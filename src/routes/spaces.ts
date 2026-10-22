@@ -73,6 +73,8 @@ import { ClientAuthzError } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { effectiveWorkerStatus } from "../ledger/issue-work-state.js";
+import { candidateProjectIds, resolveOperationalIssueRef } from "../ledger/operational-links.js";
+import { projectRouteRef } from "../ledger/issue-detail.js";
 
 function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
   if (project) requireProjectAccess(db, req, project, role);
@@ -271,7 +273,12 @@ function validateItemRef(
 
 // --- unified ref resolver ----------------------------------------------------
 
-function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverResult {
+/**
+ * `context` names the project the ref was written in (a project or repo ref).
+ * A bare issue ref resolves there first, and the result says whether the issue
+ * belongs to it.
+ */
+function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: string): ResolverResult {
   const ref = rawRef.trim();
   const store = new LedgerStore(db);
 
@@ -299,7 +306,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverRe
   if (colon > 0) {
     const prefix = ref.slice(0, colon);
     const rest = ref.slice(colon + 1);
-    if (prefix === "issue") return resolveIssueRef(db, store, rest, ref);
+    if (prefix === "issue") return resolveIssueRef(db, store, rest, ref, context);
     if (prefix === "comment") return resolveCommentRef(db, rest, ref);
     if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
     if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
@@ -315,7 +322,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string): ResolverRe
 
   // Fall back: try issue ref resolution, then artifact resolution.
   const issue = store.resolveIssueRef(ref);
-  if (issue.ok) return resolveIssueRef(db, store, ref, ref);
+  if (issue.ok) return resolveIssueRef(db, store, ref, ref, context);
   return resolveArtifactResult(db, ref);
 }
 
@@ -331,7 +338,7 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
   const artifactParam = url.searchParams.get("ref");
   const route = url.pathname.replace(/^\/+/, "");
   if (requestParam && route === "auth") return resolveAuthRef(db, req, requestParam, ref);
-  if (issueParam) return resolveIssueRef(db, store, issueParam, ref);
+  if (issueParam) return resolveIssueRef(db, store, issueParam, ref, url.searchParams.get("repo") ?? undefined);
   if (artifactParam) return resolveArtifactResult(db, artifactParam, "mandible", ref);
   return {
     ref,
@@ -345,13 +352,24 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
   };
 }
 
-function resolveIssueRef(db: Db, store: LedgerStore, refValue: string, ref: string): ResolverResult {
+function resolveIssueRef(
+  db: Db,
+  store: LedgerStore,
+  refValue: string,
+  ref: string,
+  context?: string,
+): ResolverResult {
   // `issue:<id>#<n>` addresses comment ordinal n; `#0` is the description.
   const target = parseIssueRefTarget(refValue.trim());
   const issueRef = target
     ? `${target.project ? `${target.project}/` : ""}${target.issue}`
     : refValue.trim();
-  const resolved = store.resolveIssueRef(issueRef);
+  const operational = resolveOperationalIssueRef(db, issueRef, context);
+  const resolved = operational.ok
+    ? { ok: true as const, id: operational.issue_id }
+    : operational.error === "ambiguous"
+      ? { ok: false as const, error: "ambiguous" as const, matches: operational.matches ?? [] }
+      : { ok: false as const, error: "not_found" as const };
   if (!resolved.ok) {
     return {
       ref,
@@ -367,8 +385,18 @@ function resolveIssueRef(db: Db, store: LedgerStore, refValue: string, ref: stri
   if (target?.ordinal) return resolveCommentOrdinal(store, resolved.id, String(target.ordinal), ref);
   try {
     const issue = store.getIssue(resolved.id);
-    const entity = { ...issue, worker_status: effectiveWorkerStatus(db, issue.id) };
-    return { ref, kind: "issue", resolved: true, entity: entity as unknown as Record<string, unknown> };
+    const entity = {
+      ...issue,
+      worker_status: effectiveWorkerStatus(db, issue.id),
+      project_ref: projectRouteRef(db, issue.project_id),
+    };
+    return {
+      ref,
+      kind: "issue",
+      resolved: true,
+      entity: entity as unknown as Record<string, unknown>,
+      ...(context ? { detail: { same_project: candidateProjectIds(db, context).includes(issue.project_id) } } : {}),
+    };
   } catch (error) {
     return { ref, kind: "issue", resolved: false, entity: null, error: String(error) };
   }
@@ -482,7 +510,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const ref = queryString(req, "ref") ?? queryString(req, "uri");
       if (!ref) throw new HttpError(400, "ref query parameter required");
       const db = getDb();
-      sendJson(res, 200, { resolution: resolveUnifiedRef(db, req, ref) });
+      sendJson(res, 200, { resolution: resolveUnifiedRef(db, req, ref, queryString(req, "project")) });
     } catch (error) {
       handleError(res, error);
     }

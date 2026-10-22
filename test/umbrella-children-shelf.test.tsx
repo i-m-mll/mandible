@@ -29,6 +29,7 @@ function childRef(overrides: Partial<LedgerIssueSummaryRef> = {}): LedgerIssueSu
     id: "issue-child-canonical",
     display_id: "d894231",
     project_id: "project-1",
+    project_ref: "mandible",
     title: "Umbrella surfaces stop reading the body table",
     status: "open",
     resolution: null,
