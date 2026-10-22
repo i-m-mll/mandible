@@ -52,11 +52,29 @@ export const METADATA_BACKUP_TABLES = [
   "conversation_normalization_checkpoints",
   "conversation_structural_blocks",
   "conversation_block_aliases",
+  // Operator intent and Mandible-owned delivery custody for live
+  // conversations: archive and runtime choices, the immutable control journal,
+  // every message Mandible queued for a provider, spawn receipts, and usage
+  // observations. None of it is in a provider transcript. Control state keeps
+  // the generation counters that outbox and usage rows are keyed by.
+  "conversation_archive_states",
+  "conversation_runtime_settings",
+  "conversation_control_state",
+  "conversation_control_journal",
+  "conversation_control_outbox",
+  "conversation_delivery_settings",
+  "conversation_provider_usage",
+  "conversation_spawn_requests",
+  "conversation_spawn_events",
+  "chat_attachment_files",
   "workflow_runs",
   "workflow_phases",
   "workflow_workers",
   "issue_resolutions",
   "work_units",
+  // Codex thread archival is attempted once per resolved unit; the archived
+  // mark is what keeps a restored install from archiving threads again.
+  "worker_thread_archives",
   "webhook_events",
   "auth_hooks",
   // Issue 27241e6 — durable post-merge convergence state. Not reproducible:
@@ -130,6 +148,14 @@ export const METADATA_BACKUP_TABLES = [
   // are deliberately absent and therefore every restored grant fails closed.
   "auth_clearances",
   "auth_clearance_uses",
+  // Reviewed-record audit chain for protected merges: the hashed lifecycle
+  // revisions of every auth request, the protected-base audit and candidate
+  // acceptance each approval was judged against, and the immutable work-unit
+  // custody receipts that authorize request mutation.
+  "auth_request_lifecycle_events",
+  "auth_base_audits",
+  "auth_candidate_acceptances",
+  "work_unit_custody_events",
   // User groups, group membership, and permission grants (issue a0379a3 /
   // umbrella 8e2e8b2, migration 111). Canonical registry data describing who
   // belongs to which group and what each subject may do — deliberately enrolled,
@@ -161,6 +187,7 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_submission_annotations",
   "briefing_legacy_audit",
   "briefing_legacy_custody",
+  "briefing_creation_overrides",
   // Loose named collections of otherwise independent Briefings. Bundle rows
   // precede their manually ordered membership rows for FK-safe restoration.
   "briefing_bundles",
@@ -175,6 +202,7 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_destination_routes",
   "briefing_destination_policies",
   "briefing_destination_templates",
+  "briefing_destination_mutations",
   "briefing_composition_runs",
   "briefing_composition_inputs",
   "briefing_composition_contributions",
@@ -197,6 +225,12 @@ export const METADATA_BACKUP_TABLES = [
   // reproducible runtime state. Keep requests before their event children.
   "task_command_requests",
   "task_command_events",
+  // Task activation (executor observations, the conditions raised from them,
+  // and their immutable resolution events) is executor testimony about moments
+  // that have passed, like the inventory receipts above.
+  "task_activation_observations",
+  "task_activation_conditions",
+  "task_activation_condition_events",
   // Durable successful-merge facts (migration 129). These are retained
   // predicate evidence and cannot be reconstructed after auth-request pruning.
   // The ledger_projects parent is emitted above; keep these facts before the
@@ -254,6 +288,14 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   "workflow_ingest_state",
   "graph_entities",
   "graph_edges",
+  // Full-text index over ledger issues and comments; ISSUE_SEARCH_SCHEMA_SQL
+  // rebuilds it from those tables, and triggers keep it current.
+  "issue_search",
+  "issue_search_config",
+  "issue_search_content",
+  "issue_search_data",
+  "issue_search_docsize",
+  "issue_search_idx",
 ] as const;
 
 export type ReproducibleOrRuntimeTable = (typeof REPRODUCIBLE_OR_RUNTIME_TABLES)[number];

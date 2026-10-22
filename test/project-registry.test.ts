@@ -881,3 +881,21 @@ describe("operational + relationship resolution by project_key (codex review #2)
     expect(targets).toContain(targetIssue.id);
   });
 });
+
+describe("merge move-list schema coverage", () => {
+  it("every project-id column in the live schema is covered by the move list or historical allowlist", () => {
+    const moveSet = new Set<string>();
+    for (const { table, columns } of PROJECT_ID_COLUMNS) {
+      for (const column of columns) moveSet.add(`${table}.${column}`);
+    }
+    const historicalSet = new Set(
+      HISTORICAL_PROJECT_ID_COLUMNS.map((entry) => `${entry.table}.${entry.column}`),
+    );
+    const discovered = discoverProjectIdColumns(db);
+    expect(discovered.length).toBeGreaterThan(0);
+    const uncovered = discovered
+      .map((entry) => `${entry.table}.${entry.column}`)
+      .filter((key) => !moveSet.has(key) && !historicalSet.has(key));
+    expect(uncovered).toEqual([]);
+  });
+});
