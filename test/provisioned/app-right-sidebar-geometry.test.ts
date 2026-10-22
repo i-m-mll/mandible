@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// @provisioned chromium
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,17 +9,10 @@ import {
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
+import { runChromium } from '../helpers/chromium';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
-
-const chrome = [
-  process.env.CHROME_BIN,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
 
 const styles = [
   'ui/src/styles/tokens.css', 'ui/src/styles/base.css', 'ui/src/styles/conversations.css',
@@ -38,7 +32,7 @@ function bundleFixture(directory: string): string {
   const checkoutRoot = canonicalCheckoutRoot();
   const output = join(directory, 'fixture.js');
   const bundled = spawnSync(join(checkoutRoot, 'node_modules', 'esbuild', 'bin', 'esbuild'), [
-    resolve('test/browser/fixtures/app-right-sidebar-native-fixture.tsx'), '--bundle', `--outfile=${output}`,
+    resolve('test/provisioned/fixtures/app-right-sidebar-native-fixture.tsx'), '--bundle', `--outfile=${output}`,
     '--format=iife', '--platform=browser', '--target=es2020', '--jsx=automatic', '--jsx-import-source=preact',
     '--alias:react=preact/compat', '--alias:react-dom=preact/compat', '--alias:react/jsx-runtime=preact/jsx-runtime',
     '--loader:.css=empty', '--minify', '--log-level=silent',
@@ -50,7 +44,6 @@ function bundleFixture(directory: string): string {
 let fixtureBundle: string | undefined;
 
 function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): Result {
-  if (!chrome) throw new Error('A Chromium browser is required for the app right-sidebar geometry gate.');
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
@@ -146,7 +139,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
     const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
-    const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000, timeout: 20_000 });
+    const rendered = runChromium(['--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000, timeout: 20_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));

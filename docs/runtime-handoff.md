@@ -73,9 +73,7 @@ without dependency mutation:
 ```bash
 runtime="$(scripts/bun-runtime.sh)"
 MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
-  "$runtime" scripts/run-vitest.js run \
-  --config vitest.extended.config.ts \
-  test/extended/runtime-handoff-launchd.test.ts
+  "$runtime" scripts/run-provisioned-tests.mjs test/provisioned/runtime-handoff-launchd.test.ts
 ```
 
 This fixture runs a minimal old-interpreter process. It does not replace the
@@ -120,9 +118,7 @@ MANDIBLE_TEST_CA_HOME="/absolute/path/to/existing/trusted/installation" \
 MANDIBLE_TEST_BUILD_HOME="/absolute/path/to/existing/build/user/home" \
 MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
 MANDIBLE_SQLITE_LIBRARY_ARCHIVE="/absolute/path/to/verified/sqlite.tar.gz" \
-  "$runtime" scripts/run-vitest.js run \
-  --config vitest.extended.config.ts \
-  test/extended/runtime-handoff-full.test.ts
+  "$runtime" scripts/run-provisioned-tests.mjs test/provisioned/runtime-handoff-full.test.ts
 ```
 
 Pass the qualified stock SQLite library inputs when required by its canonical

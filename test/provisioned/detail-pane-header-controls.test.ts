@@ -1,9 +1,11 @@
+// @provisioned chromium
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runChromium } from '../helpers/chromium';
 
 type HeaderCase = {
   variant: 'standard' | 'compact' | 'versioned';
@@ -20,14 +22,6 @@ type Result = {
   edgeInsets: { main: number; rightSidebar: number };
   rightSidebarControlCenterY: number | null;
 };
-
-const chrome = [
-  process.env.CHROME_BIN,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
 
 const esbuildCli = createRequire(import.meta.url).resolve('esbuild/bin/esbuild');
 const styles = [
@@ -47,7 +41,7 @@ let fixtureBundle: string | undefined;
 function bundleFixture(directory: string): string {
   const output = join(directory, 'detail-pane-header-controls.js');
   const bundled = spawnSync(esbuildCli, [
-    resolve('test/browser/fixtures/detail-pane-header-controls-fixture.tsx'),
+    resolve('test/provisioned/fixtures/detail-pane-header-controls-fixture.tsx'),
     '--bundle',
     `--outfile=${output}`,
     '--format=iife',
@@ -67,7 +61,6 @@ function bundleFixture(directory: string): string {
 }
 
 function renderCase(native: boolean): Result {
-  if (!chrome) throw new Error('A Chromium browser is required for the detail header controls gate.');
   const directory = mkdtempSync(join(tmpdir(), 'mandible-detail-header-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
@@ -103,8 +96,8 @@ function renderCase(native: boolean): Result {
       .header-controls-sidebar{flex:none;width:360px;height:132px}
       .tauri-window{--header-fixture-native:1}
     </style></head><body${native ? ' class="tauri-window"' : ''}><script>${bundle}</script><script>${measure}</script></body></html>`);
-    const rendered = spawnSync(chrome, [
-      '--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw',
+    const rendered = runChromium([
+      '--run-all-compositor-stages-before-draw',
       '--virtual-time-budget=1000', '--dump-dom', '--window-size=900,1100', `file://${path}`,
     ], { encoding: 'utf8', maxBuffer: 10_000_000, timeout: 20_000 });
     if (rendered.status !== 0) throw new Error(`Chromium header fixture failed: ${rendered.stderr}`);

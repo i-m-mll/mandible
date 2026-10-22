@@ -1,4 +1,5 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+// @provisioned chromium
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type http from 'node:http';
@@ -23,14 +24,8 @@ import {
   SOURCE_BACKED_HISTORY_SESSION_ID,
   sourceBackedHistoryJsonl,
 } from '../fixtures/source-backed-chat-history.js';
+import { spawnChromium } from '../helpers/chromium';
 
-const chrome = [
-  process.env.CHROME_BIN,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
 const esbuildCli = createRequire(import.meta.url).resolve('esbuild/bin/esbuild');
 
 type CdpClient = {
@@ -81,7 +76,7 @@ function legacyBlockId(position: number): string {
 function bundleFixture(): string {
   const output = join(directory, 'source-backed-chat-history.js');
   const bundled = spawnSync(esbuildCli, [
-    resolve('test/browser/fixtures/source-backed-chat-history-fixture.tsx'),
+    resolve('test/provisioned/fixtures/source-backed-chat-history-fixture.tsx'),
     '--bundle',
     `--outfile=${output}`,
     '--format=iife',
@@ -241,7 +236,6 @@ async function listen(): Promise<void> {
 }
 
 beforeAll(async () => {
-  if (!chrome) throw new Error('Chromium is required for the source-backed Chat history gate.');
   directory = mkdtempSync(join(tmpdir(), 'mandible-source-backed-history-'));
   db = new SqliteDatabase(join(directory, 'mandible.db'));
   migrate(db);
@@ -332,10 +326,9 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
   expect(preflight).toMatchObject({ body_source: 'source', total: SOURCE_BACKED_HISTORY_BLOCK_COUNT, window: { limit: 160 } });
   expect(preflight.blocks).toHaveLength(160);
   process.stdout.write(`SOURCE_BACKED_CHAT_STAGE source-http ${Math.round(performance.now() - preflightStartedAt)}ms\n`);
-  const browser = spawn(chrome!, [
-    '--headless=new', '--disable-gpu', '--no-sandbox', '--disable-background-networking',
-    '--disable-default-apps', '--disable-extensions', '--no-first-run',
-    '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--window-size=900,900',
+  const browser = spawnChromium([
+    '--disable-background-networking',
+    '--disable-default-apps', '--disable-extensions', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--window-size=900,900',
     `${origin}/source-backed-history`,
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';

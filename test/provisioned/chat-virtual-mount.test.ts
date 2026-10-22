@@ -1,16 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// @provisioned chromium
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-const chrome = [
-  process.env.CHROME_BIN,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
+import { runChromium } from '../helpers/chromium';
 
 function canonicalCheckoutRoot(): string {
   if (statSync(resolve('.git')).isDirectory()) return process.cwd();
@@ -24,7 +18,7 @@ function bundleFixture(directory: string): string {
   const checkoutRoot = canonicalCheckoutRoot();
   const output = join(directory, 'fixture.js');
   const bundled = spawnSync(join(checkoutRoot, 'node_modules', 'esbuild', 'bin', 'esbuild'), [
-    resolve('test/browser/fixtures/chat-virtual-mount-fixture.tsx'),
+    resolve('test/provisioned/fixtures/chat-virtual-mount-fixture.tsx'),
     '--bundle',
     `--outfile=${output}`,
     '--format=iife',
@@ -45,7 +39,6 @@ function bundleFixture(directory: string): string {
 
 describe('Chat transcript native mount', () => {
   it('settles measured end anchoring without trapping the browser main thread', () => {
-    if (!chrome) throw new Error('A Chromium browser is required for the Chat mount regression.');
     const directory = mkdtempSync(join(tmpdir(), 'mandible-chat-mount-'));
     try {
       const fixture = bundleFixture(directory);
@@ -60,10 +53,7 @@ describe('Chat transcript native mount', () => {
         .turn-group { padding: 12px; }
       </style></head><body><div id="root"></div><script>${fixture}</script></body></html>`);
 
-      const rendered = spawnSync(chrome, [
-        '--headless=new',
-        '--disable-gpu',
-        '--no-sandbox',
+      const rendered = runChromium([
         '--virtual-time-budget=1500',
         '--dump-dom',
         `file://${path}`,

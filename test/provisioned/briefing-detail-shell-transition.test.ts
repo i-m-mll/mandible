@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+// @provisioned chromium
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runChromium } from '../helpers/chromium';
 
 type ShellGeometry = {
   activeElement: string | null;
@@ -17,18 +18,7 @@ type ShellGeometry = {
   ancestorScrollTops: number[];
 };
 
-const CHROME_CANDIDATES = [
-  process.env.CHROME_BIN,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate));
-
 function renderTransitionGeometry(): ShellGeometry {
-  const chrome = CHROME_CANDIDATES.find(existsSync);
-  if (!chrome) throw new Error('A Chromium browser is required for the Briefing shell geometry regression.');
-
   const detailCss = readFileSync(resolve('ui/src/styles/detail-pane-shell.css'), 'utf8');
   const briefingCss = readFileSync(resolve('ui/src/styles/briefing.css'), 'utf8');
   const html = `<!doctype html>
@@ -110,10 +100,7 @@ function renderTransitionGeometry(): ShellGeometry {
       }));
     </script>`;
 
-  const rendered = spawnSync(chrome, [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-sandbox',
+  const rendered = runChromium([
     '--dump-dom',
     '--window-size=1120,900',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
