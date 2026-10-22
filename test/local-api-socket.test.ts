@@ -173,6 +173,20 @@ describe('owner-only local API socket', () => {
     await new Promise((resolve) => nestedCodex.once('close', resolve));
     expect(identity).toBe('|codex|codex-thread');
   });
+  it('names the Codex sandbox when a nested sandboxed Codex cannot reach its credential', async () => {
+    // Issue 9a6ac22: the seatbelt denies `ps` and hides the Keychain. The CLI
+    // must still run, and refuse a credentialed call with the cause.
+    const bin = path.join(root, 'sandbox-bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const child = spawn(path.resolve('bin/mandible'), ['work-unit', 'custody-check', '--repo', 'mandible', '--branch', 'feature/x'], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MANDIBLE_SOCKET: socketPath, MANDIBLE_SESSION_ID: 'wrapped',
+        CLAUDE_CODE_SESSION_ID: 'coordinator', CODEX_THREAD_ID: 'codex-thread', CODEX_SANDBOX: 'seatbelt' } });
+    let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const code = await new Promise((resolve) => child.once('close', resolve));
+    expect(code, stderr).not.toBe(127);
+    expect(stderr).toContain('nothing was sent. This command runs inside the Codex sandbox (CODEX_SANDBOX=seatbelt)');
+  });
   it('rejects unknown, malformed, human-bound, and conflicting managed app claims', async () => {
     const codex = createUser(db, { slug: 'codex-agent', kind: 'agent', display_name: 'Codex Agent' });
     const claude = createUser(db, { slug: 'claude-agent', kind: 'agent', display_name: 'Claude Agent' });
