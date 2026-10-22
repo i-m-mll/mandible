@@ -12,6 +12,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
+import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
@@ -159,24 +160,15 @@ function runAtomicAsync(
 }
 
 beforeEach(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-"));
-  key = path.join(repo, "signing-key");
-  git(["init", "-b", "main"]);
-  git(["config", "user.name", "Atomic Test"]);
-  git(["config", "user.email", "atomic@example.invalid"]);
-  git(["config", "gpg.format", "ssh"]);
-  git(["config", "commit.gpgsign", "true"]);
+  repo = createAuthCheckRepo();
+  key = path.join(repo, ".git", "signing-key");
   const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
-    encoding: "utf8",
+    encoding: "utf8", timeout: 5_000,
   });
   if (keygen.status !== 0) throw new Error(keygen.stderr);
-  git(["config", "user.signingkey", key]);
-  write("base.txt", "base\n");
-  commit("base");
-  git(["checkout", "-b", "feature/atomic"]);
-  write("feature.txt", "feature\n");
-  commit("feature");
-  git(["checkout", "main"]);
+  commitOnBranch(repo, "feature/atomic", { "feature.txt": "feature\n" });
+  fs.appendFileSync(path.join(repo, ".git", "config"), `\n[gpg]\n format = ssh\n[user]\n signingkey = ${JSON.stringify(key)}\n[commit]\n gpgsign = true\n`);
+
 });
 
 afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
@@ -209,7 +201,7 @@ describe("atomic auth merge", () => {
     const head = git(["rev-parse", "feature/atomic"]);
     const cached = candidate(base, head);
     const index = git(["write-tree"]);
-    const contents = fs.readFileSync(path.join(repo, "base.txt"), "utf8");
+    const contents = fs.readFileSync(path.join(repo, "shared.txt"), "utf8");
     const signer = path.join(repo, "cancelled-signer");
     fs.writeFileSync(signer, "#!/bin/sh\necho 'signing cancelled' >&2\nexit 130\n", { mode: 0o755 });
     git(["config", "gpg.ssh.program", signer]);
@@ -217,7 +209,7 @@ describe("atomic auth merge", () => {
     expect(result.status).not.toBe(0);
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(git(["write-tree"])).toBe(index);
-    expect(fs.readFileSync(path.join(repo, "base.txt"), "utf8")).toBe(contents);
+    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe(contents);
     expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
     expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
