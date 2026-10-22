@@ -387,7 +387,7 @@ describe("direct CLI agent credential resolution", () => {
   });
 
   it("never falls back to the operator credential when the agent Keychain item is missing or locked", async () => {
-    await Promise.all([{}, { MANDIBLE_TEST_SECURITY_FAIL: "attributes" }].map(async (state) => {
+    await Promise.all([{}, { MANDIBLE_TEST_SECURITY_FAIL: "attributes" }].map(async (state: Record<string, string>) => {
       const chain = keychain();
       chain.seed("mandible-operator", "mll", "operator-token");
       const stub = await userDaemon({ slug: "codex-agent", kind: "agent" });

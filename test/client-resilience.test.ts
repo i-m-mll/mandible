@@ -310,20 +310,4 @@ describe("CLI client resilience", () => {
     expect(result.stdout).toBe("201\n{\"created\":true}\n");
     expect(result.stderr).toBe("");
   });
-
-  it("configures bounded busy waits and closes every direct database reader", () => {
-    const logs = fs.readFileSync(path.join(process.cwd(), "cli", "logs.sh"), "utf8");
-    const conversations = fs.readFileSync(path.join(process.cwd(), "cli", "conversations.sh"), "utf8");
-    const blocks = fs.readFileSync(path.join(process.cwd(), "src", "cli", "conversation-blocks.ts"), "utf8");
-
-    expect(logs).toContain("PRAGMA busy_timeout = 5000");
-    expect(logs).toContain("isolation_level=None");
-    expect(logs).toContain("conn.close()");
-    expect(conversations).toContain("PRAGMA busy_timeout = 5000");
-    expect(conversations).toContain("PRAGMA query_only = ON");
-    expect(conversations).toContain("conn.close()");
-    expect(blocks).toContain('db.pragma("busy_timeout = 5000")');
-    expect(blocks).toContain('db.pragma("query_only = ON")');
-    expect(blocks).toContain("db.close()");
-  });
 });

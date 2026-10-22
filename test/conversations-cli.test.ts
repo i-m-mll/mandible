@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fileRpc, runCli, scratchDir, startStubDaemon } from "./helpers/cli-process.js";
 import type { FileRpcHandler } from "./helpers/file-rpc-responder.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
-import type { SqliteDatabase } from "../src/sqlite.js";
+import type SqliteDatabase from "../src/sqlite.js";
 
 const cleanups: Array<() => unknown> = [];
 afterEach(async () => {
