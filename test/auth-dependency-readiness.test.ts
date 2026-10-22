@@ -1,14 +1,14 @@
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db | null = null;
 
@@ -18,8 +18,7 @@ afterEach(() => {
 });
 
 function setup(): { db: Db; queue: AuthQueue; router: Router } {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   setupOperator(db, { slug: "dependency-test", display_name: "Dependency Test" });
   const queue = new AuthQueue({

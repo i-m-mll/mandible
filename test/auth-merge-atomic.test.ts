@@ -7,12 +7,12 @@ import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { extractAtomicMergeState } from "../src/auth-signature-verification.js";
 import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
-import { migrate, resetDb } from "../src/db.js";
+import { resetDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { createServer, Router } from "../src/server.js";
-import SqliteDatabase from "../src/sqlite.ts";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 
@@ -227,8 +227,7 @@ describe("atomic auth merge", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
     const cached = candidate(base, head);
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });

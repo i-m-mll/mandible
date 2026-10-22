@@ -4,13 +4,12 @@ import { describe, expect, it } from "vitest";
 
 import { AuthHookManager, authHookTimeoutMs } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { migrate } from "../src/db.js";
 import type { AuthRequest } from "../src/types.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function createDbWithHooks(): InstanceType<typeof SqliteDatabase> {
-  const db = new SqliteDatabase(":memory:");
-  migrate(db);
+  const db = migratedMemoryDb();
   setupOperator(db, { slug: "auth-hooks-test", display_name: "Auth Hooks Test" }, 1);
   return db;
 }

@@ -1,12 +1,12 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { migrate, resetDb, setDb } from "../src/db.js";
+import { resetDb, setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteOptions, RouteRegistrar } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 class CapturingRoutes implements RouteRegistrar {
   readonly handlers = new Map<string, RouteHandler>();
@@ -32,8 +32,7 @@ afterEach(() => resetDb({ reason: "auth clearance API test ended" }));
 
 describe("auth clearance API", () => {
   it("keeps prospective create operator-only and forwards explicit exact scope", async () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const operator = setupOperator(db, { slug: "clearance-api-operator", display_name: "Clearance API Operator" });
     setDb(db);
     const issue = vi.fn(async (input: unknown, issuer: string) => ({ id: "clearance-1", input, issuer }));

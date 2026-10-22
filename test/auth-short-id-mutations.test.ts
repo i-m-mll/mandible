@@ -9,16 +9,16 @@
 // These tests assert on the DATABASE, never on the response body. A route that
 // claims success is the thing under test, so its own claim cannot be the
 // evidence for it.
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { getOperator, setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db | null = null;
 
@@ -28,8 +28,7 @@ afterEach(() => {
 });
 
 function setup(): { router: Router; queue: AuthQueue; db: Db; events: SseEvent[] } {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   setupOperator(db, { slug: "auth-delete-test", display_name: "Auth Delete Test" });
   const router = new Router();

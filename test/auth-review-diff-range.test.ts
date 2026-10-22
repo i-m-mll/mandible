@@ -18,18 +18,18 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import SqliteDatabase from "../src/sqlite.ts";
 
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { MERGE_CHANGE_MESSAGE_FLAGS } from "./helpers/auth-delivery-fixtures.js";
 import { createLedgerIssue, createLedgerProject } from "./helpers/auth-queue-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
@@ -289,8 +289,7 @@ describe("auth request review counts are correctable in place", () => {
   });
 
   it("accepts corrected diff stats through PUT", async () => {
-    queueDb = new SqliteDatabase(":memory:");
-    migrate(queueDb);
+    queueDb = migratedMemoryDb();
     setDb(queueDb);
     const operator = setupOperator(queueDb, { slug: "review-counts", display_name: "Review Counts" });
     const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-review-count-auth-"));

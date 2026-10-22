@@ -14,8 +14,8 @@ import {
   validateCanonicalChangeMessage,
 } from "../src/auth-change-message.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { migrate } from "../src/db.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -593,8 +593,7 @@ describe("auth request CLI change message composition", () => {
 
 describe("auth queue canonical message storage", () => {
   function newQueue(): { db: InstanceType<typeof SqliteDatabase>; queue: AuthQueue } {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     setupOperator(db, { slug: "canonical-test", display_name: "Canonical Test" });
     return { db, queue: new AuthQueue({ db, backgroundMaintenance: false }) };
   }

@@ -6,7 +6,6 @@
 // (head_branch, base_branch) alone refused the second repo's request as a
 // duplicate of the first repo's, and the refusal echoed the caller's own title
 // back with a success exit, so the missing delivery was invisible.
-import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { clearRepoIdentityCache } from "../src/repo-identity.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
@@ -23,6 +22,7 @@ import { setupOperator } from "../src/users/store.js";
 import { addCredential } from "../src/users/store.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { createLedgerIssue, createLedgerProject } from "./helpers/auth-queue-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const SHARED_BRANCH = "feature/5bd2a6d-tasks-program";
 
@@ -138,8 +138,7 @@ function registerWorkRepo(root: string): void {
 }
 
 function createQueue(): AuthQueue {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   testRequesterUserId = setupOperator(db, {
     slug: "auth-dedup-test",
     display_name: "Auth Dedup Test",

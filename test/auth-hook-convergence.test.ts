@@ -8,7 +8,6 @@ import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue
  * production guard in src/db.ts exists for exactly this reason.
  */
 
-import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +23,7 @@ import {
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant } from "../src/permissions/store.js";
 import { registerAuthHookRoutes } from "../src/routes/auth-hooks.js";
@@ -35,8 +34,7 @@ import {
   SYSTEM_ACTOR,
   createLedgerIssue,
   createLedgerProject,
-  createMigratedDb,
-} from "./helpers/ledger-fixtures.js";
+  createMigratedDb, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const tempDirs: string[] = [];
 
@@ -53,8 +51,7 @@ function tempDir(prefix: string): string {
 }
 
 function plainDb(): Db {
-  const db = new SqliteDatabase(":memory:");
-  migrate(db);
+  const db = migratedMemoryDb();
   setupOperator(db, { slug: "hook-convergence", display_name: "Hook Convergence" }, 1);
   return db;
 }
@@ -525,10 +522,9 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
 
 describe("hook registration authority (issue 27241e6)", () => {
   it("denies hook mutation without the change_settings capability and allows it with the grant", async () => {
-    const db = new SqliteDatabase(":memory:");
+    const db = migratedMemoryDb();
     const dir = tempDir("mandible-hook-authority-");
     try {
-      migrate(db);
       setDb(db);
       setupOperator(db, { slug: "authority-operator", display_name: "Authority Operator" }, 1);
       setClientAuthMode(db, "strict");
