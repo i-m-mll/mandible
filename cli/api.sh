@@ -285,6 +285,30 @@ api_agent_provider() {
   printf '%s' "$provider"
 }
 
+# api_durable_credential_missing_reason <reason> [service]
+# The sentence a refused credential-gated call prints: why no durable
+# credential was attached, and what to do about it.
+api_durable_credential_missing_reason() {
+  local reason="$1" service="${2:-}" name markers=()
+  case "$reason" in
+    keychain_disabled)
+      printf 'MANDIBLE_NO_KEYCHAIN_TOKEN=1 disables the Keychain lookup; unset it to use the stored credential.' ;;
+    codex_sandbox)
+      printf 'This command runs inside the Codex sandbox (CODEX_SANDBOX=%s), which hides the Keychain and the Mandible socket. Rerun it outside the sandbox: request escalated permissions, or run Codex with sandbox_mode = "danger-full-access".' \
+        "${CODEX_SANDBOX:-}" ;;
+    provider_unresolved)
+      for name in CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID MANDIBLE_SESSION_ID MANDIBLE_MANAGED_CLIENT; do
+        [[ -z "$(printenv "$name")" ]] || markers+=("$name")
+      done
+      printf 'This is an agent process, but its markers (%s) name no single provider, so neither an agent nor the operator credential applies. Run the command from the agent'"'"'s own shell, where exactly one provider'"'"'s session id is set.' \
+        "${markers[*]}" ;;
+    keychain_item_missing)
+      printf 'No Keychain item exists for service %s. The operator can store one with: mandible user token mint <user> --store' "$service" ;;
+    *)
+      printf 'The Keychain lookup for service %s failed: the keychain may be locked, or this process was denied access to the item.' "$service" ;;
+  esac
+}
+
 # ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
 # One place that knows how OS secret storage is reached, so readers (this file's
 # operator and per-agent token resolver) and the writer
@@ -817,8 +841,13 @@ api_report_final_http_failure() {
         "$request_path" "$http_status" "$curl_exit" >&2
       ;;
     *)
-      printf 'Mandible request failed after bounded retries: daemon is down or unreachable (path=%s, status=%s, curl=%s).\n' \
-        "$request_path" "$http_status" "$curl_exit" >&2
+      if [[ -n "${CODEX_SANDBOX:-}" ]] && api_is_local_socket; then
+        printf 'Mandible request failed: this command runs inside the Codex sandbox (CODEX_SANDBOX=%s), which blocks the Mandible socket (path=%s, curl=%s). Rerun it outside the sandbox: request escalated permissions, or run Codex with sandbox_mode = "danger-full-access".\n' \
+          "$CODEX_SANDBOX" "$request_path" "$curl_exit" >&2
+      else
+        printf 'Mandible request failed after bounded retries: daemon is down or unreachable (path=%s, status=%s, curl=%s).\n' \
+          "$request_path" "$http_status" "$curl_exit" >&2
+      fi
       ;;
   esac
 }
@@ -838,7 +867,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service account
+  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -875,23 +904,33 @@ api_http_exchange() {
     fi
     if (( gated )); then
       if [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]]; then
-        token=""
+        missing="keychain_disabled"
       elif provider="$(api_agent_provider)"; then
         service="mandible-agent-$provider"
-        account="$(secret_account_for_service "$service")" || account=""
+        account="$(secret_account_for_service "$service")" || lookup_status=$?
         if [[ -n "$account" ]]; then
           token="$(secret_get "$service" "$account")" || token=""
         fi
       elif ! api_managed_client_markers_present; then
         service="mandible-operator"
         token="$(api_keychain_operator_token)"
+        [[ -n "$token" ]] || lookup_status=1
+      else
+        missing="provider_unresolved"
       fi
       if [[ -z "$token" && "$optional_gate" == 0 ]]; then
-        printf 'Mandible durable credential required for %s %s; no Keychain item%s was found, so nothing was sent. The operator can store one with: mandible user token mint <user> --store\n' \
-          "$method" "$request_path" "${service:+ for service $service}" >&2
+        if [[ "$missing" != "keychain_disabled" && -n "${CODEX_SANDBOX:-}" ]]; then
+          missing="codex_sandbox"
+        elif [[ -z "$missing" ]]; then
+          missing="keychain_lookup_failed"
+          (( lookup_status != 1 )) || missing="keychain_item_missing"
+        fi
+        printf 'Mandible durable credential required for %s %s; nothing was sent. %s\n' \
+          "$method" "$request_path" "$(api_durable_credential_missing_reason "$missing" "$service")" >&2
         (( token_traced == 0 )) || set -x
         rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
-        jq -n '{error:"cli_durable_credential_missing", request_sent:false}' > "$output_file"
+        jq -n --arg reason "$missing" --arg service "$service" \
+          '{error:"cli_durable_credential_missing", reason:$reason, service:($service | select(length > 0)), request_sent:false}' > "$output_file"
         printf '401'
         return 0
       fi
@@ -983,7 +1022,7 @@ api_scope_inherited_identity() {
   local processes="" nearest="" own_marker="" row_pid="" row_conversation="" row_path row_file http_status
 
   if (( $(api_provider_marker_count) > 1 )); then
-    processes=$(ps -axo pid=,ppid=,comm=)
+    processes=$(api_process_table)
     nearest=$(api_nearest_agent "$processes" "")
     case "${nearest#* }" in
       claude) unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID ;;
@@ -1009,9 +1048,16 @@ api_scope_inherited_identity() {
 
   (( $(api_provider_marker_count) == 1 )) && own_marker="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${GEMINI_SESSION_ID:-}}}}}"
   [[ -z "$own_marker" || "$own_marker" != "$row_conversation" ]] || return 0
-  [[ -n "$processes" ]] || processes=$(ps -axo pid=,ppid=,comm=)
+  [[ -n "$processes" ]] || processes=$(api_process_table)
   nearest=$(api_nearest_agent "$processes" "$row_pid")
   [[ "${nearest%% *}" == "$row_pid" ]] || unset MANDIBLE_SESSION_ID
+}
+
+# A sandbox may deny `ps` (the Codex seatbelt does). An empty table finds no
+# agent, so inherited markers stay ambiguous and an inherited session id is
+# dropped: nothing is attributed that the process tree could not confirm.
+api_process_table() {
+  ps -axo pid=,ppid=,comm= 2>/dev/null || :
 }
 
 api_provider_marker_count() {
