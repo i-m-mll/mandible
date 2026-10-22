@@ -336,8 +336,7 @@ cmd_comment_edit() {
   fi
 
   require_tools
-  local comment_id payload tmp_response status response
-  comment_id=$(resolve_comment_ref "$comment_ref")
+  local payload tmp_response status response
   payload=$(
     jq -n \
       --arg body "$message" \
@@ -348,7 +347,7 @@ cmd_comment_edit() {
       + (if $base_body_hash == "" then {} else {base_body_hash: $base_body_hash} end)'
   )
   tmp_response=$(mktemp)
-  status=$(api_send_capture PATCH "/api/ledger/comments/$(urlencode "$comment_id")" "$payload" "$tmp_response")
+  status=$(api_send_capture PATCH "/api/ledger/comments/$(urlencode "$comment_ref")" "$payload" "$tmp_response")
   response=$(cat "$tmp_response")
   rm -f "$tmp_response"
   if [[ "$status" =~ ^2 ]]; then
@@ -756,16 +755,13 @@ cmd_changed() {
   require_tools
   local checkpoint_tmp=""
   if [[ -n "$since_issue" ]]; then
-    local checkpoint_path checkpoint_response checkpoint_list_response checkpoint_created_at checkpoint_id
+    local checkpoint_path checkpoint_response checkpoint_created_at checkpoint_id
     if [[ -n "$checkpoint_ref" ]]; then
-      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints"
+      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?id=$(urlencode "$checkpoint_ref")"
       if [[ -n "$kind" ]]; then
-        checkpoint_path="${checkpoint_path}?kind=$(urlencode "$kind")"
+        checkpoint_path="${checkpoint_path}&kind=$(urlencode "$kind")"
       fi
-      checkpoint_list_response=$(api_get "$checkpoint_path") \
-        || die "${RED}Failed to fetch checkpoints for ${since_issue}${RESET}" 1
-      checkpoint_response=$(printf '%s\n' "$checkpoint_list_response" \
-        | jq -e --arg id "$checkpoint_ref" '.checkpoints[] | select(.id == $id)') \
+      checkpoint_response=$(api_get "$checkpoint_path") \
         || die "Checkpoint not found on ${since_issue}: ${checkpoint_ref}" 2
     else
       checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?latest=true"
@@ -1576,45 +1572,6 @@ PRIORITY_USAGE
   err "${GREEN}Set priority for ${issue_ref} to ${priority}${RESET}"
 }
 
-resolve_comment_ref() {
-  local comment_ref="$1"
-
-  if [[ "$comment_ref" != *"#"* ]]; then
-    printf '%s' "$comment_ref"
-    return
-  fi
-
-  local issue_ref="${comment_ref%%#*}"
-  local selector="${comment_ref##*#}"
-  if [[ -z "$issue_ref" || -z "$selector" ]]; then
-    die "Comment reference must be <issue-ref>#<ordinal>, <issue-ref>#last, or a raw comment id." 2
-  fi
-  if [[ "$selector" != "last" && ! "$selector" =~ ^[0-9]+$ ]]; then
-    die "Comment selector must be an integer ordinal or 'last': $comment_ref" 2
-  fi
-  if [[ "$selector" == "0" ]]; then
-    die "Comment ordinal 0 is the issue description; use 'mandible issue description show ${issue_ref}' or 'mandible issue description history ${issue_ref}'." 2
-  fi
-
-  local comment_id
-  if [[ "$selector" == "last" ]]; then
-    comment_id=$(
-      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
-        | jq -er '(.comments // [] | sort_by(.created_at // 0) | last | .id) // empty'
-    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
-  else
-    comment_id=$(
-      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
-        | jq -er --argjson ordinal "$selector" '
-            (.comments // [])[]
-            | select(.ordinal == $ordinal)
-            | .id
-          '
-    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
-  fi
-  printf '%s' "$comment_id"
-}
-
 cmd_comment_show() {
   local comment_ref=""
   local json=0
@@ -1628,13 +1585,12 @@ cmd_comment_show() {
   fi
 
   require_tools
-  local comment_id response
-  comment_id=$(resolve_comment_ref "$comment_ref")
-  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+  local response
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_ref")/revisions") \
     || die "${RED}Failed to fetch comment ${comment_ref}${RESET}" 1
   if (( json )); then
-    printf '%s\n' "$response" | jq --arg comment_id "$comment_id" '{
-      comment_id: $comment_id,
+    printf '%s\n' "$response" | jq '{
+      comment_id: (.revisions // [] | sort_by(.revision_no) | last | .entity_id),
       revision: (.revisions // [] | sort_by(.revision_no) | last),
       body: ((.revisions // [] | sort_by(.revision_no) | last | .snapshot_body) // "")
     }'
@@ -1657,9 +1613,8 @@ cmd_comment_history() {
   fi
 
   require_tools
-  local comment_id response
-  comment_id=$(resolve_comment_ref "$comment_ref")
-  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+  local response
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_ref")/revisions") \
     || die "${RED}Failed to fetch body revisions for comment ${comment_ref}${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq '.'

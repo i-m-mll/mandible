@@ -8,7 +8,6 @@ import {
   applyColdStartTuning,
   assertMigrationSequence,
   openDb,
-  resolvePrefix,
   SQLITE_COLD_START_TUNING,
   type Db,
   type Migration,
@@ -134,19 +133,5 @@ describe("database hardening", () => {
       `cache_size = -${SQLITE_COLD_START_TUNING.cacheSizeKib}`,
       `temp_store = ${SQLITE_COLD_START_TUNING.tempStore}`,
     ]);
-  });
-
-  it("rejects unsupported dynamic identifiers in prefix lookups", () => {
-    const db = openDb(path.join(tempDir, "prefix.db"));
-    try {
-      expect(() => resolvePrefix(db, "auth_requests; DROP TABLE sessions", "id", "abcd")).toThrow(
-        /Unsupported prefix lookup identifier/,
-      );
-      expect(() => resolvePrefix(db, "auth_requests", "title", "abcd")).toThrow(
-        /Unsupported prefix lookup identifier/,
-      );
-    } finally {
-      db.close();
-    }
   });
 });

@@ -23,6 +23,7 @@ import { resolveProjectRef } from "./ledger/project-registry.js";
 import { LedgerStore } from "./ledger/store.js";
 import { SYSTEM_USER_ID } from "./users/store.js";
 import { ulid } from "./users/ids.js";
+import { resolveId } from "./entity-refs.js";
 
 export class ManagedReminderError extends Error {
   constructor(message: string, public readonly status = 400, public readonly code = "reminder_error") {
@@ -248,14 +249,10 @@ const REMINDER_SELECT = `
     JOIN managed_task_revisions revision ON revision.id = task.active_revision_id`;
 
 function resolveReminderId(db: Db, ref: string): string {
-  const exact = db.prepare("SELECT id FROM managed_tasks WHERE id = ?").get(ref) as { id: string } | undefined;
-  if (exact) return exact.id;
-  const matches = db.prepare(
-    "SELECT id FROM managed_tasks WHERE id LIKE ? ESCAPE '\\' ORDER BY id LIMIT 2",
-  ).all(`${ref.replace(/([%_\\])/g, "\\$1")}%`) as Array<{ id: string }>;
-  if (matches.length === 0) throw new ManagedReminderError(`reminder not found: ${ref}`, 404, "not_found");
-  if (matches.length > 1) throw new ManagedReminderError(`reminder reference is ambiguous: ${ref}`, 409, "ambiguous");
-  return matches[0].id;
+  const resolved = resolveId(db, "reminder", ref);
+  if (resolved.ok) return resolved.id;
+  if (resolved.error === "ambiguous") throw new ManagedReminderError(`reminder reference is ambiguous: ${ref}`, 409, "ambiguous");
+  throw new ManagedReminderError(`reminder not found: ${ref}`, 404, "not_found");
 }
 
 export function getManagedReminder(db: Db, ref: string): ManagedReminder {

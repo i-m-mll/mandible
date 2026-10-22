@@ -14,6 +14,7 @@ import { authorizeEffects } from "./security/effect-policy.js";
 import { EFFECTS, resolveOperation, type OperationDescriptor } from "./security/operation-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
+import type { RefResolver } from "./entity-refs.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
@@ -201,6 +202,19 @@ export interface RouteOptions {
   // Infrastructure mutations may opt out of historical unattributed-write
   // telemetry. Authorization never depends on this counter.
   countUnattributed?: boolean;
+  /**
+   * Route inputs that name entities. The router completes each declared
+   * param, query, or top-level body field that names exactly one entity to
+   * its full id before the handler runs, refuses one that names several with
+   * 409 `ambiguous_ref`, and leaves an unknown one for the handler to refuse.
+   */
+  refs?: RouteRefs;
+}
+
+export interface RouteRefs {
+  params?: Readonly<Record<string, RefResolver>>;
+  query?: Readonly<Record<string, RefResolver>>;
+  body?: Readonly<Record<string, RefResolver>>;
 }
 
 export interface RoutePolicyEntry {
@@ -694,6 +708,18 @@ export class Router implements RouteRegistrar {
         query[key] = value;
       });
 
+      if (route.options.refs) {
+        const resolvedBody = body && typeof body === "object" && !Array.isArray(body)
+          ? { ...(body as Record<string, unknown>) }
+          : null;
+        const refusal = completeRouteRefs(route.options.refs, params, query, resolvedBody);
+        if (refusal) {
+          response.status(409).json(refusal);
+          return true;
+        }
+        if (resolvedBody) body = resolvedBody;
+      }
+
       const request: RequestLike = {
         method: normalizedMethod,
         url: requestUrl,
@@ -751,6 +777,34 @@ export class Router implements RouteRegistrar {
     }
     return null;
   }
+}
+
+function completeRouteRefs(
+  refs: RouteRefs,
+  params: Record<string, string>,
+  query: Record<string, string>,
+  body: Record<string, unknown> | null,
+): { error: "ambiguous_ref"; field: string; ref: string; matches: string[]; message: string } | null {
+  const sections: Array<[string, Readonly<Record<string, RefResolver>> | undefined, Record<string, unknown> | null]> = [
+    ["params", refs.params, params], ["query", refs.query, query], ["body", refs.body, body],
+  ];
+  for (const [section, resolvers, values] of sections) {
+    if (!resolvers || !values) continue;
+    for (const [name, resolve] of Object.entries(resolvers)) {
+      const ref = values[name];
+      if (typeof ref !== "string" || !ref.trim()) continue;
+      const resolved = resolve(ref);
+      if (resolved.ok) {
+        values[name] = resolved.id;
+      } else if (resolved.error === "ambiguous") {
+        return {
+          error: "ambiguous_ref", field: `${section}.${name}`, ref, matches: resolved.matches,
+          message: `'${ref}' names more than one entity (${resolved.matches.join(", ")}); pass a longer prefix.`,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function serializeFileRpcPolicy(policy: FileRpcPolicy): "allow" | "deny" | "conditional" {

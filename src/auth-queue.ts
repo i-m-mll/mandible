@@ -92,7 +92,8 @@ import {
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
 import { getDaemonLogger } from "./daemon-log.js";
-import { getDb, resolvePrefix } from "./db.js";
+import { getDb } from "./db.js";
+import { resolveId } from "./entity-refs.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -2647,7 +2648,7 @@ export class AuthQueue {
   /** Ambiguity-safe public reference lookup without lifecycle mutations. */
   getRequestReference(id: string): AuthRequest | null {
     // Bug: caa157e — support UUID prefix matching
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return null;
     }
@@ -2662,7 +2663,7 @@ export class AuthQueue {
       return null;
     }
 
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", requestedId);
+    const resolved = resolveId(this.db, "auth_request", requestedId);
     if (!resolved.ok) {
       return {
         state: resolved.error === "not_found" ? "missing" : "ambiguous",
@@ -2798,11 +2799,11 @@ export class AuthQueue {
     expectedGeneration?: number,
   ): AuthRequest {
     this.expireStale();
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw {
         status: 409,
-        message: `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+        message: `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`,
       };
     }
     if (!resolved.ok) {
@@ -3245,7 +3246,7 @@ export class AuthQueue {
    * false if the request is unknown.
    */
   markDelivered(id: string): boolean {
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return false;
     }
@@ -7673,11 +7674,11 @@ export class AuthQueue {
 
   private requireRequest(id: string): AuthRequest {
     // Bug: caa157e — surface ambiguous prefix errors before falling through to getRequest
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw new AuthQueueError(
         "not_found",
-        `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`
+        `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`
       );
     }
     const request = this.getRequestById(resolved.ok ? resolved.id : id);

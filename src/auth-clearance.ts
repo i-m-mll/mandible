@@ -11,6 +11,7 @@ import { getOperator, listCredentials, resolveUser } from "./users/store.js";
 import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-signing-resource.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { canonicalJson } from "./canonical-json.js";
+import { resolveId } from "./entity-refs.js";
 
 const DEFAULT_DURATION_MINUTES = 60;
 const DEFAULT_MAX_USES = 1;
@@ -193,17 +194,14 @@ export class AuthClearanceManager {
   }
 
   show(id: string): AuthClearance {
-    const rows = this.db.prepare(
+    const resolved = resolveId(this.db, "auth_clearance", id);
+    if (!resolved.ok && resolved.error === "ambiguous") throw new AuthClearanceError("ambiguous", `Clearance ref '${id}' is ambiguous.`);
+    if (!resolved.ok) throw new AuthClearanceError("not_found", `No clearance matches '${id}'.`);
+    return this.db.prepare(
       `SELECT c.*,
          (SELECT COUNT(*) FROM auth_clearance_uses count_use WHERE count_use.clearance_id = c.id) AS consumed_uses
-       FROM auth_clearances c WHERE c.id = ? OR c.id LIKE ? ORDER BY c.id`,
-    )
-      .all(id, `${escapeLike(id)}%`) as AuthClearance[];
-    const exact = rows.find((row) => row.id === id);
-    if (exact) return exact;
-    if (rows.length === 1) return rows[0];
-    if (rows.length > 1) throw new AuthClearanceError("ambiguous", `Clearance ref '${id}' is ambiguous.`);
-    throw new AuthClearanceError("not_found", `No clearance matches '${id}'.`);
+       FROM auth_clearances c WHERE c.id = ?`,
+    ).get(resolved.id) as AuthClearance;
   }
 
   uses(clearanceId: string): AuthClearanceUse[] {
@@ -483,9 +481,10 @@ export class AuthClearanceManager {
   }
 
   private readRequest(id: string): AuthRequest {
-    const row = this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    if (!row) throw new AuthClearanceError("request_not_found", `No auth request '${id}'.`);
-    return mapRequest(row);
+    const resolved = resolveId(this.db, "auth_request", id);
+    if (!resolved.ok && resolved.error === "ambiguous") throw new AuthClearanceError("ambiguous", `Auth request ref '${id}' is ambiguous.`);
+    if (!resolved.ok) throw new AuthClearanceError("request_not_found", `No auth request '${id}'.`);
+    return mapRequest(this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(resolved.id) as Record<string, unknown>);
   }
 }
 
@@ -539,6 +538,3 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   return resolved;
 }
 
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, "\\$&");
-}

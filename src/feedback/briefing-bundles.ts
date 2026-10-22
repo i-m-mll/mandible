@@ -7,6 +7,7 @@ import type {
 import type { Db } from "../db.js";
 import { BRIEFING_HAS_ROUND_SQL, BriefingStoreError, resolveBriefingId } from "./briefings.js";
 import { enforceActivePlacement, placementTargetForBundle, type PlacementOverride } from "./briefing-placement.js";
+import { resolveId } from "../entity-refs.js";
 
 export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean };
 
@@ -18,12 +19,9 @@ function untypedRef(value: string, prefix: string): string {
 export function resolveBundleId(db: Db, bundleRef: string): string {
   const ref = untypedRef(bundleRef, "briefing-bundle:");
   if (!ref) throw new BriefingStoreError("bundle reference must be nonblank");
-  const rows = db.prepare("SELECT id FROM briefing_bundles ORDER BY id").all() as Array<{ id: string }>;
-  const exact = rows.find((row) => row.id === ref);
-  if (exact) return exact.id;
-  const matches = rows.filter((row) => row.id.startsWith(ref));
-  if (matches.length === 1) return matches[0].id;
-  if (matches.length > 1) throw new BriefingStoreError("Briefing bundle reference is ambiguous", 409, "ambiguous_ref");
+  const resolved = resolveId(db, "briefing_bundle", ref);
+  if (resolved.ok) return resolved.id;
+  if (resolved.error === "ambiguous") throw new BriefingStoreError("Briefing bundle reference is ambiguous", 409, "ambiguous_ref");
   throw new BriefingStoreError("Briefing bundle not found", 404, "not_found");
 }
 

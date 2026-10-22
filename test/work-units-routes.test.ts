@@ -131,7 +131,9 @@ describe("work unit routes", () => {
       expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: token, body })).status).toBeGreaterThanOrEqual(400);
       expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual(before);
     }
-    const promoted = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    // The short checkpoint id `parent-role assume` prints (chk_ + ten characters) is accepted.
+    const promoted = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own',
+      body: { ...promote, parent_role_checkpoint_id: current.slice(0, 'chk_'.length + 10) } });
     expect(promoted.status).toBe(200);
     expect(promoted.body).toMatchObject({ id, kind: 'integration', custody_generation: 1, existing: true });
     expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual({ ...before!, kind: 'integration' });

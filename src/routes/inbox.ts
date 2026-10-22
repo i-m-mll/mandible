@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
-import { getDb, resolvePrefix } from "../db.js";
+import { getDb } from "../db.js";
+import { resolveId } from "../entity-refs.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
@@ -779,11 +780,11 @@ export function registerInboxRoutes(
     if (!authQueue) {
       // Defensive: in test contexts that wire inbox without an authQueue, we
       // fall back to a direct DB update so the endpoint stays exercisable.
-      const resolved = resolvePrefix(db, "auth_requests", "id", id);
+      const resolved = resolveId(db, "auth_request", id);
       if (!resolved.ok) {
         sendJson(res, resolved.error === "ambiguous" ? 409 : 404, {
           error: resolved.error === "ambiguous"
-            ? `ambiguous prefix '${id}' — matches ${resolved.count} auth requests. Use a longer prefix.`
+            ? `ambiguous prefix '${id}' names more than one auth request (${resolved.matches.join(", ")}); pass a longer prefix.`
             : "auth request not found",
         });
         return;
@@ -843,11 +844,11 @@ export function registerInboxRoutes(
 
     if (type === "continuation") {
       // Bug: caa157e — resolve UUID prefix for session IDs
-      const resolved = resolvePrefix(db, "sessions", "id", id);
+      const resolved = resolveId(db, "session_row", id);
       if (!resolved.ok) {
         if (resolved.error === "ambiguous") {
           sendJson(res, 409, {
-            error: `ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`
+            error: `ambiguous prefix '${id}' names more than one session (${resolved.matches.join(", ")}); pass a longer prefix.`
           });
         } else {
           sendJson(res, 404, { error: "continuation not found or already acknowledged" });
@@ -866,11 +867,11 @@ export function registerInboxRoutes(
       sendJson(res, 200, { ok: true });
     } else if (type === "auth_result") {
       // Bug: caa157e — resolve UUID prefix for auth request IDs
-      const resolved = resolvePrefix(db, "auth_requests", "id", id);
+      const resolved = resolveId(db, "auth_request", id);
       if (!resolved.ok) {
         if (resolved.error === "ambiguous") {
           sendJson(res, 409, {
-            error: `ambiguous prefix '${id}' — matches ${resolved.count} auth requests. Use a longer prefix.`
+            error: `ambiguous prefix '${id}' names more than one auth request (${resolved.matches.join(", ")}); pass a longer prefix.`
           });
         } else {
           sendJson(res, 404, { error: "auth request not found or already acknowledged" });
