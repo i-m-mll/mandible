@@ -1136,15 +1136,6 @@ export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
   return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
 }
 
-// Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
-// from the dashboard so stale content can be corrected before approval.
-export async function updateAuthRequestField(
-  requestId: string,
-  fields: Record<string, unknown>,
-): Promise<void> {
-  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
-}
-
 export async function getWorkRepos<T>(): Promise<T[]> {
   const payload = await cachedApiGetJson<ApiList<T>>('/api/work/repos');
   return normalizeList(payload);
