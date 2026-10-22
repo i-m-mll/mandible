@@ -546,8 +546,12 @@ function AuthActionBundle({
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
+  const declaredClosures = request.issue_closures ?? request.issues;
+  const unrecordedClosures = actions.length === 0 && Array.isArray(declaredClosures)
+    ? uniqueStrings(declaredClosures.filter((ref): ref is string => typeof ref === 'string'))
+    : [];
 
-  if (actions.length === 0) {
+  if (actions.length === 0 && unrecordedClosures.length === 0) {
     return null;
   }
 
@@ -568,6 +572,17 @@ function AuthActionBundle({
       className="auth-action-bundle"
     >
       <div className="auth-action-bundle__rows">
+        {unrecordedClosures.map(ref => (
+          <div key={ref} className="auth-action-row">
+            <div className="auth-action-row__main">
+              <IssuePill issueRef={ref} context={repoId} layout="row" />
+              <div className="auth-action-row__summary">Close issue</div>
+            </div>
+          </div>
+        ))}
+        {unrecordedClosures.length > 0 && (
+          <div className="auth-action-row__summary">No action status recorded.</div>
+        )}
         {actions.map((action) => {
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
@@ -3148,7 +3163,7 @@ export function AuthQueueView({
                   {actionError.message}
                 </DetailPaneNotice>
               ) : null}
-              actionBundle={requestActions.length > 0 ? (
+              actionBundle={(
                 <AuthActionBundle
                   request={request}
                   actions={requestActions}
@@ -3156,7 +3171,7 @@ export function AuthQueueView({
                   instance={instance}
                   onToggleVeto={handleToggleActionVeto}
                 />
-              ) : undefined}
+              )}
               actions={renderDetailActions(request)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}

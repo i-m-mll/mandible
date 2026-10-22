@@ -362,3 +362,23 @@ describe('Approval review issue and action composition', () => {
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
   });
 });
+
+
+describe('Approval closure targets without recorded actions', () => {
+  for (const field of ['issue_closures', 'issues'] as const) {
+    it(`preserves ${field} closure links without assigning completion evidence`, async () => {
+      const request = { ...pendingRequest, status: 'completed', exit_code: 0,
+        issue_references: [], actions: [], [field]: ['legacy-9b1', 'legacy-9b2', 'legacy-9b1'] };
+      render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}}
+        selectedAuthId={request.id} daemonReady instance={authMainInstance}
+        onApprove={() => undefined} onReject={() => undefined} />);
+      const panel = screen.getByRole('button', { name: 'Actions on merge', exact: true }).closest('section')!;
+      expect(panel.querySelectorAll('a')).toHaveLength(2);
+      expect(panel.querySelector('a')?.getAttribute('href')).toContain('legacy-9b1');
+      expect(panel.querySelector('.auth-action-row__state')).toBeNull();
+      expect(screen.getByText('No action status recorded.')).toBeTruthy();
+      expect(screen.queryByRole('switch')).toBeNull();
+
+    });
+  }
+});
