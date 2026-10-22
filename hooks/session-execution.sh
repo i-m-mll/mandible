@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" != "--within-deadline" ]]; then
+  exec bun --no-install "$(dirname "${BASH_SOURCE[0]}")/session-execution-deadline.mjs" "$@"
+fi
+shift
 provider="${1:-}"
 case "$provider" in claude|codex) ;; *) printf 'Mandible execution hook: expected claude or codex.\n' >&2; exit 1 ;; esac
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../cli" && pwd)/api.sh"

@@ -21,7 +21,7 @@ import {
   resetHookNotificationAttentionForTests,
 } from "../src/claude-hook-attention.js";
 import { setDb, type Db } from "../src/db.js";
-import { scratchDir } from "./helpers/cli-process.js";
+import { runCli, scratchDir } from "./helpers/cli-process.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { registerHookRoutes } from "../src/routes/hooks.js";
 import { Router, createServer, createLocalSocketServer } from "../src/server.js";
@@ -125,6 +125,22 @@ describe("execution observation boundaries", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+});
+
+it("ends the whole observer before the provider timeout when file RPC is unavailable", async () => {
+  const spool = path.join(tempDir, "unavailable-rpc");
+  fs.mkdirSync(spool);
+  const started = performance.now();
+  const result = await runCli([path.resolve("hooks/session-execution.sh"), "codex"], {
+    command: "bash", input: JSON.stringify({ session_id: "deadline-native", hook_event_name: "Stop" }),
+    env: { MANDIBLE_BASE: `file://${spool}`, MANDIBLE_SESSION_ID: undefined,
+      MANDIBLE_EXECUTION_OBSERVER_ID: undefined, MANDIBLE_EXECUTION_OBSERVER_SESSION_ID: undefined,
+      MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE: undefined },
+  });
+  expect(result.status).not.toBe(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("total observation deadline exceeded");
+  expect(performance.now() - started).toBeLessThan(3000);
 });
 
 describe("Claude hook routes", () => {
