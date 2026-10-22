@@ -46,6 +46,7 @@ import {
   addDelegatedSigningLease,
   getOperator,
 } from "../../src/users/store.js";
+import { waitUntil } from "./wait-until.js";
 
 // --- temp-path custody -----------------------------------------------------
 //
@@ -490,16 +491,11 @@ export function createNoopHookManager(): AuthHookManager {
   } as unknown as AuthHookManager;
 }
 
-export async function waitForStatus(queue: AuthQueue, id: string, status: string, timeoutMs = 2000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+export async function waitForStatus(queue: AuthQueue, id: string, status: string) {
+  return waitUntil(() => {
     const request = queue.getRequest(id);
-    if (request?.status === status) {
-      return request;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Timed out waiting for status ${status}`);
+    return request?.status === status ? request : undefined;
+  }, `request ${id} to reach status ${status}`, 20);
 }
 
 export function insertMandibleSession(

@@ -390,7 +390,7 @@ describe("scoped protected-merge clearance", () => {
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
     }
-  }, 10_000);
+  });
 
   it("cleans up the fresh signer when durable issuance fails", async () => {
     const f = fixture();

@@ -4,9 +4,9 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import SqliteDatabase from "../../src/sqlite.ts";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import { openDb, resetDb, setDb, type Db } from "../../src/db.js";
 
@@ -15,16 +15,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const CUTOFF_MS = 2_000_000_000_000;
 
 let tempRoots: string[] = [];
-
-beforeAll(() => {
-  const entrypoint = path.join(process.cwd(), "dist", "cli", "projected-conversation-convergence.js");
-  if (!fs.existsSync(entrypoint)) {
-    execFileSync(process.execPath, [path.join(process.cwd(), "scripts", "run-tsc.js")], {
-      cwd: process.cwd(),
-      stdio: "inherit",
-    });
-  }
-});
 
 afterEach(() => {
   resetDb({ poison: false });

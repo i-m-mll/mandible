@@ -9,28 +9,34 @@ mandible_bun_runtime() {
   fi
   "$selector"
 }
+# The selector reports its own refusal; stop there rather than exec an empty path.
+mandible_syntax_tool() {
+  local runtime
+  runtime="$(mandible_bun_runtime)" || return
+  "$runtime" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" "$@"
+}
 mandible_command_syntax() {
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" syntax "$1"
+  mandible_syntax_tool syntax "$1"
 }
 mandible_render_commands() {
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" render-cli
+  mandible_syntax_tool render-cli
 }
 
 mandible_bind_arguments() {
   local key="$1" bindings="$2"
   shift 2
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" bind-entry "$key" "$bindings" "$@"
+  mandible_syntax_tool bind-entry "$key" "$bindings" "$@"
 }
 
 mandible_bind_main_arguments() {
   local key="$1" bindings="$2"
   shift 2
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" bind-main "$key" "$bindings" "$@"
+  mandible_syntax_tool bind-main "$key" "$bindings" "$@"
 }
 
 mandible_command_help() {
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" help "$@"
+  mandible_syntax_tool help "$@"
 }
 mandible_parse_command() {
-  "$(mandible_bun_runtime)" "$MANDIBLE_COMMAND_SYNTAX_DIR/command-syntax.cjs" parse "$@"
+  mandible_syntax_tool parse "$@"
 }

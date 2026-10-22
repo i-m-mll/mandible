@@ -131,11 +131,10 @@ describe("artifact write authorization", () => {
       ok: true, bytes: Buffer.from("source artifact bytes"),
     });
     expect(fs.readFileSync(sourceFile)).toEqual(sourceBytes);
-    expect(fs.readFileSync(sourceDbPath)).toEqual(sourceDbBytes);
+    // Deep equality walks a multi-megabyte database byte by byte for seconds.
+    expect(fs.readFileSync(sourceDbPath).equals(sourceDbBytes)).toBe(true);
     expect(snapshot(previewDb, previewCas)).not.toEqual(sourceState);
-  // Baseline and candidate take about 4.5s for this copied-storage integration
-  // case. This deadline bounds fixture IO; file and suite timing gates remain.
-  }, 10_000);
+  });
 
   it("denies path, explicit identity, upload and legacy-key updates before any mutation", async () => {
     const project = addProject(db, { project_key: "owner", display_name: "Owner" });
@@ -498,5 +497,5 @@ describe("artifact write authorization", () => {
       expect(reuseId).not.toBe(trackedId);
 
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
-  }, 20_000);
+  });
 });

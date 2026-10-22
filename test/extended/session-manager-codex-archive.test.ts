@@ -20,7 +20,7 @@ const request = { kind: 'resume-provider-session' as const, conversation_id: 'ch
 describe('archived Codex continuation through the managed controller', () => {
   it('restores the exact native archived thread before resume', async () => {
     expect(await adapter().acquire(request)).toEqual({ ok: true, value: {
-      controller_instance_id: 'controller', provider_session_id: 'thread-archived' } });
+      controller_instance_id: 'controller', provider_session_id: 'thread-archived', pid: expect.any(Number) } });
   });
   it.each([{ FAKE_CODEX_UNARCHIVE_FAIL: '1' }, { FAKE_CODEX_RESTORED_ID: 'wrong-thread' }])
     ('refuses failed or mismatched native restoration without creating another thread', async env => {

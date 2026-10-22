@@ -317,6 +317,6 @@ describe("auth queue", () => {
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
-    }, 60_000);
+    });
   });
 });
