@@ -7,7 +7,7 @@ import {
   type CodexThreadArchiver,
   type WorkerThreadLiveness,
 } from "./codex-thread-archive.js";
-import { canonicalRepoKeysForRef, checkoutRootsForRef } from "./repo-identity.js";
+import { observeRepoIdentities, checkoutRootsForRef } from "./repo-identity.js";
 import { resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
@@ -22,6 +22,11 @@ type AuthPipelineMatch =
   | { status: "matched"; id: string; completed: boolean; resolved_at: number | null }
   | { status: "none" }
   | { status: "unknown" };
+
+function workUnitDecisionState(db: Db, id: string): string {
+  const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
+}
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
 // Runs every 60s and performs four reconciliation passes:
@@ -93,7 +98,7 @@ export class WorkUnitReconciler {
       const holders = this.reconcileDeadHolders();
       await this.archiveFinishedWorkerThreads();
       const abandoned = await this.reconcileAbandonedBranches();
-      const autoCommitted = this.reconcileAutoCommit();
+      const autoCommitted = await this.reconcileAutoCommit();
 
       const unknownChanged = holders.unknown !== this.lastUnknownHolders;
       this.lastUnknownHolders = holders.unknown;
@@ -207,12 +212,21 @@ export class WorkUnitReconciler {
         provider_session_id: string | null;
       }>;
 
+    const starting = new Map(committed.map(row => [row.id, workUnitDecisionState(db, row.id)]));
+    const identity = await observeRepoIdentities(db, committed.map(row => row.repo_id), [], this.abort.signal);
     const branchesByRoot = new Map<string, Promise<Set<string> | null>>();
     const gone: typeof committed = [];
     for (const row of committed) {
       if (await this.branchIsGone(db, row, branchesByRoot)) gone.push(row);
     }
     if (gone.length === 0) return 0;
+    const results = await Promise.allSettled(gone.map(async row => [row.id, await this.matchingAuthPipelineRequest(row)] as const));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
+    const pipelines = new Map(results.map(result => {
+      if (result.status !== "fulfilled") throw new Error("Unsettled work-unit pipeline observation");
+      return result.value;
+    }));
 
     const abandonStmt = db.prepare(
       "UPDATE work_units SET state = 'abandoned' WHERE id = ? AND state = 'committed' AND auth_request_id IS NULL"
@@ -227,6 +241,11 @@ export class WorkUnitReconciler {
     return db.transaction(() => {
       let count = 0;
       for (const row of gone) {
+        this.abort.signal.throwIfAborted();
+        identity.assertCurrent();
+        if (workUnitDecisionState(db, row.id) !== starting.get(row.id)) continue;
+        const pipeline = pipelines.get(row.id)!;
+        if (!pipeline.isCurrent()) continue;
         const sessionId = row.assigned_session_id
           ?? row.worker_provider_session_id
           ?? row.provider_session_id;
@@ -239,7 +258,7 @@ export class WorkUnitReconciler {
         // A branch may be deleted by auth-merge before the successful result
         // reaches Stage 2. Keep it committed while a same-repo request is
         // active, or resolve it here once that request proves success.
-        const authRequest = this.matchingAuthPipelineRequest(row);
+        const authRequest = pipeline.match;
         if (authRequest.status === "unknown") {
           // No evidence either way. Leave it committed for the next pass
           // rather than abandoning on a failed lookup.
@@ -298,15 +317,15 @@ export class WorkUnitReconciler {
    * handled by the `tableExists` precondition above the try, so the catch only
    * ever fires on a real failure.
    */
-  private matchingAuthPipelineRequest(workUnit: {
+  private async matchingAuthPipelineRequest(workUnit: {
     branch: string;
     repo_id: string;
     created_at: number;
-  }): AuthPipelineMatch {
+  }): Promise<{ match: AuthPipelineMatch; isCurrent(): boolean }> {
     const db = getDb();
-    if (!tableExists(db, "auth_requests")) return { status: "none" };
+    if (!tableExists(db, "auth_requests")) return { match: { status: "none" }, isCurrent: () => !tableExists(db, "auth_requests") };
     try {
-      const requests = db.prepare(
+      const read = () => db.prepare(
         `SELECT id, repo, cwd, target_repo_root, status, resolved_at
          FROM auth_requests
          WHERE type = 'merge' AND head_branch = ? AND created_at >= ?
@@ -322,35 +341,39 @@ export class WorkUnitReconciler {
         status: string;
         resolved_at: number | null;
       }>;
-      const workUnitKeys = canonicalRepoKeysForRef(db, workUnit.repo_id);
+      const requests = read();
+      const identity = await observeRepoIdentities(db, [workUnit.repo_id, ...requests.flatMap(request => [request.target_repo_root, request.cwd, request.repo])], [], this.abort.signal);
+      const isCurrent = () => {
+        this.abort.signal.throwIfAborted();
+        identity.assertCurrent();
+        return JSON.stringify(read()) === JSON.stringify(requests);
+      };
+      const result = (match: AuthPipelineMatch) => ({ match, isCurrent });
+      const workUnitKeys = identity.keysForRef(workUnit.repo_id);
       for (const request of requests) {
         const refs = [request.target_repo_root, request.cwd, request.repo].filter(
           (value): value is string => Boolean(value),
         );
         const requestKeys = new Set<string>();
         for (const ref of refs) {
-          for (const key of canonicalRepoKeysForRef(db, ref)) requestKeys.add(key);
+          for (const key of identity.keysForRef(ref)) requestKeys.add(key);
         }
         const matches = workUnitKeys.size > 0 && requestKeys.size > 0
           ? [...workUnitKeys].some((key) => requestKeys.has(key))
           : refs.includes(workUnit.repo_id);
         if (matches) {
-          return {
-            status: "matched",
-            id: request.id,
-            completed: request.status === "completed",
-            resolved_at: request.resolved_at,
-          };
+          return result({ status: "matched", id: request.id, completed: request.status === "completed", resolved_at: request.resolved_at });
         }
       }
-      return { status: "none" };
+      return result({ status: "none" });
     } catch (error) {
+      this.abort.signal.throwIfAborted();
       this.logger("error", "work_unit_auth_match_query_failed", {
         work_unit_branch: workUnit.branch,
         repo_id: workUnit.repo_id,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { status: "unknown" };
+      return { match: { status: "unknown" }, isCurrent: () => true };
     }
   }
 
@@ -358,45 +381,24 @@ export class WorkUnitReconciler {
    * Pass 4: Auto-transition open work units to committed when their branch
    * has commits ahead of the default branch (detected via the branches table).
    */
-  private reconcileAutoCommit(): number {
+  private async reconcileAutoCommit(): Promise<number> {
     const db = getDb();
-
-    const run = db.transaction(() => {
-      // Find open work units that have a branch with commits ahead of default
-      const openWithBranch = db
-        .prepare(
-          `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
-           WHERE wu.state = 'open' AND wu.branch IS NOT NULL
-           ORDER BY wu.id`
-        )
-        .all() as Array<{ id: string; branch: string; repo_id: string }>;
-
-      if (openWithBranch.length === 0) return 0;
-
-      const checkAhead = db.prepare(
-        "SELECT repo_root FROM branches WHERE branch = ? AND ahead_default > 0"
-      );
-
-      const commitStmt = db.prepare(
-        "UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ?"
-      );
-
-      const now = Date.now();
+    const rows = db.prepare("SELECT id, branch, repo_id FROM work_units WHERE state = 'open' AND branch IS NOT NULL ORDER BY id").all() as Array<{ id: string; branch: string; repo_id: string }>;
+    if (rows.length === 0) return 0;
+    const readBranches = (branch: string) => db.prepare("SELECT repo_root FROM branches WHERE branch = ? AND ahead_default > 0 ORDER BY repo_root").all(branch) as Array<{ repo_root: string }>;
+    const candidates = rows.map(row => ({ row, state: workUnitDecisionState(db, row.id), branches: readBranches(row.branch) }));
+    const identity = await observeRepoIdentities(db, candidates.flatMap(({ row, branches }) => [row.repo_id, ...branches.map(branch => branch.repo_root)]), [], this.abort.signal);
+    return db.transaction(() => {
+      this.abort.signal.throwIfAborted();
+      identity.assertCurrent();
       let count = 0;
-      for (const row of openWithBranch) {
-        const workUnitKeys = canonicalRepoKeysForRef(db, row.repo_id);
-        const ahead = (checkAhead.all(row.branch) as Array<{ repo_root: string }>).some(branch =>
-          branch.repo_root === row.repo_id || [...canonicalRepoKeysForRef(db, branch.repo_root)]
-            .some(key => workUnitKeys.has(key)));
-        if (ahead) {
-          commitStmt.run(now, row.id);
-          count++;
-        }
+      for (const { row, state, branches } of candidates) {
+        if (workUnitDecisionState(db, row.id) !== state || JSON.stringify(readBranches(row.branch)) !== JSON.stringify(branches)) continue;
+        const keys = identity.keysForRef(row.repo_id);
+        const ahead = branches.some(branch => branch.repo_root === row.repo_id || [...identity.keysForRef(branch.repo_root)].some(key => keys.has(key)));
+        if (ahead) count += Number(db.prepare("UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ? AND state = 'open'").run(this.now(), row.id).changes);
       }
-
       return count;
-    });
-
-    return run();
+    })();
   }
 }

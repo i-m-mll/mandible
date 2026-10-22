@@ -253,28 +253,28 @@ export function registerAuthRoutes(
     // its own title beside a foreign request's id and read the refusal as a
     // success. Reporting the stored title/repo/branches makes the mismatch that
     // caused the refusal visible at the point of refusal.
-    const duplicate = payload.supersedes_request_id ? null : authQueue.findDuplicate(payload);
-    if (duplicate) {
-      res.status(409).json({
-        error:
-          "Duplicate auth request — this repo already has a pending or approved request " +
-          "for this branch. Nothing was queued.",
-        request_id: duplicate.id,
-        status: duplicate.status,
-        existing: {
-          id: duplicate.id,
-          status: duplicate.status,
-          title: duplicate.title,
-          repo: duplicate.repo ?? null,
-          head_branch: duplicate.head_branch ?? null,
-          base_branch: duplicate.base_branch ?? null,
-          created_at: duplicate.created_at,
-        },
-      });
-      return;
-    }
-
     try {
+      const duplicate = payload.supersedes_request_id ? null : await authQueue.findDuplicate(payload);
+      if (duplicate) {
+        res.status(409).json({
+          error:
+            "Duplicate auth request — this repo already has a pending or approved request " +
+            "for this branch. Nothing was queued.",
+          request_id: duplicate.id,
+          status: duplicate.status,
+          existing: {
+            id: duplicate.id,
+            status: duplicate.status,
+            title: duplicate.title,
+            repo: duplicate.repo ?? null,
+            head_branch: duplicate.head_branch ?? null,
+            base_branch: duplicate.base_branch ?? null,
+            created_at: duplicate.created_at,
+          },
+        });
+        return;
+      }
+
       payload.requester_evidence_method = requester.evidenceMethod;
       payload.requester_credential_id = requester.credentialId;
       payload.require_delivery_custody = isAuthMerge;
