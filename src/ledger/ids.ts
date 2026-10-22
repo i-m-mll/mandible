@@ -143,16 +143,6 @@ export function isSha256Hex(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(value);
 }
 
-export function shortestUniquePrefix(id: string, ids: Iterable<string>, minimum = 7): string {
-  const normalized = id.toLowerCase();
-  const peers = Array.from(ids, (peer) => peer.toLowerCase()).filter((peer) => peer !== normalized);
-  for (let length = Math.min(minimum, normalized.length); length <= normalized.length; length++) {
-    const prefix = normalized.slice(0, length);
-    if (!peers.some((peer) => peer.startsWith(prefix))) return prefix;
-  }
-  return normalized;
-}
-
 function sha256Hex(record: Record<string, unknown>): string {
   return createHash("sha256").update(canonicalJson(record)).digest("hex");
 }

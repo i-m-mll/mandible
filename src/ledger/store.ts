@@ -11,6 +11,7 @@ import {
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
 import { resolveProjectRef } from "./project-registry.js";
+import { resolveId, type RefResolution } from "../entity-refs.js";
 import { assertEvidenceMethod } from "../identity/resolver.js";
 import { getUserById } from "../users/store.js";
 import type {
@@ -54,10 +55,7 @@ export function storedWorkerStatusError(value: string): string {
     : `invalid worker status: ${value} (expected one of: ${LEDGER_STORED_WORKER_STATUSES.join(", ")})`;
 }
 
-export type ResolveIssueRefResult =
-  | { ok: true; id: string }
-  | { ok: false; error: "not_found" }
-  | { ok: false; error: "ambiguous"; count: number; matches: string[] };
+export type ResolveIssueRefResult = RefResolution;
 
 export interface LedgerStoreOptions {
   broadcaster?: LedgerBroadcaster;
@@ -1993,79 +1991,12 @@ export class LedgerStore {
       const project = resolveProjectRef(this.db, qualified[1]);
       if (!project.ok) {
         return project.reason === "ambiguous"
-          ? { ok: false, error: "ambiguous", count: project.candidates.length, matches: [] }
+          ? { ok: false, error: "ambiguous", matches: project.candidates }
           : { ok: false, error: "not_found" };
       }
-      return this.resolveIssueRef(qualified[2], { project_id: project.project.id });
+      return resolveId(this.db, "issue", qualified[2], { scope: project.project.id });
     }
-
-    const matches = new Set<string>();
-    const addRows = (rows: Array<{ id?: string; issue_id?: string }>) => {
-      for (const row of rows) {
-        const id = row.id ?? row.issue_id;
-        if (id) matches.add(id);
-      }
-    };
-
-    if (options.project_id) {
-      addRows(this.db.prepare(
-        "SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?",
-      ).all(trimmed, options.project_id) as Array<{ id: string }>);
-      addRows(this.db.prepare(
-        "SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?",
-      ).all(trimmed, options.project_id) as Array<{ id: string }>);
-      addRows(this.db.prepare(
-        `SELECT issue_id FROM ledger_issue_aliases
-         WHERE alias = ? AND project_id = ?`,
-      ).all(trimmed, options.project_id) as Array<{ issue_id: string }>);
-    } else {
-      addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed) as Array<{ id: string }>);
-      addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed) as Array<{ id: string }>);
-      addRows(this.db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed) as Array<{ issue_id: string }>);
-    }
-
-    if (matches.size === 1) {
-      return { ok: true, id: Array.from(matches)[0] };
-    }
-    if (matches.size > 1) {
-      return { ok: false, error: "ambiguous", count: matches.size, matches: Array.from(matches).sort() };
-    }
-
-    if (trimmed.length >= 4) {
-      const escaped = escapeLike(trimmed);
-      if (options.project_id) {
-        addRows(this.db.prepare(
-          `SELECT id FROM ledger_issues
-           WHERE id LIKE ? ESCAPE '\\' AND project_id = ?`,
-        ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
-        addRows(this.db.prepare(
-          `SELECT id FROM ledger_issues
-           WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?`,
-        ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
-        addRows(this.db.prepare(
-          `SELECT issue_id FROM ledger_issue_aliases
-           WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?`,
-        ).all(`${escaped}%`, options.project_id) as Array<{ issue_id: string }>);
-      } else {
-        addRows(this.db.prepare(
-          "SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'",
-        ).all(`${escaped}%`) as Array<{ id: string }>);
-        addRows(this.db.prepare(
-          "SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'",
-        ).all(`${escaped}%`) as Array<{ id: string }>);
-        addRows(this.db.prepare(
-          "SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'",
-        ).all(`${escaped}%`) as Array<{ issue_id: string }>);
-      }
-    }
-
-    if (matches.size === 0) {
-      return { ok: false, error: "not_found" };
-    }
-    if (matches.size > 1) {
-      return { ok: false, error: "ambiguous", count: matches.size, matches: Array.from(matches).sort() };
-    }
-    return { ok: true, id: Array.from(matches)[0] };
+    return resolveId(this.db, "issue", trimmed, options.project_id ? { scope: options.project_id } : {});
   }
 
   getIssue(id: string): LedgerIssue {

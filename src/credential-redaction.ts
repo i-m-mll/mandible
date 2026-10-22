@@ -38,6 +38,7 @@ import { assignConversationBlockIds, conversationBlockId } from "./conversation-
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { UserRegistryError } from "./users/store.js";
+import { resolveId } from "./entity-refs.js";
 
 const redactionLog = getDaemonLogger();
 
@@ -184,29 +185,15 @@ export function resolveCredentialForRedaction(db: Db, ref: string): CredentialRo
   if (!trimmed) {
     throw new UserRegistryError("invalid", "A credential id is required.");
   }
-  const exact = db
+  const resolved = resolveId(db, "credential", trimmed);
+  if (!resolved.ok) {
+    throw resolved.error === "ambiguous"
+      ? new UserRegistryError("invalid", `Credential id '${trimmed}' is ambiguous (${resolved.matches.join(", ")}). Use a longer prefix.`)
+      : new UserRegistryError("not_found", `No credential '${trimmed}'.`);
+  }
+  const credential = db
     .prepare("SELECT id, type, status, fingerprint FROM user_credentials WHERE id = ?")
-    .get(trimmed) as CredentialRow | undefined;
-  const matches = exact
-    ? [exact]
-    // substr rather than LIKE: no pattern metacharacters to escape, so an
-    // operator-supplied ref is always a literal prefix.
-    : (db
-      .prepare(
-        `SELECT id, type, status, fingerprint FROM user_credentials
-         WHERE substr(id, 1, length(?)) = ? ORDER BY id LIMIT 5`,
-      )
-      .all(trimmed, trimmed) as CredentialRow[]);
-  if (matches.length === 0) {
-    throw new UserRegistryError("not_found", `No credential '${trimmed}'.`);
-  }
-  if (matches.length > 1) {
-    throw new UserRegistryError(
-      "invalid",
-      `Credential id '${trimmed}' is ambiguous (${matches.length} matches). Use the full id.`,
-    );
-  }
-  const credential = matches[0];
+    .get(resolved.id) as CredentialRow;
   if (credential.type !== "api_token") {
     throw new UserRegistryError(
       "invalid",

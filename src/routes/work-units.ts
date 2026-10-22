@@ -13,7 +13,6 @@ import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
-import { shortestUniquePrefix } from "../ledger/ids.js";
 import { attributionForRequest, isOperator } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
@@ -43,7 +42,7 @@ import {
   type CustodyHolder,
   type HolderLiveness,
 } from "../work-unit-custody.js";
-import { entityRefs } from "../entity-refs.js";
+import { entityRefs, shortRef } from "../entity-refs.js";
 
 // Bug: a247bc3 — work-unit CRUD for inbox workqueue
 // Bug: 8a281b3 — liveness overlay, PATCH, GET /:id
@@ -319,7 +318,7 @@ export function registerWorkUnitRoutes(
               : !checkpoint
                 ? "This umbrella has no parent-role checkpoint; run issue parent-role assume first."
                 : checkpoint.id !== body.parent_role_checkpoint_id
-                  ? `Checkpoint ${body.parent_role_checkpoint_id} is not this umbrella's latest parent-role checkpoint (${checkpoint.id}); pass the latest one.`
+                  ? `Checkpoint ${shortRef(db, "checkpoint", body.parent_role_checkpoint_id)} is not this umbrella's latest parent-role checkpoint (${shortRef(db, "checkpoint", checkpoint.id)}); pass the latest one.`
                   : payload?.authenticated_user_id !== credential.user_id || payload?.authenticated_credential_id !== credential.credential_id
                     ? "The latest parent-role checkpoint was recorded by another credential; run issue parent-role assume with this credential."
                     : null;
@@ -952,7 +951,7 @@ export function registerWorkUnitRoutes(
       holder,
       holder_liveness: liveness,
       message: `Custody is held by ${holderLabel(holder)}. The operator can approve auth request ` +
-        `${shortestUniquePrefix(requestId, (db.prepare("SELECT id FROM auth_requests").all() as Array<{ id: string }>).map((row) => row.id), 8)} ` +
+        `${shortRef(db, "auth_request", requestId)} ` +
         "in the Mandible app; approval transfers custody to your credential.",
     });
   }
@@ -1206,7 +1205,7 @@ function liveHolderRefusal(
     code: "custody_holder_live",
     holder,
     holder_liveness: liveness,
-    takeover_command: takeoverCommand(unit, { requestApproval: true }),
+    takeover_command: takeoverCommand(db, unit, { requestApproval: true }),
   };
 }
 
@@ -1244,14 +1243,13 @@ function holderRefusal(
     code: "custody_holder_stopped",
     holder,
     holder_liveness: liveness,
-    takeover_command: takeoverCommand(unit, unit.kind === "integration" && !sameCredential ? { parentRoleCheckpointId: null } : {}),
+    takeover_command: takeoverCommand(db, unit, unit.kind === "integration" && !sameCredential ? { parentRoleCheckpointId: null } : {}),
   };
 }
 
 function shortIssueRef(db: ReturnType<typeof getDb>, unit: WorkUnit): string {
   if (!unit.ledger_issue_id) return unit.issue_id;
-  const ids = (db.prepare("SELECT id FROM ledger_issues").all() as Array<{ id: string }>).map((row) => row.id);
-  return shortestUniquePrefix(unit.ledger_issue_id, ids);
+  return shortRef(db, "issue", unit.ledger_issue_id, { minimum: 7 });
 }
 
 /** The caller's own session, recorded on a unit when custody moves to it. */
@@ -1316,9 +1314,9 @@ function custodyCheck(
     const where = `Work unit held by another session of your credential ${holderLabel(holder)}, whose session ${livenessLabel(holding.liveness)}. `;
     return holding.state === "stopped"
       ? answer("takeover_available", `${where}Take over custody with the command below before committing.`,
-        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit) })
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(db, unit) })
       : answer("held", `${where}Do not commit here. Ask that session to release it, or request operator approval with the command below.`,
-        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit, { requestApproval: true }) });
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(db, unit, { requestApproval: true }) });
   }
   if (unit.kind === "integration") {
     const checkpoint = unit.ledger_issue_id
@@ -1335,16 +1333,16 @@ function custodyCheck(
           ? "You hold the umbrella parent role; take over custody with the command below before committing."
           : `Assume the umbrella parent role first (mandible issue parent-role assume ${shortIssueRef(db, unit)}), then take over custody with its checkpoint.`),
       { holder, holder_liveness: liveness,
-        takeover_command: takeoverCommand(unit, { parentRoleCheckpointId: callerHoldsRole ? checkpoint!.id : null }) });
+        takeover_command: takeoverCommand(db, unit, { parentRoleCheckpointId: callerHoldsRole ? checkpoint!.id : null }) });
   }
   if (liveness.state === "stopped") {
     return answer("takeover_available",
       `Work unit held by ${holderLabel(holder)}, whose session ${livenessLabel(liveness)}. ` +
         "Take over custody with the command below before committing.",
-      { holder, holder_liveness: liveness, takeover_command: takeoverCommand(unit) });
+      { holder, holder_liveness: liveness, takeover_command: takeoverCommand(db, unit) });
   }
   return answer("held",
     `Work unit held by ${holderLabel(holder)}, whose session ${livenessLabel(liveness)}. ` +
       "Do not commit here. Ask the holder to release it, or request operator approval with the command below.",
-    { holder, holder_liveness: liveness, takeover_command: takeoverCommand(unit, { requestApproval: true }) });
+    { holder, holder_liveness: liveness, takeover_command: takeoverCommand(db, unit, { requestApproval: true }) });
 }

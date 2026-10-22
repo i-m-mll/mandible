@@ -1,7 +1,7 @@
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
 import { getDb, type Db } from "../db.js";
-import { entityRefs, resolveCommentRef, resolveId } from "../entity-refs.js";
+import { entityRefs, resolveCommentRef, resolveId, shortRef } from "../entity-refs.js";
 import { parseIssueRefTarget } from "../ledger/authored-references.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -62,7 +62,6 @@ import { exportUntrackedCopy, serializeSpaceDocument, ExportError, resolveChecko
 import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
 import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
-import { shortestUniquePrefix } from "../ledger/ids.js";
 import type { ResolverRefKind, ResolverResult } from "../contracts.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
@@ -427,8 +426,7 @@ function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string)
     return { ref, kind: "auth", resolved: false, entity: null, error: "project_unresolved" };
   }
   requireProjectAccess(db, req, [...projects][0], "read");
-  const ids = db.prepare("SELECT id FROM auth_requests").all() as Array<{ id: string }>;
-  const id = shortestUniquePrefix(request.id as string, ids.map((row) => row.id), 8);
+  const id = shortRef(db, "auth_request", request.id as string);
   const { target_repo_root: _root, ...entity } = request;
   return { ref, kind: "auth", resolved: true, entity: { ...entity, id } };
 }

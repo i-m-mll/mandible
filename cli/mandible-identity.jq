@@ -8,6 +8,11 @@ def mandible_short_id:
   elif type != "string" then tostring
   elif test("^[0-9a-f]{8}-[0-9a-f-]{27}$"; "i") then .[0:8]
   elif test("^[0-9a-f]{64}$"; "i") then .[0:8]
+  # Time-ordered ids (ledger `<kind>_<time>_<random>`, `<kind>_<ULID>`) print
+  # their time part and seven random characters: ids minted in one
+  # millisecond share the time part, so it alone is ambiguous.
+  elif test("^[a-z]+_[0-9a-z]{10}_[0-9a-f]{20}$") then .[0:(index("_") + 19)]
+  elif test("^[a-z]+_[0-9A-HJKMNP-TV-Z]{26}$") then .[0:(index("_") + 18)]
   elif test("^[a-z][a-z0-9-]*_[0-9A-Za-z_-]{12,}$") then
     capture("^(?<prefix>[a-z][a-z0-9-]*_)(?<identity>[0-9A-Za-z_-]+)$")
     | .prefix + (.identity[0:10])
