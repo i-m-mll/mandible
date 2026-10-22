@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -222,7 +223,7 @@ describe("scoped protected-merge clearance", () => {
       }, f.operator.id);
       const executing = f.queue.approveWithClearance(request.id.slice(0, 8));
       expect(executing).toMatchObject({ status: "executing", approval_source: "clearance" });
-      await vi.waitFor(() => expect(f.queue.getRequest(request.id)?.status).toBe("completed"));
+      await waitUntil(() => f.queue.getRequest(request.id)?.status === "completed", "the cleared merge to complete");
       expect(f.executions).toHaveLength(1);
       expect(f.executions[0]).toMatchObject({ request_id: request.id });
       expect(f.executions[0].released_at_start).toBe(0);

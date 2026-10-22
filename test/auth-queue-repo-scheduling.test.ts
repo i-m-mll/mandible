@@ -5,10 +5,6 @@ import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-q
  *
  * Per-repo canonical identity: execution chains, dedupe matching, self-merge drain.
  *
- * Split out of the former 6,122-line `test/auth-queue.test.ts` (issue 9e40a31).
- * Vitest parallelises across files and never within one, so that single file was
- * 98.9% of the default gate's wall clock. Test names and assertions are
- * unchanged; the shared helpers live in `test/helpers/auth-queue-fixtures.ts`.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,17 +15,21 @@ import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookMa
 // Issue ded17e6 — per-repo execution chains keyed on canonical Git identity,
 // canonical work-unit / dedupe matching, and self-merge drain.
 describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
-  const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
-
   const waitFor = (predicate: () => boolean) => waitUntil(predicate, "merge scheduling state");
 
   function gatedExecutor() {
     const started: string[] = [];
+    const running = new Set<string>();
+    // The requests still executing when each request's executor started.
+    const runningAtStart = new Map<string, string[]>();
     const releases = new Map<string, () => void>();
     let queue: AuthQueue;
     const executor = async (options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]["executor"]>>[0]) => {
       started.push(options.request_id);
+      runningAtStart.set(options.request_id, [...running]);
+      running.add(options.request_id);
       await new Promise<void>((resolve) => releases.set(options.request_id, resolve));
+      running.delete(options.request_id);
       if (queue.getRequest(options.request_id)?.type === "merge") return publishFixtureExecution(queue, options);
       return {
         exit_code: 0,
@@ -44,6 +44,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     return {
       executor: executor as unknown as ConstructorParameters<typeof AuthQueue>[0]["executor"],
       started,
+      runningAtStart,
       bindQueue: (value: AuthQueue) => { queue = value; },
       release: (id: string) => releases.get(id)?.(),
     };
@@ -81,9 +82,8 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       g.release(reqB.id);
       await waitForStatus(queue, reqA.id, "completed");
       await waitForStatus(queue, reqB.id, "completed");
-      await tick();
       // Chain-map hygiene: settled tails are removed.
-      expect((queue as unknown as { executionChains: Map<string, unknown> }).executionChains.size).toBe(0);
+      await waitFor(() => (queue as unknown as { executionChains: Map<string, unknown> }).executionChains.size === 0);
       queue.dispose();
     } finally {
       db.close();
@@ -117,14 +117,14 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       await approveFixtureRequest(queue, req1.id);
       await approveFixtureRequest(queue, req2.id);
       await waitFor(() => g.started.length === 1);
-      await tick();
-      // req2 (alias path → same canonical repo) is blocked behind req1.
       expect(g.started).toEqual([req1.id]);
 
       g.release(req1.id);
       await waitForStatus(queue, req1.id, "completed");
       await waitFor(() => g.started.length === 2);
+      // req2 (alias path → same canonical repo) ran only after req1 finished.
       expect(g.started).toEqual([req1.id, req2.id]);
+      expect(g.runningAtStart.get(req2.id)).toEqual([]);
 
       g.release(req2.id);
       await waitForStatus(queue, req2.id, "completed");

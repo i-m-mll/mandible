@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, seedHistoricalAuthExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -126,8 +127,10 @@ describe("auth queue", () => {
         now: () => 10 * 60 * 1000,
       });
       if (blockSync) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        const blocked = queue.getRequest(request.id)!;
+        const blocked = await waitUntil(() => {
+          const current = queue.getRequest(request.id)!;
+          return current.error?.includes("needs recovery") ? current : undefined;
+        }, "the collision to be reported as needing recovery");
         expect(blocked.status).toBe("executing");
         expect(blocked.exit_code).toBeNull();
         expect(blocked.merge_candidate_pin_sha).toBe(pinned.merge_candidate_pin_sha);
