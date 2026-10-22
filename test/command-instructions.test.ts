@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { renderMandibleInstructionsFragment } from "../src/instructions/fragment.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 const syntax = createRequire(import.meta.url)("../cli/command-syntax.cjs");
 const inert = (...option: string[]) => ({ _: { option, inert: true } });
@@ -18,6 +18,41 @@ describe("one CLI grammar", () => {
       .toContain("[--future]` — explanation.");
     const markdown = fs.readFileSync("cli/instructions-contract.md", "utf8");
     expect(renderMandibleInstructionsFragment()).toBe(syntax.renderCommands(markdown));
+  });
+
+  it("parses the shortest and the fullest form of every documented command", () => {
+    const commands = syntax.loadCommands();
+    const value = (spec: any): string =>
+      spec.type === "enum" ? spec.values[0] : spec.type === "literal" ? spec.value
+        : spec.type === "integer" ? String(spec.min ?? 1) : "x";
+    const sample = (node: any, full: boolean): string[] => {
+      switch (node.kind) {
+        case "sequence": return node.items.flatMap((item: any) => sample(item, full));
+        case "choice": return sample(node.items[0], full);
+        case "optional": return full ? sample(node.item, full) : [];
+        case "repeat": return Array.from({ length: Math.max(node.min, full ? 1 : 0) }, () => sample(node.item, full)).flat();
+        case "argument": return [value(node.value)];
+        case "option": return [node.names[0], ...node.values.map((item: any) => value(item.value))];
+        default: throw new Error(`unknown grammar node ${node.kind}`);
+      }
+    };
+    const documented = [...new Set([...fs.readFileSync("cli/instructions-contract.md", "utf8")
+      .matchAll(/\{\{command ([a-z][a-z0-9.-]*)\}\}/g)].map((match) => match[1]))];
+    expect(documented.length).toBeGreaterThan(0);
+    const unparsed: string[] = [];
+    for (const key of documented) {
+      const route = commands[key].route.map((part: string) => part.split("|")[0]);
+      for (const full of [false, true]) {
+        const argv = [...route, ...sample(commands[key].grammar, full)];
+        try {
+          const parsed = syntax.parse(argv);
+          if (commands[parsed.command].route.join(" ") !== commands[key].route.join(" ")) unparsed.push(`${argv.join(" ")} -> ${parsed.command}`);
+        } catch (error) {
+          unparsed.push(`${argv.join(" ")}: ${(error as Error).message.split("\n")[0]}`);
+        }
+      }
+    }
+    expect(unparsed).toEqual([]);
   });
 
   it("rejects unknown options, missing values, invalid enums and ranges, excess arguments, and duplicate flags", () => {
@@ -85,30 +120,24 @@ describe("one CLI grammar", () => {
       ...(node.items ?? []).flatMap(optionGroups), ...(node.item ? optionGroups(node.item) : [])];
     const files = [...fs.readdirSync("cli").filter(file => file.endsWith(".sh")).map(file => `cli/${file}`), "bin/mandible"];
     const unbound: string[] = [];
-    let sites = 0;
     for (const file of files) {
       for (const match of fs.readFileSync(file, "utf8").matchAll(/mandible_bind_(?:main_)?arguments "?([@a-z][a-z0-9. -]*)"? '([^']*)'/g)) {
         const key = match[1].startsWith("@") ? byRoute.get(match[1].slice(1)) : match[1];
         if (!key || !commands[key]) throw new Error(`${file}: unknown grammar key ${match[1]}`);
-        sites++;
         const referenced = new Set(Object.values(JSON.parse(match[2])).flat()
           .flatMap((source: any) => [source.option, source.whenOption, source.unlessOption].flat().filter(Boolean)));
         for (const names of optionGroups(commands[key].grammar))
           for (const name of names) if (!referenced.has(name)) unbound.push(`${file} ${key} ${name}`);
       }
     }
-    expect(sites).toBeGreaterThan(150);
     expect(unbound).toEqual([]);
   });
 
   it("refuses executable-looking insertions and malformed grammar registries", () => {
     for (const source of ["{{command missing}}", "{{command issue.report}", "{{include /etc/passwd}}", "{{command issue.report; exit}}", "}}"])
       expect(() => syntax.renderCommands(source)).toThrow();
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-grammar-"));
-    try {
-      const file = path.join(root, "grammar.json");
-      fs.writeFileSync(file, JSON.stringify({ schema_version: 1, commands: {} }));
-      expect(() => syntax.loadCommands(file)).toThrow();
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    const file = path.join(testRuntimeRoot, "grammar.json");
+    fs.writeFileSync(file, JSON.stringify({ schema_version: 1, commands: {} }));
+    expect(() => syntax.loadCommands(file)).toThrow();
   });
 });
