@@ -4,11 +4,9 @@ import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
  *
  * Candidate recompute fail-closed guards: pins, CAS rollback, and refusal messages.
  *
- * Split out of the former 6,122-line `test/auth-queue.test.ts` (issue 9e40a31).
- * Vitest parallelises across files and never within one. This pair was split
- * once more from a single `auth-queue-recompute` successor after measurement
- * put that file at 32s, above the 25s-per-successor target; the 32-commit
- * transition test alone is a third of it. Test names are unchanged.
+ * Each refusal (base drift, head drift, missing or corrupted pin, mutated
+ * command) has its one queue-level home here; auth-merge-atomic holds the
+ * matching CLI-level refusals.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -64,7 +62,7 @@ describe("auth queue", () => {
 
     // Review F5 — a corrupted or deleted retained candidate at an UNMOVED base
     // is tamper evidence: approval refuses with the original strict message.
-    it("refuses approval when the retained candidate is corrupted at a stable base", async () => {
+    it("refuses approval when the retained candidate is missing or corrupted at a stable base", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -72,13 +70,24 @@ describe("auth queue", () => {
       try {
         commitOnBranch(repo, "feature/ref-corrupt", { "rc.txt": "rc\n" });
         commitOnBranch(repo, "feature/pin-corrupt", { "pc.txt": "pc\n" });
+        commitOnBranch(repo, "feature/pin-missing", { "pm.txt": "pm\n" });
         registerWorkRepo(db, repo);
 
-        // Deleted candidate ref.
+        // Deleted candidate ref: named as tamper evidence, not blamed on the inputs.
         const refCorrupt = submitPinnedRequest(queue, repo, "feature/ref-corrupt");
         git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${refCorrupt.id}`]);
-        await expect(approveFixtureRequest(queue, refCorrupt.id)).rejects.toThrow(STRICT_MESSAGE);
+        const refusal = approveFixtureRequest(queue, refCorrupt.id);
+        await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
+        await expect(refusal).rejects.toThrow(/Refusal: retained_candidate_invalid/);
+        await expect(refusal).rejects.toThrow(/tamper evidence/);
         expect(queue.getRequest(refCorrupt.id)?.status).toBe("pending");
+
+        // A row whose retained pin is missing altogether.
+        const missing = submitPinnedRequest(queue, repo, "feature/pin-missing");
+        db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = NULL WHERE id = ?").run(missing.id);
+        await expect(approveFixtureRequest(queue, missing.id)).rejects
+          .toThrow(/retained candidate|not_recomputable_request|lifecycle snapshot changed/);
+        expect(queue.getRequest(missing.id)?.status).toBe("pending");
 
         // Re-pointed pin (recorded pin no longer the reviewed candidate).
         const pinCorrupt = submitPinnedRequest(queue, repo, "feature/pin-corrupt");
@@ -97,33 +106,11 @@ describe("auth queue", () => {
 
     // Review F6 — a base rewritten to a non-descendant is never treated as
     // sibling drift.
-    it("refuses recompute when the base was rewritten to a non-descendant", async () => {
-      const repo = createAuthCheckRepo();
-      const db = createMigratedDb();
-      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-      const queue = createGuardQueue(db, calls);
-      try {
-        commitOnBranch(repo, "feature/rewrite", { "rw.txt": "rw\n" });
-        registerWorkRepo(db, repo);
-        const request = submitPinnedRequest(queue, repo, "feature/rewrite");
-
-        git(repo, ["commit", "--amend", "-m", "rewritten history"]);
-        expect(git(repo, ["rev-parse", "main"])).not.toBe(request.merge_preflight_base_sha);
-
-        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
-        expect(calls).toHaveLength(0);
-      } finally {
-        queue.dispose();
-        db.close();
-        fs.rmSync(repo, { recursive: true, force: true });
-      }
-    });
 
     // Review F6 — a descendant base advance that is not accounted for by a
     // recorded, signature-verified queue merge is refused: raw commits and
     // even signed merges without a completed queue record.
-    it("refuses recompute when the base advanced without a recorded authorized merge", async () => {
+    it("refuses recompute when the base advanced without a recorded authorized merge or was rewritten", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -131,6 +118,7 @@ describe("auth queue", () => {
       try {
         commitOnBranch(repo, "feature/unaccounted-a", { "ua.txt": "ua\n" });
         commitOnBranch(repo, "feature/unaccounted-b", { "ub.txt": "ub\n" });
+        commitOnBranch(repo, "feature/unaccounted-c", { "uc.txt": "uc\n" });
         commitOnBranch(repo, "feature/rogue", { "rogue.txt": "rogue\n" });
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
@@ -149,6 +137,13 @@ describe("auth queue", () => {
         await expect(approveFixtureRequest(queue, second.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(second.id)?.status).toBe("pending");
 
+        // A base rewritten to a non-descendant is never treated as sibling drift.
+        const third = submitPinnedRequest(queue, repo, "feature/unaccounted-c");
+        git(repo, ["commit", "--amend", "-m", "rewritten history"]);
+        expect(git(repo, ["rev-parse", "main"])).not.toBe(third.merge_preflight_base_sha);
+        await expect(approveFixtureRequest(queue, third.id)).rejects.toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(third.id)?.status).toBe("pending");
+
         expect(calls).toHaveLength(0);
       } finally {
         queue.dispose();
@@ -157,34 +152,55 @@ describe("auth queue", () => {
       }
     });
 
-    // Review F2 — a PUT that mutates `command` drops the retained candidate,
-    // and a hierarchical-shaped command is refused at approval (issue 060c9c8
-    // removed hierarchical merge support) even across an authorized base
-    // advance.
-    it("invalidates the pin on command mutation and refuses hierarchical-shaped approval", async () => {
+    // Review F2 and issue 08a5f04 — any edit to the reviewed inputs drops the
+    // retained candidate, and approval accepts only the canonical command for
+    // the reviewed head: never a mutated, shell-expanded or hierarchical one
+    // (issue 060c9c8 removed hierarchical merges), even unpinned.
+    it("refuses approval of mutated reviewed inputs, pinned or not", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
       const queue = createGuardQueue(db, calls);
       try {
-        commitOnBranch(repo, "feature/mutated", { "mu.txt": "mu\n" });
-        commitOnBranch(repo, "feature/hier", { "hi.txt": "hi\n" });
-        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        for (const branch of ["mutant", "expansion", "edited-head", "hier", "sibling"]) {
+          commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
+        }
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
+        const expectInvalidated = (id: string) => {
+          expect(queue.getRequest(id)).toMatchObject({
+            merge_candidate_pin_sha: null,
+            merge_candidate_tree_sha: null,
+            merge_preflight_base_sha: null,
+          });
+          expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${id}`])).toThrow();
+        };
 
-        // PUT command mutation invalidates the retained candidate.
-        const mutated = submitPinnedRequest(queue, repo, "feature/mutated");
-        const updated = queue.update(mutated.id, {
-          command: "mandible auth merge --hierarchical feature/mutated feature/evil --into main",
+        const mutant = submitPinnedRequest(queue, repo, "feature/mutant");
+        queue.update(mutant.id, { command: "echo pwned && git push --force origin main" });
+        expectInvalidated(mutant.id);
+        await expect(approveFixtureRequest(queue, mutant.id)).rejects.toThrow(/does not match the canonical form/);
+        // Merge identity cannot be stripped to dodge enforcement either.
+        expect(() => queue.update(mutant.id, { head_branch: null as unknown as string })).toThrow();
+        expect(queue.getRequest(mutant.id)?.head_branch).toBe("feature/mutant");
+
+        const expansion = submitPinnedRequest(queue, repo, "feature/expansion");
+        queue.update(expansion.id, {
+          command: "X=--hierarchical; mandible auth merge feature/expansion feature/evil --into main $X",
         });
-        expect(updated.merge_candidate_pin_sha).toBeNull();
-        expect(updated.merge_candidate_tree_sha).toBeNull();
-        expect(updated.merge_preflight_base_sha).toBeNull();
-        expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${mutated.id}`])).toThrow();
+        await expect(approveFixtureRequest(queue, expansion.id)).rejects.toThrow(/does not match the canonical form/);
 
-        // Hierarchical-shaped command: refused outright by canonical-command
-        // verification, before recompute or execution.
+        const edited = submitPinnedRequest(queue, repo, "feature/edited-head");
+        git(repo, ["checkout", "feature/edited-head"]);
+        writeFile(repo, "edited-head.txt", "revised\n");
+        git(repo, ["add", "."]);
+        git(repo, ["commit", "-m", "refresh reviewed head"]);
+        const revisedHead = git(repo, ["rev-parse", "HEAD"]);
+        git(repo, ["checkout", "main"]);
+        queue.update(edited.id, { merge_head_sha: revisedHead });
+        expectInvalidated(edited.id);
+        await expect(approveFixtureRequest(queue, edited.id)).rejects.toThrow(/retained candidate|not_recomputable_request/);
+
         const hier = submitPinnedRequest(
           queue,
           repo,
@@ -193,7 +209,10 @@ describe("auth queue", () => {
         );
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-hier-sibling");
         await expect(approveFixtureRequest(queue, hier.id)).rejects.toThrow(/Hierarchical merge commands cannot be verified/);
-        expect(queue.getRequest(hier.id)?.status).toBe("pending");
+
+        for (const request of [mutant, expansion, edited, hier]) {
+          expect(queue.getRequest(request.id)?.status).toBe("pending");
+        }
         expect(calls).toHaveLength(0);
       } finally {
         queue.dispose();
@@ -228,7 +247,10 @@ describe("auth queue", () => {
           throw new Error("injected pin cache failure");
         });
 
-        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
+        const refusal = approveFixtureRequest(queue, request.id);
+        await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
+        await expect(refusal).rejects.toThrow(/Refusal: repin_failed/);
+        await expect(refusal).rejects.toThrow(/injected pin cache failure/);
         const after = queue.getRequest(request.id);
         expect(after?.status).toBe("pending");
         // Prior strictly-blocking state fully intact.
@@ -261,7 +283,10 @@ describe("auth queue", () => {
         db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?").run(request.id);
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-sibling");
 
-        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
+        const refusal = approveFixtureRequest(queue, request.id);
+        await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
+        await expect(refusal).rejects.toThrow(/Refusal: not_recomputable_request/);
+        await expect(refusal).rejects.toThrow(/execution_mode=remote/);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -366,64 +391,10 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F2 pass 2) — a mutated command is refused at
     // approval even though the mutation already cleared the pin (previously
     // the unpinned request would proceed without fresh review).
-    it("refuses approval of a mutated command even when the request is unpinned", async () => {
-      const repo = createAuthCheckRepo();
-      const db = createMigratedDb();
-      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-      const queue = createGuardQueue(db, calls);
-      try {
-        commitOnBranch(repo, "feature/mutant", { "mt.txt": "mt\n" });
-        registerWorkRepo(db, repo);
-
-        const request = submitPinnedRequest(queue, repo, "feature/mutant");
-        const mutated = queue.update(request.id, {
-          command: "echo pwned && git push --force origin main",
-        });
-        // The mutation cleared the pin — the request is unpinned, not exempt.
-        expect(mutated.merge_candidate_pin_sha).toBeNull();
-        await expect(approveFixtureRequest(queue, request.id)).rejects
-          .toThrow(/does not match the canonical form/);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
-        expect(calls).toHaveLength(0);
-
-        // Merge identity cannot be stripped to dodge enforcement either.
-        expect(() => queue.update(request.id, { head_branch: null as unknown as string }))
-          .toThrow();
-        expect(queue.getRequest(request.id)?.head_branch).toBe("feature/mutant");
-      } finally {
-        queue.dispose();
-        db.close();
-        fs.rmSync(repo, { recursive: true, force: true });
-      }
-    });
 
     // Issue 08a5f04 (review F2 pass 2) — shell-expansion evasion dies with
     // canonicalization: only the canonical byte form is executable, so
     // `$X`-style smuggling never reaches bash.
-    it("refuses a hierarchical-via-expansion command at approval", async () => {
-      const repo = createAuthCheckRepo();
-      const db = createMigratedDb();
-      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-      const queue = createGuardQueue(db, calls);
-      try {
-        commitOnBranch(repo, "feature/expansion", { "ex.txt": "ex\n" });
-        registerWorkRepo(db, repo);
-
-        const request = submitPinnedRequest(queue, repo, "feature/expansion");
-        queue.update(request.id, {
-          command:
-            "X=--hierarchical; mandible auth merge feature/expansion feature/evil --into main $X",
-        });
-        await expect(approveFixtureRequest(queue, request.id)).rejects
-          .toThrow(/does not match the canonical form/);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
-        expect(calls).toHaveLength(0);
-      } finally {
-        queue.dispose();
-        db.close();
-        fs.rmSync(repo, { recursive: true, force: true });
-      }
-    });
 
     // Issue 08a5f04 (review F6) — the repin compare-and-swap fails closed when
     // the retained candidate ref disappeared between validation and swap.
@@ -610,97 +581,6 @@ describe("auth queue", () => {
         }
       });
 
-      it("names a corrupted retained candidate rather than blaming the inputs", async () => {
-        const repo = createAuthCheckRepo();
-        const db = createMigratedDb();
-        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-        const queue = createGuardQueue(db, calls);
-        try {
-          commitOnBranch(repo, "feature/corrupt-reason", { "cr.txt": "cr\n" });
-          registerWorkRepo(db, repo);
-
-          const request = submitPinnedRequest(queue, repo, "feature/corrupt-reason");
-          git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${request.id}`]);
-
-          await expect(approveFixtureRequest(queue, request.id)).rejects
-            .toThrow(/Refusal: retained_candidate_invalid/);
-          await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/tamper evidence/);
-          expect(calls).toHaveLength(0);
-        } finally {
-          queue.dispose();
-          db.close();
-          fs.rmSync(repo, { recursive: true, force: true });
-        }
-      });
-
-      it("names a remote request as structurally non-recomputable", async () => {
-        const repo = createAuthCheckRepo();
-        const db = createMigratedDb();
-        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-        const queue = createGuardQueue(db, calls);
-        try {
-          commitOnBranch(repo, "feature/remote-reason", { "rr.txt": "rr\n" });
-          commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
-          registerWorkRepo(db, repo);
-          configureSigningCredential(db, repo, "ssh_key");
-
-          const request = submitPinnedRequest(queue, repo, "feature/remote-reason");
-          db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?")
-            .run(request.id);
-          advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-reason");
-
-          let message = "";
-          try {
-            await approveFixtureRequest(queue, request.id);
-          } catch (error) {
-            message = error instanceof Error ? error.message : String(error);
-          }
-          expect(message).toContain("Refusal: not_recomputable_request");
-          expect(message).toContain("execution_mode=remote");
-          expect(calls).toHaveLength(0);
-        } finally {
-          queue.dispose();
-          db.close();
-          fs.rmSync(repo, { recursive: true, force: true });
-        }
-      });
-
-      it("names the pin failure when a fresh pin cannot be obtained", async () => {
-        const repo = createAuthCheckRepo();
-        const db = createMigratedDb();
-        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-        const queue = createGuardQueue(db, calls);
-        try {
-          commitOnBranch(repo, "feature/pin-reason", { "pr.txt": "pr\n" });
-          commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
-          registerWorkRepo(db, repo);
-          configureSigningCredential(db, repo, "ssh_key");
-
-          const request = submitPinnedRequest(queue, repo, "feature/pin-reason");
-          advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-pin-reason");
-          vi.spyOn(
-            queue as unknown as { createMergeCandidatePin: (request: unknown) => string },
-            "createMergeCandidatePin",
-          ).mockImplementation(() => {
-            throw new Error("injected pin cache failure");
-          });
-
-          let message = "";
-          try {
-            await approveFixtureRequest(queue, request.id);
-          } catch (error) {
-            message = error instanceof Error ? error.message : String(error);
-          }
-          expect(message).toContain("Refusal: repin_failed");
-          expect(message).toContain("injected pin cache failure");
-          expect(calls).toHaveLength(0);
-        } finally {
-          vi.restoreAllMocks();
-          queue.dispose();
-          db.close();
-          fs.rmSync(repo, { recursive: true, force: true });
-        }
-      });
     });
   });
 });
