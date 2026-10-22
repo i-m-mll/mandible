@@ -699,8 +699,13 @@ describe("watched tail ingestion", () => {
   it("appends watched JSONL records through the incremental path without a reconcile", async () => {
     const sessionPath = await watchedSession("watchappend");
     expect(blockCount(sessionPath)).toBe(2);
-    await fsp.appendFile(sessionPath, assistantRow("watched append", 3), "utf8");
-    await waitUntil(() => blockCount(sessionPath) === 3, "the watched append");
+    // The startup reconcile may still be walking the roots and can take the
+    // first append; once it has, it is past this file, so the second append
+    // reaches the index only through the watcher.
+    for (const [index, text] of ["first watched append", "second watched append"].entries()) {
+      await fsp.appendFile(sessionPath, assistantRow(text, 3 + index), "utf8");
+      await waitUntil(() => blockCount(sessionPath) === 3 + index, text);
+    }
     expect(logs.some((entry) => entry.message === "ingestion_complete"
       && entry.details?.ingest_mode === "append" && entry.details?.delta === true)).toBe(true);
   });
