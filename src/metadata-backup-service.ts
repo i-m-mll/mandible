@@ -115,12 +115,18 @@ export class MetadataBackupService {
     for (;;) {
       const job = this.queue.shift();
       if (!job) return;
-      let result: BackupResult;
-      try { result = await this.execute(job); }
-      catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        result = { ok: false, error: detail };
-        if (!this.closed) this.writeSetting("backup.last_error", detail);
+      let result = await this.execute(job);
+      if (!this.closed) {
+        try {
+          this.db.transaction(() => {
+            if (result.ok) this.writeSetting("backup.last_size_bytes", String(result.size_bytes));
+            this.writeSetting("backup.last_error", result.ok ? "" : result.error);
+          })();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const outcome = result.ok ? "Backup file was published" : result.error;
+          result = { ok: false, error: `${outcome}; backup status persistence failed: ${detail}` };
+        }
       }
       if (job.scheduled) this.scheduled = false;
       job.resolve(result);
@@ -129,9 +135,26 @@ export class MetadataBackupService {
 
   private async execute(job: Job): Promise<BackupResult> {
     const staging = path.join(path.dirname(job.destination), `.${path.basename(job.destination)}.${process.pid}.${randomUUID()}.tmp`);
+    let result: BackupResult;
+    try {
+      result = await this.write(job, staging);
+    } catch (error) {
+      result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    try { fs.unlinkSync(staging); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        const detail = error instanceof Error ? error.message : String(error);
+        result = { ok: false, error: `${result.ok ? "Backup file was published" : result.error}; backup staging cleanup failed: ${detail}` };
+      }
+    }
+    return result;
+  }
+
+  private async write(job: Job, staging: string): Promise<BackupResult> {
+    if (this.closed) return { ok: false, error: "Metadata backup service is closed." };
     let worker: Worker | undefined;
     try {
-      if (this.closed) return { ok: false, error: "Metadata backup service is closed." };
       this.writeSetting("backup.last_run_at", String(Date.now()));
       if (this.db.name === ":memory:") throw new Error("Metadata backup service requires a file-backed database.");
       worker = this.workerFactory({ database: this.db.name, staging });
@@ -151,17 +174,9 @@ export class MetadataBackupService {
       if (!response.ok) throw new Error(response.error);
       if (this.closed) return { ok: false, error: "Metadata backup service is closed." };
       fs.renameSync(staging, job.destination);
-      this.writeSetting("backup.last_size_bytes", String(response.value.size_bytes));
-      this.writeSetting("backup.last_error", "");
       return { ok: true, size_bytes: response.value.size_bytes, path: job.destination, destination: job.destination };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      if (!this.closed) this.writeSetting("backup.last_error", detail);
-      return { ok: false, error: detail };
     } finally {
       if (this.active === worker) this.active = undefined;
-      try { fs.unlinkSync(staging); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
   }
 }

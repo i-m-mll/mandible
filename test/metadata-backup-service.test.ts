@@ -12,10 +12,10 @@ import { waitUntil } from "./helpers/wait-until.js";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.useRealTimers(); for (const close of cleanups.splice(0).reverse()) await close(); });
 
-function fixture(factory?: (input: BackupWorkerInput) => Worker) {
+function fixture(factory?: (input: BackupWorkerInput) => Worker, logger = vi.fn()) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-backup-service-"));
   const db = openDb(path.join(root, "ledger.db"));
-  const service = new MetadataBackupService(db, () => undefined, factory);
+  const service = new MetadataBackupService(db, logger, factory);
   const destination = path.join(root, "backup.sql");
   service.updateSetting("backup.destination", destination);
   cleanups.push(async () => { await service.close(); if (db.open) db.close(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -183,4 +183,31 @@ it("reaps active work and settles queued callers before database close without l
   await f.service.close();
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(prepare).not.toHaveBeenCalled();
+});
+
+it("settles every caller and releases scheduled admission when SQLite rejects failure status persistence", async () => {
+  const source = `import fs from 'node:fs'; import {parentPort,workerData} from 'node:worker_threads'; fs.writeFileSync(workerData.staging,'partial'); parentPort.postMessage({ok:false,error:'private writer failure'}); parentPort.close();`;
+  const logs = vi.fn();
+  const factory = vi.fn((input: BackupWorkerInput) => new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), { execArgv: [], workerData: input }));
+  const f = fixture(factory, logs);
+  f.db.exec(`CREATE TRIGGER reject_backup_status BEFORE INSERT ON settings
+    WHEN NEW.key = 'backup.last_error' BEGIN SELECT RAISE(ABORT, 'private status rejection'); END`);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  f.service.updateSetting("backup.interval_hours", "1");
+  f.service.reschedule();
+  await vi.advanceTimersByTimeAsync(5_000);
+  await waitUntil(() => logs.mock.calls.length === 1, "the first scheduled failure result");
+  await vi.advanceTimersByTimeAsync(3_600_000);
+  await waitUntil(() => logs.mock.calls.length === 2, "the next scheduled failure result");
+  const results = await Promise.all([f.service.run(), f.service.run()]);
+  for (const result of results) expect(result).toMatchObject({ ok: false,
+    error: expect.stringMatching(/private writer failure; backup status persistence failed:.*private status rejection/) });
+  expect(factory).toHaveBeenCalledTimes(4);
+  expect(logs.mock.calls.map(call => call[2])).toEqual([
+    expect.objectContaining({ ok: false, error: expect.stringContaining("private status rejection") }),
+    expect.objectContaining({ ok: false, error: expect.stringContaining("private status rejection") }),
+  ]);
+  expect(fs.readdirSync(f.root).filter(name => name.endsWith(".tmp"))).toEqual([]);
+  await f.service.close();
+  expect(vi.getTimerCount()).toBe(0);
 });
