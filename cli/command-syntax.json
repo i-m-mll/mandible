@@ -1726,6 +1726,17 @@
         ]
       }
     },
+    "issue.parent-role.release": {
+      "route": ["issue", "parent-role", "release"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "umbrella","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--override"],"values": []}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "issue.refs.backfill": {
       "route": ["issue", "refs", "backfill"],
       "grammar": {
@@ -2088,15 +2099,6 @@
         "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time|Nd","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "conversations.lineage-backfill": {
-      "route": ["conversations", "lineage-backfill"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }

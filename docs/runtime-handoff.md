@@ -31,6 +31,17 @@ installed desktop provenance, and a full 31-second daemon health/log
 observation. Each observation sample must answer from the same process and
 definitions, ready at that generation, without event-loop or memory warnings. The candidate hook manager verifies this receipt and publication
 proof before settling convergence or releasing deferred delivery actions.
+The log assessment fails on any `error` line from the current process and on
+any one event or route that exceeds 100 lines in a 10-second window. That rate
+rule detects runaway loops. Scheduled work that goes through a backlog, such as
+reconciler passes, startup backfills, ingestion reconcile and full ingest,
+therefore logs one summary event per pass, with counts and a bounded sample of
+identifiers. The per-item record stays in its durable rows, such as
+`worker_thread_archives`, source aliases, or `meta`. A pass that logged one
+line per item would fail the handoff that first runs it. A refusal of a client
+request (an authorization error) answers with its own status and is not logged
+as a handler error.
+
 Acknowledgment removes only this helper's scoped job and regenerated files;
 the compact journal and receipt remain. Interrupted cleanup is retried without
 another merge, build, or hook attempt.

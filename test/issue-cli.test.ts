@@ -442,8 +442,8 @@ function listen(): Promise<number> {
           if ((body as { override?: boolean } | null)?.override !== true) {
             res.statusCode = 409;
             res.end(JSON.stringify({
-              error: "parent role already held by a live session; pass override to retake",
-              blocking_holder: { session_id: "sess-live", mechanism: "codex", liveness: { state: "live" } },
+              error: "parent role is held by a live session",
+              blocking_holder: { session_id: "sess-live", mechanism: "codex", liveness: { state: "live", provider: "claude" } },
             }));
             return;
           }
@@ -784,19 +784,16 @@ describe("issue CLI body revisions", () => {
     expect(parsed.operation.refreshed_child_refs).toEqual(["def"]);
   });
 
-  it("surfaces live parent-role holders and requires override", async () => {
+  it("refuses a live parent-role holder conflict with a non-zero exit, in text or JSON", async () => {
     const port = await listen();
-    const blocked = await run([
-      "issue",
-      "parent-role",
-      "assume",
-      "abc",
-      "--session",
-      "sess-new",
-    ], port);
+    const blocked = await run(["issue", "parent-role", "assume", "abc", "--session", "sess-new"], port);
 
     expect(blocked.status).toBe(3);
-    expect(blocked.stderr).toContain("live parent-role holder exists: sess-live");
+    expect(blocked.stderr).toContain("parent role held by sess-live (claude): parent role is held by a live session");
+
+    const blockedJson = await run(["issue", "parent-role", "assume", "abc", "--session", "sess-new", "--json"], port);
+    expect(blockedJson.status).toBe(3);
+    expect(JSON.parse(blockedJson.stdout).blocking_holder.session_id).toBe("sess-live");
 
     const assumed = await run([
       "issue",
@@ -828,7 +825,7 @@ describe("issue CLI body revisions", () => {
     ], port);
 
     expect(nonHolder.status).toBe(1);
-    expect(nonHolder.stderr).not.toContain("live parent-role holder exists");
+    expect(nonHolder.stderr).not.toContain("parent role held by");
     expect(nonHolder.stderr).toContain("parent role cannot be recorded while the umbrella is closed");
 
     const unknownSession = await run([

@@ -1,5 +1,6 @@
 // One-time lineage backfill for conversations indexed before their parsers
-// declared a parent (issue 23f8142). Lineage is re-derived through each
+// declared a parent (issue 23f8142). The startup ingestion reconcile runs it
+// once per database and records its result in `meta`. Lineage is re-derived through each
 // provider's own parser from the head of the transcript, so whatever a parser
 // reads lineage from is backfilled the same way it is ingested. Live ingestion
 // never reads Codex's state database; this backfill falls back to it only for
@@ -37,6 +38,20 @@ interface DerivedLineage {
   parent: ConversationParent | null;
   isSubagent: boolean;
   agentId: string | null;
+}
+
+const BACKFILL_MARKER = "conversation_lineage_backfill_v1";
+
+/**
+ * Run the backfill unless this database has already recorded it. Returns the
+ * result of the run, or null when it had already run.
+ */
+export async function backfillConversationLineageOnce(db: Db): Promise<LineageBackfillResult | null> {
+  if (db.prepare("SELECT 1 FROM meta WHERE key = ?").get(BACKFILL_MARKER)) return null;
+  const result = await backfillConversationLineage(db);
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
+    .run(BACKFILL_MARKER, JSON.stringify({ completed_at: Date.now(), ...result }));
+  return result;
 }
 
 /** Declare and link the parent of every indexed conversation that has none recorded. */

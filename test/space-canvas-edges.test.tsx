@@ -2,8 +2,7 @@
 //
 // The `SpaceEdgeLayer` component these tests once also exercised was retired
 // (its bottom edge panel was folded into the integrated canvas inspector) and
-// has been deleted; `test/spaces-canvas-mount-reachability.test.tsx` guards the
-// mount composition. What remains here is the still-live pure edge model and
+// has been deleted. What remains here is the still-live pure edge model and
 // promote-to-ledger logic.
 //
 // Covers the load-bearing acceptance criteria:

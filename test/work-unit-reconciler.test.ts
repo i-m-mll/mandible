@@ -433,10 +433,23 @@ describe("worker thread archival", () => {
     }
 
     expect(archived).toEqual(["thread-1"]);
-    expect(logs.filter((entry) => entry.event === "worker_thread_archive_failed").map((entry) => entry.level))
-      .toEqual(["error"]);
-    expect(logs.find((entry) => entry.event === "worker_thread_archived")?.data)
-      .toEqual({ thread_id: "thread-1", recovered_after_attempts: 2 });
+    const passes = logs.filter((entry) => entry.event === "worker_thread_archive_pass");
+    expect(passes.map((entry) => [entry.level, entry.data?.archived, entry.data?.recovered])).toEqual([
+      ["warn", 0, 0],
+      ["info", 1, 1],
+    ]);
+  });
+
+  it("logs one summary for a pass over a backlog of threads", async () => {
+    for (let index = 0; index < 150; index++) resolvedUnit(`wu-${index}`, `thread-${index}`);
+
+    await archivingReconciler({}).reconcile();
+    await archivingReconciler({}).reconcile();
+
+    expect(archived).toHaveLength(150);
+    const archiveLogs = logs.filter((entry) => entry.event.startsWith("worker_thread_archive"));
+    expect(archiveLogs).toHaveLength(1);
+    expect(archiveLogs[0]?.data).toMatchObject({ archived: 150, failed: 0, deferred: 0 });
   });
 });
 
