@@ -39,7 +39,7 @@ export default defineConfig({
     fileParallelism: true,
     // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
     setupFiles: ['./test/helpers/runtime-isolation.ts', './test/helpers/db-reset-backstop.ts'],
-    ...(suite === 'gate' ? { reporters: ['default', './test/helpers/timing-reporter.ts'] } : {}),
+    reporters: ['default', ['./test/helpers/timing-reporter.ts', { timing: suite === 'gate' }]],
     // No global line threshold: a coverage floor rewards tests wherever they
     // are cheapest to reach, which test/README.md exists to resist.
     coverage: {
