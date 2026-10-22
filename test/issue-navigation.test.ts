@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, act } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -236,7 +237,8 @@ describe('issue deep links', () => {
     }));
 
     expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('status:closed');
-    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Daemon reload toast link' })).toBeNull();
+    expect(await screen.findByText('Loading...')).toBeTruthy();
     expect(screen.queryByText('stored-selection-must-not-restore')).toBeNull();
 
     rerender(h(IssuesView, {
@@ -285,7 +287,8 @@ describe('issue deep links', () => {
       initialIssueId: '4c26383',
     }));
 
-    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(screen.queryByRole('heading', { name: 'Daemon reload toast link' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
     expect(await screen.findByRole('heading', { name: 'Second issue' })).toBeTruthy();
 
@@ -322,5 +325,159 @@ describe('issue deep links', () => {
     });
 
     expect(await screen.findByRole('heading', { name: 'Second hydrated detail' })).toBeTruthy();
+  });
+it.each([undefined, 'mandible'])('keeps a full explicit ref intact across partial rows (repo %s)', async (repoId) => {
+    stubIssuesLocalStorage({
+      'mandible_issues_view_state:v1': JSON.stringify({ selectedRepoId: 'saved', selectedIssueId: 'saved' }),
+    });
+    const fullId = '4c26383' + 'a'.repeat(57);
+    const requests: string[] = [];
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Promise<Response>((resolve) => pending.push(resolve));
+    }));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: repoId, initialIssueId: fullId }));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(requests.every((url) => url.includes(fullId))).toBe(true);
+    expect(screen.queryByRole('heading', { name: 'Daemon reload toast link' })).toBeNull();
+    await act(async () => {
+      for (const resolve of pending) resolve(new Response(JSON.stringify({ error: 'Issue not found' }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      }));
+    });
+    expect(await screen.findByText(/Issue not found/)).toBeTruthy();
+    expect(document.querySelector('.issues-detail h2')).toBeNull();
+  });
+
+it('does not infer global uniqueness from one visible prefix match', async () => {
+    const pending: Array<(response: Response) => void> = [];
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Promise<Response>((resolve) => pending.push(resolve));
+    }));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialIssueId: '4c26383' }));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(requests.every((url) => url.startsWith('/api/ledger/issues/4c26383'))).toBe(true);
+    expect(document.querySelector('.issues-detail h2')).toBeNull();
+    await act(async () => {
+      for (const resolve of pending) resolve(new Response(JSON.stringify({ error: 'Ambiguous issue ref' }), {
+        status: 409, headers: { 'content-type': 'application/json' },
+      }));
+    });
+    expect(await screen.findByText(/Ambiguous issue ref/)).toBeTruthy();
+    expect(document.querySelector('.issues-detail h2')).toBeNull();
+  });
+
+it('replaces mounted targets synchronously, ignores late responses and preserves row-choice context', async () => {
+    const waiting = new Map<string, Array<(response: Response) => void>>();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Promise<Response>((resolve) => waiting.set(url, [...waiting.get(url) ?? [], resolve]));
+    }));
+    const props = { repos, onRescan: async () => undefined, initialRepoId: 'mandible' };
+    const { rerender } = render(h(IssuesView, { ...props, initialIssueId: 'aaaaaaa' }));
+    await waitFor(() => expect(waiting.size).toBe(2));
+    const release = async (id: string, title: string) => {
+      await act(async () => {
+        for (const [url, resolvers] of waiting) {
+          if (!url.includes('/' + id + '/')) continue;
+          for (const resolve of resolvers) resolve(new Response(JSON.stringify(issueDetailProjection({ displayId: id, title })), {
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+      });
+    };
+    await release('aaaaaaa', 'Target A');
+    expect(await screen.findByRole('heading', { name: 'Target A' })).toBeTruthy();
+    rerender(h(IssuesView, { ...props, initialIssueId: 'bbbbbbb' }));
+    expect(screen.queryByRole('heading', { name: 'Target A' })).toBeNull();
+    await waitFor(() => expect(waiting.size).toBe(4));
+    rerender(h(IssuesView, { ...props, initialIssueId: 'ccccccc' }));
+    await waitFor(() => expect(waiting.size).toBe(6));
+    await release('ccccccc', 'Target C');
+    expect(await screen.findByRole('heading', { name: 'Target C' })).toBeTruthy();
+    await release('bbbbbbb', 'Stale B');
+    expect(screen.queryByRole('heading', { name: 'Stale B' })).toBeNull();
+    rerender(h(IssuesView, { ...props, repos: [], initialIssueId: 'ccccccc' }));
+    expect(screen.getByRole('heading', { name: 'Target C' })).toBeTruthy();
+    rerender(h(IssuesView, { ...props, initialIssueId: 'ccccccc' }));
+    window.history.replaceState(null, '', '#/issues?issue=ccccccc&comment=3&sidebar=hidden&agent_session=agent&sentinel=a%2Bb%26c');
+    fireEvent.click(screen.getByRole('button', { name: /Daemon reload toast link/ }));
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(Object.fromEntries(params)).toEqual({ repo: 'mandible', issue: '4c26383', sidebar: 'hidden', agent_session: 'agent', sentinel: 'a+b&c' });
+  });
+
+it('resolves an unloaded closed issue and its comment without selecting the saved issue', async () => {
+    stubIssuesLocalStorage({ 'mandible_issues_view_state:v1': JSON.stringify({
+      selectedRepoId: 'mandible', selectedIssueId: '4c26383', filter: 'status:open', filterEdited: true,
+    }) });
+    const id = 'bbbbbbb' + 'b'.repeat(57);
+    const detail = { ...issueDetailProjection({ displayId: 'bbbbbbb', title: 'Unloaded closed B', comments: ['Requested comment'] }), id, status: 'closed' };
+    const scroll = vi.fn();
+    const previousScroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify(detail), {
+      headers: { 'content-type': 'application/json' },
+    }))));
+    try {
+      const { rerender } = render(h(IssuesView, { repos, onRescan: async () => undefined, initialIssueId: id, initialCommentId: '1' }));
+      expect(await screen.findByRole('heading', { name: 'Unloaded closed B' })).toBeTruthy();
+      await waitFor(() => expect(scroll).toHaveBeenCalledWith({ block: 'center' }));
+      expect(screen.queryByRole('heading', { name: 'Daemon reload toast link' })).toBeNull();
+      expect(document.querySelector('.issues-list [aria-current="true"]')).toBeNull();
+      rerender(h(IssuesView, { repos: [], onRescan: async () => undefined, initialIssueId: id, initialCommentId: '1' }));
+      expect(screen.getByRole('heading', { name: 'Unloaded closed B' })).toBeTruthy();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previousScroll;
+    }
+  });
+
+it.each([404, 409, 503])('reconciles cached issue prefix identity with authoritative status %s', async (status) => {
+    stubIssuesLocalStorage();
+    const prefix = '4c26383';
+    const key = detailRequestKey('issue', { repoId: 'mandible', issueId: prefix });
+    const cached = { ...issueDetailProjection({ displayId: prefix, title: 'Cached unique A' }), id: prefix + 'a'.repeat(57) };
+    writePersistedDetail('issue-detail', key, cached);
+    writePersistedDetail('issue-detail', 'unrelated', { id: 'unrelated' });
+    let finish!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: prefix }));
+    expect(await screen.findByRole('heading', { name: 'Cached unique A' })).toBeTruthy();
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    await act(async () => finish(new Response(JSON.stringify({ error: `Authoritative ${status}` }), {
+      status, headers: { 'content-type': 'application/json' },
+    })));
+    if (status === 503) {
+      expect(screen.getByRole('heading', { name: 'Cached unique A' })).toBeTruthy();
+      expect(readPersistedDetail('issue-detail', key)).toEqual(cached);
+    } else {
+      expect(await screen.findByText(`Authoritative ${status}`)).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Cached unique A' })).toBeNull();
+      expect(readPersistedDetail('issue-detail', key)).toBeNull();
+    }
+    expect(readPersistedDetail('issue-detail', 'unrelated')).toEqual({ id: 'unrelated' });
+  });
+
+it('does not restore an invalid issue identity from a late initial projection', async () => {
+    let initial!: (response: Response) => void;
+    let full!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => new Promise<Response>((resolve) => {
+      if (String(input).includes('stage=initial')) initial = resolve;
+      else full = resolve;
+    })));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: '4c26383' }));
+    await waitFor(() => expect(full).toBeTypeOf('function'));
+    await act(async () => full(new Response(JSON.stringify({ error: 'Ambiguous prefix' }), {
+      status: 409, headers: { 'content-type': 'application/json' },
+    })));
+    expect(await screen.findByText('Ambiguous prefix')).toBeTruthy();
+    await act(async () => initial(new Response(JSON.stringify(issueDetailProjection({
+      displayId: '4c26383', title: 'Obsolete initial A', stage: 'initial',
+    })), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.queryByRole('heading', { name: 'Obsolete initial A' })).toBeNull();
+    expect(screen.getByText('Ambiguous prefix')).toBeTruthy();
   });
 });

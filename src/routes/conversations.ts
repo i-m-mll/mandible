@@ -1,9 +1,11 @@
-import { entityRefs } from "../entity-refs.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 // API routes for the chat log / conversation system.
 
 import { createHash } from "node:crypto";
 import { getDb } from "../db.js";
+import { entityRefs, resolveSessionRef } from "../entity-refs.js";
+import { sessionAliasIds } from "../session-liveness.js";
+import { sessionConversationsSql } from "../session-summary.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
 import {
@@ -38,6 +40,7 @@ import type { SourceBackedConversationBlock } from "../conversations/source-type
 import {
   ConversationFreshnessError,
   ensureExactConversationFresh,
+  resolveExactConversation,
   type ExactConversationFreshnessOptions,
 } from "../conversations/freshness.js";
 import type { ResponseLike } from "../server.js";
@@ -624,6 +627,41 @@ export function registerConversationRoutes(
   };
 
   // --- Static routes MUST be registered before parameterized :id routes ---
+
+  server.get("/api/conversations/resolve-target", (req, res) => {
+    const { conversation, session } = req.query;
+    if (Boolean(conversation) === Boolean(session)) {
+      return sendJson(res, 400, { error: "Supply one conversation or session reference" });
+    }
+    if (conversation) {
+      try {
+        const resolved = entityRefs.conversation(conversation, null);
+        if (!resolved.ok) return sendJson(res, 200, { status: resolved.error });
+        const id = resolveExactConversation(db, resolved.id).conversationId;
+        return sendJson(res, 200, { status: "resolved", selection: { type: "conversation", id } });
+      } catch (error) {
+        if (error instanceof ConversationFreshnessError && error.code === "ambiguous_ref") {
+          return sendJson(res, 200, { status: "ambiguous" });
+        }
+        if (sendFreshnessError(res, error)) return;
+        throw error;
+      }
+    }
+    const resolved = resolveSessionRef(db, session!);
+    if (resolved.status !== "resolved") return sendJson(res, 200, { status: resolved.status });
+    const aliases = sessionAliasIds(resolved.resolution);
+    const candidates = db.prepare(`SELECT DISTINCT c.id FROM conversations c WHERE ${
+      aliases.map(() => sessionConversationsSql("c")).join(" OR ")
+    } LIMIT 2`).all(...aliases.flatMap((id) => [id, id])) as Array<{ id: string }>;
+    if (candidates.length > 1) return sendJson(res, 200, { status: "ambiguous" });
+    if (candidates.length === 1) {
+      return sendJson(res, 200, { status: "resolved", selection: { type: "conversation", id: candidates[0].id } });
+    }
+    const consoleId = resolved.resolution.console_session_id;
+    return sendJson(res, 200, consoleId
+      ? { status: "resolved", selection: { type: "session", id: consoleId } }
+      : { status: "not_found" });
+  }, { operation: { id: "get:/api/conversations/resolve-target", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/conversations/sources — List ingestion sources with status
   server.get("/api/conversations/sources", (_req, res) => {

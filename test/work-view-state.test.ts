@@ -184,3 +184,37 @@ it('keeps cold and failed project discovery distinct from successful empty resul
   await screen.findByText('No projects found. Register a session or add a project.');
   expect(screen.queryByRole('button', { name: 'Select project Two' })).toBeNull();
 });
+
+it('preserves mounted compound targets, absent projects and branches, and unrelated route context', async () => {
+    const repos = [{ id: 'r1', name: 'Repo One', default_branch: 'main' }, { id: 'r2', name: 'Repo Two', default_branch: 'main' }];
+    const branchesByRepo = { r1: [{ name: 'main', status: 'clean' }], r2: [{ name: 'other', status: 'clean' }] };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url === '/api/work/repos' ? repos : url.includes('/commits')
+        ? { commits: [], total: 0, limit: 50, offset: 0 } : url.includes('/compare')
+          ? { from: 'old', to: 'new', mode: 'range', range: 'old..new', raw: '', stat: '' }
+          : [];
+      return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+    }));
+    const props = { repos, branchesByRepo, instance: mainInstance, onRescan: () => undefined };
+    window.history.replaceState(null, '', '#/work?repo=missing&branch=gone&commit=pinned&compare=old..new&mode=range&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    const view = render(h(WorkOverviewView, { ...props, params: { repo: 'missing', branch: 'gone', commit: 'pinned', compare: 'old..new', mode: 'range' } }));
+    await screen.findByText('Project unavailable: missing');
+    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('repo')).toBe('missing');
+    view.rerender(h(WorkOverviewView, { ...props, params: { repo: 'r1', branch: 'gone', commit: 'pinned', compare: 'old..new', mode: 'range' } }));
+    await screen.findByText('Branch unavailable: gone');
+    expect(screen.queryByRole('list', { name: 'main commits' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Select project Repo Two' }));
+    await screen.findByRole('list', { name: 'other commits' });
+    const context = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(context.get('repo')).toBe('r2');
+    expect(context.get('branch')).toBe('other');
+    expect(context.get('commit')).toBeNull();
+    expect(context.get('sidebar')).toBe('hidden');
+    expect(context.get('agent_session')).toBe('bound');
+    expect(context.get('sentinel')).toBe('a&b+c');
+    window.history.replaceState(null, '', '#/tasks?sentinel=retained');
+    view.rerender(h(WorkOverviewView, { ...props, params: {} }));
+    await waitFor(() => expect(window.location.hash).toBe('#/tasks?sentinel=retained'));
+  });
+

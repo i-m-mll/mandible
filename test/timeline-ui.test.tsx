@@ -410,10 +410,12 @@ describe('TimelineView', () => {
       expect(JSON.parse(String(stored)).selectedEventId).toBe('event-near-b');
     });
 
+    window.history.replaceState(null, '', '#/tasks?sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    const otherRoute = window.location.hash;
     result.rerender(h(TimelineView, {
       active: false,
       repos: [{ id: 'mandible', name: 'mandible' }],
-      params: { project: 'mandible' },
+      params: { project: 'mandible', rows: '[]' },
     }));
     const inactiveState = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
     const inactiveEventKey = new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true });
@@ -423,6 +425,7 @@ describe('TimelineView', () => {
     expect(inactiveEventKey.defaultPrevented).toBe(false);
     expect(inactiveRowKey.defaultPrevented).toBe(false);
     expect(window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible')).toBe(inactiveState);
+    expect(window.location.hash).toBe(otherRoute);
   });
 
   it('loads the projection and merges URL state over browser-local state', async () => {

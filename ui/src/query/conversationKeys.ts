@@ -60,6 +60,8 @@ export const conversationKeys = {
     ['chat', 'sidebar', 'page', normalizeSidebarFilters(filters), { group, cursor }] as const
   ),
   conversations: () => ['chat', 'conversation'] as const,
+  routeTargets: () => ['chat', 'route-target'] as const,
+  routeTarget: (target: { type: 'conversation' | 'session'; id: string } | null) => ['chat', 'route-target', target] as const,
   bySession: (sessionId: string) => ['chat', 'conversation', 'session', sessionId] as const,
   conversation: (id: string) => ['chat', 'conversation', id] as const,
   aggregate: (id: string) => ['chat', 'conversation', id, 'aggregate'] as const,

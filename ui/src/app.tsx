@@ -80,6 +80,8 @@ import {
   isViewSidebarHidden,
   parseArtifactVersionParam,
   parseRouteFromHash,
+  replaceRouteHash,
+  routeHashWithParams,
   shortRouteId,
   spacesRouteFromHash,
   type SpacesRouteTarget,
@@ -193,13 +195,13 @@ import './views/spaces/SpaceItemPicker.css';
 import './views/spaces/SpaceSeedDialog.css';
 import './views/spaces/SpacesSidebar.css';
 import './views/spaces/SpacesViewShell.css';
+import { savedSpacesSelection, writeSpacesLastView } from './views/spaces/last-view';
 import './views/spaces/SpaceTypeIndicator.css';
 import './views/tasks.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
 const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
-const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#181818',
   light: '#FFFFFF',
@@ -342,11 +344,6 @@ const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   active: false,
 };
 
-type SpacesLastView = {
-  projectId: string | null;
-  spaceId: string;
-};
-
 type MandibleBootstrapData = {
   instance?: InstanceInfo | null;
 };
@@ -414,31 +411,6 @@ function setLastSeenStartupEpoch(epoch: string): void {
     window.localStorage.setItem(LAST_SEEN_STARTUP_EPOCH_KEY, epoch);
   } catch {
     return;
-  }
-}
-
-function readSpacesLastView(): SpacesLastView | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(SPACES_LAST_VIEW_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<SpacesLastView>;
-    if (!parsed.spaceId) return null;
-    return {
-      projectId: typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : null,
-      spaceId: parsed.spaceId,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeSpacesLastView(view: SpacesLastView): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(SPACES_LAST_VIEW_KEY, JSON.stringify(view));
-  } catch {
-    // Browser-local view restoration is best-effort only.
   }
 }
 
@@ -983,6 +955,7 @@ function App(): JSX.Element {
   const navigateToSpace = useCallback(
     (target: SpacesRouteTarget) => {
       if (typeof window === 'undefined') return;
+      if (parseHashRoute().tab !== 'spaces') return;
       navigateToHash(spacesRouteFromHash(window.location.hash || '#/spaces', target));
     },
     [navigateToHash],
@@ -991,20 +964,11 @@ function App(): JSX.Element {
   useEffect(() => {
     if (startupDestinationPending) return;
     if (route.tab !== 'spaces') return;
-    const { project, space, renderer } = route.params;
+    const { project, space } = route.params;
     if (space) {
       writeSpacesLastView({ projectId: project || null, spaceId: space });
-      return;
     }
-    if (project || space || renderer) return;
-    const last = readSpacesLastView();
-    if (!last) return;
-    navigateToSpace({
-      projectId: last.projectId,
-      spaceId: last.spaceId,
-      renderer: null,
-    });
-  }, [route, navigateToSpace, startupDestinationPending]);
+  }, [route, startupDestinationPending]);
 
   useEffect(() => {
     const handleChange = () => {
@@ -2030,6 +1994,10 @@ function App(): JSX.Element {
   }, [state.workBranches]);
   const handleToastDismiss = () => dispatch({ type: 'setDaemonReload', reload: null });
   const handleSelectAuth = (id: string | null) => dispatch({ type: 'setSelectedAuthId', id });
+  const handleNavigateAuthRequest = (id: string | null) => {
+    if (routeRef.current.tab !== 'auth') return;
+    replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id }));
+  };
 
   useEffect(() => {
     if (!state.daemonReload) {
@@ -2999,6 +2967,7 @@ function App(): JSX.Element {
               daemonReady={daemonReady}
               instance={instanceInfo}
               onSelectAuth={handleSelectAuth}
+              onNavigateRequest={handleNavigateAuthRequest}
               onApprove={handleApprove}
               onReject={handleReject}
               onRetry={handleRetry}
@@ -3077,6 +3046,7 @@ function App(): JSX.Element {
               consoleSessions={state.consoleSessions}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
+              routeParams={tabRoute.params}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
               chatEntityLinkAction={state.settings.chat_entity_link_action === 'open' ? 'open' : 'preview'}
@@ -3158,6 +3128,7 @@ function App(): JSX.Element {
             <LazySpacesTab
               projectId={tabRoute.params.project ?? ''}
               spaceId={tabRoute.params.space ?? null}
+              savedSelection={savedSpacesSelection(tabRoute.params)}
               renderer={tabRoute.params.renderer}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               instance={instanceInfo}

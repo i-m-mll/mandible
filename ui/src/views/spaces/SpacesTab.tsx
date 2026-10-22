@@ -4,10 +4,12 @@ import type { SpacesRouteTarget } from '../../routing';
 import { defaultInitialSpaceId } from './SpacesSidebar';
 import { SpacesViewShell } from './SpacesViewShell';
 import { SPACE_RENDERERS_REGISTRY } from './renderers';
+import { savedSpacesSelection, type SpacesLastView } from './last-view';
 
 export type SpacesTabProps = {
   projectId: string;
   spaceId: string | null;
+  savedSelection?: SpacesLastView | null;
   renderer?: SpaceRenderer | string;
   sidebarHidden?: boolean;
   instance?: InstanceInfo | null;
@@ -20,7 +22,7 @@ export function SpacesTab(props: SpacesTabProps): JSX.Element {
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
   const groups = await listSpacesGrouped();
-  const spaceId = params.space?.trim() || defaultInitialSpaceId(groups);
+  const spaceId = params.space?.trim() || savedSpacesSelection(params)?.spaceId || defaultInitialSpaceId(groups);
   if (!spaceId) return;
   const cachedKey = detailRequestKey('spaces', { spaceId });
   if (readPersistedDetail('spaces', cachedKey)) return;

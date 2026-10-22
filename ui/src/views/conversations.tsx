@@ -45,6 +45,7 @@ import {
   getProviderChat,
   getConversationSidebar,
   getConversations,
+  resolveChatRouteTarget,
   getSidebarOrderPreference,
   getSessionIssues,
   listWorkflows,
@@ -142,7 +143,7 @@ import {
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAccessState } from '../client-auth-token';
-import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
+import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 import {
   flattenConversationTranscript,
   reconcileConversationWindow,
@@ -874,13 +875,8 @@ export function conversationAnchorHref(
 }
 
 export function conversationLatestHref(currentHash: string, conversationId: string): string {
-  const query = currentHash.includes('?') ? currentHash.slice(currentHash.indexOf('?') + 1) : '';
-  const params = new URLSearchParams(query);
-  params.set('conversation', conversationId);
-  params.delete('block');
-  params.delete('turn');
-  params.delete('position');
-  return `#/console?${params.toString()}`;
+  return routeHashWithParams(currentHash, 'console', { conversation: conversationId },
+    ['conversation', 'session', 'block', 'turn', 'position']);
 }
 
 // ── Props ──
@@ -895,6 +891,7 @@ export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
   initialConversationId: string | null;
   initialSessionId: string | null;
+  routeParams?: Record<string, string>;
   sidebarHidden?: boolean;
   sidebarGroupLimit?: number;
   chatEntityLinkAction?: ChatEntityClickAction;
@@ -922,9 +919,9 @@ export function ChatComposerSubmitIcon(): JSX.Element {
 
 // ── Detail View ──
 
-async function resolveProviderSessionConversation(providerSessionId: string): Promise<Conversation | null> {
-  const result = await getConversations({ session_id: providerSessionId, limit: 1 });
-  return result.conversations.find((candidate) => candidate.session_id === providerSessionId) ?? null;
+async function resolveProviderSessionConversation(providerSessionId: string): Promise<{ id: string } | null> {
+  const result = await resolveChatRouteTarget({ type: 'session', id: providerSessionId });
+  return result.status === 'resolved' && result.selection.type === 'conversation' ? result.selection : null;
 }
 
 function formatActivityDuration(seconds: number | null): string | null {
@@ -1882,7 +1879,7 @@ export function ConversationDetail({
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
-      window.history.replaceState(null, '', conversationLatestHref(window.location.hash, conversationId));
+      replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
       setNavigationTarget({
         key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
         kind: 'latest',
@@ -2991,6 +2988,7 @@ export function ConversationsView({
   consoleSessions,
   initialConversationId,
   initialSessionId,
+  routeParams,
   sidebarHidden = false,
   sidebarGroupLimit: rawSidebarGroupLimit,
   chatEntityLinkAction = 'preview',
@@ -2999,26 +2997,73 @@ export function ConversationsView({
   onNewConversation,
 }: ConversationsViewProps): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
+  const { active: chatViewActive } = useAppShell();
   const [chatViewState, setChatViewState] = useChatViewState();
-  const [selection, setSelection] = useState<ChatSelection>(() => (
-    initialConversationId
-      ? { type: 'conversation', id: initialConversationId }
-      : initialSessionId
-        ? { type: 'session', id: initialSessionId }
-        : chatViewState.lastSelection
-  ));
-  const handleNavigateConversation = useCallback((conversationId: string, target?: ConversationAnchor) => {
-    setSelection((current) => current?.type === 'conversation' && current.id === conversationId
-      ? current
-      : { type: 'conversation', id: conversationId });
-    const nextHash = hashWithAgentSession(
-      target
-        ? conversationAnchorHref(conversationId, target)
-        : `#/console?conversation=${encodeURIComponent(conversationId)}`,
-      getAgentPageBinding(),
-    );
-    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+  const routeTarget = useMemo(() => initialConversationId
+    ? { type: 'conversation' as const, id: initialConversationId }
+    : initialSessionId ? { type: 'session' as const, id: initialSessionId } : null,
+  [initialConversationId, initialSessionId]);
+  const routeAnchorRef = useRef<ConversationAnchor | null>(null);
+  if (routeParams) {
+    routeAnchorRef.current = conversationAnchorFromHash(`?${new URLSearchParams(routeParams)}`);
+  } else if (chatViewActive && parseRouteFromHash(window.location.hash).tab === 'console') {
+    routeAnchorRef.current = conversationAnchorFromHash(window.location.hash);
+  }
+  const routeAnchor = routeAnchorRef.current;
+  const routeIdentity = JSON.stringify([routeTarget, routeAnchor]);
+  const routeIntent = useRef({ identity: routeIdentity, generation: 0 });
+  if (routeIntent.current.identity !== routeIdentity) {
+    routeIntent.current = { identity: routeIdentity, generation: routeIntent.current.generation + 1 };
+  }
+  const routeIntentKey = routeIntent.current.generation;
+  const [overriddenIntent, setOverriddenIntent] = useState<number | null>(null);
+  const routeIntentActive = routeTarget !== null && overriddenIntent !== routeIntentKey;
+  const [manualSelection, setManualSelection] = useState<ChatSelection>(chatViewState.lastSelection);
+  const registerRouteTargetLoad = useRegisterInitialRouteLoad();
+  const fetchRouteTarget = useCallback(({ signal }: { signal: AbortSignal }) => {
+    const pending = resolveChatRouteTarget(routeTarget!, signal);
+    registerRouteTargetLoad(pending);
+    return pending;
+  }, [registerRouteTargetLoad, routeTarget]);
+  const routeResolution = useQuery({
+    queryKey: conversationKeys.routeTarget(routeTarget),
+    queryFn: fetchRouteTarget,
+    enabled: routeIntentActive,
+    retry: false,
+  }, queryClient);
+  const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;
+  const selection = routeIntentActive ? resolvedRouteSelection : manualSelection;
+  const selectionIntent = useRef({ routeIntentKey, routeTarget, routeParams, selection });
+  selectionIntent.current = { routeIntentKey, routeTarget, routeParams, selection };
+  const setSelection = useCallback((next: ChatSelection | ((current: ChatSelection) => ChatSelection)) => {
+    setOverriddenIntent(selectionIntent.current.routeIntentKey);
+    setManualSelection(typeof next === 'function' ? next(selectionIntent.current.selection) : next);
   }, []);
+  const navigateChatRoute = useCallback((target: { type: 'conversation' | 'session'; id: string } | null, anchor?: ConversationAnchor, replace = false) => {
+    const anchorParams = anchor && 'position' in anchor ? { position: String(anchor.position) } : anchor;
+    const nextHash = routeHashWithParams(window.location.hash, 'console', {
+      ...(target ? { [target.type]: target.id } : {}),
+      ...(anchorParams ?? {}),
+    }, ['conversation', 'session', 'block', 'turn', 'position']);
+    // The hash changes before the app publishes new target props. Keep that
+    // intermediate render inside the deliberate row action's intent.
+    if (!selectionIntent.current.routeParams) {
+      routeIntent.current.identity = JSON.stringify([selectionIntent.current.routeTarget, anchor ?? null]);
+    }
+    if (replace) replaceRouteHash(nextHash);
+    else if (window.location.hash !== nextHash) window.location.hash = nextHash;
+  }, []);
+  const overrideRouteWithFilter = useCallback(() => {
+    setSelection(selectionIntent.current.selection);
+    navigateChatRoute(null, undefined, true);
+  }, [navigateChatRoute, setSelection]);
+  const handleNavigateConversation = useCallback((conversationId: string, target?: ConversationAnchor) => {
+    queryClient.setQueryData(conversationKeys.routeTarget({ type: 'conversation', id: conversationId }), {
+      status: 'resolved', selection: { type: 'conversation', id: conversationId },
+    });
+    setSelection({ type: 'conversation', id: conversationId });
+    navigateChatRoute({ type: 'conversation', id: conversationId }, target);
+  }, [navigateChatRoute, queryClient, setSelection]);
   const detailPortalRef = useRef<HTMLDivElement>(null);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
   const [projectChooserSelection, setProjectChooserSelection] = useState('');
@@ -3179,83 +3224,15 @@ export function ConversationsView({
   }, [consoleSessions]);
 
   useEffect(() => {
-    if (!initialConversationId) return;
-    setSelection({ type: 'conversation', id: initialConversationId });
-  }, [initialConversationId]);
-
-  useEffect(() => {
     if (!selection || selection.type === 'draft') return;
+    if (routeIntentActive) setManualSelection(selection);
     setChatViewState((current) => (
       current.lastSelection?.type === selection.type && current.lastSelection.id === selection.id
         ? current
         : { ...current, lastSelection: selection }
     ));
-  }, [selection, setChatViewState]);
+  }, [routeIntentActive, selection, setChatViewState]);
 
-  useEffect(() => {
-    let active = true;
-    let retryTimer: number | null = null;
-
-    if (initialConversationId || !initialSessionId) {
-      return () => {
-        active = false;
-      };
-    }
-
-    const liveById = consoleSessions.find((session) => session.id === initialSessionId);
-    if (liveById && !liveById.provider_session_id) {
-      setSelection({ type: 'session', id: liveById.id });
-      onSelectSession(liveById.id);
-      return () => {
-        active = false;
-      };
-    }
-    const sessionLookupId = liveById?.provider_session_id ?? initialSessionId;
-    const sessionLookupKey = conversationKeys.bySession(sessionLookupId);
-
-    const resolveConversation = (attemptsRemaining: number) => {
-      void queryClient.fetchQuery({
-        queryKey: sessionLookupKey,
-        queryFn: ({ signal }) => getConversations({ session_id: sessionLookupId, limit: 1, signal }),
-        staleTime: 0,
-      })
-        .then((result) => {
-          if (!active) return;
-          const resolvedId = result.conversations[0]?.id ?? null;
-          if (resolvedId) {
-            setSelection({ type: 'conversation', id: resolvedId });
-            return;
-          }
-          const liveByProvider = consoleSessions.find(
-            (session) => session.provider_session_id === sessionLookupId && isLiveConsoleSession(session),
-          );
-          if (liveByProvider && attemptsRemaining <= 0) {
-            setSelection({ type: 'session', id: liveByProvider.id });
-            onSelectSession(liveByProvider.id);
-            return;
-          }
-          if (attemptsRemaining > 0) {
-            retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
-          }
-        })
-        .catch(() => {
-          if (!active) return;
-          if (attemptsRemaining > 0) {
-            retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
-          }
-        });
-    };
-
-    resolveConversation(5);
-
-    return () => {
-      active = false;
-      void queryClient.cancelQueries({ queryKey: sessionLookupKey, exact: true });
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession, queryClient]);
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
 
@@ -3623,14 +3600,14 @@ export function ConversationsView({
   }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sidebarOrder.value.pinnedConversationIds, sort]);
 
   useEffect(() => {
-    if (selection?.type !== 'session') return;
+    if (routeIntentActive || selection?.type !== 'session') return;
     const liveSession = liveSessions.find((session) => session.id === selection.id);
     if (!liveSession?.provider_session_id) return;
     const indexed = displayedConversations
       .flatMap((group) => group.conversations)
       .find((conversation) => conversation.session_id === liveSession.provider_session_id);
     if (indexed) handleNavigateConversation(indexed.id);
-  }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
+  }, [displayedConversations, handleNavigateConversation, liveSessions, routeIntentActive, selection]);
 
   useEffect(() => {
     if (sidebarOrder.value.pinnedConversationIds !== null) return;
@@ -3653,11 +3630,11 @@ export function ConversationsView({
     chatSections.chats?.entries[0] ??
     null;
   const handleUnavailableConversation = useCallback((conversationId: string) => {
-    if (initialConversationId) return;
+    if (routeIntentActive) return;
     setSelection((current) => (
       current?.type === 'conversation' && current.id === conversationId ? null : current
     ));
-  }, [initialConversationId]);
+  }, [routeIntentActive, setSelection]);
   const activeFilterCount = [
     sourceFilter !== 'all',
     starredOnly,
@@ -3672,14 +3649,14 @@ export function ConversationsView({
     return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
   }, [consoleSessions, selectedSessionId]);
   useEffect(() => {
-    if (!selection) return;
+    if (routeIntentActive || !selection) return;
     if (selection.type !== 'session') return;
     if (consoleSessions.some((session) => session.id === selection.id)) return;
     setSelection(null);
-  }, [consoleSessions, selection]);
+  }, [consoleSessions, routeIntentActive, selection, setSelection]);
 
   useEffect(() => {
-    if (selection) return;
+    if (routeIntentActive || selection) return;
     if (!firstChatEntry) return;
     if (firstChatEntry.kind === 'conversation' && firstChatEntry.conversation) {
       setSelection((current) => current ?? { type: 'conversation', id: firstChatEntry.conversation!.id });
@@ -3689,15 +3666,11 @@ export function ConversationsView({
       setSelection((current) => current ?? { type: 'session', id: firstChatEntry.session!.id });
       onSelectSession(firstChatEntry.session.id);
     }
-  }, [firstChatEntry, onSelectSession, selection]);
+  }, [firstChatEntry, onSelectSession, routeIntentActive, selection, setSelection]);
 
   const handleSelectSession = (sessionId: string) => {
     setSelection({ type: 'session', id: sessionId });
-    const nextHash = hashWithAgentSession(
-      `#/console?session=${encodeURIComponent(sessionId)}`,
-      getAgentPageBinding(),
-    );
-    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+    navigateChatRoute({ type: 'session', id: sessionId });
     onSelectSession(sessionId);
   };
 
@@ -3878,12 +3851,7 @@ export function ConversationsView({
       spawn: optimisticSpawn,
     });
     setNewChatDraft(accepted);
-    setSelection({ type: 'conversation', id: starting.id });
-    const nextHash = hashWithAgentSession(
-      `#/console?conversation=${encodeURIComponent(starting.id)}`,
-      getAgentPageBinding(),
-    );
-    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+    handleNavigateConversation(starting.id);
     try {
       const result = await onNewConversation({
         idempotency_key: starting.id,
@@ -3919,7 +3887,7 @@ export function ConversationsView({
     } finally {
       if (draftStartupController.current === startupController) draftStartupController.current = null;
     }
-  }, [newChatDraft, onNewConversation, reconcileCreationReceipt]);
+  }, [handleNavigateConversation, newChatDraft, onNewConversation, reconcileCreationReceipt]);
 
   const openNewSession = (cwd?: string) => {
     const requested = cwd ? registeredProjects.find((project) => project.root === cwd) : null;
@@ -4062,7 +4030,7 @@ export function ConversationsView({
           <>
           <SidebarSearchFilterHeader
             value={search}
-            onValueChange={setSearch}
+            onValueChange={(value) => { overrideRouteWithFilter(); setSearch(value); }}
             placeholder="Search chats"
             searchAriaLabel="Search chats"
             clearAriaLabel="Clear chat search"
@@ -4097,7 +4065,7 @@ export function ConversationsView({
                         key={lifecycle}
                         type="button"
                         className={`conv-filter-btn${conversationLifecycle === lifecycle ? ' conv-filter-btn--active' : ''}`}
-                        onClick={() => setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle }))}
+                        onClick={() => { overrideRouteWithFilter(); setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle })); }}
                       >
                         {lifecycle === 'active' ? 'Active' : 'Archived'}
                       </button>
@@ -4112,7 +4080,7 @@ export function ConversationsView({
                         key={src}
                         type="button"
                         className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
-                        onClick={() => setSourceFilter(src)}
+                        onClick={() => { overrideRouteWithFilter(); setSourceFilter(src); }}
                       >
                         {src === 'all' ? 'All' : SOURCE_LABELS[src]}
                       </button>
@@ -4124,7 +4092,7 @@ export function ConversationsView({
                     <input
                       type="checkbox"
                       checked={starredOnly}
-                      onChange={() => setStarredOnly((prev) => !prev)}
+                      onChange={() => { overrideRouteWithFilter(); setStarredOnly((prev) => !prev); }}
                     />
                     <span>Starred only</span>
                   </label>
@@ -4132,7 +4100,7 @@ export function ConversationsView({
                     <input
                       type="checkbox"
                       checked={hideEmpty}
-                      onChange={() => setHideEmpty((prev) => !prev)}
+                      onChange={() => { overrideRouteWithFilter(); setHideEmpty((prev) => !prev); }}
                     />
                     <span>Hide empty chats</span>
                   </label>
@@ -4143,14 +4111,14 @@ export function ConversationsView({
                     <button
                       type="button"
                       className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
-                      onClick={() => setSearchMode('title')}
+                      onClick={() => { overrideRouteWithFilter(); setSearchMode('title'); }}
                     >
                       Title
                     </button>
                     <button
                       type="button"
                       className={`conv-filter-btn${searchMode === 'full' ? ' conv-filter-btn--active' : ''}`}
-                      onClick={() => setSearchMode('full')}
+                      onClick={() => { overrideRouteWithFilter(); setSearchMode('full'); }}
                     >
                       Full text
                     </button>
@@ -4161,7 +4129,7 @@ export function ConversationsView({
                   <select
                     className="conv-sort"
                     value={sort}
-                    onChange={(e) => setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks')}
+                    onChange={(e) => { overrideRouteWithFilter(); setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks'); }}
                   >
                     <option value="date">Recent activity</option>
                     <option value="blocks">Message count</option>
@@ -4386,7 +4354,7 @@ export function ConversationsView({
           <ConversationDetail
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
-            anchor={conversationAnchorFromHash(window.location.hash)}
+            anchor={routeIntentActive ? routeAnchor : null}
             onNavigate={handleNavigateConversation}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
@@ -4407,11 +4375,17 @@ export function ConversationsView({
           />
         ) : (
           <ChatDetailFrame
-            state="no-selection"
+            state={routeIntentActive && routeResolution.isPending ? 'loading' : 'no-selection'}
             header={<DetailPaneHeader variant="compact" title="Chat" />}
           >
             <div className="chat-history-detail__empty">
-              No chats in this view
+              {routeIntentActive
+                ? routeResolution.isError ? 'Could not open the requested chat.'
+                  : routeResolution.data?.status === 'ambiguous' ? 'This reference matches several chats. Select an exact chat.'
+                  : routeResolution.data?.status === 'not_found' ? 'The requested chat was not found.'
+                  : selection?.type === 'session' ? 'The requested session is unavailable.'
+                  : 'Opening the requested chat…'
+                : 'No chats in this view'}
             </div>
           </ChatDetailFrame>
         )}

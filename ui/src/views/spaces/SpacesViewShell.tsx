@@ -15,12 +15,14 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useCallback, useLayoutEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
 import {
+  ApiError,
   getSpace,
   getSpaceFactPacket,
+  invalidateApiGetCache,
   type InstanceInfo,
   type Space,
   type SpaceFactPacket,
@@ -33,8 +35,9 @@ import {
   useRegisterInitialRouteLoad,
 } from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
+import { discardSpacesLastView, type SpacesLastView } from './last-view';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -76,6 +79,8 @@ export type SpacesViewShellProps = {
   projectId: string;
   /** Canonical ledger Space id, or null when no Space is selected yet. */
   spaceId?: string | null;
+  /** Browser-local restoration remains separate from explicit URL selection. */
+  savedSelection?: SpacesLastView | null;
   /**
    * Explicit legacy renderer override from a URL `?renderer=` param. When this
    * is absent, the shell loads the selected Space and opens its primary type
@@ -167,6 +172,15 @@ function persistCachedSelection(snapshot: SpaceSelectionSnapshot): void {
   }
 }
 
+function discardCachedSelection(spaceId: string): void {
+  if (!loadCachedSelection(spaceId)) return;
+  try {
+    localStorage.removeItem(SPACE_SELECTION_CACHE_KEY);
+  } catch {
+    // best-effort route-local view cache
+  }
+}
+
 /**
  * Renderable Spaces shell. Routed from `route.tab === 'spaces'` in `app.tsx`.
  * On its own (no renderers registered) it renders a stable frame + empty-state;
@@ -174,7 +188,8 @@ function persistCachedSelection(snapshot: SpaceSelectionSnapshot): void {
  */
 export function SpacesViewShell({
   projectId,
-  spaceId = null,
+  spaceId: explicitSpaceId = null,
+  savedSelection = null,
   renderer,
   renderers,
   sidebarHidden = false,
@@ -185,6 +200,12 @@ export function SpacesViewShell({
 }: SpacesViewShellProps): JSX.Element {
   const appShell = useAppShell();
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const [discardedSavedRef, setDiscardedSavedRef] = useState<string | null>(null);
+  const explicitRef = explicitSpaceId?.trim() || null;
+  const restoringSaved = Boolean(!explicitRef && savedSelection && savedSelection.spaceId !== discardedSavedRef);
+  const spaceId = explicitRef ?? (restoringSaved ? savedSelection!.spaceId : null);
+  const [retryToken, setRetryToken] = useState(0);
+  const selectionGeneration = useRef(0);
   const resolvedLoadSpaceFactPacket = useMemo(
     () => {
       if (loadSpaceFactPacket) return loadSpaceFactPacket;
@@ -213,6 +234,7 @@ export function SpacesViewShell({
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
   useLayoutEffect(() => {
+    const generation = ++selectionGeneration.current;
     if (!spaceId) {
       setSelectedSpace(null);
       setSelectedFactPacket(null);
@@ -221,6 +243,7 @@ export function SpacesViewShell({
       return undefined;
     }
     let cancelled = false;
+    if (restoringSaved && !appShell.active) return undefined;
     const canUseCachedSelection = !isGeneratedShortSpaceRef(spaceId);
     const cachedPacket = canUseCachedSelection
       ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
@@ -235,9 +258,10 @@ export function SpacesViewShell({
           : null
     ));
     setSpaceLoadError(null);
+    if (restoringSaved) invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
     const initialLoad = resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
-        if (!cancelled) {
+        if (!cancelled && generation === selectionGeneration.current) {
           const { space } = packet;
           const snapshot = snapshotFromSpace(space);
           setSelectedSpace(space);
@@ -249,23 +273,39 @@ export function SpacesViewShell({
           );
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
+          if (restoringSaved && appShell.active) {
+            onNavigate?.({ projectId: space.project_id, spaceId: space.id, renderer: null, preserveSpaceId: true });
+          }
         }
       })
       .catch((error: unknown) => {
-        if (!cancelled) setSpaceLoadError(error instanceof Error ? error.message : String(error));
+        if (cancelled || generation !== selectionGeneration.current) return;
+        if (error instanceof ApiError && (error.status === 404 || error.status === 409)) {
+          removePersistedDetail('spaces', detailRequestKey('spaces', { spaceId }));
+          discardCachedSelection(spaceId);
+          setSelectedSpace(null);
+          setSelectedFactPacket(null);
+          setSelectedSnapshot(null);
+          if (restoringSaved && error.status === 404) {
+            discardSpacesLastView(spaceId);
+            setDiscardedSavedRef(spaceId);
+            return;
+          }
+        }
+        setSpaceLoadError(error instanceof Error ? error.message : String(error));
       });
     registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
-  }, [registerInitialRouteLoad, resolvedLoadSpaceFactPacket, spaceId]);
+  }, [registerInitialRouteLoad, resolvedLoadSpaceFactPacket, spaceId, restoringSaved, appShell.active, onNavigate, retryToken]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
-    if (!spaceId || space.id !== spaceId) return;
+    if (!spaceId || space.id !== spaceId || spaceLoadError) return;
     const snapshot = snapshotFromSpace(space);
     setSelectedSnapshot(snapshot);
     persistCachedSelection(snapshot);
-  }, [spaceId]);
+  }, [spaceId, spaceLoadError]);
 
   const explicitRenderer = isSpaceRenderer(renderer) ? renderer : null;
   const primaryRenderer = selectedSpace?.default_renderer ?? selectedSnapshot?.default_renderer ?? DEFAULT_RENDERER;
@@ -310,14 +350,17 @@ export function SpacesViewShell({
         selectionActive={appShell.active}
         selectedSpaceId={canonicalSpaceId}
         onSelectedSpaceResolved={handleSidebarSpaceResolved}
-        onSelectSpace={(args) =>
+        onSelectSpace={(args) => {
+          if (!appShell.active) return;
+          ++selectionGeneration.current;
           onNavigate?.({
             projectId: args.projectId,
             projectKey: args.projectKey,
             spaceId: args.spaceId,
             renderer: args.renderer,
-          })
-        }
+            preserveSpaceId: true,
+          });
+        }}
       />
       <div className="spaces-shell__main">
         {spaceId && previewMutationsBlocked ? (
@@ -364,6 +407,10 @@ export function SpacesViewShell({
         {spaceLoadError && (
           <DetailPaneNotice severity="error" density="compact" title="Could not load space">
             {spaceLoadError}
+            <button type="button" onClick={() => {
+              if (spaceId) invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
+              setRetryToken((current) => current + 1);
+            }}>Retry space</button>
           </DetailPaneNotice>
         )}
         <div className="spaces-shell__body" data-testid="spaces-shell-body">

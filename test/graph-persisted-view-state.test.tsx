@@ -47,7 +47,7 @@ function graphResponse(): Response {
   }), { headers: { 'content-type': 'application/json' } });
 }
 
-function renderGraph(refreshToken = 0) {
+function renderGraph(refreshToken = 0, initialFocus?: string) {
   let descriptor: AppRightSidebarDescriptor | null = null;
   let owner: string | null = null;
   const registerRightSidebar: AppShellContextValue['registerRightSidebar'] = (ownerId) => {
@@ -70,15 +70,15 @@ function renderGraph(refreshToken = 0) {
   };
   const rendered = render(
     <AppShellProvider value={value}>
-      <GraphView onNavigate={() => undefined} refreshToken={refreshToken} />
+      <GraphView onNavigate={() => undefined} refreshToken={refreshToken} initialFocus={initialFocus} />
     </AppShellProvider>,
   );
   return {
     ...rendered,
     getDescriptor: () => descriptor,
-    rerenderGraph: (nextRefreshToken: number) => rendered.rerender(
+    rerenderGraph: (nextRefreshToken: number, focus = initialFocus) => rendered.rerender(
       <AppShellProvider value={value}>
-        <GraphView onNavigate={() => undefined} refreshToken={nextRefreshToken} />
+        <GraphView onNavigate={() => undefined} refreshToken={nextRefreshToken} initialFocus={focus} />
       </AppShellProvider>,
     ),
   };
@@ -98,6 +98,29 @@ afterEach(() => {
 });
 
 describe('GraphView persisted detail panel state', () => {
+  it('keeps a missing mounted focus unresolved and preserves an optional closed inspector on refetch', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      mode: 'issue', nodes: [{ id: 'loaded', type: 'issue', label: 'Loaded issue', status: 'open' }], edges: [],
+    }), { headers: { 'content-type': 'application/json' } }))));
+    const view = renderGraph(0, 'loaded');
+    await waitFor(() => {
+      const detail = render(<>{view.getDescriptor()?.content}</>);
+      expect(detail.container.textContent).toContain('Loaded issue');
+      detail.unmount();
+    });
+    view.rerenderGraph(0, 'absent');
+    await waitFor(() => {
+      const detail = render(<>{view.getDescriptor()?.content}</>);
+      expect(detail.container.textContent).toContain('absent');
+      expect(detail.container.textContent).not.toContain('Loaded issue');
+      detail.unmount();
+    });
+    act(() => view.getDescriptor()!.onOpenChange(false));
+    invalidateApiGetCache('/api/graph');
+    view.rerenderGraph(1, 'absent');
+    await waitFor(() => expect(view.getDescriptor()?.open).toBe(false));
+  });
+
   it('restores, clamps, writes through, and preserves panel intent across refetches', async () => {
     const openKey = 'mandible_graph_detail_panel_open:v1';
     const heightKey = 'mandible_graph_detail_panel_height:v1';

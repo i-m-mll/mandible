@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // An explicit legacy renderer link still mounts that renderer, and the user can
 // navigate back to the Space's primary type.
-import { screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
+import { act, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -59,4 +59,23 @@ describe('SpacesViewShell renderer routing', () => {
     fireEvent.click(screen.getByTestId('spaces-shell-open-primary'));
     expect(onNavigate).toHaveBeenCalledWith({ renderer: null });
   });
+it('keeps mounted space targets through absent groups and ignores superseded detail responses', async () => {
+  let finishB!: (space: Space) => void;
+  const pendingB = new Promise<Space>((resolve) => { finishB = resolve; });
+  const loadSpace = vi.fn(async (id: string) => id === 'B' ? pendingB : { ...makeSpace(), id, title: `Space ${id}` });
+  const onNavigate = vi.fn();
+  const props = { projectId: 'p1', onNavigate, loadSpace, renderers: { document: Mount } };
+  const view = render(<SpacesViewShell {...props} spaceId="A" />);
+  await screen.findByText('Space A');
+  view.rerender(<SpacesViewShell {...props} spaceId="B" />);
+  expect(screen.queryByText('Space A')).toBeNull();
+  await waitFor(() => expect(loadSpace).toHaveBeenCalledWith('B'));
+  view.rerender(<SpacesViewShell {...props} spaceId="C" />);
+  await screen.findByText('Space C');
+  await act(async () => finishB({ ...makeSpace(), id: 'B', title: 'Space B' }));
+  expect(screen.queryByText('Space B')).toBeNull();
+  expect(screen.getByText('Space C')).toBeTruthy();
+  expect(onNavigate).not.toHaveBeenCalled();
+});
+
 });

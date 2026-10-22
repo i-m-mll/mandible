@@ -307,6 +307,16 @@ function flush(storage: Storage, index: CacheIndex, staleKeys: string[]): void {
   }
 }
 
+export function removePersistedDetail(namespace: string, key: string): void {
+  pendingAccess.delete(accessKey(namespace, key));
+  const storage = browserStorage();
+  if (!storage) return;
+  const index = readIndex(storage);
+  const removed = index.entries.filter((entry) => entry.namespace === namespace && entry.key === key);
+  index.entries = index.entries.filter((entry) => entry.namespace !== namespace || entry.key !== key);
+  flush(storage, index, removed.map((entry) => entry.storageKey));
+}
+
 export function clearPersistedDetailCache(): void {
   pendingAccess.clear();
   const storage = browserStorage();

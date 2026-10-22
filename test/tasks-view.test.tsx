@@ -607,4 +607,30 @@ describe('TasksView task-command v2', () => {
     expect(screen.queryByText(/^Refused because/)).toBeNull();
     expect(screen.queryByText(/Library\/Application Support/)).toBeNull();
   });
+it('keeps mounted explicit targets authoritative and records deliberate row selection', async () => {
+    post([knownTask(), { ...knownTask(), task_id: 'second', display_name: 'Second task' }]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    stubInventory(inventory);
+    const first = inventory.tasks[0].key;
+    const second = inventory.tasks[1].key;
+    window.history.replaceState(null, '', '#/tasks?sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    window.localStorage.setItem('mandible.tasks.selection:v1', JSON.stringify({ selectedKey: first }));
+    const view = render(<TasksView initialTaskKey={first} />);
+    await screen.findByRole('button', { name: 'Select Second task' });
+    view.rerender(<TasksView initialTaskKey={second} />);
+    await waitFor(() => expect(document.querySelector('.tasks-detail .detail-pane-header')?.textContent).toContain('Second task'));
+    view.rerender(<TasksView initialTaskKey="missing-target" />);
+    await screen.findByText('Task not found: missing-target');
+    expect(document.querySelector('.tasks-detail .detail-pane-header')?.textContent).not.toContain('Daily digest');
+    window.dispatchEvent(new Event('managed-reminder:sse'));
+    await waitFor(() => expect(screen.getByText('Task not found: missing-target')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Select Daily digest' }));
+    await waitFor(() => expect(document.querySelector('.tasks-detail .detail-pane-header')?.textContent).toContain('Daily digest'));
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(params.get('task')).toBe(first);
+    expect(params.get('sidebar')).toBe('hidden');
+    expect(params.get('agent_session')).toBe('bound');
+    expect(params.get('sentinel')).toBe('a&b+c');
+  });
+
 });

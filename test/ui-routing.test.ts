@@ -4,10 +4,40 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin';
 import { installTauriDeepLinkHandler, navigateToMandibleDeepLink, routeHashFromMandibleDeepLink } from '../ui/src/deep-links';
 import { __resetAgentPageBindingForTests, getAgentPageBinding } from '../ui/src/agent-page-binding';
-import { briefingGroupRoute, hashWithViewSidebarHidden, hashWithViewSidebarVisible, isViewSidebarHidden, parseRouteFromHash, shortRouteId, spacesRouteFromHash } from '../ui/src/routing';
+import { briefingGroupRoute, briefingRoute, replaceRouteHash, routeHashWithParams, hashWithViewSidebarHidden, hashWithViewSidebarVisible, isViewSidebarHidden, parseRouteFromHash, shortRouteId, spacesRouteFromHash } from '../ui/src/routing';
 afterEach(() => { __resetAgentPageBindingForTests(); delete (window as Window & { __TAURI__?: unknown }).__TAURI__; });
 
 describe('App routing', () => {
+  it('replaces only owned selectors and notifies the router without adding history', () => {
+    const hash = routeHashWithParams('#/auth?request=old&sidebar=hidden&agent_session=worker&unknown=keep',
+      'auth', { request: 'next' }, ['request']);
+    const changed = vi.fn();
+    window.addEventListener('hashchange', changed);
+    try {
+      const historyLength = window.history.length;
+      replaceRouteHash(hash);
+      expect(parseRouteFromHash(window.location.hash)).toEqual({ tab: 'auth', params: {
+        request: 'next', sidebar: 'hidden', agent_session: 'worker', unknown: 'keep',
+      } });
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(window.history.length).toBe(historyLength);
+      replaceRouteHash(hash);
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(routeHashWithParams(hash, 'auth', { request: null })).not.toContain('request=');
+    } finally {
+      window.removeEventListener('hashchange', changed);
+      window.history.replaceState(null, '', '/');
+    }
+  });
+
+  it('Briefing selection replaces competing selectors while preserving link context', () => {
+    const hash = '#/briefing?group=old&briefing=old&round=old&sidebar=hidden&agent_session=worker&unknown=keep';
+    expect(briefingRoute('next', null, hash)).toBe('/#/briefing?sidebar=hidden&agent_session=worker&unknown=keep&briefing=next');
+    expect(briefingGroupRoute('policy', hash)).toBe('/#/briefing?sidebar=hidden&agent_session=worker&unknown=keep&group=policy');
+    expect(routeHashFromMandibleDeepLink('mandible:///briefing?briefing=next&group=old&round=one&sidebar=hidden'))
+      .toBe('#/briefing?briefing=next&round=one&sidebar=hidden');
+  });
+
   it('routes legacy monitor hashes into console', () => {
     expect(parseRouteFromHash('#/sessions?session=s1')).toEqual({
       tab: 'console',

@@ -175,6 +175,8 @@ export type AuthQueueViewProps = {
   daemonReady?: boolean;
   instance?: InstanceInfo | null;
   onSelectAuth?: (id: string | null) => void;
+  /** Explicit row/filter navigation; passive selection updates only notify onSelectAuth. */
+  onNavigateRequest?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
@@ -1901,6 +1903,7 @@ export function AuthQueueView({
   selectedAuthId: externalSelectedId,
   initialRequestId,
   onSelectAuth,
+  onNavigateRequest,
   onApprove,
   onReject,
   onRetry,
@@ -1931,7 +1934,14 @@ export function AuthQueueView({
 
   // Local selection state — mirrors app state via onSelectAuth
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
-  const selectedId = externalSelectedId !== undefined ? externalSelectedId : localSelectedId;
+  // Route intent owns the visible detail immediately, before controlled saved
+  // selection or a canonical-id notification can propagate through the app.
+  const deepLinkRef = useRef({ route: initialRequestId, selection: initialRequestId ?? null });
+  if (deepLinkRef.current.route !== initialRequestId) {
+    deepLinkRef.current = { route: initialRequestId, selection: initialRequestId ?? null };
+  }
+  const selectedId = deepLinkRef.current.selection
+    ?? (externalSelectedId !== undefined ? externalSelectedId : localSelectedId);
 
   // Bug: 0de95bf — history list rows omit the diff/spec/output body blobs. The
   // detail body is fetched from the detail route when a request is selected and
@@ -1945,23 +1955,10 @@ export function AuthQueueView({
   };
   const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
 
-  // Bug: 2cddba2 — the deep-linked selection propagates through a state update
-  // that lands after the first effect pass, and may reference a request outside
-  // the loaded lists. While set, sidebar reconciliation holds that selection;
-  // cleared when the user picks another row.
-  const pendingDeepLinkRef = useRef<string | null>(null);
-  const previousSelectionFiltersRef = useRef({ filterMode, typeFilter, repoFilter, branchFilter, authSearch });
-  useEffect(() => {
-    const previous = previousSelectionFiltersRef.current;
-    const changed = previous.filterMode !== filterMode
-      || previous.typeFilter !== typeFilter
-      || previous.repoFilter !== repoFilter
-      || previous.branchFilter !== branchFilter
-      || previous.authSearch !== authSearch;
-    previousSelectionFiltersRef.current = { filterMode, typeFilter, repoFilter, branchFilter, authSearch };
-    if (!changed) return;
-    pendingDeepLinkRef.current = null;
-  }, [authSearch, branchFilter, filterMode, repoFilter, typeFilter]);
+  const releaseDeepLink = useCallback(() => {
+    deepLinkRef.current.selection = null;
+    onNavigateRequest?.(null);
+  }, [onNavigateRequest]);
 
   // Track newly finalized requests so the active queue can retain the selected
   // row until the user deliberately moves elsewhere.
@@ -1994,15 +1991,16 @@ export function AuthQueueView({
   }, [clearRetainedFinalized, retainedFinalizedId, selectedId]);
 
   const handleSelect = useCallback((id: string) => {
-    pendingDeepLinkRef.current = null;
+    deepLinkRef.current.selection = null;
     setLocalSelectedId(id);
     onSelectAuth?.(id);
-  }, [onSelectAuth]);
+    onNavigateRequest?.(id);
+  }, [onSelectAuth, onNavigateRequest]);
 
   // Bug: bdcc1f5 — deep-link from graph node click: select the initial request
   useEffect(() => {
-    if (!initialRequestId) return;
-    pendingDeepLinkRef.current = initialRequestId;
+    if (!initialRequestId || deepLinkRef.current.route !== initialRequestId
+      || deepLinkRef.current.selection !== initialRequestId) return;
     setLocalSelectedId(initialRequestId);
     onSelectAuth?.(initialRequestId);
   // Only run on mount / when initialRequestId changes
@@ -2015,7 +2013,7 @@ export function AuthQueueView({
   // this re-arms when the selection upgrades, and each re-run cancels the
   // stale timer so a superseded selection can never scroll.
   useEffect(() => {
-    if (!selectedId || pendingDeepLinkRef.current !== selectedId) return;
+    if (!selectedId || deepLinkRef.current.selection !== selectedId) return;
     const timer = setTimeout(() => {
       const el = document.querySelector(`[data-request-id="${selectedId}"]`);
       if (el) {
@@ -2680,15 +2678,17 @@ export function AuthQueueView({
   // moves with it so sidebar reconciliation cannot steal the selection.
   useEffect(() => {
     if (!selectedId || !selectedRequestRaw) return;
+    if (initialRequestId && (deepLinkRef.current.route !== initialRequestId
+      || deepLinkRef.current.selection !== selectedId)) return;
     const fullId = getAuthId(selectedRequestRaw);
     if (!fullId || fullId === selectedId || !fullId.startsWith(selectedId)) return;
-    if (pendingDeepLinkRef.current === selectedId) pendingDeepLinkRef.current = fullId;
+    if (deepLinkRef.current.selection === selectedId) deepLinkRef.current.selection = fullId;
     setFetchedRequests((prev) => (
       prev[selectedId] && !prev[fullId] ? { ...prev, [fullId]: prev[selectedId] } : prev
     ));
     setLocalSelectedId(fullId);
     onSelectAuth?.(fullId);
-  }, [selectedId, selectedRequestRaw, onSelectAuth]);
+  }, [selectedId, selectedRequestRaw, initialRequestId, onSelectAuth]);
 
   // Bug: 0de95bf — a list row from the history projection carries no body
   // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
@@ -2763,16 +2763,7 @@ export function AuthQueueView({
   // present in the sidebar (e.g. all items completed/dismissed and queue empties),
   // so the orphaned detail card does not remain visible with an empty sidebar.
   useEffect(() => {
-    // Bug: 2cddba2 — a deep-linked selection may still be propagating through
-    // state (selectedId is null on the mount pass), or may reference a request
-    // outside both loaded lists (rendered from the by-id fetch above). Until
-    // the user picks another row, don't clear it or promote another row over
-    // it. Once the selection has moved elsewhere, release the hold.
-    const pendingDeepLink = pendingDeepLinkRef.current;
-    if (pendingDeepLink) {
-      if (selectedId === null || selectedId === pendingDeepLink) return;
-      pendingDeepLinkRef.current = null;
-    }
+    if (deepLinkRef.current.selection) return;
     if (
       selectedId &&
       filteredSidebarItems.length === 0
@@ -2801,6 +2792,7 @@ export function AuthQueueView({
   }, [filterMode, authSearch, typeFilter, repoFilter, branchFilter, filteredSidebarItems]);
 
   const clearAuthFilters = useCallback(() => {
+    releaseDeepLink();
     setFilterMode('active');
     setTypeFilter('all');
     setRepoFilter(null);
@@ -2808,7 +2800,7 @@ export function AuthQueueView({
     setBranchInput('');
     setSortMode('newest');
     setCustomOrder(null);
-  }, []);
+  }, [releaseDeepLink]);
 
   const activeFilterSummary = useMemo(() => {
     const labels: string[] = [];
@@ -2937,7 +2929,7 @@ export function AuthQueueView({
         header={
           <SidebarSearchFilterHeader
             value={authSearch}
-            onValueChange={setAuthSearch}
+            onValueChange={(value) => { releaseDeepLink(); setAuthSearch(value); }}
             placeholder="Search approval requests..."
             searchAriaLabel="Search approval requests"
             clearAriaLabel="Clear auth search"
@@ -2970,7 +2962,7 @@ export function AuthQueueView({
                 <span className="sidebar-search-filter__label">Queue</span>
                 <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                   {(['active', 'all', 'historical'] as AuthFilterMode[]).map((mode) => (
-                    <button key={mode} type="button" className={`sidebar-search-filter__option${filterMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
+                    <button key={mode} type="button" className={`sidebar-search-filter__option${filterMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => { releaseDeepLink(); setFilterMode(mode); }}>
                       {mode}
                     </button>
                   ))}
@@ -2992,7 +2984,7 @@ export function AuthQueueView({
                 <span className="sidebar-search-filter__label">Type</span>
                 <div className="sidebar-search-filter__options">
                   {AUTH_TYPE_OPTIONS.map((opt) => (
-                    <button key={opt.value} type="button" className={`sidebar-search-filter__option${typeFilter === opt.value ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
+                    <button key={opt.value} type="button" className={`sidebar-search-filter__option${typeFilter === opt.value ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => { releaseDeepLink(); setTypeFilter(opt.value); }}>
                       {opt.label}
                     </button>
                   ))}
@@ -3006,6 +2998,7 @@ export function AuthQueueView({
                       type="button"
                       className={`sidebar-search-filter__option${repoFilter === null ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => {
+                        releaseDeepLink();
                         setRepoFilter(null);
                         setBranchFilter(null);
                         setBranchInput('');
@@ -3021,6 +3014,7 @@ export function AuthQueueView({
                           type="button"
                           className={`sidebar-search-filter__option${repoFilter === repo ? ' sidebar-search-filter__option--active' : ''}`}
                           onClick={() => {
+                            releaseDeepLink();
                             setRepoFilter(repoFilter === repo ? null : repo);
                             setBranchFilter(null);
                             setBranchInput('');
@@ -3044,13 +3038,14 @@ export function AuthQueueView({
                       value={branchInput}
                       list="auth-branch-list"
                       onInput={(e) => {
+                        releaseDeepLink();
                         const val = (e.target as HTMLInputElement).value;
                         setBranchInput(val);
                         setBranchFilter(uniqueBranchesForRepo.includes(val) ? val : null);
                       }}
                     />
                     {branchInput && (
-                      <button type="button" className="auth-sidebar__branch-clear" onClick={() => { setBranchInput(''); setBranchFilter(null); }} aria-label="Clear branch filter">
+                      <button type="button" className="auth-sidebar__branch-clear" onClick={() => { releaseDeepLink(); setBranchInput(''); setBranchFilter(null); }} aria-label="Clear branch filter">
                         ×
                       </button>
                     )}
@@ -3065,6 +3060,7 @@ export function AuthQueueView({
                         type="button"
                         className={`auth-sidebar__branch-tag${branchFilter === branch ? ' auth-sidebar__branch-tag--active' : ''}`}
                         onClick={() => {
+                          releaseDeepLink();
                           if (branchFilter === branch) {
                             setBranchFilter(null);
                             setBranchInput('');

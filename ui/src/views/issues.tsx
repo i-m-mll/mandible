@@ -18,9 +18,9 @@ import { LedgerIssueDetail, type LedgerIssueCloseResolution } from '../component
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { shortRouteId } from '../routing';
+import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import {
@@ -110,19 +110,6 @@ export function resolveIssueRepoDeepLink(
   ));
   if (insensitive) return insensitive.project_key || insensitive.repo_id;
   return trimmed;
-}
-
-export function resolveIssueIdDeepLink(
-  repo: IssueRepoSummary | undefined,
-  rawIssueId: string,
-): string {
-  if (!repo) return rawIssueId;
-  const exact = repo.issues.find((issue) => issue.id === rawIssueId);
-  if (exact) return exact.id;
-  const matches = repo.issues.filter((issue) => (
-    issue.id.startsWith(rawIssueId) || rawIssueId.startsWith(issue.id)
-  ));
-  return matches.length === 1 ? matches[0].id : rawIssueId;
 }
 
 export type IssuesViewProps = {
@@ -298,7 +285,8 @@ function ledgerDetailMatchesSelection(
       detail.project.project_key === repoId ||
       detail.project.repo_id === repoId ||
       detail.project.repo_name === repoId ||
-      detail.project.display_name === repoId;
+      detail.project.display_name === repoId ||
+      detail.project.repo_root === repoId;
     if (!repoMatches) return false;
   }
 
@@ -307,7 +295,7 @@ function ledgerDetailMatchesSelection(
     if (alias.alias) refs.add(alias.alias);
     if (alias.external_id) refs.add(alias.external_id);
   }
-  return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+  return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId));
 }
 
 function shouldAcceptInitialLedgerDetail(
@@ -460,9 +448,9 @@ function synthesizeLedgerIssueDetail(
 }
 
 function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
-  const params = new URLSearchParams({ repo: repoId, issue: issueId });
-  if (commentId) params.set('comment', commentId);
-  return `#/issues?${params.toString()}`;
+  return routeHashWithParams(window.location.hash, 'issues', {
+    repo: repoId, issue: issueId, comment: commentId ?? null,
+  });
 }
 
 // --- Flat list item types ---
@@ -576,7 +564,7 @@ export function IssuesView({
     : '';
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(
-    initialRepoId ?? viewState.selectedRepoId,
+    initialIssueId ? resolveIssueRepoDeepLink(repos, initialRepoId) : viewState.selectedRepoId,
   );
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(
     initialIssueId ?? viewState.selectedIssueId,
@@ -587,11 +575,12 @@ export function IssuesView({
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailLoadFailed, setDetailLoadFailed] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
-  const lastAppliedDeepLinkRef = useRef<string | null>(null);
+  const routeKey = JSON.stringify([initialRepoId, initialIssueId]);
+  const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
   const selectedIssueKeyRef = useRef<string | null>(null);
@@ -600,6 +589,20 @@ export function IssuesView({
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
+  if (appliedRouteKey !== routeKey) {
+    setAppliedRouteKey(routeKey);
+    const nextRepoId = initialIssueId ? resolveIssueRepoDeepLink(repos, initialRepoId) : viewState.selectedRepoId;
+    const nextIssueId = initialIssueId ?? viewState.selectedIssueId;
+    if (nextRepoId !== selectedRepoId || nextIssueId !== selectedIssueId) {
+      detailRequestSeqRef.current += 1;
+      setSelectedRepoId(nextRepoId);
+      setSelectedIssueId(nextIssueId);
+      setLedgerIssueDetail(null);
+      setDetailLoading(Boolean(nextIssueId));
+      setDetailLoadFailed(false);
+      setDetailError(null);
+    }
+  }
   const nextSelectedIssueKey = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
   if (selectedIssueKeyRef.current !== nextSelectedIssueKey) {
     selectedIssueGenerationRef.current += 1;
@@ -634,43 +637,12 @@ export function IssuesView({
     return resolveIssueRepoDeepLink(repos, rawRepoId);
   }, [repos]);
 
-  const resolveIssueId = useCallback((repoId: string, rawIssueId: string): string => {
-    const repo = repos.find((r) => r.repo_id === repoId || r.project_key === repoId);
-    return resolveIssueIdDeepLink(repo, rawIssueId);
-  }, [repos]);
-
-  // Deep-link: auto-select issue from URL params without treating the route repo
-  // as a sidebar filter. The repo filter is user-controlled through the field.
-  useEffect(() => {
-    if (!initialIssueId) return;
-    const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}:${initialCommentId ?? ''}`;
-    if (lastAppliedDeepLinkRef.current === deepLinkKey) return;
-    lastAppliedDeepLinkRef.current = deepLinkKey;
-
-    if (initialRepoId) {
-      const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
-      const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
-      setSelectedRepoId(canonicalRepoId);
-      setSelectedIssueId(canonicalIssueId);
-    } else {
-      setSelectedRepoId(null);
-      setSelectedIssueId(initialIssueId);
-      const found = repos
-        .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
-        .find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
-      if (found) {
-        setSelectedRepoId(found.repo.repo_id);
-        setSelectedIssueId(found.issue.id);
-      }
-    }
-  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
-
   useEffect(() => {
     if (!ledgerIssueDetail || !initialCommentId) return;
     const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
     if (lastScrolledCommentRef.current === scrollKey) return;
-    const comment = document.getElementById(`comment-${initialCommentId}`)
-      ?? document.querySelector(`[data-comment-ordinal="${CSS.escape(initialCommentId)}"]`);
+    const comment = Array.from(issueDetailScrollRef.current?.querySelectorAll<HTMLElement>('[id], [data-comment-ordinal]') ?? [])
+      .find((node) => node.id === `comment-${initialCommentId}` || node.dataset.commentOrdinal === initialCommentId);
     if (!comment) return;
     lastScrolledCommentRef.current = scrollKey;
     comment.scrollIntoView({ block: 'center' });
@@ -725,26 +697,25 @@ export function IssuesView({
   }, [items]);
 
   const selectedIssueSummary = useMemo(() => {
-    if (!selectedRepoId || !selectedIssueId) return null;
-    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
+    if (!selectedIssueId) return null;
+    const resolved = ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
+      ? ledgerIssueDetail : null;
+    const repoId = resolveRepoId(selectedRepoId) ?? resolved?.project.project_key;
+    if (!repoId) return null;
     const repo = repos.find((candidate) => (
       candidate.repo_id === repoId || candidate.project_key === repoId
     ));
     if (!repo) return null;
-    const issueId = resolveIssueId(repoId, selectedIssueId);
-    const issue = repo.issues.find((candidate) => (
-      candidate.id === issueId ||
-      candidate.id.startsWith(issueId) ||
-      issueId.startsWith(candidate.id)
-    ));
+    const issue = repo.issues.find((candidate) => candidate.id === selectedIssueId
+      || Boolean(resolved && (candidate.id === resolved.id || candidate.id === resolved.display_id)));
     return issue ? { repo, issue } : null;
-  }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+  }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, ledgerIssueDetail]);
 
   const synthesizedLedgerIssueDetail = useMemo(
-    () => selectedIssueSummary
+    () => !initialIssueId && !detailLoadFailed && selectedIssueSummary
       ? synthesizeLedgerIssueDetail(selectedIssueSummary.repo, selectedIssueSummary.issue)
       : null,
-    [selectedIssueSummary],
+    [initialIssueId, detailLoadFailed, selectedIssueSummary],
   );
 
   const visibleLedgerIssueDetail = useMemo(
@@ -826,6 +797,7 @@ export function IssuesView({
     }
     const repoId = selectedRepoId;
     const issueId = selectedIssueId;
+    let identityInvalidated = false;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
     const persistedKey = detailRequestKey('issue', { repoId, issueId });
@@ -837,6 +809,7 @@ export function IssuesView({
     }
     setDetailLoading(!hasCachedDetail);
     setDetailLoadFailed(false);
+    setDetailError(null);
     const initialDetail = hasCachedDetail
       ? null
       : repoId
@@ -852,7 +825,7 @@ export function IssuesView({
     if (initialDetail) {
       initialDetail
         .then((detail) => {
-          if (detailRequestSeqRef.current !== requestSeq) return;
+          if (detailRequestSeqRef.current !== requestSeq || identityInvalidated) return;
           setLedgerIssueDetail((current) => (
             shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
           ));
@@ -867,9 +840,24 @@ export function IssuesView({
         putCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId, detail);
         writePersistedDetail('issue-detail', persistedKey, detail);
         setLedgerIssueDetail(detail);
+        if (!repoId) {
+          const canonicalRepo = detail.project.project_key;
+          putCachedIssueDetail(issueDetailCacheRef.current, canonicalRepo, issueId, detail);
+          setSelectedRepoId(canonicalRepo);
+        }
       })
-      .catch(() => {
-        if (detailRequestSeqRef.current === requestSeq && !hasCachedDetail) setDetailLoadFailed(true);
+      .catch((error) => {
+        if (detailRequestSeqRef.current !== requestSeq) return;
+        identityInvalidated = isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409);
+        if (identityInvalidated) {
+          for (const key of issueDetailCacheKeys(repoId, issueId)) issueDetailCacheRef.current.delete(key);
+          removePersistedDetail('issue-detail', persistedKey);
+          setLedgerIssueDetail(null);
+        }
+        if (identityInvalidated || !hasCachedDetail) {
+          setDetailLoadFailed(true);
+          setDetailError(error instanceof Error ? error.message : String(error));
+        }
       })
       .finally(() => {
         if (detailRequestSeqRef.current === requestSeq) setDetailLoading(false);
@@ -880,6 +868,7 @@ export function IssuesView({
   }, [registerInitialRouteLoad, selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
+    if (selectedIssueKeyRef.current !== `${repoId}:${issueId}`) detailRequestSeqRef.current += 1;
     const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
     if (cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId)) {
       setLedgerIssueDetail(cachedDetail);
@@ -922,7 +911,7 @@ export function IssuesView({
   const issueListNavigation = useSidebarListNavigation({
     items,
     getKey: (item) => `${item.repo.repo_id}:${item.issue.id}`,
-    selectedKey: selectedRepoId && selectedIssueId ? `${selectedRepoId}:${selectedIssueId}` : null,
+    selectedKey: selectedIssueSummary ? `${selectedIssueSummary.repo.repo_id}:${selectedIssueSummary.issue.id}` : null,
     onSelect: (item) => selectIssue(item.repo.repo_id, item.issue.id),
   });
 
@@ -1307,7 +1296,7 @@ export function IssuesView({
                   tabIndex={navigation.tabIndex}
                   aria-current={navigation['aria-current']}
                   className={`sidebar-list-item issues-item${
-                    selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
+                    selectedIssueSummary?.repo.repo_id === item.repo.repo_id && selectedIssueSummary.issue.id === item.issue.id
                       ? ' issues-item--selected'
                       : ''
                   }`}
@@ -1371,7 +1360,7 @@ export function IssuesView({
           </div>
         ) : (
           <div className="issues-detail__empty">
-            <p className="text-muted">Failed to load issue detail.</p>
+            <p className="text-muted">{detailError ?? 'Failed to load issue detail.'}</p>
           </div>
         )}
       </div>
@@ -1405,17 +1394,7 @@ export async function warmInitialData(
   let issueId = params.issue ?? viewState.selectedIssueId;
   if (issueId && repoId) {
     repoId = resolveIssueRepoDeepLink(repos, repoId) ?? repoId;
-    const repo = repos.find((candidate) => candidate.repo_id === repoId || candidate.project_key === repoId);
-    issueId = resolveIssueIdDeepLink(repo, issueId);
-  } else if (issueId && params.issue) {
-    const match = repos
-      .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
-      .find(({ issue }) => issue.id === issueId || issue.id.startsWith(issueId!));
-    if (match) {
-      repoId = match.repo.repo_id;
-      issueId = match.issue.id;
-    }
-  } else {
+  } else if (!issueId) {
     const first = buildIssueItems(filterIssueReposForView(repos, viewState.filter, viewState.parentFilter))[0];
     if (first) {
       repoId = first.repo.repo_id;

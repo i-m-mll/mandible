@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import { makeArtifactResolution } from "./helpers/artifact-resolution-fixtures";
-import { makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';
+import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
@@ -345,8 +345,9 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialSeriesRef: invalidSeriesRef, initialVersionNo: 1 }));
 
-    await waitFor(() => expect(screen.getByText((text) => text.includes(invalidSeriesRef))).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy());
     expect(versionRequests).toEqual([]);
+    expect(screen.queryByText('No artifacts in this view.')).toBeNull();
   });
 
   it('ignores delayed version history after navigation clears the selected series', async () => {
@@ -502,5 +503,150 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v1.md'));
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
+  });
+it('clears mounted ref detail during resolution, ignores stale targets and preserves row-choice context', async () => {
+    const artifact = makeArtifactFixture('a', 'Selected A.md');
+    const series = makeArtifactSeries('selected-a', [artifact], 'Selected A.md');
+    const waiting = new Map<string, (response: Response) => void>();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [series.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: series.history });
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        const ref = new URLSearchParams(url.split('?')[1]).get('ref')!;
+        return new Promise<Response>((resolve) => waiting.set(ref, resolve));
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.endsWith('/content')) return jsonResponse({ content: {
+        artifact_id: artifact.id, status: 'unavailable', kind: 'unavailable', media_type: artifact.media_type,
+        size_bytes: 0, source: null, preview: null,
+        download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+      } });
+      if (url.includes(encodeURIComponent(artifact.id))) return jsonResponse({ artifact });
+      return Promise.reject(new Error('Unexpected fetch ' + url));
+    }));
+    installMemoryLocalStorage({ 'mandible:artifacts:list-controls:v1': JSON.stringify({
+      selectedSeriesRef: series.summary.ref, selectedVersionNo: null, filters: {}, sortField: 'updated', sortDirection: 'desc',
+    }) });
+    const { rerender } = render(h(ArtifactsView, {}));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-b' }));
+    expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
+    await waitFor(() => expect(waiting.has('artifact:pending-b')).toBe(true));
+    rerender(h(ArtifactsView, { initialRef: 'artifact:missing-c' }));
+    await waitFor(() => expect(waiting.has('artifact:missing-c')).toBe(true));
+    await act(async () => waiting.get('artifact:missing-c')!(new Response(JSON.stringify({ error: 'Target C missing' }), {
+      status: 404, headers: { 'content-type': 'application/json' },
+    })));
+    expect(await screen.findByText(/Target C missing/)).toBeTruthy();
+    await act(async () => waiting.get('artifact:pending-b')!(new Response(JSON.stringify({ resolution: makeArtifactResolution({
+      status: 'resolved', ref: 'artifact:pending-b', artifact, logical_artifact: { ...series.history.series, id: 'artifact:selected-a' },
+      artifact_version: series.history.versions[0], target_type: 'artifact_version', warnings: [],
+    }) }), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
+    window.history.replaceState(null, '', '#/artifacts?ref=artifact:missing-c&artifact=old&version=9&sidebar=hidden&agent_session=agent&sentinel=a%2Bb%26c');
+    fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(Object.fromEntries(params)).toEqual({ series: series.summary.ref, sidebar: 'hidden', agent_session: 'agent', sentinel: 'a+b&c' });
+    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-d' }));
+    await waitFor(() => expect(waiting.has('artifact:pending-d')).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    await act(async () => waiting.get('artifact:pending-d')!(new Response(JSON.stringify({ resolution: makeArtifactResolution({
+      status: 'resolved', ref: 'artifact:pending-d', artifact, target_type: 'artifact_blob', warnings: [],
+    }) }), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.getByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }), '1');
+    await waitFor(() => expect(new URLSearchParams(window.location.hash.split('?')[1]).get('version')).toBe('1'));
+    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('sentinel')).toBe('a+b&c');
+  });
+
+describe('authoritative series references', () => {
+    function seriesFetch(artifacts: ReturnType<typeof makeArtifactFixture>[], versions: (ref: string) => Promise<Response>) {
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
+        if (url.startsWith('/api/artifacts/versions?')) return versions(new URLSearchParams(url.split('?')[1]).get('ref')!);
+        const artifact = artifacts.find((entry) => url.includes(encodeURIComponent(entry.id)));
+        if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+        if (artifact && url.endsWith('/content')) return jsonResponse({ content: {
+          artifact_id: artifact.id, status: 'unavailable', kind: 'unavailable', media_type: artifact.media_type,
+          size_bytes: 0, source: null, preview: null,
+          download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+        } });
+        if (artifact) return jsonResponse({ artifact });
+        return Promise.reject(new Error('Unexpected fetch ' + url));
+      }));
+    }
+
+    it.each([
+      ['short', null], ['short', 1], ['full', null], ['full', 1],
+    ] as const)('resolves %s series identity while retaining version %s', async (kind, pin) => {
+      const first = makeArtifactFixture('a', 'First.md');
+      const latest = makeArtifactFixture('b', 'Latest.md');
+      const fullId = 'abcdef0' + '1'.repeat(57);
+      const series = makeArtifactSeries(fullId, [first, latest], 'Resolved series');
+      const ref = kind === 'short' ? 'artifact-series:abcdef0' : series.summary.ref;
+      const requests: string[] = [];
+      seriesFetch([first, latest], async (requested) => {
+        requests.push(requested);
+        return jsonResponse({ history: series.history });
+      });
+      render(h(ArtifactsView, { initialSeriesRef: ref, initialVersionNo: pin }));
+      expect(await screen.findByRole('heading', { name: 'Resolved series' })).toBeTruthy();
+      expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe(pin === null ? '' : '1');
+      expect(document.querySelector('.artifact-detail')?.textContent).toContain(pin === null ? 'Latest.md' : 'First.md');
+      expect(requests[0]).toBe(ref);
+      expect(JSON.parse(window.localStorage.getItem('mandible:artifacts:list-controls:v1')!).selectedSeriesRef).toBe(series.summary.ref);
+    });
+
+    it.each([404, 409, 503])('does not canonicalize a stale short series cache before authoritative status %s', async (status) => {
+      const artifact = makeArtifactFixture('c', 'Cached series.md');
+      const series = makeArtifactSeries('abcdef0' + '1'.repeat(57), [artifact]);
+      const ref = 'artifact-series:abcdef0';
+      writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref }), series.history);
+      const requests: string[] = [];
+      let finish!: (response: Response) => void;
+      seriesFetch([artifact], (requested) => {
+        requests.push(requested);
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      });
+      render(h(ArtifactsView, { initialSeriesRef: ref }));
+      await waitFor(() => expect(document.querySelector('.artifact-detail')).toBeTruthy());
+      expect(requests).toEqual([ref]);
+      await act(async () => finish(new Response(JSON.stringify({ error: `Authoritative ${status}` }), {
+        status, headers: { 'content-type': 'application/json' },
+      })));
+      await waitFor(() => expect(document.body.textContent).toContain(`Authoritative ${status}`));
+      expect(Boolean(document.querySelector('.artifact-detail'))).toBe(status === 503);
+      expect(requests).toEqual([ref]);
+    });
+
+    it('canonicalizes only the current short-series response', async () => {
+      const first = makeArtifactFixture('d', 'Old series.md');
+      const second = makeArtifactFixture('e', 'Current series.md');
+      const oldSeries = makeArtifactSeries('aaaaaaa' + '1'.repeat(57), [first], 'Old series');
+      const currentSeries = makeArtifactSeries('bbbbbbb' + '2'.repeat(57), [second], 'Current series');
+      const pending = new Map<string, (response: Response) => void>();
+      seriesFetch([first, second], (ref) => {
+        if (ref === currentSeries.summary.ref) return jsonResponse({ history: currentSeries.history });
+        return new Promise<Response>((resolve) => pending.set(ref, resolve));
+      });
+      const { rerender } = render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:aaaaaaa', initialVersionNo: 1 }));
+      await waitFor(() => expect(pending.has('artifact-series:aaaaaaa')).toBe(true));
+      rerender(h(ArtifactsView, { initialSeriesRef: 'artifact-series:bbbbbbb', initialVersionNo: 1 }));
+      await waitFor(() => expect(pending.has('artifact-series:bbbbbbb')).toBe(true));
+      await act(async () => pending.get('artifact-series:aaaaaaa')!(new Response(JSON.stringify({ history: oldSeries.history }), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      expect(document.querySelector('.artifact-detail')).toBeNull();
+      await act(async () => pending.get('artifact-series:bbbbbbb')!(new Response(JSON.stringify({ history: currentSeries.history }), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      expect(await screen.findByRole('heading', { name: 'Current series' })).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Old series' })).toBeNull();
+      expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    });
   });
 });

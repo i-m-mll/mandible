@@ -13,7 +13,6 @@ import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar'
 import { BriefingGroupDetail } from '../ui/src/views/feedback/BriefingGroupDetail';
 import {
   feedbackCollectionIdentity,
-  resolveFeedbackCollection,
   type FeedbackCollection,
 } from '../ui/src/views/feedback/collection-model';
 import {
@@ -357,12 +356,5 @@ describe('Briefing sidebar row actions', () => {
     });
   });
 
-  it('resolves emitted short refs only when they identify exactly one Briefing', () => {
-    expect(resolveFeedbackCollection(collections, 'e4c52737')).toBe(collections[0]);
-    expect(resolveFeedbackCollection(collections, firstId)).toBe(collections[0]);
-    expect(resolveFeedbackCollection([
-      ...collections,
-      { ...collections[0], id: 'other', collectionId: 'e4c52737-0000-0000-0000-000000000000' },
-    ], 'e4c52737')).toBeNull();
-  });
+  
 });
