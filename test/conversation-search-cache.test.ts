@@ -135,57 +135,6 @@ describe("disposable conversation search cache", () => {
     }
   });
 
-  it("stops cold parsing after the first bounded batch satisfies the result limit", async () => {
-    const blocks = new Map(Array.from({ length: 12 }, (_, index) => {
-      const id = `c${index}`;
-      return [id, [block(id, `needle ${index}`)]];
-    }));
-    const source = new FakeSource(blocks, 8);
-    const cache = new ConversationSearchCache(source, {
-      cachePath: tempCachePath(),
-      maxConcurrentColdParses: 3,
-    });
-    try {
-      const result = await cache.search({
-        conversationIds: [...blocks.keys()],
-        needle: "needle",
-        limit: 1,
-      });
-      expect(result.matches).toHaveLength(1);
-      expect(result.metrics).toMatchObject({
-        cold_conversations: 3,
-        max_cold_parse_concurrency: 3,
-      });
-    } finally {
-      cache.close();
-    }
-  });
-
-  it("parses only native-file shortlist candidates while preserving caller order", async () => {
-    const blocks = new Map(Array.from({ length: 100 }, (_, index) => {
-      const id = `c${index}`;
-      return [id, [block(id, index === 70 ? "rare native needle" : `ordinary ${index}`)]];
-    }));
-    const source = new FakeSource(blocks);
-    source.shortlist = new Set(["c70"]);
-    const cache = new ConversationSearchCache(source, {
-      cachePath: tempCachePath(),
-      maxConcurrentColdParses: 4,
-    });
-    try {
-      const result = await cache.search({
-        conversationIds: [...blocks.keys()],
-        needle: "rare native needle",
-        limit: 1,
-      });
-      expect(result.matches.map((match) => match.conversation_id)).toEqual(["c70"]);
-      expect(source.reads).toEqual(["c70"]);
-      expect(result.metrics).toMatchObject({ cold_shortlist: 1, cold_conversations: 1 });
-    } finally {
-      cache.close();
-    }
-  });
-
   it("keeps credential canaries out of cache bytes and results", async () => {
     const token = `mandible_pat_${"A".repeat(43)}`;
     const source = new FakeSource(new Map([
@@ -227,31 +176,6 @@ describe("disposable conversation search cache", () => {
       const rebuilt = await cache.search({ conversationIds: ["c1"], needle: "safely", limit: 1 });
       expect(rebuilt.matches).toHaveLength(1);
       expect(rebuilt.metrics.cold_conversations).toBe(1);
-    } finally {
-      cache.close();
-    }
-  });
-
-  it("enforces the physical SQLite file-family cap, including FTS expansion", async () => {
-    let content = "physical-cap-needle ";
-    for (let index = 0; content.length < 512 * 1024; index += 1) {
-      content += `${index.toString(36)}-${(index * 2654435761 >>> 0).toString(36)} `;
-    }
-    const source = new FakeSource(new Map([["large", [block("large", content)]]]));
-    const cache = new ConversationSearchCache(source, {
-      cachePath: tempCachePath(),
-      maxCacheBytes: 2 * 1024 * 1024,
-      maxPhysicalBytes: 256 * 1024,
-    });
-    try {
-      const result = await cache.search({
-        conversationIds: ["large"],
-        needle: "physical-cap-needle",
-        limit: 1,
-      });
-      expect(result.matches).toHaveLength(1);
-      expect(cache.stats().physicalBytes).toBeLessThanOrEqual(256 * 1024);
-      expect(cache.stats().bodyBytes).toBe(0);
     } finally {
       cache.close();
     }

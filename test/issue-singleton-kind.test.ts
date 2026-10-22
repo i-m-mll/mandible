@@ -1,11 +1,11 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // Issue 2d4f9b8: a project may have at most one open maintenance issue. The
 // server refuses every transition that would add a second one and names the
@@ -21,8 +21,7 @@ const fakeScanner = {
 } as never;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   const operator = setupOperator(db, { display_name: "Singleton kind test operator" });
   setDb(db);
   router = authenticatedTestRouter(operator);

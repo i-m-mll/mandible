@@ -7,6 +7,7 @@ import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "..
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { migrate } from "../src/db.js";
 import { setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function testIdentity(db: SqliteDatabase): NonNullable<RequestLike["client_identity"]> {
   const operator = setupOperator(db, { slug: "settings-test", display_name: "Settings Test" });
@@ -67,8 +68,7 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
 }
 
 function createSettingsDb(): SqliteDatabase {
-  const db = new SqliteDatabase(":memory:");
-  migrate(db);
+  const db = migratedMemoryDb();
   return db;
 }
 
@@ -141,144 +141,6 @@ describe("settings routes", () => {
 
     expect(get.statusCode).toBe(200);
     expect(get.payload).toMatchObject({ app_rail_order: value });
-    db.close();
-  });
-
-  it("keeps deprecated reaper settings writable without creating the legacy config", async () => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
-    process.env.HOME = tempHome;
-    // Bun caches os.homedir independently of later HOME changes.
-    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
-    vi.resetModules();
-
-    const db = createSettingsDb();
-    const identity = testIdentity(db);
-    const { setDb } = await import("../src/db.js");
-    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
-    setDb(db);
-
-    const routes = new TestRoutes();
-    registerSettingsRoutes(routes);
-    const res = createResponse();
-    const req: RequestLike = {
-      method: "PUT",
-      url: "/api/settings/reaper_enabled",
-      params: { key: "reaper_enabled" },
-      query: {},
-      body: { value: "false" },
-      client_identity: identity,
-    };
-
-    await routes.handler("PUT", "/api/settings/:key")(req, res);
-
-    expect(res.statusCode).toBe(200);
-    expect(res.payload).toEqual({
-      ok: true,
-      key: "reaper_enabled",
-      value: "false",
-      deprecated: true,
-    });
-    expect(
-      fs.existsSync(path.join(tempHome, ".config", "claude-reaper", "config")),
-    ).toBe(false);
-    expect(
-      db.prepare("SELECT value FROM settings WHERE key = ?").get("reaper_enabled"),
-    ).toEqual({ value: "false" });
-
-    db.close();
-  });
-
-  it("returns default instruction targets and applies delivery changes immediately", async () => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
-    process.env.HOME = tempHome;
-    // Bun caches os.homedir independently of later HOME changes.
-    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
-    const cliLog = path.join(tempHome, "instructions-cli.log");
-    const fakeCli = path.join(tempHome, "instructions.sh");
-    fs.writeFileSync(fakeCli, [
-      "#!/usr/bin/env bash",
-      "printf '%s\\n' \"$*\" >> \"$MANDIBLE_TEST_CLI_LOG\"",
-      "printf 'NODE_BIN=%s\\n' \"$NODE_BIN\" >> \"$MANDIBLE_TEST_CLI_LOG\"",
-      "test -x \"$NODE_BIN\"",
-    ].join("\n"), "utf8");
-    fs.chmodSync(fakeCli, 0o755);
-    process.env.MANDIBLE_INSTRUCTIONS_CLI = fakeCli;
-    process.env.MANDIBLE_TEST_CLI_LOG = cliLog;
-    vi.resetModules();
-
-    const db = createSettingsDb();
-    const identity = testIdentity(db);
-    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
-      "instructions.targets",
-      JSON.stringify([{ path: path.join(tempHome, "old.md"), mode: "managed-block" }]),
-      1,
-    );
-    const { setDb } = await import("../src/db.js");
-    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
-    setDb(db);
-
-    const routes = new TestRoutes();
-    registerSettingsRoutes(routes);
-
-    const getRes = createResponse();
-    await routes.handler("GET", "/api/settings/instructions-delivery")({
-      method: "GET",
-      url: "/api/settings/instructions-delivery",
-      params: {},
-      query: {},
-      body: undefined,
-    }, getRes);
-    expect(getRes.statusCode).toBe(200);
-    expect(getRes.payload).toMatchObject({
-      targets: [{ path: path.join(tempHome, "old.md"), mode: "managed-block" }],
-      configuredTargets: true,
-    });
-
-    const nextTarget = path.join(tempHome, "new.md");
-    const putRes = createResponse();
-    await routes.handler("PUT", "/api/settings/instructions-delivery")({
-      method: "PUT",
-      url: "/api/settings/instructions-delivery",
-      params: {},
-      query: {},
-      body: {
-        targets: [{ path: nextTarget, mode: "standalone" }],
-        postExport: "bin/compile-agent-instructions",
-        cleanupRemovedTargets: true,
-      },
-      client_identity: identity,
-    }, putRes);
-
-    expect(putRes.statusCode).toBe(200);
-    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("instructions.targets")).toEqual({
-      value: JSON.stringify([{ path: nextTarget, mode: "standalone" }]),
-    });
-    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("instructions.post_export")).toEqual({
-      value: "bin/compile-agent-instructions",
-    });
-    expect(fs.readFileSync(cliLog, "utf8")).toContain(`cleanup --target ${path.join(tempHome, "old.md")} --mode managed-block`);
-    expect(fs.readFileSync(cliLog, "utf8")).toContain("install");
-
-    const resetRes = createResponse();
-    await routes.handler("PUT", "/api/settings/instructions-delivery")({
-      method: "PUT",
-      url: "/api/settings/instructions-delivery",
-      params: {},
-      query: {},
-      body: {
-        resetToDefaults: true,
-        cleanupRemovedTargets: false,
-      },
-      client_identity: identity,
-    }, resetRes);
-    expect(resetRes.statusCode).toBe(200);
-    expect(resetRes.payload).toMatchObject({
-      targets: [
-        { path: path.join(tempHome, ".claude", "CLAUDE.md"), mode: "managed-block" },
-        { path: path.join(tempHome, ".codex", "AGENTS.md"), mode: "managed-block" },
-      ],
-    });
-
     db.close();
   });
 

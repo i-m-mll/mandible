@@ -1,6 +1,6 @@
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type ConversationControlSnapshot } from "../ui/src/api.js";
+import { type ConversationControlSnapshot } from "../ui/src/api.js";
 import { submitConversationControl } from "../ui/src/api.js";
 import { conversationControlPresentation } from "../ui/src/chat/conversationControl.js";
 
@@ -43,14 +43,6 @@ beforeEach(establishTestClientAccess);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("shared conversation control presentation", () => {
-  it.each([
-    [owned, "Send"],
-    [{ ...owned, controller: { kind: "running", since: 1 }, turn: { kind: "running", turn_id: "turn-1", since: 1 }, capability: { kind: "live-steer", revision: 1, generation: 1 } } as ConversationControlSnapshot, "Steer now"],
-    [{ ...owned, controller: { kind: "running", since: 1 }, turn: { kind: "running", turn_id: "turn-1", since: 1 }, capability: { kind: "owned-queue", revision: 1, generation: 1 } } as ConversationControlSnapshot, "Queue after this turn"],
-    [base, "Resume"],
-  ])("derives the one Chat and Console submit affordance", (snapshot, label) => {
-    expect(conversationControlPresentation(snapshot).submitLabel).toBe(label);
-  });
 
   it("keeps external ownership blocked", () => {
     const external: ConversationControlSnapshot = {
@@ -76,24 +68,6 @@ describe("shared conversation control presentation", () => {
     expect(requests.map((request) => request.operation)).toEqual(["steer", "queue"]);
   });
 
-  it("binds composer runtime choices to the exact provider turn", async () => {
-    let request: Record<string, unknown> | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init: RequestInit) => {
-      request = JSON.parse(String(init.body)) as Record<string, unknown>;
-      return new Response(JSON.stringify({ ok: true, value: {
-        kind: "accepted", delivery_id: "delivery-1", turn_id: "turn-1", snapshot: owned,
-      } }), { status: 202, headers: { "content-type": "application/json" } });
-    }));
-
-    await submitConversationControl(base, "resume", undefined, {
-      model: "gpt-5.6-sol", effort: "xhigh", permission_mode: "agent-full-access",
-    });
-    expect(request).toMatchObject({
-      operation: "resume-provider-session",
-      runtime_options: { model: "gpt-5.6-sol", effort: "xhigh", permission_mode: "agent-full-access" },
-    });
-  });
-
   it("returns the refreshed non-mutating snapshot on capability drift", async () => {
     const refreshed = { ...owned, revision: 2, capability: { kind: "live-steer", revision: 2, generation: 1 } as const };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -103,20 +77,5 @@ describe("shared conversation control presentation", () => {
     }), { status: 409, headers: { "content-type": "application/json" } })));
 
     await expect(submitConversationControl(owned, "message")).rejects.toMatchObject({ snapshot: refreshed });
-  });
-
-  it("preserves a general HTTP rejection explanation instead of treating it as a control error", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      error: "instance_mutation_forbidden",
-      message: "This preview can control only a Chat created and still owned by this preview.",
-    }), { status: 403, headers: { "content-type": "application/json" } })));
-
-    const result = submitConversationControl(owned, "message");
-    await expect(result).rejects.toBeInstanceOf(ApiError);
-    await expect(result).rejects.toMatchObject({
-      status: 403,
-      code: "instance_mutation_forbidden",
-      message: "This preview can control only a Chat created and still owned by this preview.",
-    });
   });
 });

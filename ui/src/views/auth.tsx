@@ -1267,6 +1267,7 @@ function AuthRequestDetail({
                     <>
                       <textarea
                         className="panel__edit-textarea"
+                        aria-label="Commit message"
                         value={editCommitValue}
                         onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
                         disabled={!mutationsAllowed}
@@ -1406,6 +1407,7 @@ function AuthSidebarItem({
     <button
       type="button"
       className={`auth-sidebar-item${selected ? ' auth-sidebar-item--selected' : ''}`}
+      aria-current={selected ? 'true' : undefined}
       data-request-id={id}
       onClick={() => onSelect(id)}
     >

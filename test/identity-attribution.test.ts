@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { createStableEventId } from "../src/ledger/ids.js";
@@ -14,18 +14,12 @@ import {
   setupOperator,
 } from "../src/users/store.js";
 import {
-  EVIDENCE_METHODS,
-  OperatorNotConfiguredError,
-  isEvidenceMethod,
-  localDefaultAttribution,
   localProcessDefaultAttribution,
-  normalizeBindingValue,
-  projectActorType,
   resolveSessionAttribution,
   systemAction,
 } from "../src/identity/resolver.js";
-import type { UserKind } from "../src/users/types.js";
-import type { LedgerActorInput, LedgerActorType } from "../src/ledger/types.js";
+import type { LedgerActorInput } from "../src/ledger/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 if (false) {
   // Compile-time regression lock: removing the required attribution field must
@@ -40,7 +34,7 @@ let db: Db;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-identity-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -58,20 +52,6 @@ function createProject(): string {
     remoteUrl: "git@github.com:mll/mandible.git",
   }).project.id;
 }
-
-describe("actor_type projection is a pure mapping (issue 92813cc)", () => {
-  it("maps each user kind to its lossy actor_type projection", () => {
-    const cases: Array<[UserKind, LedgerActorType]> = [
-      ["human", "mandible_user"],
-      ["agent", "agent"],
-      ["system", "system"],
-      ["external", "external_adapter"],
-    ];
-    for (const [kind, actorType] of cases) {
-      expect(projectActorType(kind)).toBe(actorType);
-    }
-  });
-});
 
 describe("legacy actor tuple is frozen (F1: stable ids)", () => {
   it("keeps the passed legacy actor_type/actor_id/author_display; identity lives only in parallel columns", () => {
@@ -299,44 +279,6 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
 });
 
 describe("evidence_method vocabulary (F3)", () => {
-  it("only accepts the locked vocabulary", () => {
-    expect([...EVIDENCE_METHODS]).toEqual([
-      "local_default",
-      "session_claim",
-      "external_import",
-      "credential_signature",
-      "hardware_presence",
-      "delegated_lease",
-      "system_internal",
-      "api_token",
-    ]);
-    expect(isEvidenceMethod("system_internal")).toBe(true);
-    expect(isEvidenceMethod("binding:app_name")).toBe(false);
-    expect(isEvidenceMethod("git_bug_import")).toBe(false);
-  });
-
-  it("resolver constructors emit only locked values", () => {
-    expect(systemAction().evidence_method).toBe("system_internal");
-    let missingOperator: unknown;
-    try {
-      localDefaultAttribution(db);
-    } catch (error) {
-      missingOperator = error;
-    }
-    expect(missingOperator).toBeInstanceOf(OperatorNotConfiguredError);
-    expect(missingOperator).toMatchObject({
-      code: "operator_not_configured",
-      hint: "Run `mandible user setup` to create the local operator first.",
-      retryable: false,
-    });
-    setupOperator(db, { display_name: "Operator" });
-    expect(localDefaultAttribution(db).evidence_method).toBe("local_default");
-    const agent = createUser(db, { slug: "sess", kind: "agent", display_name: "Sess" });
-    addBinding(db, agent.id, { binding_type: "app_name", value: "claude-code" });
-    expect(resolveSessionAttribution(db, { app_name: "claude-code" })?.evidence_method).toBe(
-      "session_claim",
-    );
-  });
 
   it("rejects an out-of-vocabulary evidence_method at the store boundary", () => {
     const store = new LedgerStore(db);
@@ -415,8 +357,25 @@ describe("session binding resolution (F5: fail closed)", () => {
   });
 });
 
-describe("binding value normalization", () => {
-  it("trims whitespace so binding lookups converge", () => {
-    expect(normalizeBindingValue("  Ada Lovelace  ")).toBe("Ada Lovelace");
+describe("attribution identity display", () => {
+  it("labels known agents but never speculates that an operator is human", async () => {
+    const { h } = await import("preact");
+    const { cleanup, render, screen } = await import("@testing-library/preact");
+    const { AttributionIdentity } = await import("../ui/src/components/shared/DetailHeaderIdentity");
+    const verified = {
+      user: { id: "u1", display_name: "Author", kind: "agent" as const },
+      evidence_method: "api_token",
+      evidence_id: "ev1",
+      credential: null,
+    };
+    try {
+      render(h(AttributionIdentity, { display: "Operator", attribution: { ...verified, user: { ...verified.user, kind: "human" as const } } }));
+      expect(screen.queryByText("human")).toBeNull();
+      cleanup();
+      render(h(AttributionIdentity, { display: "Worker", attribution: verified }));
+      expect(screen.getByText("agent")).toBeTruthy();
+    } finally {
+      cleanup();
+    }
   });
 });

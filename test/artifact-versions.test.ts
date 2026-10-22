@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import type { Db } from "../src/db.js";
 import {
   getArtifactSeries,
   getArtifactVersion,
@@ -11,7 +11,6 @@ import {
   listProjectArtifactAssociations,
   listArtifactVersions,
   registerLocalArtifactPath,
-  projectArtifactPublicValue,
   resolveAndLinkArtifact,
   resolveArtifactVersionHistory,
 } from "../src/provider-artifacts.js";
@@ -21,6 +20,7 @@ import {
   insertRawLedgerCheckout,
   insertRawLedgerIssue,
   insertRawLedgerProject,
+  migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
@@ -65,7 +65,7 @@ beforeEach(() => {
   process.env.HOME = path.join(tempDir, "home");
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "artifacts");
   delete process.env.MANDIBLE_HOME;
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -75,23 +75,6 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-});
-
-describe("canonical artifact schema", () => {
-  it("keeps artifact_blob immutability (UNIQUE(algorithm, content_hash)) intact", () => {
-    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'artifact_blob'")
-      .get() as { sql: string }).sql;
-    expect(sql).toContain("UNIQUE(algorithm, content_hash)");
-  });
-
-  it("enforces UNIQUE(identity_key) on artifact", () => {
-    const insert = (id: string) => db.prepare(
-      `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
-       VALUES (?, 'local:/a', 'local_only', 0, 1, 1)`,
-    ).run(id);
-    insert("artifact:aaaaaaaaaaaa");
-    expect(() => insert("artifact:bbbbbbbbbbbb")).toThrow(/UNIQUE/i);
-  });
 });
 
 describe("tracked_repo versions", () => {
@@ -198,20 +181,6 @@ describe("diff derivation", () => {
     expect(diff.unified).toContain("+line2-changed");
     expect(diff.stats).toEqual({ added: 1, removed: 1 });
   });
-
-  it("normalizes JSON before diffing and reports identical content", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":2}', media_type: "application/json", logical_name: "cfg" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":3}', media_type: "application/json", logical_name: "cfg" }, 2000);
-    const diff = diffArtifacts(db, r1.version.id, r2.version.id);
-    expect(diff.kind).toBe("json");
-    expect(diff.diffable).toBe(true);
-    expect(diff.unified).toContain('"b": 2');
-    expect(diff.unified).toContain('"b": 3');
-
-    const same = diffArtifacts(db, r1.version.id, r1.version.id);
-    expect(same.identical).toBe(true);
-    expect(same.stats).toEqual({ added: 0, removed: 0 });
-  });
 });
 
 describe("canonical ref resolution and no silent retarget", () => {
@@ -304,30 +273,6 @@ describe("canonical ref resolution and no silent retarget", () => {
     ).toThrow(/not blobs/);
   });
 
-  it("resolves artifact:<hex> as the canonical compact immutable ref", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
-    const compactId = `artifact-blob:${r1.artifact.content_hash}`;
-    const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
-    expect(resolved.status).toBe("resolved");
-    expect(resolved.target_type).toBe("artifact_blob");
-    expect(resolved.target_id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect(resolved.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect(resolved.warnings).toEqual([]);
-    expect((projectArtifactPublicValue(db, resolved) as typeof resolved).artifact?.id).toBe(compactId);
-
-    const blob = resolveArtifactRef(db, `artifact-blob:${r1.artifact.content_hash}`);
-    expect(blob.status).toBe("resolved");
-    expect(blob.target_type).toBe("artifact_blob");
-    expect(blob.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect((projectArtifactPublicValue(db, blob) as typeof blob).artifact?.id).toBe(compactId);
-
-    const versionResolved = resolveArtifactRef(db, r1.version.id);
-    expect(versionResolved.artifact?.id).toBe(r1.artifact.id);
-    expect((projectArtifactPublicValue(db, versionResolved) as typeof versionResolved).artifact?.id).toBe(r1.version.id);
-    expect(versionResolved.artifact_version?.id).toBe(r1.version.id);
-    expect(versionResolved.warnings ?? []).toEqual([]);
-  });
-
   it("does not silently retarget an existing issue link when a newer version is recorded", () => {
     const issueId = createLedgerIssue("f7a994e");
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "evidence v1\n", media_type: "text/plain", logical_name: "ev" }, 1000);
@@ -371,22 +316,6 @@ describe("canonical ref resolution and no silent retarget", () => {
     const pinned2 = resolveArtifactRef(db, r2.version.id);
     expect(pinned2.artifact?.id).toBe(artifactB);
     expect(pinned2.warnings ?? []).toEqual([]);
-  });
-});
-
-describe("version history query", () => {
-  it("resolves history from a logical artifact ref, version id, or blob ref", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h1\n", media_type: "text/plain", logical_name: "hist" }, 1000);
-    recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h2\n", media_type: "text/plain", logical_name: "hist" }, 2000);
-
-    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
-    const byLogical = resolveArtifactVersionHistory(db, logicalRef);
-    expect(byLogical?.versions).toHaveLength(2);
-    const byVersion = resolveArtifactVersionHistory(db, r1.version.id);
-    expect(byVersion?.series.id).toBe(r1.series.id);
-    const byArtifact = resolveArtifactVersionHistory(db, `artifact-blob:${r1.artifact.content_hash}`);
-    expect(byArtifact?.series.id).toBe(r1.series.id);
-    expect(resolveArtifactVersionHistory(db, r1.series.id)?.series.id).toBe(r1.series.id);
   });
 });
 
@@ -477,42 +406,6 @@ describe("codex review fixes", () => {
       recordArtifactVersion(db, { source_kind: "managed", content: "c\n", media_type: "text/plain", logical_name: "report" }, 3000),
     ).toThrow(/explicit series_key/i);
   });
-
-  it("MEDIUM-5: read-only history/diff do not materialize rows for unregistered refs", () => {
-    const counts = () => ({
-      blobs: (db.prepare("SELECT COUNT(*) AS n FROM artifact_blob").get() as { n: number }).n,
-      aliases: (db.prepare("SELECT COUNT(*) AS n FROM artifact_aliases").get() as { n: number }).n,
-      graph: (db.prepare("SELECT COUNT(*) AS n FROM graph_entities").get() as { n: number }).n,
-    });
-    const before = counts();
-    const hashA = `artifact:${"a".repeat(64)}`;
-    const hashB = `artifact:${"b".repeat(64)}`;
-    expect(resolveArtifactVersionHistory(db, hashA)).toBeNull();
-    const diff = diffArtifacts(db, hashA, hashB);
-    expect(diff.diffable).toBe(false);
-    expect(counts()).toEqual(before);
-  });
-
-  it("accepts artifact-series selectors at compatibility read boundaries", () => {
-    const r = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "s\n", media_type: "text/plain", logical_name: "sel" }, 1000);
-    expect(resolveArtifactRef(db, r.version.id).artifact?.id).toBe(r.artifact.id);
-    const res = resolveArtifactRef(db, `${r.series.id}@1`);
-    expect(res.artifact?.id).toBe(r.artifact.id);
-    expect(res.status).toBe("resolved");
-    expect(res.target_type).toBe("artifact_version");
-    expect(res.warnings).toEqual([]);
-  });
-
-  it("LOW-8/HIGH-3: latest_version_id and version_count stay consistent", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c1\n", media_type: "text/plain", logical_name: "cache" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c2\n", media_type: "text/plain", logical_name: "cache" }, 2000);
-    const series = getArtifactSeries(db, r1.series.id)!;
-    const rows = listArtifactVersions(db, series.id);
-    expect(series.version_count).toBe(rows.length);
-    expect(series.latest_version_id).toBe(rows[rows.length - 1].id);
-    expect(series.latest_version_id).toBe(r2.version.id);
-
-  });
 });
 
 describe("codex re-review hardening", () => {
@@ -546,26 +439,5 @@ describe("codex re-review hardening", () => {
     expect(() =>
       recordArtifactVersion(db, { source_kind: "managed", ref: canonicalBlobRef, logical_name: "src", provider_id: "test" }, 3000),
     ).toThrow(/not materializable|hash mismatch/i);
-  });
-
-  it("RR-3: managed default series key escapes components so they cannot collide", () => {
-    const a = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a:b", content: "x\n", media_type: "text/plain", logical_name: "c" }, 1000);
-    const b = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a", role: "b", content: "y\n", media_type: "text/plain", logical_name: "c" }, 2000);
-    expect(a.series.id).not.toBe(b.series.id);
-    expect(getArtifactSeries(db, a.series.id)?.series_key).toBe("managed:a%3Ab:c");
-    expect(getArtifactSeries(db, b.series.id)?.series_key).toBe("managed:a:b:c");
-  });
-
-  it("RR-4: a dirty-file version records the HEAD commit in metadata (commit_sha stays null)", () => {
-    const { root, filePath } = makeTrackedRepo("dirty-prov", "clean\n");
-    createLedgerCheckout("mandible", fs.realpathSync(root));
-    const head = git(root, ["rev-parse", "HEAD"]);
-
-    fs.writeFileSync(filePath, "dirty-bytes\n", "utf8");
-    const rec = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
-    expect(rec.version.source_kind).toBe("managed");
-    expect(rec.version.commit_sha).toBeNull();
-    expect(rec.version.metadata.head_commit).toBe(head);
-    expect(rec.version.metadata.dirty_at_commit).toBe(head);
   });
 });

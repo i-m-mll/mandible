@@ -19,6 +19,7 @@ import {
 } from "./briefing-directives.js";
 import { resolveGroupDisplayComparisonBase } from "./briefing-groups.js";
 import { canonicalJson } from "../canonical-json.js";
+import { resolveId, shortRef } from "../entity-refs.js";
 import { isEvidenceMethod, type EvidenceMethod } from "../users/types.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
@@ -878,47 +879,32 @@ export type BriefingViewer = { userId: string; operator: boolean };
 /**
  * Resolve a Briefing reference to any stored row the viewer may see, listed or
  * not, so organization routes (archive, restore, rename) reach every row a list
- * can return. A leading `briefing:` is the typed-ref prefix, but some legacy
- * rows store it as part of their id, so the reference matches both spellings.
+ * can return. A leading `briefing:` is the typed-ref prefix; legacy rows also
+ * store it in their id, and the shared resolver matches both spellings.
  */
 export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
-  const trimmed = briefingRef.trim();
-  const ref = trimmed.startsWith("briefing:") ? trimmed.slice("briefing:".length) : trimmed;
-  if (!ref) throw new BriefingStoreError("Briefing reference must be nonblank");
-  const spellings = ref === trimmed ? [ref] : [trimmed, ref];
-  const rows = db.prepare(
-    `SELECT b.id FROM briefings b
-      WHERE ? = 1 OR EXISTS (
-        SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
-      ) ORDER BY b.id`,
-  ).all(viewer.operator ? 1 : 0, viewer.userId) as Array<{ id: string }>;
-  const exact = rows.find((row) => spellings.includes(row.id));
-  if (exact) return exact.id;
-  const matches = rows.filter((row) => spellings.some((spelling) => row.id.startsWith(spelling)));
-  if (matches.length === 1) return matches[0].id;
-  if (matches.length > 1) {
-    throw new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref");
+  const key = bareBriefingId(briefingRef.trim());
+  if (!key) throw new BriefingStoreError("Briefing reference must be nonblank");
+  const resolved = resolveId(db, "briefing", key);
+  if (!resolved.ok) {
+    throw resolved.error === "ambiguous"
+      ? new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref")
+      : new BriefingStoreError("briefing not found", 404, "not_found");
   }
-  throw new BriefingStoreError("briefing not found", 404, "not_found");
+  const visible = viewer.operator || db.prepare(
+    "SELECT 1 FROM briefing_members WHERE briefing_id = ? AND user_id = ?",
+  ).get(resolved.id, viewer.userId) !== undefined;
+  if (!visible) throw new BriefingStoreError("briefing not found", 404, "not_found");
+  return resolved.id;
 }
 
-/**
- * The shortest `briefing:<target>` reference (at least 8 characters of target)
- * that `resolveBriefingId` maps back to exactly this Briefing among all stored
- * rows. The target omits a legacy stored `briefing:` id prefix, so both id
- * spellings share one reference form.
- */
+function bareBriefingId(id: string): string {
+  return id.startsWith("briefing:") ? id.slice("briefing:".length) : id;
+}
+
+/** The shortest `briefing:<target>` reference that resolves to this Briefing. */
 export function shortBriefingRef(db: Db, briefingId: string): string {
-  const bare = briefingId.startsWith("briefing:") ? briefingId.slice("briefing:".length) : briefingId;
-  const peers = (db.prepare("SELECT id FROM briefings WHERE id <> ?").all(briefingId) as Array<{ id: string }>)
-    .map((row) => row.id);
-  for (let length = Math.min(8, bare.length); length < bare.length; length++) {
-    const target = bare.slice(0, length);
-    if (!peers.some((peer) => peer.startsWith(target) || peer.startsWith(`briefing:${target}`))) {
-      return `briefing:${target}`;
-    }
-  }
-  return `briefing:${bare}`;
+  return `briefing:${shortRef(db, "briefing", briefingId, { key: bareBriefingId(briefingId) })}`;
 }
 
 export function updateBriefingTitle(

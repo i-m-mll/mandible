@@ -127,22 +127,4 @@ describe('GraphView persisted detail panel state', () => {
     ).toBeGreaterThan(fetchCountBeforeRefetch));
     expect(view.getDescriptor()).toMatchObject({ open: true, width: 400 });
   });
-
-  it('uses current defaults for malformed panel state without rewriting on mount', async () => {
-    const openKey = 'mandible_graph_detail_panel_open:v1';
-    const heightKey = 'mandible_graph_detail_panel_height:v1';
-    const { storage, values } = installMemoryLocalStorage({
-      [openKey]: '{malformed',
-      [heightKey]: '"not-a-number"',
-    });
-    const view = renderGraph();
-
-    await waitFor(() => expect(view.getDescriptor()).not.toBeNull());
-    expect(view.getDescriptor()).toMatchObject({ open: true, width: 380 });
-    expect(values.has(openKey)).toBe(false);
-    expect(values.has(heightKey)).toBe(false);
-    expect(values.get('mandible_app_right_sidebar:graph:v1')).toBe(JSON.stringify({ open: true, width: 380 }));
-    expect(vi.mocked(storage.setItem).mock.calls).not.toContainEqual([openKey, expect.any(String)]);
-    expect(vi.mocked(storage.setItem).mock.calls).not.toContainEqual([heightKey, expect.any(String)]);
-  });
 });

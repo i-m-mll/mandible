@@ -6,10 +6,10 @@ import { resolveSessionAlias, sessionLinkKey, type SessionAliasResolution } from
 /**
  * Entity references.
  *
- * Every short id Mandible prints (`cli/mandible-identity.jq`,
- * `shortestUniquePrefix`) is a leading prefix of the entity's full id. Route
- * inputs that name an entity resolve here, so a printed short id resolves to
- * its entity, or is refused because it names several.
+ * Every short id Mandible prints (`cli/mandible-identity.jq`, `shortRef`) is a
+ * leading prefix of the entity's full id. Route inputs that name an entity
+ * resolve here, so a printed short id resolves to its entity, or is refused
+ * because it names several.
  */
 export type RefResolution =
   | { ok: true; id: string }
@@ -23,56 +23,144 @@ const NOT_FOUND = { ok: false, error: "not_found" } as const;
 const MIN_PREFIX_LENGTH = 4;
 const MATCH_SAMPLE = 5;
 
-const ID_SOURCES = {
-  auth_request: ["auth_requests", "id"],
-  auth_action: ["auth_request_actions", "id"],
-  auth_clearance: ["auth_clearances", "id"],
-  binding: ["user_bindings", "id"],
-  body_revision: ["ledger_body_revisions", "id"],
-  briefing_bundle: ["briefing_bundles", "id"],
-  briefing_group: ["briefing_groups", "id"],
-  briefing_round: ["briefing_rounds", "id"],
-  checkpoint: ["ledger_issue_checkpoints", "id"],
-  comment: ["ledger_comments", "id"],
-  credential: ["user_credentials", "id"],
-  grant: ["permission_grants", "id"],
-  reminder: ["managed_tasks", "id"],
-  session_row: ["sessions", "id"],
-  space: ["spaces", "id"],
-  space_block: ["space_blocks", "id"],
-  space_edge: ["space_edges", "id"],
-  space_item: ["space_items", "id"],
-  space_occurrence: ["space_occurrences", "id"],
-  trash_entry: ["trash_entries", "id"],
-  work_unit: ["work_units", "id"],
-} as const satisfies Record<string, readonly [string, string]>;
+/** One column whose values name entities of a kind. */
+interface IdSource {
+  readonly table: string;
+  readonly column: string;
+  /** The id column a match names; the matched column itself when omitted. */
+  readonly yields?: string;
+  /** How a key is spelled in this column; the key itself when omitted. */
+  readonly spell?: (key: string) => string;
+}
 
-export type IdKind = keyof typeof ID_SOURCES;
+interface IdKindSpec {
+  readonly sources: readonly IdSource[];
+  /** A column on every source table that a lookup may be scoped by. */
+  readonly scope?: string;
+  readonly minPrefix?: number;
+}
+
+const byId = (table: string): IdKindSpec => ({ sources: [{ table, column: "id" }] });
+
+const ID_KINDS = {
+  artifact: {
+    sources: [
+      { table: "artifact", column: "id", spell: (key) => `artifact:${key}` },
+      { table: "artifact", column: "identity_key", yields: "id" },
+    ],
+    minPrefix: 7,
+  },
+  artifact_blob: {
+    sources: [
+      { table: "artifact_blob", column: "id", spell: (key) => `artifact-blob:${key}` },
+      { table: "artifact_blob", column: "content_hash", yields: "id" },
+    ],
+    minPrefix: 7,
+  },
+  artifact_version: {
+    sources: [{ table: "artifact_version", column: "id", spell: (key) => `artifact-version:${key}` }],
+    minPrefix: 7,
+  },
+  auth_request: byId("auth_requests"),
+  auth_action: byId("auth_request_actions"),
+  auth_clearance: byId("auth_clearances"),
+  binding: byId("user_bindings"),
+  body_revision: byId("ledger_body_revisions"),
+  // Legacy Briefing ids store the `briefing:` typed-ref prefix themselves.
+  briefing: {
+    sources: [
+      { table: "briefings", column: "id" },
+      { table: "briefings", column: "id", spell: (key) => `briefing:${key}` },
+    ],
+  },
+  briefing_bundle: byId("briefing_bundles"),
+  briefing_group: byId("briefing_groups"),
+  briefing_round: byId("briefing_rounds"),
+  checkpoint: byId("ledger_issue_checkpoints"),
+  comment: byId("ledger_comments"),
+  credential: byId("user_credentials"),
+  grant: byId("permission_grants"),
+  issue: {
+    sources: [
+      { table: "ledger_issues", column: "id" },
+      { table: "ledger_issues", column: "short_id", yields: "id" },
+      { table: "ledger_issue_aliases", column: "alias", yields: "issue_id" },
+    ],
+    scope: "project_id",
+  },
+  reminder: byId("managed_tasks"),
+  reminder_occurrence: byId("managed_task_occurrences"),
+  session_row: byId("sessions"),
+  space: byId("spaces"),
+  space_block: byId("space_blocks"),
+  space_edge: byId("space_edges"),
+  space_item: byId("space_items"),
+  space_occurrence: byId("space_occurrences"),
+  trash_entry: byId("trash_entries"),
+  work_unit: byId("work_units"),
+} as const satisfies Record<string, IdKindSpec>;
+
+export type IdKind = keyof typeof ID_KINDS;
 
 /** The smallest string greater than every string that starts with `prefix`. */
 function prefixUpperBound(prefix: string): string {
   return prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
 }
 
-/** Distinct full values of `table.column` that start with `prefix`, at most `limit`. */
-function prefixMatches(db: Db, table: string, column: string, prefix: string, limit: number): string[] {
+/** Distinct ids the key names in one source, exactly or as a prefix, at most `MATCH_SAMPLE`. */
+function sourceMatches(db: Db, source: IdSource, key: string, prefix: boolean, scope: readonly [string, string] | null): string[] {
+  const needle = source.spell ? source.spell(key) : key;
+  const where = prefix ? `${source.column} >= ? AND ${source.column} < ?` : `${source.column} = ?`;
+  const params: string[] = prefix ? [needle, prefixUpperBound(needle)] : [needle];
+  const scoped = scope ? ` AND ${scope[0]} = ?` : "";
+  if (scope) params.push(scope[1]);
   return (db.prepare(
-    `SELECT DISTINCT ${column} AS value FROM ${table} WHERE ${column} >= ? AND ${column} < ? ORDER BY ${column} LIMIT ?`,
-  ).all(prefix, prefixUpperBound(prefix), limit) as Array<{ value: string }>).map((row) => row.value);
+    `SELECT DISTINCT ${source.yields ?? source.column} AS value FROM ${source.table} WHERE ${where}${scoped} ORDER BY value LIMIT ${MATCH_SAMPLE}`,
+  ).all(...params) as Array<{ value: string }>).map((row) => row.value);
 }
 
-/** Resolve an exact id, or a unique prefix of one, of the given kind. */
-export function resolveId(db: Db, kind: IdKind, ref: string): RefResolution {
-  const [table, column] = ID_SOURCES[kind];
-  const trimmed = ref.trim();
-  if (!trimmed) return NOT_FOUND;
-  const exact = db.prepare(`SELECT ${column} AS value FROM ${table} WHERE ${column} = ?`).get(trimmed) as { value: string } | undefined;
-  if (exact) return { ok: true, id: exact.value };
-  if (trimmed.length < MIN_PREFIX_LENGTH) return NOT_FOUND;
-  const matches = prefixMatches(db, table, column, trimmed, MATCH_SAMPLE);
-  if (matches.length === 0) return NOT_FOUND;
-  if (matches.length > 1) return { ok: false, error: "ambiguous", matches };
-  return { ok: true, id: matches[0] };
+function kindMatches(db: Db, spec: IdKindSpec, key: string, prefix: boolean, scope: readonly [string, string] | null): string[] {
+  const ids = new Set<string>();
+  for (const source of spec.sources) for (const id of sourceMatches(db, source, key, prefix, scope)) ids.add(id);
+  return [...ids].sort();
+}
+
+function decide(ids: string[]): RefResolution {
+  if (ids.length === 0) return NOT_FOUND;
+  if (ids.length > 1) return { ok: false, error: "ambiguous", matches: ids.slice(0, MATCH_SAMPLE) };
+  return { ok: true, id: ids[0] };
+}
+
+/**
+ * Resolve an exact id, or a unique prefix of one, of the given kind. A kind
+ * with a scope column resolves within `options.scope` when one is given.
+ */
+export function resolveId(db: Db, kind: IdKind, ref: string, options: { scope?: string } = {}): RefResolution {
+  const spec: IdKindSpec = ID_KINDS[kind];
+  if (options.scope !== undefined && !spec.scope) throw new Error(`${kind} references have no scope`);
+  const scope = options.scope !== undefined && spec.scope ? [spec.scope, options.scope] as const : null;
+  const key = ref.trim();
+  if (!key) return NOT_FOUND;
+  const exact = kindMatches(db, spec, key, false, scope);
+  if (exact.length > 0) return decide(exact);
+  if (key.length < (spec.minPrefix ?? MIN_PREFIX_LENGTH)) return NOT_FOUND;
+  return decide(kindMatches(db, spec, key, true, scope));
+}
+
+/**
+ * The shortest leading part of `key`, at least `minimum` long, that
+ * `resolveId` maps back to `id`. `key` is the id's spelling without any typed
+ * prefix its kind adds, and is the id itself by default.
+ */
+export function shortRef(db: Db, kind: IdKind, id: string, options: { key?: string; minimum?: number } = {}): string {
+  const key = options.key ?? id;
+  const spec: IdKindSpec = ID_KINDS[kind];
+  const minimum = Math.max(options.minimum ?? 8, spec.minPrefix ?? MIN_PREFIX_LENGTH);
+  for (let length = Math.min(minimum, key.length); length < key.length; length++) {
+    const resolved = resolveId(db, kind, key.slice(0, length));
+    if (resolved.ok && resolved.id === id) return key.slice(0, length);
+  }
+  return key;
 }
 
 /**
@@ -167,6 +255,37 @@ function resolveSessionAliasRef(db: Db, ref: string): RefResolution {
   return NOT_FOUND;
 }
 
+// A conversation is named by its id, its provider session id, or a source's
+// native session id. Several conversations (a session and its sidechains) can
+// share one session id, and the conversation routes choose among them, so a
+// prefix completes to the one conversation it names, else to the one alias.
+const CONVERSATION_ALIASES: readonly IdSource[] = [
+  { table: "conversations", column: "id" },
+  { table: "conversations", column: "session_id", yields: "id" },
+  { table: "conversation_sources", column: "native_session_id", yields: "conversation_id" },
+];
+
+function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
+  const key = ref.trim();
+  if (CONVERSATION_ALIASES.some((source) => sourceMatches(db, source, key, false, null).length > 0)) return { ok: true, id: key };
+  if (key.length < MIN_PREFIX_LENGTH) return NOT_FOUND;
+  const conversations = new Set<string>();
+  const aliases = new Set<string>();
+  for (const source of CONVERSATION_ALIASES) {
+    const rows = db.prepare(
+      `SELECT DISTINCT ${source.column} AS alias, ${source.yields ?? source.column} AS id FROM ${source.table}
+        WHERE ${source.column} >= ? AND ${source.column} < ? ORDER BY alias LIMIT ${MATCH_SAMPLE + 1}`,
+    ).all(key, prefixUpperBound(key)) as Array<{ alias: string; id: string }>;
+    for (const row of rows) {
+      conversations.add(row.id);
+      aliases.add(row.alias);
+    }
+  }
+  if (conversations.size === 1) return { ok: true, id: [...conversations][0] };
+  if (aliases.size === 1) return { ok: true, id: [...aliases][0] };
+  return decide([...aliases].sort());
+}
+
 const bind = (kind: IdKind): RefResolver => (ref) => resolveId(getDb(), kind, ref);
 
 /** Route-input resolvers, bound to the daemon database, for `RouteOptions.refs`. */
@@ -178,6 +297,7 @@ export const entityRefs = {
   briefingRound: bind("briefing_round"),
   checkpoint: bind("checkpoint"),
   comment: ((ref) => resolveCommentRef(getDb(), ref)) as RefResolver,
+  conversation: ((ref) => resolveConversationAliasRef(getDb(), ref)) as RefResolver,
   credential: bind("credential"),
   grant: bind("grant"),
   session: ((ref) => resolveSessionAliasRef(getDb(), ref)) as RefResolver,

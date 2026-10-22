@@ -2,13 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { getLedgerIssueContentDigest, getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { buildUmbrellaStatus } from "../src/routes/issues.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // Issue d9e59e8 — work units are the single source of an issue's branches and
 // in-progress state, and a coordinator's issue head notices their lifecycle.
@@ -21,7 +22,7 @@ let projectId = "";
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-work-state-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
   store = new LedgerStore(db);
   const root = path.join(tempDir, "repo");

@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
@@ -13,7 +12,7 @@ import {
   TASK_INVENTORY_SCHEMA_V2,
   type TaskCommand,
 } from "../src/contracts.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { registerTaskRoutes } from "../src/routes/tasks.js";
@@ -27,6 +26,7 @@ import {
 } from "../src/task-inventory.js";
 import { setSseManager, SseManager } from "../src/sse.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: Db;
 let router: Router;
@@ -135,8 +135,7 @@ function v2Body(
 }
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   operatorId = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
   setSetting(db, OPERATOR_SETTING_KEY, operatorId);

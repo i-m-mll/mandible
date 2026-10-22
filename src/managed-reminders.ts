@@ -183,18 +183,13 @@ export function acknowledgeManagedReminderOccurrence(
   acknowledgedBy: string,
   now: number = Date.now(),
 ): ManagedReminderOccurrence {
-  const exact = db.prepare("SELECT id FROM managed_task_occurrences WHERE id = ?").get(ref) as
-    { id: string } | undefined;
-  const matches = exact ? [exact] : db.prepare(
-    "SELECT id FROM managed_task_occurrences WHERE id LIKE ? ESCAPE '\\' ORDER BY id LIMIT 2",
-  ).all(`${ref.replace(/([%_\\])/g, "\\$1")}%`) as Array<{ id: string }>;
-  if (matches.length === 0) {
-    throw new ManagedReminderError(`reminder occurrence not found: ${ref}`, 404, "not_found");
+  const resolved = resolveId(db, "reminder_occurrence", ref);
+  if (!resolved.ok) {
+    throw resolved.error === "ambiguous"
+      ? new ManagedReminderError(`reminder occurrence reference is ambiguous: ${ref}`, 409, "ambiguous")
+      : new ManagedReminderError(`reminder occurrence not found: ${ref}`, 404, "not_found");
   }
-  if (matches.length > 1) {
-    throw new ManagedReminderError(`reminder occurrence reference is ambiguous: ${ref}`, 409, "ambiguous");
-  }
-  const id = matches[0].id;
+  const id = resolved.id;
   const result = db.prepare(
     `UPDATE managed_task_occurrences
         SET acknowledged_by = ?, acknowledged_at = ?

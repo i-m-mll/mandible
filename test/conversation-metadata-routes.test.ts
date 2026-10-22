@@ -4,12 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
 import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
 import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../src/conversation-spawn/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -17,8 +18,7 @@ let token = "";
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-metadata-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });
   token = authenticator.mintApiToken(setupOperator(db, { display_name: "Operator" }).id).token;

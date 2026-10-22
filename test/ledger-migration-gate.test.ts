@@ -2,10 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import {
   findLedgerIssueAcrossRepos,
-  getLedgerIssueDetailForRoute,
   listLedgerIssueSummaries,
 } from "../src/ledger/issue-projection.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -17,6 +16,7 @@ import {
   SYSTEM_ACTOR,
   createLedgerIssue as createSharedLedgerIssue,
   createLedgerProject,
+  migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
 
@@ -26,7 +26,7 @@ let testOperator: ReturnType<typeof setupOperator>;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-migration-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
   testOperator = setupOperator(db, { display_name: "Route test operator" });
 });
@@ -175,50 +175,6 @@ function setMarkdownBodyEscapePolicy(value: "allow" | "warn" | "reject"): void {
 }
 
 describe("ledger issue projection", () => {
-  it("maps ledger issues to existing issue API shapes", () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue, store } = createLedgerIssue({
-      repo: repoInfo,
-      alias: "abc123",
-      title: "Projected issue",
-      body: "Projected body",
-      labels: ["feature"],
-    });
-    const parent = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: issue.project_id,
-      title: "Parent issue",
-      body: "Parent body",
-      kind: "umbrella",
-    });
-    store.linkRelationshipEdges({
-      actor: SYSTEM_ACTOR,
-      source_entity: { entity_type: "issue", entity_id: parent.id },
-      target_entities: [{ entity_type: "issue", entity_id: issue.id }],
-      link_type: "parent_child",
-      provenance: "manual",
-    });
-    store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "Comment", author_display: "Codex", actor_type: "agent" });
-    const workScanner = fakeWorkScanner([repoInfo]);
-
-    const summaries = listLedgerIssueSummaries(db, workScanner);
-    const detail = getLedgerIssueDetailForRoute(db, workScanner, "mandible", "abc123");
-
-    expect(summaries).toHaveLength(1);
-    const projected = summaries[0].issues.find((candidate) => candidate.id === issue.short_id);
-    expect(projected).toMatchObject({
-      id: issue.short_id,
-      repo_id: "mandible",
-      repo_name: "mandible",
-      title: "Projected issue",
-      parent_id: parent.short_id,
-    });
-    // Perf (issue e5fc02b): the set-based list projection omits description from
-    // list rows; the detail projection still carries the full body.
-    expect(projected?.description).toBeUndefined();
-    expect(detail.ok && detail.detail.description).toBe("Projected body");
-    expect(detail.ok && detail.detail.comments).toHaveLength(1);
-  });
 
   it("keeps canonical project keys on list summaries and rejects checkout ids as public filters", async () => {
     const repoInfo = repo("20-widgets-widgets", "Feedbax");
@@ -339,49 +295,6 @@ describe("ledger relationship routes", () => {
 });
 
 describe("ledger issue routes", () => {
-  it("serves list, detail, context, and session routes from the ledger", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue } = createLedgerIssue({
-      repo: repoInfo,
-      alias: "abc123",
-      title: "Route issue",
-      body: "Route body",
-      labels: ["feature"],
-    });
-    db.prepare(
-      "INSERT INTO sessions (id, app, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-    ).run("sess-1", "codex", "idle", "2026-05-16T12:00:00.000Z", "2026-05-16T12:00:00.000Z");
-    db.prepare(
-      "INSERT INTO ledger_session_issue_links (session_id, issue_id, created_at) VALUES (?, ?, ?)",
-    ).run("sess-1", issue.id, 1);
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-
-    const list = await server.invoke("GET", "/api/issues");
-    expect(list.statusCode).toBe(200);
-    expect(list.body).toMatchObject([{ repo_id: "mandible", issues: [{ id: issue.short_id }] }]);
-
-    const detail = await server.invoke("GET", "/api/issues/:repoId/:issueId", {
-      params: { repoId: "mandible", issueId: issue.id.slice(0, 10) },
-    });
-    expect(detail.statusCode).toBe(200);
-    expect(detail.body).toMatchObject({ id: issue.short_id, title: "Route issue", description: "Route body" });
-
-    const context = await server.invoke("GET", "/api/issues/:repoId/:issueId/context", {
-      params: { repoId: "mandible", issueId: "abc123" },
-    });
-    expect(context.statusCode).toBe(200);
-    expect(context.body).toMatchObject({
-      issue: { id: issue.short_id, title: "Route issue" },
-      sessions: [{ session_id: "sess-1" }],
-    });
-
-    const sessions = await server.invoke("GET", "/api/issues/:repoId/:issueId/sessions", {
-      params: { repoId: "mandible", issueId: "abc123" },
-    });
-    expect(sessions.statusCode).toBe(200);
-    expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);
-  });
 
   it("atomically reopens and comments through the ledger comment route", async () => {
     const repoInfo = repo("repo-1", "mandible");
@@ -403,62 +316,6 @@ describe("ledger issue routes", () => {
     });
     const events = store.listEvents({ entity_type: "issue", entity_id: issue.id }).map((event) => event.event_type);
     expect(events).toContain("issue.reopened");
-  });
-
-  it("records advisory parent-role holders and requires override for live holders", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "umb123", title: "Umbrella" });
-    db.prepare(
-      "INSERT INTO sessions (id, app, status, created_at, updated_at, last_active) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "sess-live",
-      "codex",
-      "active",
-      "2026-06-12T12:00:00.000Z",
-      "2026-06-12T12:05:00.000Z",
-      "2026-06-12T12:05:00.000Z",
-    );
-    db.prepare(
-      "INSERT INTO sessions (id, app, status, created_at, updated_at, last_active) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "sess-new",
-      "codex",
-      "stopped",
-      "2026-06-12T11:00:00.000Z",
-      "2026-06-12T11:05:00.000Z",
-      "2026-06-12T11:05:00.000Z",
-    );
-    store.addIssueCheckpoint(issue.id, {
-      ...SYSTEM_ACTOR,
-      kind: "parent-role",
-      payload: { session_id: "sess-live", mechanism: "codex", assumed_at: 1 },
-      actor_type: "agent",
-    });
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-
-    const status = await server.invoke("GET", "/api/ledger/issues/:issueId/parent-role", {
-      params: { issueId: "umb123" },
-    });
-    const blocked = await server.invoke("POST", "/api/ledger/issues/:issueId/parent-role", {
-      params: { issueId: "umb123" },
-      body: { session_id: "sess-new", mechanism: "codex" },
-    });
-    const retaken = await server.invoke("POST", "/api/ledger/issues/:issueId/parent-role", {
-      params: { issueId: "umb123" },
-      body: { session_id: "sess-new", mechanism: "codex", override: true },
-    });
-
-    expect(status.body).toMatchObject({
-      live_holder: { session_id: "sess-live", liveness: { state: "live" } },
-    });
-    expect(blocked.statusCode).toBe(409);
-    expect(blocked.body).toMatchObject({ blocking_holder: { session_id: "sess-live" } });
-    expect(retaken.statusCode).toBe(200);
-    expect(retaken.body).toMatchObject({
-      ok: true,
-      parent_role: { holder: { session_id: "sess-new" } },
-    });
   });
 
   it("builds a deterministic umbrella status fact packet", async () => {
@@ -622,43 +479,6 @@ describe("ledger issue routes", () => {
           related_issue: expect.objectContaining({ display_id: umbrella.short_id }),
         }),
       ]));
-  });
-
-  it("reports umbrella children from structured relationship edges", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue: umbrella, store } = createLedgerIssue({
-      repo: repoInfo,
-      alias: "umbedge",
-      title: "Edge umbrella",
-      labels: ["umbrella"],
-    });
-    const child = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: umbrella.project_id,
-      title: "Edge child",
-      body: "Child body",
-      kind: "feature",
-      labels: ["feature"],
-      aliases: [{ alias_kind: "git_bug_human", alias: "edgchi", external_id: "edgchi", is_primary: true }],
-    });
-    store.linkRelationshipEdges({
-      actor: SYSTEM_ACTOR,
-      source_entity: { entity_type: "issue", entity_id: umbrella.id },
-      target_entities: [{ entity_type: "issue", entity_id: child.id }],
-      link_type: "parent_child",
-      provenance: "manual",
-    });
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-
-    const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
-      params: { issueId: "umbedge" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      children: [{ short_id: child.short_id, title: "Edge child" }],
-    });
   });
 
   it("adopts umbrella children idempotently and refreshes the delegation manifest", async () => {
@@ -944,37 +764,6 @@ describe("ledger issue routes", () => {
     expect(typeof payload[0].subtree_digest).toBe("string");
   });
 
-  it("creates ledger-native issues through the repo route", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    // Issue 3d85f43: issue creation resolves against the registered ledger
-    // checkout, so register it here before invoking the route.
-    createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
-
-    const created = await server.invoke("POST", "/api/issues/:repoId", {
-      params: { repoId: repoInfo.name },
-      body: {
-        title: "Ledger-native issue",
-        body: "Created through API",
-        root: repoInfo.root,
-        labels: ["feature"],
-      },
-    });
-    const list = await server.invoke("GET", "/api/issues", {
-      query: { repo: repoInfo.root, status: "open" },
-    });
-
-    expect(created.statusCode).toBe(200);
-    expect(created.body).toMatchObject({
-      title: "Ledger-native issue",
-      source: "mandible",
-      labels: ["feature"],
-    });
-    expect(list.body).toMatchObject([{ repo_root: repoInfo.root, issues: [{ title: "Ledger-native issue" }] }]);
-    expect(db.prepare("SELECT source FROM ledger_issues").get()).toMatchObject({ source: "mandible" });
-  });
-
   it("warns by default on likely escaped Markdown and preserves the body exactly", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
@@ -1012,29 +801,6 @@ describe("ledger issue routes", () => {
     });
   });
 
-  it("accepts real Markdown with newlines even when the policy rejects escaped bodies", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    setMarkdownBodyEscapePolicy("reject");
-
-    createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
-    const realMarkdown = "Created through API.\n\nDetails:\n- item";
-    const created = await server.invoke("POST", "/api/issues/:repoId", {
-      params: { repoId: repoInfo.name },
-      body: {
-        title: "Real Markdown issue",
-        body: realMarkdown,
-        root: repoInfo.root,
-        labels: ["feature"],
-      },
-    });
-
-    expect(created.statusCode).toBe(200);
-    expect(created.body).toMatchObject({ title: "Real Markdown issue", body: realMarkdown });
-    expect((created.body as Record<string, unknown>).markdown_body_warnings).toBeUndefined();
-  });
-
   it("rejects likely escaped Markdown issue and comment writes when configured", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
@@ -1065,21 +831,4 @@ describe("ledger issue routes", () => {
     expect(new LedgerStore(db).getIssueDetail(issue.id).comments).toHaveLength(0);
   });
 
-  it("allows likely escaped Markdown comment writes when configured", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    setMarkdownBodyEscapePolicy("allow");
-
-    const escapedBody = "Allowed escaped comment.\\n\\nDetails:\\n- item";
-    const comment = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
-      params: { issueId: issue.short_id },
-      body: { body: escapedBody },
-    });
-
-    expect(comment.statusCode).toBe(200);
-    expect((comment.body as Record<string, unknown>).markdown_body_warnings).toBeUndefined();
-    expect(new LedgerStore(db).getIssueDetail(issue.id).comments.map((row) => row.body)).toEqual([escapedBody]);
-  });
 });

@@ -2,13 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { openDb, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
 import { addProject, addOrUpdateCheckout } from '../src/ledger/project-registry.js';
 import { registerIssueRoutes } from '../src/routes/issues.js';
 import { setupOperator } from '../src/users/store.js';
 import { authenticatedTestRouter } from './helpers/authenticated-router.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 let db:Db,root:string;
-beforeEach(()=>{root=mkdtempSync(join(tmpdir(),'mandible-resume-proof-'));db=openDb(':memory:');setDb(db);const project=addProject(db,{project_key:'mandible',display_name:'Mandible'});addOrUpdateCheckout(db,project.id,{root,work_repo_id:'mandible',name:'Mandible'});});
+beforeEach(()=>{root=mkdtempSync(join(tmpdir(),'mandible-resume-proof-'));db=migratedMemoryDb();setDb(db);const project=addProject(db,{project_key:'mandible',display_name:'Mandible'});addOrUpdateCheckout(db,project.id,{root,work_repo_id:'mandible',name:'Mandible'});});
 afterEach(()=>{db.close();rmSync(root,{recursive:true,force:true});});
 async function setup() {
  const router=authenticatedTestRouter(setupOperator(db,{display_name:'Operator'}));

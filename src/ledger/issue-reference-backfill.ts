@@ -124,7 +124,7 @@ function resolveIssueId(store: LedgerStore, ref: string, projectId?: string): st
   const resolved = store.resolveIssueRef(ref, projectId ? { project_id: projectId } : undefined);
   if (resolved.ok) return resolved.id;
   if (resolved.error === "ambiguous") {
-    throw new Error(`Ambiguous issue scope '${ref}' matched ${resolved.count} issues.`);
+    throw new Error(`Ambiguous issue scope '${ref}' matched issues: ${resolved.matches.join(", ")}.`);
   }
   throw new Error(`No issue matches scope '${ref}'.`);
 }

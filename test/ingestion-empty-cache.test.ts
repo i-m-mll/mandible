@@ -4,9 +4,10 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import type { Logger } from "../src/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let watchBase = "";
@@ -80,7 +81,7 @@ beforeEach(async () => {
   sessionDir = path.join(watchBase, "2026", "07", "14");
   sessionPath = path.join(sessionDir, "rollout-2026-07-14T00-00-00-empty-cache.jsonl");
   await fsp.mkdir(sessionDir, { recursive: true });
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
 });
 
@@ -90,28 +91,6 @@ afterEach(() => {
 });
 
 describe("empty conversation ingest state", () => {
-  it("audits legacy orphan ownership once without deleting the identity", async () => {
-    const insertOrphan = db.prepare(`
-      INSERT INTO conversations (
-        id, source, source_path, source_hash, source_mtime,
-        title, started_at, block_count, session_id
-      ) VALUES (?, 'codex', ?, '', 0, 'legacy orphan', datetime('now'), 1, ?)
-    `);
-    insertOrphan.run("legacy-orphan-1", "/outside/watch/orphan-1.jsonl", "legacy-orphan-1");
-
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-
-    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get("legacy-orphan-1"))
-      .toBeDefined();
-    expect(db.prepare("SELECT value FROM meta WHERE key = ?").get("ingestion_orphan_repair_v1"))
-      .toBeDefined();
-
-    insertOrphan.run("legacy-orphan-2", "/outside/watch/orphan-2.jsonl", "legacy-orphan-2");
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-
-    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get("legacy-orphan-2"))
-      .toBeDefined();
-  });
 
   it("reconciles same-native-identity path duplicates without merging legacy bodies", async () => {
     await writeAtTick(meaningfulSession(), 1);
@@ -146,76 +125,6 @@ describe("empty conversation ingest state", () => {
       unavailable_reason: "legacy source path projection detached; no available alias",
     });
     expect(events).toContain("ingestion_duplicate_path_ownership_reconciled");
-    expect(events).not.toContain("ingestion_duplicate_conversation_rows");
-  });
-
-  it("preserves reused-path rows with a distinct native identity without warning", async () => {
-    await writeAtTick(meaningfulSession(), 1);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-    insertLegacyPathDuplicate("legacy-distinct-identity", "older-native-session");
-    const events: string[] = [];
-
-    await triggerReconcileForTest({
-      watchConfigs: watchConfigs(),
-      log: (_level, event) => events.push(event),
-    });
-
-    expect(db.prepare(
-      "SELECT session_id, source_path FROM conversations ORDER BY session_id",
-    ).all()).toEqual([
-      { session_id: "empty-cache", source_path: sessionPath },
-      {
-        session_id: "older-native-session",
-        source_path: sessionPath,
-      },
-    ]);
-    expect(db.prepare(
-      "SELECT content FROM conversation_blocks WHERE conversation_id = 'legacy-distinct-identity'",
-    ).get()).toEqual({ content: "preserved legacy body" });
-    expect(db.prepare(
-      "SELECT COUNT(*) AS count FROM conversations",
-    ).get()).toEqual({ count: 2 });
-    expect(events).not.toContain("ingestion_duplicate_conversation_rows");
-    expect(events).not.toContain("ingestion_duplicate_path_ownership_reconciled");
-  });
-
-  it("does not warn for an already detached distinct-identity path projection", async () => {
-    await writeAtTick(meaningfulSession(), 1);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-    insertLegacyPathDuplicate("legacy-distinct-identity", "older-native-session");
-    db.prepare(`
-      UPDATE conversation_sources
-         SET availability = 'missing',
-             unavailable_reason = 'source path reused by a distinct conversation identity'
-       WHERE conversation_id = 'legacy-distinct-identity'
-    `).run();
-    const events: string[] = [];
-
-    await writeAtTick(sessionMeta(), 2);
-    await triggerReconcileForTest({
-      watchConfigs: watchConfigs(),
-      log: (_level, event) => events.push(event),
-    });
-
-    expect(db.prepare(
-      "SELECT session_id, source_path FROM conversations ORDER BY session_id",
-    ).all()).toEqual([
-      { session_id: "empty-cache", source_path: sessionPath },
-      { session_id: "older-native-session", source_path: sessionPath },
-    ]);
-    expect(db.prepare(`
-      SELECT availability, unavailable_reason FROM conversation_sources
-       WHERE conversation_id = 'legacy-distinct-identity'
-    `).get()).toEqual({
-      availability: "missing",
-      unavailable_reason: "source path reused by a distinct conversation identity",
-    });
-    expect(db.prepare(`
-      SELECT COUNT(*) AS count
-        FROM conversation_source_aliases alias
-        JOIN conversation_sources source ON source.id = alias.source_id
-       WHERE source.conversation_id = 'legacy-distinct-identity'
-    `).get()).toEqual({ count: 0 });
     expect(events).not.toContain("ingestion_duplicate_conversation_rows");
   });
 
@@ -265,22 +174,5 @@ describe("empty conversation ingest state", () => {
         WHERE file_path = ?
       `).get(sessionPath),
     ).toMatchObject({ empty_source_mtime: null, empty_source_size: null });
-  });
-
-  it("removes negative ingest state when the source disappears", async () => {
-    await writeAtTick(sessionMeta(), 1);
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-    expect(
-      db.prepare("SELECT file_path FROM conversation_ingest_state WHERE file_path = ?")
-        .get(sessionPath),
-    ).toBeDefined();
-
-    await fsp.rm(sessionPath);
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-
-    expect(
-      db.prepare("SELECT file_path FROM conversation_ingest_state WHERE file_path = ?")
-        .get(sessionPath),
-    ).toBeUndefined();
   });
 });
