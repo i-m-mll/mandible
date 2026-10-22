@@ -92,6 +92,15 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
+  it("adds execution observations without inventing provider activity", () => {
+    const database = migrateFixtureThrough(207);
+    try {
+      migrate(database);
+      expect(database.prepare("SELECT * FROM provider_session_execution").all()).toEqual([]);
+      expect(schemaVersion(database)).toBe(String(CURRENT_SCHEMA_VERSION));
+    } finally { database.close(); }
+  });
+
   it("migrates the floor fixture to the schema a fresh database gets, and a daemon boots on the result", async () => {
     const freshPath = path.join(tempDir, "fresh.db");
     const migratedPath = path.join(tempDir, "migrated.db");

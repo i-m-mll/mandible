@@ -94,6 +94,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   SESSION_METADATA_WARNING: "session:metadata-warning",
   SESSION_REGISTERED: "session:registered",
   SESSION_UPDATED: "session:updated",
+  SESSION_EXECUTION_UPDATED: "session:execution-updated",
   WEBHOOK_DELIVERED: "webhook:delivered",
   WEBHOOK_DISMISSED: "webhook:dismissed",
   WEBHOOK_RECEIVED: "webhook:received",
@@ -116,7 +117,8 @@ export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_
 export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
-  E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
+  E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
+  : E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
     | typeof DOMAIN_EVENTS.SESSION_ENDED ? import("./types.js").Session
   : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
     ? { parent_id: string; child: import("./types.js").Session }
@@ -533,12 +535,41 @@ export interface SessionProcess {
   owner_user_id: string | null;
 }
 
+export const SESSION_EXECUTION_STATE_SCHEMA = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unknown") }).strict(),
+  z.object({ kind: z.literal("working") }).strict(),
+  z.object({ kind: z.literal("stopped") }).strict(),
+  z.object({ kind: z.literal("interrupted") }).strict(),
+  z.object({ kind: z.literal("ended"), reason: z.string().nullable() }).strict(),
+  z.object({ kind: z.literal("failure"), error: z.object({
+    type: z.string().min(1).max(256).nullable(), message: z.string().nullable(),
+    details: z.string().nullable(), data: z.record(z.string(), z.unknown()).nullable(),
+  }).strict() }).strict(),
+]);
+export type SessionExecutionState = z.infer<typeof SESSION_EXECUTION_STATE_SCHEMA>;
+export type ProviderFailure = Extract<SessionExecutionState, { kind: "failure" }>["error"];
+export type SessionExecutionProvider = "claude" | "codex";
+export type SessionExecutionSource = "claude_hook" | "claude_sdk_hook" | "codex_hook" | "codex_app_server";
+export const SESSION_EXECUTION_OBSERVATION_SCHEMA = z.object({
+  provider: z.enum(["claude", "codex"]),
+  provider_session_id: z.string().min(1).max(256),
+  source: z.enum(["claude_hook", "claude_sdk_hook", "codex_hook", "codex_app_server"]),
+  controller_instance_id: z.string().min(1).nullable(),
+  controller_generation: z.number().int().nonnegative().nullable(),
+  state: SESSION_EXECUTION_STATE_SCHEMA,
+  event: z.string().min(1).max(256),
+  turn_id: z.string().min(1).max(256).nullable(),
+  observed_at: z.number().int().nonnegative(),
+}).strict();
+export type SessionExecutionObservation = z.infer<typeof SESSION_EXECUTION_OBSERVATION_SCHEMA>;
+
 export interface SessionSummary {
   /** The session's key: its provider session id when known (`sessionLinkKey`). */
   id: string;
   provider: string | null;
   provider_session_id: string | null;
   liveness: LivenessState;
+  execution?: SessionExecutionObservation | null;
   /** The indexed conversation that records this session, when ingested. */
   conversation_id: string | null;
   title: string | null;
@@ -2351,6 +2382,7 @@ export function isDomainEventType(value: unknown): value is MandibleEventType {
 const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).passthrough();
 const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
+  [DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED, z.object({ provider: z.enum(["claude", "codex"]), provider_session_id: z.string().min(1), observation: SESSION_EXECUTION_OBSERVATION_SCHEMA })],
   [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],

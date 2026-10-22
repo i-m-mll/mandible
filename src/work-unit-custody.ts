@@ -1,3 +1,5 @@
+import type { SessionExecutionObservation } from "./contracts.js";
+import { formatExecutionEvidence } from "./session-execution-format.js";
 // Issue 72b00f8 — one custody rule for work units, shared by the custody routes,
 // the custody check that commit wrappers call, and the operator-approved
 // custody-transfer auth request.
@@ -55,6 +57,7 @@ export interface HolderLiveness {
   session_id: string | null;
   status: string | null;
   last_activity: number | null;
+  execution?: SessionExecutionObservation | null;
 }
 
 export function classifyHolderLiveness(
@@ -66,7 +69,9 @@ export function classifyHolderLiveness(
   const resolver: WorkUnitSessionResolver = (database, id) =>
     resolveSessionAlias(database, id, { readCodexTaskLiveness: readCodexTask });
   const liveness = computeWorkUnitLiveness(db, unit, sessionManager, resolver);
+  const execution = liveness.agent_session_id ? resolver(db, liveness.agent_session_id)?.execution ?? null : null;
   const observed = {
+    execution,
     session_id: liveness.agent_session_id,
     status: liveness.agent_status,
     last_activity: liveness.last_activity,
@@ -82,6 +87,7 @@ export function classifyHolderLiveness(
     if (!status && resolution.provider !== "codex") continue;
     return {
       state: "stopped",
+      execution: resolution.execution ?? null,
       session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
       status,
       last_activity: parseTime(resolution.last_activity),
@@ -171,7 +177,7 @@ export function livenessLabel(liveness: HolderLiveness): string {
   const meaning = liveness.state === "live" ? "is live"
     : liveness.state === "stopped" ? "has stopped"
     : "has unknown liveness";
-  return `${meaning} (${session}${status}${last})`;
+  return `${meaning} (${session}${status}${last})${formatExecutionEvidence(liveness.execution)}`;
 }
 
 function shellQuote(value: string): string {
