@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { getMandibleHomePath, getUserHome } from "../platform-paths.js";
+import { ISSUE_SEARCH_SCHEMA_SQL } from "./issue-search.js";
 
 const LEDGER_BACKUP_TABLES = [
   "ledger_projects",
@@ -284,8 +285,9 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   "workflow_ingest_state",
   "graph_entities",
   "graph_edges",
-  // Full-text index over ledger issues and comments; ISSUE_SEARCH_SCHEMA_SQL
-  // rebuilds it from those tables, and triggers keep it current.
+  // Full-text index over ledger issues and comments. The dump ends with
+  // ISSUE_SEARCH_SCHEMA_SQL, which recreates it and rebuilds it from the
+  // restored rows; its triggers keep it current from then on.
   "issue_search",
   "issue_search_config",
   "issue_search_content",
@@ -499,6 +501,7 @@ function* metadataBackupLines(db: Db): Generator<string> {
   for (const trigger of triggers) {
     if (backedUp.has(trigger.tbl_name)) yield `${trigger.sql};`;
   }
+  for (const statement of ISSUE_SEARCH_SCHEMA_SQL) yield `${statement};`;
 
   yield* ["", "COMMIT;", "PRAGMA foreign_keys=ON;", ""];
 }
