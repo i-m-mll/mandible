@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { availableParallelism } from 'node:os';
 import { measuredForks } from './scripts/measured-test-pool.js';
 
 /**
@@ -37,6 +38,9 @@ export default defineConfig({
     // Constrain the actual Bun forks, not only the Vitest parent process.
     execArgv: ['--smol'],
     fileParallelism: true,
+    // Ten slots reduced occupied work under shared-host contention while
+    // retaining the wall budget; smaller hosts keep their existing CPU reserve.
+    ...(suite === 'gate' ? { maxWorkers: Math.min(10, Math.max(1, availableParallelism() - 1)) } : {}),
     // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
     setupFiles: ['./test/helpers/runtime-isolation.ts', './test/helpers/db-reset-backstop.ts'],
     reporters: ['default', ['./test/helpers/timing-reporter.ts', { timing: suite === 'gate' }]],
