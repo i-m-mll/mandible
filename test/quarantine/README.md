@@ -21,6 +21,5 @@ Rules:
 `npm test` and `npm run test:extended` must pass; this suite must not. That
 asymmetry is what makes the boundary checkable.
 
-Two failures share one issue when they share one cause. Three of the entries
-here are the same defect in `registerAuthRoutes`, and filing it three times
-would have made the ledger, not the code, look busier.
+Two failures share one issue when they share one cause; filing one defect
+several times makes the ledger, not the code, look busier.

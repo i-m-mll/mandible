@@ -1,4 +1,5 @@
 import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from '../helpers/briefing-preview-fixtures';
+import { testRuntimeRoot } from '../helpers/runtime-isolation';
 
 import { queryClient } from '../../ui/src/query/client';
 
@@ -45,7 +46,7 @@ afterEach(async () => {
 
 describe('copied-preview Briefing publication boundary', () => {
   it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
-    const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
+    const privateRoot = fs.mkdtempSync(path.join(testRuntimeRoot, 'briefing-selected-round-'));
     const { db: privateDb, dbPath: privateDbPath, sourceDbPath, previewRoot, sourceRoot } = createCopiedPreviewDatabase(privateRoot);
     try {
       const artifactRoot = path.join(previewRoot, 'artifacts');

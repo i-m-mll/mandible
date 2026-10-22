@@ -3,11 +3,4 @@
 set -eu
 
 repo_root=$(cd "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/.." && pwd -P)
-entry="$repo_root/dist/cli/db-read.js"
-
-if [ ! -f "$entry" ]; then
-  echo "mandible db requires a built daemon bundle. Run bun run build:server first." >&2
-  exit 1
-fi
-
-exec "$("$repo_root/scripts/bun-runtime.sh")" --no-install "$entry" "$@"
+exec "$("$repo_root/scripts/bun-runtime.sh")" --no-install "$repo_root/src/cli/db-read.ts" "$@"
