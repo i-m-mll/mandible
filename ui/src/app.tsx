@@ -80,6 +80,8 @@ import {
   isViewSidebarHidden,
   parseArtifactVersionParam,
   parseRouteFromHash,
+  replaceRouteHash,
+  routeHashWithParams,
   shortRouteId,
   spacesRouteFromHash,
   type SpacesRouteTarget,
@@ -2030,6 +2032,10 @@ function App(): JSX.Element {
   }, [state.workBranches]);
   const handleToastDismiss = () => dispatch({ type: 'setDaemonReload', reload: null });
   const handleSelectAuth = (id: string | null) => dispatch({ type: 'setSelectedAuthId', id });
+  const handleNavigateAuthRequest = (id: string | null) => {
+    if (routeRef.current.tab !== 'auth') return;
+    replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id }));
+  };
 
   useEffect(() => {
     if (!state.daemonReload) {
@@ -2999,6 +3005,7 @@ function App(): JSX.Element {
               daemonReady={daemonReady}
               instance={instanceInfo}
               onSelectAuth={handleSelectAuth}
+              onNavigateRequest={handleNavigateAuthRequest}
               onApprove={handleApprove}
               onReject={handleReject}
               onRetry={handleRetry}
