@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { runCli, scratchDir } from "./helpers/cli-process.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
 import { SessionExecutionStore } from "../src/session-execution.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -186,7 +188,8 @@ it("keeps Codex approvals and usage on the exact owned turn and interrupts witho
 it("persists authoritative Codex terminal errors through retries, duplicates and idle updates until the next accepted turn", async () => {
   const db = migratedMemoryDb();
   const spawned: NodeJS.ProcessEnv[] = [];
-  const fixtureSpawn = spawner("codex", []);
+  const nativeState = scratchDir("codex-managed");
+  const fixtureSpawn = spawner("codex", [], { FAKE_CODEX_NATIVE_STATE: nativeState });
   const adapter = new CodexAppServerControllerAdapter({ codexExecutable: "codex", spawnProcess: (command, args, options) => {
     spawned.push(options.env ?? {}); return fixtureSpawn(command, args, options);
   } });
@@ -199,9 +202,12 @@ it("persists authoritative Codex terminal errors through retries, duplicates and
       db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
         VALUES ('conversation-1', 'codex', '/tmp/codex-transcript', 'hash', 1, 'Codex', '2026-01-01', 0, ?, '2026-01-01', '2026-01-01')`).run(lease.provider_session_id);
     })).ok).toBe(true);
-    expect(spawned).toHaveLength(2);
-    expect(spawned[1]).toMatchObject({ MANDIBLE_EXECUTION_OBSERVER_SESSION_ID: "codex-new-thread" });
-    expect(spawned[1].MANDIBLE_EXECUTION_OBSERVER_ID).toBeTruthy();
+    const childEnv = spawned.at(-1)!;
+    const observer = await runCli([path.resolve("hooks/session-execution.sh"), "codex"], {
+      command: "bash", input: JSON.stringify({ session_id: "codex-new-thread", hook_event_name: "Stop" }),
+      env: { ...childEnv, MANDIBLE_BASE: "", MANDIBLE_SOCKET: path.join(nativeState, "absent.sock") },
+    });
+    expect(observer).toEqual({ status: 0, stdout: "", stderr: "" });
     expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "unknown" });
     const submit = async (message: string) => {
       const snapshot = service.getSnapshot("conversation-1");
@@ -234,10 +240,9 @@ it("persists authoritative Codex terminal errors through retries, duplicates and
     if (!stopped.ok) throw new Error(JSON.stringify(stopped.error));
     expect((await service.resume({ conversation_id: "conversation-1", expected_generation: 4,
       expected_revision: stopped.value.revision, cwd: "/tmp" })).ok).toBe(true);
-    expect(spawned).toHaveLength(3);
-    expect(spawned[2].MANDIBLE_EXECUTION_OBSERVER_SESSION_ID).toBe("codex-new-thread");
+    expect(spawned.at(-1)?.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID).toBe("codex-new-thread");
     expect(execution.read("codex", "codex-new-thread")).toMatchObject({ controller_generation: 5, state: { kind: "unknown" } });
     await service.close();
     expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "ended", reason: "mandible:controller-released" });
-  } finally { await service.close(); unregister(); db.close(); }
+  } finally { await service.close(); unregister(); db.close(); fs.rmSync(nativeState, { recursive: true, force: true }); }
 });
