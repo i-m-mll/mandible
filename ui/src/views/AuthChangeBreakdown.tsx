@@ -415,11 +415,7 @@ export function AuthChangeBreakdown({
       bodyClassName="auth-change-breakdown__body"
       actions={<span className="auth-change-breakdown__summary">{summary}</span>}
     >
-      {report === null ? (
-        <p className="auth-change-breakdown__unavailable">
-          No captured breakdown is available for this request. Older requests are not recomputed from moving branches.
-        </p>
-      ) : (
+      {report !== null && (
         <>
           <div className="auth-change-breakdown__totals" aria-label="Change totals">
             <span><strong>{formatCount(report.totals.files)}</strong> files</span>

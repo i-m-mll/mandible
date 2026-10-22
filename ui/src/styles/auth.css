@@ -1162,7 +1162,6 @@
 
 .auth-change-breakdown__hint,
 .auth-change-breakdown__footnote,
-.auth-change-breakdown__unavailable,
 .auth-change-breakdown__empty {
   margin: 0;
   color: var(--text-muted);
@@ -1709,13 +1708,14 @@
 
 .auth-action-row__top {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-  flex-wrap: wrap;
   min-width: 0;
 }
 
 .auth-action-row__kind {
+  flex: none;
+  white-space: nowrap;
   color: var(--text-muted);
   font-weight: 500;
 }

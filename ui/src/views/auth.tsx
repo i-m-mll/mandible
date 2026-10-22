@@ -583,8 +583,10 @@ function AuthActionBundle({
         {unrecordedClosures.map(ref => (
           <div key={ref} className="auth-action-row">
             <div className="auth-action-row__main">
-              <IssuePill issueRef={ref} context={repoId} layout="row" />
-              <div className="auth-action-row__summary">Close issue</div>
+              <div className="auth-action-row__top">
+                <span className="auth-action-row__kind">Close issue</span>
+                <IssuePill issueRef={ref} context={repoId} layout="row" />
+              </div>
             </div>
           </div>
         ))}
@@ -607,12 +609,10 @@ function AuthActionBundle({
             >
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
                   <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="row" />
                 </div>
-                <div className="auth-action-row__summary">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
-                  {summary && <span> · {summary}</span>}
-                </div>
+                {summary && <div className="auth-action-row__summary">{summary}</div>}
                 {expanded && detail && (
                   <div id={`auth-action-detail-${action.id}`} className="auth-action-row__detail">{detail}</div>
                 )}

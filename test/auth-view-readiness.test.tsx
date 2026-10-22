@@ -348,6 +348,9 @@ describe('Approval review issue and action composition', () => {
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.firstElementChild?.className).toBe('auth-action-row__main');
+      const identity = row.querySelector('.auth-action-row__top')!;
+      expect(identity.firstElementChild?.textContent).toBe('Close issue');
+      expect(identity.children[1]?.className).toBe('issue-reference-row');
       expect(row.querySelector('.auth-action-row__controls')?.lastElementChild?.textContent).toBe('Done');
     }
     expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
@@ -527,4 +530,13 @@ it('rejects a malformed successful action response instead of confirming an empt
   vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { headers: { 'content-type': 'application/json' } })));
   const { getAuthRequestActions } = await import('../ui/src/api');
   await expect(getAuthRequestActions('req-1')).rejects.toThrow('did not contain an action list');
+});
+
+
+it('shows the unavailable breakdown in its header without a redundant explanation', () => {
+  render(<AuthQueueView queue={[pendingRequest]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
+    daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
+  const panel = screen.getByRole('button', { name: 'Change breakdown', exact: true }).closest('section')!;
+  expect(panel.querySelector('.collapsible-panel__header')?.textContent).toContain('Unavailable');
+  expect(panel.querySelector('.collapsible-panel__body')?.textContent ?? '').toBe('');
 });
