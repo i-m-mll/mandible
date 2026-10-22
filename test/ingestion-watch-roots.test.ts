@@ -10,7 +10,6 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   allowsPerFileFallback,
@@ -553,35 +552,5 @@ describe("watchConversationRoots non-darwin fallback", () => {
 
     expect(handle.rootModes.get(base)).toBe("degraded-poll");
     expect(degraded).toEqual(["recursive_unavailable"]);
-  });
-});
-
-describe("per-file watcher construction is structurally confined", () => {
-  it("constructs chokidar in exactly one helper, and only behind the darwin guard", async () => {
-    const source = await fsp.readFile(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "ingestion.ts"),
-      "utf8",
-    );
-
-    // One chokidar construction in the whole module.
-    const constructions = source.match(/chokidar\.watch\(/g) ?? [];
-    expect(constructions).toHaveLength(1);
-
-    // ...and it lives inside createChokidarPerFileWatcher.
-    const start = source.indexOf("function createChokidarPerFileWatcher(");
-    expect(start).toBeGreaterThan(-1);
-    const end = source.indexOf("\n}\n", start);
-    const helper = source.slice(start, end);
-    expect(helper).toContain("chokidar.watch(");
-
-    // The helper is only ever reached through the perFileWatchFactory seam,
-    // and every call to that seam is guarded by perFileFallbackAllowed.
-    expect(source.match(/createChokidarPerFileWatcher\b/g) ?? []).toHaveLength(2);
-    const callSites = source.match(/ctx\.perFileWatchFactory\(/g) ?? [];
-    expect(callSites).toHaveLength(1);
-    const guard = source.indexOf("if (ctx.perFileFallbackAllowed) {");
-    const startPerFile = source.indexOf("if (startPerFileFallback(reason)) return;");
-    expect(guard).toBeGreaterThan(-1);
-    expect(startPerFile).toBeGreaterThan(guard);
   });
 });

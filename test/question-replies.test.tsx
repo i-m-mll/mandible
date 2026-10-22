@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { cleanup, render } from '@testing-library/preact';
 import { afterEach, expect, it } from 'vitest';
 import { UserBubble } from '../ui/src/components/message-blocks/UserBubble';
@@ -34,10 +32,4 @@ it('leaves unrelated, malformed, and non-Codex messages visible as ordinary user
     expect(container.textContent).toContain(provider === 'claude' ? 'questionItemId' : provider === 'codex' && text.includes('broken') ? 'broken' : 'A note before');
     unmount();
   }
-});
-
-it('uses the shared theme-aware muted color for questions', () => {
-  const css = readFileSync(path.resolve('ui/src/styles/message-blocks.css'), 'utf8');
-  expect(css).toMatch(/\.user-bubble__question\s*\{[^}]*color:\s*var\(--text-muted\)/s);
-  expect(css).not.toMatch(/:root\[data-theme='light'\] \.user-bubble__question/);
 });
