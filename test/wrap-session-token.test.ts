@@ -1,29 +1,28 @@
+// @vitest-environment node
 // The wrapper passes managed task markers through without projecting a bearer.
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+
+import { scratchDir } from "./helpers/cli-process.js";
 
 const CLI_DIR = path.join(process.cwd(), "cli");
 const WRAP = path.join(CLI_DIR, "wrap.sh");
 
 function runWrap(base?: string) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-wrap-local-"));
-  try {
+  const root = scratchDir("wrap-local");
     const command = `source "$MANDIBLE_CLI_DIR/api.sh"; printf '%s|%s|%s|%s|%s|%s' "\${MANDIBLE_BASE-unset}" "$MANDIBLE_LOCAL_SOCKET" "\${MANDIBLE_TOKEN-unset}" "$MANDIBLE_MANAGED_CLIENT" "\${CODEX_THREAD_ID-unset}" "$MANDIBLE_MANAGED_APP"`;
     const env = { ...process.env, HOME: root, MANDIBLE_CLI_DIR: CLI_DIR,
       MANDIBLE_TOKEN: "stale-inherited-token", CODEX_THREAD_ID: "task-123",
       CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "",
+      // No daemon answers here; the best-effort session registration need not retry.
+      MANDIBLE_HTTP_RETRIES: "0",
     };
     if (base === undefined) delete env.MANDIBLE_BASE;
     else env.MANDIBLE_BASE = base;
-    return spawnSync("bash", [WRAP, "--app", "codex", "--id", "wrapper-session", "--", "bash", "-c", command], {
-      env, encoding: "utf8",
-    });
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+  return spawnSync("bash", [WRAP, "--app", "codex", "--id", "wrapper-session", "--", "bash", "-c", command], {
+    env, encoding: "utf8",
+  });
 }
 
 describe("cli/wrap.sh local identity", () => {

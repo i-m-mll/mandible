@@ -218,8 +218,8 @@ spawn_watcher() {
       sleep 1
     done
     # Process died — deregister
-    api_send PATCH "/api/sessions/$(urlencode "$SESSION_ID")/end" '{"status":"ended"}' >/dev/null 2>&1 || true
-  ) &
+    api_send PATCH "/api/sessions/$(urlencode "$SESSION_ID")/end" '{"status":"ended"}' || true
+  ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
 }
 
