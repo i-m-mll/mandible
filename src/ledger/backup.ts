@@ -379,7 +379,20 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
     path.dirname(outputPath),
     `.${path.basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  const file = fs.openSync(temporaryPath, "wx", 0o600);
+  try {
+    const result = writeMetadataBackupFile(db, temporaryPath);
+    fs.renameSync(temporaryPath, outputPath);
+    return { ...result, path: outputPath };
+  } catch (error) {
+    try { fs.unlinkSync(temporaryPath); } catch { /* preserve the original failure */ }
+    throw error;
+  }
+}
+
+/** Write and flush one unpublished file; its owner controls final publication. */
+export function writeMetadataBackupFile(db: Db, outputPath: string): MetadataBackupResult {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const file = fs.openSync(outputPath, "wx", 0o600);
   try {
     db.transaction(() => {
       let buffer = "";
@@ -396,10 +409,9 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
     }).deferred();
     fs.fsyncSync(file);
     fs.closeSync(file);
-    fs.renameSync(temporaryPath, outputPath);
   } catch (error) {
     try { fs.closeSync(file); } catch { /* already closed */ }
-    try { fs.unlinkSync(temporaryPath); } catch { /* preserve the original failure */ }
+    try { fs.unlinkSync(outputPath); } catch { /* preserve the original failure */ }
     throw error;
   }
   const stat = fs.statSync(outputPath);

@@ -65,7 +65,8 @@ import { registerProviderRoutes } from "./routes/providers.js";
 import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
-import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
+import { registerBackupRoutes } from "./routes/backup.js";
+import { MetadataBackupService } from "./metadata-backup-service.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
@@ -299,7 +300,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerUserSettingsRoutes(router, db);
   registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
-  registerBackupRoutes(router);
+  const backupService = registerBackupRoutes(router, new MetadataBackupService(db, logger));
 
   const reaperTimer = new ReaperTimer(sessionRegistry, logger);
   registerSessionRoutes(router, sessionRegistry, workScanner);
@@ -676,7 +677,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Start scheduled metadata backups
   if (operationalMutationsAllowed) {
-    startBackupScheduler();
+    backupService.reschedule();
     startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
     // Issue ce22a3a — retire unreviewed briefing candidates on a slow cadence.
     startManagedReminderScheduler(db, (level, event, fields) => logger(level, event, fields));
@@ -718,6 +719,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       shutdownTimeout.unref();
     }
 
+    await backupService.close();
     try { sessionManager.close(); } catch { /* best effort */ }
     try {
       await conversationControl.close();
@@ -727,7 +729,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     wss.close();
     sse.closeAll();
     await stopIngestionGracefully();
-    stopBackupScheduler();
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
