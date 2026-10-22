@@ -188,13 +188,13 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onUpdateField = vi.fn();
     renderView(true, onApprove, previewInstance, onUpdateField);
 
-    expect(screen.getByText('Commit message')).toBeTruthy();
+    expect(screen.getByText('Description')).toBeTruthy();
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByText('edit'));
-    const textarea = screen.getByRole('textbox', { name: 'Commit message' }) as HTMLTextAreaElement;
+    const textarea = screen.getByRole('textbox', { name: 'Description' }) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: 'Local copied review text' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -203,6 +203,23 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).not.toHaveBeenCalled();
   });
 
+});
+
+describe('Auth Description presentation', () => {
+  for (const type of ['config-change', 'custody-transfer'] as const) {
+    it(`renders multiline ${type} review text without Git fallback and sanitizes Markdown`, () => {
+      render(<AuthQueueView queue={[{ ...pendingRequest, type,
+        commit_message: '# Review this action\n\nPreserve the existing service.\n\n<script>window.bad=true</script>',
+      }]} historyQueue={[]} outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance}
+        onApprove={vi.fn()} onReject={vi.fn()} onSelectAuth={vi.fn()} />);
+      expect(screen.getByText('Description')).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Review this action' })).toBeTruthy();
+      expect(screen.getByText('Preserve the existing service.')).toBeTruthy();
+      expect(screen.queryByText(/git.*default/i)).toBeNull();
+      expect(document.querySelector('.rendered-markdown script')).toBeNull();
+      expect(screen.queryByText('Exact Git message')).toBeNull();
+    });
+  }
 });
 
 describe('AuthQueueView persisted action expansion', () => {

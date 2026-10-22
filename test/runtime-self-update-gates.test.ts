@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 // Issue a09b4d2 — a stale runtime handoff lock let approvals proceed while it
 // blocked every rebuild, and the failure looked like a manual restart. These
@@ -59,7 +60,7 @@ function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput>
     db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
       VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, credentialId);
   }
-  return queue.submit({ type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
+  return queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
     repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch,
     merge_head_sha: git(repo, ["rev-parse", branch]), execution_mode: "local",
     requester_evidence_method: "api_token", requester_credential_id: credentialId, require_delivery_custody: true,
@@ -236,7 +237,7 @@ describe("rebuild failure", () => {
       broadcast: (event) => { events.push(event); },
       restartAvailability: { markRebuildStarted: (id = "") => id, markShutdownStarted: () => true, markRebuildFailed: (id) => { failed.push(id); return true; } },
       executor: async (options) => publishFixtureExecution(queue, options) });
-    const request = queue.submit({ type: "merge", command: "mandible auth merge feature/self-update --into main", title: "Self-update",
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/self-update --into main", title: "Self-update",
       repo: "mandible", cwd: repo, base_branch: "main", head_branch: "feature/self-update",
       merge_head_sha: git(repo, ["rev-parse", "feature/self-update"]), execution_mode: "daemon" });
     await approveFixtureRequest(queue, request.id);

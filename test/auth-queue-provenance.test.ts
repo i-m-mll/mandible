@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -43,7 +44,7 @@ describe("auth queue", () => {
       headBranch: string,
       command = `mandible auth merge ${headBranch} --into main`,
     ) {
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command,
         title: `Merge ${headBranch}`,

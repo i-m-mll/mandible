@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import fs from "node:fs";
 import path from "node:path";
@@ -45,7 +46,7 @@ beforeEach(() => {
 afterEach(() => { queue.dispose(); db.close(); delete process.env.MANDIBLE_ARTIFACT_DIR; fs.rmSync(repo,{ recursive:true,force:true }); });
 
 function submit(patch: Partial<AuthRequestInput> = {}) {
-  return queue.submit({ type:"merge",command:"mandible auth merge feature/publication --into main",title:"Publish document",cwd:repo,repo:path.basename(repo),head_branch:"feature/publication",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/publication"]),space_publication_id:publication,issue_references:[issue],requester_evidence_method:"api_token",requester_credential_id:credentialId,require_delivery_custody:true,...patch },operatorId);
+  return queue.submit({ ...AUTH_MERGE_REVIEW,  type:"merge",command:"mandible auth merge feature/publication --into main",title:"Publish document",cwd:repo,repo:path.basename(repo),head_branch:"feature/publication",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/publication"]),space_publication_id:publication,issue_references:[issue],requester_evidence_method:"api_token",requester_credential_id:credentialId,require_delivery_custody:true,...patch },operatorId);
 }
 async function advance(changes: Record<string,string>, modeChange = false) {
   commitOnBranch(repo,"feature/sibling",changes);
@@ -53,7 +54,7 @@ async function advance(changes: Record<string,string>, modeChange = false) {
     git(repo,["checkout","feature/sibling"]); fs.chmodSync(path.join(repo,"doc.md"),0o755);
     git(repo,["add","doc.md"]); git(repo,["commit","--amend","--no-edit"]); git(repo,["checkout","main"]);
   }
-  const sibling = queue.submit({type:"merge",command:"mandible auth merge feature/sibling --into main",title:"Sibling",cwd:repo,repo:path.basename(repo),head_branch:"feature/sibling",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/sibling"])});
+  const sibling = queue.submit({ ...AUTH_MERGE_REVIEW, type:"merge",command:"mandible auth merge feature/sibling --into main",title:"Sibling",cwd:repo,repo:path.basename(repo),head_branch:"feature/sibling",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/sibling"])});
   await queue.approveWithOperatorProof(sibling.id,operatorId);
   const result = publishTestCandidate(repo,queue.getRequest(sibling.id)!);
   expect(queue.setResult(sibling.id,0,result.output).exit_code).toBe(0);

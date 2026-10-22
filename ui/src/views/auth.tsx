@@ -98,6 +98,7 @@ export type AuthRequest = {
   files_changed?: number;
   additions?: number;
   deletions?: number;
+  /** The authored Description, using its historical signed-record key. */
   commit_message?: string;
   // Issue 7d64d8f — present when commit_message is the agent-authored
   // canonical change message the merge will commit verbatim.
@@ -790,8 +791,8 @@ function AuthRequestDetail({
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
   const { branch: commitBranch, body: commitBody } = useMemo(
-    () => parseBranchTag(commitMsg),
-    [commitMsg],
+    () => isCanonicalMessage ? parseBranchTag(commitMsg) : { branch: null, body: commitMsg },
+    [commitMsg, isCanonicalMessage],
   );
   const commitHtml = useMemo(
     () => commitBody ? linkifyArtifactRefs(renderMarkdown(commitBody)) : '',
@@ -1246,7 +1247,7 @@ function AuthRequestDetail({
           <div className={panelsClass}>
             <div className="auth-detail__left-col">
               <CollapsiblePanel
-                title="Commit message"
+                title="Description"
                 expanded={showCommit}
                 onExpandedChange={setShowCommit}
                 bodyClassName="spec-panel"
@@ -1269,7 +1270,7 @@ function AuthRequestDetail({
                     <>
                       <textarea
                         className="panel__edit-textarea"
-                        aria-label="Commit message"
+                        aria-label="Description"
                         value={editCommitValue}
                         onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
                         disabled={!mutationsAllowed}
@@ -1279,7 +1280,7 @@ function AuthRequestDetail({
                         <button
                           type="button"
                           className="panel__edit-save"
-                          disabled={!mutationsAllowed}
+                          disabled={!mutationsAllowed || editCommitValue.trim() === ''}
                           onClick={() => {
                             const id = getAuthId(request);
                             if (id && onUpdateField && mutationsAllowed) {
@@ -1306,10 +1307,16 @@ function AuthRequestDetail({
                     />
                   ) : (
                     <div className="spec-panel--empty">
-                      No commit message provided. Merge will use git's default message.
+                      No Description was recorded for this historical request.
                     </div>
                   )}
               </CollapsiblePanel>
+              {isCanonicalMessage && request.type === 'merge' && (
+                <details className="auth-detail__git-message">
+                  <summary>Exact Git message</summary>
+                  <pre>{commitMsg}</pre>
+                </details>
+              )}
               {dirtyAction && (
                 <CollapsiblePanel
                   title="Protected-root changes"

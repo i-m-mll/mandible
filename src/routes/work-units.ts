@@ -919,7 +919,7 @@ export function registerWorkUnitRoutes(
           type: "custody-transfer",
           command,
           title: `Transfer custody of ${unit.branch ?? unit.issue_id} to ${requester.user_slug ?? identity.user_id}`,
-          // The reviewed abstract the operator reads before approving.
+          // The authored Description bound to this custody transfer.
           commit_message: [
             `${unit.branch ? `\`${unit.branch}\`` : `Work unit \`${unit.id}\``} is held by ${holderLabel(holder)}, ` +
               `whose session ${livenessLabel(liveness)}. ${holderLabel(requester)} asks for custody.`,

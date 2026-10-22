@@ -124,6 +124,18 @@ export function mergeChangeMessageRequirement(fields: MergeChangeMessageFields):
   return null;
 }
 
+/** One reviewed Description uses the historical commit_message storage key. */
+export function authDescriptionRequirement(fields: MergeChangeMessageFields & { type?: string }): string | null {
+  if (typeof fields.commit_message !== "string" || fields.commit_message.trim() === "") {
+    return "Every approval request requires a nonblank Description: pass --message <text> or --message-file <file> (API: commit_message).";
+  }
+  if ((fields.type ?? "merge") === "merge") return mergeChangeMessageRequirement(fields);
+  if (fields.canonical_message === true || fields.verification != null) {
+    return "canonical_message and verification apply only to merge requests; other Descriptions are explanatory Markdown.";
+  }
+  return null;
+}
+
 /** Issue refs are single tokens; whitespace is not part of an issue identity. */
 export function validateIssueRefTokens(refs: readonly unknown[] | null | undefined): string | null {
   for (const ref of refs ?? []) {

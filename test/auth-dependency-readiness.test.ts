@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,7 +51,7 @@ function setDependencyResult(
 }
 
 function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
-  const seed = queue.submit({ type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" });
+  const seed = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" });
   const columns = database.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
   const names = columns.map(({ name }) => `"${name}"`);
   const selections = columns.map(({ name }) => name === "id" ? "?" : `"${name}"`);
@@ -65,8 +66,8 @@ function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
 describe("auth dependency readiness", () => {
   it("classifies every durable dependency state and permits only finalized success", () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({ type: "commit",
+    const dependency = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependent = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo dependent",
       title: "Dependent",
       depends_on_id: dependency.id,
@@ -102,12 +103,12 @@ describe("auth dependency readiness", () => {
 
   it("uses the same projection in detail, queue, and history", async () => {
     const { db: database, queue, router } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependency = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" });
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
-    const active = queue.submit({ type: "commit",
+    const active = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo active", title: "Active dependent", depends_on_id: dependency.id,
     });
-    const historical = queue.submit({ type: "commit",
+    const historical = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo historical", title: "Historical dependent", depends_on_id: dependency.id,
     });
     setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
@@ -128,8 +129,8 @@ describe("auth dependency readiness", () => {
 
   it("blocks ordinary approval until the dependency is durably finalized", async () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({ type: "commit",
+    const dependency = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependent = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo dependent", title: "Dependent", depends_on_id: dependency.id,
     });
 

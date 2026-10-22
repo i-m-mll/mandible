@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -166,7 +167,7 @@ function fixture() {
       };
     },
   });
-  const submit = (suffix = "", overrides: Record<string, unknown> = {}) => queue.submit({
+  const submit = (suffix = "", overrides: Record<string, unknown> = {}) => queue.submit({ ...AUTH_MERGE_REVIEW,
     type: "merge",
     command: "mandible auth merge feature/scoped --into main",
     title: `Scoped merge ${suffix}`,

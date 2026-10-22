@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -63,11 +64,11 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
 
       const queue = new AuthQueue({ db, executor: g.executor, hookManager: createNoopHookManager() });
       g.bindQueue(queue);
-      const reqA = queue.submit({
+      const reqA = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/con-a --into main", title: "A",
         repo: path.basename(repoA), base_branch: "main", head_branch: "feature/con-a", cwd: repoA, merge_head_sha: git(repoA, ["rev-parse", "feature/con-a"]),
       });
-      const reqB = queue.submit({
+      const reqB = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/con-b --into main", title: "B",
         repo: path.basename(repoB), base_branch: "main", head_branch: "feature/con-b", cwd: repoB, merge_head_sha: git(repoB, ["rev-parse", "feature/con-b"]),
       });
@@ -105,11 +106,11 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
 
       const queue = new AuthQueue({ db, executor: g.executor, hookManager: createNoopHookManager() });
       g.bindQueue(queue);
-      const req1 = queue.submit({
+      const req1 = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/ser-one --into main", title: "1",
         repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-one", cwd: repo, merge_head_sha: git(repo, ["rev-parse", "feature/ser-one"]),
       });
-      const req2 = queue.submit({
+      const req2 = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/ser-two --into main", title: "2",
         repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-two", cwd: alias, merge_head_sha: git(alias, ["rev-parse", "feature/ser-two"]),
       });
@@ -140,8 +141,8 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const r1 = queue.submit({ type: "commit", command: "echo one", title: "one" });
-      const r2 = queue.submit({ type: "commit", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") });
+      const r1 = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo one", title: "one" });
+      const r2 = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") });
       const chainKey = (queue as unknown as { chainKeyForRequest(request: typeof r1): string }).chainKeyForRequest.bind(queue);
       expect(chainKey(r1)).toBe(chainKey(r2));
     } finally { queue.dispose(); db.close(); }
@@ -180,7 +181,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
 
         let queue: AuthQueue;
         queue = new AuthQueue({ db, now: () => now, executor: (options) => publishFixtureExecution(queue, options), hookManager: createNoopHookManager() });
-        const request = queue.submit({
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,
           type: "merge", command: "mandible auth merge integration/dot-batch --into main", title: "Merge dotfiles",
           repo: ".dotfiles", cwd: repo, base_branch: "main", head_branch: "integration/dot-batch",
           merge_head_sha: integrationHead, execution_mode: "daemon",
@@ -237,12 +238,12 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
 
       let queue: AuthQueue;
         queue = new AuthQueue({ db, now: () => now, executor: (options) => publishFixtureExecution(queue, options), hookManager: createNoopHookManager() });
-      const sibling = queue.submit({
+      const sibling = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/dup --into main", title: "dup sibling",
         repo: "dotfiles", cwd: repo, base_branch: "main", head_branch: "feature/dup",
         merge_head_sha: dupHead, execution_mode: "daemon",
       });
-      const completed = queue.submit({
+      const completed = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/dup --into main", title: "dup completed",
         repo: ".dotfiles", cwd: repo, base_branch: "main", head_branch: "feature/dup",
         merge_head_sha: dupHead, execution_mode: "daemon",

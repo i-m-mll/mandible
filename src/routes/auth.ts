@@ -2,7 +2,7 @@ import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-acti
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
-import { mergeChangeMessageRequirement } from "../auth-change-message.js";
+import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
 import { DelegatedSigningResource } from "../delegated-signing-resource.js";
@@ -100,6 +100,11 @@ export function registerAuthRoutes(
     const payload = parseAuthRequestPayload(body);
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
+      return;
+    }
+    const descriptionError = authDescriptionRequirement(payload);
+    if (descriptionError) {
+      res.status(400).json({ error: descriptionError, code: "description_required" });
       return;
     }
     if (payload.type === "custody-transfer") {
@@ -918,7 +923,7 @@ export function registerAuthRoutes(
 function resolveAuthRequester(
   db: Db,
   req: RequestLike,
-  payload: AuthRequestInput,
+  payload: Pick<AuthRequestInput, "command" | "title" | "session_id">,
   requireDurable = false,
 ): { ok: true; userId: string; evidenceMethod: string; credentialId: string | null }
   | { ok: false; status: number; code: string; error: string } {
@@ -1009,7 +1014,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     title: body.title,
     cwd: typeof body.cwd === "string" ? body.cwd : null,
     diff_summary: typeof body.diff_summary === "string" ? body.diff_summary : null,
-    commit_message: typeof body.commit_message === "string" ? body.commit_message : null,
+    commit_message: typeof body.commit_message === "string" ? body.commit_message : "",
     // Issue 7d64d8f — the submitter declares an agent-authored canonical change
     // message; the queue canonicalizes it and binds it to a digest.
     canonical_message: body.canonical_message === true,
@@ -1254,10 +1259,10 @@ function parseAuthRequestUpdatePayload(
   }
 
   if (hasKey("commit_message")) {
-    if (body.commit_message === null || typeof body.commit_message === "string") {
-      payload.commit_message = body.commit_message as string | null;
+    if (typeof body.commit_message === "string") {
+      payload.commit_message = body.commit_message;
     } else {
-      return { ok: false, error: "Invalid 'commit_message' — must be a string or null" };
+      return { ok: false, error: "Invalid Description ('commit_message') — must be a nonblank string" };
     }
   }
 

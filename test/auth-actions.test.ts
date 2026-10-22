@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 
 import fs from "node:fs";
@@ -64,7 +65,7 @@ function createLedgerIssue(db: Db, alias = "act123", branch?: string) {
 
 function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue['submit']>[0]) {
   const head = payload.command.match(/auth merge ([^ ]+)/)![1];
-  return queue.submit({ ...payload, execution_mode: 'daemon', base_branch: 'main', head_branch: head,
+  return queue.submit({ ...AUTH_MERGE_REVIEW,  ...payload, execution_mode: 'daemon', base_branch: 'main', head_branch: head,
     merge_head_sha: git(payload.cwd!, ['rev-parse', head]) });
 }
 
@@ -332,7 +333,7 @@ describe("auth request action execution", () => {
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "link123");
       const queue = new AuthQueue({ db, now: () => 50_000 });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo link",
         title: "Link staged close",
         cwd: repoRoot,
@@ -368,7 +369,7 @@ describe("auth request action queue persistence", () => {
       let now = 1000;
       const queue = new AuthQueue({ db, now: () => now });
 
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo staged",
         title: "Staged actions",
         cwd: repoRoot,
@@ -418,7 +419,7 @@ describe("auth request action queue persistence", () => {
     const db = createMigratedDb();
     try {
       const queue = new AuthQueue({ db });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo done",
         title: "Done",
         actions: [{ kind: "issue_close", target_issue_ref: "abc123", payload: {} }],
@@ -615,7 +616,7 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo route",
         title: "Route veto",
         actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],

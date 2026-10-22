@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import fs from "node:fs";
 import os from "node:os";
@@ -248,7 +249,7 @@ describe("auth change reports", () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "echo reviewed",
         title: "Reviewed candidate",
@@ -269,7 +270,7 @@ describe("auth change reports", () => {
         .toThrow(/immutable/);
       expect(() => db.prepare("UPDATE auth_requests SET files_changed = files_changed + 1 WHERE id = ?").run(request.id))
         .toThrow(/immutable/);
-      expect(() => queue.submit({
+      expect(() => queue.submit({ ...AUTH_COMMAND_REVIEW,
         type: "commit",
         command: "echo invalid",
         title: "Non-merge report",

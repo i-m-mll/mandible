@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -52,7 +53,7 @@ describe("auth queue", () => {
       });
 
       // Submitted from the feature worktree; executed from the protected root.
-      const request = queue.submit({ merge_head_sha: git(featureWorktree, ["rev-parse", "feature/signed-interactive"]),
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(featureWorktree, ["rev-parse", "feature/signed-interactive"]),
         type: "merge",
         command: "mandible auth merge feature/signed-interactive --into main",
         title: "Merge signed interactive",
@@ -121,7 +122,7 @@ describe("auth queue", () => {
         },
         hookManager: createNoopHookManager(),
       });
-      const first = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/fingerprint-first"]),
+      const first = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/fingerprint-first"]),
         type: "merge",
         command: "mandible auth merge feature/fingerprint-first --into main",
         title: "Merge feature/fingerprint-first",
@@ -131,7 +132,7 @@ describe("auth queue", () => {
         cwd: repo,
       });
       const reviewedBase = first.merge_preflight_base_sha!;
-      queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/fingerprint-second"]),
+      queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/fingerprint-second"]),
         type: "merge",
         command: "mandible auth merge feature/fingerprint-second --into main",
         title: "Merge feature/fingerprint-second",
@@ -183,7 +184,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/base-drift --into main",
         title: "Merge feature/base-drift",
@@ -255,7 +256,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/base-conflict --into main",
         title: "Merge feature/base-conflict",
@@ -316,7 +317,7 @@ describe("auth queue", () => {
         },
         hookManager: createNoopHookManager(),
       });
-      const submit = (suffix: string) => queue.submit({
+      const submit = (suffix: string) => queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/atomic-eligibility --into main",
         title: `Atomic eligibility ${suffix}`,
@@ -371,7 +372,7 @@ describe("auth queue", () => {
       },
     });
 
-    const request = queue.submit({
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/no-context --into main",
       title: "No context",
     });
@@ -414,7 +415,7 @@ describe("auth queue", () => {
       },
     });
 
-    const request = queue.submit({ type: "commit",
+    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo daemon",
       title: "Daemon",
       execution_mode: "daemon",
@@ -460,7 +461,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const submitted = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/lease-reuse"]),
+      const submitted = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/lease-reuse"]),
         type: "merge",
         command: "mandible auth merge feature/lease-reuse --into main",
         title: "Merge feature/lease-reuse",
@@ -531,7 +532,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", "feature/presence"]),
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/presence"]),
         type: "merge",
         command: "mandible auth merge feature/presence --into main",
         title: "Merge feature/presence",
@@ -600,7 +601,7 @@ describe("auth queue", () => {
           },
           hookManager: createNoopHookManager(),
         });
-        const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", `feature/${kind}-lease`]),
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", `feature/${kind}-lease`]),
           type: "merge",
           command: `mandible auth merge feature/${kind}-lease --into main`,
           title: `${kind} delegated lease`,
@@ -680,7 +681,7 @@ describe("auth queue", () => {
           },
           hookManager: createNoopHookManager(),
         });
-        const request = queue.submit({ merge_head_sha: git(repo, ["rev-parse", `feature/presence-${mismatch}`]),
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", `feature/presence-${mismatch}`]),
           type: "merge",
           command: `mandible auth merge feature/presence-${mismatch} --into main`,
           title: `Presence ${mismatch} mismatch`,

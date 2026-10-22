@@ -427,6 +427,7 @@ export type AuthRequest = {
   title: string;
   cwd: string | null;
   diff_summary: string | null;
+  /** Authored Description; historical wire/storage name retained for signed evidence. */
   commit_message: string | null;
   /** Issue 7d64d8f — SHA-256 of the canonical change message bytes, or null. */
   commit_message_digest?: string | null;

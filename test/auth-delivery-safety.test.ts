@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
@@ -45,7 +46,7 @@ function prepareMergeFixture() {
 }
 
 function submitMerge(issueClosures: string[] = []) {
-  const request = queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
+  const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
     repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures });
   recordPassingCandidateAcceptance(db, request.id);
   return request;
@@ -126,7 +127,7 @@ describe("protected delivery evidence", () => {
     await hooks.runPending(queue.getRequest(request.id)!);
     expect(hooks.listRuns(request.id).every(run => run.state === "complete" && run.attempts === 1)).toBe(true);
     commitOnBranch(repo, "feature/changed-hook", { "other.txt": "next bytes\n" });
-    const next = queue.submit({ type: "merge", title: "Changed hook", command: "mandible auth merge feature/changed-hook --into main", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/changed-hook", merge_head_sha: git(repo, ["rev-parse", "feature/changed-hook"]), execution_mode: "local" });
+    const next = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Changed hook", command: "mandible auth merge feature/changed-hook --into main", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/changed-hook", merge_head_sha: git(repo, ["rev-parse", "feature/changed-hook"]), execution_mode: "local" });
     await queue.approveWithOperatorProof(next.id, operatorId);
     fs.appendFileSync(path.join(repo, ".git", "hooks", "post-merge"), "# changed after review\n");
     queue.setResult(next.id, 0, publishTestCandidate(repo, queue.getRequest(next.id)!).output);
@@ -240,7 +241,7 @@ describe("protected delivery evidence", () => {
     const first = publishTestCandidate(repo, queue.getRequest(request.id)!);
     queue.setResult(request.id, 75, first.output.split("MANDIBLE_MERGE_RESULT")[0]!);
     commitOnBranch(repo, "feature/later", { "later.txt": "later bytes\n" });
-    const later = queue.submit({ type: "merge", title: "Later publication", command: "mandible auth merge feature/later --into main", repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/later", merge_head_sha: git(repo, ["rev-parse", "feature/later"]), execution_mode: "local" });
+    const later = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Later publication", command: "mandible auth merge feature/later --into main", repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/later", merge_head_sha: git(repo, ["rev-parse", "feature/later"]), execution_mode: "local" });
     await queue.approveWithOperatorProof(later.id, operatorId);
     const second = publishTestCandidate(repo, queue.getRequest(later.id)!);
     const before = protectedState();
@@ -353,7 +354,7 @@ describe('runtime convergence recovery', () => {
     const before = queue.getRequest(f.request.id)!;
     const history = queue.listLifecycleEvents(f.request.id);
     // Verification-only recovery leaves unrelated requests alone, expired or not.
-    const unrelated = queue.submit({ type: 'config-change', title: 'Unrelated pending request', command: 'true', cwd: repo });
+    const unrelated = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: 'config-change', title: 'Unrelated pending request', command: 'true', cwd: repo });
     db.prepare('UPDATE auth_requests SET expires_at = 0 WHERE id = ?').run(unrelated.id);
     const unrelatedBefore = db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(unrelated.id);
     await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toMatchObject({ code: 'recovery_refused', message: expect.stringContaining('ack interrupted') });
@@ -463,7 +464,7 @@ describe('runtime convergence recovery', () => {
 
 describe("consequential non-Git approval", () => {
   it("keeps missing, cancelled, and drifted proof pending without starting execution", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
     const before = protectedState();
     expect(() => queue.approve(request.id)).toThrow("signing proof");
     const cancelled = queue.approveWithOperatorProof(request.id, operatorId);
@@ -479,7 +480,7 @@ describe("consequential non-Git approval", () => {
     expect(protectedState()).toEqual(before);
   });
   it("records verified action-bound proof for consequential non-Git approval", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
     const approved = await queue.approveWithOperatorProof(request.id, operatorId);
     expect(approved.status).toBe("executing");
     const evidence = getAttributionEvidence(db, approved.execution_evidence_id!);

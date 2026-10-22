@@ -53,6 +53,7 @@ import {
 import { gitCommitFacts, readGitCommitFacts } from "./git-object-facts.js";
 import {
   canonicalizeChangeMessage,
+  authDescriptionRequirement,
   changeMessageDigest,
   isCanonicalChangeMessage,
   validateCanonicalChangeMessage,
@@ -1510,7 +1511,7 @@ export class AuthQueue {
    * `cwd` so a row identified only by path still matches a payload identified
    * only by name (and vice versa).
    */
-  private dedupRepoMatches(payload: AuthRequestInput, row: AuthRequest): boolean {
+  private dedupRepoMatches(payload: Pick<AuthRequestInput, "repo" | "target_repo_root" | "cwd">, row: AuthRequest): boolean {
     const keysA = this.dedupRepoKeys(payload.repo, payload.target_repo_root, payload.cwd);
     const keysB = this.dedupRepoKeys(row.repo, row.target_repo_root, row.cwd);
     if (keysA.size > 0 && keysB.size > 0) {
@@ -1565,6 +1566,12 @@ export class AuthQueue {
   }
 
   submit(payload: AuthRequestInput, requestedByUserId?: string): AuthRequest {
+    const descriptionError = authDescriptionRequirement(payload);
+    if (descriptionError) throw { status: 400, message: descriptionError };
+    const canonical = this.resolveCanonicalChangeMessage(
+      payload.commit_message ?? null, payload.canonical_message === true,
+      { verification: payload.verification },
+    );
     if (!this.allowExternalEffects && isAuthMergeCommand(payload)) {
       this.requireExternalEffects("Merge request preparation");
     }
@@ -1675,18 +1682,6 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    // Issue 7d64d8f — a submitter that declares `canonical_message` hands over
-    // an agent-authored merge commit message. The daemon is the single
-    // authority for the canonical bytes and their digest: it canonicalizes
-    // once here, stores the result back as `commit_message`, and records the
-    // digest that cli/auth-merge.sh verifies before using those exact bytes.
-    const canonical = this.resolveCanonicalChangeMessage(
-      payload.commit_message ?? null,
-      payload.canonical_message === true,
-      {
-        verification: payload.verification,
-      },
-    );
     const request: AuthRequest = {
       id: randomUUID(),
       session_id: payload.session_id ?? null,
@@ -2741,8 +2736,8 @@ export class AuthQueue {
    * When the message is declared canonical it is stored in canonical form and
    * bound to its digest, so the bytes the reviewer approves are byte-identical
    * to the bytes the merge commits. Otherwise the message is stored verbatim
-   * as free-form review text with no digest, and the merge keeps its legacy
-   * `git fmt-merge-msg` behaviour.
+   * as explanatory Markdown with no Git digest. Historical rows and snapshots
+   * retain their original keys and bytes.
    */
   private resolveCanonicalChangeMessage(
     message: string | null,
@@ -2914,6 +2909,13 @@ export class AuthQueue {
       const declaredCanonical = declaresCanonicalFlag
         ? payload.canonical_message === true
         : request.commit_message_digest != null;
+      const descriptionError = authDescriptionRequirement({
+        type: effectiveType,
+        commit_message: nextRaw,
+        canonical_message: declaredCanonical,
+        verification: payload.verification as string | null | undefined,
+      });
+      if (descriptionError) throw { status: 400, message: descriptionError };
       const resolved = this.resolveCanonicalChangeMessage(
         nextRaw ?? null,
         declaredCanonical && (nextRaw ?? "").length > 0,

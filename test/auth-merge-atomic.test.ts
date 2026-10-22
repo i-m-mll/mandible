@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -222,7 +223,7 @@ describe("atomic auth merge", () => {
     const db = migratedMemoryDb();
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
-    const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,  command: "echo checkpoint", title: "Atomic checkpoint" });
     // Issue 08a5f04 (review F1) — the output endpoint is lifecycle-locked to
     // executing requests; the real merge posts its checkpoints mid-execution.
     db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);

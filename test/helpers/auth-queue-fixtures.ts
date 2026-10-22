@@ -655,3 +655,13 @@ export async function completeFixturePublication(queue: AuthQueue, id: string): 
   (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
   await waitForStatus(queue, id, 'completed');
 }
+
+export const AUTH_COMMAND_REVIEW = {
+  commit_message: "Exercise the requested action in the isolated authorization fixture.",
+};
+
+export const AUTH_MERGE_REVIEW = {
+  commit_message: "Exercise the reviewed private merge.\n\nWhy:\nVerify the authorization contract against an isolated Git fixture.\n\nVerification:\nThe fixture validates the requested state transition.\n",
+  canonical_message: true,
+  verification: "The fixture validates the requested state transition.",
+};

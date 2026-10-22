@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -59,7 +60,7 @@ describe("auth queue", () => {
           executor: async (options) => publishFixtureExecution(queue!, options),
         });
 
-        const request = queue.submit({
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,
           command: "mandible auth merge feature/self-fix --into main",
           title: "Self-merge",
           repo: "mandible",
@@ -100,7 +101,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, restartFn: restart,
           executor: async options => publishFixtureExecution(queue!, options) });
-        const request = queue.submit({ type: 'merge', command: 'mandible auth merge feature/build-failure --into main',
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/build-failure --into main',
           title: 'Failed runtime build', repo: 'mandible', cwd: repo, base_branch: 'main', head_branch: 'feature/build-failure',
           merge_head_sha: git(repo, ['rev-parse', 'feature/build-failure']), execution_mode: 'daemon' });
         await approveFixtureRequest(queue, request.id);
@@ -148,7 +149,7 @@ describe("auth queue", () => {
           },
         });
 
-        const selfMerge = queue.submit({
+        const selfMerge = queue.submit({ ...AUTH_MERGE_REVIEW,
           command: "mandible auth merge feature/self-park --into main",
           title: "Self-merge",
           repo: "mandible",
@@ -164,7 +165,7 @@ describe("auth queue", () => {
         await waitUntil(() => queue.isRebuilding, "the self-merge hook phase");
 
         // A request approved during the rebuild window must be parked, not run.
-        const other = queue.submit({ type: "commit",
+        const other = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
           command: "echo other",
           title: "Other",
           execution_mode: "daemon",
@@ -191,7 +192,7 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({ type: "commit",
+      const req = q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo work",
         title: "Interrupted",
         execution_mode: "daemon",
@@ -231,7 +232,7 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({ type: "commit",
+      const req = q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo work",
         title: "Recent",
         execution_mode: "daemon",

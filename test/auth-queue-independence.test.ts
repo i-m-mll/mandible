@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest, approvePausedFixtureRequest, completeFixturePublication } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -19,7 +20,7 @@ import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, create
 
 async function submitPausedSibling(queue: AuthQueue, db: Parameters<typeof registerWorkRepo>[0], repo: string, branch = 'feature/a') {
   registerWorkRepo(db, repo);
-  const request = queue.submit({ type: 'merge', command: `mandible auth merge ${branch} --into main`,
+  const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge ${branch} --into main`,
     title: 'Reviewed sibling', repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: branch,
     merge_head_sha: git(repo, ['rev-parse', branch]) });
   await approvePausedFixtureRequest(queue, request.id);
@@ -50,7 +51,7 @@ describe("auth queue", () => {
          ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
         VALUES (?, '8420a44', ?, 'feature/b', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
         .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
-      const pending = queue.submit({
+      const pending = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/b --into main", title: "Merge b",
         repo: project.project.project_key, base_branch: "main", head_branch: "feature/b",
         merge_head_sha: git(repo, ["rev-parse", "feature/b"]), cwd: repo,
@@ -108,7 +109,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
       commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
 
-      const first = queue.submit({
+      const first = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/a --into main",
         title: "Merge feature/a",
@@ -126,7 +127,7 @@ describe("auth queue", () => {
       expect(check.status).toBe("clean");
       expect(check.checked_requests).toBe(1);
 
-      const second = queue.submit({
+      const second = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/b --into main",
         title: "Merge feature/b",
@@ -150,7 +151,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/a", { "shared.txt": "a\n" });
       commitOnBranch(repo, "feature/b", { "shared.txt": "b\n" });
 
-      const first = queue.submit({
+      const first = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/a --into main",
         title: "Merge feature/a",
@@ -170,7 +171,7 @@ describe("auth queue", () => {
       expect(check.conflicts[0]?.request_id).toBe(first.id);
       expect(check.conflicts[0]?.files).toContain("shared.txt");
 
-      expect(() => queue.submit({
+      expect(() => queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/b --into main",
         title: "Merge feature/b",
@@ -230,7 +231,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/demo", { "feature.txt": "feature\n" });
       writeFile(repo, "shared.txt", "dirty\n");
 
-      expect(() => queue.submit({
+      expect(() => queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/demo --into main",
         title: "Merge feature/demo",
@@ -251,7 +252,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/gone", { "gone.txt": "gone\n" });
       commitOnBranch(repo, "feature/live", { "live.txt": "live\n" });
 
-      const queued = queue.submit({
+      const queued = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/gone --into main",
         title: "Merge feature/gone",
@@ -289,7 +290,7 @@ describe("auth queue", () => {
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
       commitOnBranch(repo, 'feature/landed', { 'landed.txt': 'landed\n' });
-      const request = queue.submit({ type: 'merge', command: 'mandible auth merge feature/landed --into main', title: 'Unreviewed merge',
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/landed --into main', title: 'Unreviewed merge',
         repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/landed', merge_head_sha: git(repo, ['rev-parse', 'feature/landed']) });
       git(repo, ['merge', '--no-ff', 'feature/landed', '-m', 'Out-of-band merge']);
       if (deleteBranch) git(repo, ['branch', '-D', 'feature/landed']);
@@ -310,7 +311,7 @@ describe("auth queue", () => {
       const headSha = git(repo, ["rev-parse", "feature/unmerged"]);
 
       const queue = new AuthQueue({ db });
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/unmerged --into main",
         title: "Merge feature/unmerged",
@@ -351,7 +352,7 @@ describe("auth queue", () => {
       expect(originalHeadSha).not.toBe(targetSha);
 
       const queue = new AuthQueue({ db });
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/recreated --into main",
         title: "Merge feature/recreated",
@@ -401,7 +402,7 @@ describe("auth queue", () => {
         "INSERT INTO attribution_evidence (id, evidence_method, verified_at, details_json) VALUES (?, ?, ?, '{}')"
       ).run("evidence-parked-1", "credential_signature", Date.now());
 
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/parked --into main",
         title: "Merge feature/parked",
@@ -440,7 +441,7 @@ describe("auth queue", () => {
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
       commitOnBranch(repo, 'feature/oob', { 'oob.txt': 'out of band\n' });
-      const request = queue.submit({ type: 'merge', command: 'mandible auth merge feature/oob --into main', title: 'Unproved merge',
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/oob --into main', title: 'Unproved merge',
         repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/oob', merge_head_sha: git(repo, ['rev-parse', 'feature/oob']) });
       git(repo, ['merge', '--no-ff', 'feature/oob', '-m', 'Out-of-band merge']);
       db.prepare('UPDATE auth_requests SET approved_by_user_id = ? WHERE id = ?').run(getOperator(db)!.id, request.id);
@@ -460,7 +461,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, 'feature/a', { 'shared.txt': 'a\n' });
       commitOnBranch(repo, 'feature/b', { 'shared.txt': 'b\n' });
       const sibling = await submitPausedSibling(queue, db, repo);
-      await expect(Promise.resolve().then(() => queue.submit({ type: 'merge', command: 'mandible auth merge feature/b --into main',
+      await expect(Promise.resolve().then(() => queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: 'mandible auth merge feature/b --into main',
         title: 'Conflicting sibling', repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: 'feature/b',
         merge_head_sha: git(repo, ['rev-parse', 'feature/b']) }))).rejects.toThrow(/conflicts with pending request/);
       expect(queue.getRequest(sibling.id)?.status).toBe('executing');
@@ -500,7 +501,7 @@ describe("auth queue", () => {
       }
       registerWorkRepo(db, repo);
       configureSigningCredential(db, repo, "ssh_key");
-      const submit = (branch: string, extra: { depends_on_id?: string } = {}) => queue.submit({
+      const submit = (branch: string, extra: { depends_on_id?: string } = {}) => queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge feature/${branch} --into main`,
         title: `Merge feature/${branch}`,
@@ -585,7 +586,7 @@ describe("auth queue", () => {
     try {
       for (const branch of ['a', 'exec', 'c']) commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
       const sibling = await submitPausedSibling(queue, db, repo);
-      const request = (branch: string) => queue.submit({ type: 'merge', command: `mandible auth merge feature/${branch} --into main`,
+      const request = (branch: string) => queue.submit({ ...AUTH_MERGE_REVIEW,  type: 'merge', command: `mandible auth merge feature/${branch} --into main`,
         title: branch, repo: path.basename(repo), cwd: repo, base_branch: 'main', head_branch: `feature/${branch}`,
         merge_head_sha: git(repo, ['rev-parse', `feature/${branch}`]) });
       const execRequest = request('exec'); const pending = request('c');

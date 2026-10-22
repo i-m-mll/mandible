@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -41,7 +42,7 @@ function requesterFixture() {
         VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
         .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, credential.id);
     }
-    return queue.submit({
+    return queue.submit({ ...AUTH_MERGE_REVIEW,
     command: "mandible auth merge feature/original --into main",
     title: "Original",
     repo: project.project.project_key,
@@ -178,7 +179,7 @@ describe("auth request immutable lifecycle", () => {
 
   it("lets the operator recover a legacy pending request without fabricating custody", () => {
     const { queue, operator, credential } = requesterFixture();
-    const legacy = queue.submit({ command: "echo legacy", title: "Legacy", type: "commit" });
+    const legacy = queue.submit({ ...AUTH_COMMAND_REVIEW,  command: "echo legacy", title: "Legacy", type: "commit" });
     const recovered = queue.withdraw(legacy.id, "Operator retired an unowned legacy request", {
       user_id: operator.id,
       evidence_method: "api_token",
@@ -203,7 +204,7 @@ describe("auth request immutable lifecycle", () => {
 
   it("fails closed for legacy rows and terminal requests", () => {
     const { queue, operator, actor, submit } = requesterFixture();
-    const legacy = queue.submit({ command: "echo legacy", title: "Legacy", type: "commit" });
+    const legacy = queue.submit({ ...AUTH_COMMAND_REVIEW,  command: "echo legacy", title: "Legacy", type: "commit" });
     expect(() => queue.withdraw(legacy.id, "unknown requester", actor, 1, 0)).toThrow(AuthQueueError);
 
     const withdrawn = submit({ head_branch: "feature/withdrawn" });

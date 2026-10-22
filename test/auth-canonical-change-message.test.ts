@@ -632,6 +632,7 @@ describe("auth queue canonical message storage", () => {
     const { db, queue } = newQueue();
     try {
       const request = queue.submit({
+        type: "config-change",
         command: "echo legacy",
         title: "Legacy",
         commit_message: "- one\n- two",
@@ -659,27 +660,14 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("demotes a canonical message to review text on an explicit canonical_message false", () => {
+  it("refuses demoting the exact Git document on a merge", () => {
     const { db, queue } = newQueue();
     try {
       const request = queue.submit(canonicalSubmission("first"));
-      expect(request.commit_message_digest).not.toBeNull();
-
-      // A false-only update must be applied, not rejected as "no fields" and
-      // not silently ignored.
-      const demoted = queue.update(request.id, { canonical_message: false });
-      expect(demoted.commit_message).toBe(request.commit_message);
-      expect(demoted.commit_message_digest).toBeNull();
-
-      // ...and it can be promoted back while still pending.
-      const promoted = queue.update(request.id, {
-        canonical_message: true,
-        verification: VERIFICATION,
-      });
-      expect(promoted.commit_message_digest).toBe(request.commit_message_digest);
-    } finally {
-      db.close();
-    }
+      expect(() => queue.update(request.id, { canonical_message: false }))
+        .toThrow(expect.objectContaining({ status: 400 }));
+      expect(queue.getRequest(request.id)?.commit_message_digest).toBe(request.commit_message_digest);
+    } finally { db.close(); }
   });
 
   it("refuses to mutate a canonical message once the request leaves pending", () => {
@@ -708,6 +696,7 @@ describe("auth queue canonical message storage", () => {
     const { db, queue } = newQueue();
     try {
       const request = queue.submit({
+        type: "config-change",
         command: "echo legacy",
         title: "Legacy",
         commit_message: "- one",

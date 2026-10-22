@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -71,7 +72,7 @@ async function submitSuccessfulRequest(
   const repo = createAuthCheckRepo();
   registerWorkRepo((queue as unknown as { db: Db }).db, repo);
   commitOnBranch(repo, "feature/x", { "finalizer.txt": "reviewed\n" });
-  const request = queue.submit({
+  const request = queue.submit({ ...AUTH_MERGE_REVIEW,
     type,
     command: type === "merge" ? "mandible auth merge feature/x --into main" : "mandible auth commit",
     title: "Finalizer test",
@@ -398,7 +399,7 @@ describe("work-unit resolution on merge", () => {
         workUnitAbandonedScanRetentionMs: 1000,
         codexThreadArchiver: recordingArchiver(archived),
       });
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge integration/batch --into main",
         title: "Merge integration",
@@ -494,7 +495,7 @@ describe("work-unit resolution on merge", () => {
       ).run(path.basename(repo));
 
       const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000, backgroundMaintenance: false });
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge integration/bf-batch --into main",
         title: "Merge integration",
@@ -558,7 +559,7 @@ describe("work-unit resolution on merge", () => {
     const repo = createAuthCheckRepo();
     commitOnBranch(repo, "integration/reused", { "first.txt": "first\n" });
     registerWorkRepo(db, repo);
-    const submitWave = (queue: AuthQueue, title: string) => queue.submit({
+    const submitWave = (queue: AuthQueue, title: string) => queue.submit({ ...AUTH_MERGE_REVIEW,
       type: "merge",
       command: "mandible auth merge integration/reused --into main",
       title,
@@ -661,7 +662,7 @@ describe("worker thread archival", () => {
         created_at: Date.now(),
       });
 
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/archive-worker --into main",
         title: "Archive workers",

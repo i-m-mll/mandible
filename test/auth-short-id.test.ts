@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 //
 // The auth request short-id contract (issues f59b5bd, 22ace1c). Deep links
@@ -57,7 +58,7 @@ function column<T>(database: Db, id: string, name: string): T {
 describe("auth request short ids", () => {
   it("resolves an unambiguous prefix to the full request record", async () => {
     const { router, queue } = setup();
-    const request = queue.submit({
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/linked --into main",
       title: "Session-linked request",
       session_id: "sess-deep-link-1",
@@ -89,7 +90,7 @@ describe("auth request short ids", () => {
 
   it("resolves a declared request ref in the queue's database, not the process singleton", async () => {
     const { router, queue } = setup();
-    const request = queue.submit({ command: "echo isolated", title: "Isolated" });
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,  command: "echo isolated", title: "Isolated" });
     const singleton = migratedMemoryDb();
     const prefix = request.id.slice(0, 8);
     insertLegacyRequest(singleton, `${prefix}-other-1`, "Singleton one");
@@ -115,7 +116,7 @@ describe("auth request short ids", () => {
 
   it("revises the canonical row through a short id and invalidates its retained candidate", async () => {
     const { router, queue, db: database } = setup();
-    const request = queue.submit({
+    const request = queue.submit({ ...AUTH_COMMAND_REVIEW,
       type: "config-change",
       command: "echo candidate",
       title: "Candidate",
@@ -162,7 +163,7 @@ describe("auth request short ids", () => {
   it("applies every mutator to the row the short id resolves to", async () => {
     const { router, queue, db: database } = setup();
     const submit = (branch: string, status?: string) => {
-      const request = queue.submit({ command: `mandible auth merge feature/${branch} --into main`, title: branch });
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  command: `mandible auth merge feature/${branch} --into main`, title: branch });
       if (status) database.prepare("UPDATE auth_requests SET status = ?, exit_code = 1 WHERE id = ?").run(status, request.id);
       return request;
     };
@@ -191,7 +192,7 @@ describe("auth request short ids", () => {
 
   it("retires delete and dismiss as 410 without touching the row or emitting a deletion", async () => {
     const { router, queue, db: database, events } = setup();
-    const request = queue.submit({ command: "mandible auth merge feature/retired --into main", title: "Retired routes" });
+    const request = queue.submit({ ...AUTH_MERGE_REVIEW,  command: "mandible auth merge feature/retired --into main", title: "Retired routes" });
     const shortUrl = `/api/auth/request/${request.id.slice(0, 8)}`;
 
     const deleted = await router.invoke({ method: "DELETE", url: shortUrl, body: { reason: "superseded" } });

@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 /**
  * @vitest-environment node
@@ -59,7 +60,7 @@ function fixture() {
   return {
     repo, db, queue, calls, strangerKey, strangerFingerprint,
     submit(branch: string) {
-      return queue.submit({
+      return queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge ${branch} --into main`,
         title: `Merge ${branch}`,

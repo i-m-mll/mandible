@@ -848,6 +848,10 @@ describe("work-unit custody takeover", () => {
     expect(queue.getRequest(requestId)).toMatchObject({ type: "custody-transfer", status: "pending",
       requested_by_user_id: credentials.taker.user_id, requester_credential_id: credentials.taker.credential_id });
 
+    const description = queue.getRequest(requestId)!.commit_message;
+    expect(description).toContain("Reason:");
+    expect(description).toContain("Approving transfers custody");
+    expect(queue.getRequest(requestId)!.commit_message_digest).toBeNull();
     const completed = await queue.approveWithOperatorProof(requestId, operatorId);
     expect(completed).toMatchObject({ status: "completed", exit_code: 0, approved_by_user_id: operatorId });
     expect(owner(id)).toEqual({ owner_credential_id: credentials.taker.credential_id, custody_generation: 2 });

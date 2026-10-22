@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -278,7 +279,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
           return { exit_code: 0, output: "merge-ok\n" };
         },
       });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Durable convergence",
         repo: "durable-repo",
@@ -346,7 +347,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Bounded retry",
         repo: "bounded-repo",
@@ -397,7 +398,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Dedup alert",
         repo: "alert-repo",
@@ -477,7 +478,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Withhold closure",
         cwd: repoRoot,
@@ -646,7 +647,7 @@ describe("hook registry", () => {
     hookManager.create({ repo_pattern: "*", auth_type: "commit", command: "echo hook-executed", label: "Integration test hook", position: 0 });
     const queue = new AuthQueue({ db, hookManager });
     try {
-      const request = queue.submit({ type: "commit", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" });
+      const request = queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" });
       await approveFixtureRequest(queue, request.id);
       await waitFor(() => queue.getRequest(request.id)?.status === "completed");
       expect(queue.getRequest(request.id)?.output).toContain("hook-executed");

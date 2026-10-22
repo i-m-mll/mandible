@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, seedHistoricalAuthExecution } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -40,7 +41,7 @@ describe("auth queue", () => {
       let executionStarted: () => void;
       const started = new Promise<void>(resolve => { executionStarted = resolve; });
       queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async () => { executionStarted(); return new Promise<never>(() => {}); } });
-      const request = queue.submit({
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/atomic-recovery --into main",
         title: "Atomic recovery",
@@ -90,7 +91,7 @@ describe("auth queue", () => {
       if (blockSync) writeFile(repo, "atomic.txt", "local collision\n");
       const order: string[] = [];
       const follower = _phase === "after CAS"
-        ? queue.submit({ type: "commit",
+        ? queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
             command: "echo same-repo follower",
             title: "Same-repo follower",
             cwd: repo,
@@ -173,7 +174,7 @@ describe("auth queue", () => {
       try {
         commitOnBranch(repo, "feature/interrupted", { "interrupted.txt": "land me\n" });
         queue = new AuthQueue({ db, now: () => 0, backgroundMaintenance: false });
-        const request = queue.submit({ type: "merge", command: "mandible auth merge feature/interrupted --into main",
+        const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/interrupted --into main",
           title: "Legacy interrupted merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/interrupted",
           merge_head_sha: git(repo, ["rev-parse", "feature/interrupted"]), cwd: repo,
           target_repo_root: otherRepo ?? repo, execution_mode: "remote" });
@@ -217,7 +218,7 @@ describe("auth queue", () => {
       queue = new AuthQueue({ db, now: () => now, executor: async () => {
         markStarted(); return new Promise<never>(() => {});
       } });
-      const request = queue.submit({ type: "merge", command: "mandible auth merge feature/long-running --into main",
+      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/long-running --into main",
         title: "Long-running merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/long-running",
         merge_head_sha: git(repo, ["rev-parse", "feature/long-running"]), cwd: repo });
       await approveFixtureRequest(queue, request.id); await started;
