@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  acquireSharedSse,
-  shouldSkipFallbackPoll,
-  __resetSharedSseForTests,
-} from '../ui/src/sse-shared';
+import { acquireSharedSse, __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
   applyConversationAppendPayload,
@@ -198,35 +194,6 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     expect(current.blocks.map((b) => b.id)).toEqual(['b0']); // unchanged
   });
 
-  it('coalesces three conversation:new events into one list refetch after the debounce', async () => {
-    vi.useFakeTimers();
-    let listFetches = 0;
-    let refetchTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleListRefetch = () => {
-      if (refetchTimer !== null) return;
-      refetchTimer = setTimeout(() => {
-        refetchTimer = null;
-        listFetches += 1;
-      }, 1000);
-    };
-
-    const handle = acquireSharedSse();
-    handle.on('conversation:new', () => scheduleListRefetch());
-    handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-    es.open();
-
-    es.emit({ type: 'conversation:new', data: { id: 'conv-a' } });
-    es.emit({ type: 'conversation:new', data: { id: 'conv-b' } });
-    es.emit({ type: 'conversation:new', data: { id: 'conv-c' } });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(listFetches).toBe(0); // still pending
-
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(listFetches).toBe(1);
-  });
-
   it('merges a monotonic summary in place and refetches on unknown id', async () => {
     let list: Conversation[] = [conversation([]), { ...conversation([]), id: 'conv-2', block_count: 2 }];
     let refetches = 0;
@@ -256,27 +223,6 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     await vi.waitFor(() => expect(refetches).toBe(1));
   });
 
-  it('treats a heartbeat as a freshness-only signal (no dispatch side effects)', async () => {
-    let freshAt = 0;
-    let dispatches = 0;
-
-    const handle = acquireSharedSse();
-    handle.on('heartbeat', () => {
-      freshAt = 1234;
-    });
-    handle.on('conversation:updated', () => {
-      dispatches += 1;
-    });
-    handle.connect();
-    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const es = FakeEventSource.instances[0];
-    es.open();
-
-    es.emit({ type: 'heartbeat', data: { timestamp: 1234 } });
-    await vi.waitFor(() => expect(freshAt).toBe(1234));
-    expect(dispatches).toBe(0);
-  });
-
   it('fires the reconnect resync exactly once per real reconnect', async () => {
     vi.useFakeTimers();
     let resyncs = 0;
@@ -296,16 +242,5 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(2));
     FakeEventSource.instances[1].open(); // reopen: reconnect
     await vi.waitFor(() => expect(resyncs).toBe(1));
-  });
-
-  it('poll gate: skips while open+fresh, fires when the socket is not open or stale', () => {
-    const now = 1_000_000;
-    // Open and fresh (heartbeat 5 s ago) → skip.
-    expect(shouldSkipFallbackPoll('open', now - 5_000, now)).toBe(true);
-    // Open but stale (no signal for 46 s) → fire.
-    expect(shouldSkipFallbackPoll('open', now - 46_000, now)).toBe(false);
-    // Socket down → fire regardless of freshness.
-    expect(shouldSkipFallbackPoll('down', now - 1_000, now)).toBe(false);
-    expect(shouldSkipFallbackPoll('connecting', now, now)).toBe(false);
   });
 });

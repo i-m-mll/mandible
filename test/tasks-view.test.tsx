@@ -15,12 +15,12 @@ import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
 //   - a stale executor report is visibly stale in the list.
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
 import { render } from './helpers/notice-test-render';
-import SqliteDatabase from "../src/sqlite.ts";
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TASK_INVENTORY_SCHEMA_V2, type TaskInventoryResponse } from '../src/contracts.js';
-import { migrate, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import {
   getTaskInventoryView,
   parseTaskInventoryGeneration,
@@ -261,8 +261,7 @@ beforeEach(async () => {
   invalidateApiGetCache();
   await establishTestClientAccess();
   bindTestInstanceCatalog(MAIN_CLI_INSTANCE_RESPONSE.instance);
-  db = new SqliteDatabase(':memory:');
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   publisherId = createUser(db, {
     slug: 'agent-schedule',

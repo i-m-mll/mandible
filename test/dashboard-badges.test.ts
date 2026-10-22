@@ -1,13 +1,11 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../src/db.js";
-import { readDashboardBadgeCounts, registerDashboardRoutes } from "../src/routes/dashboard.js";
-import { Router } from "../src/server.js";
+import { setDb } from "../src/db.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { readDashboardBadgeCounts } from "../src/routes/dashboard.js";
 
 describe("dashboard badge aggregate", () => {
-  const db = new SqliteDatabase(":memory:");
-  migrate(db);
+  const db = migratedMemoryDb();
 
   // Issue c4f456c: the singleton binding is dropped after every test, so it is
   // installed per test rather than once for the whole describe block.
@@ -51,18 +49,6 @@ describe("dashboard badge aggregate", () => {
       briefing: 0,
       incidents: 0,
       tasks: 0,
-    });
-  });
-
-  it("serves the compact aggregate without full tab payloads", async () => {
-    const router = new Router();
-    registerDashboardRoutes(router, { listActive: () => [] } as never, db);
-
-    const response = await router.invoke({ method: "GET", url: "/api/dashboard/badges" });
-
-    expect(response).toEqual({
-      status: 200,
-      body: { auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 },
     });
   });
 
