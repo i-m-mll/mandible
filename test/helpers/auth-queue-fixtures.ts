@@ -34,6 +34,7 @@ import { afterAll, afterEach, expect } from "vitest";
 
 import { AuthHookManager } from "../../src/auth-hooks.js";
 import { AuthQueue } from "../../src/auth-queue.js";
+import type { SseEvent } from "../../src/contracts.js";
 import type { Db } from "../../src/db.js";
 import {
   createLedgerIssue as createSharedLedgerIssue,
@@ -502,6 +503,22 @@ export async function waitForStatus(queue: AuthQueue, id: string, status: string
   }, `request ${id} to reach status ${status}`, 20);
 }
 
+/** Observe Stage 2 completion without waiting for hooks, restart, or Stage 3. */
+export async function awaitFixtureResolution<T>(queue: AuthQueue, id: string, operation: () => Promise<T>): Promise<T> {
+  const internal = queue as unknown as { broadcast: (event: SseEvent) => void };
+  const broadcast = internal.broadcast;
+  let resolved = false;
+  internal.broadcast = event => {
+    broadcast(event);
+    if (event.event === "auth:resolved" && (event.data as { request_id?: string }).request_id === id) resolved = true;
+  };
+  try {
+    const result = await operation();
+    await waitUntil(() => resolved, `request ${id} to emit auth:resolved`);
+    return result;
+  } finally { internal.broadcast = broadcast; }
+}
+
 export function insertMandibleSession(
   db: InstanceType<typeof SqliteDatabase>,
   id: string,
@@ -651,9 +668,11 @@ export async function completeFixturePublication(queue: AuthQueue, id: string): 
     : 'ok';
   const release = pausedFixtureExecutions.get(queue)?.get(id);
   if (!release) throw new Error('Fixture execution was not paused.');
-  release(output);
-  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
-  await waitForStatus(queue, id, 'completed');
+  await awaitFixtureResolution(queue, id, async () => {
+    release(output);
+    (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
+    await waitForStatus(queue, id, 'completed');
+  });
 }
 
 export const AUTH_COMMAND_REVIEW = {

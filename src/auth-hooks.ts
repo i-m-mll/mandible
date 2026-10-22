@@ -362,7 +362,7 @@ export class AuthHookManager {
   /** External handoff observations never consume an attempt or start another hook. */
   async reconcileRuntimeHandoffs(
     adopt: (binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>) => Promise<() => void>,
-    onFailed: (requestId: string, handoffError: string) => void,
+    onFailed: (requestId: string, handoffError: string) => void | Promise<void>,
   ): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
     const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE hook_id = 'builtin-mandible-rebuild'").all() as Array<{ auth_request_id: string }>;
@@ -411,7 +411,7 @@ export class AuthHookManager {
         const refused = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
           truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
         );
-        if (Number(refused.changes) > 0) onFailed(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
+        if (Number(refused.changes) > 0) await onFailed(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
       }
     }
     return [...new Set(accepted)];

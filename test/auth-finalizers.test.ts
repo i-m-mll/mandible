@@ -28,6 +28,7 @@ import {
   approvePausedFixtureRequest,
   commitOnBranch,
   completeFixturePublication,
+  awaitFixtureResolution,
   createAuthCheckRepo,
   createLedgerIssue,
   createLedgerProject,
@@ -54,8 +55,8 @@ function recordingArchiver(archived: string[]): Archiver {
   };
 }
 
-function sweep(queue: AuthQueue): void {
-  (queue as unknown as { sweepSuccessfulMergeFinalizers(): void }).sweepSuccessfulMergeFinalizers();
+async function sweep(queue: AuthQueue): Promise<void> {
+  await (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
 }
 
 function resolveAncestry(queue: AuthQueue, request: unknown): Promise<string[]> {
@@ -217,10 +218,10 @@ describe("staged finalizer lifecycle", () => {
       expect((await queue.getRequest(id))?.merge_finalized_at).toBeNull();
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
 
-      sweep(queue);
+      await sweep(queue);
       await queue.drainFinalizers();
       expect((await queue.getRequest(id))?.merge_finalized_at).toBeNull();
-      sweep(queue);
+      await sweep(queue);
       await queue.drainFinalizers();
 
       const finalizedRow = (await queue.getRequest(id));
@@ -399,7 +400,7 @@ describe("work-unit resolution on merge", () => {
         workUnitAbandonedScanRetentionMs: 1000,
         codexThreadArchiver: recordingArchiver(archived),
       });
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge integration/batch --into main",
         title: "Merge integration",
@@ -411,10 +412,12 @@ describe("work-unit resolution on merge", () => {
         merge_head_sha: integrationHead,
         issue_closures: [closedIssue.id],
         execution_mode: "daemon",
-      });
+      }));
 
-      await approveFixtureRequest(queue, request.id);
-      await waitForStatus(queue, request.id, "completed");
+      await awaitFixtureResolution(queue, request.id, async () => {
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
+      });
       await queue.drainFinalizers();
 
       const rows = Object.fromEntries((db.prepare(
@@ -440,7 +443,7 @@ describe("work-unit resolution on merge", () => {
       // Worker archival of recovered units belongs to the work-unit reconciler.
       expect(archived).toEqual([]);
 
-      const completed = queue.getRequest(request.id)!;
+      const completed = (await queue.getRequest(request.id))!;
       const ancestry = queue as unknown as {
         resolveAncestryWorkUnitsOnMerge(request: AuthRequest): Promise<string[]>;
       };
@@ -469,7 +472,7 @@ describe("work-unit resolution on merge", () => {
       } finally {
         process.env.PATH = prevPath;
       }
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       process.env.PATH = prevPath;
       db.close();
@@ -572,10 +575,12 @@ describe("work-unit resolution on merge", () => {
     }));
     const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
     const completed = (await submitWave(queue, "First wave"));
-    await approveFixtureRequest(queue, completed.id);
-    await waitForStatus(queue, completed.id, "completed");
+    await awaitFixtureResolution(queue, completed.id, async () => {
+      await approveFixtureRequest(queue, completed.id);
+      await waitForStatus(queue, completed.id, "completed");
+    });
     await queue.drainFinalizers();
-    queue.dispose();
+    (await queue.dispose());
 
     git(repo, ["checkout", "integration/reused"]);
     writeFile(repo, "second.txt", "second\n");
@@ -662,7 +667,7 @@ describe("worker thread archival", () => {
         created_at: Date.now(),
       });
 
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/archive-worker --into main",
         title: "Archive workers",
@@ -673,7 +678,7 @@ describe("worker thread archival", () => {
         head_branch: "feature/archive-worker",
         issue_closures: ["done123"],
         execution_mode: "daemon",
-      });
+      }));
       for (const [id, session] of [["wu-worker", "console-worker"], ["wu-parent", "console-parent"], ["wu-running", "console-running"]]) {
         insertWorkUnit(db, {
           id,
@@ -685,15 +690,17 @@ describe("worker thread archival", () => {
         });
       }
 
-      await approveFixtureRequest(queue, request.id);
-      await waitForStatus(queue, request.id, "completed");
+      await awaitFixtureResolution(queue, request.id, async () => {
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
+      });
       await queue.drainFinalizers();
 
       expect(archived).toEqual(["thread-worker"]);
       expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-worker'").get()).toEqual({ state: "resolved" });
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({ status: "closed", resolution: "delivered" });
 
-      const finalizedAt = queue.getRequest(request.id)?.merge_finalized_at;
+      const finalizedAt = (await queue.getRequest(request.id))?.merge_finalized_at;
       const replay = await queue.replayCodexThreadArchives(request.id);
       expect(archived).toEqual(["thread-worker", "thread-worker"]);
       expect(replay).toMatchObject({
@@ -701,9 +708,9 @@ describe("worker thread archival", () => {
         archived: 1,
         candidates: [{ provider_session_id: "thread-worker", issue_id: issue.id, work_unit_id: "wu-worker", archived: true }],
       });
-      expect(queue.getRequest(request.id)?.merge_finalized_at).toBe(finalizedAt);
+      expect((await queue.getRequest(request.id))?.merge_finalized_at).toBe(finalizedAt);
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });

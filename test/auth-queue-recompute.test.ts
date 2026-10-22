@@ -174,6 +174,7 @@ describe("auth queue", () => {
             merge_candidate_tree_sha: null,
             merge_preflight_base_sha: null,
           });
+          await (queue as unknown as { candidateChains: Map<string, Promise<void>> }).candidateChains.get(id);
           expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${id}`])).toThrow();
         };
 
@@ -372,7 +373,7 @@ describe("auth queue", () => {
         });
 
         const baseBefore = git(repo, ['rev-parse', 'main']);
-        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/Head branch feature\/head-race moved/);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/Reviewed merge inputs or retained candidate changed/);
         expect(calls).toHaveLength(0);
         const liveHead = git(repo, ['rev-parse', 'feature/head-race']);
         expect(liveHead).not.toBe(reviewedHead);

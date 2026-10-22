@@ -1,5 +1,6 @@
+import { childOutput } from "./child-observation.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,7 +43,7 @@ export interface AuthApprovalContext {
 export interface AuthAutoApprover {
   getActiveApprovalContext(): AuthApprovalContext | null;
   getDelegatedSigningStatus?(): DelegatedSigningStatus;
-  presenceChallenge?(ttlSeconds?: number): Promise<AuthApprovalContext>;
+  presenceChallenge?(ttlSeconds?: number, signal?: AbortSignal): Promise<AuthApprovalContext>;
 }
 
 export interface DelegatedSigningStatus {
@@ -216,13 +217,19 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     return this.getStatus();
   }
 
-  async presenceChallenge(ttlSeconds = 60): Promise<AuthApprovalContext> {
+  async presenceChallenge(ttlSeconds = 60, signal?: AbortSignal): Promise<AuthApprovalContext> {
+    signal?.throwIfAborted();
     this.expireIfNeeded();
     const active = this.getActiveApprovalContext();
     if (active) return active;
 
     const durationSeconds = Math.min(300, Math.max(30, Math.round(ttlSeconds)));
-    const lease = await this.createDelegatedSigningLease(durationSeconds);
+    const lease = await this.createDelegatedSigningLease(durationSeconds, signal);
+    if (signal?.aborted) {
+      this.db.prepare("UPDATE delegated_signing_leases SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?)) WHERE id = ?").run(this.now(), lease.id);
+      await stopSshAgent(lease.sshAgentPid);
+      signal.throwIfAborted();
+    }
     const timer = setTimeout(() => {
       void stopSshAgent(lease.sshAgentPid).catch(() => undefined);
     }, durationSeconds * 1000);
@@ -274,7 +281,8 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     await stopSshAgent(context.runtime.sshAgentPid);
   }
 
-  private async createDelegatedSigningLease(durationSeconds: number): Promise<ActiveLease> {
+  private async createDelegatedSigningLease(durationSeconds: number, signal?: AbortSignal): Promise<ActiveLease> {
+    signal?.throwIfAborted();
     const status = this.getDelegatedSigningStatus();
     if (!status.configured) {
       throw new Error("Delegated signing is not configured.");
@@ -285,13 +293,14 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
     const paths = this.paths();
     const ageRecipient = fs.readFileSync(paths.recipient, "utf8").trim();
-    const credential = await this.ensureDelegatedSigningCredentials(ageRecipient);
+    const credential = await this.ensureDelegatedSigningCredentials(ageRecipient, signal);
+    signal?.throwIfAborted();
     const operator = getOperator(this.db);
     if (!operator) {
       throw new Error("Delegated signing requires a configured local operator.");
     }
     const identity = await execFileText("age-plugin-yubikey", ["--identity"], {
-      timeoutMs: this.presenceCommandTimeoutMs,
+      timeoutMs: this.presenceCommandTimeoutMs, signal,
     });
     if (!identity.trim()) {
       throw new Error("No age-plugin-yubikey identity available from the inserted YubiKey.");
@@ -300,16 +309,18 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       "age",
       ["--decrypt", "--identity", "-", paths.encryptedPassphrase],
       identity,
-      { timeoutMs: this.presenceCommandTimeoutMs },
+      { timeoutMs: this.presenceCommandTimeoutMs, signal },
     );
+    signal?.throwIfAborted();
     const agent = await startSshAgent();
 
     try {
+      signal?.throwIfAborted();
       await runWithInput(
         "ssh-add",
         ["-t", String(durationSeconds), paths.privateKey],
         `${passphrase.trimEnd()}\n`,
-        { env: { SSH_AUTH_SOCK: agent.sshAuthSock } },
+        { env: { SSH_AUTH_SOCK: agent.sshAuthSock }, signal, timeoutMs: signal ? this.presenceCommandTimeoutMs : undefined },
       );
     } catch (error) {
       await stopSshAgent(agent.sshAgentPid);
@@ -320,6 +331,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     const enabledUntil = mintedAt + durationSeconds * 1000;
     const id = randomUUID();
     try {
+      signal?.throwIfAborted();
       addDelegatedSigningLease(this.db, {
         id,
         credential_id: credential.id,
@@ -344,7 +356,8 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     };
   }
 
-  private async ensureDelegatedSigningCredentials(ageRecipient: string): Promise<UserCredential> {
+  private async ensureDelegatedSigningCredentials(ageRecipient: string, signal?: AbortSignal): Promise<UserCredential> {
+    signal?.throwIfAborted();
     const operator = getOperator(this.db);
     if (!operator) {
       throw new Error("Delegated signing setup requires a configured local operator.");
@@ -354,7 +367,9 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     const fingerprintOutput = await execFileText(
       "ssh-keygen",
       ["-lf", paths.publicKey, "-E", "sha256"],
+      { signal, timeoutMs: signal ? this.presenceCommandTimeoutMs : undefined },
     );
+    signal?.throwIfAborted();
     const fingerprint = fingerprintOutput.match(/SHA256:[A-Za-z0-9+/=]{40,50}/)?.[0] ?? null;
     if (!fingerprint) {
       throw new Error("Could not derive the delegated SSH public-key fingerprint.");
@@ -552,21 +567,18 @@ function hasCommand(command: string): boolean {
 async function execFileText(
   command: string,
   args: string[],
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; signal?: AbortSignal; input?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(command, args, {
-      env: { ...process.env, LC_ALL: "C" },
-      maxBuffer: 1024 * 1024,
-      timeout: options.timeoutMs,
-      killSignal: "SIGKILL",
+    return await childOutput(command, args, {
+      env: { ...process.env, LC_ALL: "C", ...options.env }, input: options.input,
+      maxBuffer: 1024 * 1024, encoding: "utf8", timeout: options.timeoutMs ?? 0,
+      killSignal: "SIGKILL", signal: options.signal,
     });
-    return stdout;
   } catch (error) {
+    options.signal?.throwIfAborted();
     const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
-    if (options.timeoutMs != null && (failure.killed || failure.signal === "SIGKILL")) {
-      throw new Error(`${command} timed out after ${options.timeoutMs}ms`);
-    }
+    if (options.timeoutMs != null && (failure.killed || failure.signal === "SIGKILL")) throw new Error(`${command} timed out after ${options.timeoutMs}ms`);
     throw error;
   }
 }
@@ -575,45 +587,9 @@ function runWithInput(
   command: string,
   args: string[],
   input: string,
-  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, LC_ALL: "C", ...options.env },
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timer = options.timeoutMs == null
-      ? null
-      : setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          child.kill("SIGKILL");
-          reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
-        }, options.timeoutMs);
-    timer?.unref();
-    child.stdout.on("data", (data: Buffer) => { stdout += data.toString("utf8"); });
-    child.stderr.on("data", (data: Buffer) => { stderr += data.toString("utf8"); });
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(`${command} failed with exit ${code}: ${stderr.trim()}`));
-      }
-    });
-    child.stdin.end(input);
-  });
+  return execFileText(command, args, { ...options, input });
 }
 
 async function startSshAgent(): Promise<{ sshAgentPid: string; sshAuthSock: string }> {

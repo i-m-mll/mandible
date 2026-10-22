@@ -25,12 +25,19 @@ async function observeChildBytes(program: string, args: readonly string[], optio
   const { input, encoding: _encoding, stdio: _stdio, timeout = 5_000, ...childOptions } = options;
   return new Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer; error?: Error }>((resolve) => {
     let inputError: Error | undefined;
+    let closed = false;
+    let completed: { status: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer; error?: Error } | undefined;
+    const settle = () => { if (closed && completed) resolve(inputError && !completed.error ? { ...completed, error: inputError } : completed); };
     const child = execFile(program, [...args], { ...childOptions, timeout, encoding: "buffer" }, (error, stdout, stderr) => {
       const code = error?.code;
       const status = error ? typeof code === "number" ? code : null : 0;
-      resolve({ status, signal: error?.signal ?? null, stdout, stderr,
-        ...(error && status === null ? { error } : inputError ? { error: inputError } : {}) });
+      completed = { status, signal: error?.signal ?? null,
+        stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ""),
+        stderr: Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? ""),
+        ...(error && status === null ? { error } : {}) };
+      settle();
     });
+    child.once("close", () => { closed = true; settle(); });
     child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
       if (error.code !== "EPIPE") inputError = error;
     });
@@ -45,7 +52,7 @@ export async function childOutput(program: string, args: readonly string[], opti
   if (result.status !== 0 || result.error) {
     const { error: childError, ...details } = result;
     const error = Object.assign(childError ?? new Error(`${program} exited ${result.status ?? result.signal}`), details);
-    if (result.error && "killed" in result.error && result.error.killed && result.signal) Object.assign(error, { code: "ETIMEDOUT" });
+    if (!options.signal?.aborted && result.error && "killed" in result.error && result.error.killed && result.signal) Object.assign(error, { code: "ETIMEDOUT" });
     throw error;
   }
   return options.encoding ? result.stdout.toString("utf8") : result.stdout;

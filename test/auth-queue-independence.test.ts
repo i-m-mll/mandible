@@ -447,7 +447,7 @@ describe("auth queue", () => {
       db.prepare('UPDATE auth_requests SET approved_by_user_id = ? WHERE id = ?').run(getOperator(db)!.id, request.id);
       const restarted = new AuthQueue({ db });
       try {
-        (restarted as unknown as { sweepSuccessfulMergeFinalizers(): void }).sweepSuccessfulMergeFinalizers();
+        await (restarted as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
         await restarted.drainFinalizers();
         expect((await restarted.getRequest(request.id))).toMatchObject({ status: 'pending', exit_code: null, merge_finalized_at: null, execution_evidence_id: null });
       } finally { (await restarted.dispose()); }
@@ -597,7 +597,7 @@ describe("auth queue", () => {
       await completeFixturePublication(queue, sibling.id);
       admission.mockRestore();
       await approveFixtureRequest(queue, execRequest.id); await started;
-      (queue as unknown as { sweepSuccessfulMergeFinalizers(): void }).sweepSuccessfulMergeFinalizers();
+      void (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
       expect((await queue.getRequest(pending.id))?.merge_preflight_base_sha).toBe(staleBase);
       await expect(approveFixtureRequest(queue, pending.id)).rejects.toThrow(/Refusal: execution_chain_busy/);
       releaseExec(); await waitForStatus(queue, execRequest.id, 'completed'); await queue.drainFinalizers();

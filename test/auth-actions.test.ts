@@ -320,9 +320,10 @@ describe("auth request action execution", () => {
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
       expect(store.getIssue(fresh.id).resolution).toBe("delivered");
 
+      await queue.drainFinalizers();
       const current = (await queue.getRequest(request.id))!;
-      (queue as any).applyLedgerCompletionForRequest(current);
-      (queue as any).releaseWithheldClosures(current);
+      (await (queue as any).applyLedgerCompletionForRequest(current));
+      (await (queue as any).releaseWithheldClosures(current));
       expect(queue.listActions(request.id)).toEqual(actions);
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
     } finally { (await queue?.dispose()); db.close(); }

@@ -207,6 +207,8 @@ describe("protected delivery evidence", () => {
   it("retains applied publication state when its result is missing and completes on exact recovered evidence", async () => {
     const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
+    await waitUntil(() => executorCalls === 1, "the approved executor to start");
+    const callsBeforeResult = executorCalls;
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const withoutReceipt = publication.output.split("MANDIBLE_MERGE_RESULT")[0]!;
     const stuck = (await queue.setResult(request.id, 0, withoutReceipt));
@@ -219,12 +221,14 @@ describe("protected delivery evidence", () => {
     expect(evidence?.details).toMatchObject({ publication_verified: true, verified: true, commit_sha: publication.mergeSha, signer_user_id: operatorId });
     expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
     await expect((async () => (await queue.setResult(request.id, 0, publication.output))())).rejects.toThrow();
-    expect(executorCalls).toBe(0);
+    expect(executorCalls).toBe(callsBeforeResult);
   });
 
   it("keeps nonzero post-publication result reports recoverable", async () => {
     const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
+    await waitUntil(() => executorCalls === 1, "the approved executor to start");
+    const callsBeforeResult = executorCalls;
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const reported = (await queue.setResult(request.id, 75, publication.output.split("MANDIBLE_MERGE_RESULT")[0]!, "checkout cleanup interrupted"));
     expect(reported).toMatchObject({ status: "executing", exit_code: null, merge_atomic_enabled: true });
@@ -232,7 +236,7 @@ describe("protected delivery evidence", () => {
     const completed = (await queue.setResult(request.id, 0, publication.output));
     expect(completed).toMatchObject({ status: "completed", exit_code: 0 });
     expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
-    expect(executorCalls).toBe(0);
+    expect(executorCalls).toBe(callsBeforeResult);
   });
 
   it("recovers the original receipt after a later signed publication without changing its checkout", async () => {
@@ -245,8 +249,8 @@ describe("protected delivery evidence", () => {
     await queue.approveWithOperatorProof(later.id, operatorId);
     const second = publishTestCandidate(repo, (await queue.getRequest(later.id))!);
     const before = protectedState();
-    const internals = queue as unknown as { inspectStaleMerge(request: unknown): unknown; finishRecoveredAtomicMerge(request: unknown, sha: string): Promise<void> };
-    expect(internals.inspectStaleMerge((await queue.getRequest(request.id))!)).toEqual({ outcome: "atomic_applied", mergeSha: first.mergeSha });
+    const internals = queue as unknown as { inspectStaleMerge(request: unknown): Promise<unknown>; finishRecoveredAtomicMerge(request: unknown, sha: string): Promise<void> };
+    expect(await internals.inspectStaleMerge((await queue.getRequest(request.id))!)).toEqual({ outcome: "atomic_applied", mergeSha: first.mergeSha });
     const callsBeforeRecovery = executorCalls;
     await internals.finishRecoveredAtomicMerge((await queue.getRequest(request.id))!, first.mergeSha);
     const completed = (await queue.getRequest(request.id))!;
@@ -473,7 +477,7 @@ describe("consequential non-Git approval", () => {
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
     const drifted = queue.approveWithOperatorProof(request.id, operatorId);
     (await queue.update(request.id, { title: "Changed reviewed action" }));
-    await expect(drifted).rejects.toThrow("reviewed request changed");
+    await expect(drifted).rejects.toThrow("Observed request version is no longer current");
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
     expect(hookCalls).toBe(0);

@@ -9,6 +9,7 @@ import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-q
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
@@ -53,7 +54,7 @@ describe("auth queue", () => {
       });
 
       // Submitted from the feature worktree; executed from the protected root.
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(featureWorktree, ["rev-parse", "feature/signed-interactive"]),
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(featureWorktree, ["rev-parse", "feature/signed-interactive"]),
         type: "merge",
         command: "mandible auth merge feature/signed-interactive --into main",
         title: "Merge signed interactive",
@@ -61,7 +62,7 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/signed-interactive",
         cwd: featureWorktree,
-      });
+      }));
       const approved = await approveFixtureRequest(queue, request.id);
       expect(approved.cwd).toBe(fs.realpathSync(repo));
       const resolved = await waitForStatus(queue, request.id, "completed");
@@ -86,6 +87,7 @@ describe("auth queue", () => {
         credential_id: signing.credentialId,
         user_id: signing.operatorId,
       });
+      await waitUntil(() => events.some(event => event.event === "auth:resolved" && (event.data as { request_id?: string }).request_id === request.id), "the resolved lifecycle event");
       const resolvedEvent = events.findLast((event) => event.event === "auth:resolved");
       expect(resolvedEvent?.data).toMatchObject({
         execution_evidence_id: resolved!.execution_evidence_id,
@@ -95,7 +97,7 @@ describe("auth queue", () => {
           user_id: signing.operatorId,
         },
       });
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
@@ -461,7 +463,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const submitted = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/lease-reuse"]),
+      const submitted = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/lease-reuse"]),
         type: "merge",
         command: "mandible auth merge feature/lease-reuse --into main",
         title: "Merge feature/lease-reuse",
@@ -469,9 +471,9 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/lease-reuse",
         cwd: repo,
-      });
+      }));
       expect(submitted.status).toBe("pending");
-      queue.approve(submitted.id, delegatedApproval);
+      (await queue.approve(submitted.id, delegatedApproval));
       const resolved = await waitForStatus(queue, submitted.id, "completed");
       const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
       expect(evidence.signature.evidence_method).toBe("credential_signature");
@@ -486,7 +488,7 @@ describe("auth queue", () => {
       expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
         authorizer_user_id: approverUserId,
       });
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
@@ -524,7 +526,7 @@ describe("auth queue", () => {
         },
         executor: async (options) => {
           order.push("executor");
-          expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeTruthy();
+          expect((await queue.getRequest(options.request_id))?.execution_evidence_id).toBeTruthy();
           expect(options.env?.SSH_AUTH_SOCK).toBeUndefined();
           expect(options.env?.GIT_CONFIG_VALUE_0).toBeUndefined();
           return publishFixtureExecution(queue, options);
@@ -532,7 +534,7 @@ describe("auth queue", () => {
         hookManager: createNoopHookManager(),
       });
 
-      const request = queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/presence"]),
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/presence"]),
         type: "merge",
         command: "mandible auth merge feature/presence --into main",
         title: "Merge feature/presence",
@@ -540,7 +542,7 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "feature/presence",
         cwd: repo,
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
       const resolved = await waitForStatus(queue, request.id, "completed");
 
@@ -566,7 +568,7 @@ describe("auth queue", () => {
         .join("");
       expect(output).not.toContain("waiting for YubiKey touch");
       expect(output).not.toContain("delegated signing key ready");
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
