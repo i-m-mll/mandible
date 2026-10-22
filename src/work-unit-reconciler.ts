@@ -31,6 +31,11 @@ type AuthPipelineMatch =
 // 4. Auto-commit detection: open → committed when branch has commits
 
 const RECONCILE_INTERVAL_MS = 60_000;
+const LOGGED_SAMPLE_LIMIT = 50;
+
+function sample<T>(items: T[]): T[] {
+  return items.slice(0, LOGGED_SAMPLE_LIMIT);
+}
 
 export interface WorkUnitReconcilerOptions {
   archiver: CodexThreadArchiver;
@@ -148,8 +153,10 @@ export class WorkUnitReconciler {
 
   /**
    * Pass 2: Archive Codex worker threads whose bound work units are resolved.
-   * Each archive logs once; a failing thread logs when it first fails and again
-   * when it finally archives, while its recorded backoff paces the retries.
+   * A pass may work through a backlog, so it logs one summary per pass rather
+   * than one line per thread; `worker_thread_archives` keeps the per-thread
+   * record. A pass logs only when it archived a thread or a thread newly failed;
+   * retries of a known failure stay quiet while their recorded backoff paces them.
    */
   private async archiveFinishedWorkerThreads(): Promise<void> {
     const outcome = await archiveFinishedWorkerThreads(getDb(), {
@@ -158,17 +165,18 @@ export class WorkUnitReconciler {
       resolveAlias: this.resolveSession,
       now: this.now,
     });
-    for (const { thread_id, prior_attempts } of outcome.archived) {
-      this.logger("info", "worker_thread_archived", {
-        thread_id,
-        ...(prior_attempts > 0 ? { recovered_after_attempts: prior_attempts } : {}),
-      });
-    }
-    for (const { thread_id, attempts, error } of outcome.failed) {
-      if (attempts === 1) {
-        this.logger("error", "worker_thread_archive_failed", { thread_id, error });
-      }
-    }
+    const newlyFailed = outcome.failed.filter(({ attempts }) => attempts === 1);
+    if (outcome.archived.length === 0 && newlyFailed.length === 0) return;
+    this.logger(newlyFailed.length > 0 ? "warn" : "info", "worker_thread_archive_pass", {
+      archived: outcome.archived.length,
+      recovered: outcome.archived.filter(({ prior_attempts }) => prior_attempts > 0).length,
+      failed: outcome.failed.length,
+      deferred: outcome.deferred.length,
+      archived_thread_ids: sample(outcome.archived.map(({ thread_id }) => thread_id)),
+      ...(newlyFailed.length > 0
+        ? { newly_failed: sample(newlyFailed.map(({ thread_id, error }) => ({ thread_id, error }))) }
+        : {}),
+    });
   }
 
   /**

@@ -1420,7 +1420,7 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
       return;
     }
     if (error.code === "custody_conflict" || error.code === "lifecycle_conflict" ||
-        error.code === "lifecycle_precondition_required") {
+        error.code === "lifecycle_precondition_required" || error.code === "recovery_refused") {
       res.status(409).json({ error: error.message, code: error.code });
       return;
     }

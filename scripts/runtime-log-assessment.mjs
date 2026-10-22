@@ -1,3 +1,7 @@
+// A storm is one event or route above STORM_LIMIT lines in any STORM_WINDOW_MS
+// window: the signature of a runaway loop. Planned backlog passes log one
+// summary per pass, not one line per item (docs/runtime-handoff.md), so this
+// rule needs no exemptions.
 const STORM_WINDOW_MS = 10_000;
 const STORM_LIMIT = 100;
 

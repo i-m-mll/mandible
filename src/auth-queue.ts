@@ -342,7 +342,7 @@ type StaleMergeRecovery =
   | { outcome: "failed"; detail: string };
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
@@ -5559,7 +5559,12 @@ export class AuthQueue {
         const owner = this.requestCustodyForActor(current, recovery.actor);
         if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
       };
-      await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+      try {
+        await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+      } catch (error) {
+        if (error instanceof AuthQueueError) throw error;
+        throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
+      }
       // Recovery settles this request only. Existing merge finalizers retain
       // their normal daemon lifecycle; a one-shot must not enqueue global work.
       await this.finalizerQueue.drain();
@@ -6501,6 +6506,7 @@ export class AuthQueue {
     // deferred actions (comments, worker status, labels) record what happened
     // and still run before convergence completes.
     const withholdClosures = this.convergenceWithholdsClosures(request.id);
+    const withheld: string[] = [];
     for (const action of actions) {
       if (action.state === "vetoed") {
         this.removeActionResolveLink(request, action);
@@ -6510,12 +6516,7 @@ export class AuthQueue {
         continue;
       }
       if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
-        authLog("info", "auth_issue_closure_withheld", {
-          subsystem: "auth",
-          auth_request_id: request.id,
-          action_id: action.id,
-          target_issue_ref: action.target_issue_ref,
-        });
+        withheld.push(action.target_issue_ref);
         continue;
       }
       try {
@@ -6539,6 +6540,14 @@ export class AuthQueue {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    if (withheld.length > 0) {
+      authLog("info", "auth_issue_closures_withheld", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        count: withheld.length,
+        target_issue_refs: withheld,
+      });
     }
   }
 

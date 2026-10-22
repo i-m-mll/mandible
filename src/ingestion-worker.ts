@@ -60,7 +60,7 @@ async function handle(
         return undefined;
       }
       if (request.kind === "reconcile") {
-        await reconcileForWorker(request.repairLegacyOrphans === true, cooperate);
+        await reconcileForWorker(request.startupPasses === true, cooperate);
         return undefined;
       }
       return triggerFullIngestForWorker();

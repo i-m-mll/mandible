@@ -352,7 +352,7 @@ describe('runtime convergence recovery', () => {
     const f = await recoveryFixture(true);
     const before = queue.getRequest(f.request.id)!;
     const history = queue.listLifecycleEvents(f.request.id);
-    await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toThrow('ack interrupted');
+    await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toMatchObject({ code: 'recovery_refused', message: expect.stringContaining('ack interrupted') });
     expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: f.run.attempts, attempt_history: f.run.attempt_history });
     expect(f.journal.phase).toBe('complete');
     const adopt = vi.fn(() => { throw new Error('terminal publication must not be adopted'); });
