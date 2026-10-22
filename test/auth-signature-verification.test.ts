@@ -10,11 +10,14 @@ import {
   verifySuccessfulMergeCommitSignature,
 } from "../src/auth-signature-verification.js";
 import { openDb, type Db } from "../src/db.js";
+import { AttributionReadResolver } from "../src/identity/read-projection.js";
 import {
+  addAttributionEvidence,
   addCredential,
   revokeCredential,
   setupOperator,
 } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function git(cwd: string, args: string[]): string {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
@@ -197,5 +200,30 @@ describe("successful merge result parsing", () => {
     expect(extractSuccessfulMergeCommitSha(`${marker}\n${forged}\n`)).toBeNull();
     expect(extractSuccessfulMergeCommitSha(`${forged}\n${marker}\n`)).toBeNull();
     expect(extractSuccessfulMergeCommitSha(`${marker}\nMANDIBLE_MERGE_RESULT not-json\n`)).toBeNull();
+  });
+});
+
+describe("merge signature claim", () => {
+  // The badge the approver reads before authorizing a protected-branch merge.
+  // Evidence is written with `evidence_method: "credential_signature"` whether
+  // or not verification succeeded, so the method name alone claims nothing.
+  it("claims verified only for a recorded successful verification", () => {
+    const db = migratedMemoryDb();
+    try {
+      const resolver = new AttributionReadResolver(db);
+      const claimFor = (details: Record<string, unknown>) => resolver.mergeSignatureClaim(
+        addAttributionEvidence(db, { evidence_method: "credential_signature", details }).id,
+      );
+      expect(claimFor({ verified: false, reason: "verification_error" }))
+        .toEqual({ state: "unverified", reason: "verification_error" });
+      expect(claimFor({})).toEqual({ state: "unverified", reason: null });
+      expect(claimFor({ verified: true, fingerprint: "SHA256:abc" }))
+        .toEqual({ state: "verified", fingerprint: "SHA256:abc" });
+      const other = addAttributionEvidence(db, { evidence_method: "session_claim" });
+      expect(resolver.mergeSignatureClaim(other.id)).toEqual({ state: "none" });
+      expect(resolver.mergeSignatureClaim(null)).toEqual({ state: "none" });
+    } finally {
+      db.close();
+    }
   });
 });

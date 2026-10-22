@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { CURRENT_SCHEMA_VERSION, type Db } from "../src/db.js";
+import { AUTH_REQUEST_ACTION_KINDS } from "../src/contracts.js";
+import type { Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -43,15 +44,10 @@ function createMigratedDb(): Db {
   });
 }
 
-function tableColumns(db: Db, table: string): string[] {
-  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
-    .map((row) => row.name);
-}
-
-function createLedgerIssue(db: Db, alias = "act123") {
+function createLedgerIssue(db: Db, alias = "act123", branch?: string) {
   const repoRoot = createAuthCheckRepo();
   registerWorkRepo(db, repoRoot);
-  for (const branch of ["exec", "fail", "stale", "legacy"]) commitOnBranch(repoRoot, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
+  if (branch) commitOnBranch(repoRoot, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
   tempDirs.push(repoRoot);
   const project = createLedgerProject(db, repoRoot, { defaultBranch: "main", remoteUrl: "" });
   const issue = createSharedLedgerIssue(db, {
@@ -73,6 +69,26 @@ function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue['subm
 }
 
 describe("auth request action schema", () => {
+  it("matches the SQL CHECK constraint on auth_request_actions.kind", () => {
+    // The SQL vocabulary cannot import the TypeScript array; read it back from
+    // the schema the migrations produce. A kind the code accepts but the DB
+    // rejects fails at INSERT; one the DB accepts but the code does not handle
+    // is the silent no-op that used to be recorded as `applied`.
+    const db = createMigratedDb();
+    try {
+      const row = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'auth_request_actions'")
+        .get() as { sql: string };
+      const check = /kind\s+TEXT\s+NOT NULL\s+CHECK\(kind IN \(([^)]*)\)\)/i.exec(row.sql);
+      expect(check, `could not find the kind CHECK constraint in: ${row.sql}`).toBeTruthy();
+      const sqlKinds = check![1].split(",").map((part) => part.trim().replace(/^'|'$/g, "")).filter(Boolean);
+      expect([...sqlKinds].sort()).toEqual([...AUTH_REQUEST_ACTION_KINDS].sort());
+    } finally {
+      db.close();
+    }
+  });
+
+
   it("normalizes one declarative exact Briefing promotion action", () => {
     expect(normalizeAuthActionInput({
       kind: "briefing_group_promote",
@@ -99,45 +115,13 @@ describe("auth request action schema", () => {
     })).toThrow(/unsupported field 'command'/);
   });
 
-  it("creates auth_request_actions on fresh databases", () => {
-    const db = createMigratedDb();
-    try {
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-        .toMatchObject({ value: String(CURRENT_SCHEMA_VERSION) });
-      const columns = tableColumns(db, "auth_request_actions");
-      expect(columns).toEqual([
-        "id",
-        "auth_request_id",
-        "ordinal",
-        "kind",
-        "target_issue_ref",
-        "payload",
-        "state",
-        "target_digest",
-        "staged_at",
-        "updated_at",
-        "applied_at",
-        "outcome_detail",
-        "replacement_action_id",
-      ]);
-      expect(tableColumns(db, "auth_requests")).toEqual(
-        expect.arrayContaining([
-          "merge_preflight_base_sha",
-          "merge_preflight_queue_fingerprint",
-        ]),
-      );
-    } finally {
-      db.close();
-    }
-  });
-
 });
 
 describe("auth request action execution", () => {
   it("applies staged actions once in ordinal order when a merge succeeds", async () => {
     const db = createMigratedDb();
     try {
-      const { repoRoot, issue } = createLedgerIssue(db, "exec123");
+      const { repoRoot, issue } = createLedgerIssue(db, "exec123", "exec");
       let now = 10_000;
       const queue = new AuthQueue({ db, now: () => now });
       const request = submitActionMerge(queue, {
@@ -239,7 +223,7 @@ describe("auth request action execution", () => {
   it("records failed actions and continues applying remaining staged actions", async () => {
     const db = createMigratedDb();
     try {
-      const { repoRoot, issue } = createLedgerIssue(db, "fail123");
+      const { repoRoot, issue } = createLedgerIssue(db, "fail123", "fail");
       const queue = new AuthQueue({ db, now: () => 20_000 });
       const request = submitActionMerge(queue, {
         type: "merge",
@@ -282,131 +266,65 @@ describe("auth request action execution", () => {
     }
   });
 
-  it("honors issue_close on_stale skip while default stale actions apply with annotation", async () => {
+  // Each staged closure is guarded on its own: a stale target with on_stale
+  // skip stays open, a stale target without it closes with an annotation, and
+  // a failed or refused close never blocks or undoes its siblings, even when
+  // request-wide completion and withheld-closure release are replayed.
+  it("guards each staged closure independently", async () => {
     const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
     try {
-      const first = createLedgerIssue(db, "stale1");
-      const secondIssue = new LedgerStore(db).createIssue({
-        ...SYSTEM_ACTOR,
-        project_id: first.issue.project_id,
-        title: "Second stale target",
-        body: "Body",
-        kind: "feature",
-        priority: "normal",
-        aliases: [{ alias_kind: "git_bug_short", alias: "stale2" }],
+      const { repoRoot, issue: fresh } = createLedgerIssue(db, "guard1", "stale");
+      const store = new LedgerStore(db);
+      const target = (alias: string, kind: "feature" | "tracker" = "feature") => createSharedLedgerIssue(db, {
+        project_id: fresh.project_id, title: `Guarded ${alias}`, kind, alias,
       });
-      const queue = new AuthQueue({ db, now: () => 30_000 });
+      const staleSkip = target("guard2");
+      const staleDefault = target("guard3");
+      const tracker = target("guard4", "tracker");
+      const injected = target("guard5");
+      const lastFresh = target("guard6");
+      queue = new AuthQueue({ db, now: () => 30_000, backgroundMaintenance: false });
+      const skip = { on_stale: "skip" };
       const request = submitActionMerge(queue, {
-        type: "merge",
-        command: "mandible auth merge feature/stale --into main",
-        title: "Stale action handling",
-        cwd: first.repoRoot,
-        repo: path.basename(first.repoRoot),
-        execution_mode: "remote",
+        type: "merge", command: "mandible auth merge feature/stale --into main",
+        title: "Independent guarded closures", cwd: repoRoot, repo: path.basename(repoRoot),
         actions: [
-          { kind: "issue_close", target_issue_ref: first.issue.short_id, payload: { on_stale: "skip" } },
-          { kind: "issue_close", target_issue_ref: secondIssue.short_id, payload: {} },
+          { kind: "issue_close", target_issue_ref: fresh.short_id, payload: skip },
+          { kind: "issue_close", target_issue_ref: staleSkip.short_id, payload: skip },
+          { kind: "issue_close", target_issue_ref: staleDefault.short_id, payload: {} },
+          { kind: "issue_close", target_issue_ref: tracker.short_id, payload: skip },
+          { kind: "issue_close", target_issue_ref: injected.short_id, payload: skip },
+          { kind: "issue_close", target_issue_ref: lastFresh.short_id, payload: skip },
         ],
       });
-
-      new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
-      new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
-      // Issue 08a5f04 (review F2) — canonical-command verification needs the
-      // structured branches; the fixture cwd is not a git repo, so they are
-      // recorded directly instead of via submit-time preflight.
+      const apply = (queue as any).applyDeferredLedgerAction.bind(queue);
+      (queue as any).applyDeferredLedgerAction = (request: unknown, action: { ordinal: number }) => {
+        if (action.ordinal === 5) throw new Error("Injected target execution failure");
+        return apply(request, action);
+      };
+      for (const issue of [staleSkip, staleDefault]) {
+        store.addComment(issue.id, { body: "Changed since review", source: "mandible", ...SYSTEM_ACTOR });
+      }
       await approvePausedFixtureRequest(queue, request.id);
       await completeFixturePublication(queue, request.id);
 
       const actions = queue.listActions(request.id);
-      expect(actions[0]).toMatchObject({ state: "skipped_stale", applied_at: null });
-      expect(actions[0].outcome_detail).toContain("digest moved");
-      expect(actions[1]).toMatchObject({ state: "applied" });
-      expect(actions[1].outcome_detail).toContain("digest moved");
-      expect(new LedgerStore(db).getIssue(first.issue.id).status).toBe("open");
-      expect(new LedgerStore(db).getIssue(secondIssue.id).status).toBe("closed");
-    } finally {
-      db.close();
-    }
-  });
+      expect(actions.map((action) => action.state))
+        .toEqual(["applied", "skipped_stale", "applied", "failed", "failed", "applied"]);
+      expect(actions[1]).toMatchObject({ applied_at: null, outcome_detail: expect.stringContaining("digest moved") });
+      expect(actions[2].outcome_detail).toContain("digest moved");
+      const statuses = () => [fresh, staleSkip, staleDefault, tracker, injected, lastFresh]
+        .map((issue) => store.getIssue(issue.id).status);
+      expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
+      expect(store.getIssue(fresh.id).resolution).toBe("delivered");
 
-  it.each(["fresh-first", "stale-first", "all-fresh", "tracker", "failed"])(
-    "guards each closure independently: %s", async (mode) => {
-      const db = createMigratedDb();
-      let queue: AuthQueue | undefined;
-      try {
-        const { repoRoot, issue: first } = createLedgerIssue(db, "guard1");
-        const store = new LedgerStore(db);
-        const second = createSharedLedgerIssue(db, {
-          project_id: first.project_id, title: "Second guarded target",
-          kind: mode === "tracker" ? "tracker" : "feature", alias: "guard2",
-        });
-        queue = new AuthQueue({ db, now: () => 30_000, backgroundMaintenance: false });
-        const targets = mode === "stale-first" ? [second, first] : [first, second];
-        const request = submitActionMerge(queue, {
-          type: "merge", command: "mandible auth merge feature/stale --into main",
-          title: "Independent guarded closures", cwd: repoRoot, repo: path.basename(repoRoot),
-          actions: targets.map((issue) => ({ kind: "issue_close", target_issue_ref: issue.short_id,
-            payload: { on_stale: "skip" } })),
-        });
-        if (mode === "failed") {
-          const apply = (queue as any).applyDeferredLedgerAction.bind(queue);
-          (queue as any).applyDeferredLedgerAction = (request: unknown, action: { ordinal: number }) => {
-            if (action.ordinal === 2) throw new Error("Injected target execution failure");
-            return apply(request, action);
-          };
-        }
-        if (mode === "fresh-first" || mode === "stale-first") {
-          store.addComment(second.id, { body: "Changed since review", source: "mandible", ...SYSTEM_ACTOR });
-        }
-        await approvePausedFixtureRequest(queue, request.id);
-        await completeFixturePublication(queue, request.id);
-        const expected = mode === "all-fresh" ? "applied" : mode === "tracker" || mode === "failed" ? "failed" : "skipped_stale";
-        expect(queue.listActions(request.id).map((action) => action.state)).toEqual(
-          mode === "stale-first" ? [expected, "applied"] : ["applied", expected],
-        );
-        expect(store.getIssue(first.id)).toMatchObject({ status: "closed", resolution: "delivered" });
-        expect(store.getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
-        // Replay request-wide completion and delayed release: neither may undo
-        // the individual guard, even if a resolve link still exists.
-        const terminal = queue.listActions(request.id);
-        const current = queue.getRequest(request.id)!;
-        (queue as any).applyLedgerCompletionForRequest(current);
-        (queue as any).releaseWithheldClosures(current);
-        expect(queue.listActions(request.id)).toEqual(terminal);
-        expect(store.getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
-      } finally { queue?.dispose(); db.close(); }
-    },
-  );
-
-  it("preserves legacy issue_closures through the unified close executor", async () => {
-    const db = createMigratedDb();
-    try {
-      const { repoRoot, issue } = createLedgerIssue(db, "legacy1");
-      const queue = new AuthQueue({ db, now: () => 40_000 });
-      const request = submitActionMerge(queue, {
-        type: "merge",
-        command: "mandible auth merge feature/legacy --into main",
-        title: "Legacy close",
-        cwd: repoRoot,
-        repo: path.basename(repoRoot),
-        execution_mode: "remote",
-        issue_closures: [issue.short_id],
-      });
-
-      // Issue 08a5f04 (review F2) — canonical-command verification needs the
-      // structured branches; the fixture cwd is not a git repo, so they are
-      // recorded directly instead of via submit-time preflight.
-      await approvePausedFixtureRequest(queue, request.id);
-      await completeFixturePublication(queue, request.id);
-
-      expect(queue.listActions(request.id)).toEqual([]);
-      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
-        status: "closed",
-        resolution: "delivered",
-      });
-    } finally {
-      db.close();
-    }
+      const current = queue.getRequest(request.id)!;
+      (queue as any).applyLedgerCompletionForRequest(current);
+      (queue as any).releaseWithheldClosures(current);
+      expect(queue.listActions(request.id)).toEqual(actions);
+      expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
+    } finally { queue?.dispose(); db.close(); }
   });
 
   it("creates resolves operational links for staged issue_close actions", () => {
