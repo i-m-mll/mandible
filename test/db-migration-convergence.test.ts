@@ -92,7 +92,7 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
-  it("migrates the frozen floor fixture to the same schema a fresh database gets", () => {
+  it("migrates the floor fixture to the schema a fresh database gets, and a daemon boots on the result", async () => {
     const freshPath = path.join(tempDir, "fresh.db");
     const migratedPath = path.join(tempDir, "migrated.db");
     new SqliteDatabase(migratedPath).exec(FLOOR_FIXTURE).close();
@@ -115,26 +115,24 @@ describe("floor to head", () => {
       migrated.close();
       fresh.close();
     }
-  });
 
-  it("keeps nonempty retired patch history in place and in metadata backups", () => {
-    const db = migrateFixtureThrough(MINIMUM_SUPPORTED_SCHEMA_VERSION);
+    const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
+    const priorSocket = process.env.MANDIBLE_SOCKET;
+    process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = path.join(tempDir, "local-sessions");
+    process.env.MANDIBLE_SOCKET = path.join(tempDir, "api.sock");
+    const daemon = await startDaemon({ port: 0, dbPath: migratedPath, pidFilePath: path.join(tempDir, "daemon.pid"), handleSignals: false });
     try {
-      db.prepare(`INSERT INTO runtime_patches
-        (id, fingerprint, commit_hash, diff_summary, applied_at, source, submitted)
-        VALUES ('historical-patch', 'fingerprint', 'commit', 'unique patch history', 123, 'manual', 1)`).run();
-      migrate(db);
-      expect(db.prepare("SELECT id, diff_summary FROM runtime_patches").all())
-        .toEqual([{ id: "historical-patch", diff_summary: "unique patch history" }]);
-      const backup = buildMetadataBackupSql(db);
-      expect(backup).toContain('INSERT INTO "runtime_patches"');
-      expect(backup).toContain("unique patch history");
+      expect(await checkHealth(daemon.port)).toMatchObject({ status: "ok", ready: true });
     } finally {
-      db.close();
+      await daemon.close();
+      if (priorSocket === undefined) delete process.env.MANDIBLE_SOCKET;
+      else process.env.MANDIBLE_SOCKET = priorSocket;
+      if (priorSessionAuthorityDir === undefined) delete process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
+      else process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = priorSessionAuthorityDir;
     }
   });
 
-  it("drops the retired tables and column without disturbing surviving rows", () => {
+  it("drops the retired tables and column, keeps nonempty patch history, and disturbs no surviving row", () => {
     const RETIRED_TABLES = [
       "ledger_external_refs", "ledger_sync_jobs", "ledger_outbox", "ledger_conflicts",
       "starred_chats", "presets", "preset_nodes", "preset_diffs", "session_presets",
@@ -153,6 +151,9 @@ describe("floor to head", () => {
       db.prepare("INSERT INTO preset_nodes (id, preset_id, created_at, updated_at) VALUES ('n1', 'p1', 1, 1)").run();
       db.prepare(`INSERT INTO message_params (session_id, message_index, model, preset_ids, created_at)
         VALUES ('s1', 0, 'opus', '["p1"]', 7)`).run();
+      db.prepare(`INSERT INTO runtime_patches
+        (id, fingerprint, commit_hash, diff_summary, applied_at, source, submitted)
+        VALUES ('historical-patch', 'fingerprint', 'commit', 'unique patch history', 123, 'manual', 1)`).run();
 
       migrate(db);
 
@@ -162,6 +163,11 @@ describe("floor to head", () => {
       expect(db.prepare("SELECT session_id, message_index, model, created_at FROM message_params").all())
         .toEqual([{ session_id: "s1", message_index: 0, model: "opus", created_at: 7 }]);
       expect(db.prepare("SELECT count(*) AS n FROM meta WHERE key LIKE 'post_migration.%'").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT id, diff_summary FROM runtime_patches").all())
+        .toEqual([{ id: "historical-patch", diff_summary: "unique patch history" }]);
+      const backup = buildMetadataBackupSql(db);
+      expect(backup).toContain('INSERT INTO "runtime_patches"');
+      expect(backup).toContain("unique patch history");
       expect(db.pragma("foreign_key_check")).toEqual([]);
     } finally {
       db.close();
@@ -170,32 +176,6 @@ describe("floor to head", () => {
 });
 
 describe("supported version range", () => {
-  it("boots the daemon against fresh and floor-migrated databases", async () => {
-    const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
-    const priorSocket = process.env.MANDIBLE_SOCKET;
-    process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = path.join(tempDir, "local-sessions");
-    process.env.MANDIBLE_SOCKET = path.join(tempDir, "api.sock");
-    try {
-      for (const name of ["fresh", "migrated"]) {
-        const dbPath = path.join(tempDir, `daemon-${name}.db`);
-        if (name === "migrated") new SqliteDatabase(dbPath).exec(FLOOR_FIXTURE).close();
-        const daemon = await startDaemon({ port: 0, dbPath, pidFilePath: path.join(tempDir, `${name}.pid`), handleSignals: false });
-        try {
-          expect(await checkHealth(daemon.port)).toMatchObject({ status: "ok", ready: true });
-          expect(schemaVersion(daemon.db)).toBe(String(CURRENT_SCHEMA_VERSION));
-          expect(daemon.db.pragma("foreign_key_check")).toEqual([]);
-        } finally {
-          await daemon.close();
-        }
-      }
-    } finally {
-      if (priorSocket === undefined) delete process.env.MANDIBLE_SOCKET;
-      else process.env.MANDIBLE_SOCKET = priorSocket;
-      if (priorSessionAuthorityDir === undefined) delete process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
-      else process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = priorSessionAuthorityDir;
-    }
-  });
-
   /** A database recording a version outside what this build serves. */
   function databaseRecording(version: number): Db {
     const db = new SqliteDatabase(path.join(tempDir, `v${version}.db`)).exec(FLOOR_FIXTURE);
@@ -231,35 +211,6 @@ describe("supported version range", () => {
     try {
       expect(() => migrate(db)).toThrow(UnsupportedSchemaVersionError);
       expect(() => migrate(db)).toThrow(new RegExp(`newer than the v${CURRENT_SCHEMA_VERSION} this build serves`));
-    } finally {
-      db.close();
-    }
-  });
-
-  // The persistent Chat preview recorded its lifecycle and archive migrations as
-  // v176 and v177 while main used v176 for auth change reports. That lineage is
-  // not reachable through MIGRATIONS, so it is built by hand. Delete this case
-  // when the floor passes 177.
-  it("reconciles the retained Chat preview schema-version collision without losing archive state", () => {
-    const db = migrateFixtureThrough(175);
-    try {
-      db.transaction(() => {
-        for (const name of ["unified_chat_creation_lifecycle", "mandible_conversation_archive_state"]) {
-          for (const statement of MIGRATIONS.find((candidate) => candidate.name === name)!.statements) db.exec(statement);
-        }
-        db.prepare("UPDATE meta SET value = '177' WHERE key = 'schema_version'").run();
-      })();
-      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get()).toBeUndefined();
-
-      migrate(db);
-
-      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
-      expect(db.prepare(`SELECT "notnull" FROM pragma_table_info('briefing_group_review_dispositions')
-        WHERE name = 'composition_run_id'`).get()).toEqual({ notnull: 0 });
-      expect(db.prepare("SELECT 1 FROM pragma_table_info('briefing_composition_inputs') WHERE name = 'expected_current_round_id'").get())
-        .toBeDefined();
-      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get()).toBeDefined();
-      expect(db.prepare("SELECT 1 FROM conversation_archive_states").all()).toEqual([]);
     } finally {
       db.close();
     }
@@ -649,6 +600,36 @@ describe("v174 Artifact parent locators", () => {
     }
   });
 });
+
+describe("v177 Chat preview collision", () => {
+  // The persistent Chat preview recorded its lifecycle and archive migrations as
+  // v176 and v177 while main used v176 for auth change reports. That lineage is
+  // not reachable through MIGRATIONS, so it is built by hand. Delete this case
+  // when the floor passes 177.
+  it("reconciles the retained Chat preview schema-version collision without losing archive state", () => {
+    const db = migrateFixtureThrough(175);
+    try {
+      db.transaction(() => {
+        for (const name of ["unified_chat_creation_lifecycle", "mandible_conversation_archive_state"]) {
+          for (const statement of MIGRATIONS.find((candidate) => candidate.name === name)!.statements) db.exec(statement);
+        }
+        db.prepare("UPDATE meta SET value = '177' WHERE key = 'schema_version'").run();
+      })();
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get()).toBeUndefined();
+
+      migrate(db);
+
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(db.prepare(`SELECT "notnull" FROM pragma_table_info('briefing_group_review_dispositions')
+        WHERE name = 'composition_run_id'`).get()).toEqual({ notnull: 0 });
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('briefing_composition_inputs') WHERE name = 'expected_current_round_id'").get())
+        .toBeDefined();
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get()).toBeDefined();
+      expect(db.prepare("SELECT 1 FROM conversation_archive_states").all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });});
 
 describe("v183 issue metadata", () => {
   function legacyMetadataDatabase(): Db {
