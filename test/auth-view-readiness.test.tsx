@@ -12,6 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authMainInstance, bindAuthUiOperations } from './helpers/auth-ui-fixture';
 
 import { AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
+import { CollapsiblePanel, type CollapsiblePanelAvailability } from '../ui/src/components/shared/CollapsiblePanel';
+import { usePersistedViewState } from '../ui/src/hooks/usePersistedViewState';
+import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
+import type { AuthChangeReport } from '../src/contracts';
 import type { AuthRequestAction, InstanceInfo } from '../ui/src/api';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
@@ -534,9 +538,118 @@ it('rejects a malformed successful action response instead of confirming an empt
 
 
 it('shows the unavailable breakdown in its header without a redundant explanation', () => {
-  render(<AuthQueueView queue={[pendingRequest]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
+  render(<AuthQueueView queue={[{ ...pendingRequest, change_report: null }]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
     daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
-  const panel = screen.getByRole('button', { name: 'Change breakdown', exact: true }).closest('section')!;
+  const panel = screen.getByText('Change breakdown', { exact: true }).closest('section')!;
   expect(panel.querySelector('.collapsible-panel__header')?.textContent).toContain('Unavailable');
-  expect(panel.querySelector('.collapsible-panel__body')?.textContent ?? '').toBe('');
+  expect(panel.querySelector('button')).toBeNull();
+  expect(panel.querySelector('[data-disclosure-chevron]')).toBeNull();
+  expect(panel.querySelector('.collapsible-panel__body')).toBeNull();
 });
+
+
+it('shares explicit panel availability without changing saved folding intent', async () => {
+  localStorage.setItem('availability-fold', 'true');
+  function Panel({ availability }: { availability: CollapsiblePanelAvailability }) {
+    const [expanded, setExpanded] = usePersistedViewState('availability-fold', value => value === true, true);
+    return <CollapsiblePanel title="Review panel" availability={availability} expanded={expanded}
+      onExpandedChange={setExpanded} actions={<span>Known summary</span>}
+      persistentContent={<span>Persistent content</span>}>
+      <p>Known body</p>
+    </CollapsiblePanel>;
+  }
+  const view = render(<Panel availability="unknown" />);
+  expect(screen.queryByRole('button')).toBeNull();
+  expect(screen.queryByText('Unavailable')).toBeNull();
+  expect(screen.queryByText('Known body')).toBeNull();
+  expect(screen.queryByText('Persistent content')).toBeNull();
+  expect(screen.queryByText('Known summary')).toBeNull();
+  view.rerender(<Panel availability="unavailable" />);
+  expect(screen.getByText('Unavailable')).toBeTruthy();
+  expect(screen.queryByText('Known summary')).toBeNull();
+  expect(document.querySelector('[data-disclosure-chevron]')).toBeNull();
+  expect(document.querySelector('.collapsible-panel__body')).toBeNull();
+  expect(localStorage.getItem('availability-fold')).toBe('true');
+  view.rerender(<Panel availability="available" />);
+  expect(screen.getByRole('button', { name: 'Review panel' }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByText('Known body')).toBeTruthy();
+  expect(screen.getByText('Known summary')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Review panel' }));
+  await waitFor(() => expect(localStorage.getItem('availability-fold')).toBe('false'));
+  view.rerender(<Panel availability="unknown" />);
+  view.rerender(<Panel availability="unavailable" />);
+  view.rerender(<Panel availability="available" />);
+  expect(screen.getByRole('button', { name: 'Review panel' }).getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByText('Known body')).toBeNull();
+  expect(document.querySelector('[data-disclosure-chevron="right"]')).toBeTruthy();
+});
+
+it('keeps unknown breakdown distinct from confirmed absence and available zero-file data', () => {
+  const report: AuthChangeReport = {
+    schema: 'mandible-auth-change-report@1', classifier_version: 'mandible-auth-change-classifier@1',
+    rules_version: 'mandible-auth-change-rules@1', rename_similarity_percent: 50,
+    comparison: { base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), merge_base_sha: 'a'.repeat(40) },
+    totals: { files: 0, additions: 0, deletions: 0, text_files: 0, binary_files: 0 }, files: [],
+  };
+  const view = render(<AuthChangeBreakdown requestId="availability-report" report={undefined} />);
+  expect(screen.queryByRole('button', { name: 'Change breakdown' })).toBeNull();
+  expect(screen.queryByText('Unavailable')).toBeNull();
+  view.rerender(<AuthChangeBreakdown requestId="availability-report" report={null} />);
+  expect(screen.getByText('Unavailable')).toBeTruthy();
+  expect(document.querySelector('.collapsible-panel__body')).toBeNull();
+  view.rerender(<AuthChangeBreakdown requestId="availability-report" report={report} />);
+  expect(screen.getByRole('button', { name: 'Change breakdown' })).toBeTruthy();
+  expect(screen.queryByText('Unavailable')).toBeNull();
+  expect(document.querySelector('.collapsible-panel__body')).toBeTruthy();
+});
+
+it('makes confirmed missing Description static and keeps canonical raw Git content discoverable', () => {
+  const absent = render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: null }]} historyQueue={[]}
+    outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
+  const description = screen.getByText('Description', { exact: true }).closest('section')!;
+  expect(description.querySelector('.collapsible-panel__status')?.textContent).toBe('Unavailable');
+  expect(description.querySelector('button')).toBeNull();
+  expect(description.querySelector('.collapsible-panel__body')).toBeNull();
+  absent.unmount();
+  const raw = 'Merge feature/x: Preserve exact bytes\n\nWhy:\nRead this raw message.\n\nVerification:\nPrivate review.\n';
+  render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: raw, commit_message_digest: 'a'.repeat(64) }]}
+    historyQueue={[]} outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance}
+    onApprove={() => undefined} onReject={() => undefined} />);
+  const toggle = screen.getByRole('button', { name: 'Exact Git message' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toggle.querySelector('[data-disclosure-chevron="right"]')).toBeTruthy();
+  expect(toggle.closest('.collapsible-panel-region--persistent-disclosures')).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(toggle.closest('section')?.querySelector('pre')?.textContent).toBe(raw);
+});
+
+
+for (const outcome of ['failed', 'absent'] as const) {
+  it(`preserves unknown report availability through delayed ${outcome} history hydration`, async () => {
+    let resolve!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    const held = new Promise<Response>((yes, no) => { resolve = yes; reject = no; });
+    const fetch = vi.fn((input: string) => String(input) === '/api/auth/request/req-1'
+      ? held : Promise.reject(new Error('no network in test')));
+    vi.stubGlobal('fetch', fetch);
+    const request = { ...pendingRequest, status: 'completed', exit_code: 0, change_report: undefined,
+      diff_summary: undefined, spec_content: undefined, output: undefined };
+    render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}} selectedAuthId="req-1"
+      daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
+    await waitFor(() => expect(fetch.mock.calls.some(([input]) => input === '/api/auth/request/req-1')).toBe(true));
+    const panel = () => screen.getByText('Change breakdown', { exact: true }).closest('section')!;
+    expect(panel().querySelector('button')).toBeNull();
+    expect(panel().querySelector('.collapsible-panel__status')).toBeNull();
+    await act(async () => {
+      if (outcome === 'failed') reject(new Error('History detail temporarily unavailable'));
+      else resolve(new Response(JSON.stringify({ ...request, change_report: null }), { headers: { 'content-type': 'application/json' } }));
+    });
+    if (outcome === 'failed') {
+      expect(panel().querySelector('.collapsible-panel__status')).toBeNull();
+      expect(panel().querySelector('button')).toBeNull();
+    } else {
+      await waitFor(() => expect(panel().querySelector('.collapsible-panel__status')?.textContent).toBe('Unavailable'));
+      expect(panel().querySelector('.collapsible-panel__body')).toBeNull();
+    }
+  });
+}

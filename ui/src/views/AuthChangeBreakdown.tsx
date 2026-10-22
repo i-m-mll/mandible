@@ -394,7 +394,7 @@ export function AuthChangeBreakdown({
   report,
 }: {
   requestId: string;
-  report: AuthChangeReport | null;
+  report: AuthChangeReport | null | undefined;
 }): JSX.Element {
   const [state, setState] = usePersistedViewState(
     authChangeBreakdownStorageKey(requestId),
@@ -403,19 +403,20 @@ export function AuthChangeBreakdown({
   );
   const summary = report
     ? `${formatCount(report.totals.files)} files · +${formatCount(report.totals.additions)} −${formatCount(report.totals.deletions)}`
-    : 'Unavailable';
+    : null;
   const viewPanelId = `auth-change-breakdown-panel-${encodeURIComponent(requestId)}`;
 
   return (
     <CollapsiblePanel
       title="Change breakdown"
+      availability={report === undefined ? 'unknown' : report === null ? 'unavailable' : 'available'}
       expanded={state.expanded}
       onExpandedChange={(expanded) => setState({ ...state, expanded })}
       className="auth-change-breakdown"
       bodyClassName="auth-change-breakdown__body"
-      actions={<span className="auth-change-breakdown__summary">{summary}</span>}
+      actions={summary ? <span className="auth-change-breakdown__summary">{summary}</span> : null}
     >
-      {report !== null && (
+      {report != null && (
         <>
           <div className="auth-change-breakdown__totals" aria-label="Change totals">
             <span><strong>{formatCount(report.totals.files)}</strong> files</span>
