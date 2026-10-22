@@ -2,7 +2,8 @@
 
 `bun run test:quarantine`
 
-**This suite is expected to fail.** Every file here holds `it()` blocks
+**Empty is the normal state**, and the suite then exits 0. **While any file is
+here, the suite is expected to fail.** Every file here holds `it()` blocks
 extracted verbatim from a test elsewhere in the tree, because the assertion is
 failing and the defect is real. The rest of each source file stayed where it
 was and is green. When every test in a file was red, the file moved here whole.
@@ -25,7 +26,7 @@ Rules:
 - Nothing is deleted from here to make the suite pass. Fix the defect, or
   delete the test because it should not exist (step 1).
 
-`bun run test` and `bun run test:provisioned` must pass; this suite must not.
-That asymmetry is what makes the boundary checkable.
+`bun run test` and `bun run test:provisioned` must pass; this suite must not
+while it holds any file. That asymmetry is what makes the boundary checkable.
 
 Two failures share one issue when they share one cause.

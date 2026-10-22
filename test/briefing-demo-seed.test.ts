@@ -1,16 +1,17 @@
+// @vitest-environment node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 const roots: string[] = [];
 const script = path.resolve("scripts/demo-briefing.mjs");
 
 function tempRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rich-briefing-demo-"));
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, "rich-briefing-demo-"));
   roots.push(root);
   return root;
 }

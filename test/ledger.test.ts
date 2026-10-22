@@ -7,6 +7,7 @@ import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   buildMetadataBackupSql,
+  getUnclassifiedBackupTables,
   LEDGER_BACKUP_TABLES,
   METADATA_BACKUP_TABLES,
   REPRODUCIBLE_OR_RUNTIME_TABLES,
@@ -972,5 +973,9 @@ describe("ledger backup contract", () => {
     } finally {
       restored.close();
     }
+  });
+
+  it("classifies every live table as backed up or reproducible", () => {
+    expect(getUnclassifiedBackupTables(db)).toEqual([]);
   });
 });

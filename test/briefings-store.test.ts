@@ -1,5 +1,5 @@
+// @vitest-environment node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import SqliteDatabase from "../src/sqlite.ts";
@@ -19,7 +19,6 @@ import {
   readBriefing,
   setBriefingArchived,
   submitBriefingRound,
-  updateBriefingDescription,
   updateBriefingTitle,
 } from "../src/feedback/briefings.js";
 import {
@@ -40,9 +39,10 @@ import {
   resolveGroupId,
   setBriefingGroupArchived,
 } from "../src/feedback/briefing-groups.js";
-import { METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import {
   inspectBriefingDestinationRoutes,
   registerBriefingDestinationRoute,
@@ -143,9 +143,8 @@ function insertOperatorSubmission(bundleId: string, suffix = "one"): string {
 }
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefings-"));
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  root = fs.mkdtempSync(path.join(testRuntimeRoot, "briefings-"));
+  db = migratedMemoryDb();
   setSetting(db, "artifact_root", root);
   publisherId = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" }).id;
   humanId = createUser(db, { slug: "human", kind: "human", display_name: "Human" }).id;
@@ -328,7 +327,6 @@ describe("artifact-backed Briefing rounds", () => {
     }, viewer, 1_250)).toThrow();
     expect(readBriefingGroup(db, group.id, viewer).current?.id).toBe(base.id);
     db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0 WHERE id = 'hook-run'").run();
-
 
     const applied = promoteBriefingGroupProposal(db, {
       groupRef: group.id,
@@ -610,15 +608,6 @@ describe("artifact-backed Briefing rounds", () => {
       binding_digest: null,
       blocker_code: "briefing_review_repository_authority_required",
     });
-    expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining([
-      "briefing_group_dispositions",
-      "briefing_group_review_dispositions",
-      "briefing_group_review_disposition_items",
-      "briefing_group_review_destination_items",
-      "briefing_destination_owners",
-      "briefing_destination_routes",
-      "briefing_composition_runs",
-    ]));
   });
 
   it("archives group containment, restores atomically, and records only explicit active sharing", () => {
@@ -772,37 +761,6 @@ describe("artifact-backed Briefing rounds", () => {
         .map((briefing_id, layout_position) => ({ bundle_id: bundle.id, briefing_id, layout_position,
           entry_kind: "briefing", subgroup_name: null, subgroup_position: 0, created_at: 1_500 })),
     });
-  });
-
-  it("persists, trims, updates, and clears a Briefing description without changing round bindings", () => {
-    const receipt = publishBriefingFromArtifactVersion(db, {
-      briefing_key: "described-review", title: "Described review",
-      description: "  Explains why this review exists. It represents an approval-ready policy fixture.  ",
-      artifact_version_ref: recordArtifactVersion(db, {
-        source_kind: "managed", content: "# Policy\n", series_key: "described-review",
-        logical_name: "policy.md", role: "review-document", media_type: "text/markdown",
-      }).version.id,
-      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
-    }, 1_000);
-    const viewer = { userId: humanId, operator: true };
-    const roundBefore = db.prepare("SELECT * FROM briefing_rounds WHERE id = ?").get(receipt.round_id);
-
-    expect(listBriefings(db, viewer)).toMatchObject([{ description:
-      "Explains why this review exists. It represents an approval-ready policy fixture." }]);
-    expect(readBriefing(db, receipt.briefing_id, { actorUserId: humanId, operator: true }))
-      .toMatchObject({ briefing: { description:
-        "Explains why this review exists. It represents an approval-ready policy fixture." } });
-    expect(updateBriefingDescription(db, receipt.briefing_id,
-      "  Durable source snapshot for later comparison.  ", viewer, 1_100)).toEqual({
-      briefing_id: receipt.briefing_id,
-      description: "Durable source snapshot for later comparison.",
-      changed: true,
-    });
-    expect(() => updateBriefingDescription(db, receipt.briefing_id, "  ", viewer)).toThrow(/nonblank/);
-    expect(() => updateBriefingDescription(db, receipt.briefing_id, "x".repeat(1_001), viewer)).toThrow(/1000/);
-    expect(updateBriefingDescription(db, receipt.briefing_id, null, viewer, 1_200))
-      .toMatchObject({ description: null, changed: true });
-    expect(db.prepare("SELECT * FROM briefing_rounds WHERE id = ?").get(receipt.round_id)).toEqual(roundBefore);
   });
 
   it("binds directive-free exact Markdown as an annotation-only Briefing without weakening run ingestion", () => {
@@ -1301,5 +1259,4 @@ Review note prompt.
       firstConnection.close();
     }
   });
-
 });

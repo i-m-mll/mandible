@@ -1,13 +1,14 @@
+// @vitest-environment node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { setSetting } from "../src/client-auth/settings-kv.js";
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { addGrant } from "../src/permissions/store.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import type { RequestLike, ResolvedClientIdentity, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import { createUser, setupOperator } from "../src/users/store.js";
@@ -17,9 +18,8 @@ let root: string;
 const routes = new Map<string, RouteHandler>();
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-socket-briefing-"));
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  root = fs.mkdtempSync(path.join(testRuntimeRoot, "socket-briefing-"));
+  db = migratedMemoryDb();
   setSetting(db, "artifact_root", root);
   routes.clear();
   const add = (method: string) => (route: string, handler: RouteHandler) => {
