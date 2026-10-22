@@ -7,7 +7,7 @@ import type { Db } from "./db.js";
 import type { ArtifactMaterializationResult, ArtifactMaterializationTarget } from "./contracts.js";
 import {
   readCommittedArtifactFiles
-} from "./artifact-repo-resolution.js";
+} from "./artifact-commit-source.js";
 
 export function readArtifactMaterial(db: Db, target: ArtifactMaterializationTarget, maxBytes: number):
   ArtifactMaterializationResult<{ bytes: Buffer; source: string }> {

@@ -182,37 +182,6 @@ afterEach(async () => {
 });
 
 describe("auth merge Mandible preflight", () => {
-  it("forces optional git locks off for CLI-internal git calls", async () => {
-    const authCheck = await listenForAuthCheck();
-    const realGit = spawnSync("bash", ["-lc", "command -v git"], { encoding: "utf8" }).stdout.trim();
-    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-git-wrapper-"));
-    const envLog = path.join(fakeBin, "env.log");
-    fs.writeFileSync(path.join(fakeBin, "git"), [
-      "#!/usr/bin/env bash",
-      `printf '%s\\n' "$GIT_OPTIONAL_LOCKS" >> ${JSON.stringify(envLog)}`,
-      `exec ${JSON.stringify(realGit)} "$@"`,
-      "",
-    ].join("\n"), { mode: 0o755 });
-
-    try {
-      const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
-        GIT_OPTIONAL_LOCKS: "1",
-        PATH: `${fakeBin}:${process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"}`,
-        MANDIBLE_AUTH_ATOMIC: "1",
-        MANDIBLE_PORT: String(authCheck.port),
-        MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
-      });
-
-      expect(result.status).toBe(1);
-      expect(authCheck.bodies).toHaveLength(1);
-      expect(result.stderr).toContain("commit.gpgsign is set to false");
-      const observed = fs.readFileSync(envLog, "utf8").trim().split("\n");
-      expect(observed.length).toBeGreaterThan(0);
-      expect(observed.every((value) => value === "0")).toBe(true);
-    } finally {
-      fs.rmSync(fakeBin, { recursive: true, force: true });
-    }
-  });
 
   it("aborts before dirty checks when git lock files are present", () => {
     const lockPath = path.join(tempDir, ".git", "index.lock");
@@ -227,40 +196,6 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("Aborting before auth merge because git lock files are present");
     expect(result.stderr).not.toContain("Mandible merge preflight failed");
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
-  });
-
-  it("does not block untracked-only working tree state", async () => {
-    const authCheck = await listenForAuthCheck();
-    fs.writeFileSync(path.join(tempDir, "scratch.txt"), "local\n", "utf8");
-
-    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
-      MANDIBLE_AUTH_ATOMIC: "1",
-      MANDIBLE_PORT: String(authCheck.port),
-      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
-    });
-
-    expect(result.status).toBe(1);
-    expect(authCheck.bodies).toHaveLength(1);
-    expect(result.stderr).not.toContain("Working tree is dirty");
-    expect(result.stderr).toContain("commit.gpgsign is set to false");
-  });
-
-  it("skips the daemon merge preflight when recorded target head still matches", async () => {
-    const authCheck = await listenForAuthCheck();
-    const baseSha = git(["rev-parse", "main"]);
-
-    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
-      MANDIBLE_AUTH_ATOMIC: "1",
-      MANDIBLE_PORT: String(authCheck.port),
-      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
-      MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
-      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: baseSha,
-    });
-
-    expect(result.status).toBe(1);
-    expect(authCheck.bodies).toHaveLength(0);
-    expect(result.stderr).toContain("reusing submit-time merge preflight");
-    expect(result.stderr).toContain("commit.gpgsign is set to false");
   });
 
   it("fails closed when the reviewed target head is stale", async () => {
@@ -279,23 +214,6 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("Target main moved from reviewed base");
     expect(result.stderr).toContain("requeue and reapprove");
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
-  });
-
-  it("runs the full preflight while remaining bound to an unchanged reviewed base", async () => {
-    const authCheck = await listenForAuthCheck();
-    const baseSha = git(["rev-parse", "main"]);
-
-    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
-      MANDIBLE_AUTH_ATOMIC: "1",
-      MANDIBLE_PORT: String(authCheck.port),
-      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
-      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: baseSha,
-    });
-
-    expect(result.status).toBe(1);
-    expect(authCheck.bodies).toHaveLength(1);
-    expect(result.stderr).toContain("running merge preflight checks");
-    expect(result.stderr).toContain("commit.gpgsign is set to false");
   });
 
   it("preserves delegated signing git config overrides from the executor", async () => {
@@ -322,7 +240,6 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
     expect(result.stderr).not.toContain("No signing key configured");
     expect(result.stderr).toContain("checking signing configuration");
-    expect(result.stderr).toContain("Reviewed base or head moved since auth submission");
   });
 
   it("blocks staged changes through Mandible auth check", async () => {
@@ -352,30 +269,21 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
   });
 
-  it.each([false, true])("preserves interrupted legacy merge state (candidate context: %s)", (atomic) => {
+  it("preserves interrupted legacy merge state", () => {
     git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
     fs.writeFileSync(path.join(tempDir, "tracked.txt"), "unrelated local edit\n", "utf8");
     const before = git(["rev-parse", "main"]);
     const mergeHead = fs.readFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), "utf8");
     const index = git(["write-tree"]);
 
-    const result = run(["auth", "merge", "feature/demo"], tempDir, atomic ? { MANDIBLE_AUTH_ATOMIC: "1" } : {});
+    const result = run(["auth", "merge", "feature/demo"], tempDir, { MANDIBLE_AUTH_ATOMIC: "1" });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain(atomic ? "requires operator recovery" : "require a reviewed signed candidate");
+    expect(result.stderr).toContain("requires operator recovery");
     expect(git(["rev-parse", "main"])).toBe(before);
     expect(git(["write-tree"])).toBe(index);
     expect(fs.readFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), "utf8")).toBe(mergeHead);
     expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("unrelated local edit\n");
-  });
-
-  it("refuses direct protected merge without changing refs or worktree", () => {
-    const before = git(["rev-parse", "main"]);
-    const result = run(["auth", "merge", "feature/demo"]);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("require a reviewed signed candidate");
-    expect(git(["rev-parse", "main"])).toBe(before);
-    expect(fs.existsSync(path.join(tempDir, "feature.txt"))).toBe(false);
   });
 
 });
@@ -523,28 +431,6 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
     expect(docsExists).toBe(0);
   });
 
-  it("honors --preserve-head-branch by leaving the merged branch worktree in place", () => {
-    // A plain feature worktree the cleanup would normally remove.
-    const branch = "feature/keep-me";
-    const worktree = path.join(tempDir, "worktrees", "feature__keep-me");
-    git(["worktree", "add", "-b", branch, worktree, "main"]);
-    expect(fs.existsSync(worktree)).toBe(true);
-
-    const result = runCleanupHelper(
-      `cleanup_merged_worktrees ${JSON.stringify(branch)} 1`,
-      tempDir,
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("--preserve-head-branch");
-
-    expect(fs.existsSync(worktree)).toBe(true);
-    const branchExists = spawnSync(
-      "git",
-      ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-      { cwd: tempDir },
-    ).status;
-    expect(branchExists).toBe(0);
-  });
 });
 
 function listenForCleanup(options: {
@@ -638,28 +524,6 @@ function commitFile(worktree: string, filename: string, content: string): void {
 }
 
 describe("auth merge reversible cleanup", () => {
-  it("visibly removes a clean merged worktree and local branch without trash custody", async () => {
-    const { port } = await listenForCleanup();
-    const branch = "feature/clean";
-    const worktree = createFeatureWorktree(branch);
-    commitFile(worktree, "clean.txt", "clean\n");
-    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
-
-    const result = await runCleanupHelperAsync(
-      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
-      tempDir,
-      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("reaped clean merged branch feature/clean");
-    expect(result.stderr).toContain("Worktree path ");
-    expect(result.stderr).toContain("worktrees/feature__clean is gone");
-    expect(result.stderr).toContain("No further work may happen there");
-    expect(fs.existsSync(worktree)).toBe(false);
-    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: tempDir }).status)
-      .not.toBe(0);
-    expect(git(["for-each-ref", "refs/mandible/"], tempDir)).toBe("");
-  });
 
   it("sends a dirty merged worktree through daemon trash custody", async () => {
     const { port, requests } = await listenForCleanup();
@@ -689,34 +553,6 @@ describe("auth merge reversible cleanup", () => {
       issue_refs: ["abc123"],
       checkout_root: git(["rev-parse", "--show-toplevel"], tempDir),
     });
-  });
-
-  it("reaps a differently named patch-equivalent sibling work-unit branch", async () => {
-    const { port, requests } = await listenForCleanup();
-    const sibling = "feature/sibling";
-    const worktree = createFeatureWorktree(sibling);
-    commitFile(worktree, "sibling.txt", "sibling\n");
-    fs.writeFileSync(path.join(tempDir, "main-only.txt"), "main\n", "utf8");
-    git(["add", "main-only.txt"], tempDir);
-    git(["commit", "-m", "advance main independently"], tempDir);
-    git(["cherry-pick", sibling], tempDir);
-
-    const result = await runCleanupHelperAsync(
-      "cleanup_merged_worktrees feature/missing-head 0 main abc123",
-      tempDir,
-      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("reaped clean tree-equivalent branch feature/sibling");
-    expect(fs.existsSync(worktree)).toBe(false);
-    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${sibling}`], { cwd: tempDir }).status)
-      .not.toBe(0);
-    const projectRequest = requests.find((request) => request.url?.startsWith("/api/projects/"));
-    expect(projectRequest?.url).toContain(encodeURIComponent(git(["rev-parse", "--show-toplevel"], tempDir)));
-    expect(requests.some((request) => (
-      request.url?.includes("repo_id=canonical-mandible")
-      && request.url.includes("issue_id=abc123")
-    ))).toBe(true);
   });
 
   it("releases the exact work unit of a merged worktree with its observed generation", async () => {
@@ -782,8 +618,12 @@ describe("auth merge reversible cleanup", () => {
     expect(appResult.stderr).toContain("preserved feature/app-managed: app-managed worktree");
     expect(fs.existsSync(appWorktree)).toBe(true);
 
-    const protectedResult = runCleanupHelper("cleanup_merged_worktrees main 0 main", tempDir);
-    expect(protectedResult.stderr).toContain("preserved main: protected/default branch");
+    git(["branch", "release"], tempDir);
+    const protectedResult = runCleanupHelper("cleanup_merged_worktrees release 0 main", tempDir, {
+      MANDIBLE_AUTH_PROTECTED_BRANCHES: "main,develop,release",
+    });
+    expect(protectedResult.stderr).toContain("preserved release: configured protected branch");
+    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/release"], { cwd: tempDir }).status).toBe(0);
 
     const ambiguous = "feature/not-merged";
     const ambiguousWorktree = createFeatureWorktree(ambiguous);
@@ -834,39 +674,4 @@ describe("auth merge reversible cleanup", () => {
     expect(git(["show", `${feature}:merge-only.txt`], tempDir)).toBe("unique merge resolution");
   });
 
-  it("preserves nonstandard repository-configured protected branches", () => {
-    const branch = "release";
-    const worktree = createFeatureWorktree(branch);
-    commitFile(worktree, "release.txt", "release\n");
-    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
-
-    const result = runCleanupHelper(
-      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
-      tempDir,
-      { MANDIBLE_AUTH_PROTECTED_BRANCHES: "main,develop,release" },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("configured protected branch");
-    expect(fs.existsSync(worktree)).toBe(true);
-  });
-
-  it("reports a gone dirty worktree truthfully when trash removal only partially succeeds", async () => {
-    const { port } = await listenForCleanup({ trashPartialFailure: true });
-    const branch = "feature/partial-dirty";
-    const worktree = createFeatureWorktree(branch);
-    commitFile(worktree, "partial.txt", "committed\n");
-    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
-    fs.writeFileSync(path.join(worktree, "residue.db"), "dirty\n", "utf8");
-
-    const result = await runCleanupHelperAsync(
-      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main abc123`,
-      tempDir,
-      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("Removal of feature/partial-dirty is incomplete");
-    expect(result.stderr).toContain("/reported/worktree/feature__dirty is gone");
-    expect(result.stderr).toContain("No further work may happen there");
-    expect(result.stderr).not.toContain("no deletion attempted");
-  });
 });

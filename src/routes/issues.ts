@@ -57,7 +57,6 @@ import {
   type MarkdownBodyPolicyWarning,
 } from "../ledger/markdown-body.js";
 import {
-  resolveCheckoutPath,
   resolveProjectRef,
   suggestProjectRefs,
 } from "../ledger/project-registry.js";
@@ -75,6 +74,7 @@ import {
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
+import { entityRefs, resolveCommentRef } from "../entity-refs.js";
 import {
   PermissionError,
   evaluateProjectAccess,
@@ -93,6 +93,7 @@ export interface IssueServer {
   post(path: string, handler: RouteHandler, options: RouteOptions): void;
   put?(path: string, handler: RouteHandler, options: RouteOptions): void;
   patch?(path: string, handler: RouteHandler, options: RouteOptions): void;
+  delete?(path: string, handler: RouteHandler, options: RouteOptions): void;
 }
 
 function getParam(req: unknown, key: string): string | undefined {
@@ -252,34 +253,21 @@ function resolveRelationshipEntityRef(
 ): { ok: true; entity_type: LedgerRelationshipEntityType; entity_id: string }
   | { ok: false; status: 404 | 409; error: string } {
   const trimmed = ref.trim();
-  const store = new LedgerStore(db);
   if (!trimmed) return { ok: false, status: 404, error: "relationship entity ref is empty" };
   if (trimmed.includes("#")) {
-    const [issueRef, selector] = trimmed.split("#", 2);
-    if (!issueRef || !selector) return { ok: false, status: 404, error: "invalid comment reference" };
-    const resolvedIssue = resolveLedgerIssueId(db, issueRef);
-    if (!resolvedIssue.ok) return resolvedIssue;
-    const comments = store.getIssueDetail(resolvedIssue.issue_id)
-      .comments
-      .filter((comment) => comment.deleted_at === null)
-      .sort((a, b) => a.ordinal - b.ordinal);
-    const comment = selector === "last"
-      ? comments.at(-1)
-      : /^\d+$/.test(selector)
-        ? comments.find((candidate) => candidate.ordinal === Number(selector))
-        : undefined;
-    if (!comment) return { ok: false, status: 404, error: "ledger comment not found" };
-    return { ok: true, entity_type: "comment", entity_id: comment.id };
+    const comment = resolveCommentRef(db, trimmed);
+    if (comment.ok) return { ok: true, entity_type: "comment", entity_id: comment.id };
+    return comment.error === "ambiguous"
+      ? { ok: false, status: 409, error: "ambiguous issue reference" }
+      : { ok: false, status: 404, error: "ledger comment not found" };
   }
   const resolvedIssue = resolveLedgerIssueId(db, trimmed);
   if (resolvedIssue.ok) return { ok: true, entity_type: "issue", entity_id: resolvedIssue.issue_id };
   if (resolvedIssue.error === "ambiguous issue reference") return resolvedIssue;
-  try {
-    const comment = store.getComment(trimmed);
-    return { ok: true, entity_type: "comment", entity_id: comment.id };
-  } catch {
-    return resolvedIssue;
-  }
+  const comment = resolveCommentRef(db, trimmed);
+  if (comment.ok) return { ok: true, entity_type: "comment", entity_id: comment.id };
+  if (comment.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous comment reference" };
+  return resolvedIssue;
 }
 
 function relationshipEntityIssueId(
@@ -431,36 +419,36 @@ function unregisteredSessionResponse(suppliedId: string): Record<string, unknown
   };
 }
 
-function parentRoleHolders(
+/**
+ * The umbrella's current parent-role holder: its latest `parent-role`
+ * checkpoint, or none when that checkpoint is a release.
+ *
+ * Every recorded assume was authorized against the holder before it (vacant,
+ * the holder itself, or the operator), so an earlier checkpoint never holds the
+ * role again: a predecessor that handed the role on stays live without
+ * keeping it.
+ */
+function currentParentRoleHolder(
   db: Db,
   issueId: string,
-  resolver: SessionAliasResolver = resolveSessionAlias,
-): Array<Record<string, unknown>> {
-  const store = new LedgerStore(db);
-  return store.listIssueCheckpoints(issueId, "parent-role")
-    .map((row) => {
-      const payload = checkpointPayload(row);
-      const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload)
-        ? payload as Record<string, unknown>
-        : {};
-      const sessionId = typeof payloadRecord.session_id === "string" ? payloadRecord.session_id : null;
-      return {
-        checkpoint_id: row.id,
-        issue_id: row.issue_id,
-        kind: row.kind,
-        payload,
-        session_id: sessionId,
-        mechanism: typeof payloadRecord.mechanism === "string" ? payloadRecord.mechanism : null,
-        assumed_at: typeof payloadRecord.assumed_at === "number" ? payloadRecord.assumed_at : row.created_at,
-        created_at: row.created_at,
-        liveness: sessionLiveness(db, sessionId, resolver),
-      };
-    })
-    .sort((a, b) =>
-      Number(b.assumed_at ?? 0) - Number(a.assumed_at ?? 0)
-      || Number(b.created_at ?? 0) - Number(a.created_at ?? 0)
-      || String(b.checkpoint_id ?? "").localeCompare(String(a.checkpoint_id ?? ""))
-    );
+  resolver: SessionAliasResolver,
+): Record<string, unknown> | null {
+  const row = new LedgerStore(db).getLatestIssueCheckpoint(issueId, "parent-role");
+  if (!row) return null;
+  const payload = parseJsonObject(row.payload_json);
+  if (payload.released === true) return null;
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : null;
+  return {
+    checkpoint_id: row.id,
+    issue_id: row.issue_id,
+    kind: row.kind,
+    payload,
+    session_id: sessionId,
+    mechanism: typeof payload.mechanism === "string" ? payload.mechanism : null,
+    assumed_at: typeof payload.assumed_at === "number" ? payload.assumed_at : row.created_at,
+    created_at: row.created_at,
+    liveness: sessionLiveness(db, sessionId, resolver),
+  };
 }
 
 function buildParentRoleStatus(
@@ -468,16 +456,54 @@ function buildParentRoleStatus(
   issueId: string,
   resolver: SessionAliasResolver = resolveSessionAlias,
 ): Record<string, unknown> {
-  const holders = parentRoleHolders(db, issueId, resolver);
-  const holdersIn = (state: LivenessState) =>
-    holders.filter((holder) => (holder.liveness as { state: LivenessState }).state === state);
+  const holder = currentParentRoleHolder(db, issueId, resolver);
+  const state = (holder?.liveness as { state: LivenessState } | undefined)?.state;
   return {
     issue_id: issueId,
-    holder: holders[0] ?? null,
-    live_holder: holdersIn("live")[0] ?? null,
-    unknown_holders: holdersIn("unknown"),
-    stale_holders: holdersIn("stopped"),
-    holders,
+    holder,
+    live_holder: state === "live" ? holder : null,
+  };
+}
+
+/** Every id the given session is known by, or just the id when Mandible has no record of it. */
+function sessionAliasSet(db: Db, resolver: SessionAliasResolver, sessionId: string | null | undefined): Set<string> {
+  if (!sessionId) return new Set();
+  const resolution = resolver(db, sessionId);
+  return new Set([sessionId, ...(resolution ? sessionAliasIds(resolution) : [])]);
+}
+
+type ParentRoleAuthority = "vacant" | "holder" | "operator_override";
+
+/**
+ * Who may change the parent role. A stopped holder is informational, so the
+ * role is vacant. Otherwise the holder itself may (re-assume, hand off, or
+ * release), and only the operator may displace it with an override. Session
+ * ids are claimed attribution: this is advisory coordination between
+ * cooperating agents, not a security boundary.
+ */
+function parentRoleAuthority(
+  db: Db,
+  req: RequestLike,
+  holder: Record<string, unknown> | null,
+  callerAliases: Set<string>,
+  override: boolean,
+): { ok: true; authority: ParentRoleAuthority } | { ok: false; refusal: Record<string, unknown> } {
+  const state = (holder?.liveness as { state: LivenessState } | undefined)?.state;
+  if (!holder || state === "stopped") return { ok: true, authority: "vacant" };
+  if ([...holderAliasIds(holder)].some((id) => callerAliases.has(id))) return { ok: true, authority: "holder" };
+  const identity = req.client_identity;
+  if (override && identity && isOperator(db, identity)) return { ok: true, authority: "operator_override" };
+  const held = state === "live"
+    ? "parent role is held by a live session"
+    : "parent role is held by a session whose liveness cannot be established";
+  return {
+    ok: false,
+    refusal: {
+      error: override
+        ? `${held}; --override displaces another session's holder only for the operator, and the holder can hand the role over with --session <successor>`
+        : `${held}; the holder can hand the role over with --session <successor>, and only the operator can displace it with --override`,
+      blocking_holder: holder,
+    },
   };
 }
 
@@ -1101,8 +1127,8 @@ export function registerIssueRoutes(
     });
     summaries = summaries.filter((summary) => {
       const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
-      if (project.ambiguous) return false;
-      if (!project.ok || !project.project) return true;
+      if ((!project.ok && project.reason === "ambiguous")) return false;
+      if (!project.ok) return true;
       return evaluateProjectAccess(db, {
         identity: req.client_identity ?? null,
         project_id: project.project.id,
@@ -1127,8 +1153,8 @@ export function registerIssueRoutes(
     let projectIds = (db.prepare("SELECT id FROM ledger_projects").all() as Array<{ id: string }>).map((row) => row.id);
     if (repo) {
       const resolved = resolveProjectRef(db, repo);
-      if (resolved.ambiguous) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
-      if (!resolved.project) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
+      if ((!resolved.ok && resolved.reason === "ambiguous")) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
+      if (!resolved.ok) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
       projectIds = [resolved.project.id];
     }
     projectIds = projectIds.filter((project_id) => evaluateProjectAccess(db, {
@@ -1251,31 +1277,59 @@ export function registerIssueRoutes(
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver));
   }, { operation: { id: "get:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+  // Resolves the umbrella and the caller's write access, or answers the request.
+  const parentRoleIssue = (req: RequestLike, res: ResponseLike): string | null => {
     const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return null;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return null;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return null;
+    return resolved.issue_id;
+  };
+
+  // Strictly after the current checkpoint, so "latest" is a total order even
+  // when two changes land in the same millisecond.
+  const recordParentRoleCheckpoint = (
+    req: RequestLike,
+    issueId: string,
+    payload: (now: number) => Record<string, unknown>,
+  ): LedgerIssueCheckpoint => {
+    const db = getDb();
+    const store = new LedgerStore(db);
+    const latest = store.getLatestIssueCheckpoint(issueId, "parent-role");
+    const now = Math.max(Date.now(), (latest?.created_at ?? 0) + 1);
+    return store.addIssueCheckpoint(issueId, {
+      kind: "parent-role",
+      payload: payload(now),
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      attribution: attributionForRequest(db, req),
+      source: "mandible",
+      created_at: now,
+    });
+  };
+
+  server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
     const body = getBody(req) ?? {};
     const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
       ? body.mechanism.trim()
       : "unknown";
     const override = body.override === true;
-    if (!issueRef) {
-      sendJson(res, 400, { error: "missing issueId" });
-      return;
-    }
+    const issueId = parentRoleIssue(req, res);
+    if (!issueId) return;
     if (!sessionId) {
       sendJson(res, 400, { error: "session_id is required" });
       return;
     }
     const db = getDb();
-    const resolved = resolveLedgerIssueId(db, issueRef);
-    if (!resolved.ok) {
-      sendJson(res, resolved.status, { error: resolved.error });
-      return;
-    }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
-    const identity = req.client_identity;
-    const current = buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver);
     // Issue 5b2cdbf: refuse an id Mandible cannot verify. Recording one produced
     // a holder that every liveness check judged dead, so the next coordinator
     // took the same umbrella without an override while both were told the lease
@@ -1285,59 +1339,78 @@ export function registerIssueRoutes(
       sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
     }
-    // A holder whose liveness check could not complete may be working right
-    // now, so it blocks exactly like a live one (issue 8c7eb06).
-    const liveHolder = current.live_holder as Record<string, unknown> | null;
-    const blockingHolder = liveHolder
-      ?? (current.unknown_holders as Array<Record<string, unknown>>)[0]
-      ?? null;
-    // The lease belongs to the agent, not to one spelling of its id: a holder
-    // recorded under its provider thread id is the same holder when it returns
-    // with its Mandible session id.
-    const callerAliases = new Set([sessionId, ...sessionAliasIds(resolution)]);
-    const callerAlreadyHolds = [...holderAliasIds(blockingHolder)].some((id) => callerAliases.has(id));
-    if (blockingHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
-      const state = (blockingHolder.liveness as { state: LivenessState }).state;
-      sendJson(res, 409, {
-        error: state === "live"
-          ? "parent role already held by a live session; only the operator may displace it"
-          : "parent role held by a session whose liveness cannot be established; only the operator may displace it",
-        blocking_holder: blockingHolder,
-        parent_role: current,
-      });
+    const holder = currentParentRoleHolder(db, issueId, sessionAliasResolver);
+    // Holder authority comes only from the caller's own session: a re-assume
+    // under any alias, or the holder handing the role to a successor with
+    // --session (issue 23a4edf). Naming the holder's session confers nothing,
+    // since the checkpoint carries the caller's credential.
+    const callerAliases = sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id);
+    const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
+    if (!decision.ok) {
+      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
       return;
     }
-    const now = Date.now();
-    const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
-      kind: "parent-role",
-      payload: {
-        // `session_id` stays exactly what the caller supplied; existing readers
-        // (including the archive path's holder protection) depend on it.
-        session_id: sessionId,
-        resolved_session_id: resolution.mandible_session_id,
-        console_session_id: resolution.console_session_id,
-        provider: resolution.provider,
-        provider_session_id: resolution.provider_session_id,
-        mechanism,
-        assumed_at: now,
-        override,
-        previous_live_holder: blockingHolder,
-        authenticated_user_id: identity?.method === "api_token" ? identity.user_id : null,
-        authenticated_credential_id: identity?.method === "api_token" ? identity.credential_id : null,
-      },
-      actor_type: "mandible_user",
-      author_display: "Mandible",
-      attribution: attributionForRequest(db, req),
-      source: "mandible",
-      created_at: now,
-    });
+    const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
+      // `session_id` stays exactly what the caller supplied; existing readers
+      // (including the archive path's holder protection) depend on it.
+      session_id: sessionId,
+      resolved_session_id: resolution.mandible_session_id,
+      console_session_id: resolution.console_session_id,
+      provider: resolution.provider,
+      provider_session_id: resolution.provider_session_id,
+      mechanism,
+      assumed_at: now,
+      override,
+      authority: decision.authority,
+      previous_holder: holder,
+      // The audited credential an integration promotion or custody handoff
+      // checks against this checkpoint.
+      authenticated_user_id: req.client_identity?.method === "api_token" ? req.client_identity.user_id : null,
+      authenticated_credential_id: req.client_identity?.method === "api_token" ? req.client_identity.credential_id : null,
+    }));
     sendJson(res, 200, {
       ok: true,
       checkpoint: checkpointResponse(checkpoint),
-      parent_role: buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver),
-      override_required: false,
+      parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver),
     });
-  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session } } });
+
+  // The holder steps down. Its authority is the caller's own session, never a
+  // session named in the request, so releasing someone else's live holder
+  // stays an operator override.
+  server.delete?.("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+    const body = getBody(req) ?? {};
+    const override = body.override === true;
+    const issueId = parentRoleIssue(req, res);
+    if (!issueId) return;
+    const db = getDb();
+    const holder = currentParentRoleHolder(db, issueId, sessionAliasResolver);
+    if (!holder) {
+      sendJson(res, 200, { ok: true, released: false, checkpoint: null, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
+      return;
+    }
+    const callerAliases = sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id);
+    const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
+    if (!decision.ok) {
+      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
+      return;
+    }
+    // A release carries no `session_id` and no authenticated credential, so it
+    // names no holder and authorizes no integration promotion or handoff.
+    const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
+      released: true,
+      released_at: now,
+      released_by_session_id: req.ambient_identity?.provider_session_id ?? null,
+      authority: decision.authority,
+      previous_holder: holder,
+    }));
+    sendJson(res, 200, {
+      ok: true,
+      released: true,
+      checkpoint: checkpointResponse(checkpoint),
+      parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver),
+    });
+  }, { operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/head", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1584,7 +1657,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { commentId: entityRefs.comment } } });
 
   server.get("/api/ledger/body-revisions/:revisionId", (req, res) => {
     const revisionId = getParam(req, "revisionId");
@@ -1598,7 +1671,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "body revision not found" });
     }
-  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { revisionId: entityRefs.bodyRevision } } });
 
   // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
   // into the canonical projection used by graph and issue detail panes.
@@ -1709,14 +1782,14 @@ export function registerIssueRoutes(
     let project: { id: string } | null = null;
     if (explicitProject) {
       const resolved = resolveProjectRef(db, explicitProject);
-      if (resolved.ambiguous) {
+      if ((!resolved.ok && resolved.reason === "ambiguous")) {
         sendJson(res, 409, {
           error: `ambiguous project ref: ${explicitProject}`,
           candidates: resolved.candidates ?? [],
         });
         return;
       }
-      if (!resolved.ok || !resolved.project) {
+      if (!resolved.ok) {
         sendJson(res, 400, {
           error: `unknown project: ${explicitProject}`,
           suggestions: suggestProjectRefs(db, explicitProject),
@@ -1725,10 +1798,9 @@ export function registerIssueRoutes(
       }
       project = resolved.project;
     } else {
-      project =
-        resolveCheckoutPath(db, root) ??
-        resolveProjectRef(db, repoRef).project ??
-        (root !== repoRef ? resolveProjectRef(db, root).project ?? null : null);
+      const byRoot = resolveProjectRef(db, root);
+      const byRef = byRoot.ok ? byRoot : resolveProjectRef(db, repoRef);
+      project = byRef.ok ? byRef.project : null;
       if (!project) {
         sendJson(res, 400, {
           error:
@@ -1874,7 +1946,17 @@ export function registerIssueRoutes(
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const kind = getQueryParam(req, "kind");
     const latest = getQueryParam(req, "latest");
+    const checkpointId = getQueryParam(req, "id");
     const store = new LedgerStore(db);
+    if (checkpointId) {
+      const checkpoint = store.listIssueCheckpoints(resolved.issue_id, kind).find((candidate) => candidate.id === checkpointId);
+      if (!checkpoint) {
+        sendJson(res, 404, { error: "checkpoint not found" });
+        return;
+      }
+      sendJson(res, 200, checkpointResponse(checkpoint));
+      return;
+    }
     if (latest === "1" || latest === "true") {
       const checkpoint = store.getLatestIssueCheckpoint(resolved.issue_id, kind);
       if (!checkpoint) {
@@ -1888,7 +1970,7 @@ export function registerIssueRoutes(
       .listIssueCheckpoints(resolved.issue_id, kind)
       .map(checkpointResponse);
     sendJson(res, 200, { checkpoints });
-  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { query: { id: entityRefs.checkpoint } } });
 
   server.patch?.("/api/ledger/comments/:commentId", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -1941,7 +2023,8 @@ export function registerIssueRoutes(
       }
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow",
+    refs: { params: { commentId: entityRefs.comment }, body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision } } });
 
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2060,7 +2143,7 @@ export function registerIssueRoutes(
       throw error;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
-  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision, expected_work_notes_revision: entityRefs.bodyRevision } } });
 
   server.post("/api/ledger/issues/:issueId/worker-status", (req, res) => {
     const issueRef = getParam(req, "issueId");

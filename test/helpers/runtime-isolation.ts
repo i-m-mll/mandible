@@ -28,6 +28,11 @@ const isolatedValues: Record<string, string | undefined> = {
   MANDIBLE_FILE_RPC_DIR: path.join(home, '.cache', 'mandible', 'agent-rpc'),
   MANDIBLE_SOCKET: undefined,
   MANDIBLE_DB: undefined,
+  // Shell startup files resolve outside HOME through these; unset, zsh and
+  // bash read only the private home, so the user's dotfiles never run in tests.
+  ZDOTDIR: undefined,
+  BASH_ENV: undefined,
+  ENV: undefined,
 };
 // Tests state their own caller: the agent session running the suite must not
 // leak its attribution or daemon selection into them.

@@ -3,6 +3,7 @@ import type { Options, Query, SDKMessage, SDKUserMessage, WarmQuery } from "@ant
 import { ClaudeSdkControllerAdapter } from "../src/conversation-control/claude-controller.js";
 import type { ClaudeSdk } from "../src/conversation-control/claude-sdk-transport.js";
 import type { ConversationOutboxItem } from "../src/conversation-control/types.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 const adapters: ClaudeSdkControllerAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map((adapter) => adapter.close())); });
@@ -53,7 +54,7 @@ function message(turn: string, operation: "send" | "queue" = "send"): Conversati
   return { id: turn, conversation_id: start.conversation_id, generation: 1, turn_id: turn, operation, message: "bounded test message",
     attachments: [], attachment_db_path: "/tmp/unused", message_anchor: null, runtime_options: {}, idempotency_key: crypto.randomUUID(), state: "delivering", attempts: 1, provider_receipt_id: null };
 }
-async function until(condition: () => boolean) { for (let n = 0; n < 100 && !condition(); n++) await new Promise((resolve) => setTimeout(resolve, 1)); expect(condition()).toBe(true); }
+const until = (condition: () => boolean) => waitUntil(condition, "controller state", 1);
 
 it("creates without sending and closes late startup after cancellation", async () => {
   const native = fakeSdk();
@@ -128,8 +129,8 @@ it("accepts an initialized controller with native identity pending and never ack
   expect((await delivery).ok).toBe(true);
   expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
   native.emit({ type:"system", subtype:"init", session_id:native.options.sessionId });
-  await new Promise(resolve => setTimeout(resolve,1));
-  expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
   native.emit({ type:"system", subtype:"init", session_id:"different-native" });
   await until(() => events.includes("controller-released"));
+  // The repeated init was handled before the release that followed it.
+  expect(events.filter(event => event === "provider-session-bound")).toHaveLength(1);
 });

@@ -63,6 +63,7 @@ import {
   publishBriefingCompositionRun,
   reconcileBriefingDestinationRoutes,
 } from "../feedback/briefing-composer.js";
+import { entityRefs } from "../entity-refs.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof ClientAuthzError || error instanceof BriefingStoreError || error instanceof PermissionError) {
@@ -598,7 +599,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         briefing_id: briefingId, round_id: result.round_id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "post:/api/briefings/:briefingId/report-rounds", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/report-rounds", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow",
+    refs: { body: { expected_current_round_id: entityRefs.briefingRound } } });
 
   server.post("/api/briefing-groups", (req, res) => {
     try {

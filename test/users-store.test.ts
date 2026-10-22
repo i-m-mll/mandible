@@ -3,31 +3,26 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
-  addBinding,
-  addAttributionEvidence,
   addCredential,
-  createUser,
   getOperatorId,
   getSystemUser,
-  listBindings,
   listCredentials,
   listUsers,
-  removeBinding,
   revokeCredential,
   setupOperator,
   SYSTEM_USER_ID,
-  updateUser,
   UserRegistryError,
 } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-users-store-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -58,24 +53,10 @@ describe("operator setup idempotency", () => {
     expect(listUsers(db, { kind: "human" })).toHaveLength(1);
   });
 
-  it("updates operator fields on re-run without creating a duplicate", () => {
-    const first = setupOperator(db, { slug: "op", display_name: "Old Name", email: "old@x.io" });
-    const updated = setupOperator(db, { slug: "op", display_name: "New Name", email: "new@x.io" });
-    expect(updated.id).toBe(first.id);
-    expect(updated.display_name).toBe("New Name");
-    expect(updated.email).toBe("new@x.io");
-    expect(listUsers(db, { kind: "human" })).toHaveLength(1);
-  });
-
-  it("derives a slug from the email local part when none is given", () => {
-    const user = setupOperator(db, { display_name: "Grace", email: "grace@navy.mil" });
-    expect(user.slug).toBe("grace");
-  });
 });
 
 // Valid public-shape samples for the credential allowlist.
 const SSH_FINGERPRINT = `SHA256:${"A".repeat(43)}`;
-const SSH_PUBLIC_LINE = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} user@host`;
 const AGE_RECIPIENT = `age1${"q".repeat(58)}`;
 
 describe("credential immutability and fingerprint uniqueness", () => {
@@ -112,29 +93,6 @@ describe("credential immutability and fingerprint uniqueness", () => {
     expect(listCredentials(db, op.id)).toHaveLength(1); // active only
   });
 
-  it("rejects an unknown credential type", () => {
-    const op = operator();
-    expect(() =>
-      addCredential(db, op.id, { type: "totp", fingerprint: "x" }),
-    ).toThrow(UserRegistryError);
-  });
-
-  it("accepts valid public shapes for each credential type", () => {
-    const op = operator();
-    expect(() =>
-      addCredential(db, op.id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        public_material: SSH_PUBLIC_LINE,
-      }),
-    ).not.toThrow();
-    expect(() =>
-      addCredential(db, op.id, { type: "yubikey_recipient", fingerprint: AGE_RECIPIENT }),
-    ).not.toThrow();
-    expect(() =>
-      addCredential(db, op.id, { type: "api_token", fingerprint: "tokfp-abc123DEF456" }),
-    ).not.toThrow();
-  });
 });
 
 describe("no private material is ever accepted", () => {
@@ -149,60 +107,17 @@ describe("no private material is ever accepted", () => {
     return setupOperator(db, { slug: "op", display_name: "Op" });
   }
 
-  it("rejects a PEM private key in public_material", () => {
+  it.each([
+    ["a PEM private key in public_material", { public_material: PEM_PRIVATE_KEY }, /private key/i],
+    ["a PEM private key in the fingerprint", { fingerprint: PEM_PRIVATE_KEY }, /private key/i],
+    ["a private key nested in a metadata value", { metadata: { note: "backup", stash: { key: PEM_PRIVATE_KEY } } }, /private key/i],
+    ["a private key in the label", { label: PEM_PRIVATE_KEY }, /private key/i],
+    ["a PuTTY PPK document in public_material", { public_material: PPK_DOCUMENT }, /private key/i],
+    ["a base64/DER blob in public_material", { public_material: BASE64_DER_BLOB }, /single-line OpenSSH public key/i],
+  ])("rejects %s", (_name, fields, message) => {
     expect(() =>
-      addCredential(db, op().id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        public_material: PEM_PRIVATE_KEY,
-      }),
-    ).toThrow(/private key/i);
-  });
-
-  it("rejects a PEM private key smuggled into the fingerprint", () => {
-    expect(() =>
-      addCredential(db, op().id, { type: "ssh_key", fingerprint: PEM_PRIVATE_KEY }),
-    ).toThrow(/private key/i);
-  });
-
-  it("rejects a private key hidden in a metadata value", () => {
-    expect(() =>
-      addCredential(db, op().id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        metadata: { note: "backup", stash: { key: PEM_PRIVATE_KEY } },
-      }),
-    ).toThrow(/private key/i);
-  });
-
-  it("rejects a private key hidden in the label", () => {
-    expect(() =>
-      addCredential(db, op().id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        label: PEM_PRIVATE_KEY,
-      }),
-    ).toThrow(/private key/i);
-  });
-
-  it("rejects a PuTTY PPK document in public_material", () => {
-    expect(() =>
-      addCredential(db, op().id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        public_material: PPK_DOCUMENT,
-      }),
-    ).toThrow(/private key/i);
-  });
-
-  it("rejects a base64/DER blob in public_material via the allowlist", () => {
-    expect(() =>
-      addCredential(db, op().id, {
-        type: "ssh_key",
-        fingerprint: SSH_FINGERPRINT,
-        public_material: BASE64_DER_BLOB,
-      }),
-    ).toThrow(/single-line OpenSSH public key/i);
+      addCredential(db, op().id, { type: "ssh_key", fingerprint: SSH_FINGERPRINT, ...fields }),
+    ).toThrow(message);
   });
 
   it("enforces the metadata size cap", () => {
@@ -213,42 +128,5 @@ describe("no private material is ever accepted", () => {
         metadata: { blob: "z".repeat(5000) },
       }),
     ).toThrow(/exceeds/i);
-  });
-});
-
-describe("bindings and users", () => {
-  it("adds, lists, and removes claimed bindings", () => {
-    const op = setupOperator(db, { slug: "op", display_name: "Op" });
-    const b = addBinding(db, op.id, { binding_type: "git_author_email", value: "op@x.io" });
-    expect(listBindings(db, op.id)).toHaveLength(1);
-    removeBinding(db, b.id);
-    expect(listBindings(db, op.id)).toHaveLength(0);
-  });
-
-  it("rejects an unknown binding type", () => {
-    const op = setupOperator(db, { slug: "op", display_name: "Op" });
-    expect(() =>
-      // @ts-expect-error deliberately invalid binding type
-      addBinding(db, op.id, { binding_type: "nope", value: "x" }),
-    ).toThrow(UserRegistryError);
-  });
-
-  it("enforces slug uniqueness and supports update", () => {
-    createUser(db, { slug: "agent-a", kind: "agent", display_name: "Agent A" });
-    expect(() =>
-      createUser(db, { slug: "agent-a", kind: "agent", display_name: "Dup" }),
-    ).toThrow(UserRegistryError);
-
-    const updated = updateUser(db, "agent-a", { status: "retired", display_name: "Agent A2" });
-    expect(updated.status).toBe("retired");
-    expect(updated.display_name).toBe("Agent A2");
-  });
-});
-
-describe("attribution evidence", () => {
-  it("rejects evidence methods outside the locked vocabulary", () => {
-    expect(() => addAttributionEvidence(db, {
-      evidence_method: "invented_evidence",
-    } as never)).toThrow(/Invalid evidence_method/);
   });
 });

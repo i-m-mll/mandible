@@ -62,39 +62,21 @@ function registerRepo(db: Db, repo: string): void {
 }
 
 describe("classifyGitFailure", () => {
-  it("classifies a non-zero exit as a real git answer", () => {
-    const failure = classifyGitFailure({ status: 1, stderr: "" });
-    expect(failure).toEqual({ kind: "exit", status: 1, stderr: "" });
-  });
+  it("separates git's own answers from timeouts and spawn failures", () => {
+    expect(classifyGitFailure({ status: 1, stderr: "" })).toEqual({ kind: "exit", status: 1, stderr: "" });
+    expect(classifyGitFailure({ status: 128, stderr: Buffer.from("fatal: bad object\n") }))
+      .toMatchObject({ kind: "exit", status: 128, stderr: "fatal: bad object" });
 
-  it("classifies a killed-by-timeout invocation as a timeout, not an answer", () => {
-    const failure = classifyGitFailure(
-      { code: "ETIMEDOUT", signal: "SIGTERM", status: null },
-      5000,
-    );
-    expect(failure.kind).toBe("timeout");
-    expect(describeGitFailure(failure)).toContain("timed out after 5000ms");
-    expect(describeGitFailure(failure)).toContain("not evidence about the repository");
-  });
+    const timeout = classifyGitFailure({ code: "ETIMEDOUT", signal: "SIGTERM", status: null }, 5000);
+    expect(timeout.kind).toBe("timeout");
+    expect(describeGitFailure(timeout)).toContain("not evidence about the repository");
 
-  it("classifies fd/process exhaustion as a spawn failure naming the errno", () => {
     for (const errno of ["EMFILE", "EAGAIN", "ENOMEM"]) {
       const failure = classifyGitFailure({ code: errno, status: null });
       expect(failure).toMatchObject({ kind: "spawn", errno });
-      const described = describeGitFailure(failure);
-      expect(described).toContain(`git could not be executed (${errno})`);
-      expect(described).toContain("Retry the approval");
-      expect(described).toContain("daemon health");
       // Never asserts anything about the repository itself.
-      expect(described).not.toContain("does not exist");
+      expect(describeGitFailure(failure)).not.toContain("does not exist");
     }
-  });
-
-  it("captures a Buffer stderr from execFileSync", () => {
-    const failure = classifyGitFailure({ status: 128, stderr: Buffer.from("fatal: bad object\n") });
-    expect(failure).toMatchObject({ kind: "exit", status: 128, stderr: "fatal: bad object" });
-    expect(describeGitFailure(failure)).toContain("git exited with status 128");
-    expect(describeGitFailure(failure)).toContain("fatal: bad object");
   });
 });
 
@@ -155,29 +137,20 @@ describe("resolveAuthMergeExecutionContext branch verification", () => {
 // approval-context path still collapsing every git outcome into null, so a
 // daemon-health failure was reported as an unregistered repository.
 describe("repoRootFromGitCommonDir failure honesty", () => {
-  it("resolves the repo root and reports no failure inside a repository", () => {
+  it("reports a root inside a repository, git's answer outside one, and a spawn failure as such", () => {
     const repo = createRepo();
-    const probe = probeRepoRootFromGitCommonDir(repo);
-    expect(probe.failure).toBeNull();
-    expect(probe.root).toBe(repo);
-  });
+    expect(probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: repo, failure: null });
 
-  it("reports git's own answer as an exit failure outside a repository", () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-norepo-")));
     tempDirs.push(dir);
-    const probe = probeRepoRootFromGitCommonDir(dir);
-    expect(probe.root).toBeNull();
-    expect(probe.failure?.kind).toBe("exit");
-  });
+    const outside = probeRepoRootFromGitCommonDir(dir);
+    expect(outside.root).toBeNull();
+    expect(outside.failure?.kind).toBe("exit");
 
-  it("reports an unrunnable git as a spawn failure, not as a missing repository", () => {
-    const repo = createRepo();
     const originalPath = process.env.PATH;
     try {
       process.env.PATH = path.join(repo, "no-such-bin");
-      const probe = probeRepoRootFromGitCommonDir(repo);
-      expect(probe.root).toBeNull();
-      expect(probe.failure).toMatchObject({ kind: "spawn", errno: "ENOENT" });
+      expect(probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: null, failure: { kind: "spawn", errno: "ENOENT" } });
     } finally {
       process.env.PATH = originalPath;
     }

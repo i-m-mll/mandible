@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,7 +59,6 @@ const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
   // Issue a09b4d2 — operator retirement of a failed runtime handoff lock.
   "cli/auth-handoff.sh:39 POST /api/runtime-handoff/retire",
   // Issue 23f8142 — operator one-time conversation lineage backfill.
-  "cli/conversations.sh:420 POST /api/conversations/lineage-backfill",
 ] as const;
 
 describe("CLI API route coverage", () => {
@@ -190,15 +190,10 @@ describe("CLI API route coverage", () => {
 });
 
 async function waitForFile(dir: string, suffix: string): Promise<string> {
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(dir)) {
-      const match = fs.readdirSync(dir).find((entry) => entry.endsWith(suffix));
-      if (match) return path.join(dir, match);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Timed out waiting for ${suffix} in ${dir}`);
+  const match = await waitUntil(
+    () => fs.existsSync(dir) && fs.readdirSync(dir).find((entry) => entry.endsWith(suffix)),
+    `${suffix} in ${dir}`, 20);
+  return path.join(dir, match);
 }
 
 function collectRoutePolicies(): Map<string, RoutePolicy> {

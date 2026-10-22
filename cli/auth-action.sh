@@ -5,6 +5,7 @@ set -euo pipefail
 
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+mandible_prepare_syntax_runtime || exit $?
 
 usage() {
   mandible_command_help auth action

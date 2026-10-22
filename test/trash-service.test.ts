@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { registerTrashRoutes } from "../src/routes/trash.js";
 import { Router } from "../src/server.js";
@@ -18,6 +18,7 @@ import {
   type TrashCreateInput,
 } from "../src/trash-service.js";
 import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, {
@@ -58,7 +59,7 @@ describe.sequential("trash custody", () => {
     fs.mkdirSync(path.dirname(featureWorktree), { recursive: true });
     git(repoRoot, ["worktree", "add", featureWorktree, "feature/trash"]);
 
-    db = openDb(path.join(tempDir, "mandible.db"));
+    db = migratedMemoryDb();
     projectId = addProject(db, { project_key: "trash-test", display_name: "Trash Test" }, 1).id;
     checkoutId = addOrUpdateCheckout(db, "trash-test", {
       root: repoRoot,

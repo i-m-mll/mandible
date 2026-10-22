@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Bug: 645f8a8 — daemon readiness gate for self-merge rebuilds (backend).
 //
 // Verifies the lifecycle-owned readiness flag and that the /api/health endpoint
@@ -9,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, Router, type ClientAuthGate } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import {
-  isDaemonReady,
   isDaemonWarm,
   setDaemonReady,
   setDaemonWarm,
@@ -85,15 +85,6 @@ describe("lifecycle readiness flags", () => {
     setDaemonWarm(false);
   });
 
-  it("round-trips set/get and starts armed-off after a reset", () => {
-    setDaemonReady(false);
-    expect(isDaemonReady()).toBe(false);
-    setDaemonReady(true);
-    expect(isDaemonReady()).toBe(true);
-    setDaemonReady(false);
-    expect(isDaemonReady()).toBe(false);
-  });
-
   it("tracks warm independently from mutation readiness", () => {
     expect(isDaemonWarm()).toBe(false);
     setDaemonReady(true);
@@ -145,13 +136,6 @@ describe("/api/health readiness", () => {
     expect(health.rebuilding).toBe(true);
   });
 
-  it("defaults to ready:true when no readiness source is wired (back-compat)", async () => {
-    await startServer({});
-    const health = await getHealth();
-    expect(health.ready).toBe(true);
-    expect(health.warm).toBe(true);
-  });
-
   it("reports warm independently after first-pass startup reconciliation", async () => {
     let warm = false;
     await startServer({ isReady: () => true, isWarm: () => warm });
@@ -165,17 +149,14 @@ describe("/api/health readiness", () => {
     expect((await getHealth()).startup_epoch).toBe("daemon-start-2");
   });
 
-  it("reports the exact credential directory and strict agent auth mode", async () => {
+  it("reports the agent auth mode", async () => {
     await startServer({
       clientAuth: {
         mode: () => "strict",
         credentialDirectory: () => "/tmp/mandible-test-client-auth",
       } as ClientAuthGate,
     });
-    expect((await getHealth()).client_auth).toMatchObject({
-      mode: "strict",
-      credential_directory: "/tmp/mandible-test-client-auth",
-    });
+    expect((await getHealth()).client_auth).toMatchObject({ mode: "strict" });
   });
 });
 

@@ -60,11 +60,11 @@ source "$MANDIBLE_CLI_DIR/api.sh"
 api_scope_inherited_identity
 
 usage() {
-  "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help
+  mandible_command_help
 }
 
 auth_usage() {
-  "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help auth
+  mandible_command_help auth
 }
 
 case "${1:-}" in
@@ -111,7 +111,7 @@ case "${1:-}" in
   trash) shift; exec "$MANDIBLE_CLI_DIR/trash.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
-  help) shift; if (( $# )); then exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;
+  help) shift; if (( $# )); then mandible_command_help "$@"; else usage; fi ;;
   -h|--help) usage ;;
   "") usage >&2; exit 1 ;;
   *) echo "Unknown command: $1" >&2; usage >&2; exit 1 ;;

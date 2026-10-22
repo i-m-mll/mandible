@@ -1244,11 +1244,6 @@ export async function getIssueDetail(
   return parseMaybeJson(response);
 }
 
-export async function findIssue(issueId: string): Promise<unknown> {
-  const response = await apiGet(`/api/issues/find/${encodeURIComponent(issueId)}`);
-  return parseMaybeJson(response);
-}
-
 export async function issueAction(
   repoId: string,
   issueId: string,

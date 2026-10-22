@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { realpathSync, readFileSync } from "node:fs";
-import { resolveCheckoutPath } from "./ledger/project-registry.js";
+import { resolveProjectRef, type RegistryProject } from "./ledger/project-registry.js";
 import { compiledBuildDigest, readBuildRevision, runtimeDependenciesDigest } from "../scripts/build-revision.mjs";
 import type { Db } from "./db.js";
+import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
 
@@ -25,12 +26,17 @@ export type RuntimeSourceReadiness =
   | { ok: true; projectId: string; commonGitDir: string }
   | { ok: false; reason: string };
 
+function registeredCheckoutProject(db: Db, root: string): RegistryProject | null {
+  const resolved = resolveProjectRef(db, root);
+  return resolved.ok && resolved.matched_by === "checkout_root" ? resolved.project : null;
+}
+
 export function validateRuntimeSource(db: Db, sourcePath: string, destinationPath: string): RuntimeSourceReadiness {
   try {
     const source = realpathSync(sourcePath);
     const destination = realpathSync(destinationPath);
-    const destinationProject = resolveCheckoutPath(db, destination);
-    const sourceProject = resolveCheckoutPath(db, source);
+    const destinationProject = registeredCheckoutProject(db, destination);
+    const sourceProject = registeredCheckoutProject(db, source);
     if (!destinationProject) return { ok: false, reason: `Destination checkout is unregistered. Register its verified canonical project with mandible project add-checkout <project> --root '${destination}'.` };
     if (!sourceProject) return { ok: false, reason: `Installed source checkout is unregistered. After verifying ownership, run mandible project add-checkout ${destinationProject.project_key} --root '${source}'.` };
     if (sourceProject.id !== destinationProject.id) return { ok: false, reason: 'Installed source and destination are registered to different canonical projects; reassociation is not automatic.' };
@@ -98,10 +104,11 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
     if (realpathSync(`${sourceRoot}/node_modules`) !== source.dependencies.root || runtimeDependenciesDigest(sourceRoot) !== source.dependencies.digest) fail("retained installed dependencies changed");
     if (readBuildRevision(sourceRoot) !== source.buildRevision || compiledBuildDigest(sourceRoot) !== source.compiledDigest) fail("retained installed source build changed");
   }
-  if (git(["show", "-s", "--format=%P", commit!]) !== `${base} ${head}` || git(["rev-parse", `${commit}^{tree}`]) !== tree ||
+  const published = readGitCommitFacts(root, commit!, { env, timeout: 5000 });
+  if (published.parents.join(" ") !== `${base} ${head}` || published.tree !== tree ||
       git(["rev-parse", "HEAD"]) !== commit || git(["rev-parse", `refs/heads/${row.base_branch}`]) !== commit ||
       git(["write-tree"]) !== tree || git(["status", "--porcelain", "--untracked-files=no"])) fail("exact applied checkout differs");
-  if (frozen.commit_message_digest && canonicalizeChangeMessage(git(["show", "-s", "--format=%B", commit!])) !== frozen.commit_message) fail("canonical merge message differs");
+  if (frozen.commit_message_digest && canonicalizeChangeMessage(published.message) !== frozen.commit_message) fail("canonical merge message differs");
   const frozenCandidate = { tree, snapshotRevision: event!.revision, snapshotDigest: event!.snapshot_sha256, signerCredentialId: signature.credential_id! };
   if (binding.frozenCandidate && (Object.keys(frozenCandidate) as Array<keyof typeof frozenCandidate>).some(key => binding.frozenCandidate![key] !== frozenCandidate[key])) fail("frozen proof binding differs");
   return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate, ...(sourceProjectId ? { sourceProjectId } : {}) };

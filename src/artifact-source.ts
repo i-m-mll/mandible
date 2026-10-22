@@ -2,7 +2,7 @@ import { artifactAccessProjectIds } from './permissions/resources.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { Db } from './db.js';
-import { resolveCanonicalArtifactRepoRef } from './artifact-repo-resolution.js';
+import { resolveProjectRef } from './ledger/project-registry.js';
 
 export type ArtifactSource =
   | { kind: 'repo'; project_id: string; path: string }
@@ -30,8 +30,8 @@ export function sourceKey(source: ArtifactSource): string {
 }
 export function validateArtifactSource(db: Db, source: ArtifactSource): ArtifactLifecycleResult<ArtifactSource> {
   if (source.kind === 'repo') {
-    const repo = resolveCanonicalArtifactRepoRef(db, source.project_id);
-    if (!repo.ok || repo.project_id !== source.project_id || !source.path || path.posix.isAbsolute(source.path)
+    const repo = resolveProjectRef(db, source.project_id);
+    if (!repo.ok || repo.project.id !== source.project_id || !source.path || path.posix.isAbsolute(source.path)
       || source.path.includes('\\') || source.path.split('/').some(p => p === '..' || p === '.' || !p)) {
       return artifactFailure('invalid_source', 'Repository source requires a canonical project ID and normalized relative path');
     }

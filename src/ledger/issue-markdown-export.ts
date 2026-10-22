@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Db } from "../db.js";
 import { buildLedgerIssueDetailProjection, type LedgerIssueDetailProjection } from "./issue-detail.js";
 import { LedgerStore } from "./store.js";
+import { resolveProjectIds } from "./project-registry.js";
 
 export const ISSUE_MARKDOWN_EXPORT_CONFIG_SETTING = "ledger.issue_markdown_exports";
 
@@ -96,10 +97,7 @@ export function selectIssueMarkdownExportIssueIds(
     issueIds.add(resolved.id);
   }
 
-  const projectIds = resolveProjectRefs(db, scope.project_refs ?? []);
-  for (const projectId of resolveRepoRefs(db, scope.repo_refs ?? [])) {
-    projectIds.add(projectId);
-  }
+  const projectIds = resolveProjectIds(db, [...(scope.project_refs ?? []), ...(scope.repo_refs ?? [])]);
   if (projectIds.size > 0) {
     const rows = db.prepare(
       `SELECT id FROM ledger_issues
@@ -240,39 +238,6 @@ function parseExportConfig(value: unknown): IssueMarkdownExportConfig {
     project_refs: stringArray(record.project_refs ?? record.projects ?? record.project),
     repo_refs: stringArray(record.repo_refs ?? record.repos ?? record.repo),
   };
-}
-
-function resolveProjectRefs(db: Db, refs: string[]): Set<string> {
-  const projectIds = new Set<string>();
-  for (const ref of refs) {
-    const rows = db.prepare(
-      `SELECT id FROM ledger_projects
-       WHERE id = ? OR display_name = ? OR remote_identity = ? OR upstream_identity = ?
-       UNION
-       SELECT project_id AS id FROM ledger_project_checkouts
-       WHERE id = ? OR root = ? OR name = ? OR work_repo_id = ?`,
-    ).all(ref, ref, ref, ref, ref, ref, ref, ref) as Array<{ id: string }>;
-    if (rows.length === 0) {
-      throw new Error(`Unable to resolve ledger project ref '${ref}'`);
-    }
-    for (const row of rows) projectIds.add(row.id);
-  }
-  return projectIds;
-}
-
-function resolveRepoRefs(db: Db, refs: string[]): Set<string> {
-  const projectIds = new Set<string>();
-  for (const ref of refs) {
-    const rows = db.prepare(
-      `SELECT project_id AS id FROM ledger_project_checkouts
-       WHERE id = ? OR root = ? OR name = ? OR work_repo_id = ?`,
-    ).all(ref, ref, ref, ref) as Array<{ id: string }>;
-    if (rows.length === 0) {
-      throw new Error(`Unable to resolve ledger repo ref '${ref}'`);
-    }
-    for (const row of rows) projectIds.add(row.id);
-  }
-  return projectIds;
 }
 
 function hasScope(scope: IssueMarkdownExportScope): boolean {

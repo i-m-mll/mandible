@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { WorkUnit } from "./contracts.js";
 import type { AuthRequest } from "./types.js";
-import { shortestUniquePrefix } from "./ledger/ids.js";
+import { shortRef } from "./entity-refs.js";
 import { LedgerStore } from "./ledger/store.js";
 import type { LedgerAttributionInput } from "./ledger/types.js";
 import { evaluateProjectAccess } from "./permissions/store.js";
@@ -156,8 +156,7 @@ export function describeCustodyHolder(db: Db, userId: string | null, credentialI
 }
 
 function shortCredentialRef(db: Db, credentialId: string): string {
-  const ids = (db.prepare("SELECT id FROM user_credentials").all() as Array<{ id: string }>).map((row) => row.id);
-  return credentialId.slice(0, shortestUniquePrefix(credentialId, ids, 8).length);
+  return shortRef(db, "credential", credentialId);
 }
 
 export function holderLabel(holder: CustodyHolder): string {
@@ -180,14 +179,19 @@ function shellQuote(value: string): string {
 }
 
 /** The exact custody-assume command for this unit at its current generation. */
-export function takeoverCommand(unit: WorkUnit, options: { requestApproval?: boolean; parentRoleCheckpointId?: string | null } = {}): string {
+export function takeoverCommand(
+  db: Db,
+  unit: WorkUnit,
+  options: { requestApproval?: boolean; parentRoleCheckpointId?: string | null } = {},
+): string {
   const reason = `Continue ${unit.branch ?? unit.issue_id}; take over custody.`;
+  const checkpoint = options.parentRoleCheckpointId ? shortRef(db, "checkpoint", options.parentRoleCheckpointId) : "<checkpoint-id>";
   return [
     "mandible work-unit custody-assume",
-    `--id ${unit.id}`,
+    `--id ${shortRef(db, "work_unit", unit.id)}`,
     `--expected-generation ${unit.custody_generation}`,
     `--reason ${shellQuote(reason)}`,
-    ...(options.parentRoleCheckpointId !== undefined ? [`--parent-role-checkpoint ${options.parentRoleCheckpointId ?? "<checkpoint-id>"}`] : []),
+    ...(options.parentRoleCheckpointId !== undefined ? [`--parent-role-checkpoint ${checkpoint}`] : []),
     ...(options.requestApproval ? ["--request-approval"] : []),
   ].join(" ");
 }
@@ -203,7 +207,7 @@ export function credentialMayHoldCustody(db: Db, repoId: string, userId: string,
     return "The requesting credential is not active for its user.";
   }
   const project = resolveProjectRef(db, repoId);
-  if (!project.ok || !project.project || project.ambiguous) return "Work-unit project identity is not unique.";
+  if (!project.ok) return "Work-unit project identity is not unique.";
   const user = db.prepare("SELECT slug FROM users WHERE id = ?").get(userId) as { slug: string } | undefined;
   if (!user) return "The requesting user no longer exists.";
   const decision = evaluateProjectAccess(db, {
@@ -298,14 +302,13 @@ function custodyTransferComment(
   next: CustodyHolder,
   nextGeneration: number,
 ): string {
-  const branch = input.unit.branch ? `\`${input.unit.branch}\`` : `work unit \`${input.unit.id}\``;
+  const branch = input.unit.branch ? `\`${input.unit.branch}\`` : `work unit \`${shortRef(db, "work_unit", input.unit.id)}\``;
   const how = (() => {
     switch (input.authority_path) {
       case "stopped_holder_takeover":
         return `The previous holder's session ${livenessLabel(input.prior_holder_liveness!)}.`;
       case "operator_approval": {
-        const ids = (db.prepare("SELECT id FROM auth_requests").all() as Array<{ id: string }>).map((row) => row.id);
-        const ref = shortestUniquePrefix(input.auth_request_id!, ids, 8);
+        const ref = shortRef(db, "auth_request", input.auth_request_id!);
         const holder = input.prior_holder_liveness ? ` The previous holder's session ${livenessLabel(input.prior_holder_liveness)}.` : "";
         return `The operator approved this transfer in [auth:${ref}].${holder}`;
       }

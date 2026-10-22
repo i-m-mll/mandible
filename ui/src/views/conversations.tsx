@@ -87,7 +87,7 @@ import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { ManagedConversationControlActions, ManagedConversationControlFields, useManagedConversationControlState } from '../chat/ManagedConversationControls';
-import { EntityPill } from '../components/shared/EntityPill';
+import { IssuePill } from '../components/shared/IssuePill';
 import {
   ChatOverlay,
   ChatFailureNotice,
@@ -1256,11 +1256,10 @@ function ConversationMetadataModal({
             {issueLinks.length > 0 && (
               <div className="conv-modal__chips">
                 {issueLinks.map((link) => (
-                  <EntityPill
+                  <IssuePill
                     key={`${link.repo_id}-${link.issue_id}`}
-                    type="issue"
-                    id={link.issue_id}
-                    repoId={link.repo_id}
+                    issueRef={link.issue_id}
+                    context={link.repo_id}
                   />
                 ))}
               </div>

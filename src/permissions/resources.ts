@@ -46,17 +46,8 @@ export function resolveArtifactProject(db: Db, artifactOrVersionId: string): Res
   return { ok: true, project_id: projects[0] };
 }
 
-/** Resolve work-scanner ids, checkout roots, or canonical refs to one project. */
 export function resolveWorkProject(db: Db, repoRef: string): ResourceProjectResolution {
-  const rows = db.prepare(
-    `SELECT DISTINCT project_id FROM ledger_project_checkouts
-      WHERE work_repo_id = ? OR root = ? OR id = ?
-      ORDER BY project_id`,
-  ).all(repoRef, repoRef, repoRef) as Array<{ project_id: string }>;
-  if (rows.length > 1) return { ok: false, reason: "ambiguous" };
-  if (rows.length === 1) return { ok: true, project_id: rows[0].project_id };
-  const direct = resolveProjectRef(db, repoRef);
-  if (direct.ambiguous) return { ok: false, reason: "ambiguous" };
-  if (direct.ok && direct.project) return { ok: true, project_id: direct.project.id };
-  return { ok: false, reason: "not_found" };
+  const resolved = resolveProjectRef(db, repoRef);
+  if (resolved.ok) return { ok: true, project_id: resolved.project.id };
+  return { ok: false, reason: resolved.reason === "ambiguous" ? "ambiguous" : "not_found" };
 }

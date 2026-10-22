@@ -117,7 +117,10 @@ describe("conversation custody", () => {
     const store = new ConversationCustodyStore(custodyRoot);
     const captured = store.capture({ conversation_id: "conv-b", provider: "claude_code", session_id: fixture.sessionId, source_path: fixture.source });
     const main = captured.manifest.files.find((file) => file.dependency_role === "main_transcript")!;
-    fs.appendFileSync(path.join(captured.version_path, main.path), "corrupt");
+    const target = path.join(captured.version_path, main.path);
+    const bytes = fs.readFileSync(target);
+    bytes[0] ^= 1;
+    fs.writeFileSync(target, bytes);
     expect(store.verifyVersion("conv-b")).toMatchObject({ ok: false });
 
     const clean = store.capture({ conversation_id: "conv-c", provider: "claude_code", session_id: fixture.sessionId, source_path: fixture.source });

@@ -2,12 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { triggerTargetedIngest } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
-import { backfillConversationLineage } from "../src/conversations/lineage-backfill.js";
+import { backfillConversationLineageOnce } from "../src/conversations/lineage-backfill.js";
 import SqliteDatabase from "../src/sqlite.js";
 import { Router } from "../src/server.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -74,7 +75,7 @@ function rowsOf(sessionId: string): Array<{ id: string; parent_conversation_id: 
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-lineage-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db);
 });
 
@@ -138,13 +139,14 @@ describe("conversation lineage", () => {
     );
     registry.close();
 
-    const result = await backfillConversationLineage(db);
+    const result = await backfillConversationLineageOnce(db);
     expect(result).toMatchObject({
       declared: { codex: 2 },
       lineage_source: { transcript: 2, codex_state_database: 1 },
       linked: 2,
       unresolved_parent: 0,
     });
+    expect(await backfillConversationLineageOnce(db)).toBeNull();
     const rootId = rowsOf(ROOT)[0].id;
     expect(rowsOf(CHILD_A)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Leibniz" });
     expect(rowsOf(CHILD_B)[0]).toMatchObject({ parent_conversation_id: rootId, is_sidechain: 1, agent_id: "Locke" });
@@ -168,7 +170,13 @@ describe("conversation lineage", () => {
       ...extra,
     });
     const agent = write("agent-aaa6e9a.jsonl", [
-      record("a1", "user", { isSidechain: true }),
+      record("a1", "user", {
+        isSidechain: true,
+        message: {
+          role: "user",
+          content: "[mandible child parent=claude:99999999-9999-4999-8999-999999999999 parent-role=coordinator role=worker]\nWork.",
+        },
+      }),
       record("a2", "assistant", { isSidechain: true }),
     ]);
     await ingest(agent);
@@ -184,5 +192,40 @@ describe("conversation lineage", () => {
     expect(child.parent_conversation_id).toBe(
       (db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(parent.source_path) as { id: string }).id,
     );
+  });
+
+  it("links Claude subagent transcripts under their session directory and keeps them out of top-level lists", async () => {
+    const parentSession = "33333333-3333-4333-8333-333333333333";
+    const projectDir = path.join(tempDir, ".claude", "projects", "-tmp-project");
+    const write = (file: string, rows: Array<Record<string, unknown>>) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      return file;
+    };
+    const message = (uuid: string, role: "user" | "assistant", text: string, extra: Record<string, unknown> = {}) => ({
+      uuid, type: role, timestamp: "2026-06-01T00:00:00.000Z", cwd: "/tmp/project",
+      message: { role, model: "claude-opus", content: role === "user" ? text : [{ type: "text", text }] }, ...extra,
+    });
+    await ingest(write(path.join(projectDir, `${parentSession}.jsonl`), [
+      message("p1", "user", "Run two tasks", { sessionId: parentSession }),
+      message("p2", "assistant", "dispatching"),
+    ]));
+    for (const agentId of ["alpha", "beta"]) {
+      await ingest(write(path.join(projectDir, parentSession, "subagents", `agent-${agentId}.jsonl`), [
+        message(`${agentId}-1`, "user", `You are a subagent: ${agentId}`, { sessionId: `child-${agentId}`, isSidechain: true }),
+        message(`${agentId}-2`, "assistant", `${agentId} done`, { isSidechain: true }),
+      ]));
+    }
+
+    const parentId = rowsOf(parentSession)[0].id;
+    for (const agentId of ["alpha", "beta"]) {
+      expect(rowsOf(`child-${agentId}`)[0]).toMatchObject({ parent_conversation_id: parentId, is_sidechain: 1, agent_id: agentId });
+    }
+    const router = new Router();
+    registerConversationRoutes(router);
+    const detail = await router.invoke({ method: "GET", url: `/api/conversations/${parentId}` });
+    expect(detail.body).toMatchObject({ conversation: { id: parentId, children_count: 2 } });
+    const list = await router.invoke({ method: "GET", url: "/api/conversations?exclude_subagents=true" });
+    expect(list.body).toMatchObject({ total: 1 });
   });
 });

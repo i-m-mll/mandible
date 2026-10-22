@@ -336,8 +336,7 @@ cmd_comment_edit() {
   fi
 
   require_tools
-  local comment_id payload tmp_response status response
-  comment_id=$(resolve_comment_ref "$comment_ref")
+  local payload tmp_response status response
   payload=$(
     jq -n \
       --arg body "$message" \
@@ -348,7 +347,7 @@ cmd_comment_edit() {
       + (if $base_body_hash == "" then {} else {base_body_hash: $base_body_hash} end)'
   )
   tmp_response=$(mktemp)
-  status=$(api_send_capture PATCH "/api/ledger/comments/$(urlencode "$comment_id")" "$payload" "$tmp_response")
+  status=$(api_send_capture PATCH "/api/ledger/comments/$(urlencode "$comment_ref")" "$payload" "$tmp_response")
   response=$(cat "$tmp_response")
   rm -f "$tmp_response"
   if [[ "$status" =~ ^2 ]]; then
@@ -756,16 +755,13 @@ cmd_changed() {
   require_tools
   local checkpoint_tmp=""
   if [[ -n "$since_issue" ]]; then
-    local checkpoint_path checkpoint_response checkpoint_list_response checkpoint_created_at checkpoint_id
+    local checkpoint_path checkpoint_response checkpoint_created_at checkpoint_id
     if [[ -n "$checkpoint_ref" ]]; then
-      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints"
+      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?id=$(urlencode "$checkpoint_ref")"
       if [[ -n "$kind" ]]; then
-        checkpoint_path="${checkpoint_path}?kind=$(urlencode "$kind")"
+        checkpoint_path="${checkpoint_path}&kind=$(urlencode "$kind")"
       fi
-      checkpoint_list_response=$(api_get "$checkpoint_path") \
-        || die "${RED}Failed to fetch checkpoints for ${since_issue}${RESET}" 1
-      checkpoint_response=$(printf '%s\n' "$checkpoint_list_response" \
-        | jq -e --arg id "$checkpoint_ref" '.checkpoints[] | select(.id == $id)') \
+      checkpoint_response=$(api_get "$checkpoint_path") \
         || die "Checkpoint not found on ${since_issue}: ${checkpoint_ref}" 2
     else
       checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?latest=true"
@@ -1127,14 +1123,19 @@ cmd_parent_role() {
   case "$action" in
     status) cmd_parent_role_status "$@" ;;
     assume) cmd_parent_role_assume "$@" ;;
+    release) cmd_parent_role_release "$@" ;;
     ""|-h|--help)
       mandible_command_help issue parent-role
       ;;
     *)
-      die "Unknown parent-role action: $action (expected status or assume)" 2
+      die "Unknown parent-role action: $action (expected status, assume or release)" 2
       ;;
   esac
 }
+
+# The holder's provider comes from its resolved session, not from the free-form
+# --mechanism it was recorded with (issue 23a4edf).
+PARENT_ROLE_HOLDER_JQ='def parent_role_holder: "\((.session_id // "-") | mandible_short_id) (\(.liveness.provider // .mechanism // "-"))";'
 
 cmd_parent_role_status() {
   local issue_ref=""
@@ -1152,18 +1153,46 @@ cmd_parent_role_status() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
   else
-    printf '%s\n' "$response" | api_jq_human '
-      if .live_holder then
-        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.liveness.provider // .live_holder.mechanism // "-"))"
-      elif (.unknown_holders // []) | length > 0 then
-        "holder of unknown liveness: \((.unknown_holders[0].session_id // "-") | mandible_short_id) (\(.unknown_holders[0].liveness.provider // .unknown_holders[0].mechanism // "-"))"
-      elif .holder then
-        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.liveness.provider // .holder.mechanism // "-"))"
-      else
-        "no parent-role holder"
+    printf '%s\n' "$response" | api_jq_human "${PARENT_ROLE_HOLDER_JQ}"'
+      if .holder == null then "no parent-role holder"
+      else {live: "live holder", unknown: "holder of unknown liveness", stopped: "stale holder"}[.holder.liveness.state]
+        + ": " + (.holder | parent_role_holder)
       end
     '
   fi
+}
+
+# Report one parent-role mutation's captured answer and consume its file. A
+# refusal exits non-zero: 3 when a holder blocks the change, 1 otherwise, with
+# --json printing the server's answer either way.
+parent_role_report() {
+  local status="$1" response_file="$2" json="$3" success_filter="$4"
+  local response
+  response=$(cat "$response_file")
+  rm -f "$response_file"
+  local code=0
+  if [[ ! "$status" =~ ^2 ]]; then
+    code=1
+    # Only a response that actually carries a holder is a holder conflict.
+    # Other refusals (and the 400 for an unregistered session id) carry their
+    # own `error` and must be shown as themselves, not as a phantom holder
+    # "- (-)" (issue 7a97e2c).
+    if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
+      code=3
+    fi
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.' 2>/dev/null || printf '%s\n' "$response"
+  elif (( code == 0 )); then
+    printf '%s\n' "$response" | api_jq_human "$success_filter"
+  elif (( code == 3 )); then
+    printf '%s\n' "$response" | api_jq_human "${PARENT_ROLE_HOLDER_JQ}"'"parent role held by \(.blocking_holder | parent_role_holder): \(.error)"' >&2
+  else
+    printf '%s\n' "$response" \
+      | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' >&2 2>/dev/null \
+      || printf '%s\n' "$response" >&2
+  fi
+  return "$code"
 }
 
 cmd_parent_role_assume() {
@@ -1184,38 +1213,37 @@ cmd_parent_role_assume() {
     die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Gemini session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, GEMINI_SESSION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
   fi
   require_tools
-  local payload tmp_response status response
+  local payload
   payload=$(jq -n \
     --arg session_id "$session_id" \
     --arg mechanism "$mechanism" \
     --arg override "$override" \
     '{session_id:$session_id, override:($override == "1")} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
+  local tmp_response status
   tmp_response=$(mktemp)
   status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
-  response=$(cat "$tmp_response")
-  rm -f "$tmp_response"
-  if [[ "$status" =~ ^2 ]]; then
-    if (( json )); then
-      printf '%s\n' "$response" | jq '.'
-    else
-      printf '%s\n' "$response" | api_jq_human '"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder.payload.session_id | mandible_short_id)"'
-    fi
-    return 0
+  parent_role_report "$status" "$tmp_response" "$json" \
+    "${PARENT_ROLE_HOLDER_JQ}"'"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder | parent_role_holder)"'
+}
+
+cmd_parent_role_release() {
+  local issue_ref=""
+  local override=0
+  local json=0
+  local binding
+  binding=$(mandible_bind_arguments "issue.parent-role.release" '{"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: $(mandible_command_syntax issue.parent-role.release)" 2
   fi
-  # Only a response that actually carries a holder is a holder conflict. Other
-  # 409s on this route (and the 400 for an unregistered session id) carry their
-  # own `error` and must be shown as themselves, not rendered as a phantom
-  # "live parent-role holder exists: - (-)" (issue 7a97e2c).
-  if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
-    printf '%s\n' "$response" | api_jq_human '"\(if .blocking_holder.liveness.state == "live" then "live" else "unknown-liveness" end) parent-role holder exists: \((.blocking_holder.session_id // "-") | mandible_short_id) (\(.blocking_holder.mechanism // "-")); rerun with --override to retake"' >&2
-    return 3
-  fi
-  local rendered
-  rendered=$(printf '%s\n' "$response" \
-    | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' 2>/dev/null) \
-    || rendered="$response"
-  printf '%s\n' "$rendered" >&2
-  return 1
+  require_tools
+  local payload
+  payload=$(jq -n --arg override "$override" '{override:($override == "1")}')
+  local tmp_response status
+  tmp_response=$(mktemp)
+  status=$(api_send_capture DELETE "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
+  parent_role_report "$status" "$tmp_response" "$json" \
+    "${PARENT_ROLE_HOLDER_JQ}"'if .released then "parent-role released checkpoint=\(.checkpoint.id | mandible_short_id) previous holder=\(.checkpoint.payload.previous_holder | parent_role_holder)" else "no parent-role holder; nothing released" end'
 }
 
 cmd_label() {
@@ -1548,45 +1576,6 @@ PRIORITY_USAGE
   err "${GREEN}Set priority for ${issue_ref} to ${priority}${RESET}"
 }
 
-resolve_comment_ref() {
-  local comment_ref="$1"
-
-  if [[ "$comment_ref" != *"#"* ]]; then
-    printf '%s' "$comment_ref"
-    return
-  fi
-
-  local issue_ref="${comment_ref%%#*}"
-  local selector="${comment_ref##*#}"
-  if [[ -z "$issue_ref" || -z "$selector" ]]; then
-    die "Comment reference must be <issue-ref>#<ordinal>, <issue-ref>#last, or a raw comment id." 2
-  fi
-  if [[ "$selector" != "last" && ! "$selector" =~ ^[0-9]+$ ]]; then
-    die "Comment selector must be an integer ordinal or 'last': $comment_ref" 2
-  fi
-  if [[ "$selector" == "0" ]]; then
-    die "Comment ordinal 0 is the issue description; use 'mandible issue description show ${issue_ref}' or 'mandible issue description history ${issue_ref}'." 2
-  fi
-
-  local comment_id
-  if [[ "$selector" == "last" ]]; then
-    comment_id=$(
-      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
-        | jq -er '(.comments // [] | sort_by(.created_at // 0) | last | .id) // empty'
-    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
-  else
-    comment_id=$(
-      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
-        | jq -er --argjson ordinal "$selector" '
-            (.comments // [])[]
-            | select(.ordinal == $ordinal)
-            | .id
-          '
-    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
-  fi
-  printf '%s' "$comment_id"
-}
-
 cmd_comment_show() {
   local comment_ref=""
   local json=0
@@ -1600,13 +1589,12 @@ cmd_comment_show() {
   fi
 
   require_tools
-  local comment_id response
-  comment_id=$(resolve_comment_ref "$comment_ref")
-  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+  local response
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_ref")/revisions") \
     || die "${RED}Failed to fetch comment ${comment_ref}${RESET}" 1
   if (( json )); then
-    printf '%s\n' "$response" | jq --arg comment_id "$comment_id" '{
-      comment_id: $comment_id,
+    printf '%s\n' "$response" | jq '{
+      comment_id: (.revisions // [] | sort_by(.revision_no) | last | .entity_id),
       revision: (.revisions // [] | sort_by(.revision_no) | last),
       body: ((.revisions // [] | sort_by(.revision_no) | last | .snapshot_body) // "")
     }'
@@ -1629,9 +1617,8 @@ cmd_comment_history() {
   fi
 
   require_tools
-  local comment_id response
-  comment_id=$(resolve_comment_ref "$comment_ref")
-  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+  local response
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_ref")/revisions") \
     || die "${RED}Failed to fetch body revisions for comment ${comment_ref}${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
@@ -1818,7 +1805,7 @@ cmd_refs() {
     backfill)
       local root
       root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-      exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-refs-backfill.js" "$@"
+      exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-refs-backfill.ts" "$@"
       ;;
     ""|-h|--help)
       cat <<'REFS_USAGE'
@@ -1835,7 +1822,7 @@ REFS_USAGE
 cmd_markdown() {
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-  exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-markdown-tools.js" "$@"
+  exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-markdown-tools.ts" "$@"
 }
 
 # --- Main ---

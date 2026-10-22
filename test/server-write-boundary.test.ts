@@ -1,9 +1,11 @@
 import http from "node:http";
 import net from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ClientAuthzError } from "../src/client-auth/authz.js";
 import { attachWebSocketUpgrade, createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
+import type { Logger } from "../src/types.js";
 
 interface TestServer {
   port: number;
@@ -252,3 +254,44 @@ function requestUpgrade(path: string, headers: Record<string, string>): Promise<
     socket.on("error", reject);
   });
 }
+
+describe("route error envelope", () => {
+  it("returns a standard internal error envelope when a handler throws", async () => {
+    const logger: Logger = vi.fn();
+    const router = new Router({ logger });
+
+    router.get("/api/fails", () => {
+      throw new Error("private details");
+    }, { fileRpc: "deny", operation: { id: "fixture.failure", effects: [], reportingCategory: null, requestSchema: null } });
+
+    const response = await router.invoke({ method: "GET", url: "/api/fails" });
+
+    expect(response).toEqual({
+      status: 500,
+      body: { error: "internal_error" },
+    });
+    expect(logger).toHaveBeenCalledWith(
+      "error",
+      "route_handler_error",
+      expect.objectContaining({
+        method: "GET",
+        pathname: "/api/fails",
+        error: "Error: private details",
+      }),
+    );
+  });
+
+  it("answers an authorization refusal with its own status and logs no handler error", async () => {
+    const logger: Logger = vi.fn();
+    const router = new Router({ logger });
+
+    router.post("/api/operator-only", () => {
+      throw new ClientAuthzError(403, "operator_required", "Only the local operator may perform this action.");
+    }, { fileRpc: "deny", operation: { id: "fixture.operator", effects: [], reportingCategory: null, requestSchema: null } });
+
+    const response = await router.invoke({ method: "POST", url: "/api/operator-only" });
+
+    expect(response.status).toBe(403);
+    expect(logger).not.toHaveBeenCalledWith("error", expect.anything(), expect.anything());
+  });
+});

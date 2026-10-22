@@ -1,16 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { createTestRuntime } from "./test-runtime-isolation.mjs";
 
-export function processTreeRss(rootPid) {
-  const snapshot = spawnSync("ps", ["-axo", "pid=,ppid=,rss="], { encoding: "utf8", timeout: 1_000 });
+function readProcessTable() {
+  const snapshot = spawnSync("ps", ["-axo", "pid=,ppid=,rss="], { encoding: "utf8", timeout: 10_000 });
   if (snapshot.error || snapshot.status !== 0) {
     throw new Error(`Cannot measure test process RSS: ${snapshot.stderr || snapshot.error?.message || snapshot.status}`);
   }
-  const rows = snapshot.stdout.trim().split("\n").filter(Boolean).map((line) => {
+  return snapshot.stdout.trim().split("\n").filter(Boolean).map((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
     if (!match) throw new Error(`Invalid process RSS sample: ${line}`);
     return { pid: Number(match[1]), ppid: Number(match[2]), rss: Number(match[3]) };
   });
+}
+
+function treeRss(rows, rootPid) {
   const children = new Map();
   for (const row of rows) {
     if (!children.has(row.ppid)) children.set(row.ppid, []);
@@ -21,6 +24,23 @@ export function processTreeRss(rootPid) {
     for (const child of children.get(pid) ?? []) descendants.add(child);
   }
   return rows.reduce((total, row) => total + (descendants.has(row.pid) ? row.rss : 0), 0);
+}
+
+export function processTreeRss(rootPid) {
+  return treeRss(readProcessTable(), rootPid);
+}
+
+/** One `ps` snapshot shared by every concurrent phase, refreshed at most every `maxAgeMs`. */
+export function sharedProcessTreeRss({ maxAgeMs }) {
+  let rows;
+  let takenAt = -Infinity;
+  return (rootPid) => {
+    if (performance.now() - takenAt >= maxAgeMs) {
+      rows = readProcessTable();
+      takenAt = performance.now();
+    }
+    return treeRss(rows, rootPid);
+  };
 }
 
 export function measureTestRssKiB(child, {
@@ -39,6 +59,10 @@ export async function executeTestPhase({
   measureRssKiB = (child) => measureTestRssKiB(child, { includeParentRss }),
   rssLimitKiB = 950_000,
   monitorIntervalMs = 100,
+  // How long sampling may fail before the phase is stopped. A loaded machine
+  // can stall one `ps`; stopping a phase skips its own cleanup, so a short
+  // stall must not stop it.
+  unmeasuredGraceMs = 0,
   createRuntime = createTestRuntime,
 }) {
   let runtime;
@@ -46,6 +70,7 @@ export async function executeTestPhase({
   let stop;
   let measurementError;
   let peakKiB = 0;
+  let lastMeasuredAt = performance.now();
   let memoryKilled = false;
   let result;
   let error;
@@ -65,10 +90,12 @@ export async function executeTestPhase({
       try {
         const totalKiB = measureRssKiB(child);
         if (!Number.isFinite(totalKiB) || totalKiB < 0) throw new Error(`Invalid test RSS measurement: ${totalKiB}`);
+        lastMeasuredAt = performance.now();
         peakKiB = Math.max(peakKiB, totalKiB);
         if (totalKiB < rssLimitKiB) return;
         memoryKilled = true;
       } catch (caught) {
+        if (performance.now() - lastMeasuredAt < unmeasuredGraceMs) return;
         measurementError = caught;
       }
       clearInterval(monitor);

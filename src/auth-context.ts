@@ -327,11 +327,22 @@ export function resolveAuthMergeExecutionContext(
   const repo = resolveRegisteredTargetRepo(db, input);
 
   validateProtectedBaseBranch(db, repo, baseBranch);
-  verifyLocalBranch(repo.root, "base_branch", baseBranch);
-  verifyLocalBranch(repo.root, "head_branch", headBranch);
-  verifyHeadAheadOfBase(repo.root, baseBranch, headBranch);
-  const baseSha = resolveBranchHeadSha(repo.root, baseBranch);
-  const headSha = resolveBranchHeadSha(repo.root, headBranch);
+  let refs: Map<string, string>;
+  try {
+    refs = readCommitRefsSync(repo.root, [`refs/heads/${baseBranch}`, `refs/heads/${headBranch}`]);
+  } catch (error) {
+    throw new AuthExecutionContextError(
+      `Unable to verify 'base_branch' branch '${baseBranch}' in ${repo.root}: ${describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))}`,
+    );
+  }
+  const branchCommit = (field: "base_branch" | "head_branch", branch: string): string => {
+    const oid = refs.get(`refs/heads/${branch}`);
+    if (!oid) throw new AuthExecutionContextError(`Invalid '${field}' for auth merge execution context: local branch '${branch}' does not exist in ${repo.root}.`);
+    return oid;
+  };
+  const baseSha = branchCommit("base_branch", baseBranch);
+  const headSha = branchCommit("head_branch", headBranch);
+  verifyHeadAheadOfBase(repo.root, baseBranch, headBranch, baseSha, headSha);
 
   const executionCwd = resolveBaseBranchWorktree(repo.root, baseBranch);
   return {
@@ -378,6 +389,19 @@ export async function readCommitRefs(repoRoot: string, refs: readonly string[]):
     timeout: GIT_REF_TIMEOUT_MS,
     env: authGitEnv(),
   });
+  return commitRefsFromOutput(stdout, refs);
+}
+
+/** A new synchronous ref snapshot for one decision phase. Never retained across awaits. */
+export function readCommitRefsSync(repoRoot: string, refs: readonly string[]): Map<string, string> {
+  const stdout = execFileSync("git", ["for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", ...refs], {
+    cwd: repoRoot, encoding: "utf8", timeout: GIT_REF_TIMEOUT_MS, env: authGitEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return commitRefsFromOutput(stdout, refs);
+}
+
+function commitRefsFromOutput(stdout: string, refs: readonly string[]): Map<string, string> {
   const wanted = new Set(refs);
   const commits = new Map<string, string>();
   for (const line of stdout.split("\n")) {
@@ -668,43 +692,12 @@ function validateProtectedBaseBranch(
   }
 }
 
-/**
- * Issue 2205073 — `git show-ref --verify --quiet` answers "this ref is absent"
- * with exit status 1 and nothing else. Only that answer justifies claiming the
- * branch does not exist; a timeout, a spawn errno, or any other git status
- * (128 = repository-level fatal) is reported as what it is.
- */
-function verifyLocalBranch(
-  repoRoot: string,
-  field: "base_branch" | "head_branch",
-  branch: string
-): void {
-  try {
-    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
-      cwd: repoRoot,
-      timeout: GIT_REF_TIMEOUT_MS,
-      env: authGitEnv(),
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-  } catch (error) {
-    const failure = classifyGitFailure(error, GIT_REF_TIMEOUT_MS);
-    if (failure.kind === "exit" && failure.status === 1) {
-      throw new AuthExecutionContextError(
-        `Invalid '${field}' for auth merge execution context: local branch '${branch}' does not exist in ${repoRoot}.`
-      );
-    }
-    throw new AuthExecutionContextError(
-      `Unable to verify '${field}' branch '${branch}' in ${repoRoot}: ${describeGitFailure(failure)}`
-    );
-  }
-}
-
-function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch: string): void {
+function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch: string, baseSha: string, headSha: string): void {
   let output: string;
   try {
     output = execFileSync(
       "git",
-      ["rev-list", "--count", `refs/heads/${baseBranch}..refs/heads/${headBranch}`],
+      ["rev-list", "--count", `${baseSha}..${headSha}`],
       {
         cwd: repoRoot,
         encoding: "utf-8",

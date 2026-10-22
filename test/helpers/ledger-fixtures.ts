@@ -28,6 +28,8 @@ import type { CreateLedgerIssueInput, LedgerAliasInput } from "../../src/ledger/
 import type { LedgerIssue } from "../../src/ledger/types.js";
 import { addBinding, createUser, setupOperator } from "../../src/users/store.js";
 import type { User } from "../../src/users/types.js";
+import { assertNotProductionDbUnderTest } from "../../cli/production-db-guard.cjs";
+import { readSchemaSeed } from './schema-seed.js';
 
 export const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -120,13 +122,41 @@ export function createMigratedDb(options: CreateMigratedDbOptions = {}): Db {
 export function createMigratedDbWithSeeds(
   options: CreateMigratedDbOptions = {},
 ): { db: Db; seeds: MigratedDbSeeds } {
-  const db = new SqliteDatabase(options.path ?? ":memory:");
-  for (const pragma of options.pragmas ?? []) {
-    db.pragma(pragma);
-  }
-  migrate(db);
+  const db = migratedDb(options.path ?? ":memory:", options.pragmas ?? []);
   if (options.setGlobal) setDb(db);
   return { db, seeds: seedUsers(db, options) };
+}
+
+function migratedDb(filename: string, pragmas: string[]): Db {
+  let db: Db;
+  if (filename === ':memory:') {
+    db = SqliteDatabase.fromSnapshot(Buffer.from(schemaSnapshot()));
+  } else {
+    assertNotProductionDbUnderTest(filename);
+    fs.writeFileSync(filename, schemaSnapshot(), { flag: 'wx', mode: 0o600 });
+    db = new SqliteDatabase(filename);
+  }
+  try {
+    for (const pragma of pragmas) db.pragma(pragma);
+    // Functions and connection state are not serialized with schema bytes.
+    migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+let migratedTemplate: Buffer | null = null;
+function schemaSnapshot(): Buffer {
+  return migratedTemplate ??= readSchemaSeed();
+}
+
+/**
+ * A fresh in-memory database at head, cloned from the run's immutable seed.
+ */
+export function migratedMemoryDb(): Db {
+  return migratedDb(':memory:', []);
 }
 
 // --- production-path ledger factories --------------------------------------

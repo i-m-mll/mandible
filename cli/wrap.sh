@@ -15,6 +15,7 @@ GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+mandible_prepare_syntax_runtime || exit $?
 
 # ── Argument parsing ─────────────────────────────────────────────
 
@@ -218,8 +219,8 @@ spawn_watcher() {
       sleep 1
     done
     # Process died — deregister
-    api_send PATCH "/api/sessions/$(urlencode "$SESSION_ID")/end" '{"status":"ended"}' >/dev/null 2>&1 || true
-  ) &
+    api_send PATCH "/api/sessions/$(urlencode "$SESSION_ID")/end" '{"status":"ended"}' || true
+  ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
 }
 

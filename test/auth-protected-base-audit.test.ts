@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 /**
  * @vitest-environment node
  *
@@ -10,7 +11,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { Db } from "../src/db.js";
 import { addCredential, getOperator } from "../src/users/store.js";
@@ -111,7 +112,7 @@ describe("protected-base history audit", () => {
       // The approved candidate binds the base the request showed, so the
       // warning is enough: approval proceeds to execution.
       await approveFixtureRequest(f.queue, request.id);
-      await vi.waitFor(() => expect(f.calls).toHaveLength(1));
+      await waitUntil(() => f.calls.length === 1, "the merge executor to run");
     } finally {
       f.cleanup();
     }
@@ -135,7 +136,7 @@ describe("protected-base history audit", () => {
       expect(storedAudit(f.db, request.id)?.unexpected.map((commit: { sha: string }) => commit.sha)).toEqual([unsigned]);
 
       await approveFixtureRequest(f.queue, request.id);
-      await vi.waitFor(() => expect(f.calls).toHaveLength(1));
+      await waitUntil(() => f.calls.length === 1, "the merge executor to run");
     } finally {
       f.cleanup();
     }

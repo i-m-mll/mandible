@@ -21,7 +21,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * same shape.
  *
  * Append a migration and update these statements in the same change.
- * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
+ * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
 export const BASELINE_SCHEMA_VERSION = 207;

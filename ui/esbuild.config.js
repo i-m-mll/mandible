@@ -3,7 +3,15 @@ import path from 'node:path';
 import { build, context } from 'esbuild';
 
 const isWatch = process.argv.includes('--watch');
-const outdir = 'ui/dist';
+const outdir = outdirArgument(process.argv) ?? 'ui/dist';
+
+function outdirArgument(argv) {
+  const flag = argv.indexOf('--outdir');
+  if (flag < 0) return null;
+  const value = argv[flag + 1];
+  if (!value || value.startsWith('--')) throw new Error('--outdir requires a directory');
+  return value;
+}
 const routeEntryPoints = {
   auth: 'ui/src/views/auth.tsx',
   artifacts: 'ui/src/views/artifacts.tsx',

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
 import { notifyProtectionInputsChanged } from "../protection-inputs.js";
@@ -181,179 +183,254 @@ function getProjectRowById(db: Db, id: string): ProjectRow | undefined {
     .get(id) as ProjectRow | undefined;
 }
 
-export interface ResolveProjectResult {
-  ok: boolean;
-  project?: RegistryProject;
-  ambiguous?: boolean;
-  candidates?: string[];
-  matched_by?: "id" | "project_key" | "work_repo_id" | "root" | "remote_identity" | "display_name";
-}
+export type ProjectRefMatch =
+  | "id"
+  | "checkout_id"
+  | "project_key"
+  | "work_repo_id"
+  | "checkout_name"
+  | "remote_identity"
+  | "display_name"
+  | "checkout_root"
+  | "git_common_dir"
+  | "git_remote"
+  | "checkout_ancestry";
 
 /**
- * Resolve an arbitrary string ref to one canonical project. Precedence:
- * 1) ledger id (prj_…), 2) exact project_key, 3) checkout work_repo_id,
- * 4) checkout root (path-normalized), 5) remote_identity, 6) display_name.
- * A display-name hit that is ambiguous returns { ambiguous, candidates }.
+ * `checkout` is the registered checkout the ref named or contains it, and is
+ * null when the ref named the project itself.
  */
-export function resolveProjectRef(db: Db, ref: string): ResolveProjectResult {
-  const trimmed = ref?.trim() ?? "";
-  if (!trimmed) return { ok: false };
+export type ProjectRefResolution =
+  | { ok: true; project: RegistryProject; checkout: RegistryCheckout | null; matched_by: ProjectRefMatch }
+  | { ok: false; reason: "unknown" }
+  | { ok: false; reason: "ambiguous"; candidates: string[] };
 
-  const byId = getProjectRowById(db, trimmed);
-  if (byId) return { ok: true, project: toRegistryProject(db, byId), matched_by: "id" };
+interface RefRow {
+  project_id: string;
+  project_key: string;
+  display_name: string;
+  remote_identity: string;
+  upstream_identity: string;
+  checkout_id: string | null;
+  work_repo_id: string | null;
+  root: string | null;
+  checkout_name: string | null;
+  remote_url: string | null;
+}
 
-  const byKey = db
-    .prepare(
-      `SELECT id, project_key, display_name, remote_identity, upstream_identity,
-              namespace_policy, created_at, updated_at
-       FROM ledger_projects WHERE project_key = ?`,
-    )
-    .get(trimmed) as ProjectRow | undefined;
-  if (byKey) return { ok: true, project: toRegistryProject(db, byKey), matched_by: "project_key" };
+function refRows(db: Db): RefRow[] {
+  return db.prepare(
+    `SELECT p.id AS project_id, p.project_key, p.display_name, p.remote_identity, p.upstream_identity,
+            c.id AS checkout_id, c.work_repo_id, c.root, c.name AS checkout_name, c.remote_url
+       FROM ledger_projects p
+       LEFT JOIN ledger_project_checkouts c ON c.project_id = p.id
+      ORDER BY c.updated_at DESC, c.root, p.id`,
+  ).all() as RefRow[];
+}
 
-  const byWorkRepo = db
-    .prepare(
-      `SELECT project_id FROM ledger_project_checkouts WHERE work_repo_id = ?
-       ORDER BY updated_at DESC LIMIT 1`,
-    )
-    .get(trimmed) as { project_id: string } | undefined;
-  if (byWorkRepo) {
-    const project = getProjectRowById(db, byWorkRepo.project_id);
-    if (project) {
-      return { ok: true, project: toRegistryProject(db, project), matched_by: "work_repo_id" };
-    }
-  }
+/** Whether a match names the checkout of its row, or only its project. */
+type CheckoutLevel = boolean | ((row: RefRow) => boolean);
 
-  const resolvedRoot = path.resolve(trimmed);
-  const byRoot = db
-    .prepare(
-      `SELECT project_id FROM ledger_project_checkouts WHERE root = ? OR root = ?
-       ORDER BY updated_at DESC LIMIT 1`,
-    )
-    .get(trimmed, resolvedRoot) as { project_id: string } | undefined;
-  if (byRoot) {
-    const project = getProjectRowById(db, byRoot.project_id);
-    if (project) {
-      return { ok: true, project: toRegistryProject(db, project), matched_by: "root" };
-    }
-  }
-
-  const identity = normalizeRemoteIdentity(trimmed);
-  if (identity) {
-    const byRemote = db
-      .prepare(
-        `SELECT id, project_key, display_name, remote_identity, upstream_identity,
-                namespace_policy, created_at, updated_at
-         FROM ledger_projects WHERE remote_identity = ? AND remote_identity != ''`,
-      )
-      .get(identity) as ProjectRow | undefined;
-    if (byRemote) {
-      return { ok: true, project: toRegistryProject(db, byRemote), matched_by: "remote_identity" };
-    }
-  }
-
-  const byDisplay = db
-    .prepare(
-      `SELECT id, project_key, display_name, remote_identity, upstream_identity,
-              namespace_policy, created_at, updated_at
-       FROM ledger_projects WHERE display_name = ?
-       ORDER BY project_key, id`,
-    )
-    .all(trimmed) as ProjectRow[];
-  if (byDisplay.length === 1) {
-    return { ok: true, project: toRegistryProject(db, byDisplay[0]), matched_by: "display_name" };
-  }
-  if (byDisplay.length > 1) {
+function settle(db: Db, rows: RefRow[], matchedBy: ProjectRefMatch, checkoutLevel: CheckoutLevel): ProjectRefResolution | null {
+  const byProject = new Map<string, RefRow>();
+  for (const row of rows) if (!byProject.has(row.project_id)) byProject.set(row.project_id, row);
+  if (byProject.size === 0) return null;
+  if (byProject.size > 1) {
     return {
       ok: false,
-      ambiguous: true,
-      candidates: byDisplay.map((row) => row.project_key || row.id),
+      reason: "ambiguous",
+      candidates: [...byProject.values()].map((row) => row.project_key || row.project_id).sort(),
     };
   }
-
-  return { ok: false };
+  const row = byProject.values().next().value!;
+  const project = toRegistryProject(db, getProjectRowById(db, row.project_id)!);
+  const namesCheckout = typeof checkoutLevel === "function" ? checkoutLevel(row) : checkoutLevel;
+  const checkout = namesCheckout ? project.checkouts.find((entry) => entry.id === row.checkout_id) ?? null : null;
+  return { ok: true, project, checkout, matched_by: matchedBy };
 }
 
-/**
- * Resolve any accepted project/checkout alias to the registry's canonical
- * outward repo identity. Work-unit state uses project_key, never a checkout's
- * path-local work_repo_id or a caller-supplied display spelling.
- */
-export function canonicalProjectRepoId(db: Db, ref: string | null | undefined): string | null {
-  const trimmed = ref?.trim() ?? "";
-  if (!trimmed) return null;
+function runGit(cwd: string, args: string[]): string | null {
   try {
-    const direct = db.prepare(
-      `SELECT project_key FROM ledger_projects
-       WHERE id = ? OR project_key = ?
-       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
-       LIMIT 1`,
-    ).get(trimmed, trimmed, trimmed) as { project_key: string } | undefined;
-    if (direct?.project_key) return direct.project_key;
-
-    const checkoutKeys = (where: string, params: unknown[]): string[] =>
-      (db.prepare(
-        `SELECT DISTINCT p.project_key
-         FROM ledger_project_checkouts c
-         JOIN ledger_projects p ON p.id = c.project_id
-         WHERE ${where} AND p.project_key != ''
-         ORDER BY p.project_key`,
-      ).all(...params) as Array<{ project_key: string }>).map((row) => row.project_key);
-    const byWorkRepo = checkoutKeys("c.work_repo_id = ?", [trimmed]);
-    if (byWorkRepo.length > 0) return byWorkRepo.length === 1 ? byWorkRepo[0] : null;
-
-    const resolvedRoot = path.resolve(trimmed);
-    const byRoot = checkoutKeys("c.root = ? OR c.root = ?", [trimmed, resolvedRoot]);
-    if (byRoot.length > 0) return byRoot.length === 1 ? byRoot[0] : null;
-
-    const remote = normalizeRemoteIdentity(trimmed);
-    if (remote) {
-      const rows = db.prepare(
-        `SELECT project_key FROM ledger_projects
-         WHERE remote_identity = ? AND remote_identity != '' AND project_key != ''
-         ORDER BY project_key`,
-      ).all(remote) as Array<{ project_key: string }>;
-      if (rows.length > 0) return rows.length === 1 ? rows[0].project_key : null;
-    }
-
-    const byDisplay = db.prepare(
-      `SELECT project_key FROM ledger_projects
-       WHERE display_name = ? AND project_key != ''
-       ORDER BY project_key`,
-    ).all(trimmed) as Array<{ project_key: string }>;
-    return byDisplay.length === 1 ? byDisplay[0].project_key : null;
+    return execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
-    // Registry tables are intentionally absent in some compatibility fixtures.
     return null;
   }
 }
 
-/** Preserve compatibility for an unregistered repo while canonicalizing every
- * registry-backed alias. */
-export function normalizeProjectRepoId(db: Db, ref: string): string {
-  const trimmed = ref.trim();
-  return canonicalProjectRepoId(db, trimmed) ?? trimmed;
+interface GitPathEvidence {
+  at: number;
+  /** Every working tree of the repository containing the path, main checkout included. */
+  worktrees: Set<string>;
+  origin: string;
+}
+
+// A path's repository identity is stable; the TTL only bounds git spawn cost
+// for callers that resolve the same path in a loop.
+const GIT_EVIDENCE_TTL_MS = 60_000;
+const gitEvidenceCache = new Map<string, GitPathEvidence>();
+
+function gitPathEvidence(target: string): GitPathEvidence {
+  const now = Date.now();
+  const cached = gitEvidenceCache.get(target);
+  if (cached && now - cached.at < GIT_EVIDENCE_TTL_MS) return cached;
+  // Ask only the requested repository; probing registered checkouts would let
+  // an unrelated mount or OS access gate block resolution.
+  const listing = runGit(target, ["worktree", "list", "--porcelain", "-z"]);
+  const worktrees = new Set((listing ?? "").split("\0")
+    .filter((field) => field.startsWith("worktree "))
+    .map((field) => path.resolve(field.slice("worktree ".length))));
+  if (listing) {
+    // Bare or separate Git directories list the object store as their main
+    // path, which is not a checkout; an explicit core.worktree names the real one.
+    const common = runGit(target, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    if (common) worktrees.delete(path.resolve(common));
+    const main = runGit(target, ["config", "--path", "--get", "core.worktree"]);
+    if (main && common) worktrees.add(path.resolve(common, main));
+  }
+  const origin = listing ? normalizeRemoteIdentity(runGit(target, ["remote", "get-url", "origin"])) : "";
+  const evidence = { at: now, worktrees, origin };
+  gitEvidenceCache.set(target, evidence);
+  return evidence;
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function safeRealpath(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 /**
- * Resolve a filesystem path to a REGISTERED checkout -> project. Returns null
- * when the path is not a registered checkout root. This is the cwd-inference
- * gate: cwd only resolves a project when it is a known checkout, never by
- * minting one.
+ * Symlink evidence for the requested paths only: the primary path and its
+ * realpath identify the target, and every ancestor's realpath is a prefix
+ * alias. Registered roots are never realpath'd, so an unrelated registered
+ * mount cannot block resolution.
  */
-export function resolveCheckoutPath(db: Db, root: string): RegistryProject | null {
-  const trimmed = root?.trim() ?? "";
-  if (!trimmed) return null;
-  const resolved = path.resolve(trimmed);
-  const row = db
-    .prepare(
-      `SELECT project_id FROM ledger_project_checkouts WHERE root = ? OR root = ?
-       ORDER BY updated_at DESC LIMIT 1`,
-    )
-    .get(trimmed, resolved) as { project_id: string } | undefined;
-  if (!row) return null;
-  const project = getProjectRowById(db, row.project_id);
-  return project ? toRegistryProject(db, project) : null;
+function requestedPathEvidence(paths: string[]): { targets: Set<string>; canonicalize: (root: string) => string } {
+  const targets = new Set<string>();
+  const aliases = new Map<string, string>();
+  const realPaths = new Map<string, string>();
+  for (const [index, entry] of paths.entries()) {
+    const resolved = path.resolve(entry);
+    for (let ancestor = resolved; !realPaths.has(ancestor); ancestor = path.dirname(ancestor)) {
+      const real = safeRealpath(ancestor);
+      realPaths.set(ancestor, real);
+      if (real !== ancestor) aliases.set(ancestor, real);
+      if (ancestor === path.dirname(ancestor)) break;
+    }
+    if (index === 0) targets.add(resolved).add(realPaths.get(resolved)!);
+  }
+  const prefixes = [...aliases].sort(([a], [b]) => b.length - a.length);
+  return {
+    targets,
+    canonicalize(root) {
+      const resolved = path.resolve(root);
+      const alias = prefixes.find(([prefix]) => isPathInside(resolved, prefix));
+      return alias ? path.resolve(alias[1], path.relative(alias[0], resolved)) : resolved;
+    },
+  };
+}
+
+function resolveProjectPath(db: Db, rows: RefRow[], target: string, observedPath?: string): ProjectRefResolution | null {
+  const checkouts = rows.filter((row) => row.root);
+  const evidence = requestedPathEvidence(observedPath ? [target, observedPath] : [target]);
+  const exact = checkouts.filter((row) => evidence.targets.has(evidence.canonicalize(row.root!)));
+  const exactResolution = settle(db, exact, "checkout_root", true);
+  if (exactResolution) return exactResolution;
+
+  const { worktrees, origin } = gitPathEvidence(target);
+  const sameRepo = checkouts.filter((row) => worktrees.has(evidence.canonicalize(row.root!)));
+  const sameRepoResolution = settle(db, sameRepo, "git_common_dir", true);
+  if (sameRepoResolution) return sameRepoResolution;
+
+  if (origin) {
+    const sameRemote = rows.filter((row) =>
+      [row.remote_identity, row.upstream_identity, row.remote_url]
+        .some((value) => normalizeRemoteIdentity(value) === origin));
+    const remoteResolution = settle(db, sameRemote, "git_remote", true);
+    if (remoteResolution) return remoteResolution;
+  }
+
+  const containing = checkouts
+    .map((row) => ({ row, root: evidence.canonicalize(row.root!) }))
+    .filter(({ root }) => [...evidence.targets].some((requested) => isPathInside(requested, root)));
+  const deepest = Math.max(...containing.map(({ root }) => root.length));
+  return settle(db, containing.filter(({ root }) => root.length === deepest).map(({ row }) => row), "checkout_ancestry", true);
+}
+
+/**
+ * The one resolver from a project reference to a registered project. A ref
+ * resolves to exactly one project or is refused as unknown or ambiguous; at
+ * each tier, a ref naming several projects is refused rather than passed to a
+ * weaker tier.
+ *
+ * An absolute path resolves through the checkout it names or lies in: an
+ * exact registered root, any working tree of a registered checkout's Git
+ * repository (linked worktrees included), a clone of a registered remote, and
+ * finally the deepest registered root containing it. `observedPath` supplies
+ * extra symlink evidence for a path the caller reached through an alias.
+ *
+ * Any other ref is tried, in order, as a project or checkout id, project key,
+ * WorkScanner repo id, checkout name, remote identity, and display name. Keys,
+ * names, and display names compare case-insensitively.
+ */
+export function resolveProjectRef(
+  db: Db,
+  ref: string | null | undefined,
+  options: { observedPath?: string } = {},
+): ProjectRefResolution {
+  const trimmed = ref?.trim() ?? "";
+  if (!trimmed) return { ok: false, reason: "unknown" };
+  const rows = refRows(db);
+  if (path.isAbsolute(trimmed)) {
+    return resolveProjectPath(db, rows, trimmed, options.observedPath) ?? { ok: false, reason: "unknown" };
+  }
+  const folded = trimmed.toLowerCase();
+  const remote = normalizeRemoteIdentity(trimmed);
+  const projectRemote = (row: RefRow) => [row.remote_identity, row.upstream_identity].includes(remote);
+  const tiers: Array<[ProjectRefMatch, CheckoutLevel, (row: RefRow) => boolean]> = [
+    ["id", false, (row) => row.project_id === trimmed],
+    ["checkout_id", true, (row) => row.checkout_id === trimmed],
+    ["project_key", false, (row) => row.project_key !== "" && row.project_key.toLowerCase() === folded],
+    ["work_repo_id", true, (row) => row.work_repo_id === trimmed],
+    ["checkout_name", true, (row) => row.checkout_name?.toLowerCase() === folded],
+    ["remote_identity", (row) => !projectRemote(row), (row) => remote !== "" &&
+      (projectRemote(row) || normalizeRemoteIdentity(row.remote_url) === remote)],
+    ["display_name", false, (row) => row.display_name.toLowerCase() === folded],
+  ];
+  for (const [matchedBy, checkoutLevel, matches] of tiers) {
+    const resolution = settle(db, rows.filter(matches), matchedBy, checkoutLevel);
+    if (resolution) return resolution;
+  }
+  return { ok: false, reason: "unknown" };
+}
+
+/** Resolve every ref to its project; any unresolved ref fails the whole set. */
+export function resolveProjectIds(db: Db, refs: string[]): Set<string> {
+  const projectIds = new Set<string>();
+  for (const ref of refs) {
+    const resolved = resolveProjectRef(db, ref);
+    if (!resolved.ok) throw new Error(`Unable to resolve ledger project ref '${ref}': ${resolved.reason}`);
+    projectIds.add(resolved.project.id);
+  }
+  return projectIds;
+}
+
+/** A registered ref's canonical project key, or the ref itself for an unregistered repo. */
+export function normalizeProjectRepoId(db: Db, ref: string): string {
+  const resolved = resolveProjectRef(db, ref);
+  return resolved.ok ? resolved.project.project_key : ref.trim();
 }
 
 /** Near-match project keys/display names for unknown-ref error help. */
@@ -466,7 +543,7 @@ export function updateProject(
   now = Date.now(),
 ): RegistryProject {
   const resolved = resolveProjectRef(db, ref);
-  if (!resolved.ok || !resolved.project) {
+  if (!resolved.ok) {
     throw new ProjectRegistryError(`project not found: ${ref}`, "not_found", {
       suggestions: suggestProjectRefs(db, ref),
     });
@@ -541,7 +618,7 @@ export function addOrUpdateCheckout(
   now = Date.now(),
 ): { project: RegistryProject; checkout: RegistryCheckout } {
   const resolved = resolveProjectRef(db, projectRef);
-  if (!resolved.ok || !resolved.project) {
+  if (!resolved.ok) {
     throw new ProjectRegistryError(`project not found: ${projectRef}`, "not_found", {
       suggestions: suggestProjectRefs(db, projectRef),
     });
@@ -827,6 +904,8 @@ export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[
   { table: "managed_task_events", columns: ["project_id"] },
   { table: "ledger_change_feed_state", columns: ["project_id"] },
   { table: "ledger_change_log", columns: ["project_id"] },
+  { table: "conversation_spawn_requests", columns: ["project_id"] },
+  { table: "briefing_destination_mutations", columns: ["project_id"] },
 ];
 
 const PROJECT_MERGE_SPECIAL_TABLES = new Set([
@@ -834,12 +913,15 @@ const PROJECT_MERGE_SPECIAL_TABLES = new Set([
   "ledger_change_log",
 ]);
 
-// Project-id-bearing columns that are DELIBERATELY not repointed on merge (kept
-// as historical records). Currently empty: every project-scoped column moves, so
-// a merge leaves no row pointing at a deleted project. New entries here must be
-// justified (the row is immutable historical provenance whose project id is
-// part of the record, not a live reference).
-export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [];
+// Project-id-bearing columns that are DELIBERATELY not repointed on merge: the
+// row is immutable provenance whose project id is part of the record. Such a row
+// pins its project, so a source project that any of them references cannot be
+// merged away; detectMergeConflicts reports it and force does not override it.
+// Merge clearances are immutable scoped authority (auth_clearances_scope_immutable)
+// and cannot be deleted, so re-scoping one to another project is refused.
+export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+  { table: "auth_clearances", column: "project_id" },
+];
 
 const PROJECT_ID_COLUMN_NAMES = new Set(["project_id", "source_project_id", "target_project_id"]);
 
@@ -873,7 +955,7 @@ function tableHasColumn(db: Db, table: string, column: string): boolean {
 }
 
 export interface MergeConflict {
-  kind: "short_id" | "alias";
+  kind: "short_id" | "alias" | "historical_reference";
   value: string;
   detail?: string;
 }
@@ -896,6 +978,19 @@ export interface RepairReport {
 
 function detectMergeConflicts(db: Db, sourceId: string, targetId: string): MergeConflict[] {
   const conflicts: MergeConflict[] = [];
+  for (const { table, column } of HISTORICAL_PROJECT_ID_COLUMNS) {
+    if (!tableHasColumn(db, table, column)) continue;
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`)
+      .get(sourceId) as { n: number };
+    if (row.n > 0) {
+      conflicts.push({
+        kind: "historical_reference",
+        value: `${table}.${column}`,
+        detail: `${row.n} immutable row(s) pin the source project`,
+      });
+    }
+  }
   if (tableExists(db, "ledger_issues")) {
     const shortIdClashes = db
       .prepare(
@@ -1034,10 +1129,10 @@ export function repairRegistry(
   if (options.merge) {
     const source = resolveProjectRef(db, options.merge.source);
     const target = resolveProjectRef(db, options.merge.target);
-    if (!source.ok || !source.project) {
+    if (!source.ok) {
       throw new ProjectRegistryError(`merge source not found: ${options.merge.source}`, "not_found");
     }
-    if (!target.ok || !target.project) {
+    if (!target.ok) {
       throw new ProjectRegistryError(`merge target not found: ${options.merge.target}`, "not_found");
     }
     const sourceId = source.project.id;
@@ -1058,6 +1153,14 @@ export function repairRegistry(
     };
 
     if (apply) {
+      const pinned = conflicts.filter((conflict) => conflict.kind === "historical_reference");
+      if (pinned.length > 0) {
+        throw new ProjectRegistryError(
+          `merge blocked: immutable rows pin the source project (${pinned.map((c) => c.value).join(", ")})`,
+          "merge_conflict",
+          { conflicts: pinned },
+        );
+      }
       if (conflicts.length > 0 && !options.force) {
         throw new ProjectRegistryError(
           `merge blocked by ${conflicts.length} conflict(s); resolve or pass force`,

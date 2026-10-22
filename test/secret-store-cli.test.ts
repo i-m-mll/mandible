@@ -1,85 +1,643 @@
-import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
-import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
-// Issue e2cb93f — the secret-backend seam in cli/api.sh and the one-command
-// provisioning flow `mandible user token mint <ref> --store`.
+// @vitest-environment node
+// Issue e2cb93f — the secret-backend seam in cli/api.sh, ambient credential
+// resolution, and `mandible user token mint <ref> --store`.
 //
-// Every test stubs the keychain tool (via MANDIBLE_SECURITY_BIN) and `uname`,
-// so nothing here reads or writes the developer machine's real keychain, and
-// the macOS-only backend is exercised on a Linux CI runner too.
+// Every test stubs the keychain tool (MANDIBLE_SECURITY_BIN) and `uname`, so
+// nothing here touches the developer's keychain and the macOS-only backend runs
+// on any CI runner. Both shells run only where shell semantics decide the
+// outcome: xtrace suppression and never echoing or exporting a token.
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import http from "node:http";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { CLI, runCli, scratchDir, startStubDaemon, type CliResult, type StubDaemon, type StubRequest } from "./helpers/cli-process.js";
+import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
 
 const API_HELPER = path.join(process.cwd(), "cli", "api.sh");
+const CLI_DIR = path.join(process.cwd(), "cli");
+const SHELLS = ["bash", "zsh"];
+const MINTED_TOKEN = "mandible_pat_test-token-value";
 const fixtureRuntimeEnv = qualifiedRuntimeFixtureEnv();
 
-const CLI = path.join(process.cwd(), "bin", "mandible");
-const SHELLS = ["bash", "zsh"];
+const cleanups: Array<() => unknown> = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
 
-let stubDir = "";
-let storeDir = "";
-let homeDir = "";
-let argvLog = "";
-let securityStub = "";
-let server: http.Server | null = null;
-let authHeaders: string[] = [];
-let requestAuth: Array<{ method: string; url: string; auth: string }> = [];
+interface StoredItem {
+  service: string;
+  account: string;
+  secret: string;
+}
 
 /**
  * A fake keychain tool with the fidelity these tests need. Items are stored one
  * per file under `<store>/items/NNN` as `<service>\n<account>\n<secret>`, with
- * NNN increasing by creation order, so:
- *   - items are keyed by (service, account), and several may share a service;
- *   - a service-only lookup resolves to the OLDEST match, which is what the
- *     real keychain was observed to do;
- *   - a lookup that matches nothing exits 44, the status the real tool uses for
- *     item-not-found and which the seam distinguishes from operational errors.
+ * NNN increasing by creation order, so items are keyed by (service, account),
+ * several may share a service, a service-only lookup resolves to the OLDEST
+ * match (what the real keychain does), and a miss exits 44, the status the real
+ * tool uses for item-not-found.
  *
- * It understands argv invocations and `-i` batch mode, applying security's
- * batch quoting rules (`"` delimits, `\` escapes inside quotes).
+ * It understands argv invocations and `-i` batch mode with security's batch
+ * quoting. MANDIBLE_TEST_SECURITY_FAIL=attributes makes attribute reads fail
+ * operationally (exit 1, never 44); MANDIBLE_TEST_SECURITY_SHADOW=<account>
+ * inserts an older competing item for the service before a write.
  *
- * Injectable behavior, via the environment:
- *   - MANDIBLE_TEST_SECURITY_FAIL=attributes — attribute reads fail with an
- *     operational error (exit 1), never 44.
- *   - MANDIBLE_TEST_SECURITY_SHADOW=<account> — before writing, insert an older
- *     competing item for the same service under <account>, simulating a writer
- *     that raced us and now wins service-only resolution.
- *
- * Two behaviors are deliberate regression guards: every invocation's argv is
- * appended to argvLog so tests can assert no secret reaches a process argument
- * list, and `add-generic-password` with no inline value (the getpass/tty
- * protocol) is refused outright, so reverting to "pipe the password to -w"
- * fails the suite on every platform, not only under a controlling terminal.
+ * Every invocation's argv is logged so tests can assert no secret reaches an
+ * argument list, and `add-generic-password` without an inline value (the
+ * getpass/tty protocol) is refused, so reverting to "pipe the password to -w"
+ * fails on every platform.
  */
-function writeSecurityStub(): void {
-  securityStub = path.join(stubDir, "security");
-  fs.writeFileSync(
-    securityStub,
-    `#!/usr/bin/env bash
+function keychain() {
+  const dir = scratchDir("keychain");
+  const bin = path.join(dir, "bin");
+  const store = path.join(dir, "store");
+  const log = path.join(dir, "argv.log");
+  const home = path.join(dir, "home");
+  for (const created of [bin, store, home]) fs.mkdirSync(created);
+  fs.mkdirSync(path.join(store, "items"));
+  fs.writeFileSync(log, "");
+  // Provider ambiguity must not depend on the agent running this test.
+  fs.writeFileSync(path.join(bin, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "security"), securityStub(store, log), { mode: 0o755 });
+  const kernel = (name: "Darwin" | "Linux") => fs.writeFileSync(
+    path.join(bin, "uname"),
+    `#!/bin/sh\nif [ "$1" = "-s" ]; then printf '${name}\\n'; else /usr/bin/uname "$@"; fi\n`,
+    { mode: 0o755 },
+  );
+  kernel("Darwin");
+  const items = (): StoredItem[] => {
+    const itemsDir = path.join(store, "items");
+    if (!fs.existsSync(itemsDir)) return [];
+    return fs.readdirSync(itemsDir).sort().map((name) => {
+      const [service = "", account = "", secret = ""] = fs.readFileSync(path.join(itemsDir, name), "utf8").split("\n");
+      return { service, account, secret };
+    });
+  };
+  const env = (extra: Record<string, string> = {}): Record<string, string> => ({
+    MANDIBLE_RUNTIME: process.execPath,
+    ...fixtureRuntimeEnv,
+    GIT_OPTIONAL_LOCKS: "0",
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    HOME: home,
+    TMPDIR: process.env.TMPDIR ?? "/tmp",
+    MANDIBLE_SECURITY_BIN: path.join(bin, "security"),
+    ...extra,
+  });
+  return {
+    dir,
+    home,
+    env,
+    items,
+    /** With an account, that exact item; without one, the oldest for the service. */
+    item: (service: string, account?: string) =>
+      items().find((item) => item.service === service && (account === undefined || item.account === account)) ?? null,
+    seed(service: string, account: string, secret: string) {
+      const itemsDir = path.join(store, "items");
+      fs.mkdirSync(itemsDir, { recursive: true });
+      fs.writeFileSync(path.join(itemsDir, String(fs.readdirSync(itemsDir).length + 1).padStart(3, "0")), `${service}\n${account}\n${secret}\n`);
+    },
+    argv: () => fs.readFileSync(log, "utf8"),
+    linux: () => kernel("Linux"),
+    /** Source api.sh and run `script` in `shell`. */
+    seam(script: string, extra: Record<string, string> = {}, shell = "bash", flags: string[] = []) {
+      const result = spawnSync(shell, [...flags, "-c", `source ${JSON.stringify(API_HELPER)}\n${script}`], { encoding: "utf8", env: env(extra) });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    },
+    /** Independent seam operations share one shell's definitions and temp root. */
+    seams(operations: Array<{ script: string; env?: Record<string, string> }>) {
+      const script = operations.map((operation) => {
+        const exports = Object.entries(operation.env ?? {}).map(([key, value]) => `export ${key}=${shellQuote(value)}`).join("\n");
+        return `(\n${exports}\n${operation.script}\n); printf '\\036'`;
+      }).join("\n");
+      const result = spawnSync("bash", ["-c", `source ${shellQuote(API_HELPER)}\n${script}`], { encoding: "utf8", env: env() });
+      expect(result.status, result.stderr).toBe(0);
+      return { stdout: result.stdout.split("\x1e").slice(0, -1), stderr: result.stderr };
+    },
+  };
+}
+type Keychain = ReturnType<typeof keychain>;
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+interface FakeUser {
+  slug: string;
+  kind: string;
+  appNames?: string[];
+  whoamiAuthenticated?: boolean;
+  userFields?: Record<string, unknown>;
+  mintFields?: Record<string, unknown>;
+}
+
+async function userDaemon(user: FakeUser): Promise<StubDaemon> {
+  const stub = await startStubDaemon(({ method, url, headers }) => {
+    if (method === "GET" && url === "/api/client-auth/whoami") {
+      const authenticated = user.whoamiAuthenticated !== false && Boolean(headers.authorization);
+      return { body: { authenticated, user: authenticated ? { id: `user-${user.slug}`, slug: user.slug, kind: user.kind } : null } };
+    }
+    if (method === "GET" && url.startsWith("/api/users") && !url.startsWith("/api/users/")) return { body: { users: [] } };
+    if (method === "GET" && url.startsWith("/api/users/")) {
+      return {
+        body: {
+          user: {
+            id: `user-${user.slug}`, slug: user.slug, kind: user.kind, display_name: user.slug, status: "active", credentials: [],
+            bindings: (user.appNames ?? []).map((value, index) => ({ id: `binding-${index}`, binding_type: "app_name", value, status: "active" })),
+            ...user.userFields,
+          },
+        },
+      };
+    }
+    if (method === "POST" && url.endsWith("/tokens")) {
+      return { status: 201, body: { token: MINTED_TOKEN, credential: { id: "credential-1", status: "active", label: "provisioning" }, ...user.mintFields } };
+    }
+    return undefined;
+  });
+  cleanups.push(() => stub.close());
+  return stub;
+}
+
+/** Environment for a CLI talking to `stub`, with Keychain token reads opted out unless overridden. */
+function cliEnv(chain: Keychain, stub: StubDaemon, extra: Record<string, string> = {}) {
+  return chain.env({
+    ...stub.env,
+    MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+    MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
+    ...extra,
+  });
+}
+
+function cli(chain: Keychain, stub: StubDaemon, args: string[], extra: Record<string, string> = {}): Promise<CliResult> {
+  return runCli(args, { env: cliEnv(chain, stub, extra), inheritEnv: false });
+}
+
+const authOf = (requests: StubRequest[], url: string) => requests.find((request) => request.method === "GET" && request.url === url)?.headers.authorization ?? "";
+const posted = (stub: StubDaemon) => stub.requests.some((request) => request.method === "POST");
+
+describe("secret backend seam", () => {
+  it("writes through batch mode, never argv, and reads back exactly what was stored", () => {
+    const chain = keychain();
+    chain.seed("svc-rotate", "acct-1", "old-token");
+    const awkward = 'has"quote\\slash and space';
+
+    const writes = [["svc-plain", "tok-not-in-argv"], ["svc-quoting", awkward], ["svc-rotate", "new-token"]];
+    const results = chain.seams([
+      ...writes.map(([service, value]) => ({ script: `printf %s ${shellQuote(value)} | secret_set ${service} acct-1; printf 'rc=%s' "$?"` })),
+      { script: "secret_get svc-plain acct-1" },
+    ]);
+    for (const [index, [service, value]] of writes.entries()) {
+      expect(results.stdout[index], results.stderr).toBe("rc=0");
+      expect(chain.item(service)?.secret).toBe(value);
+    }
+
+    expect(results.stdout[3]).toBe("tok-not-in-argv");
+    expect(chain.items().filter((item) => item.service === "svc-rotate")).toHaveLength(1);
+    const argv = chain.argv();
+    expect(argv).not.toContain("tok-not-in-argv");
+    expect(argv.split("\n")).toContain("-i");
+    expect(argv).not.toContain("add-generic-password");
+  });
+
+  it("keys lookups on service and account, and resolves a service-only lookup to the oldest item", () => {
+    const chain = keychain();
+    chain.seed("svc-multi", "older", "older-token");
+    chain.seed("svc-multi", "newer", "newer-token");
+
+    const result = chain.seams([
+      { script: "secret_get svc-multi newer" },
+      { script: 'secret_get svc-multi absent; printf "rc=%s" "$?"' },
+      { script: "secret_get svc-multi" },
+      { script: "secret_account_for_service svc-multi" },
+    ]);
+    expect(result.stdout).toEqual(["newer-token", "rc=1", "older-token", "older"]);
+  });
+
+  it("reports an absent item quietly and never mistakes an unreadable keychain for absence", () => {
+    const chain = keychain();
+    chain.seed("svc-present", "acct-1", "token");
+    const result = chain.seams([
+      { script: 'secret_account_for_service svc-present; printf "rc=%s" "$?"' },
+      { script: 'secret_get svc-absent; printf "rc=%s" "$?"' },
+      { script: 'secret_account_for_service svc-absent; printf "rc=%s" "$?"' },
+      { script: 'secret_account_for_service svc-present; printf "rc=%s" "$?"', env: { MANDIBLE_TEST_SECURITY_FAIL: "attributes" } },
+    ]);
+    expect(result.stdout).toEqual(["acct-1rc=0", "rc=1", "rc=1", "rc=3"]);
+    expect(result.stderr).toBe("");
+  });
+
+  it("refuses input it cannot store faithfully, storing nothing", () => {
+    const chain = keychain();
+    const brokenWc = path.join(chain.dir, "broken-wc");
+    fs.mkdirSync(brokenWc);
+    fs.writeFileSync(path.join(brokenWc, "wc"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
+    // Byte-exact NUL fixtures, piped through `cat` so the stream is non-seekable
+    // (the seam's calling convention). A terminal NUL is swallowed as read's
+    // delimiter, so only the read status itself can refuse it.
+    const nul = (bytes: number[]) => {
+      const file = path.join(chain.dir, `nul-${bytes.join("-")}`);
+      fs.writeFileSync(file, Buffer.from(bytes));
+      return `cat ${JSON.stringify(file)}`;
+    };
+    const cases: Array<[string, string, Record<string, string>?]> = [
+      ["multi-line stdin", 'printf "first\\nsecond\\n"'],
+      ["a terminal NUL", nul([0x74, 0x6f, 0x6b, 0x00])],
+      ["a terminal NUL after the newline", nul([0x74, 0x6f, 0x6b, 0x0a, 0x00])],
+      ["a leading NUL", nul([0x00, 0x74, 0x6f, 0x6b, 0x0a])],
+      ["a NUL inside the line", nul([0x74, 0x00, 0x6f, 0x6b, 0x0a])],
+      ["NULs after the line", nul([0x74, 0x6f, 0x6b, 0x0a, 0x00, 0x00])],
+      ["NULs with no newline", nul([0x74, 0x6f, 0x6b, 0x00, 0x00])],
+      ["NUL-only input", nul([0x00])],
+      ["empty stdin", "cat /dev/null"],
+      ["a tab", 'printf "a\\tb"'],
+      ["non-ASCII", 'printf %s "café"'],
+      ["an uncountable leftover", 'printf %s "tok"', { PATH: `${brokenWc}:${chain.env().PATH}` }],
+    ];
+    const refused = chain.seams([
+      ...cases.map(([, input, extra]) => ({ script: `${input} | secret_set svc-refused acct-1; printf "rc=%s" "$?"`, env: extra })),
+      { script: `printf %s "tok" | secret_set "svc-$(printf '\\t')" acct-1; printf "rc=%s" "$?"` },
+    ]);
+    for (const [index, [name]] of cases.entries()) {
+      expect(refused.stdout[index], name).toBe("rc=2");
+    }
+    expect(refused.stdout.at(-1)).toBe("rc=2");
+    expect(chain.items()).toEqual([]);
+
+    expect(chain.seam('printf "only\\n" | secret_set svc-single acct-1; printf "rc=%s" "$?"').stdout).toBe("rc=0");
+    expect(chain.item("svc-single")?.secret).toBe("only");
+  });
+
+  it("fails writes visibly without a platform backend while token readers carry on without one", () => {
+    const chain = keychain();
+    chain.seed("mandible-operator", "mll", "operator-token");
+    expect(chain.seam("api_keychain_operator_token").stdout).toBe("operator-token");
+    expect(chain.seam('api_keychain_operator_token; printf "rc=%s" "$?"', { MANDIBLE_NO_KEYCHAIN_TOKEN: "1" }).stdout).toBe("rc=0");
+
+    chain.linux();
+    expect(chain.seam('secret_backend_available; printf "rc=%s" "$?"').stdout).toBe("rc=1");
+    expect(chain.seam("secret_backend_unavailable_reason").stdout).toContain("no secret backend available on this platform");
+    expect(chain.seam('printf %s "tok" | secret_set svc-linux acct-1; printf "rc=%s" "$?"').stdout).toBe("rc=1");
+    expect(chain.item("svc-linux")).toBeNull();
+    const reader = chain.seam('api_keychain_operator_token; printf "rc=%s" "$?"');
+    expect(reader.stdout).toBe("rc=0");
+    expect(reader.stderr).toBe("");
+  });
+
+  it("creates token-bearing temp files as 0600 inside a 0700 root", () => {
+    const result = keychain().seam(
+      'f="$(api_temp_file)"; printf "file="; stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f"; '
+        + 'printf "root="; stat -f "%Lp" "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || stat -c "%a" "$MANDIBLE_API_TEMP_ROOT"',
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("file=600");
+    expect(result.stdout).toContain("root=700");
+  });
+
+  for (const shell of SHELLS) {
+    it(`suppresses and restores xtrace around secret handling under ${shell}`, () => {
+      const chain = keychain();
+      // Piped from a file so the traced caller line carries no secret: anything
+      // in the trace came from inside the seam.
+      const valueFile = path.join(chain.dir, "trace-input");
+      fs.writeFileSync(valueFile, "xtrace-secret");
+      const result = chain.seam([
+        `cat ${JSON.stringify(valueFile)} | secret_set svc-trace acct-1`,
+        "secret_get svc-trace acct-1 >/dev/null",
+        "echo marker-after-restore >/dev/null",
+      ].join("\n"), {}, shell, ["-x"]);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(chain.item("svc-trace")?.secret).toBe("xtrace-secret");
+      expect(result.stderr).not.toContain("xtrace-secret");
+      expect(result.stderr).toContain("marker-after-restore");
+    });
+
+    it(`sends the operator token through a real request without echoing it under ${shell}`, async () => {
+      // The reader chain end to end under -x (api_client_token → secret_get →
+      // curl config): a callee cannot protect its caller's trace, so only the
+      // real call sites prove this.
+      const chain = keychain();
+      chain.seed("mandible-operator", "mll", "captured-operator-token");
+      const stub = await userDaemon({ slug: "mll", kind: "human" });
+
+      const result = await runCli(["-x", path.join(CLI_DIR, "user.sh"), "list"], {
+        command: shell,
+        env: cliEnv(chain, stub, { MANDIBLE_CLI_DIR: CLI_DIR, MANDIBLE_NO_KEYCHAIN_TOKEN: "" }),
+        inheritEnv: false,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(stub.requests.map((request) => request.headers.authorization)).toContain("Bearer captured-operator-token");
+      expect(result.stderr).not.toContain("captured-operator-token");
+      expect(result.stderr).toContain("+");
+    });
+
+    it(`never exports an agent token from wrap.sh under ${shell}`, async () => {
+      const chain = keychain();
+      chain.seed("mandible-agent-claude", "claude-code", "wrapped-agent-token");
+      const stub = await userDaemon({ slug: "claude-code", kind: "agent" });
+
+      const result = await runCli([
+        "-x", path.join(CLI_DIR, "wrap.sh"), "--app", "claude", "--id", "secret-store-test-session", "--",
+        "/bin/sh", "-c", 'printf "token=%s managed=%s" "${MANDIBLE_TOKEN-unset}" "$MANDIBLE_MANAGED_CLIENT"',
+      ], { command: shell, env: cliEnv(chain, stub, { MANDIBLE_NO_KEYCHAIN_TOKEN: "" }), inheritEnv: false });
+
+      expect(result.stdout).toContain("token=unset managed=1");
+      expect(result.stderr).not.toContain("wrapped-agent-token");
+    });
+  }
+});
+
+describe("direct CLI agent credential resolution", () => {
+  const reads = { MANDIBLE_NO_KEYCHAIN_TOKEN: "" };
+
+  it("loads the provider's own Keychain credential, and none when provider markers disagree", async () => {
+    const markers: Array<[Record<string, string>, string]> = [
+      [{ CODEX_SESSION_ID: "codex-session" }, "Bearer codex-keychain-token"],
+      [{ CODEX_THREAD_ID: "thread-id", CODEX_SESSION_ID: "thread-id" }, "Bearer codex-keychain-token"],
+      [{ CODEX_THREAD_ID: "thread-id", CLAUDE_SESSION_ID: "claude-id" }, ""],
+    ];
+    await Promise.all(markers.map(async ([marker, expected]) => {
+      const chain = keychain();
+      chain.seed("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+      chain.seed("mandible-operator", "mll", "operator-token");
+      const stub = await userDaemon({ slug: "codex-agent", kind: "agent" });
+
+      const result = await cli(chain, stub, ["user", "list", "--json"], { ...marker, ...reads });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(authOf(stub.requests, "/api/users"), JSON.stringify(marker)).toBe(expected);
+      expect(chain.argv()).not.toContain("codex-keychain-token");
+    }));
+    const ambient = keychain().seam('printf "%s|%s" "$(api_ambient_provider)" "$(api_ambient_session_id)"', { CODEX_SESSION_ID: "codex-session" });
+    expect(ambient.stdout).toBe("codex|codex-session");
+  });
+
+  it("keeps a verified inherited agent token without reading the Keychain secret", async () => {
+    const chain = keychain();
+    chain.seed("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const stub = await userDaemon({ slug: "codex-agent", kind: "agent" });
+
+    const result = await cli(chain, stub, ["user", "list", "--json"], { CODEX_THREAD_ID: "thread-id", MANDIBLE_TOKEN: "inherited-agent-token", ...reads });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(authOf(stub.requests, "/api/client-auth/whoami")).toBe("Bearer inherited-agent-token");
+    expect(authOf(stub.requests, "/api/users")).toBe("Bearer inherited-agent-token");
+    expect(chain.argv()).not.toContain(" -w");
+  });
+
+  it("drops an inherited token it cannot verify as this agent, with no Keychain or operator fallback", async () => {
+    const users: FakeUser[] = [
+      { slug: "mll", kind: "human" },
+      { slug: "other-agent", kind: "agent" },
+      { slug: "codex-agent", kind: "agent", whoamiAuthenticated: false },
+    ];
+    const results = await Promise.all(users.map(async (user) => {
+      const chain = keychain();
+      chain.seed("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+      chain.seed("mandible-operator", "mll", "operator-token");
+      const stub = await userDaemon(user);
+      const result = await cli(chain, stub, ["user", "list", "--json"], { CODEX_THREAD_ID: "thread-id", MANDIBLE_TOKEN: "rejected-inherited-token", ...reads });
+      return { ...result, auth: authOf(stub.requests, "/api/users") };
+    }));
+    const unverifiable = keychain();
+    unverifiable.seed("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const unavailable = unverifiable.seam("api_client_token GET", {
+      CODEX_SESSION_ID: "codex-session", MANDIBLE_TOKEN: "rejected-inherited-token", MANDIBLE_BASE: "http://127.0.0.1:1", ...reads,
+    });
+
+    for (const result of [...results, { ...unavailable, auth: unavailable.stdout }]) {
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.auth).toBe("");
+      expect(result.stderr).toContain("ignoring inherited MANDIBLE_TOKEN");
+      for (const secret of ["rejected-inherited-token", "codex-keychain-token", "operator-token"]) expect(result.stderr).not.toContain(secret);
+    }
+  });
+
+  it("never falls back to the operator credential when the agent Keychain item is missing or locked", async () => {
+    await Promise.all([{}, { MANDIBLE_TEST_SECURITY_FAIL: "attributes" }].map(async (state: Record<string, string>) => {
+      const chain = keychain();
+      chain.seed("mandible-operator", "mll", "operator-token");
+      const stub = await userDaemon({ slug: "codex-agent", kind: "agent" });
+
+      const result = await cli(chain, stub, ["user", "list", "--json"], { CODEX_SESSION_ID: "codex-session", ...reads, ...state });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(authOf(stub.requests, "/api/users")).toBe("");
+    }));
+  });
+
+  it("uses the operator Keychain credential in an unmarked human shell", async () => {
+    const chain = keychain();
+    chain.seed("mandible-operator", "mll", "operator-token");
+    const stub = await userDaemon({ slug: "mll", kind: "human" });
+
+    const result = await cli(chain, stub, ["user", "list", "--json"], reads);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(authOf(stub.requests, "/api/users")).toBe("Bearer operator-token");
+  });
+
+  it("projects no agent credential, stored or inherited, into the file transport", () => {
+    const chain = keychain();
+    chain.seed("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    for (const inherited of ["", "inherited-agent-token"]) {
+      const result = chain.seam('api_client_token POST; printf "|source=%s" "$API_CLIENT_CREDENTIAL_SOURCE"', {
+        CODEX_SESSION_ID: "codex-session", MANDIBLE_BASE: `file://${path.join(chain.home, "spool")}`, MANDIBLE_TOKEN: inherited, ...reads,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("|source=");
+      if (inherited) expect(result.stderr).not.toContain(inherited);
+    }
+  });
+});
+
+describe("user token mint --store", () => {
+  it("rejects non-scalar user and minted credential fields before shell evaluation or storage", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    for (const value of [["safe", "touch", marker], { unexpected: "object" }]) {
+      for (const field of ["slug", "kind", "token", "credential.id"]) {
+        const beforeMint = field === "slug" || field === "kind";
+        const stub = await userDaemon({ slug: "malformed", kind: "human",
+          ...(beforeMint ? { userFields: { [field]: value } } : { mintFields: field === "token" ? { token: value } : { credential: { id: value } } }),
+        });
+        const result = await cli(chain, stub, ["user", "token", "mint", "malformed", "--store", "--service", "malformed-service", "--json"]);
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toMatch(/valid secret-store user fields|malformed token or credential fields/);
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(chain.items()).toEqual([]);
+        if (beforeMint) expect(posted(stub)).toBe(false);
+      }
+    }
+  });
+
+  it("keeps quoted and shell-metacharacter response fields as literal secret-store data", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    const account = `account'; touch ${marker}; #`;
+    const token = `token\"; $(touch ${marker}); \\`;
+    const service = `service'; touch ${marker}; #`;
+    const stub = await userDaemon({ slug: account, kind: "human", mintFields: { token, credential: { id: `credential'; touch ${marker}; #` } } });
+    const result = await cli(chain, stub, ["user", "token", "mint", "operator", "--store", "--service", service, "--json"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(chain.item(service, account)?.secret).toBe(token);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(result.stdout + result.stderr).not.toContain(token);
+  });
+
+  const mint = (...args: string[]) => ["user", "token", "mint", ...args];
+
+  it("stores an agent token under its shortest app_name binding or an explicit service, and prints no token", async () => {
+    const [chain, explicit] = [keychain(), keychain()];
+    const stub = await userDaemon({ slug: "claude-code", kind: "agent", appNames: ["claude-code", "claude"] });
+
+    const [result, overridden] = await Promise.all([
+      cli(chain, stub, mint("claude-code", "--store")),
+      cli(explicit, stub, mint("claude-code", "--store", "--service", "mandible-agent-custom")),
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain(MINTED_TOKEN);
+    expect(result.stdout).toContain("service: mandible-agent-claude");
+    expect(chain.item("mandible-agent-claude")).toEqual({ service: "mandible-agent-claude", account: "claude-code", secret: MINTED_TOKEN });
+    expect(chain.argv()).not.toContain(MINTED_TOKEN);
+    expect(overridden.status, overridden.stderr).toBe(0);
+    expect(explicit.item("mandible-agent-custom")?.secret).toBe(MINTED_TOKEN);
+  });
+
+  it("stores an operator token under mandible-operator, reports rotation, and prints the token only without --store", async () => {
+    const [fresh, rotated, printed] = [keychain(), keychain(), keychain()];
+    rotated.seed("mandible-operator", "mll", "previous-token");
+    const stub = await userDaemon({ slug: "mll", kind: "human" });
+
+    const [json, rotation, once] = await Promise.all([
+      cli(fresh, stub, mint("mll", "--store", "--json")),
+      cli(rotated, stub, mint("mll", "--store")),
+      cli(printed, stub, mint("mll")),
+    ]);
+
+    expect(json.status, json.stderr).toBe(0);
+    const payload = JSON.parse(json.stdout);
+    expect(payload.token).toBeUndefined();
+    expect(payload.secret).toEqual({ backend: "keychain", service: "mandible-operator", account: "mll", rotated: false });
+    expect(fresh.item("mandible-operator")?.secret).toBe(MINTED_TOKEN);
+    expect(rotation.status, rotation.stderr).toBe(0);
+    expect(rotation.stderr).toContain("rotated");
+    expect(rotated.item("mandible-operator")?.secret).toBe(MINTED_TOKEN);
+    expect(once.status, once.stderr).toBe(0);
+    expect(once.stdout).toContain(`token: ${MINTED_TOKEN}`);
+    expect(printed.items()).toEqual([]);
+  });
+
+  it("refuses before minting when the stored token could not be found again or kept faithfully", async () => {
+    const cases: Array<{ name: string; user: FakeUser; args: string[]; expected: string; setup?: (chain: Keychain) => Record<string, string> | void }> = [
+      // Ambient readers look the service up without an account; a second item would leave them on the older token.
+      { name: "another account holds the service", user: { slug: "mll", kind: "human" }, args: [], expected: "someone-else", setup: (chain) => chain.seed("mandible-operator", "someone-else", "previous-token") },
+      { name: "the existing item is unreadable", user: { slug: "mll", kind: "human" }, args: [], expected: "could not read the existing secret-store item", setup: () => ({ MANDIBLE_TEST_SECURITY_FAIL: "attributes" }) },
+      { name: "no backend", user: { slug: "mll", kind: "human" }, args: [], expected: "keychain tool is missing", setup: (chain) => ({ MANDIBLE_SECURITY_BIN: path.join(chain.dir, "missing-security") }) },
+      { name: "an agent without app_name", user: { slug: "gemini", kind: "agent" }, args: [], expected: "no active app_name binding" },
+      { name: "a system user", user: { slug: "system", kind: "system" }, args: [], expected: "user kind 'system'" },
+      { name: "a blank service", user: { slug: "mll", kind: "human" }, args: ["--service", "  "], expected: "--service must name a service" },
+      { name: "an unstorable service", user: { slug: "mll", kind: "human" }, args: ["--service", "mandible\toperator"], expected: "printable ASCII" },
+    ];
+    await Promise.all(cases.map(async ({ name, user, args, expected, setup }) => {
+      const chain = keychain();
+      const extra = setup?.(chain) ?? {};
+      const before = chain.items();
+      const stub = await userDaemon(user);
+
+      const result = await cli(chain, stub, mint(user.slug, "--store", ...args), extra);
+
+      expect(result.status, name).not.toBe(0);
+      expect(result.stderr, name).toContain(expected);
+      expect(posted(stub), name).toBe(false);
+      expect(chain.items(), name).toEqual(before);
+    }));
+  });
+
+  it("reports a racing writer that shadows the item it just stored", async () => {
+    const chain = keychain();
+    const stub = await userDaemon({ slug: "mll", kind: "human" });
+
+    const result = await cli(chain, stub, mint("mll", "--store"), { MANDIBLE_TEST_SECURITY_SHADOW: "intruder" });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("credential-1");
+    expect(result.stderr).toContain("intruder");
+    expect(result.stderr).not.toContain(MINTED_TOKEN);
+    // The write happened; the failure is that ambient readers resolve to the shadowing item.
+    expect(chain.item("mandible-operator", "mll")?.secret).toBe(MINTED_TOKEN);
+    expect(chain.item("mandible-operator")?.account).toBe("intruder");
+  });
+
+  it("never echoes the token when the CLI itself runs under xtrace", async () => {
+    const chain = keychain();
+    const stub = await userDaemon({ slug: "mll", kind: "human" });
+
+    const result = await runCli(["-x", path.join(CLI_DIR, "user.sh"), "token", "mint", "mll", "--store"], {
+      command: "zsh",
+      env: cliEnv(chain, stub, { MANDIBLE_CLI_DIR: CLI_DIR }),
+      inheritEnv: false,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("+");
+    expect(result.stderr).not.toContain(MINTED_TOKEN);
+    expect(chain.item("mandible-operator")?.secret).toBe(MINTED_TOKEN);
+  });
+
+  it("stores the token with a controlling terminal attached", async () => {
+    // `security` collects a missing password with getpass(3), which opens
+    // /dev/tty and ignores piped stdin, so a write protocol that works headless
+    // can hang an operator's terminal. BSD `script` takes the command as
+    // trailing argv; util-linux takes -c.
+    const chain = keychain();
+    const stub = await userDaemon({ slug: "mll", kind: "human" });
+    const quoted = [CLI, ...mint("mll", "--store")].map((part) => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
+    const scriptArgs = process.platform === "darwin"
+      ? ["-q", "/dev/null", "/bin/sh", "-c", quoted]
+      : ["-q", "-e", "-c", quoted, "/dev/null"];
+
+    const output = await new Promise<{ status: number | null; text: string }>((resolve) => {
+      const child = spawn("script", scriptArgs, { env: cliEnv(chain, stub), stdio: ["ignore", "pipe", "pipe"] });
+      let text = "";
+      child.stdout.on("data", (chunk) => { text += chunk; });
+      child.stderr.on("data", (chunk) => { text += chunk; });
+      child.on("close", (status) => resolve({ status, text }));
+    });
+
+    expect(output.status, output.text).toBe(0);
+    expect(output.text).not.toContain("password");
+    expect(output.text).not.toContain(MINTED_TOKEN);
+    expect(chain.item("mandible-operator")?.secret).toBe(MINTED_TOKEN);
+  });
+});
+
+function securityStub(store: string, log: string): string {
+  return `#!/usr/bin/env bash
 set -u
-STORE=${JSON.stringify(storeDir)}
-LOG=${JSON.stringify(argvLog)}
+STORE=${JSON.stringify(store)}
+LOG=${JSON.stringify(log)}
 ITEMS="$STORE/items"
-mkdir -p "$ITEMS"
 printf '%s\\n' "$*" >> "$LOG"
 
 next_index() {
-  local last
-  last="$(ls "$ITEMS" 2>/dev/null | sort | tail -n 1)"
+  local last="" file
+  for file in "$ITEMS"/*; do
+    [ -f "$file" ] || continue
+    last="\${file##*/}"
+  done
   if [ -z "$last" ]; then printf '001'; else printf '%03d' "$((10#$last + 1))"; fi
 }
 
 # Echo the path of the oldest item matching a service and, when given, account.
 find_item() {
-  local svc="$1" acct="$2" name file
-  for name in $(ls "$ITEMS" 2>/dev/null | sort); do
-    file="$ITEMS/$name"
-    [ "$(sed -n 1p "$file")" = "$svc" ] || continue
-    if [ -n "$acct" ] && [ "$(sed -n 2p "$file")" != "$acct" ]; then continue; fi
+  local svc="$1" acct="$2" file item_service item_account
+  for file in "$ITEMS"/*; do
+    [ -f "$file" ] || continue
+    { IFS= read -r item_service; IFS= read -r item_account; } < "$file"
+    [ "$item_service" = "$svc" ] || continue
+    if [ -n "$acct" ] && [ "$item_account" != "$acct" ]; then continue; fi
     printf '%s' "$file"
     return 0
   done
@@ -98,7 +656,7 @@ write_item() {
 handle() {
   local cmd="\${1:-}"
   shift || true
-  local svc="" acct="" inline="" update=0 have_w=0 file
+  local svc="" acct="" inline="" update=0 have_w=0 file item_service item_account item_secret
   while [ $# -gt 0 ]; do
     case "$1" in
       -s) svc="\${2:-}"; shift 2 ;;
@@ -124,11 +682,12 @@ handle() {
         return 1
       fi
       file="$(find_item "$svc" "$acct")" || return 44
+      { IFS= read -r item_service; IFS= read -r item_account; IFS= read -r item_secret; } < "$file"
       if [ "$have_w" -eq 1 ]; then
-        sed -n 3p "$file"
+        printf '%s\\n' "$item_secret"
       else
         printf '    "acct"<blob>="%s"\\n    "svce"<blob>="%s"\\n' \\
-          "$(sed -n 2p "$file")" "$(sed -n 1p "$file")"
+          "$item_account" "$item_service"
       fi
       ;;
     add-generic-password)
@@ -188,1061 +747,5 @@ fi
 
 handle "$@"
 exit $?
-`,
-    { mode: 0o755 },
-  );
+`;
 }
-
-/** A `uname` stub so the Darwin-gated backend is testable on any CI runner. */
-function writeUnameStub(kernel: "Darwin" | "Linux"): void {
-  fs.writeFileSync(
-    path.join(stubDir, "uname"),
-    `#!/usr/bin/env bash\nif [[ \"$1\" == \"-s\" ]]; then printf '${kernel}\\n'; else /usr/bin/uname \"$@\"; fi\n`,
-    { mode: 0o755 },
-  );
-}
-
-interface StoredItem {
-  service: string;
-  account: string;
-  secret: string;
-}
-
-/** Every item in the stub store, oldest first. */
-function storedItems(): StoredItem[] {
-  const itemsDir = path.join(storeDir, "items");
-  if (!fs.existsSync(itemsDir)) return [];
-  return fs
-    .readdirSync(itemsDir)
-    .sort()
-    .map((name) => {
-      const [service = "", account = "", secret = ""] = fs
-        .readFileSync(path.join(itemsDir, name), "utf8")
-        .split("\n");
-      return { service, account, secret };
-    });
-}
-
-/**
- * The item a lookup resolves to: with an account, that exact item; without one,
- * the oldest item for the service — the ambient readers' lookup.
- */
-function storedItem(service: string, account?: string): StoredItem | null {
-  return (
-    storedItems().find(
-      (item) => item.service === service && (account === undefined || item.account === account),
-    ) ?? null
-  );
-}
-
-function seedItem(service: string, account: string, secret: string): void {
-  const itemsDir = path.join(storeDir, "items");
-  fs.mkdirSync(itemsDir, { recursive: true });
-  const next = String(fs.readdirSync(itemsDir).length + 1).padStart(3, "0");
-  fs.writeFileSync(path.join(itemsDir, next), `${service}\n${account}\n${secret}\n`);
-}
-
-function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return {
-    MANDIBLE_RUNTIME: process.execPath,
-    ...fixtureRuntimeEnv,
-    GIT_OPTIONAL_LOCKS: "0",
-    PATH: `${stubDir}:${process.env.PATH ?? ""}`,
-    HOME: homeDir,
-    TMPDIR: process.env.TMPDIR ?? "/tmp",
-    MANDIBLE_SECURITY_BIN: securityStub,
-    ...extra,
-  };
-}
-
-beforeEach(() => {
-  stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-secret-stub-"));
-  storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-secret-store-"));
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-secret-home-"));
-  argvLog = path.join(stubDir, "argv.log");
-  fs.writeFileSync(argvLog, "");
-  authHeaders = [];
-  requestAuth = [];
-  writeSecurityStub();
-  writeUnameStub("Darwin");
-});
-
-afterEach(async () => {
-  if (server) {
-    await new Promise<void>((resolve, reject) => {
-      server!.close((error) => (error ? reject(error) : resolve()));
-    });
-    server = null;
-  }
-  for (const dir of [stubDir, storeDir, homeDir]) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-function runSeam(
-  shell: string,
-  script: string,
-  env: Record<string, string> = {},
-  shellFlags: string[] = [],
-): { status: number | null; stdout: string; stderr: string } {
-  const full = [`source ${JSON.stringify(API_HELPER)}`, script].join("\n");
-  const result = spawnSync(shell, [...shellFlags, "-c", full], {
-    encoding: "utf8",
-    env: baseEnv(env),
-  });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-}
-
-describe("secret backend seam", () => {
-  for (const shell of SHELLS) {
-    it(`stores and reads a secret through the macOS backend under ${shell}`, () => {
-      const written = runSeam(
-        shell,
-        'printf %s "tok-round-trip" | secret_set mandible-agent-test acct-1',
-      );
-      expect(written.status, written.stderr).toBe(0);
-      expect(storedItem("mandible-agent-test")).toEqual({
-        service: "mandible-agent-test",
-        account: "acct-1",
-        secret: "tok-round-trip",
-      });
-
-      const read = runSeam(shell, "secret_get mandible-agent-test acct-1");
-      expect(read.status, read.stderr).toBe(0);
-      expect(read.stdout).toBe("tok-round-trip");
-    });
-
-    it(`writes through batch mode, never argv, under ${shell}`, () => {
-      const written = runSeam(
-        shell,
-        'printf %s "tok-not-in-argv" | secret_set mandible-agent-test acct-1',
-      );
-      expect(written.status, written.stderr).toBe(0);
-
-      const argv = fs.readFileSync(argvLog, "utf8");
-      // The password must appear in no process argument list at all…
-      expect(argv).not.toContain("tok-not-in-argv");
-      // …because the write went through `security -i`, whose argv is just -i.
-      expect(argv.split("\n")).toContain("-i");
-      expect(argv).not.toContain("add-generic-password");
-    });
-
-    it(`keys reads and writes on service+account under ${shell}`, () => {
-      const written = runSeam(shell, 'printf %s "acct-1-token" | secret_set svc-shared acct-1');
-      expect(written.status, written.stderr).toBe(0);
-
-      // Right account resolves; wrong account does not.
-      expect(runSeam(shell, "secret_get svc-shared acct-1").stdout).toBe("acct-1-token");
-      const wrong = runSeam(shell, 'secret_get svc-shared acct-2; printf "rc=%s" "$?"');
-      expect(wrong.stdout).toBe("rc=1");
-      // The service-only lookup the ambient readers use still resolves.
-      expect(runSeam(shell, "secret_get svc-shared").stdout).toBe("acct-1-token");
-      // And the account behind a service-only lookup is discoverable.
-      expect(runSeam(shell, "secret_account_for_service svc-shared").stdout).toBe("acct-1");
-    });
-
-    it(`resolves a service-only lookup to the oldest item under ${shell}`, () => {
-      // Two items share a service. The ambient readers pass no account, so the
-      // answer must be the same one the real keychain gives: the older item.
-      seedItem("svc-multi", "older", "older-token");
-      seedItem("svc-multi", "newer", "newer-token");
-
-      expect(runSeam(shell, "secret_get svc-multi").stdout).toBe("older-token");
-      expect(runSeam(shell, "secret_get svc-multi newer").stdout).toBe("newer-token");
-      expect(runSeam(shell, "secret_account_for_service svc-multi").stdout).toBe("older");
-    });
-
-    it(`separates item-absent from an unreadable keychain under ${shell}`, () => {
-      seedItem("svc-present", "acct-1", "token");
-
-      const present = runSeam(shell, 'secret_account_for_service svc-present; printf "rc=%s" "$?"');
-      expect(present.stdout).toBe("acct-1rc=0");
-
-      // Nothing there: the backend's not-found status, reported as rc 1.
-      const absent = runSeam(shell, 'secret_account_for_service svc-absent; printf "rc=%s" "$?"');
-      expect(absent.stdout).toBe("rc=1");
-
-      // Operational failure: never reported as absence.
-      const broken = runSeam(
-        shell,
-        'secret_account_for_service svc-present; printf "rc=%s" "$?"',
-        { MANDIBLE_TEST_SECURITY_FAIL: "attributes" },
-      );
-      expect(broken.stdout).toBe("rc=3");
-    });
-
-    it(`refuses multi-line stdin instead of storing the first line under ${shell}`, () => {
-      const multiline = runSeam(
-        shell,
-        'printf "first\\nsecond\\n" | secret_set svc-multiline acct-1; printf "rc=%s" "$?"',
-      );
-      expect(multiline.stdout).toBe("rc=2");
-      expect(storedItem("svc-multiline")).toBeNull();
-
-      // A single trailing newline is still fine.
-      const single = runSeam(
-        shell,
-        'printf "only\\n" | secret_set svc-multiline acct-1; printf "rc=%s" "$?"',
-      );
-      expect(single.stdout).toBe("rc=0");
-      expect(storedItem("svc-multiline")?.secret).toBe("only");
-    });
-
-    // Byte-exact fixtures, written by the test rather than through shell
-    // printf, whose NUL handling differs per shell. Piped in with `cat` so the
-    // stream is non-seekable, which is the seam's calling convention.
-    //
-    // Every position a NUL can occupy is covered. A TERMINAL NUL is the case
-    // neither the value nor the leftover count can see — it is swallowed as
-    // read's delimiter, so `tok\0` looks like a clean `tok` with nothing left
-    // over — which is why the refusal is driven by the read status itself.
-    const nulCases: Array<{ name: string; bytes: number[] }> = [
-      { name: "a single terminal NUL", bytes: [0x74, 0x6f, 0x6b, 0x00] },
-      { name: "a terminal NUL after the newline", bytes: [0x74, 0x6f, 0x6b, 0x0a, 0x00] },
-      { name: "a leading NUL", bytes: [0x00, 0x74, 0x6f, 0x6b, 0x0a] },
-      { name: "a NUL inside the line", bytes: [0x74, 0x00, 0x6f, 0x6b, 0x0a] },
-      { name: "NUL bytes after the line", bytes: [0x74, 0x6f, 0x6b, 0x0a, 0x00, 0x00] },
-      { name: "NUL bytes with no trailing newline", bytes: [0x74, 0x6f, 0x6b, 0x00, 0x00] },
-      { name: "NUL-only input", bytes: [0x00] },
-    ];
-    for (const { name, bytes } of nulCases) {
-      it(`refuses ${name} under ${shell}`, () => {
-        const fixture = path.join(stubDir, `nul-${bytes.join("-")}`);
-        fs.writeFileSync(fixture, Buffer.from(bytes));
-
-        const result = runSeam(
-          shell,
-          `cat ${JSON.stringify(fixture)} | secret_set svc-nul acct-1; printf "rc=%s" "$?"`,
-        );
-        expect(result.stdout).toBe("rc=2");
-        expect(storedItem("svc-nul")).toBeNull();
-      });
-    }
-
-    it(`refuses entirely empty stdin under ${shell}`, () => {
-      const result = runSeam(
-        shell,
-        'secret_set svc-empty acct-1 < /dev/null; printf "rc=%s" "$?"',
-      );
-      expect(result.stdout).toBe("rc=2");
-      expect(storedItem("svc-empty")).toBeNull();
-    });
-
-    it(`fails closed when the leftover-byte count cannot be taken under ${shell}`, () => {
-      // A broken or missing counter must never be read as "nothing left". The
-      // stub shadows `wc` on PATH for this call only.
-      const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-broken-wc-"));
-      try {
-        fs.writeFileSync(
-          path.join(brokenDir, "wc"),
-          "#!/usr/bin/env bash\nprintf 'wc: simulated failure\\n' >&2\nexit 1\n",
-          { mode: 0o755 },
-        );
-        const result = runSeam(
-          shell,
-          'printf %s "tok" | secret_set svc-nowc acct-1; printf "rc=%s" "$?"',
-          { PATH: `${brokenDir}:${stubDir}:${process.env.PATH ?? ""}` },
-        );
-        expect(result.stdout).toBe("rc=2");
-        expect(storedItem("svc-nowc")).toBeNull();
-      } finally {
-        fs.rmSync(brokenDir, { recursive: true, force: true });
-      }
-    });
-
-    it(`round-trips values that need batch-line quoting under ${shell}`, () => {
-      const awkward = 'has"quote\\slash and space';
-      const written = runSeam(
-        shell,
-        `printf %s ${JSON.stringify(awkward)} | secret_set svc-quoting acct-1`,
-      );
-      expect(written.status, written.stderr).toBe(0);
-      expect(storedItem("svc-quoting")?.secret).toBe(awkward);
-    });
-
-    it(`refuses material the backend cannot store faithfully under ${shell}`, () => {
-      // Tab (control character) and non-ASCII: `security` stores these as hex
-      // rather than the original bytes, so the seam rejects them (exit 2).
-      const tabbed = runSeam(
-        shell,
-        'printf "a\\tb" | secret_set svc-bad acct-1; printf "rc=%s" "$?"',
-      );
-      expect(tabbed.stdout).toBe("rc=2");
-      const unicode = runSeam(
-        shell,
-        'printf %s "café" | secret_set svc-bad acct-1; printf "rc=%s" "$?"',
-      );
-      expect(unicode.stdout).toBe("rc=2");
-      const badService = runSeam(
-        shell,
-        'printf %s "tok" | secret_set "svc-bad-$(printf \'\\t\')" acct-1; printf "rc=%s" "$?"',
-      );
-      expect(badService.stdout).toBe("rc=2");
-      expect(storedItem("svc-bad")).toBeNull();
-    });
-
-    it(`rotates an existing item in place under ${shell}`, () => {
-      seedItem("mandible-agent-test", "acct-1", "old-token");
-      const written = runSeam(
-        shell,
-        'printf %s "new-token" | secret_set mandible-agent-test acct-1',
-      );
-      expect(written.status, written.stderr).toBe(0);
-      expect(storedItem("mandible-agent-test")?.secret).toBe("new-token");
-    });
-
-    it(`reports absence quietly under ${shell}`, () => {
-      const result = runSeam(shell, 'secret_get mandible-agent-absent; printf "rc=%s" "$?"');
-      expect(result.stdout).toBe("rc=1");
-      expect(result.stderr).toBe("");
-    });
-
-    it(`fails visibly when the platform has no backend under ${shell}`, () => {
-      writeUnameStub("Linux");
-      const available = runSeam(shell, 'secret_backend_available; printf "rc=%s" "$?"');
-      expect(available.stdout).toBe("rc=1");
-
-      const reason = runSeam(shell, "secret_backend_unavailable_reason");
-      expect(reason.stdout).toContain("no secret backend available on this platform");
-      expect(reason.stdout).toContain("Linux");
-      expect(reason.stdout).toContain("e2cb93f");
-
-      const written = runSeam(
-        shell,
-        'printf %s "tok" | secret_set mandible-agent-test acct-1; printf "rc=%s" "$?"',
-      );
-      expect(written.stdout).toBe("rc=1");
-      expect(storedItem("mandible-agent-test")).toBeNull();
-    });
-
-    it(`suppresses and restores xtrace around secret handling under ${shell}`, () => {
-      // The value is piped in from a file with `cat`, so the traced caller line
-      // itself carries no secret and anything that shows up in the trace came
-      // from inside the seam.
-      const valueFile = path.join(stubDir, "trace-input");
-      fs.writeFileSync(valueFile, "xtrace-secret");
-      const result = runSeam(
-        shell,
-        [
-          `cat ${JSON.stringify(valueFile)} | secret_set svc-trace acct-1`,
-          "secret_get svc-trace acct-1 >/dev/null",
-          "echo marker-after-restore >/dev/null",
-        ].join("\n"),
-        {},
-        ["-x"],
-      );
-      expect(result.status, result.stderr).toBe(0);
-      expect(storedItem("svc-trace")?.secret).toBe("xtrace-secret");
-      // The secret never appears in the trace…
-      expect(result.stderr).not.toContain("xtrace-secret");
-      // …but tracing is still on afterwards, so the guard restored it.
-      expect(result.stderr).toContain("marker-after-restore");
-    });
-
-    it(`never echoes the operator token through a real request under ${shell}`, async () => {
-      // The ambient-reader call chain end to end, under -x: api_client_token →
-      // api_keychain_operator_token → secret_get, then the bearer token written
-      // into curl's config file. A callee cannot protect its caller (the shell
-      // prints `token=<value>` for a command substitution after it returns), so
-      // this must be exercised through the real call sites, not by capturing a
-      // token-printing function from a test script.
-      seedItem("mandible-operator", "mll", "captured-operator-token");
-      const port = await startUserServer({ slug: "mll", kind: "human" }, []);
-
-      const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
-        const child = spawn(
-          shell,
-          ["-x", path.join(process.cwd(), "cli", "user.sh"), "list"],
-          {
-            cwd: process.cwd(),
-            env: {
-              ...cliEnv(port),
-              MANDIBLE_CLI_DIR: path.join(process.cwd(), "cli"),
-              // Keychain reads on: this test is about the reader path.
-              MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-            },
-          },
-        );
-        let stderr = "";
-        child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk;
-        });
-        child.on("close", (status) => resolve({ status, stderr }));
-      });
-
-      expect(result.status).toBe(0);
-      // The keychain token really was resolved and sent…
-      expect(authHeaders).toContain("Bearer captured-operator-token");
-      // …and never appeared in the trace.
-      expect(result.stderr).not.toContain("captured-operator-token");
-      expect(result.stderr).toContain("+"); // tracing really was on
-    }, 20_000);
-
-    it(`never exports an agent token from wrap.sh under ${shell}`, async () => {
-      // A stored credential must stay outside the wrapped agent's environment,
-      // including under xtrace.
-      seedItem("mandible-agent-claude", "claude-code", "wrapped-agent-token");
-      const port = await startUserServer({ slug: "claude-code", kind: "agent" }, []);
-
-      const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
-        (resolve) => {
-          const child = spawn(
-            shell,
-            [
-              "-x",
-              path.join(process.cwd(), "cli", "wrap.sh"),
-              "--app",
-              "claude",
-              "--id",
-              "secret-store-test-session",
-              "--",
-              "/bin/sh",
-              "-c",
-              'printf "token=%s managed=%s" "${MANDIBLE_TOKEN-unset}" "$MANDIBLE_MANAGED_CLIENT"',
-            ],
-            { cwd: process.cwd(), env: { ...cliEnv(port), MANDIBLE_NO_KEYCHAIN_TOKEN: "" } },
-          );
-          let stdout = "";
-          let stderr = "";
-          child.stdout.setEncoding("utf8");
-          child.stderr.setEncoding("utf8");
-          child.stdout.on("data", (chunk) => {
-            stdout += chunk;
-          });
-          child.stderr.on("data", (chunk) => {
-            stderr += chunk;
-          });
-          child.on("close", (status) => resolve({ status, stdout, stderr }));
-        },
-      );
-
-      expect(result.stdout).toContain("token=unset managed=1");
-      expect(result.stderr).not.toContain("wrapped-agent-token");
-    }, 20_000);
-  }
-
-  it("keeps api_keychain_operator_token semantics when routed through the seam", () => {
-    seedItem("mandible-operator", "mll", "operator-token");
-
-    const read = runSeam("bash", "api_keychain_operator_token");
-    expect(read.status, read.stderr).toBe(0);
-    expect(read.stdout).toBe("operator-token");
-
-    const optedOut = runSeam("bash", 'api_keychain_operator_token; printf "rc=%s" "$?"', {
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
-    });
-    expect(optedOut.stdout).toBe("rc=0");
-
-    // No backend at all is still a normal, non-fatal "no token" for readers.
-    writeUnameStub("Linux");
-    const noBackend = runSeam("bash", 'api_keychain_operator_token; printf "rc=%s" "$?"');
-    expect(noBackend.stdout).toBe("rc=0");
-    expect(noBackend.stderr).toBe("");
-  });
-
-  it("creates token-bearing temp files as 0600 inside a 0700 root", () => {
-    const result = runSeam(
-      "bash",
-      'f="$(api_temp_file)"; printf "file="; stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f"; '
-        + 'printf "root="; stat -f "%Lp" "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null '
-        + '|| stat -c "%a" "$MANDIBLE_API_TEMP_ROOT"',
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("file=600");
-    expect(result.stdout).toContain("root=700");
-  });
-});
-
-interface FakeUser {
-  slug: string;
-  kind: string;
-  appNames?: string[];
-  whoamiAuthenticated?: boolean;
-}
-
-const MINTED_TOKEN = "mandible_pat_test-token-value";
-const MAIN_INSTANCE_RESPONSE = MAIN_CLI_INSTANCE_RESPONSE;
-
-async function startUserServer(user: FakeUser, requests: string[]): Promise<number> {
-  server = http.createServer((req, res) => {
-    if (req.method === "GET" && req.url === "/api/instance") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(MAIN_INSTANCE_RESPONSE));
-      return;
-    }
-    requests.push(`${req.method} ${req.url}`);
-    if (req.headers.authorization) authHeaders.push(req.headers.authorization);
-    requestAuth.push({
-      method: req.method ?? "",
-      url: req.url ?? "",
-      auth: req.headers.authorization ?? "",
-    });
-    if (req.method === "GET" && req.url === "/api/client-auth/whoami") {
-      const authenticated = user.whoamiAuthenticated !== false && Boolean(req.headers.authorization);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        authenticated,
-        user: authenticated ? { id: `user-${user.slug}`, slug: user.slug, kind: user.kind } : null,
-      }));
-      return;
-    }
-    if (req.method === "GET" && req.url?.startsWith("/api/users") && !req.url.startsWith("/api/users/")) {
-      // The list route, used by the reader-path trace test.
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ users: [] }));
-      return;
-    }
-    if (req.method === "GET" && req.url?.startsWith("/api/users/")) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          user: {
-            id: `user-${user.slug}`,
-            slug: user.slug,
-            kind: user.kind,
-            display_name: user.slug,
-            status: "active",
-            credentials: [],
-            bindings: (user.appNames ?? []).map((value, index) => ({
-              id: `binding-${index}`,
-              binding_type: "app_name",
-              value,
-              status: "active",
-            })),
-          },
-        }),
-      );
-      return;
-    }
-    if (req.method === "POST" && req.url?.endsWith("/tokens")) {
-      res.writeHead(201, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          token: MINTED_TOKEN,
-          credential: { id: "credential-1", status: "active", label: "provisioning" },
-        }),
-      );
-      return;
-    }
-    res.statusCode = 404;
-    res.end("not found");
-  });
-  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("test server did not bind");
-  return address.port;
-}
-
-function cliEnv(port: number): NodeJS.ProcessEnv {
-  return baseEnv({
-    MANDIBLE_BASE: `http://127.0.0.1:${port}`,
-    MANDIBLE_PORT: String(port),
-    MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
-    // Reads are opted out so the stub is exercised only by the explicit --store
-    // write; MANDIBLE_NO_KEYCHAIN_TOKEN governs token reads, not provisioning.
-    MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
-  });
-}
-
-function runCli(
-  args: string[],
-  port: number,
-  env: Record<string, string> = {},
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(CLI, args, { cwd: process.cwd(), env: { ...cliEnv(port), ...env } });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
-  });
-}
-
-describe("direct CLI agent credential resolution", () => {
-  function userListRequest() {
-    return requestAuth.find((request) => request.method === "GET" && request.url === "/api/users");
-  }
-
-  it("loads the Codex Keychain credential for a direct CODEX_SESSION_ID invocation", async () => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
-
-    const result = await runCli(["user", "list", "--json"], port, {
-      CODEX_SESSION_ID: "codex-session",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("Bearer codex-keychain-token");
-    expect(fs.readFileSync(argvLog, "utf8")).not.toContain("codex-keychain-token");
-  });
-
-  it("uses CODEX_SESSION_ID for the shared ambient provider and session identity", () => {
-    const resolved = runSeam(
-      "bash",
-      'printf "%s|%s" "$(api_ambient_provider)" "$(api_ambient_session_id)"',
-      { CODEX_SESSION_ID: "codex-session" },
-    );
-    expect(resolved.status, resolved.stderr).toBe(0);
-    expect(resolved.stdout).toBe("codex|codex-session");
-  });
-
-  it("accepts duplicate markers for one provider and rejects cross-provider ambiguity", async () => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    seedItem("mandible-operator", "mll", "operator-token");
-    let port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
-
-    let result = await runCli(["user", "list", "--json"], port, {
-      CODEX_THREAD_ID: "thread-id",
-      CODEX_SESSION_ID: "thread-id",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("Bearer codex-keychain-token");
-
-    await new Promise<void>((resolve) => server!.close(() => resolve()));
-    server = null;
-    requestAuth = [];
-    port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
-    result = await runCli(["user", "list", "--json"], port, {
-      CODEX_THREAD_ID: "thread-id",
-      CLAUDE_SESSION_ID: "claude-id",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("");
-  });
-
-  it("preserves a verified inherited agent token without reading the Keychain secret", async () => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
-
-    const result = await runCli(["user", "list", "--json"], port, {
-      CODEX_THREAD_ID: "thread-id",
-      MANDIBLE_TOKEN: "inherited-agent-token",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(requestAuth.find((request) => request.url === "/api/client-auth/whoami")?.auth)
-      .toBe("Bearer inherited-agent-token");
-    expect(userListRequest()?.auth).toBe("Bearer inherited-agent-token");
-    expect(fs.readFileSync(argvLog, "utf8")).not.toContain(" -w");
-  });
-
-  it.each([
-    ["human", { slug: "mll", kind: "human" }],
-    ["mismatched", { slug: "other-agent", kind: "agent" }],
-    ["invalid", { slug: "codex-agent", kind: "agent", whoamiAuthenticated: false }],
-  ] as const)("rejects inherited %s identity without Keychain or operator fallback", async (_case, user) => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    seedItem("mandible-operator", "mll", "operator-token");
-    const port = await startUserServer(user, []);
-
-    const result = await runCli(["user", "list", "--json"], port, {
-      CODEX_THREAD_ID: "thread-id",
-      MANDIBLE_TOKEN: "rejected-inherited-token",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("");
-    expect(result.stderr).toContain("ignoring inherited MANDIBLE_TOKEN");
-    expect(result.stderr).not.toContain("rejected-inherited-token");
-    expect(result.stderr).not.toContain("codex-keychain-token");
-    expect(result.stderr).not.toContain("operator-token");
-  });
-
-  it("rejects an inherited token when identity verification is unavailable", () => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    const result = runSeam("bash", "api_client_token GET", {
-      CODEX_SESSION_ID: "codex-session",
-      MANDIBLE_TOKEN: "unavailable-inherited-token",
-      MANDIBLE_BASE: "http://127.0.0.1:1",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("ignoring inherited MANDIBLE_TOKEN");
-    expect(result.stderr).not.toContain("unavailable-inherited-token");
-    expect(result.stderr).not.toContain("codex-keychain-token");
-  });
-
-  it.each(["missing", "locked"])("does not use operator credentials when the agent Keychain item is %s", async (state) => {
-    seedItem("mandible-operator", "mll", "operator-token");
-    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
-
-    const result = await runCli(["user", "list", "--json"], port, {
-      CODEX_SESSION_ID: "codex-session",
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-      MANDIBLE_TEST_SECURITY_FAIL: state === "locked" ? "attributes" : "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("");
-  });
-
-  it("preserves operator Keychain behavior in an unmarked human shell", async () => {
-    seedItem("mandible-operator", "mll", "operator-token");
-    const port = await startUserServer({ slug: "mll", kind: "human" }, []);
-
-    const result = await runCli(["user", "list", "--json"], port, {
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(userListRequest()?.auth).toBe("Bearer operator-token");
-  });
-
-  it.each(["", "inherited-agent-token"])("does not project %s agent credentials into file transport", (inherited) => {
-    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
-    const result = runSeam(
-      "bash",
-      'api_client_token POST; printf "|source=%s" "$API_CLIENT_CREDENTIAL_SOURCE"',
-      {
-        CODEX_SESSION_ID: "codex-session",
-        MANDIBLE_BASE: `file://${path.join(homeDir, "spool")}`,
-        MANDIBLE_TOKEN: inherited,
-        MANDIBLE_NO_KEYCHAIN_TOKEN: "",
-      },
-    );
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toBe("|source=");
-    if (inherited) expect(result.stderr).not.toContain(inherited);
-  });
-});
-
-/**
- * Run the CLI with a controlling terminal. `security` collects a missing
- * password with getpass(3), which opens /dev/tty and ignores piped stdin — a
- * write protocol that works headless can hang for an operator in a terminal, so
- * the provisioning flow is exercised under a real PTY as well.
- */
-function runCliWithPty(
-  args: string[],
-  port: number,
-): Promise<{ status: number | null; output: string; timedOut: boolean }> {
-  const quoted = [CLI, ...args].map((part) => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
-  // BSD `script` takes the command as trailing argv; util-linux takes -c.
-  const scriptArgs =
-    process.platform === "darwin"
-      ? ["-q", "/dev/null", "/bin/sh", "-c", quoted]
-      : ["-q", "-e", "-c", quoted, "/dev/null"];
-  // Async spawn, never spawnSync: the fake daemon runs on this process's event
-  // loop, and a synchronous child would block it and starve its own request.
-  return new Promise((resolve) => {
-    const child = spawn("script", scriptArgs, {
-      env: cliEnv(port),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    let timedOut = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      output += chunk;
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, 20_000);
-    child.on("close", (status) => {
-      clearTimeout(timer);
-      resolve({ status, output, timedOut });
-    });
-  });
-}
-
-describe("user token mint --store", () => {
-  it("stores an agent token under the shortest app_name binding and prints no token", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer(
-      { slug: "claude-code", kind: "agent", appNames: ["claude-code", "claude"] },
-      requests,
-    );
-
-    const result = await runCli(["user", "token", "mint", "claude-code", "--store"], port);
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).not.toContain(MINTED_TOKEN);
-    expect(result.stderr).not.toContain(MINTED_TOKEN);
-    expect(result.stdout).toContain("credential: credential-1 [active]");
-    expect(result.stdout).toContain("service: mandible-agent-claude");
-    expect(result.stdout).toContain("account: claude-code");
-    expect(storedItem("mandible-agent-claude")).toEqual({
-      service: "mandible-agent-claude",
-      account: "claude-code",
-      secret: MINTED_TOKEN,
-    });
-    expect(fs.readFileSync(argvLog, "utf8")).not.toContain(MINTED_TOKEN);
-  });
-
-  it("never echoes the token when the CLI itself runs under xtrace", async () => {
-    const port = await startUserServer({ slug: "mll", kind: "human" }, []);
-    const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
-      const child = spawn(
-        "zsh",
-        ["-x", path.join(process.cwd(), "cli", "user.sh"), "token", "mint", "mll", "--store"],
-        {
-          cwd: process.cwd(),
-          env: { ...cliEnv(port), MANDIBLE_CLI_DIR: path.join(process.cwd(), "cli") },
-        },
-      );
-      let stderr = "";
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("close", (status) => resolve({ status, stderr }));
-    });
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("+"); // tracing really was on
-    expect(result.stderr).not.toContain(MINTED_TOKEN);
-    expect(storedItem("mandible-operator")?.secret).toBe(MINTED_TOKEN);
-  });
-
-  it(
-    "stores the token with a controlling terminal attached",
-    async () => {
-      // Regression guard for the getpass()/tty write protocol: with a PTY
-      // present the write must still complete without prompting or hanging.
-      const port = await startUserServer({ slug: "mll", kind: "human" }, []);
-      const result = await runCliWithPty(["user", "token", "mint", "mll", "--store"], port);
-
-      expect(result.timedOut, `PTY run timed out:\n${result.output}`).toBe(false);
-      expect(result.status, result.output).toBe(0);
-      expect(result.output).not.toContain("password");
-      expect(result.output).not.toContain(MINTED_TOKEN);
-      expect(result.output).toContain("service: mandible-operator");
-      expect(storedItem("mandible-operator")?.secret).toBe(MINTED_TOKEN);
-    },
-    30_000,
-  );
-
-  it("stores a human operator token under mandible-operator", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "mll", "--store", "--json"], port);
-
-    expect(result.status, result.stderr).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    expect(payload.token).toBeUndefined();
-    expect(payload.secret).toEqual({
-      backend: "keychain",
-      service: "mandible-operator",
-      account: "mll",
-      rotated: false,
-    });
-    expect(storedItem("mandible-operator")?.secret).toBe(MINTED_TOKEN);
-  });
-
-  it("reports a rotation when the item already exists", async () => {
-    seedItem("mandible-operator", "mll", "previous-token");
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "mll", "--store"], port);
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain("rotated");
-    expect(storedItem("mandible-operator")?.secret).toBe(MINTED_TOKEN);
-  });
-
-  it("refuses to shadow an item held by a different account", async () => {
-    // The ambient readers look this service up without an account, so writing a
-    // second item would leave them on the older token.
-    seedItem("mandible-operator", "someone-else", "previous-token");
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "mll", "--store"], port);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("someone-else");
-    expect(result.stderr).toContain("mll");
-    expect(result.stderr).toContain("--service");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-    expect(storedItem("mandible-operator")?.secret).toBe("previous-token");
-  });
-
-  it("fails closed when the existing item cannot be read", async () => {
-    // An unreadable keychain must never be mistaken for an empty one: that is
-    // how a shadowing item gets created.
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
-      const child = spawn(CLI, ["user", "token", "mint", "mll", "--store"], {
-        cwd: process.cwd(),
-        env: { ...cliEnv(port), MANDIBLE_TEST_SECURITY_FAIL: "attributes" },
-      });
-      let stderr = "";
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("close", (status) => resolve({ status, stderr }));
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("could not read the existing secret-store item");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-    expect(storedItems()).toEqual([]);
-  });
-
-  it("reports when a racing writer shadows the item it just stored", async () => {
-    // The pre-write check passes (nothing there yet), then a competing older
-    // item appears at write time and wins service-only resolution.
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
-      (resolve) => {
-        const child = spawn(CLI, ["user", "token", "mint", "mll", "--store"], {
-          cwd: process.cwd(),
-          env: { ...cliEnv(port), MANDIBLE_TEST_SECURITY_SHADOW: "intruder" },
-        });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.setEncoding("utf8");
-        child.stderr.setEncoding("utf8");
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk;
-        });
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk;
-        });
-        child.on("close", (status) => resolve({ status, stdout, stderr }));
-      },
-    );
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("credential-1");
-    expect(result.stderr).toContain("intruder");
-    expect(result.stderr).toContain("mll");
-    expect(result.stderr).not.toContain(MINTED_TOKEN);
-    // The write itself did happen — the failure being reported is that ambient
-    // readers would resolve to the shadowing item instead.
-    expect(storedItem("mandible-operator", "mll")?.secret).toBe(MINTED_TOKEN);
-    expect(storedItem("mandible-operator")?.account).toBe("intruder");
-  });
-
-  it("honors an explicit --service override", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "gemini", kind: "agent" }, requests);
-
-    const result = await runCli(
-      ["user", "token", "mint", "gemini", "--store", "--service", "mandible-agent-custom"],
-      port,
-    );
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("service: mandible-agent-custom");
-    expect(storedItem("mandible-agent-custom")?.secret).toBe(MINTED_TOKEN);
-  });
-
-  it("rejects an empty --service", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(
-      ["user", "token", "mint", "mll", "--store", "--service", "  "],
-      port,
-    );
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--service must name a service");
-    expect(requests).toEqual([]);
-  });
-
-  it("rejects a --service the backend cannot store faithfully, before minting", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(
-      ["user", "token", "mint", "mll", "--store", "--service", "mandible\toperator"],
-      port,
-    );
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("printable ASCII");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-  });
-
-  it("refuses to guess a service name for an agent with no app_name binding", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "gemini", kind: "agent" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "gemini", "--store"], port);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("no active app_name binding");
-    expect(result.stderr).toContain("--service");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-  });
-
-  it("refuses to guess a service name for a non-human, non-agent user", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "system", kind: "system" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "system", "--store"], port);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("user kind 'system'");
-    expect(result.stderr).toContain("--service");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-  });
-
-  it("fails before minting when no secret backend is available", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "mll", "--store"], port, {
-      MANDIBLE_SECURITY_BIN: path.join(stubDir, "missing-security"),
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("keychain tool is missing");
-    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
-  });
-
-  it("rejects --service without --store", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(
-      ["user", "token", "mint", "mll", "--service", "mandible-operator"],
-      port,
-    );
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Arguments do not match");
-    expect(requests).toEqual([]);
-  });
-
-  it("still prints the token once when --store is not passed", async () => {
-    const requests: string[] = [];
-    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
-
-    const result = await runCli(["user", "token", "mint", "mll"], port);
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`token: ${MINTED_TOKEN}`);
-    expect(requests.some((entry) => entry.startsWith("GET"))).toBe(false);
-  });
-});

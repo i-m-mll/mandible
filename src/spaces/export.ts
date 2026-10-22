@@ -3,7 +3,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
-import { getSpace, type SpaceRecord } from "../ledger/spaces.js";
+import type { Space } from "../contracts.js";
+import { getSpace } from "../ledger/spaces.js";
 import { listSpaceBlocks, toDocBlock } from "../ledger/space-blocks.js";
 import { exportDocument, type DocBlock, type DocTree } from "./serialize.js";
 // --- doc tree assembly -------------------------------------------------------
@@ -87,7 +88,7 @@ export function getProjectCheckout(db: Db, checkoutId: string): ProjectCheckout 
  */
 export function resolveCheckoutForSpace(
   db: Db,
-  space: SpaceRecord,
+  space: Space,
   explicitRepoId?: string | null,
 ): ProjectCheckout {
   if (explicitRepoId) {

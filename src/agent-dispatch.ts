@@ -324,7 +324,7 @@ function issuePlan(db: Db, issueRef: string, instruction: string, actorUserId: s
       context: [
         ["Issue", `${detail.short_id} — ${detail.title}`],
         ["Issue id", detail.id],
-        ["Project", project.ok && project.project ? project.project.project_key : detail.project_id],
+        ["Project", project.ok ? project.project.project_key : detail.project_id],
         ["Status", `${detail.status} / worker ${effectiveWorkerStatus(db, detail.id)}`],
         ["Linked branches", branches.length > 0 ? branches.join(", ") : "none"],
         ["Working directory", cwd],

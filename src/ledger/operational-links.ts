@@ -82,21 +82,13 @@ export function resolveOperationalIssueRef(
   const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef));
   if (scoped.ok || scoped.error === "ambiguous") return scoped;
 
-  const global = withProject(db, store.resolveIssueRef(trimmed));
-  if (global.ok || global.error === "ambiguous") return global;
-
-  const separator = trimmed.indexOf("/");
-  if (separator <= 0 || separator === trimmed.length - 1) return global;
-  const project = resolveProjectRef(db, trimmed.slice(0, separator));
-  if (project.ambiguous) return { ok: false, error: "ambiguous" };
-  if (!project.ok || !project.project) return global;
-  return resolveInProjects(db, store, trimmed.slice(separator + 1), [project.project.id]);
+  return withProject(db, store.resolveIssueRef(trimmed));
 }
 
 /**
  * Issue ids are global, so the caller's repo only ranks candidates: a ref
- * resolves in the repo's own projects first, then across the ledger, then as
- * `<project>/<id>`.
+ * resolves in the repo's own projects first, then across the ledger. A
+ * `<project>/<id>` ref names its project explicitly.
  */
 function resolveInProjects(
   db: Db,
@@ -849,44 +841,17 @@ function maybeRecordLinkEvent(
   });
 }
 
-function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
-  const trimmed = repoRef?.trim();
-  if (!trimmed || !tableExists(db, "ledger_project_checkouts")) return [];
-  const ids = new Set<string>();
-  const checkoutRows = db.prepare(
-    `SELECT project_id FROM ledger_project_checkouts
-     WHERE work_repo_id = ? OR root = ? OR name = ? OR project_id = ?`,
-  ).all(trimmed, trimmed, trimmed, trimmed) as Array<{ project_id: string }>;
-  for (const row of checkoutRows) ids.add(row.project_id);
-  // Issue 3d85f43: the canonical project_key is a valid repo ref (case-insensitive,
-  // so `Feedbax` and `feedbax` resolve the same), so work-unit/auth/relationship
-  // refs that carry the key link to the right project.
-  const hasProjectKey = (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>)
-    .some((column) => column.name === "project_key");
-  const projectRows = db.prepare(
-    `SELECT id FROM ledger_projects
-     WHERE id = ? OR display_name = ? OR remote_identity = ? OR upstream_identity = ?${
-       hasProjectKey ? " OR (project_key != '' AND lower(project_key) = lower(?))" : ""
-     }`,
-  ).all(...(hasProjectKey ? [trimmed, trimmed, trimmed, trimmed, trimmed] : [trimmed, trimmed, trimmed, trimmed])) as Array<{ id: string }>;
-  for (const row of projectRows) ids.add(row.id);
-  return Array.from(ids).sort();
+export function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
+  const resolved = resolveProjectRef(db, repoRef);
+  return resolved.ok ? [resolved.project.id] : [];
 }
 
+/** The first ref that names a project decides; an ambiguous ref decides "none". */
 function resolveCanonicalProjectId(db: Db, refs: Array<string | null>): string | null {
   for (const ref of refs) {
-    const ids = new Set(candidateProjectIds(db, ref));
-    const trimmed = ref?.trim();
-    if (trimmed && tableExists(db, "work_repos")) {
-      const roots = db.prepare(
-        `SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?`,
-      ).all(trimmed, trimmed, trimmed) as Array<{ root: string }>;
-      for (const row of roots) {
-        for (const projectId of candidateProjectIds(db, row.root)) ids.add(projectId);
-      }
-    }
-    if (ids.size === 1) return [...ids][0]!;
-    if (ids.size > 1) return null;
+    const resolved = resolveProjectRef(db, ref);
+    if (resolved.ok) return resolved.project.id;
+    if (resolved.reason === "ambiguous") return null;
   }
   return null;
 }

@@ -13,7 +13,6 @@ import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
-import { shortestUniquePrefix } from "../ledger/ids.js";
 import { attributionForRequest, isOperator } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
@@ -43,6 +42,7 @@ import {
   type CustodyHolder,
   type HolderLiveness,
 } from "../work-unit-custody.js";
+import { entityRefs, shortRef } from "../entity-refs.js";
 
 // Bug: a247bc3 — work-unit CRUD for inbox workqueue
 // Bug: 8a281b3 — liveness overlay, PATCH, GET /:id
@@ -311,9 +311,19 @@ export function registerWorkUnitRoutes(
           const checkpoint = new LedgerStore(db).getLatestIssueCheckpoint(current.ledger_issue_id, "parent-role");
           const payload = checkpoint ? JSON.parse(checkpoint.payload_json) as Record<string, unknown> : null;
           const credential = durableCredential(req)!;
-          if (issue?.kind !== "umbrella" || !checkpoint || checkpoint.id !== body.parent_role_checkpoint_id ||
-              payload?.authenticated_user_id !== credential.user_id || payload?.authenticated_credential_id !== credential.credential_id) {
-            sendJson(res, 403, { error: "Integration promotion requires the latest audited parent-role checkpoint for this umbrella and durable credential. Run issue parent-role assume and pass --parent-role-checkpoint." });
+          const refusal = issue?.kind !== "umbrella"
+            ? "Integration promotion requires a work unit on an umbrella issue."
+            : !body.parent_role_checkpoint_id
+              ? "Integration promotion requires --parent-role-checkpoint: run issue parent-role assume and pass the checkpoint it prints."
+              : !checkpoint
+                ? "This umbrella has no parent-role checkpoint; run issue parent-role assume first."
+                : checkpoint.id !== body.parent_role_checkpoint_id
+                  ? `Checkpoint ${shortRef(db, "checkpoint", body.parent_role_checkpoint_id)} is not this umbrella's latest parent-role checkpoint (${shortRef(db, "checkpoint", checkpoint.id)}); pass the latest one.`
+                  : payload?.authenticated_user_id !== credential.user_id || payload?.authenticated_credential_id !== credential.credential_id
+                    ? "The latest parent-role checkpoint was recorded by another credential; run issue parent-role assume with this credential."
+                    : null;
+          if (refusal) {
+            sendJson(res, 403, { error: refusal });
             return;
           }
         }
@@ -450,7 +460,8 @@ export function registerWorkUnitRoutes(
       ...ledgerLinkFields(ledgerLink),
       ...ledgerIssueMetadataFields(db, ledgerLink),
     });
-  }, { operation: { id: "post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
+    refs: { body: { parent_role_checkpoint_id: entityRefs.checkpoint, assigned_session_id: entityRefs.session } } });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
   server.post("/api/work-units/activate", (req, res) => {
@@ -593,7 +604,8 @@ export function registerWorkUnitRoutes(
         ...ledgerIssueMetadataFields(db, ledgerLink),
       });
     }
-  }, { operation: { id: "post:/api/work-units/activate", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/activate", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
+    refs: { body: { assigned_session_id: entityRefs.session } } });
 
   server.post("/api/work-units/release", (req, res) => {
     const body = readBody<ReleaseInput>(req);
@@ -635,7 +647,8 @@ export function registerWorkUnitRoutes(
       WHERE id = ? AND custody_generation = ? AND state != 'abandoned'`)
       .run(row.id, body.expected_generation);
     sendJson(res, 200, { ok: true, id: row.id, released: changed.changes, unchanged: changed.changes === 0 });
-  }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
+    refs: { body: { id: entityRefs.workUnit } } });
 
   server.post("/api/work-units/release-issue", (req, res) => {
     const body = readBody<ReleaseIssueInput>(req);
@@ -761,7 +774,7 @@ export function registerWorkUnitRoutes(
     }
     const unit = mapRow(row);
     const project = resolveProjectRef(db, unit.repo_id);
-    if (!project.ok || !project.project || project.ambiguous) {
+    if (!project.ok) {
       sendJson(res, 409, { error: "Work-unit project identity is not unique." });
       return;
     }
@@ -810,7 +823,7 @@ export function registerWorkUnitRoutes(
       authorityPath = "stopped_holder_takeover";
     } else if (!operatorRecovery && unit.kind === "integration") {
       if (!unit.ledger_issue_id || !body.parent_role_checkpoint_id) {
-        sendJson(res, 403, { error: "Integration custody transfer requires the caller's audited parent-role checkpoint." });
+        sendJson(res, 403, { error: "Integration custody transfer requires --parent-role-checkpoint: run issue parent-role assume and pass the checkpoint it prints." });
         return;
       }
       const checkpoint = db.prepare(
@@ -818,9 +831,12 @@ export function registerWorkUnitRoutes(
          WHERE id = ? AND issue_id = ? AND kind = 'parent-role'`,
       ).get(body.parent_role_checkpoint_id, unit.ledger_issue_id) as { id: string; payload_json: string } | undefined;
       const payload = checkpoint ? JSON.parse(checkpoint.payload_json) as Record<string, unknown> : null;
-      if (!checkpoint || payload?.authenticated_user_id !== identity.user_id ||
-          payload?.authenticated_credential_id !== identity.credential_id) {
-        sendJson(res, 403, { error: "Integration custody transfer requires the caller's audited parent-role checkpoint." });
+      if (!checkpoint) {
+        sendJson(res, 403, { error: `Checkpoint ${body.parent_role_checkpoint_id} is not a parent-role checkpoint of this unit's umbrella.` });
+        return;
+      }
+      if (payload?.authenticated_user_id !== identity.user_id || payload?.authenticated_credential_id !== identity.credential_id) {
+        sendJson(res, 403, { error: "That parent-role checkpoint was recorded by another credential; run issue parent-role assume with this credential." });
         return;
       }
       checkpointId = checkpoint.id;
@@ -852,7 +868,8 @@ export function registerWorkUnitRoutes(
       }
       throw error;
     }
-  }, { operation: { id: "post:/api/work-units/:id/custody/assume", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/:id/custody/assume", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.workUnit }, body: { parent_role_checkpoint_id: entityRefs.checkpoint, target_session_id: entityRefs.session } } });
 
   /**
    * Queue one custody-transfer auth request for the operator, or return the
@@ -934,7 +951,7 @@ export function registerWorkUnitRoutes(
       holder,
       holder_liveness: liveness,
       message: `Custody is held by ${holderLabel(holder)}. The operator can approve auth request ` +
-        `${shortestUniquePrefix(requestId, (db.prepare("SELECT id FROM auth_requests").all() as Array<{ id: string }>).map((row) => row.id), 8)} ` +
+        `${shortRef(db, "auth_request", requestId)} ` +
         "in the Mandible app; approval transfers custody to your credential.",
     });
   }
@@ -959,7 +976,8 @@ export function registerWorkUnitRoutes(
 
     const workUnit = mapRow(row);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
-  }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
+    refs: { params: { id: entityRefs.workUnit } } });
 
   // PATCH /api/work-units/:id — update mutable fields
   // Bug: 8a281b3
@@ -1055,7 +1073,8 @@ export function registerWorkUnitRoutes(
 
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
-  }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
+    refs: { params: { id: entityRefs.workUnit }, body: { auth_request_id: entityRefs.authRequest, assigned_session_id: entityRefs.session } } });
 }
 
 function durableCredential(req: RequestLike): { user_id: string; credential_id: string } | null {
@@ -1159,7 +1178,7 @@ function custodyMutationFailure(
     return { status: 403, error: "Only the exact durable custodian may change work-unit delivery state.", code: "work_unit_custody_conflict" };
   }
   const project = resolveProjectRef(db, row.repo_id);
-  if (project.ok && project.project && !project.ambiguous) {
+  if (project.ok) {
     try {
       requireProjectAccess(db, req, project.project.id, "write");
     } catch (error) {
@@ -1186,7 +1205,7 @@ function liveHolderRefusal(
     code: "custody_holder_live",
     holder,
     holder_liveness: liveness,
-    takeover_command: takeoverCommand(unit, { requestApproval: true }),
+    takeover_command: takeoverCommand(db, unit, { requestApproval: true }),
   };
 }
 
@@ -1224,14 +1243,13 @@ function holderRefusal(
     code: "custody_holder_stopped",
     holder,
     holder_liveness: liveness,
-    takeover_command: takeoverCommand(unit, unit.kind === "integration" && !sameCredential ? { parentRoleCheckpointId: null } : {}),
+    takeover_command: takeoverCommand(db, unit, unit.kind === "integration" && !sameCredential ? { parentRoleCheckpointId: null } : {}),
   };
 }
 
 function shortIssueRef(db: ReturnType<typeof getDb>, unit: WorkUnit): string {
   if (!unit.ledger_issue_id) return unit.issue_id;
-  const ids = (db.prepare("SELECT id FROM ledger_issues").all() as Array<{ id: string }>).map((row) => row.id);
-  return shortestUniquePrefix(unit.ledger_issue_id, ids);
+  return shortRef(db, "issue", unit.ledger_issue_id, { minimum: 7 });
 }
 
 /** The caller's own session, recorded on a unit when custody moves to it. */
@@ -1296,9 +1314,9 @@ function custodyCheck(
     const where = `Work unit held by another session of your credential ${holderLabel(holder)}, whose session ${livenessLabel(holding.liveness)}. `;
     return holding.state === "stopped"
       ? answer("takeover_available", `${where}Take over custody with the command below before committing.`,
-        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit) })
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(db, unit) })
       : answer("held", `${where}Do not commit here. Ask that session to release it, or request operator approval with the command below.`,
-        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(unit, { requestApproval: true }) });
+        { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(db, unit, { requestApproval: true }) });
   }
   if (unit.kind === "integration") {
     const checkpoint = unit.ledger_issue_id
@@ -1315,16 +1333,16 @@ function custodyCheck(
           ? "You hold the umbrella parent role; take over custody with the command below before committing."
           : `Assume the umbrella parent role first (mandible issue parent-role assume ${shortIssueRef(db, unit)}), then take over custody with its checkpoint.`),
       { holder, holder_liveness: liveness,
-        takeover_command: takeoverCommand(unit, { parentRoleCheckpointId: callerHoldsRole ? checkpoint!.id : null }) });
+        takeover_command: takeoverCommand(db, unit, { parentRoleCheckpointId: callerHoldsRole ? checkpoint!.id : null }) });
   }
   if (liveness.state === "stopped") {
     return answer("takeover_available",
       `Work unit held by ${holderLabel(holder)}, whose session ${livenessLabel(liveness)}. ` +
         "Take over custody with the command below before committing.",
-      { holder, holder_liveness: liveness, takeover_command: takeoverCommand(unit) });
+      { holder, holder_liveness: liveness, takeover_command: takeoverCommand(db, unit) });
   }
   return answer("held",
     `Work unit held by ${holderLabel(holder)}, whose session ${livenessLabel(liveness)}. ` +
       "Do not commit here. Ask the holder to release it, or request operator approval with the command below.",
-    { holder, holder_liveness: liveness, takeover_command: takeoverCommand(unit, { requestApproval: true }) });
+    { holder, holder_liveness: liveness, takeover_command: takeoverCommand(db, unit, { requestApproval: true }) });
 }

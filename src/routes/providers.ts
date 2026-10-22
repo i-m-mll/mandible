@@ -105,11 +105,11 @@ function resolveArtifactRouteRecord(id: string) {
 function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef: string): boolean {
   const db = getDb();
   const resolved = resolveProjectRef(db, projectRef);
-  if (resolved.ambiguous) {
+  if ((!resolved.ok && resolved.reason === "ambiguous")) {
     sendJson(res, 403, { error: "ambiguous project", code: "ambiguous_project" });
     return false;
   }
-  if (!resolved.ok || !resolved.project) {
+  if (!resolved.ok) {
     sendJson(res, 404, { error: "project not found", code: "unknown_project" });
     return false;
   }
@@ -227,7 +227,7 @@ function recordAuthorizedVersion(req: RequestLike, res: ResponseLike, input: Rec
     if (!source) { sendJson(res, 400, { error: "invalid source", code: "invalid_source" }); return; }
     if (source.kind === "repo") {
       const project = resolveProjectRef(getDb(), source.project_id);
-      if (!project.ok || !project.project || project.ambiguous) {
+      if (!project.ok) {
         sendJson(res, 400, { error: "source project is unknown or ambiguous", code: "invalid_source" }); return;
       }
       source.project_id = project.project.id;
@@ -926,7 +926,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           }
           if (body.project !== undefined) {
             const project = resolveProjectRef(getDb(), body.project as string);
-            if (!project.ok || !project.project || project.ambiguous) {
+            if (!project.ok) {
               sendJson(res, 400, { error: 'Project is unknown or ambiguous', code: 'invalid_source' }); return;
             }
             const path = body.path ?? (current.source?.kind === 'repo' ? current.source.path : undefined);

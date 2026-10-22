@@ -12,8 +12,10 @@ usage() {
 
 if [[ "${1:-}" == "daemon" ]]; then
   shift
-  exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
+  exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../src/cli/operational-logs.ts" "$@"
 fi
+
+mandible_prepare_syntax_runtime || exit $?
 
 logs_source() {
   case "$1" in
@@ -366,7 +368,7 @@ def inspect(args: SimpleNamespace) -> int:
     if args.parse:
         cmd = [
             os.environ["MANDIBLE_RUNTIME"],
-            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
+            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "src" / "cli" / "conversation-blocks.ts"),
             "logs",
             str(path),
             "--limit",
@@ -420,7 +422,7 @@ def main() -> int:
     if args.command == "capabilities":
         cmd = [
             os.environ["MANDIBLE_RUNTIME"],
-            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
+            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "src" / "cli" / "conversation-blocks.ts"),
             "capabilities",
         ]
         if args.provider:

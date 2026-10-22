@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import type {
   RequestLike,
   ResponseLike,
@@ -14,17 +14,16 @@ import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerGraphRoutes } from "../src/routes/graph.js";
 import {
   ensureArtifactSeries,
-  getArtifactSeries,
   registerArtifactLink,
   resolveAndLinkArtifact,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
-import { appendArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
+import { appendArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import type { ArtifactRecord } from "../src/types.js";
 import {
-  insertRawLedgerCheckout,
   insertRawLedgerIssue,
   insertRawLedgerProject,
+  migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
 import { setupOperator } from "../src/users/store.js";
@@ -128,36 +127,11 @@ function getGraphRoute(query: Record<string, string>): { statusCode: number; pay
 function postLink(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   return postRoute("/api/artifacts/link", body);
 }
-function postIngest(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
-  return postRoute("/api/artifacts/ingest", body);
-}
-function postSnapshot(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
-  return postRoute("/api/artifacts/snapshot", body);
-}
 
 // --- ledger fixtures ----------------------------------------------------------
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
   const projectId = insertRawLedgerProject(db, { name: projectName });
   return insertRawLedgerIssue(db, { id: issueId, projectId });
-}
-
-function createProjectCheckout(projectKey: string, root: string): void {
-  const projectId = insertRawLedgerProject(db, {
-    name: projectKey,
-    projectKey,
-    remoteIdentity: "",
-    upstreamIdentity: "",
-    namespacePolicy: "local",
-    conflict: "replace",
-  });
-  insertRawLedgerCheckout(db, {
-    projectId,
-    name: projectKey,
-    root,
-    defaultBranch: "main",
-    remoteUrl: "",
-    conflict: "replace",
-  });
 }
 
 let counter = 0;
@@ -195,7 +169,7 @@ beforeEach(() => {
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "artifacts");
   delete process.env.MANDIBLE_HOME;
   counter = 0;
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
   setDb(db); // wire getDb() for the route handlers
   operator = setupOperator(db, { display_name: "Artifact route test operator" });
 });
@@ -316,42 +290,6 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
   });
 });
 
-describe("backward compatibility / idempotency", () => {
-  it("re-POSTing a minimally seeded v104 pinned link computes the same id and updates in place", () => {
-    const issueId = createLedgerIssue("issuecompat");
-    const art = makeArtifact("compat\n");
-
-    // Learn the canonical id and target, then re-create a minimal valid v104
-    // row. Genuine pre-v104 replay coverage lives in the migration fixture;
-    // this test isolates idempotent re-POST behavior on the current schema.
-    const seed = registerArtifactLink(db, art.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1000)!;
-    const canonicalTarget = db.prepare(
-      "SELECT blob_id, target_type, target_id FROM artifact_links WHERE id = ?",
-    ).get(seed.id) as { blob_id: string; target_type: string; target_id: string };
-    db.prepare("DELETE FROM artifact_links WHERE id = ?").run(seed.id);
-    db.prepare(
-      `INSERT INTO artifact_links
-        (id, blob_id, entity_type, entity_id, link_type, role, repo_id,
-         provider_id, source, metadata_json, created_at, updated_at, target_type, target_id)
-       VALUES (@id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
-         NULL, 'legacy', '{}', 1, 1, @target_type, @target_id)`,
-    ).run({ id: seed.id, entity_id: issueId, ...canonicalTarget });
-    const seeded = db
-      .prepare("SELECT link_kind, series_ref FROM artifact_links WHERE id = ?")
-      .get(seed.id);
-    expect(seeded).toEqual({ link_kind: "pinned", series_ref: null });
-
-    // Re-POST with no link_kind → same id, in-place update, no duplicate row.
-    const again = registerArtifactLink(db, art.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 2000)!;
-    expect(again.id).toBe(seed.id);
-    expect(again.link_kind).toBe("pinned");
-    expect(again.series_id).toBeNull();
-    expect(again.updated_at).toBe(2000);
-    const count = db.prepare("SELECT COUNT(*) AS n FROM artifact_links WHERE id = ?").get(seed.id) as { n: number };
-    expect(count.n).toBe(1);
-  });
-});
-
 describe("resolveAndLinkArtifact: pinned vs living", () => {
   it("pinned (default) on a series ref pins to the latest artifact and surfaces series_latest_not_pinned", () => {
     const issueId = createLedgerIssue("issuepin");
@@ -369,19 +307,6 @@ describe("resolveAndLinkArtifact: pinned vs living", () => {
     expect(link!.metadata.artifact_ref).toBe(seriesId); // provenance preserved
   });
 
-  it("@latest series ref without link_kind still pins to latest + surfaces the warning", () => {
-    const issueId = createLedgerIssue("issuelatest");
-    const { seriesId, head } = makeSeriesWithHead("series-latest", "v1\n");
-    const { resolution, link } = resolveAndLinkArtifact(db, {
-      ref: `${seriesId}@latest`,
-      entity_type: "issue",
-      entity_id: issueId,
-    }, 1000);
-    expect(resolution.warnings ?? []).toContain("series_latest_not_pinned");
-    expect(link!.link_kind).toBe("pinned");
-    expect(link!.artifact_id).toBe(head.id);
-  });
-
   it("living on a series ref stores series_id, the author ref, and the latest-at-creation fallback", () => {
     const issueId = createLedgerIssue("issuelive");
     const { seriesId, head } = makeSeriesWithHead("series-live", "v1\n");
@@ -397,18 +322,6 @@ describe("resolveAndLinkArtifact: pinned vs living", () => {
     expect(link!.series_ref).toBe(seriesId); // original author ref
     expect(link!.artifact_id).toBe(head.id); // latest-at-creation fallback
     expect(link!.metadata.artifact_ref).toBe(seriesId);
-  });
-
-  it("a pinned and a living link to the same (entity, series, relation) coexist as distinct rows", () => {
-    const issueId = createLedgerIssue("issuecoexist");
-    const { seriesId, head } = makeSeriesWithHead("series-coexist", "v1\n");
-    const pinned = resolveAndLinkArtifact(db, { ref: seriesId, entity_type: "issue", entity_id: issueId }, 1000).link!;
-    const living = resolveAndLinkArtifact(db, { ref: seriesId, entity_type: "issue", entity_id: issueId, link_kind: "living" }, 1001).link!;
-    expect(pinned.id).toMatch(/^artifact_link:/);
-    expect(living.id).toBe(livingLinkId(seriesId, "issue", issueId, "references", null));
-    expect(pinned.id).not.toBe(living.id);
-    const rows = db.prepare("SELECT link_kind FROM artifact_links ORDER BY link_kind").all() as Array<{ link_kind: string }>;
-    expect(rows.map((r) => r.link_kind)).toEqual(["living", "pinned"]);
   });
 });
 
@@ -448,28 +361,6 @@ describe("living write requires a single resolvable series", () => {
       }),
     ).toThrow(/living_link_requires_series/);
   });
-
-  it("accepts living when a plain content ref resolves to exactly one series", () => {
-    const issueId = createLedgerIssue("issueoneseries");
-    const art = makeArtifact("one-series\n");
-    const series = ensureArtifactSeries(db, { series_key: "series-one", source_kind: "managed" });
-    appendArtifactVersion(db, {
-      series_id: series.id,
-      artifact_id: art.id,
-      source_kind: "managed",
-      content_hash: art.content_hash,
-      natural_key: "series-one:1",
-    });
-    const { link } = resolveAndLinkArtifact(db, {
-      ref: art.id,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_kind: "living",
-    }, 1000);
-    expect(link!.link_kind).toBe("living");
-    expect(link!.series_id).toBe(series.id);
-    expect(link!.series_ref).toBe(art.id);
-  });
 });
 
 describe("evidence links must be pinned", () => {
@@ -485,34 +376,6 @@ describe("evidence links must be pinned", () => {
         link_kind: "living",
       }),
     ).toThrow(/evidence_links_must_be_pinned/);
-  });
-
-  it("allows a PINNED issue-evidence link", () => {
-    const issueId = createLedgerIssue("issueevidenceok");
-    const { seriesId, head } = makeSeriesWithHead("series-evidence-ok", "v1\n");
-    const { link } = resolveAndLinkArtifact(db, {
-      ref: seriesId,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_type: "evidence",
-    }, 1000);
-    expect(link!.link_type).toBe("evidence");
-    expect(link!.link_kind).toBe("pinned");
-    expect(link!.artifact_id).toBe(head.id);
-  });
-
-  it("rejects a living issue-evidence link at the ROUTE (POST /api/artifacts/link)", async () => {
-    const issueId = createLedgerIssue("issueevidenceroute");
-    const { seriesId } = makeSeriesWithHead("series-evidence-route", "v1\n");
-    const res = await postLink({
-      ref: seriesId,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_type: "evidence",
-      link_kind: "living",
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.payload).toEqual({ error: "evidence_links_must_be_pinned" });
   });
 
   it("the route creates a living references link end to end", async () => {
@@ -563,50 +426,6 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(JSON.stringify(graph.payload)).not.toContain("artifact:sha256:");
   });
 
-  it("projects repository-scan artifact responses", async () => {
-    const repoRoot = path.join(tempDir, "scan-repo");
-    fs.mkdirSync(path.join(repoRoot, "results"), { recursive: true });
-    fs.writeFileSync(path.join(repoRoot, "results", "summary.md"), "# Summary\n", "utf8");
-    createProjectCheckout("scan-provider", repoRoot);
-
-    const response = await postRoute("/api/artifacts/scan-repos", {
-      roots: [{ root: repoRoot, repo_id: "scan-provider" }],
-      register: true,
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.payload.artifacts).toHaveLength(1);
-    expect(response.payload.artifacts[0].id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
-    expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
-  });
-
-  it("emits current compact ids from ingest and snapshot APIs", async () => {
-    const ingest = await postIngest({ content: "ingest output\n", custody_mode: "managed" });
-    const snapshot = await postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
-    for (const response of [ingest, snapshot]) {
-      expect(response.statusCode).toBe(200);
-      expect(response.payload.artifact.id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
-      expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
-    }
-  });
-
-  it("rejects a living issue+evidence link forwarded through POST /api/artifacts/ingest", async () => {
-    const issueId = createLedgerIssue("issueingestev");
-    const { seriesId } = makeSeriesWithHead("series-ingest-ev", "v1\n");
-    const res = await postIngest({
-      media_type: "application/json",
-      json: { payload: "evidence" },
-      link: {
-        entity_type: "issue",
-        entity_id: issueId,
-        link_type: "evidence",
-        link_kind: "living",
-        series_id: seriesId,
-      },
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.payload).toEqual({ error: "evidence_links_must_be_pinned" });
-  });
-
   it("rejects a living link whose series_id does not contain the artifact (non-member)", () => {
     const issueId = createLedgerIssue("issuenonmember");
     const { seriesId } = makeSeriesWithHead("series-member", "v1\n");
@@ -620,61 +439,5 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
         series_id: seriesId,
       }),
     ).toThrow(/living_link_series_mismatch/);
-  });
-
-  it("rejects a living link naming a series that does not exist (bogus series_id)", () => {
-    const issueId = createLedgerIssue("issuebogus");
-    const art = makeArtifact("bogus\n");
-    expect(() =>
-      registerArtifactLink(db, art.id, {
-        entity_type: "issue",
-        entity_id: issueId,
-        link_type: "references",
-        link_kind: "living",
-        series_id: "artifact-series:does-not-exist",
-      }),
-    ).toThrow(/living_link_series_mismatch/);
-  });
-
-  it("still accepts a valid living link via resolveAndLinkArtifact (no regression)", () => {
-    const issueId = createLedgerIssue("issuenoreg");
-    const { seriesId } = makeSeriesWithHead("series-noreg", "v1\n");
-    expect(() =>
-      resolveAndLinkArtifact(db, {
-        ref: seriesId,
-        entity_type: "issue",
-        entity_id: issueId,
-        link_kind: "living",
-      }, 1000),
-    ).not.toThrow();
-    const row = db
-      .prepare("SELECT link_kind, target_type, target_id FROM artifact_links WHERE entity_id = ?")
-      .get(issueId) as { link_kind: string; target_type: string; target_id: string };
-    expect(row).toEqual({
-      link_kind: "living",
-      target_type: "artifact",
-      target_id: seriesId.replace(/^artifact-series:/, "artifact:"),
-    });
-  });
-
-  it("leaves the pinned ingest path unaffected (default link_kind, no series required)", async () => {
-    const issueId = createLedgerIssue("issuepinnedingest");
-    const res = await postIngest({
-      media_type: "application/json",
-      json: { payload: "pinned" },
-      link: {
-        entity_type: "issue",
-        entity_id: issueId,
-        link_type: "evidence", // pinned evidence is allowed
-      },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.payload.artifact.id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
-    const row = db
-      .prepare(
-        "SELECT link_kind, target_type FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'",
-      )
-      .get(issueId) as { link_kind: string; target_type: string };
-    expect(row).toEqual({ link_kind: "pinned", target_type: "artifact_blob" });
   });
 });

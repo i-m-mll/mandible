@@ -45,11 +45,12 @@ import {
   isAuthMergeCommand,
   liveCommitRefReader,
   readCommitRefs,
+  readCommitRefsSync,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
   type CommitRefReader,
 } from "./auth-context.js";
-import { gitObjectAnswer } from "./git-object-facts.js";
+import { gitCommitFacts, readGitCommitFacts } from "./git-object-facts.js";
 import {
   canonicalizeChangeMessage,
   changeMessageDigest,
@@ -92,7 +93,8 @@ import {
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
 import { getDaemonLogger } from "./daemon-log.js";
-import { getDb, resolvePrefix } from "./db.js";
+import { getDb } from "./db.js";
+import { resolveId } from "./entity-refs.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -342,7 +344,7 @@ type StaleMergeRecovery =
   | { outcome: "failed"; detail: string };
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
@@ -595,7 +597,7 @@ class AncestryBatch {
 }
 
 export class AuthQueue {
-  private readonly db: InstanceType<typeof SqliteDatabase>;
+  readonly db: InstanceType<typeof SqliteDatabase>;
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly backgroundMaintenance: boolean;
@@ -831,7 +833,7 @@ export class AuthQueue {
   /** Where and as whom the run executes; a missing project or custody fails the run with the reason. */
   private acceptanceInput(request: AuthRequest, pinSha: string): Omit<CandidateAcceptanceInput, "signal"> {
     const project = request.repo ? resolveProjectRef(this.db, request.repo) : null;
-    if (!project?.ok || !project.project || project.ambiguous) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
+    if (!project?.ok) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
     if (!request.custody_work_unit_id) throw new Error("The request has no delivery work unit in custody.");
     const home = getUserHome();
     const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
@@ -2029,7 +2031,7 @@ export class AuthQueue {
       throw new AuthQueueError("custody_required", "Merge submission requires canonical project and head branch identity.");
     }
     const project = resolveProjectRef(this.db, payload.repo);
-    if (!project.ok || !project.project || project.ambiguous) {
+    if (!project.ok) {
       throw new AuthQueueError("custody_required", "Merge project does not resolve uniquely in the project registry.");
     }
     const issueIds = new Set<string>();
@@ -2042,7 +2044,7 @@ export class AuthQueue {
        WHERE state = 'committed' AND resolved_at IS NULL AND branch = ? AND auth_request_id IS NULL`,
     ).all(payload.head_branch) as WorkUnitCustody[]).filter((row) => {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
-      return wuProject.ok && wuProject.project && !wuProject.ambiguous && wuProject.project.id === project.project!.id;
+      return wuProject.ok && wuProject.project.id === project.project!.id;
     });
     const owned = onBranch.filter((row) => row.owner_user_id === actor.user_id && row.owner_credential_id === actor.credential_id);
     const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));
@@ -2647,7 +2649,7 @@ export class AuthQueue {
   /** Ambiguity-safe public reference lookup without lifecycle mutations. */
   getRequestReference(id: string): AuthRequest | null {
     // Bug: caa157e — support UUID prefix matching
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return null;
     }
@@ -2662,7 +2664,7 @@ export class AuthQueue {
       return null;
     }
 
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", requestedId);
+    const resolved = resolveId(this.db, "auth_request", requestedId);
     if (!resolved.ok) {
       return {
         state: resolved.error === "not_found" ? "missing" : "ambiguous",
@@ -2798,11 +2800,11 @@ export class AuthQueue {
     expectedGeneration?: number,
   ): AuthRequest {
     this.expireStale();
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw {
         status: 409,
-        message: `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+        message: `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`,
       };
     }
     if (!resolved.ok) {
@@ -3245,7 +3247,7 @@ export class AuthQueue {
    * false if the request is unknown.
    */
   markDelivered(id: string): boolean {
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return false;
     }
@@ -3278,10 +3280,11 @@ export class AuthQueue {
     if (isAuthMergeCommand(request)) {
       if (!request.cwd) throw new AuthQueueError("merge_check_failed", "Protected hook context is unavailable.");
       const quote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
-      for (const [name, args] of [["post-commit", ""], ["post-merge", " 0"]] as const) {
-        const hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
-          cwd: request.cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
-        }).trim();
+      const names = ["post-commit", "post-merge"] as const;
+      const paths = this.nativeHookPaths(request.cwd, names);
+      for (const [index, name] of names.entries()) {
+        const args = name === "post-merge" ? " 0" : "";
+        const hookPath = paths[index]!;
         try { accessSync(hookPath, fsConstants.X_OK); }
         catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
@@ -3865,12 +3868,12 @@ export class AuthQueue {
       !request.merge_head_sha
     ) return false;
     try {
-      const pin = (args: string[]): string => gitObjectAnswer(request.cwd!, args, { timeout: 5_000, env: authGitEnv() });
+      const pin = gitCommitFacts(request.cwd, request.merge_candidate_pin_sha, { timeout: 5_000, env: authGitEnv() });
       return (
-        pin(["cat-file", "-t", request.merge_candidate_pin_sha]) === "commit" &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^{tree}`]) === request.merge_candidate_tree_sha &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^1`]) === request.merge_preflight_base_sha &&
-        pin(["rev-parse", `${request.merge_candidate_pin_sha}^2`]) === request.merge_head_sha &&
+        pin.tree === request.merge_candidate_tree_sha &&
+        pin.parents.length === 2 &&
+        pin.parents[0] === request.merge_preflight_base_sha &&
+        pin.parents[1] === request.merge_head_sha &&
         refs(this.mergeCandidateRef(request.id)) === request.merge_candidate_pin_sha
       );
     } catch {
@@ -3882,15 +3885,19 @@ export class AuthQueue {
     return `refs/mandible/auth-candidates/${requestId}`;
   }
 
+  private nativeHookPaths(cwd: string, names: readonly string[]): string[] {
+    const directory = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], {
+      cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
+    }).replace(/\n$/, "");
+    return names.map(name => join(directory, name));
+  }
+
   private hasNativeMergeHooks(cwd: string | null): boolean {
     if (!cwd) return true;
-    for (const name of ["pre-merge-commit", "prepare-commit-msg", "commit-msg"]) {
-      let hookPath: string;
-      try {
-        hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
-          cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
-        }).trim();
-      } catch { return true; }
+    let paths: string[];
+    try { paths = this.nativeHookPaths(cwd, ["pre-merge-commit", "prepare-commit-msg", "commit-msg"]); }
+    catch { return true; }
+    for (const hookPath of paths) {
       try { accessSync(hookPath, fsConstants.X_OK); return true; }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -4048,7 +4055,14 @@ export class AuthQueue {
    * exactly: pinned, base branch unmoved from the preflighted base, and the
    * retained pin commit intact.
    */
-  private mergeCandidateExact(request: AuthRequest, refs: CommitRefReader = liveCommitRefReader(request.cwd)): boolean {
+  private mergeCandidateExact(request: AuthRequest, refs?: CommitRefReader): boolean {
+    if (!refs) {
+      if (!request.cwd || !request.base_branch) return false;
+      try {
+        const snapshot = readCommitRefsSync(request.cwd, [`refs/heads/${request.base_branch}`, this.mergeCandidateRef(request.id)]);
+        refs = ref => snapshot.get(ref) ?? null;
+      } catch { return false; }
+    }
     return Boolean(
       request.merge_candidate_pin_sha &&
       request.cwd &&
@@ -4233,7 +4247,7 @@ export class AuthQueue {
       const expectedFirstParent = chain[index + 1] ?? oldBase;
       let parents: string[];
       try {
-        parents = git(["show", "-s", "--format=%P", commit]).split(/\s+/).filter(Boolean);
+        parents = [...readGitCommitFacts(cwd, commit, { timeout: 5_000, env: authGitEnv() }).parents];
       } catch {
         return refuse("parents_unresolvable", { commit });
       }
@@ -4844,10 +4858,10 @@ export class AuthQueue {
     if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
     try {
       const options = { timeout: 5_000, env: authGitEnv() };
-      const published = (args: string[]) => gitObjectAnswer(cwd, args, options);
-      const parents = published(["show", "-s", "--format=%P", mergeSha]).split(/\s+/);
-      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published(["rev-parse", `${mergeSha}^{tree}`]) !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
-      if (request.commit_message_digest && canonicalizeChangeMessage(published(["show", "-s", "--format=%B", mergeSha])) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
+      const published = gitCommitFacts(cwd, mergeSha, options);
+      const parents = published.parents;
+      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published.tree !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
+      if (request.commit_message_digest && canonicalizeChangeMessage(published.message) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
       execFileSync("git", ["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`], { cwd, ...options, stdio: "ignore" });
     } catch {
       return "Exact signed candidate publication could not be verified on the protected branch.";
@@ -5559,7 +5573,12 @@ export class AuthQueue {
         const owner = this.requestCustodyForActor(current, recovery.actor);
         if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
       };
-      await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+      try {
+        await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+      } catch (error) {
+        if (error instanceof AuthQueueError) throw error;
+        throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
+      }
       // Recovery settles this request only. Existing merge finalizers retain
       // their normal daemon lifecycle; a one-shot must not enqueue global work.
       await this.finalizerQueue.drain();
@@ -6501,6 +6520,7 @@ export class AuthQueue {
     // deferred actions (comments, worker status, labels) record what happened
     // and still run before convergence completes.
     const withholdClosures = this.convergenceWithholdsClosures(request.id);
+    const withheld: string[] = [];
     for (const action of actions) {
       if (action.state === "vetoed") {
         this.removeActionResolveLink(request, action);
@@ -6510,12 +6530,7 @@ export class AuthQueue {
         continue;
       }
       if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
-        authLog("info", "auth_issue_closure_withheld", {
-          subsystem: "auth",
-          auth_request_id: request.id,
-          action_id: action.id,
-          target_issue_ref: action.target_issue_ref,
-        });
+        withheld.push(action.target_issue_ref);
         continue;
       }
       try {
@@ -6539,6 +6554,14 @@ export class AuthQueue {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    if (withheld.length > 0) {
+      authLog("info", "auth_issue_closures_withheld", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        count: withheld.length,
+        target_issue_refs: withheld,
+      });
     }
   }
 
@@ -7664,11 +7687,11 @@ export class AuthQueue {
 
   private requireRequest(id: string): AuthRequest {
     // Bug: caa157e — surface ambiguous prefix errors before falling through to getRequest
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw new AuthQueueError(
         "not_found",
-        `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`
+        `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`
       );
     }
     const request = this.getRequestById(resolved.ok ? resolved.id : id);

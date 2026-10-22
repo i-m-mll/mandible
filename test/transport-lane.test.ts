@@ -1,15 +1,14 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
-import { migrate, setDb } from "../src/db.js";
+import { setDb } from "../src/db.js";
 import { SessionManager } from "../src/session-manager.js";
 import type { ConsoleSessionInput } from "../src/types.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // Managed provider control belongs to ConversationControlService. Console owns
 // plain terminals; retired SDK/ACP/Channel creation is deliberately rejected.
 describe("Console transport boundary", () => {
   it("persists a plain terminal as PTY even when its command names a provider", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db); setDb(db);
+    const db = migratedMemoryDb(); setDb(db);
     const manager = new SessionManager(db, () => undefined);
     try {
       const session = manager.create({ label: "Terminal", command: "codex" });
@@ -20,8 +19,7 @@ describe("Console transport boundary", () => {
   });
 
   it("rejects managed lifecycle inputs before creating a Console record", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db); setDb(db);
+    const db = migratedMemoryDb(); setDb(db);
     const manager = new SessionManager(db, () => undefined);
     const inputs: Partial<ConsoleSessionInput>[] = [
       { backend_type: "sdk" }, { backend_type: "acp" }, { backend_type: "spawn" },

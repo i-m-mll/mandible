@@ -11,10 +11,9 @@ import { columnExists, tableExists } from "./db-introspection.js";
 import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
   readCommittedArtifactFiles, retainArtifactCommit, type CommittedArtifactFile,
-  resolveCanonicalArtifactRepoForRoot,
-  resolveCanonicalArtifactRepoRef,
-} from "./artifact-repo-resolution.js";
+} from "./artifact-commit-source.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
+import { resolveId, shortRef, type RefResolution } from "./entity-refs.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 import {
   classifyArtifactRef,
@@ -650,17 +649,17 @@ function normalizeRef(ref: string, options: { db?: Db; validateRepo?: boolean } 
     const inputRepoId = repoMatch[1];
     const refName = repoMatch[2];
     const repoPath = repoMatch[3].replace(/^\/+/, "");
-    const resolution = options.db ? resolveCanonicalArtifactRepoRef(options.db, inputRepoId) : null;
+    const resolution = options.db ? resolveProjectRef(options.db, inputRepoId) : null;
     if (resolution && !resolution.ok && options.validateRepo) {
       return {
         scheme: "repo",
         alias,
         normalizedRef: alias,
         locator: { repo_id: inputRepoId, ref: refName ?? null, path: repoPath },
-        invalidReason: resolution.reason,
+        invalidReason: resolution.reason === "ambiguous" ? "ambiguous_repo" : "unknown_repo",
       };
     }
-    const repoId = resolution?.ok ? resolution.project_key : inputRepoId;
+    const repoId = resolution?.ok ? resolution.project.project_key : inputRepoId;
     return {
       scheme: "repo",
       alias,
@@ -956,75 +955,13 @@ function splitProviderIssueRef(rawRef: string): { projectRef?: string; issueRef:
 }
 
 function projectIdForRef(db: Db, projectRef: string | undefined): string | null {
-  const ref = projectRef?.trim();
-  if (!ref || !tableExists(db, "ledger_projects")) return null;
-  const hasProjectKey = columnExists(db, "ledger_projects", "project_key");
-  const projectKeyPredicate = hasProjectKey ? "OR lower(project_key) = lower(@ref)" : "";
-  const checkoutPredicate = tableExists(db, "ledger_project_checkouts")
-    ? `UNION
-       SELECT project_id AS id FROM ledger_project_checkouts
-        WHERE lower(name) = lower(@ref) OR work_repo_id = @ref OR root = @ref`
-    : "";
-  const rows = db.prepare(
-    `SELECT id FROM ledger_projects
-      WHERE lower(display_name) = lower(@ref)
-         ${projectKeyPredicate}
-         OR id = @ref
-         OR remote_identity = @ref
-     ${checkoutPredicate}`
-  ).all({ ref }) as Array<{ id: string }>;
-  const ids = Array.from(new Set(rows.map((row) => row.id)));
-  return ids.length === 1 ? ids[0] : null;
+  const resolved = resolveProjectRef(db, projectRef);
+  return resolved.ok ? resolved.project.id : null;
 }
 
-function issueMatches(db: Db, issueRef: string, projectId: string | null): string[] {
-  if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_issue_aliases")) return [];
-  const trimmed = issueRef.trim();
-  if (!trimmed) return [];
-  const matches = new Set<string>();
-  const addRows = (rows: Array<{ id?: string; issue_id?: string }>) => {
-    for (const row of rows) {
-      const id = row.id ?? row.issue_id;
-      if (id) matches.add(id);
-    }
-  };
-
-  if (projectId) {
-    addRows(db.prepare(
-      "SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?",
-    ).all(trimmed, projectId) as Array<{ id: string }>);
-    addRows(db.prepare(
-      "SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?",
-    ).all(trimmed, projectId) as Array<{ id: string }>);
-    addRows(db.prepare(
-      "SELECT issue_id FROM ledger_issue_aliases WHERE alias = ? AND project_id = ?",
-    ).all(trimmed, projectId) as Array<{ issue_id: string }>);
-  } else {
-    addRows(db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed) as Array<{ id: string }>);
-    addRows(db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed) as Array<{ id: string }>);
-    addRows(db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed) as Array<{ issue_id: string }>);
-  }
-
-  if (matches.size === 0 && trimmed.length >= 4) {
-    const like = `${escapeLike(trimmed)}%`;
-    if (projectId) {
-      addRows(db.prepare(
-        "SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\' AND project_id = ?",
-      ).all(like, projectId) as Array<{ id: string }>);
-      addRows(db.prepare(
-        "SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?",
-      ).all(like, projectId) as Array<{ id: string }>);
-      addRows(db.prepare(
-        "SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?",
-      ).all(like, projectId) as Array<{ issue_id: string }>);
-    } else {
-      addRows(db.prepare("SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'").all(like) as Array<{ id: string }>);
-      addRows(db.prepare("SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'").all(like) as Array<{ id: string }>);
-      addRows(db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'").all(like) as Array<{ issue_id: string }>);
-    }
-  }
-
-  return Array.from(matches).sort();
+function resolveProviderIssueRef(db: Db, issueRef: string, projectId: string | null): RefResolution {
+  if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_issue_aliases")) return { ok: false, error: "not_found" };
+  return resolveId(db, "issue", issueRef, projectId ? { scope: projectId } : {});
 }
 
 function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRef: string, now: number): {
@@ -1186,18 +1123,18 @@ function upsertNativeIssueRef(db: Db, args: {
     ?? asString(provenance.repo_id)
     ?? asString(provenance.source_repo_id);
   const projectId = projectIdForRef(db, projectHint);
-  const matches = issueMatches(db, issueRef, projectId);
-  const resolved = matches.length === 1
-    ? ledgerIssueGraphInfo(db, matches[0], args.providerId, args.issueId, args.now)
+  const issue = resolveProviderIssueRef(db, issueRef, projectId);
+  const resolved = issue.ok
+    ? ledgerIssueGraphInfo(db, issue.id, args.providerId, args.issueId, args.now)
     : null;
   const nodeId = resolved?.nodeId ?? graphEntityId(args.providerId, "issue", args.issueId);
   const resolutionMetadata = resolved?.metadata ?? {
     issue_ref: args.issueId,
     issue_ref_normalized: issueRef,
     project_ref: projectHint ?? null,
-    resolution_status: matches.length > 1 ? "ambiguous" : "unresolved",
+    resolution_status: !issue.ok && issue.error === "ambiguous" ? "ambiguous" : "unresolved",
     resolution_source: "provider_fallback",
-    candidate_count: matches.length,
+    candidate_count: issue.ok ? 1 : issue.error === "ambiguous" ? issue.matches.length : 0,
   };
   if (resolved) {
     upsertGraphEdge(db, {
@@ -1680,8 +1617,8 @@ function runGit(cwd: string, args: string[]): string | null {
 
 function repoInfoForRoot(db: Db, root: string, observedRoot?: string): { repo_id: string | null; name: string | null } {
   const realRoot = path.resolve(root);
-  const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot, observedRoot);
-  if (canonical.ok) return { repo_id: canonical.project_key, name: canonical.checkout_name };
+  const canonical = resolveProjectRef(db, realRoot, { observedPath: observedRoot });
+  if (canonical.ok) return { repo_id: canonical.project.project_key, name: canonical.checkout?.name ?? null };
   return { repo_id: null, name: null };
 }
 
@@ -2181,19 +2118,18 @@ function resolveIssueEntity(
 ): { entity_id: string; metadata: JsonRecord } {
   const split = splitProviderIssueRef(rawIssueRef);
   const projectId = projectIdForRef(db, projectRef ?? split.projectRef);
-  const matches = issueMatches(db, split.issueRef, projectId);
-  if (matches.length === 0) {
-    throw new Error(`issue ref not found: ${rawIssueRef}`);
-  }
-  if (matches.length > 1) {
-    throw new Error(`ambiguous issue ref ${rawIssueRef}: ${matches.join(", ")}`);
+  const issue = resolveProviderIssueRef(db, split.issueRef, projectId);
+  if (!issue.ok) {
+    throw new Error(issue.error === "ambiguous"
+      ? `ambiguous issue ref ${rawIssueRef}: ${issue.matches.join(", ")}`
+      : `issue ref not found: ${rawIssueRef}`);
   }
   return {
-    entity_id: matches[0],
+    entity_id: issue.id,
     metadata: {
       issue_ref: rawIssueRef,
       issue_project: projectRef ?? split.projectRef ?? null,
-      ledger_issue_id: matches[0],
+      ledger_issue_id: issue.id,
       resolution_status: "resolved",
     },
   };
@@ -3817,71 +3753,43 @@ function canonicalArtifactKey(ref: string): string | null {
   return key.trim() ? key.trim() : null;
 }
 
-function getLogicalArtifactPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactIdentityRecord> {
+/** A typed artifact lookup of a bare key through the shared entity-ref resolver. */
+function artifactLookup<T>(
+  db: Db,
+  kind: "artifact" | "artifact_version" | "artifact_blob",
+  key: string,
+  load: (id: string) => T | null,
+): PrefixLookupResult<T> {
   if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
+  const resolved = resolveId(db, kind, key);
+  if (resolved.ok) {
+    const value = load(resolved.id);
+    return value ? { status: "resolved", value } : { status: "unresolved", value: null };
+  }
+  if (resolved.error === "ambiguous") return { status: "ambiguous", value: null };
+  return { status: key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH ? "unsupported" : "unresolved", value: null };
+}
+
+function getLogicalArtifactPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactIdentityRecord> {
   const key = canonicalArtifactKey(ref);
   if (!key) return { status: "unsupported", value: null };
-  const fullRef = `artifact:${key}`;
-  const exact = getLogicalArtifact(db, fullRef);
-  if (exact) return { status: "resolved", value: exact };
-  if (key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH) return { status: "unsupported", value: null };
-  const rows = db
-    .prepare(
-      `SELECT * FROM artifact
-        WHERE id LIKE ? ESCAPE '\\'
-           OR identity_key LIKE ? ESCAPE '\\'
-        ORDER BY id ASC
-        LIMIT 2`,
-    )
-    .all(`${escapeLike(fullRef)}%`, `${escapeLike(key)}%`) as Array<Record<string, unknown>>;
-  if (rows.length === 1) return { status: "resolved", value: artifactIdentityFromRow(db, rows[0]) };
-  return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
+  return artifactLookup(db, "artifact", key, (id) => getLogicalArtifact(db, id));
 }
 
 function getCanonicalArtifactVersionPrefix(
   db: Db,
   ref: string,
 ): PrefixLookupResult<CanonicalArtifactVersionRecord> {
-  if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
-  const trimmed = ref.trim();
-  const key = trimmed.replace(/^artifact-version:/i, "");
-  const fullRef = /^artifact-version:/i.test(trimmed) ? trimmed : `artifact-version:${key}`;
-  const exact = getCanonicalArtifactVersion(db, fullRef);
-  if (exact) return { status: "resolved", value: exact };
-  if (key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH) return { status: "unsupported", value: null };
-  const rows = db
-    .prepare(
-      `SELECT * FROM artifact_version
-        WHERE id LIKE ? ESCAPE '\\'
-        ORDER BY id ASC
-        LIMIT 2`,
-    )
-    .all(`${escapeLike(fullRef)}%`) as Array<Record<string, unknown>>;
-  if (rows.length === 1) return { status: "resolved", value: canonicalArtifactVersionFromRow(rows[0]) };
-  return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
+  const key = ref.trim().replace(/^artifact-version:/i, "");
+  return artifactLookup(db, "artifact_version", key, (id) => getCanonicalArtifactVersion(db, id));
 }
 
 function getArtifactBlobPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactBlobRecord> {
-  if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
   const trimmed = ref.trim();
-  const explicit = /^artifact-blob:/i.test(trimmed);
-  const key = explicit ? trimmed.replace(/^artifact-blob:/i, "") : "";
+  if (!/^artifact-blob:/i.test(trimmed)) return { status: "unsupported", value: null };
+  const key = trimmed.replace(/^artifact-blob:/i, "").toLowerCase();
   if (!key) return { status: "unsupported", value: null };
-  const fullRef = explicit ? `artifact-blob:${key}` : artifactBlobIdFromHash(key);
-  const exact = getArtifactBlob(db, fullRef) ?? (isSha256(key) ? getArtifactBlob(db, artifactBlobIdFromHash(key)) : null);
-  if (exact) return { status: "resolved", value: exact };
-  if (key.length < MIN_ARTIFACT_HASH_PREFIX_LENGTH) return { status: "unsupported", value: null };
-  const rows = db
-    .prepare(
-      `SELECT * FROM artifact_blob
-        WHERE id LIKE ? ESCAPE '\\'
-           OR lower(content_hash) LIKE ? ESCAPE '\\'
-        ORDER BY id ASC
-        LIMIT 2`,
-    )
-    .all(`${escapeLike(fullRef)}%`, `${escapeLike(key.toLowerCase())}%`) as Array<Record<string, unknown>>;
-  if (rows.length === 1) return { status: "resolved", value: artifactBlobFromRow(rows[0]) };
-  return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
+  return artifactLookup(db, "artifact_blob", key, (id) => getArtifactBlob(db, id));
 }
 
 export function canonicalArtifactShortRef(db: Db, hash: string): string {
@@ -3907,12 +3815,7 @@ export function canonicalArtifactBlobShortRef(db: Db, ref: string): string {
   if (!isSha256(hash)) throw new Error("artifact blob ref must contain a 64-character SHA-256 hash");
   const blob = getArtifactBlob(db, artifactBlobIdFromHash(hash));
   if (!blob) return artifactBlobIdFromHash(hash);
-  for (let length = DEFAULT_ARTIFACT_ID_PREFIX_LENGTH; length <= hash.length; length += 1) {
-    const candidate = `artifact-blob:${hash.slice(0, length)}`;
-    const lookup = getArtifactBlobPrefix(db, candidate);
-    if (lookup.status === "resolved" && lookup.value?.id === blob.id) return candidate;
-  }
-  return blob.id;
+  return `artifact-blob:${shortRef(db, "artifact_blob", blob.id, { key: hash, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
 }
 
 export function canonicalLogicalArtifactShortRef(db: Db, ref: string): string {
@@ -4484,8 +4387,8 @@ export function associateProjectArtifact(
     throw new Error("project_artifact_associations table is not present in this database");
   }
   const project = resolveProjectRef(db, input.project_ref);
-  if (!project.ok || !project.project) {
-    throw new Error(project.ambiguous ? `ambiguous project ref: ${input.project_ref}` : `project not found: ${input.project_ref}`);
+  if (!project.ok) {
+    throw new Error((!project.ok && project.reason === "ambiguous") ? `ambiguous project ref: ${input.project_ref}` : `project not found: ${input.project_ref}`);
   }
   const projectId = project.project.id;
   const target = resolveAssociationTarget(db, input);
@@ -4565,7 +4468,7 @@ export function listProjectArtifactAssociations(
   const bindings: Record<string, unknown> = {};
   if (asString(options.projectRef)) {
     const project = resolveProjectRef(db, options.projectRef!);
-    if (!project.ok || !project.project) return [];
+    if (!project.ok) return [];
     bindings.projectId = project.project.id;
     where.push("project_id = @projectId");
   }
@@ -4672,33 +4575,8 @@ function resolveLogicalArtifactForSeriesRef(
   db: Db,
   ref: string,
 ): PrefixLookupResult<ArtifactIdentityRecord> {
-  if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
-  const trimmed = ref.trim();
-  const key = trimmed.replace(/^artifact-series:/i, "");
-  const exact = getLogicalArtifactForSeriesRef(db, trimmed)
-    ?? getLogicalArtifactForSeriesRef(db, key);
-  if (exact) return { status: "resolved", value: exact };
-  if (key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH) return { status: "unsupported", value: null };
-  const idPrefix = trimmed.startsWith("artifact-series:") ? trimmed : `artifact-series:${key}`;
-  const rows = db.prepare(
-    `SELECT * FROM artifact
-      WHERE id LIKE ? ESCAPE '\\'
-         OR identity_key LIKE ? ESCAPE '\\'
-      ORDER BY id ASC
-      LIMIT 2`,
-  ).all(
-    `${escapeLike(canonicalArtifactIdForSeriesRef(idPrefix))}%`,
-    `${escapeLike(key)}%`,
-  ) as Array<Record<string, unknown>>;
-  if (rows.length === 1) return { status: "resolved", value: artifactIdentityFromRow(db, rows[0]) };
-  return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
-}
-
-function resolveArtifactSeriesPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactSeriesRecord> {
-  const lookup = resolveLogicalArtifactForSeriesRef(db, ref);
-  return lookup.status === "resolved"
-    ? { status: "resolved", value: projectCanonicalSeriesRecord(lookup.value) }
-    : { status: lookup.status, value: null };
+  const key = ref.trim().replace(/^artifact(?:-series)?:/i, "");
+  return artifactLookup(db, "artifact", key, (id) => getLogicalArtifact(db, id));
 }
 
 export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | null {
@@ -4706,24 +4584,12 @@ export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | 
   return canonical ? projectCanonicalVersionRecord(db, canonical) : null;
 }
 
-function resolveArtifactVersionPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactVersionRecord> {
-  const lookup = getCanonicalArtifactVersionPrefix(db, ref);
-  return lookup.status === "resolved"
-    ? { status: "resolved", value: projectCanonicalVersionRecord(db, lookup.value) }
-    : { status: lookup.status, value: null };
-}
-
 export function canonicalArtifactSeriesShortRef(db: Db, ref: string): string {
   const series = getArtifactSeries(db, ref);
   if (!series) return canonicalArtifactSeriesRef(ref);
   const canonical = canonicalArtifactSeriesRef(series.id);
   const key = canonical.replace(/^artifact-series:/i, "");
-  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
-    const candidate = `artifact-series:${key.slice(0, length)}`;
-    const lookup = resolveArtifactSeriesPrefix(db, candidate);
-    if (lookup.status === "resolved" && lookup.value?.id === series.id) return candidate;
-  }
-  return canonical;
+  return `artifact-series:${shortRef(db, "artifact", `artifact:${key}`, { key, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
 }
 
 export function canonicalArtifactVersionShortRef(db: Db, ref: string): string {
@@ -4731,12 +4597,7 @@ export function canonicalArtifactVersionShortRef(db: Db, ref: string): string {
   if (!version) return canonicalVersionIdForVersionRef(ref);
   const canonical = canonicalVersionIdForVersionRef(version.id);
   const key = canonical.replace(/^artifact-version:/i, "");
-  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
-    const candidate = `artifact-version:${key.slice(0, length)}`;
-    const lookup = resolveArtifactVersionPrefix(db, candidate);
-    if (lookup.status === "resolved" && lookup.value?.id === version.id) return candidate;
-  }
-  return canonical;
+  return `artifact-version:${shortRef(db, "artifact_version", canonical, { key, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
 }
 
 export function listArtifactVersions(db: Db, seriesId: string): ArtifactVersionRecord[] {
@@ -5095,13 +4956,13 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       if (input.source && sourceKey(input.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Declared source differs from committed source');
     } else if (local) {
       const git = local.git_state;
-      const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path), path.dirname(local.input_path));
-      if (repo && !repo.ok && repo.reason === 'ambiguous_repo') return artifactFailure('invalid_source', 'Repository is ambiguous');
-      if (repo.ok && (git.relative_path || repo.checkout_root)) {
-        projectId = repo.project_id;
-        repoId = repo.project_key;
+      const repo = resolveProjectRef(db, path.resolve(git.repo_root ?? path.dirname(local.resolved_path)), { observedPath: path.dirname(local.input_path) });
+      if (!repo.ok && repo.reason === 'ambiguous') return artifactFailure('invalid_source', 'Repository is ambiguous');
+      if (repo.ok && (git.relative_path || repo.checkout)) {
+        projectId = repo.project.id;
+        repoId = repo.project.project_key;
         repoPath = repo.matched_by === 'checkout_ancestry' || !git.relative_path
-          ? path.relative(safeRealpathSync(repo.checkout_root!), local.resolved_path).split(path.sep).join('/')
+          ? path.relative(safeRealpathSync(repo.checkout!.root), local.resolved_path).split(path.sep).join('/')
           : git.relative_path;
         source = { kind: 'repo', project_id: projectId, path: repoPath };
         seriesKey ??= `repo:${repoId}:${repoPath}`;
@@ -5154,9 +5015,9 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     let ownerProject: string | null = null;
     for (const ref of [input.repo_id, input.project]) {
       if (!ref) continue;
-      const owner = resolveCanonicalArtifactRepoRef(db, ref);
+      const owner = resolveProjectRef(db, ref);
       if (!owner.ok) return artifactFailure('invalid_source', `Artifact project ${ref} is unknown or ambiguous`);
-      ownerProject = owner.project_id;
+      ownerProject = owner.project.id;
     }
     // A selected project names the artifact's project; a repository file's project is its repository.
     if (input.project && source.kind === 'repo' && source.project_id !== ownerProject) return artifactFailure('source_mismatch', 'Selected project differs from source repository');
@@ -5769,14 +5630,14 @@ function artifactBlobFromRow(row: Record<string, unknown>): ArtifactBlobRecord {
 
 function artifactIdentityFromRow(db: Db, row: Record<string, unknown>): ArtifactIdentityRecord {
   const current = getArtifactCurrentSource(db, String(row.id));
-  const repo = current?.source?.kind === "repo" ? resolveCanonicalArtifactRepoRef(db, current.source.project_id) : null;
+  const repo = current?.source?.kind === "repo" ? resolveProjectRef(db, current.source.project_id) : null;
   return {
     id: String(row.id),
     identity_key: String(row.identity_key),
     source_kind: asArtifactIdentitySourceKind(row.source_kind),
     title: nullableString(row.title),
     source_project_id: nullableString(row.source_project_id),
-    source_repo_id: repo?.ok ? repo.project_key : null,
+    source_repo_id: repo?.ok ? repo.project.project_key : null,
     logical_name: nullableString(row.logical_name),
     source_path: current?.source && current.source.kind !== "managed" ? current.source.path : null,
     latest_version_id: nullableString(row.latest_version_id),

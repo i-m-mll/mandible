@@ -14,6 +14,7 @@ import type {
   AuthRequestActionState,
 } from "./types.js";
 import { parseJsonObject } from "./row-coerce.js";
+import { resolveId } from "./entity-refs.js";
 
 /**
  * Whether a staged action must be withheld when convergence has not completed.
@@ -378,18 +379,15 @@ function stagedTargetDigest(
 }
 
 function requireAuthAction(db: Db, requestId: string, actionId: string): AuthRequestAction {
-  const rows = db.prepare(
-    `SELECT * FROM auth_request_actions
-     WHERE auth_request_id = ? AND (id = ? OR id LIKE ?)
-     ORDER BY id ASC`,
-  ).all(requestId, actionId, `${actionId}%`) as Record<string, unknown>[];
-  if (rows.length === 0) {
-    throw new AuthActionValidationError("Auth request action not found.", 404);
-  }
-  if (rows.length > 1) {
+  const resolved = resolveId(db, "auth_action", actionId);
+  if (!resolved.ok && resolved.error === "ambiguous") {
     throw new AuthActionValidationError(`Ambiguous action prefix '${actionId}'. Use a longer prefix.`, 409);
   }
-  return mapAuthActionRow(rows[0]);
+  const row = resolved.ok
+    ? db.prepare("SELECT * FROM auth_request_actions WHERE id = ? AND auth_request_id = ?").get(resolved.id, requestId) as Record<string, unknown> | undefined
+    : undefined;
+  if (!row) throw new AuthActionValidationError("Auth request action not found.", 404);
+  return mapAuthActionRow(row);
 }
 
 function mapAuthActionRow(row: Record<string, unknown>): AuthRequestAction {

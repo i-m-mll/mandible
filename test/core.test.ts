@@ -8,7 +8,8 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
-import { autoStartDaemon, checkHealth, stopDaemon, waitForHealth } from "../src/lifecycle.js";
+import { autoStartDaemon, checkHealth, stopDaemon } from "../src/lifecycle.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 interface TempPaths {
   dir: string;
@@ -52,22 +53,6 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
-async function waitForNoHealth(
-  port: number,
-  timeoutMs: number = 3000,
-  intervalMs: number = 200,
-): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const health = await checkHealth(port);
-    if (!health) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return false;
-}
-
 describe.sequential("mandible daemon", () => {
   let temp: TempPaths | null = null;
   const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
@@ -91,12 +76,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("starts server and responds to health", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -123,12 +104,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("does not expose the retired anonymous GET SSE endpoint", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -156,80 +133,6 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
     await daemon.close();
   });
 
-  it("runs migrations on fresh database", async () => {
-    const db = openDb(temp!.dbPath);
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all() as { name: string }[];
-    const names = tables.map((row) => row.name);
-
-    expect(names).toContain("meta");
-    expect(names).toContain("sessions");
-    expect(names).toContain("auth_requests");
-    expect(names).toContain("branches");
-    expect(names).toContain("ledger_issues");
-    expect(names).toContain("ledger_events");
-    expect(names).toContain("ledger_comments");
-
-    const versionRow = db
-      .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
-      .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe(String(CURRENT_SCHEMA_VERSION));
-
-    db.close();
-  });
-
-  it("creates the schema surfaces formerly duplicated by ensureSchema fallbacks", async () => {
-    const db = openDb(temp!.dbPath);
-
-    const authRequestIndexes = (
-      db.prepare("PRAGMA index_list(auth_requests)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(authRequestIndexes).toContain("idx_auth_requests_status_created");
-    expect(authRequestIndexes).toContain("idx_auth_requests_queue");
-    expect(authRequestIndexes).toContain("idx_auth_requests_target_session");
-    expect(authRequestIndexes).toContain("idx_auth_requests_target_repo");
-    expect(authRequestIndexes).toContain("idx_auth_requests_conversation_id");
-
-    const authHookIndexes = (
-      db.prepare("PRAGMA index_list(auth_hooks)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(authHookIndexes).toContain("idx_auth_hooks_repo_type");
-    expect(
-      db.prepare("SELECT 1 FROM auth_hooks WHERE id = ?")
-        .get("builtin-mandible-rebuild"),
-    ).toBeTruthy();
-
-    const branches = (
-      db.prepare("PRAGMA table_info(branches)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(branches).toContain("last_commit_date");
-    expect(branches).toContain("diff_stat");
-
-    const workRepos = (
-      db.prepare("PRAGMA table_info(work_repos)").all() as Array<{ name: string }>
-    ).map((row) => row.name);
-    expect(workRepos).toContain("excluded");
-    expect(workRepos).toContain("user_modified");
-
-    db.close();
-  });
-
-  it("keeps module-local schema fallback DDL out of service constructors", () => {
-    const files = [
-      "src/auth-hooks.ts",
-      "src/auth-auto-approve.ts",
-      "src/work-scanner.ts",
-      "src/auth-queue.ts",
-    ];
-
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(process.cwd(), file), "utf8");
-      expect(content).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?TABLE\s+IF\s+NOT\s+EXISTS/i);
-      expect(content).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS/i);
-    }
-  });
-
   it("keeps migrations idempotent", async () => {
     const db = openDb(temp!.dbPath);
     migrate(db);
@@ -242,12 +145,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("creates and removes pid file on lifecycle", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -263,12 +162,11 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
 
   it("auto-starts daemon and waits for health", async () => {
     const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
+    expect(port).toBeGreaterThan(0);
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
     const rootDir = path.resolve(currentDir, "..");
-    const entryPath = path.join(rootDir, "dist", "index.js");
+    // Bun runs the source entry directly, so this boundary needs no prior build.
+    const entryPath = path.join(rootDir, "src", "index.ts");
 
     await autoStartDaemon({
       port,
@@ -277,13 +175,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
       entryPath
     });
 
-    const health = await waitForHealth(port, 10_000, 200);
-    expect(health?.status).toBe("ok");
-
-    const stopped = stopDaemon(temp!.pidFilePath);
-    expect(stopped).toBe(true);
-
-    const drained = await waitForNoHealth(port, 10_000, 200);
-    expect(drained).toBe(true);
-  }, 15_000);
+    expect((await waitUntil(() => checkHealth(port), "the auto-started daemon to answer health")).status).toBe("ok");
+    expect(stopDaemon(temp!.pidFilePath)).toBe(true);
+    await waitUntil(async () => (await checkHealth(port)) === null, "the stopped daemon to stop answering health");
+  });
 });

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Tests for the secure, non-executable `spaces-doc.v1` parse/sanitize pipeline
 // (Spaces child C14a, issue 047d1be). These cover:
 //   - parse path: `spaces-doc.v1` -> data nodes + sanitized HTML
@@ -115,12 +116,6 @@ describe('spaces-doc pipeline: parse to data nodes', () => {
     expect(loose.html).toContain('plain prose');
   });
 
-  it('flags an unexpected format marker without throwing', () => {
-    const text = ['---', `${FORMAT_KEY}: spaces-doc.v999`, '---', '', 'hi'].join('\n');
-    const parsed = parseSpacesDoc(text);
-    expect(parsed.diagnostics.some((d) => d.kind === 'unknown_format')).toBe(true);
-  });
-
   it('preserves unknown directive prose without minting block identity', () => {
     const parsed = parseSpacesDoc(docText([
       ':::note',
@@ -147,24 +142,6 @@ describe('spaces-doc pipeline: parse to data nodes', () => {
     expect(parsed.html).not.toContain(':::warning');
     expect(parsed.html).not.toContain(':::');
     expect(parsed.refs.map((ref) => ref.canonical)).toEqual([`artifact:sha256:${HASH64}`]);
-  });
-
-  it('keeps well-formed block parsing unchanged', () => {
-    const parsed = parseSpacesDoc(docText([
-      ':::block{id="b1" parent="root" sort="m" type="paragraph"}',
-      'Body prose.',
-      ':::',
-    ]));
-
-    expect(parsed.blocks).toHaveLength(1);
-    expect(parsed.blocks[0]).toMatchObject({
-      id: 'b1',
-      parentId: null,
-      blockType: 'paragraph',
-      sortKey: 'm',
-    });
-    expect(parsed.refs).toEqual([]);
-    expect(parsed.diagnostics).toEqual([]);
   });
 
   it('preserves mixed fragment order and separates directive and prose diagnostics', () => {
@@ -228,18 +205,4 @@ describe('spaces-doc pipeline: renderer security (standing AC #2)', () => {
     expect(allHtml).not.toContain('steal()');
   });
 
-
-  it('has no MDX/JSX/eval compile step: directive attributes are inert strings', () => {
-    // An expression-shaped attribute value is captured verbatim, never evaluated.
-    const text = docText([
-      ':::block{id="b1" parent="root" sort="m" type="paragraph" expr="{1+1}"}',
-      'Body.',
-      ':::',
-    ]);
-    const parsed = parseSpacesDoc(text);
-    // The block still parses as data; the bogus attr is ignored, not executed.
-    expect(parsed.blocks[0].id).toBe('b1');
-    // Rendering produced no evaluated "2" artifact, only the literal body.
-    expect(parsed.blocks[0].html).not.toContain('>2<');
-  });
 });

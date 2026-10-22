@@ -1,4 +1,5 @@
-import { retainArtifactCommit } from '../src/artifact-repo-resolution.js';
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
+import { retainArtifactCommit } from '../src/artifact-commit-source.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import SqliteDatabase from "../src/sqlite.ts";
-import { openDb, type Db } from '../src/db.js';
+import { type Db } from '../src/db.js';
 import { planArtifactVersionBatch, planArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from "../src/provider-artifacts.js";
 import {
   appendArtifactVersion,
@@ -20,7 +21,7 @@ import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permiss
 import { evaluateProjectAccess, setProjectRestricted } from '../src/permissions/store.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from '../src/artifact-source-schema.js';
-import { insertRawLedgerProject, insertRawLedgerCheckout } from './helpers/ledger-fixtures.js';
+import { insertRawLedgerProject, insertRawLedgerCheckout, migratedMemoryDb } from './helpers/ledger-fixtures.js';
 
 let db: Db;
 let dir: string;
@@ -30,14 +31,13 @@ function git(root: string, ...args: string[]): string {
   return execFileSync('git', ['--no-optional-locks','-C',root,...args], {encoding:'utf8',env:{...process.env,GIT_CONFIG_COUNT:'0'},stdio:['ignore','pipe','pipe']}).trim();
 }
 function repo(name:string, text='same bytes') {
-  const root=path.join(dir,name); fs.mkdirSync(root);
-  git(root,'init','-b','main'); git(root,'config','user.name','Test'); git(root,'config','user.email','test@example.invalid'); git(root,'config','commit.gpgsign','false');
-  const file=path.join(root,'report.md'); fs.writeFileSync(file,text); git(root,'add','.'); git(root,'commit','-m','record');
-  const project=insertRawLedgerProject(db,{name}); insertRawLedgerCheckout(db,{projectId:project,name,root,conflict:'replace'});
+  const root=path.join(dir,name); artifactRepo(root, {'report.md': text});
+  const file=path.join(root,'report.md');
+  const project=insertRawLedgerProject(db,{name,projectKey:name}); insertRawLedgerCheckout(db,{projectId:project,name,root,conflict:'replace'});
   return {root,file,project};
 }
 const identity = (series: string) => series.replace('artifact-series:','artifact:');
-beforeEach(()=>{dir=fs.mkdtempSync(path.join(os.tmpdir(),'artifact-source-'));previous=process.env.MANDIBLE_ARTIFACT_DIR;process.env.MANDIBLE_ARTIFACT_DIR=path.join(dir,'cas');db=openDb(path.join(dir,'db'));});
+beforeEach(()=>{dir=fs.mkdtempSync(path.join(os.tmpdir(),'artifact-source-'));previous=process.env.MANDIBLE_ARTIFACT_DIR;process.env.MANDIBLE_ARTIFACT_DIR=path.join(dir,'cas');db=migratedMemoryDb();});
 afterEach(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});if(previous===undefined)delete process.env.MANDIBLE_ARTIFACT_DIR;else process.env.MANDIBLE_ARTIFACT_DIR=previous;});
 
 it('moves across projects without transferring owner; old-path reuse and equal blobs preserve exact histories',()=>{
@@ -174,7 +174,7 @@ it('takes a selected project as the owner of a non-repository file and still ref
 
 it('requires registered project access for files in checkouts without Git metadata',()=>{
   const root=path.join(dir,'registered-folder');fs.mkdirSync(root);const file=path.join(root,'notes.txt');fs.writeFileSync(file,'private');
-  const project=insertRawLedgerProject(db,{name:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
+  const project=insertRawLedgerProject(db,{name:'folder',projectKey:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
   const plan=ok(planArtifactVersion(db,{source_kind:'managed',path:file}));
   expect(plan.source).toEqual({kind:'repo',project_id:project,path:'notes.txt'});
   expect(plan.required_project_ids).toEqual([project]);
@@ -284,18 +284,41 @@ it('refuses an unexpected existing Git retention target without overwriting it',
   const other=git(a.root,'rev-parse','HEAD');git(a.root,'update-ref',ref,other);
   expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('unexpected commit');
   expect(git(a.root,'rev-parse',ref)).toBe(other);
+  git(a.root,'update-ref','-d',ref); git(a.root,'symbolic-ref',ref,'refs/heads/main');
+  expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('must not be symbolic');
+  expect(git(a.root,'symbolic-ref',ref)).toBe('refs/heads/main');
 });
 
 it('preserves original input alias evidence and rejects conflicting project attribution', () => {
   const target = path.join(dir, 'target'); fs.mkdirSync(target);
   const file = path.join(target, 'report.md'); fs.writeFileSync(file, 'report');
   const alias = path.join(dir, 'alias'); fs.symlinkSync(target, alias);
-  const project = insertRawLedgerProject(db, { name: 'alias-project' });
+  const project = insertRawLedgerProject(db, { name: 'alias-project', projectKey: 'alias-project' });
   insertRawLedgerCheckout(db, { projectId: project, name: 'alias-project', root: alias, conflict: 'replace' });
   const input = { source_kind: 'local_only' as const, path: path.join(alias, 'report.md'), custody_mode: 'managed' as const };
   const plan = ok(planArtifactVersion(db, input));
   expect(plan.required_project_ids).toContain(project);
-  const other = insertRawLedgerProject(db, { name: 'target-project' });
+  const other = insertRawLedgerProject(db, { name: 'target-project', projectKey: 'target-project' });
   insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
   expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });
+});
+
+it('keeps template copies private across config, index, refs, hooks and content mutations', () => {
+  const a = repo('clone-a'), b = repo('clone-b');
+  const before = git(b.root, 'rev-parse', 'HEAD');
+  git(a.root, 'config', 'user.name', 'Changed');
+  fs.mkdirSync(path.join(a.root, '.git', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(a.root, '.git', 'hooks', 'pre-commit'), 'changed hook');
+  fs.writeFileSync(a.file, 'changed clone');
+  git(a.root, 'add', '.'); git(a.root, 'commit', '-m', 'private commit');
+  git(a.root, 'branch', 'private');
+  const c = repo('clone-c');
+  for (const copy of [b, c]) {
+    expect(git(copy.root, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(copy.root, 'status', '--porcelain')).toBe('');
+    expect(git(copy.root, 'config', 'user.name')).toBe('Artifact Test');
+    expect(git(copy.root, 'branch', '--list', 'private')).toBe('');
+    expect(fs.existsSync(path.join(copy.root, '.git', 'hooks', 'pre-commit'))).toBe(false);
+    expect(fs.readFileSync(copy.file, 'utf8')).toBe('same bytes');
+  }
 });
