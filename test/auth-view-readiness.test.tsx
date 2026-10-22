@@ -443,10 +443,11 @@ describe('Approval body reading position', () => {
 });
 
 
+for (const savedOffset of [0, 184]) {
 for (const settleBeforeTailEffect of [false, true]) {
-it(`restores saved Console184 when delayed output becomes reachable (settles before tail effect: ${settleBeforeTailEffect})`, async () => {
+it(`restores saved Console${savedOffset} when delayed output becomes reachable (settles before tail effect: ${settleBeforeTailEffect})`, async () => {
   localStorage.setItem('auth-review-tab:req-1', '"console"');
-  localStorage.setItem('auth-review-scroll:req-1:console', '184');
+  localStorage.setItem('auth-review-scroll:req-1:console', String(savedOffset));
   const resizeCallbacks: Array<() => void> = [];
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(() => callback([], this as unknown as ResizeObserver)); }
@@ -476,8 +477,9 @@ it(`restores saved Console184 when delayed output becomes reachable (settles bef
   expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   outputReady = true;
   view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Long console output arrived after the saved reading position was loaded.' }} />);
-  await waitFor(() => expect(body.scrollTop).toBe(184));
-  expect(localStorage.getItem('auth-review-scroll:req-1:console')).toBe('184');
+  await waitFor(() => expect(body.scrollTop).toBe(savedOffset));
+  expect(localStorage.getItem('auth-review-scroll:req-1:console')).toBe(String(savedOffset));
   expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
 });
+}
 }

@@ -933,9 +933,10 @@ function AuthRequestDetail({
   ) !== null;
   useLayoutEffect(() => {
     const freshOutput = sameConsole && previousConsole.current?.text !== consoleText;
+    const hydratingSavedConsole = hasConsoleReadingPosition && !previousConsole.current?.text.trim();
     previousConsole.current = { key: consoleKey, text: consoleText };
     if (viewMode === 'console' && consoleEndRef.current
-      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && consoleWasAtTail && !wasRestoringScroll && !scrollRestoring.current))) {
+      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && !hydratingSavedConsole && consoleWasAtTail && !wasRestoringScroll && !scrollRestoring.current))) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [consoleKey, consoleText]);
