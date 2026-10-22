@@ -30,16 +30,29 @@ export interface CommittedArtifactFile {
 export function readCommittedArtifactFiles(db: Db, input: {
   project?: string; cwd?: string; commit: string; paths: string[];
 }): CommittedArtifactFile[] {
+  return readCommittedSource(db, input).files;
+}
+
+function readCommittedSource(db: Db, input: {
+  project?: string; cwd?: string; commit: string; paths: string[];
+}): { root: string; files: CommittedArtifactFile[] } {
   if (typeof input.commit !== 'string' || !input.commit.trim()) throw new Error('A nonempty commit ref is required');
   const repo = resolveProjectRef(db, input.project ?? path.resolve(input.cwd ?? process.cwd()));
   if (!repo.ok) throw new Error(`Committed source repository is ${repo.reason}`);
   const roots = repo.project.checkouts.map(checkout => checkout.root);
-  const root = roots.find(r => fs.existsSync(r) && runGit(r, ['rev-parse','--verify','--end-of-options',`${input.commit}^{commit}`]));
-  if (!root) throw new Error('Committed source requires an available registered repository object store');
-  const git = (args: string[], stdin?: string) => execFileSync('git', ['--no-optional-locks', '-C', root, ...args], {
+  let root: string | undefined;
+  let commit: string | null = null;
+  for (const candidate of roots) {
+    if (!fs.existsSync(candidate)) continue;
+    commit = runGit(candidate, ['rev-parse', '--verify', '--end-of-options', `${input.commit}^{commit}`]);
+    if (commit) { root = candidate; break; }
+  }
+  if (!root || !commit) throw new Error('Committed source requires an available registered repository object store');
+  const resolvedRoot = root;
+  const resolvedCommit = commit;
+  const git = (args: string[], stdin?: string) => execFileSync('git', ['--no-optional-locks', '-C', resolvedRoot, ...args], {
     input: stdin, timeout: 15_000, maxBuffer: 128 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
   });
-  const commit = git(['rev-parse', '--verify', '--end-of-options', `${input.commit}^{commit}`]).toString().trim();
   const paths = input.paths.map(p => {
     const relative = p;
     if (path.isAbsolute(relative)) throw new Error('Committed paths must be repository-relative');
@@ -47,19 +60,19 @@ export function readCommittedArtifactFiles(db: Db, input: {
       || relative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Committed paths must be normalized repository-relative paths');
     return relative;
   });
-  const tree = git(['--literal-pathspecs', 'ls-tree', '-rz', commit, '--', ...paths]).toString();
+  const tree = git(['--literal-pathspecs', 'ls-tree', '-rz', resolvedCommit, '--', ...paths]).toString();
   const entries = new Map(tree.split('\0').filter(Boolean).map(entry => {
     const match = /^(\d+) (\w+) ([a-f0-9]+)\t([\s\S]+)$/.exec(entry)!;
     return [match[4], { mode: match[1], type: match[2], oid: match[3] }];
   }));
   const ids = paths.map(p => {
     const entry = entries.get(p);
-    if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) throw new Error(`Not a tracked regular file at ${commit}: ${p}`);
+    if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) throw new Error(`Not a tracked regular file at ${resolvedCommit}: ${p}`);
     return entry.oid;
   });
   const output = git(['cat-file', '--batch'], ids.join('\n') + '\n');
   let offset = 0;
-  return paths.map((p, i) => {
+  const files = paths.map((p, i) => {
     const end = output.indexOf(10, offset);
     const header = output.subarray(offset, end).toString().split(' ');
     const size = Number(header[2]);
@@ -67,26 +80,21 @@ export function readCommittedArtifactFiles(db: Db, input: {
     const bytes = output.subarray(end + 1, end + 1 + size);
     if (bytes.length !== size) throw new Error('Truncated Git blob response');
     offset = end + size + 2;
-    return { project_id: repo.project.id, project_key: repo.project.project_key, commit, path: p, bytes };
+    return { project_id: repo.project.id, project_key: repo.project.project_key, commit: resolvedCommit, path: p, bytes };
   });
+  return { root: resolvedRoot, files };
 }
 
 /** Pin a verified committed source against branch removal and ordinary Git GC. */
 export function retainArtifactCommit(db: Db, input: {
   project: string; commit: string; path: string; sha256: string;
 }): string {
-  const file = readCommittedArtifactFiles(db, {project:input.project,commit:input.commit,paths:[input.path]})[0];
+  const { root, files: [file] } = readCommittedSource(db, {project:input.project,commit:input.commit,paths:[input.path]});
   if (createHash('sha256').update(file.bytes).digest('hex') !== input.sha256) throw new Error('Git artifact bytes do not match registered sha256');
-  const project = resolveProjectRef(db, file.project_id);
-  const roots = project.ok ? project.project.checkouts.map(checkout => checkout.root) : [];
   const ref = `refs/mandible/artifacts/${file.commit}`;
-  for (const root of roots) {
-    if (runGit(root, ['rev-parse','--verify',`${file.commit}^{commit}`]) !== file.commit) continue;
-    if (runGit(root,['symbolic-ref','-q',ref])) throw new Error('Artifact retention ref must not be symbolic');
-    const existing=runGit(root,['rev-parse','--verify',ref]);
-    if (existing && existing !== file.commit) throw new Error('Artifact retention ref points to an unexpected commit');
-    execFileSync('git',['--no-optional-locks','-C',root,'update-ref','--no-deref',ref,file.commit,existing ?? '0'.repeat(file.commit.length)],{timeout:15000,stdio:['ignore','pipe','pipe']});
-    return ref;
-  }
-  throw new Error('No available repository can retain artifact commit');
+  if (runGit(root,['symbolic-ref','-q',ref])) throw new Error('Artifact retention ref must not be symbolic');
+  const existing=runGit(root,['rev-parse','--verify',ref]);
+  if (existing && existing !== file.commit) throw new Error('Artifact retention ref points to an unexpected commit');
+  execFileSync('git',['--no-optional-locks','-C',root,'update-ref','--no-deref',ref,file.commit,existing ?? '0'.repeat(file.commit.length)],{timeout:15000,stdio:['ignore','pipe','pipe']});
+  return ref;
 }

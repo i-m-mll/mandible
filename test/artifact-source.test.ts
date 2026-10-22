@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import { retainArtifactCommit } from '../src/artifact-commit-source.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -30,9 +31,8 @@ function git(root: string, ...args: string[]): string {
   return execFileSync('git', ['--no-optional-locks','-C',root,...args], {encoding:'utf8',env:{...process.env,GIT_CONFIG_COUNT:'0'},stdio:['ignore','pipe','pipe']}).trim();
 }
 function repo(name:string, text='same bytes') {
-  const root=path.join(dir,name); fs.mkdirSync(root);
-  git(root,'init','-b','main'); git(root,'config','user.name','Test'); git(root,'config','user.email','test@example.invalid'); git(root,'config','commit.gpgsign','false');
-  const file=path.join(root,'report.md'); fs.writeFileSync(file,text); git(root,'add','.'); git(root,'commit','-m','record');
+  const root=path.join(dir,name); artifactRepo(root, {'report.md': text});
+  const file=path.join(root,'report.md');
   const project=insertRawLedgerProject(db,{name,projectKey:name}); insertRawLedgerCheckout(db,{projectId:project,name,root,conflict:'replace'});
   return {root,file,project};
 }
@@ -284,6 +284,9 @@ it('refuses an unexpected existing Git retention target without overwriting it',
   const other=git(a.root,'rev-parse','HEAD');git(a.root,'update-ref',ref,other);
   expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('unexpected commit');
   expect(git(a.root,'rev-parse',ref)).toBe(other);
+  git(a.root,'update-ref','-d',ref); git(a.root,'symbolic-ref',ref,'refs/heads/main');
+  expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('must not be symbolic');
+  expect(git(a.root,'symbolic-ref',ref)).toBe('refs/heads/main');
 });
 
 it('preserves original input alias evidence and rejects conflicting project attribution', () => {
@@ -298,4 +301,24 @@ it('preserves original input alias evidence and rejects conflicting project attr
   const other = insertRawLedgerProject(db, { name: 'target-project', projectKey: 'target-project' });
   insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
   expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });
+});
+
+it('keeps template copies private across config, index, refs, hooks and content mutations', () => {
+  const a = repo('clone-a'), b = repo('clone-b');
+  const before = git(b.root, 'rev-parse', 'HEAD');
+  git(a.root, 'config', 'user.name', 'Changed');
+  fs.mkdirSync(path.join(a.root, '.git', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(a.root, '.git', 'hooks', 'pre-commit'), 'changed hook');
+  fs.writeFileSync(a.file, 'changed clone');
+  git(a.root, 'add', '.'); git(a.root, 'commit', '-m', 'private commit');
+  git(a.root, 'branch', 'private');
+  const c = repo('clone-c');
+  for (const copy of [b, c]) {
+    expect(git(copy.root, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(copy.root, 'status', '--porcelain')).toBe('');
+    expect(git(copy.root, 'config', 'user.name')).toBe('Artifact Test');
+    expect(git(copy.root, 'branch', '--list', 'private')).toBe('');
+    expect(fs.existsSync(path.join(copy.root, '.git', 'hooks', 'pre-commit'))).toBe(false);
+    expect(fs.readFileSync(copy.file, 'utf8')).toBe('same bytes');
+  }
 });

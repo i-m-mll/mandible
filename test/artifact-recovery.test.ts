@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,14 +33,8 @@ function git(root: string, ...args: string[]): string {
 }
 
 function makeRepo(root: string, content = "tracked bytes\n"): { project: string; commit: string; file: string } {
-  fs.mkdirSync(root, { recursive: true });
-  git(root, "init", "-b", "main");
-  git(root, "config", "user.name", "Artifact Recovery Test");
-  git(root, "config", "user.email", "artifact-recovery@example.invalid");
+  artifactRepo(root, { "report.md": content });
   const file = path.join(root, "report.md");
-  fs.writeFileSync(file, content);
-  git(root, "add", "report.md");
-  git(root, "commit", "-m", "record artifact");
   return { project: "", commit: git(root, "rev-parse", "HEAD"), file };
 }
 

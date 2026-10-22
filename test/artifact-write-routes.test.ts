@@ -1,8 +1,10 @@
+import { runCli } from "./helpers/cli-process.js";
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -166,8 +168,7 @@ describe("artifact write authorization", () => {
   it("cannot bypass a registered repository's rights or identity by changing custody labels", async () => {
     const repo = path.join(root, "restricted-repo"); fs.mkdirSync(repo);
     const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
-    git("init"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.invalid");
-    git("config", "commit.gpgsign", "false");
+    artifactRepo(repo);
     const filename = path.join(repo, "report.md"); fs.writeFileSync(filename, "committed\n");
     git("add", "report.md"); git("commit", "-m", "fixture");
     const project = addProject(db, { project_key: "restricted-repo", display_name: "Restricted repo" });
@@ -357,7 +358,7 @@ describe("artifact write authorization", () => {
     expect(snapshot()).toEqual(after);
   });
 
-  it("runs CLI ingest, guarded rename, old-path reuse and exact historical reads against the API", async () => {
+  it("runs CLI transformations and transport across a guarded artifact lifecycle", async () => {
     const requests: string[] = [];
     const cliInstance = resolveInstanceInfo({ env: {} });
     router = authenticatedTestRouter(agent, { instance: cliInstance });
@@ -379,16 +380,21 @@ describe("artifact write authorization", () => {
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
-    const run = (args: string[]) => new Promise<string>((resolve, reject) => {
-      const child = spawn(path.join(process.cwd(), "bin/mandible"), ["artifact", ...args], {
-        cwd: root, env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`,
+    const run = async (args: string[]) => {
+      const result = await runCli(["artifact", ...args], {
+        cwd: root, env: { MANDIBLE_BASE: `http://127.0.0.1:${port}`,
           MANDIBLE_NO_KEYCHAIN_TOKEN: "1", MANDIBLE_TOKEN: "", MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" },
       });
-      let stdout = "", stderr = "";
-      child.stdout.on("data", x => stdout += x); child.stderr.on("data", x => stderr += x);
-      child.on("error", reject);
-      child.on("close", code => code === 0 ? resolve(stdout) : reject(new Error(stderr + stdout)));
-    });
+      if (result.status !== 0) throw new Error(result.stderr + result.stdout);
+      return result.stdout;
+    };
+    const api = async (url: string, body: unknown) => {
+      const response = await invoke("POST", url, body);
+      if (response.status !== 200) throw new Error(`${response.status}: ${JSON.stringify(response.body)}`);
+      return response.body as any;
+    };
+    const ingest = (paths: string[], options: Record<string, unknown> = {}) => api("/api/artifacts/ingest", { paths, ...options });
+    const move = (artifact_id: string, path: string) => api("/api/artifacts/source/move", { artifact_id, path });
     const cli = async (args: string[]) => JSON.parse(await run([...args, "--json"]));
     try {
       const oldPath = path.join(root, "old.md"), newPath = path.join(root, "new.md");
@@ -408,7 +414,7 @@ describe("artifact write authorization", () => {
       const moved = await cli(['move', id, '--path', fs.realpathSync(newPath)]);
       expect(requests.slice(moveStart)).toEqual(['POST /api/artifacts/source/move']);
       const stableMove = snapshot();
-      expect((await cli(['move', id, '--path', fs.realpathSync(newPath)])).status).toBe('unchanged');
+      expect((await move(id, fs.realpathSync(newPath))).status).toBe('unchanged');
       expect(snapshot()).toEqual(stableMove);
       await expect(cli(['move', id, '--path', oldPath, '--if-revision', String(moved.source.revision - 1)])).rejects.toThrow(/revision changed/);
       expect(snapshot()).toEqual(stableMove);
@@ -416,15 +422,14 @@ describe("artifact write authorization", () => {
       const second = await cli(["ingest", newPath, "--managed", "--artifact", id]);
       expect(second.registered[0].series.id).toBe(first.registered[0].series.id);
       fs.writeFileSync(oldPath, "different document\n");
-      const reused = await cli(["ingest", oldPath, "--managed"]);
+      const reused = await ingest([oldPath], { custody_mode: "managed" });
       expect(reused.registered[0].series.id).not.toBe(first.registered[0].series.id);
       const bytes = readArtifactBytesFull(db, version.id);
       expect(bytes.ok && bytes.bytes.toString()).toBe("original\n");
 
       const repo = path.join(root, "tracked-repo"); fs.mkdirSync(repo);
       const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
-      git("init"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.invalid");
-      git("config", "commit.gpgsign", "false");
+      artifactRepo(repo);
       const tracked = path.join(repo, "tracked.md"); fs.writeFileSync(tracked, "committed\n");
       fs.writeFileSync(path.join(repo, "forgotten.md"), "historical only\n");
       git("add", "tracked.md", "forgotten.md"); git("commit", "-m", "fixture");
@@ -439,7 +444,7 @@ describe("artifact write authorization", () => {
       expect((shown.body as any).version_custody).toEqual({ git: 1, managed: 1 });
       expect(getArtifactCurrentSource(db, trackedId)?.source).toEqual({ kind: "repo", project_id: project.id, path: "tracked.md" });
       fs.writeFileSync(tracked, "dirty\n");
-      const dirty = await cli(["ingest", tracked, "--managed"]);
+      const dirty = await ingest([tracked], { custody_mode: "managed" });
       expect(dirty.registered[0].series.id).toBe(linked.registered[0].series.id);
       expect(dirty.registered[0].version.commit_sha).toBeNull();
       const historical = readArtifactBytesFull(db, linked.registered[0].version.id);
@@ -459,23 +464,23 @@ describe("artifact write authorization", () => {
       console.log(`historical CLI: ${Math.round(performance.now() - started)}ms, 1 request`);
       expect(getArtifactCurrentSource(db, trackedId)).toEqual(sourceBeforeHistory);
       fs.writeFileSync(tracked, 'reused path'); git('add', 'tracked.md'); git('commit', '-m', 'reuse');
-      const reusedTracked = await cli(['ingest', tracked]);
+      const reusedTracked = await ingest([tracked]);
       const reuseId = reusedTracked.registered[0].series.id.replace('artifact-series:', 'artifact:');
       const ambiguousBefore = snapshot();
-      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit])).rejects.toThrow(/multiple artifacts/);
+      await expect(ingest(['tracked.md'], { project: 'tracked-repo', commit })).rejects.toThrow(/multiple artifacts/);
       expect(snapshot()).toEqual(ambiguousBefore);
       const selected = await cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId]);
       expect(selected.registered[0].version.id).toBe(linked.registered[0].version.id);
-      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', id])).rejects.toThrow(/no source lineage/);
+      await expect(ingest(['tracked.md'], { project: 'tracked-repo', commit, artifact_id: id })).rejects.toThrow(/no source lineage/);
       expect(snapshot()).toEqual(ambiguousBefore);
-      await expect(cli(['move', trackedId, '--path', 'tracked.md'])).rejects.toThrow(/already belongs/);
+      await expect(move(trackedId, 'tracked.md')).rejects.toThrow(/already belongs/);
       expect(snapshot()).toEqual(ambiguousBefore);
       const other = addProject(db, { project_key: 'other', display_name: 'Other project' });
       const projectOnly = await cli(['move', trackedId, '--project', 'Other project']);
       expect(projectOnly.source.source).toEqual({ kind: 'repo', project_id: other.id, path: 'renamed.md' });
       setProjectRestricted(db, other.id, true);
       const deniedHistory = snapshot();
-      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId, '--managed'])).rejects.toThrow(/403/);
+      await expect(ingest(['tracked.md'], { project: 'tracked-repo', commit, artifact_id: trackedId, custody_mode: 'managed' })).rejects.toThrow(/403/);
       expect(snapshot()).toEqual(deniedHistory);
       grant(other.id);
       const both = await cli(['move', trackedId, '--project', 'tracked-repo', '--path', 'final.md']);
