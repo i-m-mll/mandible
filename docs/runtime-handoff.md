@@ -76,15 +76,14 @@ failure, until that handoff's journal fails.
 
 ## Focused verification
 
-The explicit macOS fixture uses the deployed legacy interpreter with a private
+The macOS launchd fixture runs the deployed interpreter (the pinned Bun, or
+`MANDIBLE_TEST_LEGACY_RUNTIME` when an older one must be named) with a private
 installation directory and unique launchd labels. It verifies independent
 supervision, bridge ordering, helper crash recovery and repeated admission
-without dependency mutation:
+without dependency mutation, and runs with the provisioned suite:
 
 ```bash
-runtime="$(scripts/bun-runtime.sh)"
-MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
-  "$runtime" scripts/run-provisioned-tests.mjs test/provisioned/runtime-handoff-launchd.test.ts
+bun run test:provisioned test/provisioned/runtime-handoff-launchd.test.ts
 ```
 
 This fixture runs a minimal old-interpreter process. It does not replace the
