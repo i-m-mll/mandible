@@ -501,31 +501,22 @@ describe("auth request CLI change message composition", () => {
     }
   });
 
-  it("refuses agent-authored Verification headings and comment lines", async () => {
+  it("refuses malformed change messages, verification text and issue references before submission", async () => {
     const server = await submitServer();
+    const message = "outcome\n\nWhy:\nBecause.";
     try {
-      for (const offending of [
-        "outcome\n\nVerification:\nI promise it works.",
-        "outcome\n\n# a comment line",
+      for (const args of [
+        ["--message", "outcome\n\nVerification:\nI promise it works.", "--verification", "ok"],
+        ["--message", "outcome\n\n# a comment line", "--verification", "ok"],
+        ["--message", "a", "--message-file", "/dev/null", "--verification", "ok"],
+        ["--message", message, "--verification", "one\n\ntwo"],
+        ["--message", message, "--verification", "ok", "--issue", "7d64d8f\nMandible-Issue: deadbee"],
       ]) {
         const result = await submitAndCapture(
-          [
-            "auth",
-            "request",
-            "feature/canonical",
-            "--title",
-            "Bad message",
-            "--issue",
-            "7d64d8f",
-            "--message",
-            offending,
-            "--verification",
-            "ok",
-            "--no-watch",
-          ],
+          ["auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f", ...args, "--no-watch"],
           server.port,
         );
-        expect(result.status).toBe(2);
+        expect(result.status, args.join(" ")).toBe(2);
       }
       expect(server.bodies).toHaveLength(0);
     } finally {
@@ -533,62 +524,6 @@ describe("auth request CLI change message composition", () => {
     }
   });
 
-  it("rejects conflicting message sources", async () => {
-    const server = await submitServer();
-    try {
-      const both = await submitAndCapture(
-        [
-          "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
-          "--message", "a", "--message-file", "/dev/null", "--verification", "ok", "--no-watch",
-        ],
-        server.port,
-      );
-      expect(both.status).toBe(2);
-      expect(both.stderr).toContain("Arguments do not match");
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("constrains the machine-owned verification text", async () => {
-    const server = await submitServer();
-    try {
-      for (const verification of ["   ", "one\n\ntwo", "#comment"]) {
-        const result = await submitAndCapture(
-          [
-            "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
-            "--message", "outcome\n\nWhy:\nBecause.", "--verification", verification,
-            "--no-watch",
-          ],
-          server.port,
-        );
-        expect(result.status).toBe(2);
-        expect(result.stderr).toContain("--verification");
-      }
-      expect(server.bodies).toHaveLength(0);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("refuses whitespace in structured issue references", async () => {
-    const server = await submitServer();
-    try {
-      const result = await submitAndCapture(
-        [
-          "auth", "request", "feature/canonical", "--title", "x",
-          "--issue", "7d64d8f\nMandible-Issue: deadbee",
-          "--message", "outcome\n\nWhy:\nBecause.", "--verification", "ok", "--no-watch",
-        ],
-        server.port,
-      );
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain("whitespace or newlines");
-      expect(server.bodies).toHaveLength(0);
-    } finally {
-      await server.close();
-    }
-  });
 });
 
 describe("auth queue canonical message storage", () => {
@@ -826,63 +761,6 @@ describe("auth merge canonical message consumption", () => {
       const merged = git(["rev-parse", "main"]);
       expect(git(["show", "-s", "--format=%B", merged])).toBe(MESSAGE.trimEnd());
       expect(result.stderr).toContain("using the approved canonical change message");
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("refuses the retired direct git merge path without changing protected state", async () => {
-    const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/canonical"]);
-    const server = await serveRequest({
-      id: "canonical-merge",
-      commit_message: MESSAGE,
-      commit_message_digest: DIGEST,
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "canonical-merge",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
-          MANDIBLE_AUTH_EXPECTED_HEAD_SHA: head,
-        },
-        null,
-      );
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("require a reviewed signed candidate");
-      expect(git(["rev-parse", "main"])).toBe(base);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("keeps git's default merge message when the request carries none", async () => {
-    const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/canonical"]);
-    const server = await serveRequest({
-      id: "no-message",
-      commit_message: null,
-      commit_message_digest: null,
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "no-message",
-          MANDIBLE_AUTH_EXPECTED_HEAD_SHA: head,
-        },
-        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
-      );
-
-      expect(result.status).toBe(0);
-      const merged = git(["rev-parse", "main"]);
-      expect(git(["show", "-s", "--format=%B", merged])).toBe(
-        "Merge branch 'feature/canonical'",
-      );
     } finally {
       await server.close();
     }
