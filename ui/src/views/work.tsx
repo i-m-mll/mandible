@@ -1667,6 +1667,7 @@ export function WorkOverviewView({
                           <input
                             type="text"
                             className="repo-settings-strip__input"
+                            aria-label="Name"
                             value={currentEditName}
                             onInput={(e) =>
                               setEditName((prev) => ({ ...prev, [repoId]: e.currentTarget.value }))
