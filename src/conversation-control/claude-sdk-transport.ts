@@ -65,6 +65,7 @@ export class ClaudeSdkTransport {
     delete env.CLAUDECODE;
     delete env.MANDIBLE_TOKEN;
     env.MANDIBLE_MANAGED_CLIENT = "1";
+    delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE;
     env.MANDIBLE_EXECUTION_OBSERVER_ID = request.controller_instance_id;
     env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID = providerId;
     const bind = (id: string) => {

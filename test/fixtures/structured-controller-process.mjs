@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 const provider = process.argv[2];
@@ -29,11 +31,16 @@ lines.on("line", (line) => {
     if (process.env.FAKE_CODEX_UNARCHIVE_FAIL === "1") send({ id: request.id, error: { code: -32600, message: "Archive restore refused" } });
     else { archived = false; respond({ thread: { id: process.env.FAKE_CODEX_RESTORED_ID ?? request.params.threadId } }); }
   }
+  else if (request.method === "thread/resume" && request.params.threadId === "codex-new-thread"
+    && process.env.FAKE_CODEX_NATIVE_STATE && !fs.existsSync(path.join(process.env.FAKE_CODEX_NATIVE_STATE, "rollout"))) {
+    send({ id: request.id, error: { code: -32600, message: "no rollout found for thread id codex-new-thread" } });
+  }
   else if (request.method === "thread/resume" && archived) send({ id: request.id, error: { code: -32600, message: "Thread remains archived" } });
   else if (request.method === "thread/resume") respond({ thread: { id: request.params.threadId, status: { type: process.env.FAKE_CODEX_RESUME_STATUS ?? "idle" } } });
   else if (request.method === "thread/start") respond({ thread: { id: "codex-new-thread", status: { type: "idle" } } });
   else if (request.method === "thread/read") respond({ thread: { id: request.params.threadId, path: `/tmp/codex/${archived ? "archived_sessions" : "sessions"}/${request.params.threadId}.jsonl`, status: { type: process.env.FAKE_CODEX_THREAD_STATUS ?? "idle" } } });
   else if (request.method === "turn/start") {
+    if (process.env.FAKE_CODEX_NATIVE_STATE) fs.writeFileSync(path.join(process.env.FAKE_CODEX_NATIVE_STATE, "rollout"), "materialized");
     outputBatch = [];
     activeTurnId = `native-${request.params.clientUserMessageId}`;
     const turn = { id: activeTurnId, status: "inProgress" };

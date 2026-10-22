@@ -146,21 +146,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (input.kind !== "start" && providerSessionId !== input.provider_session_id) {
         throw new UncertainCodexAcquisition("Codex App Server resumed a different thread identity");
       }
-      if (input.kind === "start") {
-        // The server chooses a new thread ID. Reopen its idle runtime so child
-        // hooks and tools inherit a marker scoped to that exact native thread.
-        await client.close();
-        client = await this.connectedClient(input, providerSessionId);
-        if (aborted) throw new Error("Codex controller acquisition was cancelled");
-        const resumed = responseThread(await client.request("thread/resume", { threadId: providerSessionId, cwd: input.cwd,
-          model: input.runtime_options?.model,
-          ...(input.runtime_options?.permission_mode === "agent-full-access"
-            ? { approvalPolicy: "never" as const, sandbox: "danger-full-access" as const } : {}) }));
-        if (aborted) throw new Error("Codex controller acquisition was cancelled");
-        if (stringField(resumed, "id") !== providerSessionId || threadStatus(resumed) !== "idle") {
-          throw new UncertainCodexAcquisition("Codex new thread did not reopen with its scoped observer identity");
-        }
-      }
+      client.bindExecutionObserver(providerSessionId);
       const status = threadStatus(thread);
       if (status === "active") throw new UncertainCodexAcquisition("Codex thread already has an active provider controller");
       if (status !== "idle") {
@@ -395,14 +381,15 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     }));
   }
 
-  private async connectedClient(input: ControllerAcquisitionRequest, nativeId?: string): Promise<CodexAppServerClient> {
+  private async connectedClient(input: ControllerAcquisitionRequest): Promise<CodexAppServerClient> {
     const env = providerEnvironment();
-    const sessionId = nativeId ?? (input.kind === "start" ? null : input.provider_session_id);
+    const sessionId = input.kind === "start" ? null : input.provider_session_id;
     projectManagedProviderIdentity(env, "codex", sessionId, input.conversation_id);
     env.MANDIBLE_EXECUTION_OBSERVER_ID = input.controller_instance_id;
     if (sessionId) env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID = sessionId;
     else delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID;
-    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess, executable: this.codexExecutable, env });
+    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess, executable: this.codexExecutable, env,
+      executionObserver: { controller_instance_id: input.controller_instance_id, provider_session_id: sessionId } });
     try {
       const account = object(await client.request("account/read", { refreshToken: false }));
       if (!object(account?.account)) {

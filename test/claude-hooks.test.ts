@@ -96,10 +96,12 @@ describe("execution observation boundaries", () => {
     const server = createLocalSocketServer(options);
     await new Promise<void>((resolve) => server.listen(socket, resolve));
     try {
+      const binding = path.join(tempDir, "observer.json");
+      fs.writeFileSync(binding, JSON.stringify({ controller_instance_id: "inherited-controller", provider_session_id: "unrelated-parent" }));
       const stdout = await runScriptWithInput("bash", [path.resolve("hooks/session-execution.sh"), provider], JSON.stringify({
         session_id: "payload-native", hook_event_name: "UserPromptSubmit", prompt: "private prompt", transcript_path: "private path",
       }), { env: { ...process.env, MANDIBLE_BASE: "", MANDIBLE_SOCKET: socket, MANDIBLE_SESSION_ID: "unrelated-parent",
-        MANDIBLE_EXECUTION_OBSERVER_ID: "inherited-controller", MANDIBLE_EXECUTION_OBSERVER_SESSION_ID: "unrelated-parent" } });
+        MANDIBLE_EXECUTION_OBSERVER_ID: "inherited-controller", MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE: binding } });
       expect(stdout).toBe("");
       expect(new SessionExecutionStore(db).read(provider as "claude" | "codex", "payload-native")?.event).toBe("UserPromptSubmit");
       const store = new SessionExecutionStore(db);
