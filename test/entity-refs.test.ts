@@ -9,7 +9,9 @@ import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import type { Router } from "../src/server.js";
-import { setupOperator } from "../src/users/store.js";
+import { resolveBriefingId } from "../src/feedback/briefings.js";
+import { registerUserRoutes } from "../src/routes/users.js";
+import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { createLedgerIssue, insertRawLedgerIssue } from "./helpers/ledger-fixtures.js";
 
@@ -195,5 +197,50 @@ describe("conversation references", () => {
     expect(entityRefs.conversation("c0a1-m")).toEqual({ ok: true, id: "c0a1-main" });
     expect(entityRefs.conversation(printed(session))).toEqual({ ok: true, id: session });
     expect(entityRefs.conversation("c0a1")).toEqual({ ok: false, error: "ambiguous", matches: ["c0a1-main", "c0a1-side"] });
+  });
+});
+
+describe("references a caller cannot read", () => {
+  it("resolves a caller's credential despite unreadable collisions and names only readable ambiguity", async () => {
+    db.exec("PRAGMA foreign_keys = OFF");
+    const agent = createUser(db, { slug: "refs-agent", kind: "agent", display_name: "Agent" });
+    const peer = createUser(db, { slug: "refs-peer", kind: "human", display_name: "Peer" });
+    for (const fill of ["1", "2"]) insertRow("user_credentials", { id: hash(fill), user_id: peer.id });
+    const agentRouter = authenticatedTestRouter(agent);
+    registerUserRoutes(agentRouter);
+    const revoke = () => agentRouter.invoke({ method: "POST", url: "/api/users/credentials/" + SHARED + "/revoke" });
+
+    const hidden = await revoke();
+    expect(hidden.status).toBe(404);
+    for (const fill of ["1", "2"]) expect(JSON.stringify(hidden.body)).not.toContain(hash(fill));
+
+    insertRow("user_credentials", { id: hash("3"), user_id: agent.id });
+    const own = await revoke();
+    expect(own.status).toBe(200);
+    expect(own.body).toMatchObject({ credential: { id: hash("3"), status: "revoked" } });
+    for (const fill of ["1", "2"]) {
+      expect(db.prepare("SELECT status FROM user_credentials WHERE id = ?").get(hash(fill))).toEqual({ status: "active" });
+    }
+
+    insertRow("user_credentials", { id: hash("4"), user_id: agent.id });
+    const ambiguous = await revoke();
+    expect(ambiguous.status).toBe(409);
+    expect(ambiguous.body).toMatchObject({ error: "ambiguous_ref", matches: [hash("3"), hash("4")] });
+    for (const fill of ["1", "2"]) expect(JSON.stringify(ambiguous.body)).not.toContain(hash(fill));
+  });
+
+  it("resolves Briefings within membership before deciding ambiguity", () => {
+    db.exec("PRAGMA foreign_keys = OFF");
+    const agent = createUser(db, { slug: "refs-agent", kind: "agent", display_name: "Agent" });
+    const viewer = { userId: agent.id, operator: false };
+    insertRow("briefings", { id: hash("1") });
+    insertRow("briefings", { id: hash("2") });
+    insertRow("briefing_members", { briefing_id: hash("2"), user_id: agent.id, created_at: 1 });
+    expect(resolveBriefingId(db, SHARED, viewer)).toBe(hash("2"));
+    expect(resolveBriefingId(db, "briefing:" + SHARED, viewer)).toBe(hash("2"));
+    expect(() => resolveBriefingId(db, hash("1"), viewer)).toThrowError(expect.objectContaining({ status: 404, code: "not_found" }));
+    expect(() => resolveBriefingId(db, SHARED, { ...viewer, operator: true })).toThrowError(expect.objectContaining({ status: 409, code: "ambiguous_ref" }));
+    insertRow("briefing_members", { briefing_id: hash("1"), user_id: agent.id, created_at: 1 });
+    expect(() => resolveBriefingId(db, SHARED, viewer)).toThrowError(expect.objectContaining({ status: 409, code: "ambiguous_ref" }));
   });
 });

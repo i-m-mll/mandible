@@ -711,7 +711,7 @@ export class Router implements RouteRegistrar {
         const resolvedBody = body && typeof body === "object" && !Array.isArray(body)
           ? { ...(body as Record<string, unknown>) }
           : null;
-        const refusal = completeRouteRefs(route.options.refs, params, query, resolvedBody);
+        const refusal = completeRouteRefs(route.options.refs, clientIdentity ?? null, params, query, resolvedBody);
         if (refusal) {
           response.status(409).json(refusal);
           return true;
@@ -780,6 +780,7 @@ export class Router implements RouteRegistrar {
 
 function completeRouteRefs(
   refs: RouteRefs,
+  caller: ResolvedClientIdentity | null,
   params: Record<string, string>,
   query: Record<string, string>,
   body: Record<string, unknown> | null,
@@ -792,7 +793,7 @@ function completeRouteRefs(
     for (const [name, resolve] of Object.entries(resolvers)) {
       const ref = values[name];
       if (typeof ref !== "string" || !ref.trim()) continue;
-      const resolved = resolve(ref);
+      const resolved = resolve(ref, caller);
       if (resolved.ok) {
         values[name] = resolved.id;
       } else if (resolved.error === "ambiguous") {

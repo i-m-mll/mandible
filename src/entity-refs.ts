@@ -1,4 +1,6 @@
 import { getDb, type Db } from "./db.js";
+import type { ResolvedClientIdentity } from "./server.js";
+import { getOperatorId } from "./users/store.js";
 import { tableExists } from "./db-introspection.js";
 import { resolveOperationalIssueRef } from "./ledger/operational-links.js";
 import { resolveSessionAlias, sessionLinkKey, type SessionAliasResolution } from "./session-liveness.js";
@@ -16,8 +18,8 @@ export type RefResolution =
   | { ok: false; error: "not_found" }
   | { ok: false; error: "ambiguous"; matches: string[] };
 
-/** A bound resolver for one route input. */
-export type RefResolver = (ref: string) => RefResolution;
+/** A bound resolver for one route input, given the authenticated caller. */
+export type RefResolver = (ref: string, caller: ResolvedClientIdentity | null) => RefResolution;
 
 const NOT_FOUND = { ok: false, error: "not_found" } as const;
 const MIN_PREFIX_LENGTH = 4;
@@ -37,6 +39,8 @@ interface IdKindSpec {
   readonly sources: readonly IdSource[];
   /** A column on every source table that a lookup may be scoped by. */
   readonly scope?: string;
+  /** A predicate on every source table, over one user id, naming the rows that user may read. */
+  readonly readableBy?: string;
   readonly minPrefix?: number;
 }
 
@@ -64,7 +68,7 @@ const ID_KINDS = {
   auth_request: byId("auth_requests"),
   auth_action: byId("auth_request_actions"),
   auth_clearance: byId("auth_clearances"),
-  binding: byId("user_bindings"),
+  binding: { ...byId("user_bindings"), readableBy: "user_id = ?" },
   body_revision: byId("ledger_body_revisions"),
   // Legacy Briefing ids store the `briefing:` typed-ref prefix themselves.
   briefing: {
@@ -72,14 +76,15 @@ const ID_KINDS = {
       { table: "briefings", column: "id" },
       { table: "briefings", column: "id", spell: (key) => `briefing:${key}` },
     ],
+    readableBy: "id IN (SELECT briefing_id FROM briefing_members WHERE user_id = ?)",
   },
   briefing_bundle: byId("briefing_bundles"),
   briefing_group: byId("briefing_groups"),
   briefing_round: byId("briefing_rounds"),
   checkpoint: byId("ledger_issue_checkpoints"),
   comment: byId("ledger_comments"),
-  credential: byId("user_credentials"),
-  grant: byId("permission_grants"),
+  credential: { ...byId("user_credentials"), readableBy: "user_id = ?" },
+  grant: { ...byId("permission_grants"), readableBy: "subject_type = 'user' AND subject_id = ?" },
   issue: {
     sources: [
       { table: "ledger_issues", column: "id" },
@@ -107,21 +112,24 @@ function prefixUpperBound(prefix: string): string {
   return prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
 }
 
+/** A row predicate with its one parameter. */
+type RowFilter = readonly [predicate: string, param: string];
+
 /** Distinct ids the key names in one source, exactly or as a prefix, at most `MATCH_SAMPLE`. */
-function sourceMatches(db: Db, source: IdSource, key: string, prefix: boolean, scope: readonly [string, string] | null): string[] {
+function sourceMatches(db: Db, source: IdSource, key: string, prefix: boolean, filters: readonly RowFilter[]): string[] {
   const needle = source.spell ? source.spell(key) : key;
   const where = prefix ? `${source.column} >= ? AND ${source.column} < ?` : `${source.column} = ?`;
   const params: string[] = prefix ? [needle, prefixUpperBound(needle)] : [needle];
-  const scoped = scope ? ` AND ${scope[0]} = ?` : "";
-  if (scope) params.push(scope[1]);
+  const filtered = filters.map(([predicate]) => ` AND (${predicate})`).join("");
+  params.push(...filters.map(([, param]) => param));
   return (db.prepare(
-    `SELECT DISTINCT ${source.yields ?? source.column} AS value FROM ${source.table} WHERE ${where}${scoped} ORDER BY value LIMIT ${MATCH_SAMPLE}`,
+    `SELECT DISTINCT ${source.yields ?? source.column} AS value FROM ${source.table} WHERE ${where}${filtered} ORDER BY value LIMIT ${MATCH_SAMPLE}`,
   ).all(...params) as Array<{ value: string }>).map((row) => row.value);
 }
 
-function kindMatches(db: Db, spec: IdKindSpec, key: string, prefix: boolean, scope: readonly [string, string] | null): string[] {
+function kindMatches(db: Db, spec: IdKindSpec, key: string, prefix: boolean, filters: readonly RowFilter[]): string[] {
   const ids = new Set<string>();
-  for (const source of spec.sources) for (const id of sourceMatches(db, source, key, prefix, scope)) ids.add(id);
+  for (const source of spec.sources) for (const id of sourceMatches(db, source, key, prefix, filters)) ids.add(id);
   return [...ids].sort();
 }
 
@@ -133,18 +141,34 @@ function decide(ids: string[]): RefResolution {
 
 /**
  * Resolve an exact id, or a unique prefix of one, of the given kind. A kind
- * with a scope column resolves within `options.scope` when one is given.
+ * with a scope column resolves within `options.scope` when one is given; a
+ * kind with a read predicate resolves among the rows `options.reader` (a user
+ * id) may read when one is given, so a refusal never names another's rows.
  */
-export function resolveId(db: Db, kind: IdKind, ref: string, options: { scope?: string } = {}): RefResolution {
+export function resolveId(
+  db: Db,
+  kind: IdKind,
+  ref: string,
+  options: { scope?: string; reader?: string } = {},
+): RefResolution {
   const spec: IdKindSpec = ID_KINDS[kind];
   if (options.scope !== undefined && !spec.scope) throw new Error(`${kind} references have no scope`);
-  const scope = options.scope !== undefined && spec.scope ? [spec.scope, options.scope] as const : null;
+  if (options.reader !== undefined && !spec.readableBy) throw new Error(`${kind} references have no read predicate`);
+  const filters: RowFilter[] = [];
+  if (options.scope !== undefined && spec.scope) filters.push([`${spec.scope} = ?`, options.scope]);
+  if (options.reader !== undefined && spec.readableBy) filters.push([spec.readableBy, options.reader]);
   const key = ref.trim();
   if (!key) return NOT_FOUND;
-  const exact = kindMatches(db, spec, key, false, scope);
+  const exact = kindMatches(db, spec, key, false, filters);
   if (exact.length > 0) return decide(exact);
   if (key.length < (spec.minPrefix ?? MIN_PREFIX_LENGTH)) return NOT_FOUND;
-  return decide(kindMatches(db, spec, key, true, scope));
+  return decide(kindMatches(db, spec, key, true, filters));
+}
+
+/** The reader a lookup is bounded by: none for the operator, else the caller (or nobody). */
+export function refReader(db: Db, caller: { user_id: string } | null | undefined): string | undefined {
+  if (caller && caller.user_id === getOperatorId(db)) return undefined;
+  return caller?.user_id ?? "";
 }
 
 /**
@@ -267,7 +291,7 @@ const CONVERSATION_ALIASES: readonly IdSource[] = [
 
 function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
   const key = ref.trim();
-  if (CONVERSATION_ALIASES.some((source) => sourceMatches(db, source, key, false, null).length > 0)) return { ok: true, id: key };
+  if (CONVERSATION_ALIASES.some((source) => sourceMatches(db, source, key, false, []).length > 0)) return { ok: true, id: key };
   if (key.length < MIN_PREFIX_LENGTH) return NOT_FOUND;
   const conversations = new Set<string>();
   const aliases = new Set<string>();
@@ -287,19 +311,23 @@ function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
 }
 
 const bind = (kind: IdKind): RefResolver => (ref) => resolveId(getDb(), kind, ref);
+const bindReadable = (kind: IdKind): RefResolver => (ref, caller) => {
+  const db = getDb();
+  return resolveId(db, kind, ref, { reader: refReader(db, caller) });
+};
 
 /** Route-input resolvers, bound to the daemon database, for `RouteOptions.refs`. */
 export const entityRefs = {
   authRequest: bind("auth_request"),
   authClearance: bind("auth_clearance"),
-  binding: bind("binding"),
+  binding: bindReadable("binding"),
   bodyRevision: bind("body_revision"),
   briefingRound: bind("briefing_round"),
   checkpoint: bind("checkpoint"),
   comment: ((ref) => resolveCommentRef(getDb(), ref)) as RefResolver,
   conversation: ((ref) => resolveConversationAliasRef(getDb(), ref)) as RefResolver,
-  credential: bind("credential"),
-  grant: bind("grant"),
+  credential: bindReadable("credential"),
+  grant: bindReadable("grant"),
   session: ((ref) => resolveSessionAliasRef(getDb(), ref)) as RefResolver,
   spaceBlock: bind("space_block"),
   spaceEdge: bind("space_edge"),

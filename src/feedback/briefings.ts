@@ -885,16 +885,12 @@ export type BriefingViewer = { userId: string; operator: boolean };
 export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
   const key = bareBriefingId(briefingRef.trim());
   if (!key) throw new BriefingStoreError("Briefing reference must be nonblank");
-  const resolved = resolveId(db, "briefing", key);
+  const resolved = resolveId(db, "briefing", key, viewer.operator ? {} : { reader: viewer.userId });
   if (!resolved.ok) {
     throw resolved.error === "ambiguous"
       ? new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref")
       : new BriefingStoreError("briefing not found", 404, "not_found");
   }
-  const visible = viewer.operator || db.prepare(
-    "SELECT 1 FROM briefing_members WHERE briefing_id = ? AND user_id = ?",
-  ).get(resolved.id, viewer.userId) !== undefined;
-  if (!visible) throw new BriefingStoreError("briefing not found", 404, "not_found");
   return resolved.id;
 }
 
