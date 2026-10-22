@@ -742,8 +742,9 @@ api_operational_mutation_category POST /api/auth/check '${file}'`, 1);
       expect(result.stderr).toContain("temporarily unavailable after bounded retries");
       expect(target.requests.some((request) => request.method === "POST")).toBe(false);
       expect(target.requests.filter((request) => request.url === "/api/instance")).toHaveLength(2);
-      // A successful health response is read once; only the 503 instance route retries.
-      expect(target.requests.filter((request) => request.url === "/api/health")).toHaveLength(1);
+      // Health is never retried: one preflight read, one final-failure diagnostic probe.
+      expect(target.requests.filter((request) => request.url === "/api/health")).toHaveLength(2);
+      expect(result.stderr).not.toContain("unbound variable");
     } finally {
       await target.close();
     }
