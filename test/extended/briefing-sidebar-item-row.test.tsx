@@ -15,7 +15,6 @@ import { CollectionsSidebar } from '../../ui/src/views/feedback/CollectionsSideb
 import { BriefingGroupDetail } from '../../ui/src/views/feedback/BriefingGroupDetail';
 import {
   feedbackCollectionIdentity,
-  resolveFeedbackCollection,
   type FeedbackCollection,
 } from '../../ui/src/views/feedback/collection-model';
 import {
@@ -735,13 +734,4 @@ describe('Briefing sidebar row actions', () => {
   });
 
 
-  it('resolves emitted short refs only when they identify exactly one Briefing', () => {
-    expect(resolveFeedbackCollection(collections, 'e4c52737')).toEqual({ status: 'resolved', collection: collections[0] });
-    expect(resolveFeedbackCollection(collections, firstId)).toEqual({ status: 'resolved', collection: collections[0] });
-    expect(resolveFeedbackCollection([
-      ...collections,
-      { ...collections[0], id: 'other', collectionId: 'e4c52737-0000-0000-0000-000000000000' },
-    ], 'e4c52737')).toEqual({ status: 'ambiguous', collection: null });
-    expect(resolveFeedbackCollection(collections, 'missing')).toEqual({ status: 'not-found', collection: null });
-  });
 });

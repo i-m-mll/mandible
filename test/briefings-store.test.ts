@@ -18,6 +18,7 @@ import {
   publishBriefingRun,
   publishBriefingFromArtifactVersion,
   readBriefing,
+  resolveBriefingId,
   setBriefingArchived,
   submitBriefingRound,
   updateBriefingDescription,
@@ -162,6 +163,22 @@ afterEach(() => {
 // organization routes reach every stored row, including ids that themselves
 // begin with the `briefing:` typed-ref prefix.
 describe("roundless Briefings", () => {
+  it("resolves archived detail and counts hidden archived rows when detecting prefix collisions", () => {
+    const published = publishBriefingRun(db, request(), publisherId, 1_000);
+    const viewer = { userId: humanId, operator: true };
+    setBriefingArchived(db, published.briefing_id, true, viewer, 1_100);
+    expect(listBriefings(db, viewer)).toEqual([]);
+    expect(readBriefing(db, published.briefing_id, { actorUserId: humanId, operator: true }))
+      .toMatchObject({ briefing: { id: published.briefing_id, archived_at: 1_100 } });
+    setBriefingArchived(db, published.briefing_id, false, viewer, 1_200);
+    const prefix = published.briefing_id.replace(/^briefing:/, '').slice(0, 8);
+    db.prepare(`INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at, archived_at)
+      VALUES (?, 'hidden-collision', 'Hidden', NULL, 0, 1, 1, 1)`).run(`briefing:${prefix}hidden`);
+    expect(listBriefings(db, viewer).map((row) => row.id)).toEqual([published.briefing_id]);
+    expect(() => resolveBriefingId(db, `briefing:${prefix}`, viewer)).toThrow(expect.objectContaining({ status: 409, code: 'ambiguous_ref' }));
+    expect(resolveBriefingId(db, published.briefing_id, viewer)).toBe(published.briefing_id);
+  });
+
   it("lists only Briefings with a round and archives or restores any row by its stored id", () => {
     const listed = publishBriefingRun(db, request(), publisherId, 1_000);
     const quiet = publishBriefingRun(db, request(undefined, {

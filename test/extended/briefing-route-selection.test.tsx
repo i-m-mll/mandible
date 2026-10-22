@@ -1,18 +1,22 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { useEffect, useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BriefingSidebarSnapshot } from '../../ui/src/api';
+import * as api from '../../ui/src/api';
+import { ApiError, normalizeBriefingProjection, type BriefingSidebarSnapshot } from '../../ui/src/api';
 import type { CollectionShellProps } from '../../ui/src/views/feedback/CollectionShell';
 import { queryClient } from '../../ui/src/query/client';
+import { browserResourceKeys } from '../../ui/src/query/browserResources';
 import { parseRouteFromHash } from '../../ui/src/routing';
 import { BriefingView, warmInitialData } from '../../ui/src/views/briefing';
 import { BRIEFING_VIEW_STATE_KEY } from '../../ui/src/views/feedback/collection-view-state';
 
 const query = vi.hoisted(() => ({ data: undefined as BriefingSidebarSnapshot | undefined,
   error: null as Error | null, isFetching: true, refetch: vi.fn(async () => undefined) }));
-vi.mock('@tanstack/preact-query', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@tanstack/preact-query')>(), useQuery: () => query,
-}));
+vi.mock('@tanstack/preact-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/preact-query')>();
+  return { ...actual, useQuery: (options: Parameters<typeof actual.useQuery>[0], client: Parameters<typeof actual.useQuery>[1]) =>
+    options.queryKey[1] === 'sidebar' ? query : actual.useQuery(options, client) };
+});
 vi.mock('../../ui/src/views/feedback/BriefingDocumentRenderer', () => ({
   BriefingDocumentRenderer: ({ briefingId, roundId }: { briefingId: string; roundId: string | null }) =>
     <article data-testid="document" data-briefing={briefingId} data-round={roundId ?? 'latest'} />,
@@ -38,6 +42,11 @@ const snapshot = (): BriefingSidebarSnapshot => ({ briefings: rows, bundles: [],
 }] });
 const storageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
 const saved = () => JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}');
+const projection = (id: string) => normalizeBriefingProjection({
+  briefing: { id, title: id, latest_round_id: 'latest', round_count: 1 },
+  rounds: [{ id: 'latest', ordinal: 1, artifact_version_id: 'version', created_at: 1 }],
+  selected_round: { id: 'latest' },
+});
 
 function RoutedView() {
   const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
@@ -51,6 +60,13 @@ function RoutedView() {
 }
 
 beforeEach(() => {
+  queryClient.clear();
+  vi.spyOn(api, 'getBriefing').mockImplementation(async (id) => {
+    if (id === 'target') throw new ApiError('Ambiguous including archived row', 409, 'ambiguous_ref');
+    if (id === 'absent') throw new ApiError('Not found', 404, 'not_found');
+    if (id === 'offline') throw new Error('offline');
+    return projection(id);
+  });
   const values = new Map<string, string>();
   Object.defineProperty(window, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => values.get(key) ?? null,
@@ -62,6 +78,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup(); vi.restoreAllMocks();
+  queryClient.clear();
   window.history.replaceState(null, '', '/');
   if (storageDescriptor) Object.defineProperty(window, 'localStorage', storageDescriptor);
 });
@@ -73,23 +90,22 @@ describe('Briefing route intent', () => {
     expect(screen.getByRole('status').getAttribute('data-route-state')).toBe('resolving');
     query.data = snapshot(); query.isFetching = false;
     view.rerender(<BriefingView instance={null} initialBriefingId="target" />);
-    expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('ambiguous');
+    await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('ambiguous'));
     expect(screen.getByTestId('sidebar-selection').textContent).toBe('');
     view.rerender(<BriefingView instance={null} initialBriefingId="absent" />);
-    expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('not-found');
-    query.error = new Error('offline');
-    view.rerender(<BriefingView instance={null} initialBriefingId="absent" />);
-    expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('error');
+    await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('not-found'));
+    view.rerender(<BriefingView instance={null} initialBriefingId="offline" />);
+    await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('error'));
     expect(screen.queryByTestId('document')).toBeNull();
     await act(async () => {});
     expect(saved().selectedCollectionId).toBe('briefing:saved');
     query.error = null;
     view.rerender(<BriefingView instance={null} initialBriefingId="target-one" initialRoundId="linked-round" />);
-    expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one');
+    await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('linked-round');
   });
 
-  it('resolves group keys and ID prefixes, and lets the Briefing identity own conflicting group context', () => {
+  it('resolves group keys and ID prefixes, and lets the Briefing identity own conflicting group context', async () => {
     query.data = snapshot(); query.isFetching = false;
     const view = render(<BriefingView instance={null} initialGroupId="policy-health" />);
     expect(screen.getByTestId('group').getAttribute('data-group')).toBe('group-uuid');
@@ -97,7 +113,7 @@ describe('Briefing route intent', () => {
     expect(screen.getByTestId('group').getAttribute('data-group')).toBe('group-uuid');
     view.rerender(<BriefingView instance={null} initialGroupId="policy-health" initialBriefingId="target-one" />);
     expect(screen.queryByTestId('group')).toBeNull();
-    expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one');
+    await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('latest');
   });
 
@@ -105,7 +121,7 @@ describe('Briefing route intent', () => {
     query.data = snapshot(); query.isFetching = false;
     window.history.replaceState(null, '', '#/briefing?briefing=saved&round=linked-round&sidebar=hidden&agent_session=worker&unknown=keep');
     const view = render(<RoutedView />);
-    expect(screen.getByTestId('document').getAttribute('data-round')).toBe('linked-round');
+    await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-round')).toBe('linked-round'));
     fireEvent.click(screen.getByRole('button', { name: 'target-one' }));
     await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
     expect(parseRouteFromHash(window.location.hash).params).toEqual({ briefing: 'target-one', round: 'old-target-round',
@@ -124,14 +140,42 @@ describe('Briefing route intent', () => {
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('saved-round');
   });
 
-  it('does not warm unrelated saved detail for a missing or ambiguous explicit link', async () => {
+  it('resolves an unlisted archived target to canonical identity and honors hidden-collision ambiguity', async () => {
+    query.data = { ...snapshot(), briefings: [rows[1]] }; query.isFetching = false;
+    vi.mocked(api.getBriefing).mockImplementation(async (ref) => {
+      if (ref === 'target') throw new ApiError('Hidden archived collision', 409, 'ambiguous_ref');
+      return projection(ref === 'active-short' ? 'target-one' : 'archived-canonical');
+    });
+    const view = render(<BriefingView instance={null} initialBriefingId="archived-short" initialRoundId="linked-round" />);
+    await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('archived-canonical'));
+    expect(api.getBriefing).toHaveBeenCalledWith('archived-short', 'linked-round', null, expect.any(AbortSignal));
+    expect(screen.getByTestId('sidebar-selection').textContent).toBe('briefing:archived-canonical');
+    view.rerender(<BriefingView instance={null} initialBriefingId="active-short" />);
+    await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
+    expect(screen.getByTestId('sidebar-selection').textContent).toBe('briefing:target-one');
+    view.rerender(<BriefingView instance={null} initialBriefingId="target" />);
+    await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('ambiguous'));
+    expect(screen.queryByTestId('document')).toBeNull();
+    expect(screen.getByTestId('sidebar-selection').textContent).toBe('');
+  });
+
+  it('warms explicit refs authoritatively before reading sidebar eligibility or saved detail', async () => {
+    await expect(warmInitialData({ briefing: 'absent' })).rejects.toMatchObject({ status: 404 });
+    await expect(warmInitialData({ briefing: 'target' })).rejects.toMatchObject({ status: 409 });
+    await warmInitialData({ briefing: 'archived', round: 'linked-round' });
+    expect(api.getBriefing).toHaveBeenCalledWith('archived', 'linked-round', null, expect.any(AbortSignal));
     const fetch = vi.spyOn(queryClient, 'fetchQuery').mockResolvedValue(snapshot());
-    await warmInitialData({ briefing: 'missing' });
-    await warmInitialData({ briefing: 'target' });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    fetch.mockClear();
     await warmInitialData({});
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[1][0].queryKey).toContain('saved');
+  });
+
+  it('honors an authoritative ambiguity even when an earlier resolution remains cached', async () => {
+    query.data = snapshot(); query.isFetching = false;
+    queryClient.setQueryData(browserResourceKeys.briefingProjection('target', null, null), projection('target-one'));
+    render(<BriefingView instance={null} initialBriefingId="target" />);
+    await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('ambiguous'));
+    expect(screen.queryByTestId('document')).toBeNull();
+    expect(screen.getByTestId('sidebar-selection').textContent).toBe('');
   });
 });
