@@ -84,8 +84,8 @@ it.each(["bytes", "mode"])("rejects same-path clean signed target %s advancement
   await background.revalidatePendingMergeRequestsSerialized(queue.listHistory().find(row => row.head_branch === "feature/sibling")!);
   expect((await queue.getRequest(request.id))?.error).toContain("Destination changed");
   const before = (await queue.getRequest(request.id))!;
-  const repin = queue as unknown as { repinMergeCandidate(request:unknown,base:string,fingerprint:null):unknown };
-  expect(() => repin.repinMergeCandidate(before,base,null)).toThrow("Destination changed");
+  const repin = queue as unknown as { repinMergeCandidate(request:unknown,base:string,fingerprint:null):Promise<unknown> };
+  await expect(repin.repinMergeCandidate(before,base,null)).rejects.toThrow("Destination changed");
   await expect(queue.approveWithOperatorProof(request.id,operatorId)).rejects.toThrow("Destination changed");
   expect((await queue.getRequest(request.id))).toMatchObject({status:"pending",merge_candidate_pin_sha:before.merge_candidate_pin_sha});
   expect(git(repo,["rev-parse","main"])).toBe(base);
