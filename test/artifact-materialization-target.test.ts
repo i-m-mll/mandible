@@ -80,7 +80,7 @@ it("keeps a Git version's verified locator after current source registration mov
   git(checkout, "config", "user.name", "Fixture"); git(checkout, "config", "user.email", "fixture@example.invalid");
   fs.writeFileSync(path.join(checkout, "report.md"), "committed\n");
   git(checkout, "add", "."); git(checkout, "-c", "commit.gpgsign=false", "commit", "-m", "Fixture");
-  const project = insertRawLedgerProject(db, { name: "target-fixture" });
+  const project = insertRawLedgerProject(db, { name: "target-fixture", projectKey: "target-fixture" });
   insertRawLedgerCheckout(db, { projectId: project, name: "target-fixture", root: checkout });
   const version = recordArtifactVersion(db, { source_kind: "tracked_repo", path: path.join(checkout, "report.md") });
   const target = material(version.artifact_version.id);

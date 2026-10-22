@@ -17,7 +17,6 @@ import {
   ProjectRegistryError,
   PROJECT_ID_COLUMNS,
   repairRegistry,
-  resolveCheckoutPath,
   resolveProjectRef,
   slugifyProjectKey,
   suggestProjectRefs,
@@ -139,99 +138,6 @@ describe("backfillProjectKeys", () => {
     // Referential integrity intact
     const violations = db.prepare("PRAGMA foreign_key_check").all();
     expect(violations).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3. resolveProjectRef — precedence chain
-// ---------------------------------------------------------------------------
-
-describe("resolveProjectRef", () => {
-  it("resolves by id, project_key, work_repo_id, root, and remote_identity", () => {
-    const dir = path.join(tempDir, "mandible");
-    fs.mkdirSync(dir, { recursive: true });
-
-    const { project } = resolveProjectForCheckout(db, {
-      root: dir,
-      remoteUrl: "git@github.com:mll/mandible.git",
-      workRepoId: "20-mandible",
-    });
-
-    // By ledger ID
-    const byId = resolveProjectRef(db, project.id);
-    expect(byId.ok).toBe(true);
-    expect(byId.matched_by).toBe("id");
-
-    // By project_key (derived from "mandible")
-    const byKey = resolveProjectRef(db, "mandible");
-    expect(byKey.ok).toBe(true);
-    expect(byKey.matched_by).toBe("project_key");
-
-    // By work_repo_id
-    const byWorkRepo = resolveProjectRef(db, "20-mandible");
-    expect(byWorkRepo.ok).toBe(true);
-    expect(byWorkRepo.matched_by).toBe("work_repo_id");
-
-    // By checkout root (absolute path)
-    const byRoot = resolveProjectRef(db, dir);
-    expect(byRoot.ok).toBe(true);
-    expect(byRoot.matched_by).toBe("root");
-
-    // By remote url (scp form → github.com/mll/mandible)
-    const byRemote = resolveProjectRef(db, "git@github.com:mll/mandible.git");
-    expect(byRemote.ok).toBe(true);
-    expect(byRemote.matched_by).toBe("remote_identity");
-
-    // Unknown
-    const unknown = resolveProjectRef(db, "totally-unknown-ref-xyz");
-    expect(unknown.ok).toBe(false);
-    expect(unknown.project).toBeUndefined();
-  });
-
-  // ---------------------------------------------------------------------------
-  // 4. Ambiguous display_name
-  // ---------------------------------------------------------------------------
-
-  it("returns ambiguous when display_name matches multiple projects", () => {
-    addProject(db, {
-      project_key: "proj-alpha",
-      remote_identity: "git@github.com:mll/proj-alpha.git",
-      display_name: "Shared Name",
-    });
-    addProject(db, {
-      project_key: "proj-beta",
-      remote_identity: "git@github.com:mll/proj-beta.git",
-      display_name: "Shared Name",
-    });
-
-    const result = resolveProjectRef(db, "Shared Name");
-    expect(result.ok).toBe(false);
-    expect(result.ambiguous).toBe(true);
-    expect(result.candidates).toContain("proj-alpha");
-    expect(result.candidates).toContain("proj-beta");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. resolveCheckoutPath — registered vs unregistered path
-// ---------------------------------------------------------------------------
-
-describe("resolveCheckoutPath", () => {
-  it("returns project for a registered checkout root, null for unknown", () => {
-    const dir = path.join(tempDir, "myrepo");
-    fs.mkdirSync(dir, { recursive: true });
-
-    resolveProjectForCheckout(db, {
-      root: dir,
-      remoteUrl: "git@github.com:mll/myrepo.git",
-    });
-
-    const found = resolveCheckoutPath(db, dir);
-    expect(found).not.toBeNull();
-    expect(found?.project_key).toBe("myrepo");
-
-    const notFound = resolveCheckoutPath(db, "/random/unregistered/path/xyz");
-    expect(notFound).toBeNull();
   });
 });
 
@@ -896,7 +802,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
       root: dirO,
       remoteUrl: "git@github.com:mll/other.git",
     });
-    expect(resolveProjectRef(db, "feedbax").project?.id).toBe(feedbax.id);
+    expect(resolveProjectRef(db, "feedbax")).toMatchObject({ ok: true, project: { id: feedbax.id } });
 
     const store = new LedgerStore(db);
     const inF = store.createIssue({

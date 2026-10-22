@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { realpathSync, readFileSync } from "node:fs";
-import { resolveCheckoutPath } from "./ledger/project-registry.js";
+import { resolveProjectRef, type RegistryProject } from "./ledger/project-registry.js";
 import { compiledBuildDigest, readBuildRevision, runtimeDependenciesDigest } from "../scripts/build-revision.mjs";
 import type { Db } from "./db.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
@@ -25,12 +25,17 @@ export type RuntimeSourceReadiness =
   | { ok: true; projectId: string; commonGitDir: string }
   | { ok: false; reason: string };
 
+function registeredCheckoutProject(db: Db, root: string): RegistryProject | null {
+  const resolved = resolveProjectRef(db, root);
+  return resolved.ok && resolved.matched_by === "checkout_root" ? resolved.project : null;
+}
+
 export function validateRuntimeSource(db: Db, sourcePath: string, destinationPath: string): RuntimeSourceReadiness {
   try {
     const source = realpathSync(sourcePath);
     const destination = realpathSync(destinationPath);
-    const destinationProject = resolveCheckoutPath(db, destination);
-    const sourceProject = resolveCheckoutPath(db, source);
+    const destinationProject = registeredCheckoutProject(db, destination);
+    const sourceProject = registeredCheckoutProject(db, source);
     if (!destinationProject) return { ok: false, reason: `Destination checkout is unregistered. Register its verified canonical project with mandible project add-checkout <project> --root '${destination}'.` };
     if (!sourceProject) return { ok: false, reason: `Installed source checkout is unregistered. After verifying ownership, run mandible project add-checkout ${destinationProject.project_key} --root '${source}'.` };
     if (sourceProject.id !== destinationProject.id) return { ok: false, reason: 'Installed source and destination are registered to different canonical projects; reassociation is not automatic.' };

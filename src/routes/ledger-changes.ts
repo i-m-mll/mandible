@@ -16,10 +16,10 @@ export function registerLedgerChangeRoutes(server: RouteRegistrar, db: Db = getD
       return;
     }
     const resolution = resolveProjectRef(db, projectRef);
-    if (!resolution.ok || !resolution.project) {
-      sendJson(res, resolution.ambiguous ? 409 : 404, {
-        error: resolution.ambiguous ? "project reference is ambiguous" : "project not found",
-        code: resolution.ambiguous ? "ambiguous_project" : "project_not_found",
+    if (!resolution.ok) {
+      sendJson(res, (!resolution.ok && resolution.reason === "ambiguous") ? 409 : 404, {
+        error: (!resolution.ok && resolution.reason === "ambiguous") ? "project reference is ambiguous" : "project not found",
+        code: (!resolution.ok && resolution.reason === "ambiguous") ? "ambiguous_project" : "project_not_found",
         candidates: suggestProjectRefs(db, projectRef),
       });
       return;

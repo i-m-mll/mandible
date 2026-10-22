@@ -111,7 +111,6 @@ function resolvesToAnyProductionDbPath(dbPath, productionPaths = PRODUCTION_DB_P
 }
 
 function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_PATHS) {
-  if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
   if (!isUnderTestRunner()) return;
   const matched = resolvesToAnyProductionDbPath(
     dbPath,
@@ -123,7 +122,7 @@ function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_
         canonicalizePath(matched) +
         ". Tests must open an explicit temp/fixture path, never the real DB. This guard " +
         "prevents a test or test-invoked tool from writing or migrating live data " +
-        "(issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.",
+        "(issue 07edc0d).",
     );
   }
 }

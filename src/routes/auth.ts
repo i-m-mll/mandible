@@ -16,7 +16,8 @@ import {
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
-import { getDb, resolvePrefix } from "../db.js";
+import type { Db } from "../db.js";
+import { entityRefs, resolveId } from "../entity-refs.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
@@ -49,23 +50,24 @@ function rejectTokenlessSocketExecution(req: RequestLike, res: ResponseLike): bo
   return true;
 }
 
+/**
+ * Every handler reads and writes the queue's database. Registration never
+ * resolves the process-wide singleton, so routes bound to an explicit database
+ * cannot reach another one (issue e9cd064).
+ */
 export function registerAuthRoutes(
   app: RouteRegistrar,
-  queue?: AuthQueue,
-  autoApprove?: AuthAutoApproveManager,
+  authQueue: AuthQueue,
+  autoApproveManager: AuthAutoApproveManager,
   clearance?: AuthClearanceManager,
 ): AuthQueue {
-  const autoApproveManager = autoApprove ?? new AuthAutoApproveManager();
+  const db = authQueue.db;
   const fallbackRuntimeEpoch = randomUUID();
   const clearanceManager = clearance ?? new AuthClearanceManager(
-    getDb(), new DelegatedSigningResource(autoApproveManager, {
-      db: getDb(), runtimeEpoch: fallbackRuntimeEpoch,
+    db, new DelegatedSigningResource(autoApproveManager, {
+      db, runtimeEpoch: fallbackRuntimeEpoch,
     }), fallbackRuntimeEpoch,
   );
-  const authQueue = queue ?? new AuthQueue({
-    autoApprover: autoApproveManager,
-    clearanceManager,
-  });
   app.post("/api/auth/check", (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({
@@ -79,7 +81,7 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth check payload." });
       return;
     }
-    const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(payload));
+    const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(db, payload));
     res.status(200).json({ check: report });
   }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -117,7 +119,7 @@ export function registerAuthRoutes(
       });
       return;
     }
-    const requester = resolveAuthRequester(req, payload, isAuthMerge);
+    const requester = resolveAuthRequester(db, req, payload, isAuthMerge);
     if (!requester.ok) {
       res.status(requester.status).json({ error: requester.error, code: requester.code });
       return;
@@ -142,7 +144,7 @@ export function registerAuthRoutes(
         if (!payload.base_branch && payload.cwd) {
           payload.base_branch = detectProtectedBranch(payload.cwd) ?? undefined;
         }
-        const resolved = resolveAuthMergeExecutionContext(getDb(), payload);
+        const resolved = resolveAuthMergeExecutionContext(db, payload);
         payload.cwd = resolved.executionCwd;
         payload.target_repo_root = resolved.targetRepoRoot;
         payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
@@ -235,7 +237,7 @@ export function registerAuthRoutes(
           ? path.basename(payload.cwd)
           : payload.repo;
     }
-    if (isAuthMerge && !enforceAuthProjectWrite(req, res, payload.repo)) return;
+    if (isAuthMerge && !enforceAuthProjectWrite(db, req, res, payload.repo)) return;
 
     // Bug: 16985e8 — detect duplicate submissions. Return 409 with the existing
     // request_id so the agent can PUT to update it rather than creating a new one.
@@ -289,10 +291,10 @@ export function registerAuthRoutes(
     const request = authQueue.getRequest(req.params.id);
     if (!request) {
       // Bug: caa157e — distinguish ambiguous prefix from not-found
-      const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+      const resolved = resolveId(db, "auth_request", req.params.id);
       if (!resolved.ok && resolved.error === "ambiguous") {
         res.status(409).json({
-          error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`
+          error: `Ambiguous prefix '${req.params.id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`
         });
         return;
       }
@@ -324,7 +326,7 @@ export function registerAuthRoutes(
       candidate_acceptance: authQueue.candidateAcceptanceForRequest(request),
       // Issue 117ba80 — protected-base commits that are neither Mandible merges nor operator-signed.
       base_audit: authQueue.baseAuditForRequest(request.id),
-      ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
+      ...authAttributionReadFields(new AttributionReadResolver(db), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       lifecycle_events: authQueue.listLifecycleEvents(request.id),
@@ -344,7 +346,7 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
-      const control = authMutationControl(req, res, current, body);
+      const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const action = authQueue.addAction(req.params.id, authActionPayload(body), control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
@@ -359,7 +361,7 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
-      const control = authMutationControl(req, res, current, body);
+      const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const action = authQueue.updateAction(
         req.params.id,
@@ -380,7 +382,7 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
-      const control = authMutationControl(req, res, current, body);
+      const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const action = authQueue.deleteAction(req.params.id, req.params.actionId, control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
@@ -399,7 +401,7 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
-      const control = authMutationControl(req, res, current, body);
+      const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed,
         control.actor, numberField(body.expected_revision), numberField(body.expected_custody_generation));
@@ -419,10 +421,10 @@ export function registerAuthRoutes(
     try {
       const current = authQueue.getRequest(req.params.id);
       if (!current) {
-        const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+        const resolved = resolveId(db, "auth_request", req.params.id);
         if (!resolved.ok && resolved.error === "ambiguous") {
           res.status(409).json({
-            error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+            error: `Ambiguous prefix '${req.params.id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`,
           });
           return;
         }
@@ -433,7 +435,7 @@ export function registerAuthRoutes(
         res.status(400).json({ error: CUSTODY_TRANSFER_SUBMISSION_REFUSAL });
         return;
       }
-      const control = authMutationControl(req, res, current, body, true);
+      const control = authMutationControl(db, req, res, current, body, true);
       if (!control) return;
       // Issue 4720024 — a revision that touches a merge request's message must
       // leave a canonical change message with its verification text. Requests
@@ -475,20 +477,20 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "reason is required" });
       return;
     }
-    const requester = resolveAuthRequester(req, { command: "withdraw", title: "withdraw" }, true);
+    const requester = resolveAuthRequester(db, req, { command: "withdraw", title: "withdraw" }, true);
     if (!requester.ok) {
       res.status(requester.status).json({ error: requester.error, code: requester.code });
       return;
     }
     try {
       const recovery = body.operator_recovery === true;
-      if (recovery) requireOperator(getDb(), req);
+      if (recovery) requireOperator(db, req);
       const current = authQueue.getRequest(req.params.id);
       if (!current) {
         res.status(404).json({ error: "Auth request not found." });
         return;
       }
-      if (!enforceAuthProjectWrite(req, res, current.repo)) return;
+      if (!enforceAuthProjectWrite(db, req, res, current.repo)) return;
       const request = authQueue.withdraw(req.params.id, body.reason, {
         user_id: requester.userId,
         evidence_method: requester.evidenceMethod,
@@ -506,7 +508,7 @@ export function registerAuthRoutes(
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-      const control = authMutationControl(req, res, request, body, true);
+      const control = authMutationControl(db, req, res, request, body, true);
       if (!control?.actor) return;
       res.json(authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor));
     } catch (error) {
@@ -519,7 +521,7 @@ export function registerAuthRoutes(
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
-      const control = authMutationControl(req, res, request, body, true);
+      const control = authMutationControl(db, req, res, request, body, true);
       if (!control?.actor) return;
       const expectedDigest = body.expected_current_snapshot_sha256;
       if (typeof expectedDigest !== "string" || !/^[0-9a-f]{64}$/.test(expectedDigest)) {
@@ -549,7 +551,7 @@ export function registerAuthRoutes(
       if (body.mode !== undefined && body.mode !== 'retry' && body.mode !== 'verify-current') { res.status(400).json({ error: 'Unknown convergence mode.' }); return; }
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: 'Auth request not found.' }); return; }
-      const control = body.mode === 'verify-current' ? authMutationControl(req, res, request, body, true) : null;
+      const control = body.mode === 'verify-current' ? authMutationControl(db, req, res, request, body, true) : null;
       if (body.mode === 'verify-current' && !control?.actor) return;
       const convergence = await authQueue.retryHookConvergence(req.params.id, hookId,
         body.mode === 'verify-current' ? { mode: 'verify-current', actor: control!.actor! } : undefined);
@@ -565,9 +567,9 @@ export function registerAuthRoutes(
     try {
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
-      const requester = resolveAuthRequester(req, { command: "candidate-acceptance", title: "candidate-acceptance" });
+      const requester = resolveAuthRequester(db, req, { command: "candidate-acceptance", title: "candidate-acceptance" });
       if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
-      if (!enforceAuthProjectWrite(req, res, request.repo)) return;
+      if (!enforceAuthProjectWrite(db, req, res, request.repo)) return;
       res.status(202).json({ request_id: request.id, acceptance: await authQueue.runCandidateAcceptance(request) });
     } catch (error) {
       handleQueueError(error, res);
@@ -592,7 +594,7 @@ export function registerAuthRoutes(
 
   app.post("/api/runtime-handoff/retire", async (req, res) => {
     try {
-      const operator = requireOperator(getDb(), req);
+      const operator = requireOperator(db, req);
       const body = readBody<Record<string, unknown>>(req);
       if (typeof body.binding_digest !== "string" || typeof body.reason !== "string" || !body.reason.trim()) {
         res.status(400).json({ error: "binding_digest and reason are required." });
@@ -628,7 +630,7 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
-    const attributionResolver = new AttributionReadResolver(getDb());
+    const attributionResolver = new AttributionReadResolver(db);
     const enriched = requests.map((r) => {
       return {
         ...r,
@@ -664,7 +666,7 @@ export function registerAuthRoutes(
     }
     // action_count is already resolved in one batched query by
     // listHistorySummaries (0de95bf); only fold in main's user-attribution fields.
-    const attributionResolver = new AttributionReadResolver(getDb());
+    const attributionResolver = new AttributionReadResolver(db);
     res.json({
       requests: requests.map((r) => ({
         ...r,
@@ -790,19 +792,20 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/clearances", (req, res) => {
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
       const requestId = typeof req.query.request_id === "string" ? req.query.request_id : null;
       res.json({ clearances: clearanceManager.list(requestId) });
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
+    refs: { query: { request_id: entityRefs.authRequest } } });
 
   // Keep this static path ahead of /:id so "signing" is never interpreted as
   // a clearance reference by order-sensitive HTTP routers.
   app.get("/api/auth/clearances/signing", (req, res) => {
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
       res.json(clearanceManager.signingStatus());
     } catch (error) {
       handleClearanceError(error, res);
@@ -811,7 +814,7 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/clearances/:id", (req, res) => {
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
       const clearance = clearanceManager.show(req.params.id);
       res.json({ clearance, uses: clearanceManager.uses(clearance.id) });
     } catch (error) {
@@ -825,7 +828,7 @@ export function registerAuthRoutes(
       if (body.action !== undefined && body.action !== "merge") {
         throw new AuthClearanceError("unsupported_action", "Clearance action is fixed to merge.");
       }
-      const operator = requireOperator(getDb(), req);
+      const operator = requireOperator(db, req);
       const clearance = await clearanceManager.issue({
         requestId: typeof body.request_id === "string" ? body.request_id : null,
         grantee: String(body.grantee ?? ""),
@@ -846,7 +849,7 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/clearances/:id/revoke", async (req, res) => {
     try {
-      const operator = requireOperator(getDb(), req);
+      const operator = requireOperator(db, req);
       res.json({ clearance: await clearanceManager.revoke(req.params.id, operator.user_id) });
     } catch (error) {
       handleClearanceError(error, res);
@@ -858,7 +861,7 @@ export function registerAuthRoutes(
       const identity = req.client_identity;
       const request = authQueue.getRequest(req.params.id);
       const custody = request?.custody_work_unit_id
-        ? getDb().prepare(`
+        ? db.prepare(`
             SELECT wu.owner_user_id, wu.owner_credential_id, uc.status AS credential_status
             FROM work_units wu
             LEFT JOIN user_credentials uc ON uc.id = wu.owner_credential_id
@@ -887,7 +890,7 @@ export function registerAuthRoutes(
   app.post("/api/auth/clearances/signing/setup", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
       const status = await clearanceManager.setupSigning({
         name: typeof body.name === "string" ? body.name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
@@ -902,7 +905,7 @@ export function registerAuthRoutes(
 
   app.delete("/api/auth/clearances/signing", async (req, res) => {
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
       res.json(await clearanceManager.removeSigning());
     } catch (error) {
       handleClearanceError(error, res);
@@ -913,6 +916,7 @@ export function registerAuthRoutes(
 }
 
 function resolveAuthRequester(
+  db: Db,
   req: RequestLike,
   payload: AuthRequestInput,
   requireDurable = false,
@@ -934,9 +938,9 @@ function resolveAuthRequester(
   const sessionResolution = payload.session_id
     ? ambientIdentity
       ? payload.session_id === ambientIdentity.provider_session_id
-        ? resolveProviderSessionAttributionResult(getDb(), ambientIdentity.provider)
+        ? resolveProviderSessionAttributionResult(db, ambientIdentity.provider)
         : { status: "conflict" as const }
-      : resolveSessionIdAttributionResult(getDb(), payload.session_id)
+      : resolveSessionIdAttributionResult(db, payload.session_id)
     : { status: "no_match" as const };
   if (sessionResolution.status === "conflict") {
     return { ok: false, status: 403, code: "requester_session_conflict", error: "Auth request session claims resolve to conflicting users." };
@@ -1043,14 +1047,14 @@ function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function enforceAuthProjectWrite(req: RequestLike, res: ResponseLike, repo: string | undefined): boolean {
-  const resolved = repo ? resolveProjectRef(getDb(), repo) : { ok: false as const };
-  if (!resolved.ok || !resolved.project || resolved.ambiguous) {
+function enforceAuthProjectWrite(db: Db, req: RequestLike, res: ResponseLike, repo: string | undefined): boolean {
+  const resolved = repo ? resolveProjectRef(db, repo) : { ok: false as const };
+  if (!resolved.ok) {
     res.status(409).json({ error: "Auth request project identity is missing or ambiguous." });
     return false;
   }
   try {
-    requireProjectAccess(getDb(), req, resolved.project.id, "write");
+    requireProjectAccess(db, req, resolved.project.id, "write");
     return true;
   } catch (error) {
     if (error instanceof PermissionError) {
@@ -1062,6 +1066,7 @@ function enforceAuthProjectWrite(req: RequestLike, res: ResponseLike, repo: stri
 }
 
 function authMutationControl(
+  db: Db,
   req: RequestLike,
   res: ResponseLike,
   request: AuthRequest,
@@ -1071,7 +1076,7 @@ function authMutationControl(
   if (rejectTokenlessSocketExecution(req, res)) return null;
   const governed = requireGoverned || Boolean(request.custody_work_unit_id) || isAuthMergeCommand(request);
   if (!governed) return { actor: undefined };
-  const requester = resolveAuthRequester(req, { command: "mutate", title: "mutate" }, true);
+  const requester = resolveAuthRequester(db, req, { command: "mutate", title: "mutate" }, true);
   if (!requester.ok) {
     res.status(requester.status).json({ error: requester.error, code: requester.code });
     return null;
@@ -1079,7 +1084,7 @@ function authMutationControl(
   const recovery = body.operator_recovery === true;
   if (recovery) {
     try {
-      requireOperator(getDb(), req);
+      requireOperator(db, req);
     } catch (error) {
       if (error instanceof ClientAuthzError) {
         res.status(error.status).json({ error: error.message, code: error.code });
@@ -1089,7 +1094,7 @@ function authMutationControl(
     }
   }
   if (request.repo) {
-    if (!enforceAuthProjectWrite(req, res, request.repo)) return null;
+    if (!enforceAuthProjectWrite(db, req, res, request.repo)) return null;
   } else if (!recovery) {
     res.status(409).json({ error: "Unbound legacy auth requests require operator recovery." });
     return null;
@@ -1119,10 +1124,10 @@ function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInp
   };
 }
 
-function resolveAuthCheckPayload(payload: AuthMergeCheckInput): AuthMergeCheckInput {
+function resolveAuthCheckPayload(db: Db, payload: AuthMergeCheckInput): AuthMergeCheckInput {
   const resolved = { ...payload };
   if (!resolved.cwd && resolved.repo) {
-    resolved.cwd = registeredAuthCheckRepoRoot(resolved.repo);
+    resolved.cwd = registeredAuthCheckRepoRoot(db, resolved.repo);
   }
   if (resolved.cwd && !resolved.base_branch) {
     resolved.base_branch = detectProtectedBranch(resolved.cwd);
@@ -1130,10 +1135,10 @@ function resolveAuthCheckPayload(payload: AuthMergeCheckInput): AuthMergeCheckIn
   return resolved;
 }
 
-function registeredAuthCheckRepoRoot(repoRef: string): string | null {
+function registeredAuthCheckRepoRoot(db: Db, repoRef: string): string | null {
   const normalizedRef = normalizeExistingPath(repoRef);
   try {
-    const rows = getDb()
+    const rows = db
       .prepare(
         "SELECT id, root, name FROM work_repos WHERE dir_exists = 1 AND excluded = 0"
       )

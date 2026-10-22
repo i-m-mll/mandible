@@ -46,7 +46,9 @@ function runHookAfterMerge(
   const runtimeTracePath = path.join(tempDir, "runtime-trace");
   fs.mkdirSync(cliDir, { recursive: true });
   fs.mkdirSync(path.join(repo, "dist"));
-  const sqliteBuild = spawnSync(process.execPath, ["build", path.join(process.cwd(), "src/sqlite.ts"), "--target", "bun", "--outfile", path.join(repo, "dist/sqlite.js")], { encoding: "utf8" });
+  // The instructions helper loads the SQLite boundary from source; one bundled
+  // file stands in for the source tree it imports.
+  const sqliteBuild = spawnSync(process.execPath, ["build", path.join(process.cwd(), "src/sqlite.ts"), "--target", "bun", "--outfile", path.join(repo, "src/sqlite.ts")], { encoding: "utf8" });
   expect(sqliteBuild.status, sqliteBuild.stderr).toBe(0);
   const runtimeInputs = copyRuntimeFixture(repo);
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });

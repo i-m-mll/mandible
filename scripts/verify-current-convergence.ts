@@ -23,7 +23,7 @@ try {
   const request = queue.getRequestExact(requestId);
   if (!request?.repo) throw new Error('An exact project-bound request is required.');
   const project = resolveProjectRef(db, request.repo);
-  if (!project.ok || !project.project) throw new Error('Request project is unavailable or ambiguous.');
+  if (!project.ok) throw new Error('Request project is unavailable or ambiguous.');
   requireProjectAccess(db, { client_identity: resolvedApiTokenIdentity(identity, 'in_process', PRODUCTION_EFFECTS) }, project.project.id, 'write');
   const convergence = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
     actor: { user_id: identity.user.id, credential_id: identity.credentialId, evidence_method: 'api_token', authority_path: option === '--operator-recovery' ? 'operator_recovery' : 'custodian' } });

@@ -92,7 +92,8 @@ import {
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
 import { getDaemonLogger } from "./daemon-log.js";
-import { getDb, resolvePrefix } from "./db.js";
+import { getDb } from "./db.js";
+import { resolveId } from "./entity-refs.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -595,7 +596,7 @@ class AncestryBatch {
 }
 
 export class AuthQueue {
-  private readonly db: InstanceType<typeof SqliteDatabase>;
+  readonly db: InstanceType<typeof SqliteDatabase>;
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly backgroundMaintenance: boolean;
@@ -831,7 +832,7 @@ export class AuthQueue {
   /** Where and as whom the run executes; a missing project or custody fails the run with the reason. */
   private acceptanceInput(request: AuthRequest, pinSha: string): Omit<CandidateAcceptanceInput, "signal"> {
     const project = request.repo ? resolveProjectRef(this.db, request.repo) : null;
-    if (!project?.ok || !project.project || project.ambiguous) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
+    if (!project?.ok) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
     if (!request.custody_work_unit_id) throw new Error("The request has no delivery work unit in custody.");
     const home = getUserHome();
     const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
@@ -2029,7 +2030,7 @@ export class AuthQueue {
       throw new AuthQueueError("custody_required", "Merge submission requires canonical project and head branch identity.");
     }
     const project = resolveProjectRef(this.db, payload.repo);
-    if (!project.ok || !project.project || project.ambiguous) {
+    if (!project.ok) {
       throw new AuthQueueError("custody_required", "Merge project does not resolve uniquely in the project registry.");
     }
     const issueIds = new Set<string>();
@@ -2042,7 +2043,7 @@ export class AuthQueue {
        WHERE state = 'committed' AND resolved_at IS NULL AND branch = ? AND auth_request_id IS NULL`,
     ).all(payload.head_branch) as WorkUnitCustody[]).filter((row) => {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
-      return wuProject.ok && wuProject.project && !wuProject.ambiguous && wuProject.project.id === project.project!.id;
+      return wuProject.ok && wuProject.project.id === project.project!.id;
     });
     const owned = onBranch.filter((row) => row.owner_user_id === actor.user_id && row.owner_credential_id === actor.credential_id);
     const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));
@@ -2647,7 +2648,7 @@ export class AuthQueue {
   /** Ambiguity-safe public reference lookup without lifecycle mutations. */
   getRequestReference(id: string): AuthRequest | null {
     // Bug: caa157e — support UUID prefix matching
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return null;
     }
@@ -2662,7 +2663,7 @@ export class AuthQueue {
       return null;
     }
 
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", requestedId);
+    const resolved = resolveId(this.db, "auth_request", requestedId);
     if (!resolved.ok) {
       return {
         state: resolved.error === "not_found" ? "missing" : "ambiguous",
@@ -2798,11 +2799,11 @@ export class AuthQueue {
     expectedGeneration?: number,
   ): AuthRequest {
     this.expireStale();
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw {
         status: 409,
-        message: `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+        message: `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`,
       };
     }
     if (!resolved.ok) {
@@ -3245,7 +3246,7 @@ export class AuthQueue {
    * false if the request is unknown.
    */
   markDelivered(id: string): boolean {
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok) {
       return false;
     }
@@ -7673,11 +7674,11 @@ export class AuthQueue {
 
   private requireRequest(id: string): AuthRequest {
     // Bug: caa157e — surface ambiguous prefix errors before falling through to getRequest
-    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") {
       throw new AuthQueueError(
         "not_found",
-        `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`
+        `Ambiguous prefix '${id}' names more than one request (${resolved.matches.join(", ")}); pass a longer prefix.`
       );
     }
     const request = this.getRequestById(resolved.ok ? resolved.id : id);

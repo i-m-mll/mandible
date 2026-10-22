@@ -90,7 +90,7 @@ function listen(opts: { staleConflict?: boolean } = {}): Promise<number> {
         return;
       }
 
-      if (req.method === "PATCH" && req.url === "/api/ledger/comments/comment-2") {
+      if (req.method === "PATCH" && ["abc%232", "abc%23last"].some((ref) => req.url === `/api/ledger/comments/${ref}`)) {
         void readBody().then((body) => {
           requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
           if (opts.staleConflict) {
@@ -175,7 +175,7 @@ describe("comment edit CLI", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("Edited comment abc#2");
     expect(requestBodies).toContainEqual({
-      path: "/api/ledger/comments/comment-2",
+      path: "/api/ledger/comments/abc%232",
       method: "PATCH",
       body: { body: "Updated body" },
     });
@@ -187,7 +187,7 @@ describe("comment edit CLI", () => {
 
     expect(result.status).toBe(0);
     expect(requestBodies).toContainEqual({
-      path: "/api/ledger/comments/comment-2",
+      path: "/api/ledger/comments/abc%23last",
       method: "PATCH",
       body: { body: "Last comment updated" },
     });
@@ -215,7 +215,7 @@ describe("comment edit CLI", () => {
 
     expect(result.status).toBe(0);
     expect(requestBodies).toContainEqual({
-      path: "/api/ledger/comments/comment-2",
+      path: "/api/ledger/comments/abc%232",
       method: "PATCH",
       body: { body: "With base rev", base_body_revision_id: "rev-abc123" },
     });
@@ -231,7 +231,7 @@ describe("comment edit CLI", () => {
 
     expect(result.status).toBe(0);
     expect(requestBodies).toContainEqual({
-      path: "/api/ledger/comments/comment-2",
+      path: "/api/ledger/comments/abc%232",
       method: "PATCH",
       body: { body: "With base hash", base_body_hash: "deadbeef1234" },
     });

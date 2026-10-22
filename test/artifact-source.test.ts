@@ -1,4 +1,4 @@
-import { retainArtifactCommit } from '../src/artifact-repo-resolution.js';
+import { retainArtifactCommit } from '../src/artifact-commit-source.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -33,7 +33,7 @@ function repo(name:string, text='same bytes') {
   const root=path.join(dir,name); fs.mkdirSync(root);
   git(root,'init','-b','main'); git(root,'config','user.name','Test'); git(root,'config','user.email','test@example.invalid'); git(root,'config','commit.gpgsign','false');
   const file=path.join(root,'report.md'); fs.writeFileSync(file,text); git(root,'add','.'); git(root,'commit','-m','record');
-  const project=insertRawLedgerProject(db,{name}); insertRawLedgerCheckout(db,{projectId:project,name,root,conflict:'replace'});
+  const project=insertRawLedgerProject(db,{name,projectKey:name}); insertRawLedgerCheckout(db,{projectId:project,name,root,conflict:'replace'});
   return {root,file,project};
 }
 const identity = (series: string) => series.replace('artifact-series:','artifact:');
@@ -174,7 +174,7 @@ it('takes a selected project as the owner of a non-repository file and still ref
 
 it('requires registered project access for files in checkouts without Git metadata',()=>{
   const root=path.join(dir,'registered-folder');fs.mkdirSync(root);const file=path.join(root,'notes.txt');fs.writeFileSync(file,'private');
-  const project=insertRawLedgerProject(db,{name:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
+  const project=insertRawLedgerProject(db,{name:'folder',projectKey:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
   const plan=ok(planArtifactVersion(db,{source_kind:'managed',path:file}));
   expect(plan.source).toEqual({kind:'repo',project_id:project,path:'notes.txt'});
   expect(plan.required_project_ids).toEqual([project]);
@@ -290,12 +290,12 @@ it('preserves original input alias evidence and rejects conflicting project attr
   const target = path.join(dir, 'target'); fs.mkdirSync(target);
   const file = path.join(target, 'report.md'); fs.writeFileSync(file, 'report');
   const alias = path.join(dir, 'alias'); fs.symlinkSync(target, alias);
-  const project = insertRawLedgerProject(db, { name: 'alias-project' });
+  const project = insertRawLedgerProject(db, { name: 'alias-project', projectKey: 'alias-project' });
   insertRawLedgerCheckout(db, { projectId: project, name: 'alias-project', root: alias, conflict: 'replace' });
   const input = { source_kind: 'local_only' as const, path: path.join(alias, 'report.md'), custody_mode: 'managed' as const };
   const plan = ok(planArtifactVersion(db, input));
   expect(plan.required_project_ids).toContain(project);
-  const other = insertRawLedgerProject(db, { name: 'target-project' });
+  const other = insertRawLedgerProject(db, { name: 'target-project', projectKey: 'target-project' });
   insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
   expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });
 });

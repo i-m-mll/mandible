@@ -17,7 +17,6 @@ import {
   ProjectRegistryError,
   PROJECT_ID_COLUMNS,
   repairRegistry,
-  resolveCheckoutPath,
   resolveProjectRef,
   slugifyProjectKey,
   suggestProjectRefs,
@@ -49,10 +48,6 @@ afterEach(() => {
 
 // ---------------------------------------------------------------------------
 // 3. resolveProjectRef — precedence chain
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// 5. resolveCheckoutPath — registered vs unregistered path
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

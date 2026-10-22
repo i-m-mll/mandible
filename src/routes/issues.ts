@@ -57,7 +57,6 @@ import {
   type MarkdownBodyPolicyWarning,
 } from "../ledger/markdown-body.js";
 import {
-  resolveCheckoutPath,
   resolveProjectRef,
   suggestProjectRefs,
 } from "../ledger/project-registry.js";
@@ -75,6 +74,7 @@ import {
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
+import { entityRefs, resolveCommentRef } from "../entity-refs.js";
 import {
   PermissionError,
   evaluateProjectAccess,
@@ -253,34 +253,21 @@ function resolveRelationshipEntityRef(
 ): { ok: true; entity_type: LedgerRelationshipEntityType; entity_id: string }
   | { ok: false; status: 404 | 409; error: string } {
   const trimmed = ref.trim();
-  const store = new LedgerStore(db);
   if (!trimmed) return { ok: false, status: 404, error: "relationship entity ref is empty" };
   if (trimmed.includes("#")) {
-    const [issueRef, selector] = trimmed.split("#", 2);
-    if (!issueRef || !selector) return { ok: false, status: 404, error: "invalid comment reference" };
-    const resolvedIssue = resolveLedgerIssueId(db, issueRef);
-    if (!resolvedIssue.ok) return resolvedIssue;
-    const comments = store.getIssueDetail(resolvedIssue.issue_id)
-      .comments
-      .filter((comment) => comment.deleted_at === null)
-      .sort((a, b) => a.ordinal - b.ordinal);
-    const comment = selector === "last"
-      ? comments.at(-1)
-      : /^\d+$/.test(selector)
-        ? comments.find((candidate) => candidate.ordinal === Number(selector))
-        : undefined;
-    if (!comment) return { ok: false, status: 404, error: "ledger comment not found" };
-    return { ok: true, entity_type: "comment", entity_id: comment.id };
+    const comment = resolveCommentRef(db, trimmed);
+    if (comment.ok) return { ok: true, entity_type: "comment", entity_id: comment.id };
+    return comment.error === "ambiguous"
+      ? { ok: false, status: 409, error: "ambiguous issue reference" }
+      : { ok: false, status: 404, error: "ledger comment not found" };
   }
   const resolvedIssue = resolveLedgerIssueId(db, trimmed);
   if (resolvedIssue.ok) return { ok: true, entity_type: "issue", entity_id: resolvedIssue.issue_id };
   if (resolvedIssue.error === "ambiguous issue reference") return resolvedIssue;
-  try {
-    const comment = store.getComment(trimmed);
-    return { ok: true, entity_type: "comment", entity_id: comment.id };
-  } catch {
-    return resolvedIssue;
-  }
+  const comment = resolveCommentRef(db, trimmed);
+  if (comment.ok) return { ok: true, entity_type: "comment", entity_id: comment.id };
+  if (comment.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous comment reference" };
+  return resolvedIssue;
 }
 
 function relationshipEntityIssueId(
@@ -1140,8 +1127,8 @@ export function registerIssueRoutes(
     });
     summaries = summaries.filter((summary) => {
       const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
-      if (project.ambiguous) return false;
-      if (!project.ok || !project.project) return true;
+      if ((!project.ok && project.reason === "ambiguous")) return false;
+      if (!project.ok) return true;
       return evaluateProjectAccess(db, {
         identity: req.client_identity ?? null,
         project_id: project.project.id,
@@ -1166,8 +1153,8 @@ export function registerIssueRoutes(
     let projectIds = (db.prepare("SELECT id FROM ledger_projects").all() as Array<{ id: string }>).map((row) => row.id);
     if (repo) {
       const resolved = resolveProjectRef(db, repo);
-      if (resolved.ambiguous) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
-      if (!resolved.project) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
+      if ((!resolved.ok && resolved.reason === "ambiguous")) return sendJson(res, 409, { error: `ambiguous project ref: ${repo}`, candidates: resolved.candidates ?? [] });
+      if (!resolved.ok) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
       projectIds = [resolved.project.id];
     }
     projectIds = projectIds.filter((project_id) => evaluateProjectAccess(db, {
@@ -1389,7 +1376,7 @@ export function registerIssueRoutes(
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver),
     });
-  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session } } });
 
   // The holder steps down. Its authority is the caller's own session, never a
   // session named in the request, so releasing someone else's live holder
@@ -1673,7 +1660,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { commentId: entityRefs.comment } } });
 
   server.get("/api/ledger/body-revisions/:revisionId", (req, res) => {
     const revisionId = getParam(req, "revisionId");
@@ -1687,7 +1674,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "body revision not found" });
     }
-  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { revisionId: entityRefs.bodyRevision } } });
 
   // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
   // into the canonical projection used by graph and issue detail panes.
@@ -1798,14 +1785,14 @@ export function registerIssueRoutes(
     let project: { id: string } | null = null;
     if (explicitProject) {
       const resolved = resolveProjectRef(db, explicitProject);
-      if (resolved.ambiguous) {
+      if ((!resolved.ok && resolved.reason === "ambiguous")) {
         sendJson(res, 409, {
           error: `ambiguous project ref: ${explicitProject}`,
           candidates: resolved.candidates ?? [],
         });
         return;
       }
-      if (!resolved.ok || !resolved.project) {
+      if (!resolved.ok) {
         sendJson(res, 400, {
           error: `unknown project: ${explicitProject}`,
           suggestions: suggestProjectRefs(db, explicitProject),
@@ -1814,10 +1801,9 @@ export function registerIssueRoutes(
       }
       project = resolved.project;
     } else {
-      project =
-        resolveCheckoutPath(db, root) ??
-        resolveProjectRef(db, repoRef).project ??
-        (root !== repoRef ? resolveProjectRef(db, root).project ?? null : null);
+      const byRoot = resolveProjectRef(db, root);
+      const byRef = byRoot.ok ? byRoot : resolveProjectRef(db, repoRef);
+      project = byRef.ok ? byRef.project : null;
       if (!project) {
         sendJson(res, 400, {
           error:
@@ -1963,7 +1949,17 @@ export function registerIssueRoutes(
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const kind = getQueryParam(req, "kind");
     const latest = getQueryParam(req, "latest");
+    const checkpointId = getQueryParam(req, "id");
     const store = new LedgerStore(db);
+    if (checkpointId) {
+      const checkpoint = store.listIssueCheckpoints(resolved.issue_id, kind).find((candidate) => candidate.id === checkpointId);
+      if (!checkpoint) {
+        sendJson(res, 404, { error: "checkpoint not found" });
+        return;
+      }
+      sendJson(res, 200, checkpointResponse(checkpoint));
+      return;
+    }
     if (latest === "1" || latest === "true") {
       const checkpoint = store.getLatestIssueCheckpoint(resolved.issue_id, kind);
       if (!checkpoint) {
@@ -1977,7 +1973,7 @@ export function registerIssueRoutes(
       .listIssueCheckpoints(resolved.issue_id, kind)
       .map(checkpointResponse);
     sendJson(res, 200, { checkpoints });
-  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { query: { id: entityRefs.checkpoint } } });
 
   server.patch?.("/api/ledger/comments/:commentId", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -2030,7 +2026,8 @@ export function registerIssueRoutes(
       }
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow",
+    refs: { params: { commentId: entityRefs.comment }, body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision } } });
 
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2149,7 +2146,7 @@ export function registerIssueRoutes(
       throw error;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
-  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision, expected_work_notes_revision: entityRefs.bodyRevision } } });
 
   server.post("/api/ledger/issues/:issueId/worker-status", (req, res) => {
     const issueRef = getParam(req, "issueId");

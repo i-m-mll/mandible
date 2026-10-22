@@ -159,14 +159,14 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
   router.get("/api/projects/:ref", (req, res) => {
     try {
       const resolved = resolveProjectRef(getDb(), req.params.ref);
-      if (resolved.ambiguous) {
+      if ((!resolved.ok && resolved.reason === "ambiguous")) {
         sendJson(res, 409, {
           error: `ambiguous project ref: ${req.params.ref}`,
           candidates: resolved.candidates ?? [],
         });
         return;
       }
-      if (!resolved.ok || !resolved.project) {
+      if (!resolved.ok) {
         sendJson(res, 404, {
           error: `project not found: ${req.params.ref}`,
           suggestions: suggestProjectRefs(getDb(), req.params.ref),

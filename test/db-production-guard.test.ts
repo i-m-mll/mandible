@@ -31,7 +31,6 @@ describe("production database isolation guard (issue 07edc0d)", () => {
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
-    delete process.env.MANDIBLE_ALLOW_REAL_DB;
   });
 
   it("refuses to open the production database path under the test runner", () => {
@@ -115,13 +114,6 @@ describe("production database isolation guard (issue 07edc0d)", () => {
       db = openDb(tempPath);
     }).not.toThrow();
     db?.close();
-  });
-
-  it("honors the MANDIBLE_ALLOW_REAL_DB explicit opt-out", () => {
-    process.env.MANDIBLE_ALLOW_REAL_DB = "1";
-    for (const guarded of PRODUCTION_DB_PATHS) {
-      expect(() => assertNotProductionDbUnderTest(guarded)).not.toThrow();
-    }
   });
 
   it("does not flag a path that resolves to no production location", () => {

@@ -1,7 +1,8 @@
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
-import { getDb, resolvePrefix, type Db } from "../db.js";
-import { parseCommentRefTarget, parseIssueRefTarget } from "../ledger/authored-references.js";
+import { getDb, type Db } from "../db.js";
+import { entityRefs, resolveCommentRef, resolveId } from "../entity-refs.js";
+import { parseIssueRefTarget } from "../ledger/authored-references.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -186,16 +187,10 @@ function requireRefType(value: unknown): SpaceItemRefType {
 }
 
 function loadSpaceOr404(db: Db, ref: string): SpaceRecord {
-  const exact = getSpace(db, ref);
-  if (exact) return exact;
-  if (ref.length < 4) throw new HttpError(404, "space not found");
-
-  const rows = db.prepare(
-    "SELECT id FROM spaces WHERE substr(id, 1, length(?)) = ? ORDER BY id LIMIT 2",
-  ).all(ref, ref) as Array<{ id: string }>;
-  if (rows.length === 0) throw new HttpError(404, "space not found");
-  if (rows.length > 1) throw new HttpError(409, `ambiguous space ref '${ref}'`);
-  return getSpace(db, rows[0].id)!;
+  const resolved = resolveId(db, "space", ref);
+  if (resolved.ok) return getSpace(db, resolved.id)!;
+  if (resolved.error === "ambiguous") throw new HttpError(409, `ambiguous space ref '${ref}'`);
+  throw new HttpError(404, "space not found");
 }
 
 function resolveSpacesProjectFilter(db: Db, ref: string): string {
@@ -307,7 +302,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
     const prefix = ref.slice(0, colon);
     const rest = ref.slice(colon + 1);
     if (prefix === "issue") return resolveIssueRef(db, store, rest, ref, context);
-    if (prefix === "comment") return resolveCommentRef(db, rest, ref);
+    if (prefix === "comment") return resolveCommentResult(db, rest, ref);
     if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
     if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
@@ -410,7 +405,7 @@ function resolveCommentOrdinal(store: LedgerStore, issueId: string, selector: st
 }
 
 function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string): ResolverResult {
-  const resolved = resolvePrefix(db, "auth_requests", "id", refValue.trim());
+  const resolved = resolveId(db, "auth_request", refValue.trim());
   if (!resolved.ok) {
     return { ref, kind: "auth", resolved: false, entity: null, error: resolved.error };
   }
@@ -464,20 +459,13 @@ function resolveBriefingRef(db: Db, req: RequestLike, ref: string): ResolverResu
   return { ref, kind: "briefing", resolved: true, entity: { ...briefing, id: short.slice("briefing:".length), ref: short } };
 }
 
-function resolveCommentRef(db: Db, refValue: string, ref: string): ResolverResult {
-  const store = new LedgerStore(db);
-  const target = parseCommentRefTarget(refValue.trim());
-  if (target && /^\d+$/.test(target.comment)) {
-    const issue = store.resolveIssueRef(`${target.project ? `${target.project}/` : ""}${target.issue}`);
-    if (!issue.ok) return { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
-    return resolveCommentOrdinal(store, issue.id, target.comment, ref);
+function resolveCommentResult(db: Db, refValue: string, ref: string): ResolverResult {
+  const resolved = resolveCommentRef(db, refValue);
+  if (!resolved.ok) {
+    return { ref, kind: "comment", resolved: false, entity: null, error: resolved.error === "ambiguous" ? "ambiguous" : "comment not found" };
   }
-  try {
-    const comment = store.getComment(refValue.trim());
-    return { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> };
-  } catch {
-    return { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
-  }
+  const comment = new LedgerStore(db).getComment(resolved.id);
+  return { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> };
 }
 
 function resolveArtifactResult(
@@ -674,7 +662,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   router.delete("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -688,7 +676,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   // --- occurrences ---
   router.post("/api/spaces/:id/occurrences", (req, res) => {
@@ -748,7 +736,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
 
   router.delete("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -762,7 +750,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
 
   // --- edges ---
   router.post("/api/spaces/:id/edges", (req, res) => {
@@ -812,7 +800,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
 
   router.delete("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -826,7 +814,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
 
   // --- seed-from-filter ---
   router.post("/api/spaces/:id/seed", (req, res) => {
@@ -894,7 +882,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
 
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -908,7 +896,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
 
   // Detach/degrade: drop the item_id embed from every block in the Space that
   // embeds it (preserving item_snapshot_json as a placeholder) so the item can
@@ -926,7 +914,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   router.get("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
@@ -972,7 +960,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       if (body.ref) pinnedRef=documentArtifactAccess(db,req,requireString(body,"ref"));
       else {
         const project=resolveProjectRef(db,requireString(body,"project"));
-        if(!project.ok || !project.project) throw new HttpError(400,"Source project is unavailable or ambiguous");
+        if(!project.ok) throw new HttpError(400,"Source project is unavailable or ambiguous");
         requireProjectAccess(db,req,project.project.id,"read");
       }
       const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:pinnedRef!,title:requireString(body,"title"),projectId:destination })
