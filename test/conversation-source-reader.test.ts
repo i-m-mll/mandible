@@ -95,6 +95,27 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it("rebuilds identical source block identities from the same transcript", async () => {
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    const snapshots: string[][] = [];
+    for (let i = 0; i < 2; i++) {
+      const db = migratedMemoryDb();
+      try {
+        insertConversation(db, "identity-fixture", filePath, parsed);
+        await record(db, "identity-fixture", filePath);
+        const result = await new ConversationSourceReader(db).readAll("identity-fixture");
+        expect(result.status).toBe("source");
+        if (result.status !== "source") throw new Error("expected source read");
+        snapshots.push(result.value.map((block) => block.id));
+      } finally {
+        db.close();
+      }
+    }
+    expect(snapshots[0].length).toBeGreaterThan(0);
+    expect(snapshots[1]).toEqual(snapshots[0]);
+  });
 
   it("seals the parser extent when the writer appends before source indexing", async () => {
     const db = migratedMemoryDb();

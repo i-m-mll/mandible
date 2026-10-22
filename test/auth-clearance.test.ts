@@ -190,6 +190,23 @@ function fixture() {
 }
 
 describe("scoped protected-merge clearance", () => {
+  it("refuses a clearance whose head differs from its selected request", async () => {
+    const f = fixture();
+    try {
+      const request = f.submit();
+      await expect(f.manager.issue({
+        requestId: request.id,
+        grantee: f.agent.id,
+        issueRef: f.issue.id,
+        headBranch: "feature/other",
+      }, f.operator.id)).rejects.toMatchObject({ code: "scope_mismatch" });
+    } finally {
+      f.queue.dispose();
+      f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
   it("does not consume clearance until the dependency is durably finalized", async () => {
     const f = fixture();
     try {
