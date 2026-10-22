@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { useLayoutEffect } from 'preact/hooks';
+import * as ScrollPersistence from '../ui/src/hooks/usePersistedScrollPosition';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
@@ -441,10 +443,27 @@ describe('Approval body reading position', () => {
 });
 
 
-it('restores a saved Console position when long output arrives after an initially empty console', async () => {
+for (const settleBeforeTailEffect of [false, true]) {
+it(`restores saved Console184 when delayed output becomes reachable (settles before tail effect: ${settleBeforeTailEffect})`, async () => {
   localStorage.setItem('auth-review-tab:req-1', '"console"');
   localStorage.setItem('auth-review-scroll:req-1:console', '184');
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const resizeCallbacks: Array<() => void> = [];
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(() => callback([], this as unknown as ResizeObserver)); }
+    observe() {}
+    disconnect() {}
+  });
+  let outputReady = false;
+  if (settleBeforeTailEffect) {
+    const realHook = ScrollPersistence.usePersistedScrollPosition;
+    vi.spyOn(ScrollPersistence, 'usePersistedScrollPosition').mockImplementation((ref, key) => {
+      const pending = realHook(ref, key);
+      useLayoutEffect(() => {
+        if (outputReady) for (const notify of resizeCallbacks) notify();
+      });
+      return pending;
+    });
+  }
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function(this: HTMLElement) {
     return this.querySelector('.console-output__pre') ? 2000 : 300;
   });
@@ -455,8 +474,10 @@ it('restores a saved Console position when long output arrives after an initiall
   const body = document.querySelector<HTMLDivElement>('.auth-detail__body')!;
   expect(body.scrollTop).toBe(0);
   expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  outputReady = true;
   view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Long console output arrived after the saved reading position was loaded.' }} />);
   await waitFor(() => expect(body.scrollTop).toBe(184));
   expect(localStorage.getItem('auth-review-scroll:req-1:console')).toBe('184');
   expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
 });
+}
