@@ -12,7 +12,7 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 const root = path.join(testRuntimeRoot, "post-merge");
 const template = path.join(root, "template");
-let runtimeInputs: Record<string, string> = {};
+let runtimeInputs: ReturnType<typeof copyRuntimeFixture> = {};
 let caseCount = 0;
 
 function git(repo: string, ...args: string[]): string {

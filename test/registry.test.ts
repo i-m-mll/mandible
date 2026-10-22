@@ -60,7 +60,9 @@ function pidlessSession(updatedAt: string): Session {
     terminal: null, multiplexer: null, nav_session: null, nav_tab: null, nav_pane_id: null, nav_extra: null,
     nav_metadata_status: "not_applicable", nav_metadata_attempts: 0, nav_metadata_last_error: null,
     nav_metadata_last_attempt_at: null, nav_metadata_next_retry_at: null, task: null, status: "active",
-    parent_id: null, agent_type: null, description: null, created_at: updatedAt, updated_at: updatedAt, ended_at: null,
+    parent_id: null, agent_type: null, description: null, conversation_id: null, created_at: updatedAt, updated_at: updatedAt,
+    pinned: 0, continuation: null, continuation_acked_by: null, ended_at: null, last_active: null,
+    channel_connected_at: null, channel_last_tool_call: null, owner_user_id: null, identity_mismatch: null,
   };
 }
 

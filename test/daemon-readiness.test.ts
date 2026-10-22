@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, Router, type ClientAuthGate } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import {
-  isDaemonReady,
   isDaemonWarm,
   setDaemonReady,
   setDaemonWarm,
