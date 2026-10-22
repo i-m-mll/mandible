@@ -159,7 +159,7 @@ describe('Briefing sidebar row actions', () => {
     render(<GroupHarness />);
 
     const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
-    const group = groupSelect.closest('.sidebar-group-node') as HTMLElement;
+    const group = groupSelect.closest('section') as HTMLElement;
     const reorderHandle = await within(group).findByRole('button', { name: 'Reorder Release review' });
     const disclosure = within(group).getByRole('button', { name: 'Collapse Release review' });
     expect(reorderHandle.dataset.sidebarReorderHandle).toBe(`group:${groupedUpdates.id}`);
@@ -304,9 +304,9 @@ describe('Briefing sidebar row actions', () => {
     );
 
     const agentPolicy = () => screen.getByRole('button', { name: 'Select Briefing group Release review' })
-      .closest('.sidebar-group-node') as HTMLElement;
+      .closest('section') as HTMLElement;
     const sara = () => screen.getByRole('button', { name: "Select Briefing group Sara's skill, breakdown" })
-      .closest('.sidebar-group-node') as HTMLElement;
+      .closest('section') as HTMLElement;
 
     expect(within(agentPolicy()).queryByRole('button', { name: /Research/ })).toBeNull();
     expect(within(agentPolicy()).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();

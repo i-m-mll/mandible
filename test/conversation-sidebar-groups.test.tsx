@@ -289,9 +289,7 @@ describe('conversation sidebar groups', () => {
     const row = await screen.findByRole('button', { name: provider === 'codex' ? 'Open conversation New Codex chat' : 'Open conversation New Claude chat' });
     expect(row.getAttribute('aria-current')).toBe('true');
     const composer = await screen.findByPlaceholderText('Message...') as HTMLTextAreaElement;
-    const transcript = document.querySelector('.conv-transcript');
-    expect(transcript).toBeTruthy();
-    expect(transcript?.querySelectorAll('[data-chat-event]').length).toBe(0);
+    expect(document.querySelectorAll('[data-chat-event]').length).toBe(0);
     fireEvent.input(composer, { target: { value: 'First message' } });
     if (submitKind === 'return') fireEvent.keyDown(composer, { key: 'Enter' });
     else fireEvent.click(screen.getByRole('button', { name: 'Send' }));

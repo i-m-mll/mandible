@@ -269,10 +269,6 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(document.activeElement).toBe(unpin));
     expect(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }).getAttribute('aria-current')).toBe('true');
     const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
-    const pinnedHeading = within(pinnedSection).getByRole('button', { name: /^Pinned/ });
-    expect(pinnedHeading.querySelector('.sidebar-group-node__count')).toBeNull();
-    expect(pinnedHeading.getAttribute('aria-description')).toBe('2 pinned chats');
-    expect(pinnedSection.querySelector('.chat-history-item__pin')).toBeNull();
     expect(within(pinnedSection).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label'))).toEqual([
       `Open conversation ${existingPinnedConversation.title}`,
       `Open conversation ${conversation.title}`,

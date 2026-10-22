@@ -6,7 +6,7 @@
 // flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
 
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the seed POST so the SpaceSeedDialog mount path doesn't hit a daemon.
@@ -90,6 +90,9 @@ afterEach(() => {
   cleanup();
 });
 
+const spaceOrder = (group: HTMLElement) =>
+  within(group).getAllByText(/^(Backlog|Roadmap)$/).map((node) => node.textContent);
+
 describe('SpacesSidebar render + grouping', () => {
   it('supplies the canonical project key when opening a project Space', async () => {
     const onSelectSpace = vi.fn();
@@ -122,19 +125,19 @@ describe('SpacesSidebar live filter', () => {
     expect(input.value).toBe('a');
 
     const alpha = screen.getByTestId('spaces-group-proj-a');
-    expect(Array.from(alpha.querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+    expect(spaceOrder(alpha))
       .toEqual(['Backlog', 'Roadmap']);
 
     rerender(<SpacesSidebar refreshToken={1} onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(2));
     expect((screen.getByTestId('spaces-filter-input') as HTMLInputElement).value).toBe('a');
-    expect(Array.from(screen.getByTestId('spaces-group-proj-a').querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+    expect(spaceOrder(screen.getByTestId('spaces-group-proj-a')))
       .toEqual(['Backlog', 'Roadmap']);
 
     unmount();
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
-    expect(Array.from(screen.getByTestId('spaces-group-proj-a').querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+    expect(spaceOrder(screen.getByTestId('spaces-group-proj-a')))
       .toEqual(['Backlog', 'Roadmap']);
     fireEvent.click(screen.getByRole('button', { name: 'Space filter and sort options' }));
     expect(screen.getByRole('menuitemradio', { name: 'Name' }).getAttribute('aria-checked')).toBe('true');
