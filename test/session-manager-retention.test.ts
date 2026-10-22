@@ -1,17 +1,16 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../src/db.js";
+import { setDb } from "../src/db.js";
 import {
   SessionManager,
   TERMINAL_BACKEND_RETENTION_LIMIT,
 } from "../src/session-manager.js";
 import { PTYBackend } from "../src/backends/pty-backend.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 describe("SessionManager terminal backend retention", () => {
   it("loads copied sessions without reconciling or starting them in read-only mode", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     setDb(db);
     const seed = new SessionManager(db, () => undefined);
     const session = seed.create({
@@ -42,8 +41,7 @@ describe("SessionManager terminal backend retention", () => {
   });
 
   it("evicts backend resources while preserving list and on-demand lookup behavior", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     setDb(db);
     const manager = new SessionManager(db, () => undefined);
     const sessionIds: string[] = [];

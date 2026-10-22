@@ -9,12 +9,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { TASK_INVENTORY_SCHEMA_V2 } from "../src/contracts.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { registerTaskRoutes } from "../src/routes/tasks.js";
@@ -25,6 +24,7 @@ import { createManagedReminder } from "../src/managed-reminders.js";
 import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const NOW = 1_786_650_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -122,8 +122,7 @@ function post(body: unknown, credential?: string) {
 }
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   operatorId = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
   setSetting(db, OPERATOR_SETTING_KEY, operatorId);

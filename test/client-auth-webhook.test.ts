@@ -4,10 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerWebhookRoutes } from "../src/routes/webhooks.js";
 import { Router } from "../src/server.js";
 import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 describe("client-auth operator webhook delivery", () => {
   let tempDir: string;
@@ -21,7 +22,7 @@ describe("client-auth operator webhook delivery", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-webhook-"));
-    db = openDb(path.join(tempDir, "mandible.db"));
+    db = migratedMemoryDb();
     setDb(db);
     const operator = setupOperator(db, { display_name: "Operator" });
     const agent = createUser(db, {
