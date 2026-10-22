@@ -234,7 +234,7 @@ describe('Auth Description disclosure persistence', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Description' }));
     fireEvent.click(screen.getByRole('button', { name: 'Exact Git message' }));
     await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1'))
-      .toBe(JSON.stringify({ descriptionExpanded: false, exactGitExpanded: true })));
+      .toBe(JSON.stringify({ descriptionExpanded: false, exactGitExpanded: true, referencesExpanded: true })));
 
     view.rerender(<AuthQueueView {...props()} queue={[{ ...first, updated_at: 2 }, second]} />);
     expect(expanded('Description')).toBe('false');
@@ -294,4 +294,91 @@ describe('AuthQueueView persisted action expansion', () => {
     expect(screen.getByRole('button', { name: 'Expand Comment action' })).toBeTruthy();
     expect(localStorage.getItem(storageKey)).toBe('[]');
   });
+});
+
+describe('Approval review issue and action composition', () => {
+  it('keeps references and actions in reading order with independent links, details and saved disclosures', async () => {
+    const titles: Record<string, string> = {
+      'ref-9b1': 'Reference one with a title outside its ID',
+      'ref-9b2': 'Reference two',
+      'close-9b1': 'First completed issue',
+      'close-9b2': 'Second completed issue',
+    };
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      if (!input.startsWith('/api/spaces/resolve?')) throw new Error('no network in test');
+      const ref = new URL(input, 'http://localhost').searchParams.get('ref')!.replace('issue:', '');
+      return { ok: true, json: async () => ({ resolved: true, entity: { id: ref, short_id: ref, project_ref: 'mandible', title: titles[ref] }, detail: { same_project: true } }) };
+    }));
+    const request: AuthRequest = {
+      ...pendingRequest,
+      status: 'completed', exit_code: 0,
+      issue_references: ['ref-9b1', 'ref-9b2'],
+      issue_closures: ['close-9b1', 'close-9b2'],
+      actions: ['close-9b1', 'close-9b2'].map((ref, index) => ({
+        ...deferredAction, id: `layout-action-${index}`, kind: 'issue_close', state: 'applied',
+        target_issue_ref: ref, ordinal: index, payload: {},
+        outcome_detail: index === 0 ? 'Closed after the reviewed target changed.' : null,
+      })),
+    };
+    const props = {
+      queue: [], historyQueue: [request], outputs: {}, selectedAuthId: request.id,
+      daemonReady: true, instance: authMainInstance,
+      onApprove: () => undefined, onReject: () => undefined, onRetry: () => undefined, onDismiss: () => undefined,
+    };
+    const view = render(<AuthQueueView {...props} />);
+    await screen.findByText(titles['ref-9b1']);
+    const panel = (name: string) => screen.getByRole('button', { name, exact: true }).closest('section')!;
+    const description = panel('Description');
+    const references = panel('References');
+    const actions = panel('Actions on merge');
+    expect(description.nextElementSibling).toBe(references);
+    expect(references.nextElementSibling).toBe(actions);
+    expect(references.classList.contains('collapsible-panel')).toBe(true);
+    expect(actions.classList.contains('collapsible-panel')).toBe(true);
+    expect(view.container.querySelector('.auth-detail__header')?.querySelector('.issue-pill')).toBeNull();
+    expect(references.querySelectorAll('a')).toHaveLength(2);
+    for (const link of [...references.querySelectorAll('a'), ...actions.querySelectorAll('a')]) {
+      expect(link.querySelector('.issue-pill')?.textContent).toMatch(/^(ref|close)-9b[12]$/);
+      expect(link.querySelector('.issue-pill__title')?.closest('.issue-pill')).toBeNull();
+      expect(link.getAttribute('href')).toContain('#/issues?issue=');
+    }
+    const rows = actions.querySelectorAll('.auth-action-row');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.firstElementChild?.className).toBe('auth-action-row__main');
+      expect(row.querySelector('.auth-action-row__controls')?.lastElementChild?.textContent).toBe('Done');
+    }
+    expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Close issue action' }));
+    expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'References', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions on merge', exact: true }));
+    view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, updated_at: 2 }]} />);
+    expect(screen.getByRole('button', { name: 'References', exact: true }).getAttribute('aria-expanded')).toBe('false');
+    view.unmount();
+    render(<AuthQueueView {...props} />);
+    expect(screen.getByRole('button', { name: 'Actions on merge', exact: true }).getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions on merge', exact: true }));
+    expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
+  });
+});
+
+
+describe('Approval closure targets without recorded actions', () => {
+  for (const field of ['issue_closures', 'issues'] as const) {
+    it(`preserves ${field} closure links without assigning completion evidence`, async () => {
+      const request = { ...pendingRequest, status: 'completed', exit_code: 0,
+        issue_references: [], actions: [], [field]: ['legacy-9b1', 'legacy-9b2', 'legacy-9b1'] };
+      render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}}
+        selectedAuthId={request.id} daemonReady instance={authMainInstance}
+        onApprove={() => undefined} onReject={() => undefined} />);
+      const panel = screen.getByRole('button', { name: 'Actions on merge', exact: true }).closest('section')!;
+      expect(panel.querySelectorAll('a')).toHaveLength(2);
+      expect(panel.querySelector('a')?.getAttribute('href')).toContain('legacy-9b1');
+      expect(panel.querySelector('.auth-action-row__state')).toBeNull();
+      expect(screen.getByText('No action status recorded.')).toBeTruthy();
+      expect(screen.queryByRole('switch')).toBeNull();
+
+    });
+  }
 });
