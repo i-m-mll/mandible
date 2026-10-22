@@ -95,7 +95,7 @@ describe("protected-base history audit", () => {
       const unsigned = directCommit(f.repo, "unsigned.txt", "Unsigned direct commit", "none");
       const stranger = directCommit(f.repo, "stranger.txt", "Commit signed by another key", f.strangerKey);
 
-      const request = f.submit("feature/topic");
+      const request = await f.submit("feature/topic");
       const audit = f.queue.baseAuditForRequest(request.id)!;
       expect(audit).toMatchObject({
         status: "unexpected",
@@ -126,7 +126,7 @@ describe("protected-base history audit", () => {
       commitOnBranch(f.repo, "feature/topic", { "topic.txt": "topic\n" });
       advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/landed", "merge-landed");
       const unsigned = directCommit(f.repo, "unsigned.txt", "Unsigned direct commit", "none");
-      const request = f.submit("feature/topic");
+      const request = await f.submit("feature/topic");
       // A request whose stored audit predates this base (or never existed).
       f.db.prepare("DELETE FROM auth_base_audits WHERE auth_request_id = ?").run(request.id);
 
@@ -143,20 +143,20 @@ describe("protected-base history audit", () => {
     }
   });
 
-  it("refuses a delegated approval onto a base with unexpected history even though the request showed it", () => {
+  it("refuses a delegated approval onto a base with unexpected history even though the request showed it", async () => {
     const f = fixture();
     try {
       commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });
       commitOnBranch(f.repo, "feature/topic", { "topic.txt": "topic\n" });
       advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/landed", "merge-landed");
       const unsigned = directCommit(f.repo, "unsigned.txt", "Unsigned direct commit", "none");
-      const request = f.submit("feature/topic");
+      const request = await f.submit("feature/topic");
       expect(f.queue.baseAuditForRequest(request.id)?.status).toBe("unexpected");
       const operatorId = registerTestDelegatedLease(f.db, "lease-unattended");
 
-      expect(() => f.queue.approve(request.id, {
+      await expect(f.queue.approve(request.id, {
         source: "auto_lease", leaseId: "lease-unattended", approverUserId: operatorId, env: {},
-      })).toThrow(new RegExp(`without a human reviewer[\\s\\S]*${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
+      })).rejects.toThrow(new RegExp(`without a human reviewer[\\s\\S]*${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
       expect(f.queue.getRequest(request.id)?.status).toBe("pending");
       expect(f.calls).toHaveLength(0);
     } finally {
@@ -164,7 +164,7 @@ describe("protected-base history audit", () => {
     }
   });
 
-  it("reports a recorded Mandible merge that the protected branch no longer contains", () => {
+  it("reports a recorded Mandible merge that the protected branch no longer contains", async () => {
     const f = fixture();
     try {
       commitOnBranch(f.repo, "feature/first", { "first.txt": "first\n" });
@@ -175,7 +175,7 @@ describe("protected-base history audit", () => {
       f.db.prepare("UPDATE auth_requests SET resolved_at = 200 WHERE id = 'merge-second'").run();
       git(f.repo, ["reset", "--hard", first]);
 
-      const request = f.submit("feature/topic");
+      const request = await f.submit("feature/topic");
       expect(f.queue.baseAuditForRequest(request.id)).toMatchObject({
         status: "unexpected", baseline_sha: first, unexpected: [], missing_merges: [second],
       });
@@ -187,7 +187,7 @@ describe("protected-base history audit", () => {
   // The Git hook accepts the delegated key, but the audit has Mandible's merge
   // record: a delegated signature on an unrecorded commit means the key was
   // used outside a Mandible merge.
-  it("lists an unrecorded commit signed with the operator's delegated key", () => {
+  it("lists an unrecorded commit signed with the operator's delegated key", async () => {
     const f = fixture();
     try {
       commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });
@@ -199,7 +199,7 @@ describe("protected-base history audit", () => {
       addCredential(f.db, operator.id, { type: "delegated_ssh_key", fingerprint: f.strangerFingerprint, public_material: material });
       const delegated = directCommit(f.repo, "agent.txt", "Agent-signed direct commit", f.strangerKey);
 
-      const request = f.submit("feature/topic");
+      const request = await f.submit("feature/topic");
       expect(f.queue.baseAuditForRequest(request.id)?.unexpected.map((commit) => commit.sha)).toEqual([delegated]);
     } finally {
       f.cleanup();
