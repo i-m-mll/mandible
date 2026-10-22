@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -77,11 +78,8 @@ it("keeps a Git version's verified locator after current source registration mov
       env: { ...process.env, GIT_CONFIG_COUNT: "0" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     }).trim();
   }
-  const checkout = path.join(root, "repo"); fs.mkdirSync(checkout);
-  git(checkout, "init", "-b", "main");
-  git(checkout, "config", "user.name", "Fixture"); git(checkout, "config", "user.email", "fixture@example.invalid");
-  fs.writeFileSync(path.join(checkout, "report.md"), "committed\n");
-  git(checkout, "add", "."); git(checkout, "-c", "commit.gpgsign=false", "commit", "-m", "Fixture");
+  const checkout = path.join(root, "repo");
+  artifactRepo(checkout, { "report.md": "committed\n" });
   const project = insertRawLedgerProject(db, { name: "target-fixture", projectKey: "target-fixture" });
   insertRawLedgerCheckout(db, { projectId: project, name: "target-fixture", root: checkout });
   const version = recordArtifactVersion(db, { source_kind: "tracked_repo", path: path.join(checkout, "report.md") });

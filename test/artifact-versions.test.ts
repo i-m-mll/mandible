@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -44,14 +45,7 @@ function createLedgerIssue(issueId: string, projectName = "mandible"): string {
 function makeTrackedRepo(name: string, content: string): { root: string; filePath: string } {
   const root = path.join(tempDir, name);
   const filePath = path.join(root, "results", "report.md");
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
-  git(root, ["config", "user.email", "test@example.invalid"]);
-  git(root, ["config", "user.name", "Test User"]);
-  git(root, ["config", "commit.gpgsign", "false"]);
-  fs.writeFileSync(filePath, content, "utf8");
-  git(root, ["add", "results/report.md"]);
-  git(root, ["commit", "-m", "v1"]);
+  artifactRepo(root, { "results/report.md": content });
   return { root, filePath };
 }
 

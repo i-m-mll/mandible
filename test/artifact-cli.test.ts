@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 // @vitest-environment node
 /**
  * What only a real `mandible artifact` spawn proves: artifact bytes never ride
@@ -7,7 +8,6 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { fileRpc, runCli, scratchDir, startStubDaemon, type StubDaemon, type StubHandler } from "./helpers/cli-process.js";
@@ -34,11 +34,7 @@ function spool(handler: FileRpcHandler): { env: Record<string, string>; responde
 /** A committed repo holding report.md, the CLI's working directory. */
 function repo(): string {
   const dir = scratchDir("artifact-repo");
-  fs.writeFileSync(path.join(dir, "report.md"), "# Report\n\nReady.\n");
-  for (const args of [["init", "-q"], ["add", "report.md"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "add report"]]) {
-    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
-    if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
-  }
+  artifactRepo(dir, { "report.md": "# Report\n\nReady.\n" });
   return dir;
 }
 

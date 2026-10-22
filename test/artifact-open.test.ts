@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,12 +29,9 @@ describe("artifact external open", () => {
   it("opens tracked repo material only through its registered checkout locator", async () => {
     const repoRoot = path.join(tempDir, "checkout");
     const trackedPath = path.join(repoRoot, "results", "report.md");
-    fs.mkdirSync(path.dirname(trackedPath), { recursive: true });
-    fs.writeFileSync(trackedPath, "tracked material\n");
+    artifactRepo(repoRoot, { "results/report.md": "tracked material\n" });
     const projectId = insertRawLedgerProject(db, { name: "repo", projectKey: "repo" });
     insertRawLedgerCheckout(db, { projectId, name: "repo", root: repoRoot });
-    const git=(args:string[])=>execFileSync('git',['-C',repoRoot,...args],{stdio:'pipe'});
-    git(['init','-b','main']);git(['config','user.name','Test']);git(['config','user.email','test@example.invalid']);git(['config','commit.gpgsign','false']);git(['add','.']);git(['commit','-m','save']);
     const saved=recordArtifactVersion(db,{source_kind:'tracked_repo',path:trackedPath,custody_mode:'git'});
     fs.writeFileSync(trackedPath,'changed checkout');
     db.prepare('UPDATE artifact_version SET metadata_json=? WHERE id=?').run(JSON.stringify({filename:'../../escaped.md'}),saved.version.id);

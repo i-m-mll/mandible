@@ -1,3 +1,4 @@
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -109,11 +110,7 @@ function git(repo: string, args: string[]): string {
 }
 
 function initGitRepo(root: string): void {
-  fs.mkdirSync(root, { recursive: true });
-  execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
-  git(root, ["config", "user.email", "test@example.invalid"]);
-  git(root, ["config", "user.name", "Test User"]);
-  git(root, ["config", "commit.gpgsign", "false"]);
+  artifactRepo(root);
 }
 
 beforeEach(() => {
@@ -900,11 +897,7 @@ describe("provider/artifact substrate", () => {
 
 describe("durable local-only artifact paths across worktree symlinks (issue 2f9c3c3)", () => {
   function initRepo(root: string): void {
-    fs.mkdirSync(root, { recursive: true });
-    execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
-    git(root, ["config", "user.email", "test@example.invalid"]);
-    git(root, ["config", "user.name", "Test User"]);
-    git(root, ["config", "commit.gpgsign", "false"]);
+    artifactRepo(root);
   }
 
   function commitFile(root: string, rel: string, body: string): void {
