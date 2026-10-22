@@ -956,7 +956,7 @@ export async function getAuthRequestActions(requestId: string): Promise<AuthRequ
   if (payload && typeof payload === 'object' && Array.isArray((payload as { actions?: unknown }).actions)) {
     return (payload as { actions: AuthRequestAction[] }).actions;
   }
-  return [];
+  throw new Error('Approval action response did not contain an action list.');
 }
 
 export async function setAuthRequestActionVeto(

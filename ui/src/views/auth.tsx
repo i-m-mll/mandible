@@ -442,6 +442,12 @@ function getActionCount(request: AuthRequest): number {
     : 0;
 }
 
+function getInlineActionList(request: AuthRequest): AuthRequestAction[] | undefined {
+  if (!Array.isArray(request.actions)) return undefined;
+  if (request.actions.length === 0 && typeof request.action_count === 'number' && request.action_count > 0) return undefined;
+  return request.actions;
+}
+
 function formatActionKind(kind: AuthRequestAction['kind']): string {
   switch (kind) {
     case 'comment_add': return 'Comment';
@@ -527,7 +533,7 @@ function AuthActionBundle({
   onToggleVeto,
 }: {
   request: AuthRequest;
-  actions: AuthRequestAction[];
+  actions?: AuthRequestAction[];
   inFlightActionIds: Set<string>;
   instance?: InstanceInfo | null;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
@@ -547,12 +553,13 @@ function AuthActionBundle({
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
+  const actionRows = actions ?? [];
   const declaredClosures = request.issue_closures ?? request.issues;
-  const unrecordedClosures = actions.length === 0 && Array.isArray(declaredClosures)
+  const unrecordedClosures = actionRows.length === 0 && Array.isArray(declaredClosures)
     ? uniqueStrings(declaredClosures.filter((ref): ref is string => typeof ref === 'string'))
     : [];
 
-  if (actions.length === 0 && unrecordedClosures.length === 0) {
+  if (actionRows.length === 0 && unrecordedClosures.length === 0) {
     return null;
   }
 
@@ -581,10 +588,10 @@ function AuthActionBundle({
             </div>
           </div>
         ))}
-        {unrecordedClosures.length > 0 && (
+        {actions !== undefined && unrecordedClosures.length > 0 && (
           <div className="auth-action-row__summary">No action status recorded.</div>
         )}
-        {actions.map((action) => {
+        {actionRows.map((action) => {
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
@@ -2734,8 +2741,8 @@ export function AuthQueueView({
   useEffect(() => {
     if (!selectedRequest) return;
     const requestId = getAuthId(selectedRequest);
-    const inlineActions = Array.isArray(selectedRequest.actions) ? selectedRequest.actions : [];
-    if (inlineActions.length > 0) {
+    const inlineActions = getInlineActionList(selectedRequest);
+    if (inlineActions !== undefined) {
       // Issue 80ced49: the queue prop's inline actions are a first-paint seed,
       // not an authoritative refresh. This effect re-runs whenever the selected
       // request object is re-derived (body hydration rewrites its identity), and
@@ -2743,10 +2750,6 @@ export function AuthQueueView({
       // veto toggle, silently reverting the user's action. Seed once per request
       // and let the actions refetch below carry real server updates.
       seedActionListForRequest(requestId, inlineActions);
-    }
-    if (getActionCount(selectedRequest) === 0) {
-      setActionListForRequest(requestId, []);
-      return;
     }
     let active = true;
     getAuthRequestActions(requestId)
@@ -3147,7 +3150,8 @@ export function AuthQueueView({
           const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
           const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
           const isHistory = isHistoryStatus(status, exitCode);
-          const requestActions = actionLists.get(id) ?? (Array.isArray(request.actions) ? request.actions : []);
+          const inlineActions = getInlineActionList(request);
+          const requestActions = actionLists.get(id) ?? inlineActions;
           const actionError = actionErrors.get(id) ?? null;
           return (
             <AuthRequestDetail

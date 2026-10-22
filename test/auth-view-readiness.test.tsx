@@ -5,7 +5,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
-import { screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
+import { act, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -483,3 +483,48 @@ it(`restores saved Console${savedOffset} when delayed output becomes reachable (
 });
 }
 }
+
+it('waits for confirmed actions and preserves useful rows throughout a delayed refetch', async () => {
+  const replies: Array<{ resolve(response: Response): void; reject(error: Error): void }> = [];
+  vi.stubGlobal('fetch', vi.fn((input: string) => {
+    if (!String(input).endsWith('/api/auth/request/req-1/actions')) return Promise.reject(new Error('no network in test'));
+    return new Promise<Response>((resolve, reject) => replies.push({ resolve, reject }));
+  }));
+  const request: AuthRequest = { ...pendingRequest, status: 'completed', exit_code: 0,
+    actions: undefined, action_count: 3, issue_closures: ['close-loading'], issue_references: [],
+    diff_summary: '', spec_content: '', output: '',
+  };
+  const props = { queue: [], historyQueue: [request], outputs: {}, selectedAuthId: 'req-1',
+    daemonReady: true, instance: authMainInstance, onApprove: () => undefined, onReject: () => undefined };
+  const view = render(<AuthQueueView {...props} />);
+  await waitFor(() => expect(replies).toHaveLength(1));
+  expect(screen.queryByText('No action status recorded.')).toBeNull();
+  expect(screen.queryByText('Done')).toBeNull();
+  expect(document.querySelectorAll('.auth-action-row')).toHaveLength(1);
+  expect(document.querySelector('.auth-action-row a')?.getAttribute('href')).toContain('close-loading');
+  expect(screen.queryByRole('switch')).toBeNull();
+  const respond = (actions: AuthRequestAction[]) => replies.shift()!.resolve(new Response(JSON.stringify({ actions }), {
+    headers: { 'content-type': 'application/json' },
+  }));
+  respond([{ ...deferredAction, kind: 'issue_close', state: 'applied', target_issue_ref: 'close-loading' }]);
+  await screen.findByText('Done');
+  view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, action_count: undefined, updated_at: 2 }]} />);
+  await waitFor(() => expect(replies).toHaveLength(1));
+  expect(screen.getByText('Done')).toBeTruthy();
+  expect(screen.queryByText('No action status recorded.')).toBeNull();
+  await act(async () => { replies.shift()!.reject(new Error('Refetch unavailable')); });
+  expect(screen.getByText('Done')).toBeTruthy();
+  expect(screen.queryByText('No action status recorded.')).toBeNull();
+  view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, updated_at: 3 }]} />);
+  await waitFor(() => expect(replies).toHaveLength(1));
+  respond([]);
+  await screen.findByText('No action status recorded.');
+  expect(screen.queryByText('Done')).toBeNull();
+  expect(document.querySelectorAll('.auth-action-row')).toHaveLength(1);
+});
+
+it('rejects a malformed successful action response instead of confirming an empty list', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { headers: { 'content-type': 'application/json' } })));
+  const { getAuthRequestActions } = await import('../ui/src/api');
+  await expect(getAuthRequestActions('req-1')).rejects.toThrow('did not contain an action list');
+});
