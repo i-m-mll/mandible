@@ -15,6 +15,7 @@ GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+mandible_prepare_syntax_runtime || exit $?
 
 # Derive branch and repo from git
 branch=$(git branch --show-current 2>/dev/null) || true

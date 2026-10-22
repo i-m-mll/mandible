@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/api.sh"
+mandible_prepare_syntax_runtime || exit $?
 
 usage() {
   mandible_command_help auth clearance

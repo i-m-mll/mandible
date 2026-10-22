@@ -2,6 +2,7 @@
 # Inspect or repair one candidate-only pending auth lifecycle snapshot drift.
 set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+mandible_prepare_syntax_runtime || exit $?
 
 usage='Usage: mandible auth candidate-repair inspect <request> [--operator-recovery] [--json]
        mandible auth candidate-repair apply <request> --expected-revision <n> --expected-custody-generation <n> --expected-current-snapshot-sha256 <sha256> [--operator-recovery] [--json]'

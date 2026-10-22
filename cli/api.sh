@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/command-syntax.sh"
+source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/command-syntax.sh" --mandible-syntax-definitions-only
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/canonical-origin.sh"
 : "${MANDIBLE_PORT:=${MANDIBLE_DEFAULT_BACKEND_PORT}}"
 if [[ -z "${MANDIBLE_BASE:-}" || ( "${MANDIBLE_BASE%/}" == "${MANDIBLE_CANONICAL_ORIGIN%/}" && "${MANDIBLE_TRANSPORT:-}" != "http" ) ]]; then
@@ -493,8 +493,7 @@ secret_account_for_service() {
     return 3
   fi
   account=$(printf '%s\n' "$attributes" \
-    | sed -n 's/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/p' \
-    | sed -n '1p')
+    | sed -n '/^[[:space:]]*"acct"<blob>=".*"$/ { s/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/; p; q; }')
   [[ -n "$account" ]] || return 3
   printf '%s' "$account"
 }
@@ -798,8 +797,9 @@ api_http_probe_health() {
   fi
   http_status="${http_status:-000}"
   if [[ "$curl_exit" -eq 0 && "$http_status" =~ ^2 ]]; then
-    ready=$(jq -r 'if has("ready") then (.ready | tostring) else "unknown" end' "$health_tmp" 2>/dev/null || printf 'unknown')
-    rebuilding=$(jq -r '.rebuilding // false' "$health_tmp" 2>/dev/null || printf 'false')
+    ready=unknown rebuilding=false
+    eval "$(jq -r '{ready: (if has("ready") then (.ready | tostring) else "unknown" end), rebuilding: ((.rebuilding // false) | tostring)}
+      | to_entries[] | "\(.key)=\(.value | @sh)"' "$health_tmp" 2>/dev/null)"
     rm -f "$health_tmp"
     if [[ "$ready" == "false" || "$rebuilding" == "true" ]]; then
       printf 'busy_not_ready'
@@ -1038,8 +1038,8 @@ api_scope_inherited_identity() {
   row_path="/api/sessions/$(urlencode "$MANDIBLE_SESSION_ID")"
   http_status=$(unset MANDIBLE_SESSION_ID; api_capture GET "$row_path" "" "$row_file")
   if [[ "$http_status" == 200 ]]; then
-    row_pid=$(jq -r '.pid // empty' "$row_file")
-    row_conversation=$(jq -r '.conversation_id // empty' "$row_file")
+    eval "$(jq -r '{row_pid: (.pid // ""), row_conversation: (.conversation_id // "")}
+      | to_entries[] | "\(.key)=\(.value | @sh)"' "$row_file")"
   fi
   rm -f "$row_file"
   # 404 binds nothing; without the daemon there is nothing to attribute to, and
@@ -1265,16 +1265,14 @@ api_restart_availability_preflight() {
     return 1
   fi
 
-  phase=$(jq -r '.phase' "$notice_file")
+  eval "$(jq -r '{phase, sample_count, retry_after: (.retry_after_seconds // ""),
+    exceeded: (.eta_exceeded_seconds // ""), average: (.average_seconds // "")}
+    | to_entries[] | "\(.key)=\(.value | @sh)"' "$notice_file")"
   case "$phase" in
     rebuilding) phase_word="rebuilding" ;;
     shutdown) phase_word="restarting" ;;
     *) rm -f "$notice_file"; return 1 ;;
   esac
-  sample_count=$(jq -r '.sample_count' "$notice_file")
-  retry_after=$(jq -r '.retry_after_seconds // empty' "$notice_file")
-  exceeded=$(jq -r '.eta_exceeded_seconds // empty' "$notice_file")
-  average=$(jq -r '.average_seconds // empty' "$notice_file")
 
   if [[ -n "$retry_after" ]]; then
     timing_text="about ${retry_after} s remaining"
@@ -1445,10 +1443,13 @@ api_preflight_operational_mutation() {
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
-  role=$(jq -r '.instance.role' "$tmp_response")
-  policy=$(jq -r 'if (.instance | has("allowed_effects")) then
-    if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
-  else .instance.operational_mutations end' "$tmp_response")
+  eval "$(jq -r '{
+    role: .instance.role,
+    policy: (if (.instance | has("allowed_effects")) then
+      if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
+      else .instance.operational_mutations end),
+    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}
+    | to_entries[] | "\(.key)=\(.value | @sh)"' "$tmp_response")"
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0
@@ -1467,8 +1468,6 @@ api_preflight_operational_mutation() {
     return 0
   }
 
-  db_path=$(jq -r '.instance.db_path // ""' "$tmp_response")
-  source_db_path=$(jq -r '.instance.source_db_path // ""' "$tmp_response")
   rm -f "$tmp_response"
 
   message="Refusing ${category} mutation against Mandible ${role} instance (${policy}). This target is not the main operational daemon"
@@ -1556,10 +1555,10 @@ api_file_rpc_cleanup() {
 
 api_file_rpc_consume_response() {
   local response_file="$1" output_file="$2" response response_status
-  response=$(cat "$response_file")
+  response=$(jq -r '(.status // 500), (.body | tojson)' "$response_file")
   api_file_rpc_cleanup "$response_file"
-  response_status=$(printf '%s' "$response" | jq -r '.status // 500')
-  printf '%s' "$response" | jq -c '.body' > "$output_file"
+  response_status="${response%%$'\n'*}"
+  printf '%s\n' "${response#*$'\n'}" > "$output_file"
   printf '%s' "$response_status"
 }
 
