@@ -736,11 +736,12 @@ describe('Briefing sidebar row actions', () => {
 
 
   it('resolves emitted short refs only when they identify exactly one Briefing', () => {
-    expect(resolveFeedbackCollection(collections, 'e4c52737')).toBe(collections[0]);
-    expect(resolveFeedbackCollection(collections, firstId)).toBe(collections[0]);
+    expect(resolveFeedbackCollection(collections, 'e4c52737')).toEqual({ status: 'resolved', collection: collections[0] });
+    expect(resolveFeedbackCollection(collections, firstId)).toEqual({ status: 'resolved', collection: collections[0] });
     expect(resolveFeedbackCollection([
       ...collections,
       { ...collections[0], id: 'other', collectionId: 'e4c52737-0000-0000-0000-000000000000' },
-    ], 'e4c52737')).toBeNull();
+    ], 'e4c52737')).toEqual({ status: 'ambiguous', collection: null });
+    expect(resolveFeedbackCollection(collections, 'missing')).toEqual({ status: 'not-found', collection: null });
   });
 });
