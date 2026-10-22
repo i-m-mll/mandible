@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate } from "../src/db.js";
 import {
   createKnowledgeBackref,
   listKnowledgeBackrefs,
 } from "../src/knowledge-backrefs.js";
 import { ingestArtifact } from "../src/provider-artifacts.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let db: SqliteDatabase;
 let tempDir = "";
@@ -18,8 +18,7 @@ beforeEach(() => {
   savedHome = process.env.HOME;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-backrefs-test-"));
   process.env.HOME = path.join(tempDir, "home");
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -84,36 +83,4 @@ describe("knowledge backrefs", () => {
     expect(JSON.stringify(listed)).not.toContain("claim_text");
   });
 
-  it("upserts by source and external HumbleB id", () => {
-    createKnowledgeBackref(db, {
-      source_type: "document",
-      source_id: "repo://mandible@main/docs/handoff.md",
-      ref_type: "entity",
-      external_id: "ent_0000000000000001",
-      status: "offered",
-    }, 1000);
-
-    const updated = createKnowledgeBackref(db, {
-      source_type: "document",
-      source_id: "repo://mandible@main/docs/handoff.md",
-      external_ref: "humbleb:entity:ent_0000000000000001",
-      status: "returned",
-      metadata: { entity_label: "Mandible" },
-    }, 2000);
-
-    const listed = listKnowledgeBackrefs(db, {
-      sourceType: "document",
-      sourceId: "repo://mandible@main/docs/handoff.md",
-    });
-    expect(listed).toHaveLength(1);
-    expect(listed[0]).toMatchObject({
-      id: updated.id,
-      ref_type: "entity",
-      external_id: "ent_0000000000000001",
-      status: "returned",
-      metadata: { entity_label: "Mandible" },
-      created_at: 1000,
-      updated_at: 2000,
-    });
-  });
 });

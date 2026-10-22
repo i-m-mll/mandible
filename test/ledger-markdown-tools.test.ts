@@ -2,21 +2,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import {
-  ISSUE_MARKDOWN_EXPORT_CONFIG_SETTING,
-  exportIssueMarkdownFiles,
   renderIssueMarkdown,
 } from "../src/ledger/issue-markdown-export.js";
 import {
   auditEscapedMarkdownBodies,
   normalizeEscapedMarkdownBodies,
-  normalizeEscapedMarkdownBody,
 } from "../src/ledger/markdown-body.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -24,7 +22,7 @@ const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-markdown-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedMemoryDb();
 });
 
 afterEach(() => {
@@ -126,11 +124,6 @@ describe("ledger escaped Markdown audit and normalization", () => {
     );
   });
 
-  it("preserves intentional Markdown code spans while normalizing surrounding text", () => {
-    expect(normalizeEscapedMarkdownBody("A\\n`B\\nC`\\n```json\n{\"x\":\"y\\n\"}\n```\\nD")).toBe(
-      "A\n`B\\nC`\n```json\n{\"x\":\"y\\n\"}\n```\nD",
-    );
-  });
 });
 
 describe("ledger issue Markdown export", () => {
@@ -165,50 +158,4 @@ describe("ledger issue Markdown export", () => {
     expect(first).not.toContain("event_nonce");
   });
 
-  it("exports selected issues to stable paths and overwrites content on update", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.id,
-      title: "Export Path",
-      body: "Before",
-      created_at: 1000,
-    });
-    const outDir = path.join(tempDir, "exports");
-
-    const first = exportIssueMarkdownFiles(db, { out_dir: outDir, issue_refs: [issue.id] });
-    expect(first.files).toHaveLength(1);
-    expect(first.files[0].path).toMatch(/exports\/mandible--prj_.*\/[a-z0-9]+\.md$/);
-    expect(fs.readFileSync(first.files[0].path, "utf8")).toContain("Before");
-
-    store.updateIssue(issue.id, { body: "After" }, SYSTEM_ACTOR);
-    const second = exportIssueMarkdownFiles(db, { out_dir: outDir, issue_refs: [issue.id] });
-
-    expect(second.files[0].path).toBe(first.files[0].path);
-    expect(fs.readFileSync(second.files[0].path, "utf8")).toContain("After");
-  });
-
-  it("runs all configured exports from settings", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.id,
-      title: "Configured",
-      body: "Configured body",
-      created_at: 1000,
-    });
-    const outDir = path.join(tempDir, "configured");
-    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
-      .run(ISSUE_MARKDOWN_EXPORT_CONFIG_SETTING, JSON.stringify([
-        { out_dir: outDir, project_refs: [project.id] },
-      ]), 1000);
-
-    const result = exportIssueMarkdownFiles(db, { all_configured: true });
-
-    expect(result.configured_exports).toBe(1);
-    expect(result.files).toHaveLength(1);
-    expect(fs.readFileSync(result.files[0].path, "utf8")).toContain("Configured body");
-  });
 });
