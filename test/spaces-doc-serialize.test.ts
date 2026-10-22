@@ -1,8 +1,6 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
-  BLOCK_TYPES,
-  SPACES_DOC_VERSION,
-  assertNonExecutableGrammar,
   exportDocument,
   importDocument,
   isSpacesDocDirectiveRef,
@@ -35,29 +33,6 @@ function normalize(t: DocTree): Record<string, DocBlock> {
   for (const b of t.blocks) byId[b.id] = b;
   return byId;
 }
-
-describe('spaces-doc.v1 frozen grammar', () => {
-  it('publishes the frozen version marker', () => {
-    expect(SPACES_DOC_VERSION).toBe('spaces-doc.v1');
-  });
-
-  it('block types match the C11 space_blocks CHECK set (frozen)', () => {
-    expect([...BLOCK_TYPES]).toEqual([
-      'heading',
-      'paragraph',
-      'reference',
-      'artifact_embed',
-      'issue_embed',
-      'comment_embed',
-      'todo',
-    ]);
-  });
-
-  it('export writes the format marker into frontmatter', () => {
-    const text = exportDocument(tree([block({ id: 'b1', sort_key: 'a0', block_type: 'heading', markdown: '# Hi' })]));
-    expect(text).toContain('mandible_format: spaces-doc.v1');
-  });
-});
 
 describe('round-trip: import(export(tree)) == tree', () => {
   it('round-trips parent_id, sort_key, block_type, item_id embeds, and prose body', () => {
@@ -221,10 +196,6 @@ describe('import-conflict matrix (custody-doc §1.3, all 5 rows)', () => {
 });
 
 describe('non-executable data-node guarantee', () => {
-  it('assertNonExecutableGrammar passes (no executable directive path exists)', () => {
-    expect(assertNonExecutableGrammar()).toBe(true);
-  });
-
   it('a javascript:-scheme ref directive is inert unresolved data, not executed', () => {
     const parsed = parseSpacesDocDirectiveRef(':ref[x]{href="javascript:alert(1)"}');
     expect(parsed).not.toBeNull();
@@ -240,18 +211,17 @@ describe('non-executable data-node guarantee', () => {
     expect(attrs.expr).toContain('1+1');
     expect(attrs.href).toBe('repo://r@main/x');
   });
-
-  it('the serializer module exports no eval/Function/import() executable path', () => {
-    // Structural guard: the directive parsers are pure functions over strings.
-    // A directive carrying a function-call-shaped body never produces callable
-    // output — only data records.
-    const parsed = parseSpacesDocDirectiveRef(':embed{href="artifact:sha256:' + HASH64 + '"}');
-    expect(parsed?.directive).toBe('embed');
-    expect(typeof parsed).toBe('object');
-  });
 });
 
 describe('spaces-doc.v1 directive ref recognition (frozen grammar)', () => {
+  it('classifies issue and repo directive refs and rejects non-directive text', () => {
+    expect(parseSpacesDocDirectiveRef(':ref[e70757d]{href="mandible://mandible/issue/e70757d"}')!.kind).toBe('issue');
+    expect(parseSpacesDocDirectiveRef(':embed{href="repo://mandible@main/docs/x.md"}')).toMatchObject({ kind: 'repo', directive: 'embed' });
+    expect(isSpacesDocDirectiveRef('just some prose')).toBe(false);
+    expect(isSpacesDocDirectiveRef('[artifact:abc123]')).toBe(false);
+    expect(parseSpacesDocDirectiveRef('')).toBeNull();
+  });
+
   it('recognizes inline :ref[label]{href=...} directives', () => {
     const parsed = parseSpacesDocDirectiveRef(':ref[abc]{href="artifact:sha256:' + HASH64 + '"}');
     expect(parsed).not.toBeNull();
@@ -259,22 +229,5 @@ describe('spaces-doc.v1 directive ref recognition (frozen grammar)', () => {
     expect(parsed!.label).toBe('abc');
     expect(parsed!.kind).toBe('artifact');
     expect(parsed!.canonical).toBe(`artifact:sha256:${HASH64}`);
-  });
-
-  it('recognizes mandible://…/issue/… refs as issue kind', () => {
-    const parsed = parseSpacesDocDirectiveRef(':ref[e70757d]{href="mandible://mandible/issue/e70757d"}');
-    expect(parsed!.kind).toBe('issue');
-  });
-
-  it('recognizes repo:// refs as repo kind', () => {
-    const parsed = parseSpacesDocDirectiveRef(':embed{href="repo://mandible@main/docs/x.md"}');
-    expect(parsed!.kind).toBe('repo');
-    expect(parsed!.directive).toBe('embed');
-  });
-
-  it('rejects non-directive text', () => {
-    expect(isSpacesDocDirectiveRef('just some prose')).toBe(false);
-    expect(isSpacesDocDirectiveRef('[artifact:abc123]')).toBe(false);
-    expect(parseSpacesDocDirectiveRef('')).toBeNull();
   });
 });

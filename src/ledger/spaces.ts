@@ -8,6 +8,15 @@ import {
   type IssueRow,
 } from "./issue-predicate.js";
 import { parseJsonObject } from "../row-coerce.js";
+import type {
+  Space,
+  SpaceEdge,
+  SpaceItem,
+  SpaceItemRefType,
+  SpaceOccurrence,
+  SpaceOccurrenceRenderer,
+  SpaceRenderer,
+} from "../contracts.js";
 
 /**
  * Spaces data + query helpers (issue f108bba, umbrella de56ffa).
@@ -18,97 +27,14 @@ import { parseJsonObject } from "../row-coerce.js";
  * C2 routes (`src/routes/spaces.ts`) are a thin HTTP shell over these helpers.
  *
  * Contract notes that downstream children depend on (FROZEN):
- * - Record shapes ({@link SpaceRecord}, {@link SpaceItemRecord},
- *   {@link SpaceOccurrenceRecord}, {@link SpaceEdgeRecord}) deserialize
+ * - Record shapes ({@link Space}, {@link SpaceItem},
+ *   {@link SpaceOccurrence}, {@link SpaceEdge}) deserialize
  *   `metadata_json` into a `metadata` object; the raw column is never returned.
  * - Membership is idempotent on `UNIQUE(space_id, ref_type, ref_id)`:
  *   {@link addSpaceItem} returns `{ item, created }` and never throws on a repeat.
  * - Project-scoping is enforced in the route layer, not here; these helpers are
  *   pure storage and assume validated input.
  */
-
-export type SpaceRenderer = "canvas" | "document" | "board" | "collection";
-export type SpaceOccurrenceRenderer = "canvas" | "board" | "collection";
-export type SpaceItemRefType =
-  | "issue"
-  | "comment"
-  | "artifact"
-  | "external_ref"
-  | "space";
-
-export const SPACE_RENDERERS: readonly SpaceRenderer[] = [
-  "canvas",
-  "document",
-  "board",
-  "collection",
-];
-export const SPACE_OCCURRENCE_RENDERERS: readonly SpaceOccurrenceRenderer[] = [
-  "canvas",
-  "board",
-  "collection",
-];
-export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = [
-  "issue",
-  "comment",
-  "artifact",
-  "external_ref",
-  "space",
-];
-
-export interface SpaceRecord {
-  id: string;
-  /** Owning project, or `null` for a top-level / global Space (issue 812df41). */
-  project_id: string | null;
-  title: string;
-  default_renderer: SpaceRenderer;
-  description: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface SpaceItemRecord {
-  id: string;
-  space_id: string;
-  ref_type: SpaceItemRefType;
-  ref_id: string;
-  ref_uri: string | null;
-  title: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface SpaceOccurrenceRecord {
-  id: string;
-  space_id: string;
-  item_id: string | null;
-  renderer: SpaceOccurrenceRenderer;
-  parent_id: string | null;
-  x: number | null;
-  y: number | null;
-  width: number | null;
-  height: number | null;
-  z_index: number | null;
-  sort_key: string | null;
-  section_id: string | null;
-  note: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface SpaceEdgeRecord {
-  id: string;
-  space_id: string;
-  source: string;
-  target: string;
-  label: string | null;
-  style: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
 
 interface SpaceRow {
   id: string;
@@ -177,7 +103,7 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
-function mapSpace(row: SpaceRow): SpaceRecord {
+function mapSpace(row: SpaceRow): Space {
   return {
     id: row.id,
     project_id: row.project_id,
@@ -190,7 +116,7 @@ function mapSpace(row: SpaceRow): SpaceRecord {
   };
 }
 
-function mapItem(row: SpaceItemRow): SpaceItemRecord {
+function mapItem(row: SpaceItemRow): SpaceItem {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -204,7 +130,7 @@ function mapItem(row: SpaceItemRow): SpaceItemRecord {
   };
 }
 
-function mapOccurrence(row: SpaceOccurrenceRow): SpaceOccurrenceRecord {
+function mapOccurrence(row: SpaceOccurrenceRow): SpaceOccurrence {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -225,7 +151,7 @@ function mapOccurrence(row: SpaceOccurrenceRow): SpaceOccurrenceRecord {
   };
 }
 
-function mapEdge(row: SpaceEdgeRow): SpaceEdgeRecord {
+function mapEdge(row: SpaceEdgeRow): SpaceEdge {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -250,7 +176,7 @@ export interface CreateSpaceInput {
   metadata?: Record<string, unknown>;
 }
 
-export function createSpace(db: Db, input: CreateSpaceInput, now = Date.now()): SpaceRecord {
+export function createSpace(db: Db, input: CreateSpaceInput, now = Date.now()): Space {
   const id = newId();
   db.prepare(
     `INSERT INTO spaces (id, project_id, title, default_renderer, description, metadata_json, created_at, updated_at)
@@ -268,7 +194,7 @@ export function createSpace(db: Db, input: CreateSpaceInput, now = Date.now()): 
   return getSpace(db, id)!;
 }
 
-export function getSpace(db: Db, id: string): SpaceRecord | null {
+export function getSpace(db: Db, id: string): Space | null {
   const row = db.prepare("SELECT * FROM spaces WHERE id = ?").get(id) as SpaceRow | undefined;
   return row ? mapSpace(row) : null;
 }
@@ -278,7 +204,7 @@ export function getSpace(db: Db, id: string): SpaceRecord | null {
  * (project_id IS NULL) are NOT returned here; use {@link listTopLevelSpaces} or
  * {@link listSpacesGrouped} for those.
  */
-export function listSpaces(db: Db, projectId: string): SpaceRecord[] {
+export function listSpaces(db: Db, projectId: string): Space[] {
   const rows = db.prepare(
     "SELECT * FROM spaces WHERE project_id = ? ORDER BY updated_at DESC, id ASC",
   ).all(projectId) as SpaceRow[];
@@ -286,7 +212,7 @@ export function listSpaces(db: Db, projectId: string): SpaceRecord[] {
 }
 
 /** List the top-level / global Spaces (project_id IS NULL, issue 812df41). */
-export function listTopLevelSpaces(db: Db): SpaceRecord[] {
+export function listTopLevelSpaces(db: Db): Space[] {
   const rows = db.prepare(
     "SELECT * FROM spaces WHERE project_id IS NULL ORDER BY updated_at DESC, id ASC",
   ).all() as SpaceRow[];
@@ -294,7 +220,7 @@ export function listTopLevelSpaces(db: Db): SpaceRecord[] {
 }
 
 /** List EVERY Space across all projects plus top-level (issue 812df41). */
-export function listAllSpaces(db: Db): SpaceRecord[] {
+export function listAllSpaces(db: Db): Space[] {
   const rows = db.prepare(
     "SELECT * FROM spaces ORDER BY updated_at DESC, id ASC",
   ).all() as SpaceRow[];
@@ -312,7 +238,7 @@ export interface SpaceGroup {
   project_key: string | null;
   /** Project display name (already disambiguated when colliding), or `null` for the top-level group. */
   project_name: string | null;
-  spaces: SpaceRecord[];
+  spaces: Space[];
 }
 
 /**
@@ -333,8 +259,8 @@ export function listSpacesGrouped(db: Db): SpaceGroup[] {
     .prepare("SELECT id, project_key, display_name FROM ledger_projects")
     .all() as Array<{ id: string; project_key: string; display_name: string | null }>;
 
-  const topLevel: SpaceRecord[] = [];
-  const byProject = new Map<string, SpaceRecord[]>();
+  const topLevel: Space[] = [];
+  const byProject = new Map<string, Space[]>();
   // Do NOT pre-populate every project — only emit groups that own at least one Space.
   // (Empty-project headers caused duplicate/empty headings in the sidebar, issue 6fdd924.)
   for (const space of all) {
@@ -408,7 +334,7 @@ export function updateSpace(
   id: string,
   input: UpdateSpaceInput,
   now = Date.now(),
-): SpaceRecord | null {
+): Space | null {
   const existing = getSpace(db, id);
   if (!existing) return null;
   db.prepare(
@@ -446,11 +372,11 @@ export interface AddSpaceItemInput {
 }
 
 export interface AddSpaceItemResult {
-  item: SpaceItemRecord;
+  item: SpaceItem;
   created: boolean;
 }
 
-export function getSpaceItem(db: Db, spaceId: string, itemId: string): SpaceItemRecord | null {
+export function getSpaceItem(db: Db, spaceId: string, itemId: string): SpaceItem | null {
   const row = db.prepare(
     "SELECT * FROM space_items WHERE space_id = ? AND id = ?",
   ).get(spaceId, itemId) as SpaceItemRow | undefined;
@@ -462,14 +388,14 @@ function findSpaceItemByRef(
   spaceId: string,
   refType: SpaceItemRefType,
   refId: string,
-): SpaceItemRecord | null {
+): SpaceItem | null {
   const row = db.prepare(
     "SELECT * FROM space_items WHERE space_id = ? AND ref_type = ? AND ref_id = ?",
   ).get(spaceId, refType, refId) as SpaceItemRow | undefined;
   return row ? mapItem(row) : null;
 }
 
-export function listSpaceItems(db: Db, spaceId: string): SpaceItemRecord[] {
+export function listSpaceItems(db: Db, spaceId: string): SpaceItem[] {
   const rows = db.prepare(
     "SELECT * FROM space_items WHERE space_id = ? ORDER BY created_at ASC, id ASC",
   ).all(spaceId) as SpaceItemRow[];
@@ -521,7 +447,7 @@ export function updateSpaceItem(
   itemId: string,
   input: UpdateSpaceItemInput,
   now = Date.now(),
-): SpaceItemRecord | null {
+): SpaceItem | null {
   const existing = getSpaceItem(db, spaceId, itemId);
   if (!existing) return null;
   db.prepare(
@@ -571,14 +497,14 @@ export function getSpaceOccurrence(
   db: Db,
   spaceId: string,
   occurrenceId: string,
-): SpaceOccurrenceRecord | null {
+): SpaceOccurrence | null {
   const row = db.prepare(
     "SELECT * FROM space_occurrences WHERE space_id = ? AND id = ?",
   ).get(spaceId, occurrenceId) as SpaceOccurrenceRow | undefined;
   return row ? mapOccurrence(row) : null;
 }
 
-export function listSpaceOccurrences(db: Db, spaceId: string): SpaceOccurrenceRecord[] {
+export function listSpaceOccurrences(db: Db, spaceId: string): SpaceOccurrence[] {
   const rows = db.prepare(
     "SELECT * FROM space_occurrences WHERE space_id = ? ORDER BY sort_key ASC, created_at ASC, id ASC",
   ).all(spaceId) as SpaceOccurrenceRow[];
@@ -590,7 +516,7 @@ export function createSpaceOccurrence(
   spaceId: string,
   input: OccurrenceInput,
   now = Date.now(),
-): SpaceOccurrenceRecord {
+): SpaceOccurrence {
   const id = input.id ?? newId();
   db.prepare(
     `INSERT INTO space_occurrences (
@@ -642,12 +568,12 @@ function applyOccurrenceUpdate(
   occurrenceId: string,
   input: UpdateOccurrenceInput,
   now: number,
-): SpaceOccurrenceRecord | null {
+): SpaceOccurrence | null {
   const existing = getSpaceOccurrence(db, spaceId, occurrenceId);
   if (!existing) return null;
   const pick = <K extends keyof UpdateOccurrenceInput>(
     key: K,
-    fallback: SpaceOccurrenceRecord[K & keyof SpaceOccurrenceRecord],
+    fallback: SpaceOccurrence[K & keyof SpaceOccurrence],
   ) => (input[key] === undefined ? fallback : input[key]);
   db.prepare(
     `UPDATE space_occurrences
@@ -691,7 +617,7 @@ export function updateSpaceOccurrence(
   occurrenceId: string,
   input: UpdateOccurrenceInput,
   now = Date.now(),
-): SpaceOccurrenceRecord | null {
+): SpaceOccurrence | null {
   return applyOccurrenceUpdate(db, spaceId, occurrenceId, input, now);
 }
 
@@ -707,7 +633,7 @@ export interface BatchOccurrenceEntry extends UpdateOccurrenceInput {
 }
 
 export interface BatchOccurrenceResult {
-  occurrences: SpaceOccurrenceRecord[];
+  occurrences: SpaceOccurrence[];
   created: number;
   updated: number;
 }
@@ -724,7 +650,7 @@ export function batchWriteOccurrences(
   now = Date.now(),
 ): BatchOccurrenceResult {
   const run = db.transaction((items: BatchOccurrenceEntry[]): BatchOccurrenceResult => {
-    const occurrences: SpaceOccurrenceRecord[] = [];
+    const occurrences: SpaceOccurrence[] = [];
     let created = 0;
     let updated = 0;
     for (const entry of items) {
@@ -757,14 +683,14 @@ export interface CreateEdgeInput {
   metadata?: Record<string, unknown>;
 }
 
-export function getSpaceEdge(db: Db, spaceId: string, edgeId: string): SpaceEdgeRecord | null {
+export function getSpaceEdge(db: Db, spaceId: string, edgeId: string): SpaceEdge | null {
   const row = db.prepare(
     "SELECT * FROM space_edges WHERE space_id = ? AND id = ?",
   ).get(spaceId, edgeId) as SpaceEdgeRow | undefined;
   return row ? mapEdge(row) : null;
 }
 
-export function listSpaceEdges(db: Db, spaceId: string): SpaceEdgeRecord[] {
+export function listSpaceEdges(db: Db, spaceId: string): SpaceEdge[] {
   const rows = db.prepare(
     "SELECT * FROM space_edges WHERE space_id = ? ORDER BY created_at ASC, id ASC",
   ).all(spaceId) as SpaceEdgeRow[];
@@ -776,7 +702,7 @@ export function createSpaceEdge(
   spaceId: string,
   input: CreateEdgeInput,
   now = Date.now(),
-): SpaceEdgeRecord {
+): SpaceEdge {
   const id = newId();
   db.prepare(
     `INSERT INTO space_edges (id, space_id, source, target, label, style, metadata_json, created_at, updated_at)
@@ -809,7 +735,7 @@ export function updateSpaceEdge(
   edgeId: string,
   input: UpdateEdgeInput,
   now = Date.now(),
-): SpaceEdgeRecord | null {
+): SpaceEdge | null {
   const existing = getSpaceEdge(db, spaceId, edgeId);
   if (!existing) return null;
   db.prepare(
@@ -909,10 +835,10 @@ export interface SeedSpaceInput {
 
 export interface SeedSpaceResult {
   matched_issue_ids: string[];
-  items: SpaceItemRecord[];
+  items: SpaceItem[];
   items_created: number;
   items_existing: number;
-  occurrences: SpaceOccurrenceRecord[];
+  occurrences: SpaceOccurrence[];
   diagnostics: TimelineDiagnostic[];
 }
 
@@ -928,7 +854,7 @@ export interface SeedSpaceResult {
  */
 export function seedSpaceFromPredicate(
   db: Db,
-  space: SpaceRecord,
+  space: Space,
   input: SeedSpaceInput,
   now = Date.now(),
 ): SeedSpaceResult {
@@ -971,8 +897,8 @@ export function seedSpaceFromPredicate(
     : new Map<string, string[]>();
 
   const run = db.transaction((): SeedSpaceResult => {
-    const items: SpaceItemRecord[] = [];
-    const occurrences: SpaceOccurrenceRecord[] = [];
+    const items: SpaceItem[] = [];
+    const occurrences: SpaceOccurrence[] = [];
     let created = 0;
     let existing = 0;
 

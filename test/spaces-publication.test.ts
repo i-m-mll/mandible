@@ -1,10 +1,8 @@
 // @vitest-environment node
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { beforeEach, afterEach, expect, it } from 'vitest';
-import SqliteDatabase from '../src/sqlite.js';
+import { beforeAll, beforeEach, afterEach, expect, it } from 'vitest';
 import { migrate, setDb, type Db } from '../src/db.js';
 import { createSpace } from '../src/ledger/spaces.js';
 import { createSpaceBlock, listSpaceBlocks, updateSpaceBlock } from '../src/ledger/space-blocks.js';
@@ -21,6 +19,8 @@ import { createUser, setupOperator } from '../src/users/store.js';
 import { addGrant, setProjectRestricted } from '../src/permissions/store.js';
 import { registerSpacesRoutes } from '../src/routes/spaces.js';
 import { Router } from '../src/server.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
+import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 
 function unwrap<T>(result:import('../src/spaces/publication.js').PublicationResult<T>):T {
   if(!result.ok)throw new Error(result.error.message);return result.value;
@@ -28,16 +28,19 @@ function unwrap<T>(result:import('../src/spaces/publication.js').PublicationResu
 const preparePublication=(...args:Parameters<typeof prepareResult>)=>unwrap(prepareResult(...args));
 const executePublication=async(...args:Parameters<typeof executeResult>)=>unwrap(await executeResult(...args));
 const importManagedDocument=(...args:Parameters<typeof importResult>)=>unwrap(importResult(...args));
-let root:string,db:Db,space:string;
+let root:string,db:Db,space:string,signingKey:string;
 const git=(directory:string,...args:string[])=>execFileSync('git',args,{cwd:directory,encoding:'utf8',env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}}).trim();
+beforeAll(()=> {
+  signingKey=path.join(fs.mkdtempSync(path.join(testRuntimeRoot,'publication-key-')),'fixture-key');
+  execFileSync('ssh-keygen',['-q','-t','ed25519','-N','','-f',signingKey]);
+});
 beforeEach(()=> {
-  root=fs.mkdtempSync(path.join(os.tmpdir(),'mandible-publication-'));
+  root=fs.mkdtempSync(path.join(testRuntimeRoot,'publication-'));
   process.env.MANDIBLE_ARTIFACT_DIR=path.join(root,'artifacts');
-  db=new SqliteDatabase(':memory:') as Db;migrate(db);
+  db=migratedMemoryDb();
   db.prepare('INSERT INTO ledger_projects (id,project_key,display_name,remote_identity,created_at,updated_at) VALUES (?,?,?,?,?,?)').run('p','fixture','Fixture','local:fixture',1,1);
   const checkout=path.join(root,'repo');fs.mkdirSync(checkout);
-  execFileSync('ssh-keygen',['-q','-t','ed25519','-N','','-f',path.join(root,'fixture-key')]);
-  git(checkout,'init','-b','main');git(checkout,'config','user.name','Fixture');git(checkout,'config','user.email','fixture@example.test');git(checkout,'config','gpg.format','ssh');git(checkout,'config','user.signingkey',path.join(root,'fixture-key'));git(checkout,'config','commit.gpgsign','true');
+  git(checkout,'init','-b','main');git(checkout,'config','user.name','Fixture');git(checkout,'config','user.email','fixture@example.test');git(checkout,'config','gpg.format','ssh');git(checkout,'config','user.signingkey',signingKey);git(checkout,'config','commit.gpgsign','true');
   db.prepare('INSERT INTO ledger_project_checkouts (id,project_id,root,name,default_branch,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('c','p',checkout,'fixture','main',1,1);
   new LedgerStore(db).createIssue({project_id:'p',title:'Publish',body:'',kind:'feature',attribution:systemAction(),aliases:[{alias_kind:'git_bug_short',alias:'abc1234',source:'git_bug',is_primary:true}]});
   const created=createSpace(db,{project_id:'p',title:'Document',default_renderer:'document'});space=created.id;
@@ -76,7 +79,7 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   updateSpaceBlock(db,space,listSpaceBlocks(db,space)[0].id,{markdown:'later'});
   let submissions=0;
   const proposal=path.join(root,'proposal');git(root,'clone','--shared',repo,proposal);
-  git(proposal,'config','user.name','Fixture');git(proposal,'config','user.email','fixture@example.test');git(proposal,'config','gpg.format','ssh');git(proposal,'config','user.signingkey',path.join(root,'fixture-key'));git(proposal,'config','commit.gpgsign','true');
+  git(proposal,'config','user.name','Fixture');git(proposal,'config','user.email','fixture@example.test');git(proposal,'config','gpg.format','ssh');git(proposal,'config','user.signingkey',signingKey);git(proposal,'config','commit.gpgsign','true');
   const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=> {
     git(directory,'add',value.path);git(directory,'commit','-m','Fixture publication');git(repo,'fetch',directory,'HEAD:refs/heads/fixture-proposal');return git(directory,'rev-parse','HEAD');
   },submit:(_directory,value)=>{submissions++;db.prepare("UPDATE space_publications SET auth_request_id='fixture-auth',state='submitted' WHERE id=?").run(value.id);return 'fixture-auth';}};
@@ -159,7 +162,7 @@ it('publication import retains embedded snapshots and metadata independently of 
 it('rechecks the destination after a committed submission failure without changing the signed snapshot',async()=> {
   const repo=path.join(root,'repo');fs.writeFileSync(path.join(repo,'seed'),'seed');git(repo,'add','seed');git(repo,'commit','-m','Seed');
   const proposal=path.join(root,'proposal');git(root,'clone','--shared',repo,proposal);
-  for(const [key,value] of [['user.name','Fixture'],['user.email','fixture@example.test'],['gpg.format','ssh'],['user.signingkey',path.join(root,'fixture-key')],['commit.gpgsign','true']])git(proposal,'config',key,value);
+  for(const [key,value] of [['user.name','Fixture'],['user.email','fixture@example.test'],['gpg.format','ssh'],['user.signingkey',signingKey],['commit.gpgsign','true']])git(proposal,'config',key,value);
   const prepared=preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'});
   let commits=0,submissions=0;
   const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=>{

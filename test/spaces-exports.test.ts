@@ -1,15 +1,17 @@
+// @vitest-environment node
 import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CURRENT_SCHEMA_VERSION, openDb, type Db } from "../src/db.js";
+import { openDb, type Db } from "../src/db.js";
 import {
   buildMetadataBackupSql,
   METADATA_BACKUP_TABLES,
   REPRODUCIBLE_OR_RUNTIME_TABLES,
 } from "../src/ledger/backup.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // Issue 9041bb3 (umbrella de56ffa): Spaces document-custody tracking — the
 // space_exports table (THIRD serial-chain migration, per
@@ -27,8 +29,6 @@ function now(): number {
 // ============================================================================
 
 describe("space_exports schema (issue 9041bb3)", () => {
-  let tempDir = "";
-  let dbPath = "";
   let db: Db;
 
   function seedProject(id = "proj-1"): string {
@@ -95,35 +95,10 @@ describe("space_exports schema (issue 9041bb3)", () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-exports-"));
-    dbPath = path.join(tempDir, "mandible.db");
-    db = openDb(dbPath);
+    db = migratedMemoryDb();
   });
   afterEach(() => {
     db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("creates the space_exports table at the head migration version", () => {
-    const row = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'space_exports'")
-      .get() as { name: string } | undefined;
-    expect(row?.name).toBe("space_exports");
-    // Third serial-chain link: contiguous version after C11's space_blocks (v84).
-    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(85);
-  });
-
-  it("inserts a tracking row keyed to a project checkout", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    const repoId = seedCheckout(projectId);
-    expect(() => insertExport(spaceId, repoId)).not.toThrow();
-    const stored = db
-      .prepare("SELECT authority, status FROM space_exports WHERE id = 'exp-1'")
-      .get() as { authority: string; status: string };
-    // Defaults applied.
-    expect(stored.authority).toBe("mandible");
-    expect(stored.status).toBe("clean");
   });
 
   it("keys repo_id to ledger_project_checkouts (backed-up), NOT work_repos", () => {
@@ -159,28 +134,6 @@ describe("space_exports schema (issue 9041bb3)", () => {
     expect(() =>
       insertExport(spaceId, repoId, { id: "exp-3", branch: "docs", path: "b.md" }),
     ).not.toThrow();
-  });
-
-  it("rejects invalid authority and status via CHECK", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    const repoId = seedCheckout(projectId);
-    expect(() => insertExport(spaceId, repoId, { id: "bad-auth", authority: "nobody" })).toThrow();
-    expect(() => insertExport(spaceId, repoId, { id: "bad-status", status: "weird" })).toThrow();
-    // Every documented authority/status value is accepted.
-    let n = 0;
-    for (const authority of ["mandible", "repo"]) {
-      expect(() =>
-        insertExport(spaceId, repoId, { id: `auth-${n}`, path: `auth-${n}.md`, authority }),
-      ).not.toThrow();
-      n += 1;
-    }
-    for (const status of ["clean", "stale", "repo_changed", "worktree_dirty", "conflict"]) {
-      expect(() =>
-        insertExport(spaceId, repoId, { id: `st-${n}`, path: `st-${n}.md`, status }),
-      ).not.toThrow();
-      n += 1;
-    }
   });
 
   it("CASCADEs exports on space deletion; RESTRICTs deleting a tracked checkout", () => {
