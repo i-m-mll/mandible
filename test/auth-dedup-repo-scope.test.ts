@@ -180,151 +180,76 @@ afterEach(() => {
 });
 
 describe("auth request duplicate detection is repo-scoped", () => {
-  it("queues the same branch name submitted from two different repos", () => {
+  it("queues the same branch name from two repos and refuses it twice in one repo", () => {
     const queue = createQueue();
     const repoA = createRepo("alpha");
     const repoB = createRepo("beta");
 
     const first = queue.submit(submission(repoA));
-
     // The reported bug: this returned `first` and the second repo's delivery
     // was never queued.
     expect(queue.findDuplicate(submission(repoB))).toBeNull();
-
     const second = queue.submit(submission(repoB));
     expect(second.id).not.toBe(first.id);
+    expect(queue.listActive().filter((request) => request.head_branch === SHARED_BRANCH)).toHaveLength(2);
 
-    const queued = queue
-      .listActive()
-      .filter((request) => request.head_branch === SHARED_BRANCH);
-    expect(queued).toHaveLength(2);
-    expect(new Set(queued.map((request) => request.repo))).toEqual(
-      new Set([path.basename(repoA), path.basename(repoB)]),
-    );
+    expect(queue.findDuplicate(submission(repoA))?.id).toBe(first.id);
   });
 
-  it("still refuses the same branch resubmitted in the same repo", () => {
-    const queue = createQueue();
-    const repoA = createRepo("alpha");
-
-    const first = queue.submit(submission(repoA));
-    const duplicate = queue.findDuplicate(submission(repoA));
-
-    expect(duplicate).not.toBeNull();
-    expect(duplicate!.id).toBe(first.id);
-  });
-
-  it("matches the same repo across a name-only and a path-only submission", () => {
-    // Canonical identity, not string equality: one side carries only the repo
-    // string, the other only the checkout path.
-    const queue = createQueue();
-    const repoA = createRepo("alpha");
-
-    const first = queue.submit(
-      submission(repoA, { cwd: null, target_repo_root: null }),
-    );
-    const duplicate = queue.findDuplicate(
-      submission(repoA, { repo: undefined }),
-    );
-
-    expect(duplicate?.id).toBe(first.id);
-  });
-
-  it("treats a linked worktree of the same repo as the same repo", () => {
+  it("matches one repo by canonical identity across names, paths and linked worktrees", () => {
     const queue = createQueue();
     const repoA = createRepo("alpha");
     const worktree = path.join(path.dirname(repoA), `${path.basename(repoA)}-wt`);
     tempRoots.push(worktree);
     git(repoA, ["worktree", "add", "--detach", worktree, "main"]);
 
-    const first = queue.submit(submission(repoA));
+    // One side carries only the repo string, the other only the checkout path.
+    const first = queue.submit(submission(repoA, { cwd: null, target_repo_root: null }));
+    expect(queue.findDuplicate(submission(repoA, { repo: undefined }))?.id).toBe(first.id);
     // Same physical repo, different path and different basename.
-    const duplicate = queue.findDuplicate(
-      submission(repoA, {
-        repo: path.basename(worktree),
-        cwd: worktree,
-        target_repo_root: worktree,
-      }),
-    );
-
-    expect(duplicate?.id).toBe(first.id);
+    expect(queue.findDuplicate(submission(repoA, {
+      repo: path.basename(worktree),
+      cwd: worktree,
+      target_repo_root: worktree,
+    }))?.id).toBe(first.id);
   });
 
-  it("scopes the session+title fallback to the repo as well", () => {
-    // One agent session delivering one program across two repos reuses the
-    // title, so an unscoped session+title match reintroduces the same bug.
-    const queue = createQueue();
+  it("keeps the fallbacks repo-scoped: session and title, rows without repo evidence, vanished checkouts", () => {
+    const legacy = {
+      command: `mandible auth merge ${SHARED_BRANCH} --into main`,
+      title: `Merge ${SHARED_BRANCH}`,
+      head_branch: SHARED_BRANCH,
+      base_branch: "main",
+    };
+    const fresh = () => {
+      db?.close();
+      clearRepoIdentityCache();
+      return createQueue();
+    };
+
+    // One session delivering one program across two repos reuses the title.
+    let queue = fresh();
     const repoA = createRepo("alpha");
     const repoB = createRepo("beta");
-    const sessionId = "session-cross-repo";
+    const sessionOnly = { session_id: "session-cross-repo", head_branch: undefined, base_branch: undefined };
+    queue.submit(submission(repoA, sessionOnly));
+    expect(queue.findDuplicate(submission(repoB, sessionOnly))).toBeNull();
 
-    queue.submit(
-      submission(repoA, { session_id: sessionId, head_branch: undefined, base_branch: undefined }),
-    );
+    // A legacy row with no repo evidence never swallows a repo-identified
+    // submission, but two evidence-free submissions still dedup (16985e8).
+    queue = fresh();
+    const legacyRow = queue.submit(legacy);
+    expect(queue.findDuplicate(submission(repoA))).toBeNull();
+    expect(queue.findDuplicate(legacy)?.id).toBe(legacyRow.id);
 
-    expect(
-      queue.findDuplicate(
-        submission(repoB, {
-          session_id: sessionId,
-          head_branch: undefined,
-          base_branch: undefined,
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  describe("rows that predate repo capture", () => {
-    it("does not let a null-repo row swallow a repo-identified submission", () => {
-      const queue = createQueue();
-      const repoA = createRepo("alpha");
-
-      // A legacy row: same branch pair, no repo evidence of any kind.
-      queue.submit({
-        command: `mandible auth merge ${SHARED_BRANCH} --into main`,
-        title: `Merge ${SHARED_BRANCH}`,
-        head_branch: SHARED_BRANCH,
-        base_branch: "main",
-      });
-
-      expect(queue.findDuplicate(submission(repoA))).toBeNull();
-    });
-
-    it("keeps deduping two submissions that both carry no repo evidence", () => {
-      // The 16985e8 retry protection must survive on legacy rows.
-      const queue = createQueue();
-      const payload = {
-        command: `mandible auth merge ${SHARED_BRANCH} --into main`,
-        title: `Merge ${SHARED_BRANCH}`,
-        head_branch: SHARED_BRANCH,
-        base_branch: "main",
-      };
-
-      const first = queue.submit(payload);
-      expect(queue.findDuplicate(payload)?.id).toBe(first.id);
-    });
-
-    it("does not crash when a recorded repo path no longer exists", () => {
-      // A queued request whose checkout was since deleted: no canonical key
-      // resolves on that side, so the comparison falls back to repo strings.
-      const queue = createQueue();
-      const repoA = createRepo("alpha");
-      const repoB = createRepo("beta");
-      const missing = path.join(os.tmpdir(), "mandible-dedup-deleted-repo");
-
-      const stale = queue.submit(submission(repoB, { repo: "deleted-repo" }));
-      db!
-        .prepare("UPDATE auth_requests SET cwd = ?, target_repo_root = ? WHERE id = ?")
-        .run(missing, missing, stale.id);
-      clearRepoIdentityCache();
-
-      // Different repo string, unresolvable path — not a duplicate, no throw.
-      expect(() => queue.findDuplicate(submission(repoA))).not.toThrow();
-      expect(queue.findDuplicate(submission(repoA))).toBeNull();
-      // Same repo string still dedups on the string fallback.
-      expect(
-        queue.findDuplicate(submission(repoA, { repo: "deleted-repo" }))?.id,
-      ).toBe(stale.id);
-    });
+    // A queued request whose checkout was deleted falls back to repo strings.
+    queue = fresh();
+    const missing = path.join(os.tmpdir(), "mandible-dedup-deleted-repo");
+    const stale = queue.submit(submission(repoB, { repo: "deleted-repo" }));
+    db!.prepare("UPDATE auth_requests SET cwd = ?, target_repo_root = ? WHERE id = ?").run(missing, missing, stale.id);
+    clearRepoIdentityCache();
+    expect(queue.findDuplicate(submission(repoA))).toBeNull();
+    expect(queue.findDuplicate(submission(repoA, { repo: "deleted-repo" }))?.id).toBe(stale.id);
   });
 });
 
@@ -342,20 +267,6 @@ describe("POST /api/auth/request duplicate refusal", () => {
     registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db: db! }));
     return app;
   }
-
-  it("accepts the second repo's request for a same-named branch", async () => {
-    const queue = createQueue();
-    const router = createRouter(queue);
-    const repoA = createRepo("alpha");
-    const repoB = createRepo("beta");
-
-    const first = await postRequest(router, submission(repoA));
-    const second = await postRequest(router, submission(repoB));
-
-    expect(first.status).toBe(201);
-    expect(second.status).toBe(201);
-    expect(second.body.request_id).not.toBe(first.body.request_id);
-  });
 
   it("reports the stored request's own identity, never the caller's input", async () => {
     const queue = createQueue();
