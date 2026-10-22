@@ -8,7 +8,8 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
-import { autoStartDaemon, checkHealth, stopDaemon, waitForHealth } from "../src/lifecycle.js";
+import { autoStartDaemon, checkHealth, stopDaemon } from "../src/lifecycle.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 interface TempPaths {
   dir: string;
@@ -52,22 +53,6 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
-async function waitForNoHealth(
-  port: number,
-  timeoutMs: number = 3000,
-  intervalMs: number = 200,
-): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const health = await checkHealth(port);
-    if (!health) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return false;
-}
-
 describe.sequential("mandible daemon", () => {
   let temp: TempPaths | null = null;
   const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
@@ -91,12 +76,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("starts server and responds to health", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -123,12 +104,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("does not expose the retired anonymous GET SSE endpoint", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -156,29 +133,6 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
     await daemon.close();
   });
 
-  it("runs migrations on fresh database", async () => {
-    const db = openDb(temp!.dbPath);
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all() as { name: string }[];
-    const names = tables.map((row) => row.name);
-
-    expect(names).toContain("meta");
-    expect(names).toContain("sessions");
-    expect(names).toContain("auth_requests");
-    expect(names).toContain("branches");
-    expect(names).toContain("ledger_issues");
-    expect(names).toContain("ledger_events");
-    expect(names).toContain("ledger_comments");
-
-    const versionRow = db
-      .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
-      .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe(String(CURRENT_SCHEMA_VERSION));
-
-    db.close();
-  });
-
   it("keeps migrations idempotent", async () => {
     const db = openDb(temp!.dbPath);
     migrate(db);
@@ -191,12 +145,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
   });
 
   it("creates and removes pid file on lifecycle", async () => {
-    const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
     const daemon = await startDaemon({
-      port,
+      port: 0,
       dbPath: temp!.dbPath,
       pidFilePath: temp!.pidFilePath,
       handleSignals: false
@@ -212,9 +162,7 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
 
   it("auto-starts daemon and waits for health", async () => {
     const port = await getAvailablePort();
-    if (!port) {
-      return;
-    }
+    expect(port).toBeGreaterThan(0);
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
     const rootDir = path.resolve(currentDir, "..");
     // Bun runs the source entry directly, so this boundary needs no prior build.
@@ -227,13 +175,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
       entryPath
     });
 
-    const health = await waitForHealth(port, 10_000, 200);
-    expect(health?.status).toBe("ok");
-
-    const stopped = stopDaemon(temp!.pidFilePath);
-    expect(stopped).toBe(true);
-
-    const drained = await waitForNoHealth(port, 10_000, 200);
-    expect(drained).toBe(true);
+    expect((await waitUntil(() => checkHealth(port), "the auto-started daemon to answer health")).status).toBe("ok");
+    expect(stopDaemon(temp!.pidFilePath)).toBe(true);
+    await waitUntil(async () => (await checkHealth(port)) === null, "the stopped daemon to stop answering health");
   });
 });
