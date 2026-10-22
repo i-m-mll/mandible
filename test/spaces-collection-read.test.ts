@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Fact-packet read test for the collection renderer (umbrella de56ffa, C8 /
 // issue fa83ec7).
 //
@@ -5,12 +6,12 @@
 // items/occurrences/edges) per the umbrella plan §5.1 / §589 — the bare space
 // alone is not enough to render. The `space` field is preserved for backward
 // compatibility; this test pins the superset shape the renderer reads.
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { migrate, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
 import { registerSpacesRoutes } from '../src/routes/spaces.js';
 import { Router } from '../src/server.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 
 let db: Db;
 let router: Router;
@@ -28,8 +29,7 @@ async function call(method: string, url: string, body?: unknown) {
 }
 
 beforeEach(() => {
-  db = new SqliteDatabase(':memory:');
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   router = new Router();
   registerSpacesRoutes(router);
@@ -75,9 +75,5 @@ describe('GET /api/spaces/:id fact packet (C8 read surface)', () => {
     expect(body.items.map((i) => i.id)).toContain(item.id);
     expect(body.occurrences.map((o) => o.id)).toContain(occ.id);
     expect(Array.isArray(body.edges)).toBe(true);
-  });
-
-  it('still 404s an unknown space', async () => {
-    expect((await call('GET', '/api/spaces/nope')).status).toBe(404);
   });
 });

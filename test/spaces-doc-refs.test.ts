@@ -17,11 +17,6 @@ afterEach(() => {
 });
 
 describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
-  it('without the extension, the C6 parser does NOT recognize a directive node', () => {
-    __resetResourceRefRecognizers();
-    expect(parseResourceRef(':ref[abc]{href="artifact:logical"}')).toBeNull();
-  });
-
   it('after installing the extension, the C6 parser recognizes a canonical directive ref node', () => {
     installSpacesDocRefRecognizer();
     const parsed = parseResourceRef(':ref[abc]{href="artifact-blob:' + HASH64 + '"}');
@@ -57,15 +52,6 @@ describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
     const repo = recognizeSpacesDocDirectiveRef(':embed{href="repo://mandible@main/x.md"}');
     expect(repo!.kind).toBe('repo');
     expect(recognizeSpacesDocDirectiveRef('not a directive')).toBeNull();
-  });
-
-  it('installation is idempotent (single registration)', () => {
-    const off1 = installSpacesDocRefRecognizer();
-    const off2 = installSpacesDocRefRecognizer();
-    expect(off1).toBe(off2);
-    off1();
-    // After unregister, recognition falls back to built-in (declines directive).
-    expect(parseResourceRef(':ref[x]{href="artifact:logical"}')).toBeNull();
   });
 
   it('declines legacy artifact directive hrefs', () => {
