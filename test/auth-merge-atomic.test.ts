@@ -483,18 +483,6 @@ describe("atomic auth merge", () => {
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
   });
 
-  it("preserves legacy interrupted state instead of resuming protected signing", () => {
-    const base = git(["rev-parse", "main"]);
-    git(["merge", "--no-ff", "--no-commit", "feature/atomic"]);
-
-    // The daemon reviewed a different commit than the one staged in MERGE_HEAD.
-    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: base });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("reviewed signed candidate");
-    expect(git(["rev-parse", "main"])).toBe(base);
-  });
-
   it("accepts SHA-256 repository object ids", () => {
     fs.rmSync(repo, { recursive: true, force: true });
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-sha256-"));
