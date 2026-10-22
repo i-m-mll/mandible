@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { waitUntil } from "./helpers/wait-until.js";
 import { ProcessGroupSupervisor, runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../scripts/test-phase-executor.mjs';
 
@@ -25,7 +26,7 @@ it('bounds a stage whose process ignores graceful termination', async () => {
     setInterval(() => {}, 1000);
   `], { timeout: 1000, graceMs: 100, stdio: 'ignore' })).rejects.toThrow('stage deadline');
   expect(isAlive(Number(fs.readFileSync(pidFile, 'utf8')))).toBe(false);
-}, 3000);
+});
 
 it.each(["signal", "watchdog"] as const)("terminates the launcher shard group through the outer %s path", async (trigger) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-process-group-"));
@@ -67,15 +68,15 @@ it.each(["signal", "watchdog"] as const)("terminates the launcher shard group th
         monitorIntervalMs: 10,
       });
   `], { stdio: "ignore" });
-  await waitUntil(() => fs.existsSync(readyFile), 2_000);
+  await waitUntil(() => fs.existsSync(readyFile), "the descendant to report ready");
   const descendantPid = Number(fs.readFileSync(pidFile, "utf8"));
   if (trigger === "signal") outer.kill("SIGTERM");
-  await waitForExit(outer, 2_000);
-  await waitUntil(() => !isAlive(descendantPid), 2_000);
+  await waitForExit(outer);
+  await waitUntil(() => !isAlive(descendantPid), "the descendant process group to be cleaned up");
   expect(fs.existsSync(fs.readFileSync(runtimeFile, "utf8"))).toBe(false);
   expect(fs.existsSync(leaderTermFile)).toBe(true);
   expect(isAlive(descendantPid)).toBe(false);
-}, 6_000);
+});
 
 function isAlive(pid: number): boolean {
   try {
@@ -86,22 +87,8 @@ function isAlive(pid: number): boolean {
   }
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error("bounded process cleanup probe timed out");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
-  return Promise.race([
-    new Promise<void>((resolve, reject) => {
-      child.once("exit", () => resolve());
-      child.once("error", reject);
-    }),
-    new Promise<void>((_, reject) => setTimeout(() => reject(new Error("supervisor did not exit")), timeoutMs)),
-  ]);
+async function waitForExit(child: ReturnType<typeof spawn>): Promise<void> {
+  await waitUntil(() => child.exitCode !== null || child.signalCode !== null, `process ${child.pid} to exit`);
 }
 
 // Retain the exited group leader as a zombie under a controller outside that
@@ -117,7 +104,7 @@ it.skipIf(process.platform !== "darwin")("confirms an owned zombie-only group ha
   try {
     await waitUntil(() => {
       try { process.kill(-groupId, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
-    }, 1_000);
+    }, "the zombie-only group to report EPERM");
     const exited = Object.assign(new EventEmitter(), { pid: groupId, exitCode: 0, signalCode: null });
     supervisor.attach(exited);
     // A mutated ChildProcess.pid must never change the captured group identity.
@@ -126,7 +113,7 @@ it.skipIf(process.platform !== "darwin")("confirms an owned zombie-only group ha
   } finally {
     await supervisor.close();
     controller.stdin!.end("reap\n");
-    await waitForExit(controller, 1_000);
+    await waitForExit(controller);
   }
 });
 
@@ -141,7 +128,7 @@ it("refuses a live replacement leader after the owned child exits", async () => 
   } finally {
     await supervisor.close();
     child.kill("SIGKILL");
-    await waitForExit(child, 1_000);
+    await waitForExit(child);
   }
 });
 
