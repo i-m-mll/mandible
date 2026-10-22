@@ -310,7 +310,7 @@ describe("staged finalizer lifecycle", () => {
 });
 
 describe("work-unit resolution on merge", () => {
-  it("resolves exactly the work units an integration merge contains, in a bounded number of git spawns", async () => {
+  it("resolves exactly contained work units without per-unit ancestry processes", async () => {
     const now = 10_000;
     const archived: string[] = [];
     const repo = createAuthCheckRepo();
@@ -387,7 +387,7 @@ describe("work-unit resolution on merge", () => {
       unit("wu-fresh-retire", "feature/retire-fresh", "abandoned", now);
       // Fifty unresolvable candidates: the batch probes targets and tips once, not per row.
       for (let i = 0; i < 50; i += 1) {
-        insertBranch.run(rp, `feature/budget-${i}`, "0".repeat(40));
+        insertBranch.run(rp, `feature/budget-${i}`, i.toString(16).padStart(40, "0"));
         unit(`wu-budget-${i}`, `feature/budget-${i}`, "committed", now);
       }
 
@@ -412,14 +412,9 @@ describe("work-unit resolution on merge", () => {
         execution_mode: "daemon",
       });
 
-      process.env.PATH = `${traceDir}${path.delimiter}${prevPath ?? ""}`;
-      try {
-        await approveFixtureRequest(queue, request.id);
-        await waitForStatus(queue, request.id, "completed");
-        await queue.drainFinalizers();
-      } finally {
-        process.env.PATH = prevPath;
-      }
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
+      await queue.drainFinalizers();
 
       const rows = Object.fromEntries((db.prepare(
         "SELECT id, state, resolved_at, auth_request_id, merge_scan_retired_at FROM work_units WHERE id NOT LIKE 'wu-budget-%'",
@@ -444,12 +439,35 @@ describe("work-unit resolution on merge", () => {
       // Worker archival of recovered units belongs to the work-unit reconciler.
       expect(archived).toEqual([]);
 
-      const calls = fs.readFileSync(traceLog, "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
-      const batchSpawns = calls.filter((line) => (
-        (line.startsWith("rev-list ") && !line.includes("--count")) || line.startsWith("for-each-ref ")
-      ));
-      // Two targets (merge_head_sha, refs/heads/main) plus one tip map.
-      expect(batchSpawns.length).toBeLessThanOrEqual(4);
+      const completed = queue.getRequest(request.id)!;
+      const ancestry = queue as unknown as {
+        resolveAncestryWorkUnitsOnMerge(request: AuthRequest): Promise<string[]>;
+      };
+      const scan = async () => {
+        fs.writeFileSync(traceLog, "");
+        const resolved = await ancestry.resolveAncestryWorkUnitsOnMerge(completed);
+        const calls = fs.readFileSync(traceLog, "utf8").split("\n").filter(Boolean);
+        return { resolved, processes: calls.length };
+      };
+      process.env.PATH = `${traceDir}${path.delimiter}${prevPath ?? ""}`;
+      try {
+        unit("wu-probe-fifty", "feature/snap-child", "committed", now);
+        const fifty = await scan();
+        expect(fifty.resolved).toContain("wu-probe-fifty");
+        expect(fifty.processes).toBeGreaterThan(0);
+        for (let i = 50; i < 100; i += 1) {
+          insertBranch.run(rp, `feature/budget-${i}`, i.toString(16).padStart(40, "0"));
+          unit(`wu-budget-${i}`, `feature/budget-${i}`, "committed", now);
+        }
+        unit("wu-probe-hundred", "feature/snap-child", "committed", now);
+        const hundred = await scan();
+        expect(hundred.resolved).toContain("wu-probe-hundred");
+        const probes = db.prepare("SELECT state FROM work_units WHERE id IN ('wu-probe-fifty', 'wu-probe-hundred')").all() as Array<{ state: string }>;
+        expect(probes.map(row => row.state)).toEqual(["resolved", "resolved"]);
+        expect(hundred.processes).toBe(fifty.processes);
+      } finally {
+        process.env.PATH = prevPath;
+      }
       queue.dispose();
     } finally {
       process.env.PATH = prevPath;
