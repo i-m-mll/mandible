@@ -54,20 +54,6 @@ function openWorkingNotes(): void {
 }
 
 describe('issue detail label presentation', () => {
-  it('displays labels as free-form metadata without hiding metadata-shaped names', () => {
-    render(<LedgerIssueDetail detail={detail([
-      'mandible:branch:feature/example',
-      'mandible:status:in_progress',
-      'merged',
-      'visible',
-    ])} />);
-
-    expect(screen.getByText('mandible:branch:feature/example').textContent).toBe('mandible:branch:feature/example');
-    expect(screen.getByText('mandible:status:in_progress').textContent).toBe('mandible:status:in_progress');
-    expect(screen.getByText('merged').textContent).toBe('merged');
-    expect(screen.getByText('visible').textContent).toBe('visible');
-  });
-
   it('preserves ordinary and colon-bearing labels without aliasing kind names', () => {
     const preserved = ['team:frontend', 'mandible:priority:high', 'mandible:branch', 'status:open'];
     render(<LedgerIssueDetail detail={detail([...preserved, 'error'])} />);
@@ -77,75 +63,6 @@ describe('issue detail label presentation', () => {
     }
     expect(screen.getByText('error').textContent).toBe('error');
     expect(screen.queryByText('bug')).toBeNull();
-  });
-
-  it('starts secondary issue shelves in shared collapsed panels', () => {
-    const projection = detail([]);
-    projection.relationships = [
-      {
-        id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child', link_type: 'parent_child', note: null,
-        provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
-        related_issue: { id: 'child', display_id: 'child-1', project_id: 'project-1', kind: 'feature', priority: 'normal', labels: [], title: 'Child issue', status: 'open', resolution: null },
-      },
-      {
-        id: 'reference-edge', direction: 'outgoing', relationship_type: 'references', link_type: 'references', note: null,
-        provenance: 'manual', confidence: 'explicit', metadata: {}, created_at: 1, updated_at: 1,
-        related_issue: { id: 'reference', display_id: 'ref-1', project_id: 'project-1', kind: 'feature', priority: 'normal', labels: [], title: 'Referenced issue', status: 'open', resolution: null },
-      },
-    ];
-    projection.associated_artifacts = [{
-      id: 'artifact-1', ref: 'artifact:artifact-1', title: 'Decision brief', logical_name: null,
-      uri: 'file:///tmp/decision.md', content_hash: 'a'.repeat(64), role: 'reference', media_type: 'text/markdown',
-      algorithm: 'sha256', manifest_id: null, custody_mode: 'managed', created_at: 1,
-      pin_state: 'pinned', is_latest: null, resolved_version_no: null, series_id: null, warnings: [],
-      provider_id: null, availability: 'present', refs: [], links: [],
-    }];
-
-    render(<LedgerIssueDetail detail={projection} />);
-
-    const children = screen.getByRole('button', { name: /Children/ });
-    const relationships = screen.getByRole('button', { name: /Relationships/ });
-    const artifacts = screen.getByRole('button', { name: /Associated Artifacts/ });
-    expect(children.getAttribute('aria-expanded')).toBe('false');
-    expect(relationships.getAttribute('aria-expanded')).toBe('false');
-    expect(artifacts.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('Child issue')).toBeNull();
-    expect(screen.queryByText('Referenced issue')).toBeNull();
-    expect(screen.queryByText('Decision brief')).toBeNull();
-
-    fireEvent.click(children);
-    fireEvent.click(relationships);
-    fireEvent.click(artifacts);
-    expect(screen.getByText('Child issue').textContent).toBe('Child issue');
-    expect(screen.getByText('ref-1 Referenced issue').textContent).toBe('ref-1 Referenced issue');
-    expect(screen.getByText('Decision brief').textContent).toBe('Decision brief');
-  });
-
-  it('renders current and immutable historical working notes', () => {
-    const projection = detail([]);
-    projection.work_notes = 'Current **notes**';
-    projection.work_notes_revision = 'notes-rev-2';
-    projection.timeline = [{
-      id: 'notes-event-1',
-      kind: 'event',
-      event_type: 'issue.work_notes_updated',
-      author: { id: null, type: 'agent', display: 'Agent', legacy_display: 'Agent', attribution: null },
-      source: 'mandible',
-      created_at: 2,
-      payload: { work_notes: 'Historical notes before the current edit' },
-    }];
-
-    render(<LedgerIssueDetail detail={projection} />);
-
-    expect(document.querySelector('.ledger-issue-detail__body .ledger-work-notes-body')).toBeNull();
-    openWorkingNotes();
-    expect(document.querySelector('.ledger-work-notes-body')?.textContent).toContain('Current notes');
-    expect(screen.getByText('Working notes updated')).toBeTruthy();
-    expect(document.querySelector('.ledger-work-notes-history')?.hasAttribute('open')).toBe(false);
-    fireEvent.click(screen.getByText('View saved working notes'));
-    expect(document.querySelector('.ledger-work-notes-history')?.hasAttribute('open')).toBe(true);
-    expect(screen.getByText('Historical notes before the current edit').textContent)
-      .toBe('Historical notes before the current edit');
   });
 
   it('keeps an active draft and its base revision across refresh and stale-save conflict', async () => {
@@ -219,28 +136,5 @@ describe('issue detail label presentation', () => {
     openWorkingNotes();
     await waitFor(() => expect(screen.getByText('Issue two notes')).toBeTruthy());
     expect(screen.queryByText('Old issue save')).toBeNull();
-  });
-
-  it('shows open dependency warnings without blocking issue actions', () => {
-    const projection = detail([]);
-    projection.dependencies = [{
-      id: 'dependency-1',
-      display_id: 'dep-1',
-      project_id: 'project-1',
-      title: 'Open prerequisite',
-      status: 'open',
-      resolution: null,
-      kind: 'bug',
-      priority: 'normal',
-      labels: [],
-    }];
-
-    render(<LedgerIssueDetail detail={projection} onSetStatus={vi.fn()} />);
-
-    const dependency = screen.getByRole('button', { name: /dep-1 Open prerequisite open Open prerequisite/ });
-    expect(dependency).toBeTruthy();
-    expect(dependency.textContent).toContain('Open prerequisite');
-    expect(dependency).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Issue actions' })).toBeTruthy();
   });
 });

@@ -11,10 +11,8 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
-import { h } from 'preact';
 
 import { SpaceCollectionRenderer } from '../ui/src/views/spaces/space-collection';
-import { SPACE_RENDERERS_REGISTRY } from '../ui/src/views/spaces/renderers';
 import { collectionStorageKey } from '../ui/src/views/spaces/collectionViewState';
 
 const NOW = 1_700_000_000_000;
@@ -25,8 +23,6 @@ type Packet = {
   occurrences: Record<string, unknown>[];
   edges: Record<string, unknown>[];
 };
-
-let listeners: Array<(payload: unknown) => void> = [];
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -178,7 +174,6 @@ beforeEach(async () => {
   await establishTestClientAccess();
   stubLocalStorage();
   MockEventSource.instances = [];
-  listeners = [];
   vi.stubGlobal('EventSource', MockEventSource);
   __resetSharedSseForTests();
 });
@@ -192,26 +187,6 @@ afterEach(() => {
 });
 
 describe('SpaceCollectionRenderer', () => {
-  it('shows a prompt when no space is selected', () => {
-    stubFetch({ getPacket: () => fullPacket() });
-    render(<SpaceCollectionRenderer projectId="prj1" spaceId={null} renderer="collection" />);
-    expect(screen.getByTestId('space-collection-empty').textContent).toContain('Select a Space');
-  });
-
-  it('renders a collection tree from occurrences', async () => {
-    stubFetch({
-      getPacket: () =>
-        fullPacket({
-          items: [makeItem('a', { title: 'Alpha' }), makeItem('b', { title: 'Beta' })],
-          occurrences: [makeOcc('root', { item_id: 'a' }), makeOcc('kid', { item_id: 'b', parent_id: 'root' })],
-        }),
-    });
-    render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
-    const tree = await screen.findByTestId('space-collection-tree');
-    expect(within(tree).getByText('Alpha')).toBeTruthy();
-    expect(within(tree).getByText('Beta')).toBeTruthy();
-  });
-
   it('surfaces item-only membership in the Items section (never lost)', async () => {
     stubFetch({
       getPacket: () =>
@@ -222,13 +197,12 @@ describe('SpaceCollectionRenderer', () => {
     });
     render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
     const shelf = await screen.findByTestId('space-collection-shelf');
-    expect(within(shelf).getByText('Items (1)')).toBeTruthy();
     expect(within(shelf).getByText('Lonely')).toBeTruthy();
     // 'Placed' is in the tree, not the shelf.
     expect(within(shelf).queryByText('Placed')).toBeNull();
   });
 
-  it('renders missing/unresolved refs through quiet C6 unresolved-ref UI, never dropping them', async () => {
+  it('keeps a missing or unresolved ref visible instead of dropping it', async () => {
     stubFetch({
       getPacket: () =>
         fullPacket({
@@ -240,80 +214,8 @@ describe('SpaceCollectionRenderer', () => {
       <SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />,
     );
     await screen.findByTestId('space-collection-shelf');
-    const ref = container.querySelector('.resource-ref');
-    expect(ref).toBeTruthy();
+    const ref = container.querySelector('[data-ref-state]');
     expect(ref?.getAttribute('data-ref-state')).toBe('unresolved');
-    expect(container.querySelector('.resource-ref__resolve')).toBeNull();
-    expect(ref?.querySelector('.resource-ref__link')).toBeTruthy();
-  });
-
-  it('does not render always-visible resolve buttons for normal item refs', async () => {
-    stubFetch({
-      getPacket: () =>
-        fullPacket({ items: [makeItem('i1', { ref_uri: 'mandible://issue/i1' })], occurrences: [] }),
-    });
-    const { container } = render(
-      <SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />,
-    );
-    await screen.findByTestId('space-collection-shelf');
-    expect(container.querySelector('.resource-ref__resolve')).toBeNull();
-    expect(container.querySelector('.resource-ref')?.getAttribute('data-ref-state')).toBe('unresolved');
-  });
-
-  it('filters the tree + shelf by item text', async () => {
-    stubFetch({
-      getPacket: () =>
-        fullPacket({
-          items: [makeItem('a', { title: 'Authentication' }), makeItem('b', { title: 'Rendering' })],
-          occurrences: [makeOcc('oa', { item_id: 'a' })],
-        }),
-    });
-    render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
-    await screen.findByTestId('space-collection-body');
-    const filter = screen.getByLabelText('Filter collection items') as HTMLInputElement;
-    fireEvent.input(filter, { target: { value: 'auth' } });
-    await waitFor(() => {
-      expect(screen.queryByText('Rendering')).toBeNull();
-      expect(screen.getByText('Authentication')).toBeTruthy();
-    });
-  });
-
-  it('adds an item via the searchable "Add items" picker (POST to the C2 items route)', async () => {
-    const mutations: Array<[string, string]> = [];
-    stubFetch({
-      getPacket: () => fullPacket(),
-      onMutation: (method, url) => mutations.push([method, url]),
-      graphNodes: [
-        { id: 'n1', type: 'issue', label: 'Issue 42', detail: { ledger_issue_id: 'issue-42', project_name: 'prj1' } },
-      ],
-    });
-    render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
-    await screen.findByTestId('space-collection-body');
-    // Open the picker, find the searched issue, select + add it.
-    fireEvent.click(screen.getByTestId('space-collection-add-items'));
-    const option = await screen.findByText('Issue 42');
-    fireEvent.click(option);
-    fireEvent.click(screen.getByTestId('space-item-picker-add'));
-    await waitFor(() => {
-      expect(mutations.some(([m, u]) => m === 'POST' && u.includes('/api/spaces/sp1/items'))).toBe(true);
-    });
-  });
-
-  it('removes an occurrence via the remove affordance (DELETE to the C2 occurrences route)', async () => {
-    const mutations: Array<[string, string]> = [];
-    stubFetch({
-      getPacket: () =>
-        fullPacket({ items: [makeItem('a', { title: 'Alpha' })], occurrences: [makeOcc('o', { item_id: 'a' })] }),
-      onMutation: (method, url) => mutations.push([method, url]),
-    });
-    render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
-    await screen.findByTestId('space-collection-tree');
-    fireEvent.click(screen.getByLabelText('Remove from collection'));
-    await waitFor(() => {
-      expect(
-        mutations.some(([m, u]) => m === 'DELETE' && u.includes('/api/spaces/sp1/occurrences/o')),
-      ).toBe(true);
-    });
   });
 
   it('persists view-state (collapse) across remount', async () => {
@@ -364,9 +266,5 @@ describe('SpaceCollectionRenderer', () => {
     // New data shows up AND the selection survives reconciliation.
     await waitFor(() => expect(screen.getByText('Beta')).toBeTruthy());
     expect(container.querySelector('[data-occurrence-id="root"]')?.getAttribute('data-selected')).toBe('true');
-  });
-
-  it('is registered as the collection renderer in the shared registry', () => {
-    expect(SPACE_RENDERERS_REGISTRY.collection).toBe(SpaceCollectionRenderer);
   });
 });

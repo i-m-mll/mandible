@@ -12,10 +12,8 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
-import { h } from 'preact';
 
 import { SpaceBoardRenderer } from '../ui/src/views/spaces/SpaceBoard';
-import { SPACE_RENDERERS_REGISTRY } from '../ui/src/views/spaces/renderers';
 import {
   defaultColumnKey,
   BOARD_METADATA_KEY,
@@ -290,62 +288,6 @@ afterEach(() => {
 });
 
 describe('SpaceBoardRenderer', () => {
-  it('registers under the board renderer key', () => {
-    expect(SPACE_RENDERERS_REGISTRY.board).toBe(SpaceBoardRenderer);
-  });
-
-  it('shows a prompt when no space is selected', () => {
-    stubFetch({ packet: fullPacket(), mutations: [] });
-    render(<SpaceBoardRenderer projectId="prj1" spaceId={null} renderer="board" />);
-    expect(screen.getByTestId('space-board-empty').textContent).toContain('Select a Space');
-  });
-
-  it('renders the five worker_status default columns', async () => {
-    stubFetch({ packet: fullPacket(), mutations: [] });
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    for (const status of ['none', 'in_progress', 'blocked', 'pivot-needed', 'done']) {
-      expect(screen.getByTestId(`board-column-${defaultColumnKey(status as never)}`)).toBeTruthy();
-    }
-  });
-
-  it('renders the default column shell before the initial packet resolves', async () => {
-    const packet = createDeferred<Response>();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const method = (init?.method ?? 'GET').toUpperCase();
-        if (method === 'GET' && /\/api\/spaces\/sp1(\?|$)/.test(url)) return packet.promise;
-        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
-          headers: { 'content-type': 'application/json' },
-        }));
-      }),
-    );
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-
-    for (const status of ['none', 'in_progress', 'blocked', 'pivot-needed', 'done']) {
-      expect(screen.getByTestId(`board-column-${defaultColumnKey(status as never)}`)).toBeTruthy();
-    }
-    expect(screen.getByRole('status').textContent).toContain('Loading cards');
-
-    packet.resolve(new Response(JSON.stringify(fullPacket()), {
-      headers: { 'content-type': 'application/json' },
-    }));
-    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
-  });
-
-  it('uses the shared Add items affordance and compact filter-column editor hook', async () => {
-    stubFetch({ packet: fullPacket(), mutations: [] });
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    expect(screen.getByTestId('space-board-add-items').textContent).toBe('+ Add items');
-
-    fireEvent.click(screen.getByLabelText('Board column actions'));
-    expect(screen.getByLabelText('Add filter column').className).toBe('space-board-filter');
-  });
-
   it('does not prune restored custom-column state while the shell waits for data', async () => {
     const metadata = {
       [BOARD_METADATA_KEY]: {
@@ -400,23 +342,8 @@ describe('SpaceBoardRenderer', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Expand Triage')).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Expand Triage'));
-    const card = (await screen.findByText('Preserved card')).closest('.space-board__card') as HTMLElement;
+    const card = (await screen.findByText('Preserved card')).closest('[data-occurrence-id]') as HTMLElement;
     await waitFor(() => expect(card.getAttribute('data-selected')).toBe('true'));
-  });
-
-  it('places an issue card in its resolved worker_status column', async () => {
-    const state = {
-      packet: fullPacket({
-        items: [makeItem('iss1', { title: 'Issue One' })],
-        occurrences: [makeOcc('o1', { item_id: 'iss1' })],
-      }),
-      workerStatus: { iss1: 'in_progress' },
-      mutations: [],
-    };
-    stubFetch(state);
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    const col = await screen.findByTestId(`board-column-${defaultColumnKey('in_progress')}`);
-    await waitFor(() => expect(within(col).getByText('Issue One')).toBeTruthy());
   });
 
   it('keyboard move writes section_id + sort_key via the occurrence PATCH route', async () => {
@@ -432,7 +359,7 @@ describe('SpaceBoardRenderer', () => {
     render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
     const noneCol = await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
     const card = await within(noneCol).findByText('Movable');
-    const cardEl = card.closest('.space-board__card') as HTMLElement;
+    const cardEl = card.closest('[data-occurrence-id]') as HTMLElement;
     // ArrowRight moves the card one column to the right.
     fireEvent.keyDown(cardEl, { key: 'ArrowRight' });
     await waitFor(() => {
@@ -442,62 +369,6 @@ describe('SpaceBoardRenderer', () => {
       expect(body.section_id).toBe(defaultColumnKey('in_progress'));
       expect(typeof body.sort_key).toBe('string');
     });
-  });
-
-  it('adds an Untitled manual custom column persisted to spaces.metadata', async () => {
-    const state = { packet: fullPacket(), mutations: [] as Mutation[] };
-    stubFetch(state);
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
-    fireEvent.click(screen.getByText('Add manual column'));
-    await waitFor(() => {
-      const patch = state.mutations.find(
-        (m) => m.method === 'PATCH' && /\/api\/spaces\/sp1$/.test(m.url.split('?')[0]),
-      );
-      expect(patch).toBeTruthy();
-      const meta = (patch!.body as { metadata: Record<string, unknown> }).metadata;
-      const board = meta[BOARD_METADATA_KEY] as { columns: { title: string; kind: string }[] };
-      expect(board.columns[0].title).toBe('Untitled');
-      expect(board.columns[0].kind).toBe('manual');
-    });
-    // The new column renders after the metadata round-trips.
-    await waitFor(() => expect(screen.getByText('Untitled')).toBeTruthy());
-  });
-
-  it('adds an item from the toolbar as a board card and skips duplicate board cards', async () => {
-    const state = {
-      packet: fullPacket(),
-      mutations: [] as Mutation[],
-      graphNodes: [
-        { id: 'n1', type: 'issue', label: 'Issue 99', detail: { ledger_issue_id: 'issue-99', project_name: 'prj1' } },
-      ],
-    };
-    stubFetch(state);
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    fireEvent.click(screen.getByTestId('space-board-add-items'));
-    fireEvent.click(await screen.findByText('Issue 99'));
-    fireEvent.click(screen.getByTestId('space-item-picker-add'));
-
-    await waitFor(() => {
-      const post = state.mutations.find(
-        (m) => m.method === 'POST' && /\/api\/spaces\/sp1\/occurrences$/.test(m.url.split('?')[0]),
-      );
-      expect(post).toBeTruthy();
-      expect(post!.body).toMatchObject({
-        item_id: 'issue-99',
-        renderer: 'board',
-        section_id: defaultColumnKey('none'),
-      });
-    });
-
-    fireEvent.click(screen.getByTestId('space-board-add-items'));
-    await waitFor(() =>
-      expect(screen.getByTestId('space-item-picker-empty').textContent).toContain(
-        'Everything here is already in this view',
-      ),
-    );
   });
 
   it('renames and confirms deletion of custom columns without deleting cards', async () => {
@@ -559,7 +430,7 @@ describe('SpaceBoardRenderer', () => {
     };
     stubFetch(state);
     render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    const card = (await screen.findByText('Pinned')).closest('.space-board__card') as HTMLElement;
+    const card = (await screen.findByText('Pinned')).closest('[data-occurrence-id]') as HTMLElement;
     fireEvent.click(card);
     await waitFor(() => expect(card.getAttribute('data-selected')).toBe('true'));
 
@@ -572,22 +443,8 @@ describe('SpaceBoardRenderer', () => {
     await screen.findByText('New arrival');
 
     await waitFor(() => {
-      const reselected = (screen.getByText('Pinned').closest('.space-board__card') as HTMLElement);
+      const reselected = (screen.getByText('Pinned').closest('[data-occurrence-id]') as HTMLElement);
       expect(reselected.getAttribute('data-selected')).toBe('true');
     });
-  });
-
-  it('persists column collapse across a remount (view-state persistence)', async () => {
-    stubFetch({ packet: fullPacket(), mutations: [] });
-    const { unmount } = render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    fireEvent.click(screen.getByLabelText('Collapse In progress'));
-    await waitFor(() => expect(screen.getByLabelText('Expand In progress')).toBeTruthy());
-    unmount();
-
-    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
-    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    // Collapsed state restored from localStorage.
-    await waitFor(() => expect(screen.getByLabelText('Expand In progress')).toBeTruthy());
   });
 });

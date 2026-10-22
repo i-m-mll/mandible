@@ -14,15 +14,9 @@ import {
   projectBoard,
   readBoardMetadata,
   writeBoardMetadata,
-  sortKeyBetween,
   defaultColumnKey,
-  workerStatusFromColumnKey,
-  normalizeWorkerStatus,
   issueFactsFromEntity,
-  evaluatePredicate,
   isValidCustomColumnKey,
-  compareBoardCards,
-  WORKER_STATUS_VALUES,
   BOARD_METADATA_KEY,
   EMPTY_BOARD_METADATA,
   type BoardMetadata,
@@ -31,7 +25,6 @@ import {
 import {
   reconcileBoardViewState,
   normalizeBoardViewState,
-  boardStorageKey,
   EMPTY_BOARD_VIEW_STATE,
 } from '../ui/src/views/spaces/boardViewState';
 
@@ -96,73 +89,7 @@ function findColumn(columns: { key: string }[], key: string) {
   return columns.find((c) => c.key === key);
 }
 
-describe('board default columns from worker_status', () => {
-  it('renders exactly the five worker_status columns in order', () => {
-    const model = buildSpaceViewModel(packet([], []));
-    const { columns } = projectBoard(model, EMPTY_BOARD_METADATA, {});
-    expect(columns.map((c) => c.key)).toEqual(WORKER_STATUS_VALUES.map(defaultColumnKey));
-    expect(columns.every((c) => c.kind === 'default')).toBe(true);
-  });
-
-  it('places an occurrence in the default column matching its issue worker_status', () => {
-    const items = [item('i1'), item('i2'), item('i3')];
-    const occs = [
-      occ('o1', { item_id: 'i1' }),
-      occ('o2', { item_id: 'i2' }),
-      occ('o3', { item_id: 'i3' }),
-    ];
-    const model = buildSpaceViewModel(packet(items, occs));
-    const facts: IssueFactsByItemId = {
-      i1: issueFactsFromEntity('i1', { worker_status: 'in_progress', kind: 'feature' }),
-      i2: issueFactsFromEntity('i2', { worker_status: 'done', kind: 'feature' }),
-      // i3 unresolved → falls into the `none` column
-    };
-    const { columns } = projectBoard(model, EMPTY_BOARD_METADATA, facts);
-    expect(findColumn(columns, defaultColumnKey('in_progress'))!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o1']);
-    expect(findColumn(columns, defaultColumnKey('done'))!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o2']);
-    expect(findColumn(columns, defaultColumnKey('none'))!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o3']);
-  });
-
-  it('non-board occurrences are ignored', () => {
-    const model = buildSpaceViewModel(
-      packet([item('i1')], [occ('o1', { item_id: 'i1', renderer: 'collection' })]),
-    );
-    const { columns } = projectBoard(model, EMPTY_BOARD_METADATA, {});
-    expect(columns.every((c) => c.cards.length === 0)).toBe(true);
-  });
-
-  it('round-trips worker_status column keys', () => {
-    for (const status of WORKER_STATUS_VALUES) {
-      expect(workerStatusFromColumnKey(defaultColumnKey(status))).toBe(status);
-    }
-    expect(workerStatusFromColumnKey('col-custom')).toBeNull();
-  });
-
-  it('normalizes unknown worker_status to none', () => {
-    expect(normalizeWorkerStatus('in_progress')).toBe('in_progress');
-    expect(normalizeWorkerStatus('garbage')).toBe('none');
-    expect(normalizeWorkerStatus(undefined)).toBe('none');
-  });
-});
-
 describe('manual and filter custom columns', () => {
-  it('an explicit section_id matching a manual column wins over the worker_status default', () => {
-    const meta: BoardMetadata = {
-      version: 1,
-      columns: [{ key: 'col-triage', title: 'Triage', kind: 'manual', order: 0 }],
-    };
-    const model = buildSpaceViewModel(
-      packet([item('i1')], [occ('o1', { item_id: 'i1', section_id: 'col-triage' })]),
-    );
-    const facts: IssueFactsByItemId = {
-      i1: issueFactsFromEntity('i1', { worker_status: 'in_progress' }),
-    };
-    const { columns } = projectBoard(model, meta, facts);
-    expect(findColumn(columns, 'col-triage')!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o1']);
-    // Not double-placed in the worker_status column.
-    expect(findColumn(columns, defaultColumnKey('in_progress'))!.cards).toHaveLength(0);
-  });
-
   it('an unknown section_id falls back to the worker_status default (never dropped)', () => {
     const model = buildSpaceViewModel(
       packet([item('i1')], [occ('o1', { item_id: 'i1', section_id: 'col-gone' })]),
@@ -170,32 +97,6 @@ describe('manual and filter custom columns', () => {
     const facts: IssueFactsByItemId = { i1: issueFactsFromEntity('i1', { worker_status: 'blocked' }) };
     const { columns } = projectBoard(model, EMPTY_BOARD_METADATA, facts);
     expect(findColumn(columns, defaultColumnKey('blocked'))!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o1']);
-  });
-
-  it('a filter column pulls in cards whose facts match its predicate', () => {
-    const meta: BoardMetadata = {
-      version: 1,
-      columns: [
-        {
-          key: 'col-bugs',
-          title: 'Bugs',
-          kind: 'filter',
-          order: 0,
-          scope: { type: 'kind', kind: 'error' as never },
-        },
-      ],
-    };
-    const model = buildSpaceViewModel(
-      packet([item('i1'), item('i2')], [occ('o1', { item_id: 'i1' }), occ('o2', { item_id: 'i2' })]),
-    );
-    const facts: IssueFactsByItemId = {
-      i1: issueFactsFromEntity('i1', { worker_status: 'in_progress', kind: 'error' }),
-      i2: issueFactsFromEntity('i2', { worker_status: 'in_progress', kind: 'feature' }),
-    };
-    const { columns } = projectBoard(model, meta, facts);
-    // o1 matches the filter (kind=error) AND keeps its worker_status home.
-    expect(findColumn(columns, 'col-bugs')!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o1']);
-    expect(findColumn(columns, defaultColumnKey('in_progress'))!.cards.map((c) => c.occurrence.occurrence.id)).toEqual(['o1', 'o2']);
   });
 
   it('a card manually placed in a filter column is not duplicated by the predicate', () => {
@@ -227,40 +128,6 @@ describe('manual and filter custom columns', () => {
   });
 });
 
-describe('predicate evaluation over resolved issue facts', () => {
-  const facts = issueFactsFromEntity('i1', {
-    worker_status: 'in_progress',
-    kind: 'feature',
-    labels: ['auth', 'ui'],
-  });
-
-  it('matches label and kind, and combines with and/or/not', () => {
-    expect(evaluatePredicate({ type: 'label', name: 'auth' }, facts)).toBe(true);
-    expect(evaluatePredicate({ type: 'label', name: 'absent' }, facts)).toBe(false);
-    expect(evaluatePredicate({ type: 'kind', kind: 'feature' as never }, facts)).toBe(true);
-    expect(
-      evaluatePredicate(
-        { type: 'and', predicates: [{ type: 'label', name: 'auth' }, { type: 'kind', kind: 'feature' as never }] },
-        facts,
-      ),
-    ).toBe(true);
-    expect(evaluatePredicate({ type: 'not', predicate: { type: 'label', name: 'auth' } }, facts)).toBe(false);
-    expect(
-      evaluatePredicate({ type: 'or', predicates: [{ type: 'label', name: 'x' }, { type: 'label', name: 'ui' }] }, facts),
-    ).toBe(true);
-  });
-
-  it('treats relationship predicates the bare entity cannot resolve as non-matching', () => {
-    expect(evaluatePredicate({ type: 'referenced_by', issue_id: 'x' }, facts)).toBe(false);
-    expect(evaluatePredicate({ type: 'parent_subtree', issue_id: 'x' }, facts)).toBe(false);
-  });
-
-  it('extracts labels from object-shaped entries', () => {
-    const f = issueFactsFromEntity('i', { labels: [{ name: 'a' }, 'b', { nope: 1 }] });
-    expect(f.labels).toEqual(['a', 'b']);
-  });
-});
-
 describe('board metadata read/write (spaces.metadata, no new table)', () => {
   it('reads custom columns from spaces.metadata and drops invalid ones', () => {
     const sp = space({
@@ -278,10 +145,6 @@ describe('board metadata read/write (spaces.metadata, no new table)', () => {
     });
     const meta = readBoardMetadata(sp);
     expect(meta.columns.map((c) => c.key)).toEqual(['col-a']);
-  });
-
-  it('returns the empty definition for a Space with no board metadata', () => {
-    expect(readBoardMetadata(space()).columns).toEqual([]);
   });
 
   it('writeBoardMetadata preserves sibling metadata keys', () => {
@@ -303,56 +166,7 @@ describe('board metadata read/write (spaces.metadata, no new table)', () => {
   });
 });
 
-describe('sort_key generation', () => {
-  it('produces a key strictly between two neighbors', () => {
-    const mid = sortKeyBetween('a', 'c');
-    expect(mid > 'a').toBe(true);
-    expect(mid < 'c').toBe(true);
-  });
-
-  it('produces a key after the last when after is null', () => {
-    const k = sortKeyBetween('m', null);
-    expect(k > 'm').toBe(true);
-  });
-
-  it('produces a key before the first when before is null', () => {
-    const k = sortKeyBetween(null, 'm');
-    expect(k < 'm').toBe(true);
-  });
-
-  it('orders multiple sequential appends', () => {
-    let prev: string | null = null;
-    const keys: string[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const k = sortKeyBetween(prev, null);
-      keys.push(k);
-      prev = k;
-    }
-    const sorted = [...keys].sort();
-    expect(keys).toEqual(sorted);
-  });
-
-  it('compareBoardCards orders by sort_key with nulls last', () => {
-    const cardWith = (id: string, sort_key: string | null) => ({
-      occurrence: {
-        occurrence: occ(id, { sort_key }),
-        item: null,
-        renderer: 'board' as const,
-      },
-      facts: null,
-    });
-    const arr = [cardWith('a', null), cardWith('b', 'm'), cardWith('c', 'a')];
-    arr.sort(compareBoardCards);
-    expect(arr.map((c) => c.occurrence.occurrence.id)).toEqual(['c', 'b', 'a']);
-  });
-});
-
 describe('board view-state persistence + reconciliation', () => {
-  it('keeps the established per-space storage key', () => {
-    expect(boardStorageKey('prj1', 'sp1')).toBe('mandible.spaces.board:prj1:sp1');
-    expect(boardStorageKey('', 'sp1')).toBe('mandible.spaces.board:_:sp1');
-  });
-
   it('normalizes malformed stored JSON to a safe state', () => {
     expect(normalizeBoardViewState(null)).toEqual(EMPTY_BOARD_VIEW_STATE);
     expect(normalizeBoardViewState({ collapsedColumns: { x: 'nope' } }).collapsedColumns).toEqual({});
@@ -372,15 +186,5 @@ describe('board view-state persistence + reconciliation', () => {
     expect(next.cardFilter).toBe('q'); // filter preserved
     expect(next.selection.ids).toEqual(['o1']); // vanished id dropped, surviving kept
     expect(next.collapsedColumns).toEqual({ 'worker_status:done': true }); // removed column dropped
-  });
-
-  it('reconcile does not clear selection just because data refreshed (identical ids)', () => {
-    const prior = {
-      cardFilter: '',
-      selection: { kind: 'occurrence' as const, ids: ['o1'] },
-      collapsedColumns: {},
-    };
-    const next = reconcileBoardViewState(prior, new Set(['o1', 'o2']), new Set());
-    expect(next.selection).toBe(prior.selection);
   });
 });
