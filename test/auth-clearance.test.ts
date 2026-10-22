@@ -346,7 +346,7 @@ describe("scoped protected-merge clearance", () => {
   });
 
   it.each([
-    ["action type", { type: "data-delete", command: "echo destructive" }, /protected merge/],
+    ["action type", { type: "data-delete", command: "echo destructive", canonical_message: false, verification: null }, /protected merge/],
     ["remote execution", { execution_mode: "remote" }, /protected merge/],
     ["session claim", { requester_evidence_method: "session_claim", requester_credential_id: null }, /provenance/],
   ])("refuses unsupported %s", async (_label, overrides, message) => {

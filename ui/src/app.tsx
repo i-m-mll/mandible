@@ -31,7 +31,6 @@ import {
   rejectAuthRequest,
   retryAuthRequest,
   scanIssues,
-  updateAuthRequestField,
   updateAppThemePreference,
   updateSetting,
   updateUserAppRailOrderSetting,
@@ -2050,17 +2049,6 @@ function App(): JSX.Element {
   };
 
   // Bug: 2c826ca — allow editing auth request fields from the dashboard
-  const handleUpdateAuthField = async (requestId: string, field: string, value: string) => {
-    try {
-      await updateAuthRequestField(requestId, { [field]: value });
-      // Refresh the queue to pick up the updated field
-      const queue = await getAuthQueue<AuthRequest>();
-      dispatch({ type: 'setAuthQueue', queue });
-    } catch {
-      return;
-    }
-  };
-
   const handleRescan = async () => {
     try {
       // Trigger a full scan on the server before fetching results
@@ -2971,7 +2959,6 @@ function App(): JSX.Element {
               onApprove={handleApprove}
               onReject={handleReject}
               onRetry={handleRetry}
-              onUpdateField={handleUpdateAuthField}
               autoShowConsoleOnApproval={enabledSetting(state.settings, AUTH_AUTO_SHOW_CONSOLE_SETTING)}
               autoReturnToAbstractOnSuccess={enabledSetting(state.settings, AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING)}
               retainFinalizedSelection={enabledSetting(state.settings, AUTH_RETAIN_FINALIZED_SELECTION_SETTING)}

@@ -63,7 +63,7 @@ describe("auth queue", () => {
         pinned.merge_head_sha!,
         "-S",
         "-m",
-        "Merge branch 'feature/atomic-recovery'",
+        pinned.commit_message!,
       ]);
       const prepared = `MANDIBLE_MERGE_PREPARED ${JSON.stringify({
         merge_sha: mergeSha,

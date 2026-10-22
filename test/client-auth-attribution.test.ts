@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -190,7 +191,7 @@ describe("client-auth durable attribution", () => {
     const submit = (sessionId: string) => router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo codex",
         title: "Codex desktop auth request",
         session_id: sessionId,
@@ -231,6 +232,7 @@ describe("client-auth durable attribution", () => {
       method: "POST",
       url: "/api/auth/request",
       body: {
+        ...AUTH_MERGE_REVIEW,
         command: "echo attributed",
         title: "Attributed auth request",
         session_id: "auth-request-agent-session",
@@ -347,7 +349,7 @@ describe("client-auth durable attribution", () => {
     const mismatched = await router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo mismatch",
         title: "Mismatched auth request",
         session_id: "auth-request-agent-session",
@@ -373,7 +375,7 @@ describe("client-auth durable attribution", () => {
     const conflicting = await router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo conflict",
         title: "Conflicting session claims",
         session_id: "auth-request-agent-session",

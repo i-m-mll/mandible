@@ -56,7 +56,7 @@ describe("approval Description", () => {
           const result = await router.invoke({ method: "POST", url: "/api/auth/request",
             body: { type, command: "echo fixture", title: "Review", commit_message } });
           expect(result.status).toBe(400);
-          expect(result.body).toMatchObject({ code: "description_required" });
+          expect(result.body).toMatchObject({ code: type === "merge" ? "change_message_required" : "description_required" });
         }
       }
       const description = "# Apply reviewed settings\n\nPreserve the private fixture database.";

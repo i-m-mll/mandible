@@ -104,7 +104,7 @@ export function registerAuthRoutes(
     }
     const descriptionError = authDescriptionRequirement(payload);
     if (descriptionError) {
-      res.status(400).json({ error: descriptionError, code: "description_required" });
+      res.status(400).json({ error: descriptionError, code: (payload.type ?? "merge") === "merge" ? "change_message_required" : "description_required" });
       return;
     }
     if (payload.type === "custody-transfer") {
