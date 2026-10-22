@@ -27,6 +27,7 @@ export function applyConversationSse(
   data: ConversationAppendPayload,
 ): void {
   if (type === 'conversation:new' || !data.id) {
+    void client.invalidateQueries({ queryKey: conversationKeys.routeTargets() });
     void client.invalidateQueries({ queryKey: conversationKeys.sidebars() });
     return;
   }
