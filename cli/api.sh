@@ -790,7 +790,7 @@ api_http_probe_health() {
   health_tmp=$(api_temp_file)
   local socket_args=()
   api_is_local_socket && socket_args=(--unix-socket "$MANDIBLE_SOCKET")
-  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" "${socket_args[@]}" -o "$health_tmp" \
+  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" ${socket_args[@]+"${socket_args[@]}"} -o "$health_tmp" \
       -w "%{http_code}" "${health_base}/api/health" 2>/dev/null); then
     :
   else

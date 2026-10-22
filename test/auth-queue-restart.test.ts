@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -314,11 +315,7 @@ describe("auth queue", () => {
         await approveFixtureRequest(queue, selfMerge.id);
 
         // Wait for the self-merge to enter its hook phase (admission closed).
-        const deadline = Date.now() + 2000;
-        while (!queue.isRebuilding && Date.now() < deadline) {
-          await new Promise((resolve) => originalSetTimeout(resolve, 10));
-        }
-        expect(queue.isRebuilding).toBe(true);
+        await waitUntil(() => queue.isRebuilding, "the self-merge hook phase");
 
         // A request approved during the rebuild window must be parked, not run.
         const other = queue.submit({ type: "commit",

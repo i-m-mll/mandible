@@ -1,21 +1,11 @@
 /**
- * Default-gate timing contract (issue 9e40a31).
- *
- * The gate regressed to 663s and then sat at 102.7s not because any one test
- * was slow but because 139 uniformly expensive tests lived in one file, and
- * Vitest parallelises across files and never within one. Nothing measured that.
- * `test/README.md` asked for readmitted tests to cost under a second and no
- * mechanism checked it.
- *
- * This reporter publishes the numbers that make the failure mode visible, and
- * fails the run on the shape that caused it.
+ * The gate's timing packet and checkout watcher (issues 9e40a31, fec6f89).
  *
  * ## What is measured
  *
  * Per-file *occupancy*, not accumulated test duration. A fork is held for the
  * whole of environment setup, harness preparation, module import and collection
  * as well as the tests themselves, and all of it counts against the schedule.
- * Using only `diagnostic().duration` understates a file by several seconds.
  *
  * ## The bound
  *
@@ -23,26 +13,30 @@
  *
  *     max(sum of file occupancies / workers, longest single file)
  *
- * The longest-file term is the one that matters here: it is why 13 idle-capable
- * workers still produced a 102.7s wall clock, and why the fix was to split the
- * file rather than to add parallelism that already existed. A ratio of
- * wall/(sum/workers) alone is the wrong metric and must not be reintroduced —
- * it reported "3.1x the floor" for a schedule that was within 1% of optimal.
+ * A ratio of wall/(sum/workers) alone is the wrong metric and must not be
+ * reintroduced: it reported "3.1x the floor" for a schedule that was within 1%
+ * of optimal, because one file was 99% of the wall clock.
  *
  * ## Enforcement
  *
- * The relative outlier rule is always enforced: it is hardware-independent, so
- * it is safe on the variable `ubuntu-latest` runners CI uses. The absolute
- * wall-clock and slowest-file rules are enforced only when
- * `MANDIBLE_TIMING_GATE=1`, which is for a controlled machine — an absolute
- * 60-second budget is not meaningful on a runner of unknown size.
+ * Always: the relative outlier rule (hardware-independent) and checkout
+ * cleanliness — `git status --porcelain --untracked-files=all` must read the
+ * same at the end of the run as at the start, so a test that writes into the
+ * repository fails the run. With `MANDIBLE_TIMING_GATE=1`, on a controlled
+ * machine, also the absolute budget: occupancy sum, slowest file, and wall.
+ *
+ * `MANDIBLE_TIMING_JSON=<path>` additionally writes the full packet, every
+ * file's occupancy included.
  */
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 
 import type { Reporter, TestModule } from "vitest/node";
 
 const WALL_LIMIT_MS = 60_000;
-const SLOWEST_LIMIT_MS = 45_000;
+const FILE_LIMIT_MS = 25_000;
+const SUM_LIMIT_MS = 600_000;
 const OUTLIER_FLOOR_MS = 30_000;
 const OUTLIER_RATIO = 2;
 
@@ -66,12 +60,41 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
+type CheckoutState = { ok: true; entries: string[] } | { ok: false; error: string };
+
+function checkoutState(): CheckoutState {
+  const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  if (status.error || status.status !== 0) {
+    return { ok: false, error: status.error?.message ?? (status.stderr.trim() || `exit ${status.status}`) };
+  }
+  return { ok: true, entries: status.stdout.split("\n").filter(Boolean) };
+}
+
+function checkoutViolation(before: CheckoutState, after: CheckoutState): string | null {
+  if (!before.ok) return `cannot read checkout state at run start: ${before.error}`;
+  if (!after.ok) return `cannot read checkout state at run end: ${after.error}`;
+  const start = new Set(before.entries);
+  const end = new Set(after.entries);
+  const changes = [
+    ...after.entries.filter((entry) => !start.has(entry)).map((entry) => `+ ${entry}`),
+    ...before.entries.filter((entry) => !end.has(entry)).map((entry) => `- ${entry}`),
+  ];
+  if (changes.length === 0) return null;
+  return `the run changed the checkout; tests must write only under their own temp root ` +
+    `(testRuntimeRoot in test/helpers/runtime-isolation.ts):\n${changes.map((c) => `        ${c}`).join("\n")}`;
+}
+
 export default class TimingContractReporter implements Reporter {
   private startedAt = 0;
   private workers = Math.max(1, availableParallelism() - 1);
+  private checkoutAtStart: CheckoutState = { ok: false, error: "reporter was not initialised" };
 
   onInit(vitest: { config?: { maxWorkers?: number | string } }): void {
     this.startedAt = Date.now();
+    this.checkoutAtStart = checkoutState();
     const configured = vitest?.config?.maxWorkers;
     if (typeof configured === "number" && configured > 0) {
       this.workers = configured;
@@ -98,7 +121,7 @@ export default class TimingContractReporter implements Reporter {
 
     const lines: string[] = [
       "",
-      "  Timing contract (issue 9e40a31)",
+      "  Timing contract",
       `    wall                 ${seconds(wallMs)}`,
       `    files                ${files.length}`,
       `    workers              ${this.workers}`,
@@ -113,16 +136,14 @@ export default class TimingContractReporter implements Reporter {
       `    lower bound          ${seconds(lowerBoundMs)}  max(floor, slowest)`,
       `    scheduling ratio     ${efficiency.toFixed(2)}x  (wall / lower bound)`,
       "",
-      "    slowest five:",
-      ...files.slice(0, 5).map((f) => `      ${seconds(f.occupancyMs).padStart(8)}  ${f.name}`),
+      "    slowest ten:",
+      ...files.slice(0, 10).map((f) => `      ${seconds(f.occupancyMs).padStart(8)}  ${f.name}`),
       "",
     );
 
     const absolute = process.env.MANDIBLE_TIMING_GATE === "1";
     const violations: string[] = [];
 
-    // Always enforced: hardware-independent, and it is the exact shape that
-    // produced the regression — one file dominating a schedule that has room.
     if (
       second &&
       slowest.occupancyMs > OUTLIER_FLOOR_MS &&
@@ -136,20 +157,35 @@ export default class TimingContractReporter implements Reporter {
     }
 
     if (absolute) {
+      if (sumMs > SUM_LIMIT_MS) {
+        violations.push(`sum of occupancies ${seconds(sumMs)} exceeds the ${seconds(SUM_LIMIT_MS)} budget.`);
+      }
+      for (const file of files.filter((f) => f.occupancyMs > FILE_LIMIT_MS)) {
+        violations.push(`${file.name} at ${seconds(file.occupancyMs)} exceeds the ${seconds(FILE_LIMIT_MS)} per-file budget.`);
+      }
       if (wallMs > WALL_LIMIT_MS) {
         violations.push(`wall ${seconds(wallMs)} exceeds the ${seconds(WALL_LIMIT_MS)} budget.`);
-      }
-      if (slowest.occupancyMs > SLOWEST_LIMIT_MS) {
-        violations.push(
-          `slowest file ${slowest.name} at ${seconds(slowest.occupancyMs)} exceeds the ` +
-            `${seconds(SLOWEST_LIMIT_MS)} per-file budget.`,
-        );
       }
     } else {
       lines.push(
         "    absolute budgets not enforced (set MANDIBLE_TIMING_GATE=1 on a controlled machine)",
         "",
       );
+    }
+
+    const checkout = checkoutViolation(this.checkoutAtStart, checkoutState());
+    if (checkout) violations.push(checkout);
+
+    const packetPath = process.env.MANDIBLE_TIMING_JSON;
+    if (packetPath) {
+      writeFileSync(packetPath, `${JSON.stringify({
+        wall_ms: wallMs,
+        workers: this.workers,
+        sum_ms: sumMs,
+        lower_bound_ms: lowerBoundMs,
+        files: files.map((f) => ({ file: f.name, occupancy_ms: Math.round(f.occupancyMs) })),
+        violations,
+      }, null, 2)}\n`);
     }
 
     if (violations.length > 0) {

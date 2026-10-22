@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawnChromium } from '../test/helpers/chromium.ts';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -6,10 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
-const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const observeOnly = process.argv.includes('--observe');
 
-if (!existsSync(chrome)) throw new Error(`Chrome is unavailable at ${chrome}`);
 
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mandible-timeline-layout-'));
 const profile = path.join(temporaryRoot, 'chrome-profile');
@@ -116,8 +114,7 @@ try {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Failed to allocate the isolated harness port.');
 
-  browser = spawn(chrome, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+  browser = spawnChromium([
     `--user-data-dir=${profile}`, '--remote-debugging-port=0',
     `http://127.0.0.1:${address.port}/`,
   ], { stdio: 'ignore' });

@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,13 +92,7 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error(`condition was not met within ${timeoutMs}ms`);
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  }
-}
+const waitFor = (predicate: () => boolean) => waitUntil(predicate, "controller state", 5);
 
 describe("structured conversation controller adapters", () => {
 
@@ -134,7 +129,7 @@ describe("structured conversation controller adapters", () => {
     const events = providerEvents(codex);
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
     expect((await codex.deliver(delivery("resume-provider-session", "rich-turn", "rich"))).ok).toBe(true);
-    await waitUntil(() => events.some((event) => event.kind === "provisional-content"
+    await waitFor(() => events.some((event) => event.kind === "provisional-content"
       && event.item.identity.native_item_id === "command-rich"
       && event.item.content_completion === "complete"));
 
@@ -173,14 +168,14 @@ it("keeps Codex approvals and usage on the exact owned turn and interrupts witho
  const events=lifecycle(adapter);const usage:unknown[]=[];adapter.subscribeRuntimeEvents(event=>usage.push(event));
  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
  expect((await adapter.deliver(delivery('send','approval-turn','permission'))).ok).toBe(true);
- await waitUntil(()=>adapter.permissions('conversation-1').length===1);
+ await waitFor(()=>adapter.permissions('conversation-1').length===1);
  expect(usage).toEqual([expect.objectContaining({conversation_id:'conversation-1',generation:4,snapshot:{usage:{total:{inputTokens:12,outputTokens:3,totalTokens:15}}}})]);
  expect((await adapter.decidePermission({conversation_id:'conversation-1',generation:5,request_id:'approval-1',decision:'allow'})).ok).toBe(false);
  expect((await adapter.decidePermission({conversation_id:'conversation-1',generation:4,request_id:'approval-1',decision:'deny'})).ok).toBe(true);
- await waitUntil(()=>events.some(event=>event.kind==='turn-completed'));
+ await waitFor(()=>events.some(event=>event.kind==='turn-completed'));
  expect(adapter.permissions('conversation-1')).toEqual([]);
  expect((await adapter.deliver(delivery('send','interrupt-turn','hold'))).ok).toBe(true);
  expect((await adapter.interrupt({conversation_id:'conversation-1',generation:4})).ok).toBe(true);
- await waitUntil(()=>events.some(event=>event.kind==='turn-cancelled'));
+ await waitFor(()=>events.some(event=>event.kind==='turn-cancelled'));
  expect(await adapter.probe({conversation_id:'conversation-1',generation:4,controller_instance_id:'controller-1',provider_session_id:'codex-thread'})).toMatchObject({ok:true,value:{kind:'owned'}});
 });

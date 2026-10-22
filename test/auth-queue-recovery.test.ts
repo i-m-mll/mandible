@@ -137,10 +137,10 @@ describe("auth queue", () => {
       }
       if (follower) {
         await approveFixtureRequest(queue, follower.id);
-        await waitForStatus(queue, follower.id, "completed", 5000);
+        await waitForStatus(queue, follower.id, "completed");
         expect(order.indexOf("recovery-hook-end")).toBeLessThan(order.indexOf("follower-executor"));
       }
-      const recovered = await waitForStatus(queue, request.id, "completed", 5000);
+      const recovered = await waitForStatus(queue, request.id, "completed");
 
       expect(recovered.exit_code).toBe(0);
       expect(recovered.output).toContain(`"merge_sha":"${mergeSha}"`);
@@ -159,7 +159,7 @@ describe("auth queue", () => {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 
   it.each(["clean", "untracked", "staged", "divergent"] as const)(
     "refuses legacy interrupted publication and preserves a %s checkout", async (kind) => {

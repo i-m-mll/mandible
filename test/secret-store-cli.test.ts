@@ -577,7 +577,7 @@ describe("secret backend seam", () => {
       // …and never appeared in the trace.
       expect(result.stderr).not.toContain("captured-operator-token");
       expect(result.stderr).toContain("+"); // tracing really was on
-    }, 20_000);
+    });
 
     it(`never exports an agent token from wrap.sh under ${shell}`, async () => {
       // A stored credential must stay outside the wrapped agent's environment,
@@ -619,7 +619,7 @@ describe("secret backend seam", () => {
 
       expect(result.stdout).toContain("token=unset managed=1");
       expect(result.stderr).not.toContain("wrapped-agent-token");
-    }, 20_000);
+    });
   }
 
   it("keeps api_keychain_operator_token semantics when routed through the seam", () => {

@@ -90,6 +90,19 @@ const checks = {
     return sites.length === 1 ? [] : [`chokidar.watch( appears ${sites.length} times (${sites.join(', ') || 'nowhere'}); expected once, in src/ingestion.ts`];
   },
 
+  // Chrome under a test HOME without --use-mock-keychain raises a modal
+  // "Keychain not found" dialog on the operator's screen per launch, so every
+  // launch in tests and scripts goes through the one launcher that passes it.
+  'Chrome starts only through test/helpers/chromium.ts'() {
+    const launcher = 'test/helpers/chromium.ts';
+    const signs = /--headless|Google Chrome\.app|Chromium\.app|\/usr\/bin\/(?:google-chrome|chromium)|\bCHROME_BIN\b/;
+    return ['test', 'scripts']
+      .flatMap((root) => walk(root, (file) => /\.(?:[cm]?[jt]sx?|sh)$/.test(file)))
+      .filter((file) => file !== launcher && file !== 'scripts/check.mjs')
+      .flatMap((file) => read(file).split('\n').flatMap((line, index) =>
+        signs.test(line) ? [`${file}:${index + 1}: launches Chrome directly; use ${launcher}`] : []));
+  },
+
   // Reminder predicates are evaluated against a database capability only, so
   // evaluation is deterministic and cannot reach the host.
   'the reminder evaluator imports no host capabilities'() {

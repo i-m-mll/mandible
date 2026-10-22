@@ -250,12 +250,11 @@ Operator settings (protected branches, notifications, approval hooks, signing ke
 bun run dev                # tsc --watch and esbuild --watch
 bun run typecheck
 bun run test               # default gate: the flat test/ directory
-bun run test:extended      # test/extended/
-bun run test:browser       # provisioned machines only
+bun run test:provisioned   # test/provisioned/: browser, lockf, legacy interpreter, daemon fleet
 bun run iab-preview -- --json   # an isolated preview daemon on a copied database
 ```
 
-The default gate is the whitelist of boundary tests described in [test/README.md](test/README.md); build the daemon first after server changes. Schema changes are numbered migrations in `src/db-migrations.ts`, never edits to existing ones. Do not commit `dist/` or `ui/dist/`; the post-merge hook rebuilds them. Every capability change ships with its interface-contract text in the same change, and `cli/command-syntax.json` is the one source for command synopses.
+The gate and its admission policy are described in [test/README.md](test/README.md). Schema changes are numbered migrations in `src/db-migrations.ts`, never edits to existing ones. Do not commit `dist/` or `ui/dist/`; the post-merge hook rebuilds them. Every capability change ships with its interface-contract text in the same change, and `cli/command-syntax.json` is the one source for command synopses.
 
 The repository's own agent instructions are in [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
 

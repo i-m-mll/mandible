@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -189,15 +190,10 @@ describe("CLI API route coverage", () => {
 });
 
 async function waitForFile(dir: string, suffix: string): Promise<string> {
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(dir)) {
-      const match = fs.readdirSync(dir).find((entry) => entry.endsWith(suffix));
-      if (match) return path.join(dir, match);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Timed out waiting for ${suffix} in ${dir}`);
+  const match = await waitUntil(
+    () => fs.existsSync(dir) && fs.readdirSync(dir).find((entry) => entry.endsWith(suffix)),
+    `${suffix} in ${dir}`, 20);
+  return path.join(dir, match);
 }
 
 function collectRoutePolicies(): Map<string, RoutePolicy> {

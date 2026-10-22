@@ -217,7 +217,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
     }
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
     const rootDir = path.resolve(currentDir, "..");
-    const entryPath = path.join(rootDir, "dist", "index.js");
+    // Bun runs the source entry directly, so this boundary needs no prior build.
+    const entryPath = path.join(rootDir, "src", "index.ts");
 
     await autoStartDaemon({
       port,
@@ -234,5 +235,5 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
 
     const drained = await waitForNoHealth(port, 10_000, 200);
     expect(drained).toBe(true);
-  }, 15_000);
+  });
 });

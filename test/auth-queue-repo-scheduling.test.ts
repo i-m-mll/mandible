@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -20,14 +21,7 @@ import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookMa
 describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
   const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
 
-  async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (predicate()) return;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error("waitFor timed out");
-  }
+  const waitFor = (predicate: () => boolean) => waitUntil(predicate, "merge scheduling state");
 
   function gatedExecutor() {
     const started: string[] = [];

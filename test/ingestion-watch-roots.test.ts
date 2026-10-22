@@ -4,6 +4,7 @@
 // one recursive watch per root directory; these tests pin the path
 // classification that replaced chokidar's add/change/unlink events.
 
+import { waitUntil } from "./helpers/wait-until.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -35,14 +36,7 @@ afterEach(async () => {
   }
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for watch event");
-}
+const waitFor = (predicate: () => boolean) => waitUntil(predicate, "watch event", 25);
 
 describe("groupWatchConfigs", () => {
   it("collapses configs that share a base into one root", () => {

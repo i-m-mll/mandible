@@ -1,3 +1,4 @@
+import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
 /**
  * Issue 27241e6 — probes for durable, honest, authorized post-merge hooks.
@@ -615,13 +616,6 @@ describe("hook registration authority (issue 27241e6)", () => {
   });
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for condition");
-}
+const waitFor = (predicate: () => boolean) => waitUntil(predicate, "hook convergence", 25);
 
 export type { AuthHookRun };
