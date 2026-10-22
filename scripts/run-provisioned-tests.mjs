@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * `bun run test:provisioned [file...]`: the suite that needs a real browser,
- * macOS `lockf`, a legacy interpreter or a daemon fleet (test/README.md).
+ * macOS `lockf` and launchd, or a daemon fleet (test/README.md).
  *
  * Each unit runs in its own supervised Vitest process tree under a per-unit
  * RSS cap, a pool of units at a time, with output buffered per unit so
@@ -21,6 +21,7 @@ const SUITE_DIR = "test/provisioned";
 const LAUNCHER = `${SUITE_DIR}/iab-preview-launcher.test.ts`;
 const RSS_LIMIT_KIB = 950_000;
 const RSS_SAMPLE_MS = 500;
+const UNMEASURED_GRACE_MS = 60_000;
 
 /**
  * Exclusive resources a file declares with an `// @provisioned <resource>`
@@ -30,6 +31,9 @@ const RESOURCES = {
   // Headless Chrome process trees reach about 2 GB, and concurrent launches
   // contend for startup until geometry checks become load tests.
   chromium: { rssLimitKiB: 4_000_000 },
+  // Fixture launchd jobs share the operator's GUI domain, and the full handoff
+  // builds the deployed revision inside its own tree.
+  launchd: { rssLimitKiB: 4_000_000 },
 };
 
 function declaredResource(file) {
@@ -40,11 +44,14 @@ function declaredResource(file) {
   return declared ?? null;
 }
 
+/** macOS lockf and launchd. */
+const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "runtime-handoff-full.test.ts"]);
+
 function suiteFiles() {
   return readdirSync(path.join(root, SUITE_DIR))
     .filter((name) => /\.test\.tsx?$/.test(name))
     .map((name) => `${SUITE_DIR}/${name}`)
-    .filter((file) => process.platform === "darwin" || file !== `${SUITE_DIR}/local-ca-lockf.test.ts`)
+    .filter((file) => process.platform === "darwin" || !DARWIN_ONLY.has(path.basename(file)))
     .sort();
 }
 
@@ -158,6 +165,7 @@ export async function runUnits(units, {
           rssLimitKiB: unit.resource ? RESOURCES[unit.resource].rssLimitKiB : rssLimitKiB,
           measureRssKiB,
           monitorIntervalMs,
+          unmeasuredGraceMs: UNMEASURED_GRACE_MS,
           spawnChild: (env) => {
             const child = spawnUnit(unit, env);
             child.stdout?.on("data", (chunk) => output.push(chunk));

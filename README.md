@@ -250,7 +250,7 @@ Operator settings (protected branches, notifications, approval hooks, signing ke
 bun run dev                # tsc --watch and esbuild --watch
 bun run typecheck
 bun run test               # default gate: the flat test/ directory
-bun run test:provisioned   # test/provisioned/: browser, lockf, legacy interpreter, daemon fleet
+bun run test:provisioned   # test/provisioned/: browser, lockf, launchd, daemon fleet
 bun run iab-preview -- --json   # an isolated preview daemon on a copied database
 ```
 

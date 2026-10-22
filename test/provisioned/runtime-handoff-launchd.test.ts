@@ -1,3 +1,4 @@
+// @provisioned launchd
 // @vitest-environment node
 // This checks the actual old interpreter/launchd admission boundary. The
 // integrated production-daemon and desktop gate remains separately required.
@@ -23,9 +24,9 @@ const wait = async (predicate: () => boolean, timeout = 15000) => {
 };
 it('arms one independent helper under the deployed interpreter and survives helper death without build mutation', async () => {
   if (process.platform !== 'darwin') throw new Error('This launchd check requires macOS.');
-  // The deployed interpreter: the pinned Bun the runner provides, unless an older one is named explicitly.
-  const legacy = process.env.MANDIBLE_TEST_LEGACY_RUNTIME ?? process.env.MANDIBLE_RUNTIME;
-  if (!legacy || !fs.existsSync(legacy)) throw new Error('No interpreter: set MANDIBLE_TEST_LEGACY_RUNTIME, or run through bun run test:provisioned.');
+  // The deployed interpreter is the pinned Bun the runner provides.
+  const deployed = process.env.MANDIBLE_RUNTIME;
+  if (!deployed || !fs.existsSync(deployed)) throw new Error('Prerequisite missing: MANDIBLE_RUNTIME, the pinned Bun; run through bun run test:provisioned.');
   const repo = fs.realpathSync(createAuthCheckRepo());
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-handoff-launchd-'));
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
@@ -65,7 +66,7 @@ it('arms one independent helper under the deployed interpreter and survives help
     fs.writeFileSync(runner, "import fs from 'node:fs';fs.writeFileSync(process.env.OLD_MARKER,String(process.pid));setInterval(()=>{},1000);\n");
     const marker = path.join(scratch, 'old-started');
     const backendFile = path.join(services, `${backend}.plist`);
-    fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [legacy, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
+    fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [deployed, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
     fs.writeFileSync(path.join(services, `${gateway}.plist`), renderLaunchAgent({ label: gateway, programArguments: ['/usr/bin/true', 'fixture'], workingDirectory: runtimeDir, environment: { HOME: userHome }, stdoutPath: path.join(scratch, 'gateway.log'), stderrPath: path.join(scratch, 'gateway.log') }));
     expect(control(['bootstrap', domain, backendFile]).status).toBe(0); await wait(() => fs.existsSync(marker));
     const sqliteFiles = sqliteRuntimePaths();
@@ -76,9 +77,9 @@ it('arms one independent helper under the deployed interpreter and survives help
     const result = arm(); expect(result.status, result.stderr).toBe(75);
     journal = readRuntimeHandoff(home, request.id, hook.id);
     expect(journal.bridgeInstalled).toBe(true); expect(journal.binding.oldProcess.pid).toBe(Number(fs.readFileSync(marker, 'utf8')));
-    expect(journal.binding.priorBackend.argv[0]).toBe(legacy); expect(journal.binding.mergeCommit).toBe(published.mergeSha);
+    expect(journal.binding.priorBackend.argv[0]).toBe(deployed); expect(journal.binding.mergeCommit).toBe(published.mergeSha);
     expect(journal.stages).toEqual({}); expect(fs.readFileSync(runner, 'utf8')).toContain('dependency-free');
-    bridgeChild = spawn(legacy, [runner, 'run'], { env, stdio: 'ignore' });
+    bridgeChild = spawn(deployed, [runner, 'run'], { env, stdio: 'ignore' });
     const bridgeMarker = path.join(path.dirname(path.join(runtimeDir, 'handoff', `${request.id}-${hook.id}`, 'journal.json')), 'bridge-process.json');
     await wait(() => fs.existsSync(bridgeMarker) && JSON.parse(fs.readFileSync(bridgeMarker, 'utf8')).pid === bridgeChild?.pid);
     expect(bridgeChild.exitCode).toBeNull();
