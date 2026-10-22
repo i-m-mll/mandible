@@ -1288,19 +1288,16 @@ function AuthRequestDetail({
           </div>
         ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
-          <div className="auth-detail__panels">
+          <div className="auth-detail__panels collapsible-panel-region--persistent-disclosures">
             <div className="auth-detail__left-col">
               <CollapsiblePanel
                 title="Description"
+                availability={request.commit_message === undefined ? 'unknown' : commitHtml ? 'available' : 'unavailable'}
                 expanded={descriptionView.descriptionExpanded}
                 onExpandedChange={descriptionExpanded => setDescriptionView(current => ({ ...current, descriptionExpanded }))}
                 bodyClassName="spec-panel"
               >
-                {commitHtml ? (
-                  <div className="rendered-markdown" dangerouslySetInnerHTML={{ __html: commitHtml }} />
-                ) : (
-                  <div className="spec-panel--empty">No Description was recorded for this historical request.</div>
-                )}
+                <div className="rendered-markdown" dangerouslySetInnerHTML={{ __html: commitHtml }} />
               </CollapsiblePanel>
               {referenceRefs.length > 0 && canIssueLink && (
                 <CollapsiblePanel
@@ -1359,7 +1356,7 @@ function AuthRequestDetail({
               {authType === 'merge' && (
                 <AuthChangeBreakdown
                   requestId={fullId}
-                  report={request.change_report ?? null}
+                  report={request.change_report}
                 />
               )}
             </div>
@@ -1959,7 +1956,7 @@ export function AuthQueueView({
     diff_summary: string;
     spec_content: string;
     output: string;
-    change_report: AuthChangeReport | null;
+    change_report?: AuthChangeReport | null;
   };
   const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
 
@@ -2721,7 +2718,7 @@ export function AuthQueueView({
             diff_summary: typeof hydrated.diff_summary === 'string' ? hydrated.diff_summary : '',
             spec_content: typeof hydrated.spec_content === 'string' ? hydrated.spec_content : '',
             output: typeof hydrated.output === 'string' ? hydrated.output : '',
-            change_report: hydrated.change_report ?? null,
+            change_report: hydrated.change_report,
           },
         }));
       })
@@ -2735,7 +2732,10 @@ export function AuthQueueView({
   const selectedRequest = useMemo((): AuthRequest | null => {
     if (!selectedRequestRaw) return null;
     const hydration = hydratedBodies[getAuthId(selectedRequestRaw)];
-    return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
+    return hydration ? {
+      ...selectedRequestRaw, ...hydration,
+      change_report: selectedRequestRaw.change_report !== undefined ? selectedRequestRaw.change_report : hydration.change_report,
+    } : selectedRequestRaw;
   }, [selectedRequestRaw, hydratedBodies]);
 
   useEffect(() => {
