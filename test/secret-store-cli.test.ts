@@ -126,6 +126,8 @@ interface FakeUser {
   kind: string;
   appNames?: string[];
   whoamiAuthenticated?: boolean;
+  userFields?: Record<string, unknown>;
+  mintFields?: Record<string, unknown>;
 }
 
 async function userDaemon(user: FakeUser): Promise<StubDaemon> {
@@ -141,12 +143,13 @@ async function userDaemon(user: FakeUser): Promise<StubDaemon> {
           user: {
             id: `user-${user.slug}`, slug: user.slug, kind: user.kind, display_name: user.slug, status: "active", credentials: [],
             bindings: (user.appNames ?? []).map((value, index) => ({ id: `binding-${index}`, binding_type: "app_name", value, status: "active" })),
+            ...user.userFields,
           },
         },
       };
     }
     if (method === "POST" && url.endsWith("/tokens")) {
-      return { status: 201, body: { token: MINTED_TOKEN, credential: { id: "credential-1", status: "active", label: "provisioning" } } };
+      return { status: 201, body: { token: MINTED_TOKEN, credential: { id: "credential-1", status: "active", label: "provisioning" }, ...user.mintFields } };
     }
     return undefined;
   });
@@ -449,6 +452,39 @@ describe("direct CLI agent credential resolution", () => {
 });
 
 describe("user token mint --store", () => {
+  it("rejects non-scalar user and minted credential fields before shell evaluation or storage", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    for (const value of [["safe", "touch", marker], { unexpected: "object" }]) {
+      for (const field of ["slug", "kind", "token", "credential.id"]) {
+        const beforeMint = field === "slug" || field === "kind";
+        const stub = await userDaemon({ slug: "malformed", kind: "human",
+          ...(beforeMint ? { userFields: { [field]: value } } : { mintFields: field === "token" ? { token: value } : { credential: { id: value } } }),
+        });
+        const result = await cli(chain, stub, ["user", "token", "mint", "malformed", "--store", "--service", "malformed-service", "--json"]);
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toMatch(/valid secret-store user fields|malformed token or credential fields/);
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(chain.items()).toEqual([]);
+        if (beforeMint) expect(posted(stub)).toBe(false);
+      }
+    }
+  });
+
+  it("keeps quoted and shell-metacharacter response fields as literal secret-store data", async () => {
+    const chain = keychain();
+    const marker = path.join(chain.dir, "response-executed");
+    const account = `account'; touch ${marker}; #`;
+    const token = `token\"; $(touch ${marker}); \\`;
+    const service = `service'; touch ${marker}; #`;
+    const stub = await userDaemon({ slug: account, kind: "human", mintFields: { token, credential: { id: `credential'; touch ${marker}; #` } } });
+    const result = await cli(chain, stub, ["user", "token", "mint", "operator", "--store", "--service", service, "--json"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(chain.item(service, account)?.secret).toBe(token);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(result.stdout + result.stderr).not.toContain(token);
+  });
+
   const mint = (...args: string[]) => ["user", "token", "mint", ...args];
 
   it("stores an agent token under its shortest app_name binding or an explicit service, and prints no token", async () => {
