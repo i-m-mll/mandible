@@ -87,6 +87,25 @@ describe("auth request short ids", () => {
     expect(queue.getRequest(secondId)?.title).toBe("Second");
   });
 
+  it("resolves a declared request ref in the queue's database, not the process singleton", async () => {
+    const { router, queue } = setup();
+    const request = queue.submit({ command: "echo isolated", title: "Isolated" });
+    const singleton = migratedMemoryDb();
+    const prefix = request.id.slice(0, 8);
+    insertLegacyRequest(singleton, `${prefix}-other-1`, "Singleton one");
+    insertLegacyRequest(singleton, `${prefix}-other-2`, "Singleton two");
+    setDb(singleton);
+    try {
+      const response = await router.invoke({
+        method: "GET",
+        url: `/api/auth/clearances?request_id=${prefix}`,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+    } finally {
+      singleton.close();
+    }
+  });
+
   it("keeps an honest 404 for an unknown id", async () => {
     const { router } = setup();
     expect((await router.invoke({ method: "GET", url: "/api/auth/request/deadbeef" })).status).toBe(404);

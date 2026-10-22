@@ -11,6 +11,7 @@ import {
   METADATA_BACKUP_TABLES,
   REPRODUCIBLE_OR_RUNTIME_TABLES,
 } from "../src/ledger/backup.js";
+import { issueSearchExpression, searchLedgerIssues } from "../src/ledger/issue-search.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { createUser, setupOperator } from "../src/users/store.js";
@@ -352,6 +353,18 @@ describe("metadata backup coverage", () => {
       expect(rows(restored, "ledger_comments")).toHaveLength(1);
       expect(restored.pragma("foreign_key_check")).toEqual([]);
       expect(restored.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+
+      const restoredStore = new LedgerStore(restored);
+      restoredStore.updateIssue(issue.id, { title: "Restored and renamed" }, SYSTEM_ACTOR);
+      restoredStore.addComment(issue.id, { ...SYSTEM_ACTOR, body: "written after restore" });
+      const hits = (words: string) => searchLedgerIssues(restored, {
+        expression: issueSearchExpression(words)!,
+        projectIds: [project.id],
+        status: "all",
+        limit: 10,
+      }).map((hit) => hit.id);
+      expect(hits("line two")).toEqual([issue.id]);
+      expect(hits("renamed after restore")).toEqual([issue.id]);
     } finally {
       restored.close();
       db.close();

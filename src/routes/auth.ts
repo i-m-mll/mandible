@@ -17,7 +17,7 @@ import {
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
-import { entityRefs, resolveId } from "../entity-refs.js";
+import { resolveId } from "../entity-refs.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
@@ -799,7 +799,7 @@ export function registerAuthRoutes(
       handleClearanceError(error, res);
     }
   }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
-    refs: { query: { request_id: entityRefs.authRequest } } });
+    refs: { query: { request_id: (ref) => resolveId(db, "auth_request", ref) } } });
 
   // Keep this static path ahead of /:id so "signing" is never interpreted as
   // a clearance reference by order-sensitive HTTP routers.

@@ -228,7 +228,10 @@ function refRows(db: Db): RefRow[] {
   ).all() as RefRow[];
 }
 
-function settle(db: Db, rows: RefRow[], matchedBy: ProjectRefMatch, checkoutLevel: boolean): ProjectRefResolution | null {
+/** Whether a match names the checkout of its row, or only its project. */
+type CheckoutLevel = boolean | ((row: RefRow) => boolean);
+
+function settle(db: Db, rows: RefRow[], matchedBy: ProjectRefMatch, checkoutLevel: CheckoutLevel): ProjectRefResolution | null {
   const byProject = new Map<string, RefRow>();
   for (const row of rows) if (!byProject.has(row.project_id)) byProject.set(row.project_id, row);
   if (byProject.size === 0) return null;
@@ -241,7 +244,8 @@ function settle(db: Db, rows: RefRow[], matchedBy: ProjectRefMatch, checkoutLeve
   }
   const row = byProject.values().next().value!;
   const project = toRegistryProject(db, getProjectRowById(db, row.project_id)!);
-  const checkout = checkoutLevel ? project.checkouts.find((entry) => entry.id === row.checkout_id) ?? null : null;
+  const namesCheckout = typeof checkoutLevel === "function" ? checkoutLevel(row) : checkoutLevel;
+  const checkout = namesCheckout ? project.checkouts.find((entry) => entry.id === row.checkout_id) ?? null : null;
   return { ok: true, project, checkout, matched_by: matchedBy };
 }
 
@@ -394,15 +398,15 @@ export function resolveProjectRef(
   }
   const folded = trimmed.toLowerCase();
   const remote = normalizeRemoteIdentity(trimmed);
-  const tiers: Array<[ProjectRefMatch, boolean, (row: RefRow) => boolean]> = [
+  const projectRemote = (row: RefRow) => [row.remote_identity, row.upstream_identity].includes(remote);
+  const tiers: Array<[ProjectRefMatch, CheckoutLevel, (row: RefRow) => boolean]> = [
     ["id", false, (row) => row.project_id === trimmed],
     ["checkout_id", true, (row) => row.checkout_id === trimmed],
     ["project_key", false, (row) => row.project_key !== "" && row.project_key.toLowerCase() === folded],
     ["work_repo_id", true, (row) => row.work_repo_id === trimmed],
     ["checkout_name", true, (row) => row.checkout_name?.toLowerCase() === folded],
-    ["remote_identity", false, (row) => remote !== "" &&
-      [row.remote_identity, row.upstream_identity].includes(remote)],
-    ["remote_identity", true, (row) => remote !== "" && normalizeRemoteIdentity(row.remote_url) === remote],
+    ["remote_identity", (row) => !projectRemote(row), (row) => remote !== "" &&
+      (projectRemote(row) || normalizeRemoteIdentity(row.remote_url) === remote)],
     ["display_name", false, (row) => row.display_name.toLowerCase() === folded],
   ];
   for (const [matchedBy, checkoutLevel, matches] of tiers) {
