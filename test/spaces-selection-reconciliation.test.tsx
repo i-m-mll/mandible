@@ -133,6 +133,28 @@ it('discards a deleted saved space after 404, selects the first eligible space a
   expect(expectContext().get('space')).toBe('B');
 });
 
+it('preserves an authoritative full UUID when another accessible space shares its short prefix', async () => {
+  const fullA = '12345678-1111-4111-8111-111111111111';
+  const fullB = '12345678-2222-4222-8222-222222222222';
+  const prefix = '12345678';
+  writeSpacesLastView({ projectId: null, spaceId: fullA });
+  vi.mocked(listSpacesGrouped).mockResolvedValue([{ project_id: null, project_key: null, project_name: null, spaces: [space(fullB)] }]);
+  const load = vi.fn(async (id: string) => {
+    if (id === prefix) throw new ApiError('ambiguous space ref', 409);
+    return packet(id);
+  });
+  const navigated = vi.fn();
+  render(<Harness load={load} navigated={navigated} />);
+  await waitFor(() => expect(expectContext().get('space')).toBe(fullA));
+  await waitFor(() => expect(readSpacesLastView()?.spaceId).toBe(fullA));
+  expect(screen.getByLabelText('Opened space').textContent).toBe(fullA);
+  expect(load).toHaveBeenCalledWith(fullA);
+  expect(load).not.toHaveBeenCalledWith(prefix);
+  expect(load).not.toHaveBeenCalledWith(fullB);
+  expect(mountedTargets).not.toContain(fullB);
+  expect(screen.queryByText('ambiguous space ref')).toBeNull();
+});
+
 it('leaves a genuine empty collection after a deleted saved target is authoritatively missing', async () => {
   vi.mocked(listSpacesGrouped).mockResolvedValue([]);
   const navigated = vi.fn();

@@ -274,7 +274,7 @@ export function SpacesViewShell({
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
           if (restoringSaved && appShell.active) {
-            onNavigate?.({ projectId: space.project_id, spaceId: space.id, renderer: null });
+            onNavigate?.({ projectId: space.project_id, spaceId: space.id, renderer: null, preserveSpaceId: true });
           }
         }
       })

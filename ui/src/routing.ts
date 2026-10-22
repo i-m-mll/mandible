@@ -33,6 +33,7 @@ export type SpacesRouteTarget = {
   projectId?: string | null;
   projectKey?: string | null;
   spaceId?: string | null;
+  preserveSpaceId?: boolean;
   renderer?: string | null;
 };
 
@@ -51,7 +52,7 @@ export function spacesRouteFromHash(hashValue: string, target: SpacesRouteTarget
       : shortRouteId(target.projectId)
   );
   setOrDelete('project', projectRef);
-  setOrDelete('space', target.spaceId ? shortRouteId(target.spaceId) : target.spaceId);
+  setOrDelete('space', target.spaceId && !target.preserveSpaceId ? shortRouteId(target.spaceId) : target.spaceId);
   setOrDelete('renderer', target.renderer);
   const query = params.toString();
   return `#/spaces${query ? `?${query}` : ''}`;
