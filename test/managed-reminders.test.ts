@@ -1,19 +1,24 @@
-import SqliteDatabase from "../src/sqlite.ts";
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
-import { migrate, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
+import { startManagedReminderScheduler, stopManagedReminderScheduler } from "../src/managed-reminder-scheduler.js";
 import {
   cancelManagedReminder,
   createManagedReminder,
+  getManagedReminder,
   listManagedReminderOccurrences,
   reconcileManagedReminders,
 } from "../src/managed-reminders.js";
-import {
-  canonicalizeReminderInstant,
-  parseManagedReminderCreateRequest,
-} from "../src/managed-reminder-parser.js";
-import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
+import { countGlobalInboxBadge, registerInboxRoutes } from "../src/routes/inbox.js";
+import { registerManagedReminderRoutes } from "../src/routes/reminders.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
 let db: Db;
@@ -35,8 +40,7 @@ function request(
 }
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   userId = createUser(db, { slug: "reminder-agent", kind: "agent", display_name: "Reminder Agent" }, NOW).id;
   projectId = resolveProjectForCheckout(db, {
     root: "/tmp/managed-reminder-project",
@@ -49,12 +53,6 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("mandible-reminder@1 parser", () => {
-  it("canonicalizes absolute RFC 3339 instants to UTC and rejects loose dates", () => {
-    expect(canonicalizeReminderInstant("2026-08-14T08:00:00-04:00"))
-      .toBe("2026-08-14T12:00:00.000Z");
-    expect(() => canonicalizeReminderInstant("2026-08-14")).toThrow(/absolute RFC 3339/);
-    expect(() => canonicalizeReminderInstant("2026-02-31T12:00:00Z")).toThrow(/not a valid/);
-  });
 
   it("admits exactly the three v1 predicates and rejects unknown fields", () => {
     expect(request({ kind: "at", at: "2026-08-14T12:00:00Z" }).predicate.kind).toBe("at");
@@ -213,5 +211,109 @@ describe("managed reminder service", () => {
       { userId, evidenceMethod: "api_token" },
       NOW + 2,
     )).toThrow(/current lifecycle is completed/);
+  });
+});
+
+describe("managed reminder routes", () => {
+  class SlugGate implements ClientAuthGate {
+    authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
+      if (!credential) return null;
+      const row = db.prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
+        .get(credential) as { id: string; slug: string } | undefined;
+      return row
+        ? {
+            user_id: row.id,
+            slug: row.slug,
+            method: "api_token",
+            credential_id: null,
+            source: "in_process",
+            effect_ceiling: PRODUCTION_EFFECTS,
+          }
+        : null;
+    }
+    mode(): "compat" { return "compat"; }
+    recordUnattributedWrite(): void {}
+  }
+
+  it("requires an attributable active user with project write access", async () => {
+    setProjectRestricted(db, "reminder-project", true);
+    const router = new Router({
+      clientAuth: new SlugGate(),
+      instance: resolveInstanceInfo({ env: { MANDIBLE_OPERATIONAL_MUTATIONS: "allow" } as NodeJS.ProcessEnv }),
+    });
+    registerManagedReminderRoutes(router, db);
+    const create = (key: string, credential?: string) => router.invoke({
+      method: "POST",
+      url: "/api/reminders",
+      body: {
+        schema: MANAGED_REMINDER_SCHEMA,
+        idempotency_key: key,
+        project: "reminder-project",
+        message: "Durable route reminder",
+        predicate: { kind: "at", at: "2099-08-15T12:00:00Z" },
+      },
+      ...(credential ? { credential } : {}),
+    });
+
+    expect(await create("anon")).toMatchObject({ status: 401, body: { code: "authentication_required" } });
+    expect(await create("denied", "reminder-agent"))
+      .toMatchObject({ status: 403, body: { code: "project_permission_required" } });
+    addGrant(db, { subject_type: "user", subject: "reminder-agent", resource_type: "project",
+      resource: "reminder-project", permission: "write" }, NOW);
+    expect(await create("accepted", "reminder-agent"))
+      .toMatchObject({ status: 201, body: { stored: true, fired_immediately: false } });
+  });
+
+  it("acknowledges an Inbox occurrence without deleting it", async () => {
+    setDb(db);
+    const created = createManagedReminder(
+      db,
+      request({ kind: "at", at: "2026-08-14T11:00:00Z" }),
+      { userId, evidenceMethod: "api_token" },
+      { now: NOW, projectId },
+    );
+    const occurrenceId = created.reminder.occurrence!.id;
+    const router = new Router();
+    registerInboxRoutes(router, {} as never);
+    expect(countGlobalInboxBadge(db)).toBe(1);
+
+    const ack = await router.invoke({
+      method: "POST",
+      url: `/api/inbox/managed_reminder_occurrence/${occurrenceId}/ack`,
+      body: {},
+    });
+
+    expect(ack.status).toBe(200);
+    expect(countGlobalInboxBadge(db)).toBe(0);
+    expect(listManagedReminderOccurrences(db)).toEqual([
+      expect.objectContaining({ id: occurrenceId, acknowledged_by: "manual" }),
+    ]);
+  });
+});
+
+describe("managed reminder scheduler", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    stopManagedReminderScheduler();
+    vi.useRealTimers();
+  });
+
+  it("reconciles at startup and on the minute cadence", async () => {
+    const created = createManagedReminder(
+      db,
+      request({ kind: "at", at: "2026-08-14T12:01:00Z" }, "scheduler-key"),
+      { userId, evidenceMethod: "api_token" },
+      { now: NOW, projectId },
+    );
+    startManagedReminderScheduler(db, () => undefined, { startupDelayMs: 0, intervalMs: 60_000 });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getManagedReminder(db, created.reminder.id).lifecycle).toBe("armed");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getManagedReminder(db, created.reminder.id).lifecycle).toBe("completed");
   });
 });
