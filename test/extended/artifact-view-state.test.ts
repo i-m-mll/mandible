@@ -1290,7 +1290,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy());
     expect(versionRequests).toEqual([]);
-    expect(screen.getByText('No artifacts in this view.')).toBeTruthy();
+    expect(screen.queryByText('No artifacts in this view.')).toBeNull();
   });
 
   it('ignores delayed version history after navigation clears the selected series', async () => {
@@ -1684,6 +1684,64 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('repo_commit')).toBeTruthy();
     expect(screen.getByText('Manifest JSON')).toBeTruthy();
   });
+  it('clears mounted ref detail during resolution, ignores stale targets and preserves row-choice context', async () => {
+    const artifact = makeArtifactFixture('a', 'Selected A.md');
+    const series = makeArtifactSeries('selected-a', [artifact], 'Selected A.md');
+    const waiting = new Map<string, (response: Response) => void>();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [series.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: series.history });
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        const ref = new URLSearchParams(url.split('?')[1]).get('ref')!;
+        return new Promise<Response>((resolve) => waiting.set(ref, resolve));
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.endsWith('/content')) return jsonResponse({ content: {
+        artifact_id: artifact.id, status: 'unavailable', kind: 'unavailable', media_type: artifact.media_type,
+        size_bytes: 0, source: null, preview: null,
+        download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+      } });
+      if (url.includes(encodeURIComponent(artifact.id))) return jsonResponse({ artifact });
+      return Promise.reject(new Error('Unexpected fetch ' + url));
+    }));
+    installMemoryLocalStorage({ 'mandible:artifacts:list-controls:v1': JSON.stringify({
+      selectedSeriesRef: series.summary.ref, selectedVersionNo: null, filters: {}, sortField: 'updated', sortDirection: 'desc',
+    }) });
+    const { rerender } = render(h(ArtifactsView, {}));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-b' }));
+    expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
+    await waitFor(() => expect(waiting.has('artifact:pending-b')).toBe(true));
+    rerender(h(ArtifactsView, { initialRef: 'artifact:missing-c' }));
+    await waitFor(() => expect(waiting.has('artifact:missing-c')).toBe(true));
+    await act(async () => waiting.get('artifact:missing-c')!(new Response(JSON.stringify({ error: 'Target C missing' }), {
+      status: 404, headers: { 'content-type': 'application/json' },
+    })));
+    expect(await screen.findByText(/Target C missing/)).toBeTruthy();
+    await act(async () => waiting.get('artifact:pending-b')!(new Response(JSON.stringify({ resolution: makeArtifactResolution({
+      status: 'resolved', ref: 'artifact:pending-b', artifact, logical_artifact: { ...series.history.series, id: 'artifact:selected-a' },
+      artifact_version: series.history.versions[0], target_type: 'artifact_version', warnings: [],
+    }) }), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
+    window.history.replaceState(null, '', '#/artifacts?ref=artifact:missing-c&artifact=old&version=9&sidebar=hidden&agent_session=agent&sentinel=a%2Bb%26c');
+    fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    expect(Object.fromEntries(params)).toEqual({ series: series.summary.ref, sidebar: 'hidden', agent_session: 'agent', sentinel: 'a+b&c' });
+    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-d' }));
+    await waitFor(() => expect(waiting.has('artifact:pending-d')).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
+    expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    await act(async () => waiting.get('artifact:pending-d')!(new Response(JSON.stringify({ resolution: makeArtifactResolution({
+      status: 'resolved', ref: 'artifact:pending-d', artifact, target_type: 'artifact_blob', warnings: [],
+    }) }), { headers: { 'content-type': 'application/json' } })));
+    expect(screen.getByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
+    changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }), '1');
+    await waitFor(() => expect(new URLSearchParams(window.location.hash.split('?')[1]).get('version')).toBe('1'));
+    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('sentinel')).toBe('a+b&c');
+  });
+
 });
 
 
