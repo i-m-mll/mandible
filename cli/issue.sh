@@ -1162,16 +1162,14 @@ cmd_parent_role_status() {
   fi
 }
 
-# Send one parent-role mutation and report it. A refusal exits non-zero: 3 when
-# a holder blocks the change, 1 otherwise, with --json printing the server's
-# answer either way.
-parent_role_send() {
-  local method="$1" issue_ref="$2" payload="$3" json="$4" success_filter="$5"
-  local tmp_response status response
-  tmp_response=$(mktemp)
-  status=$(api_send_capture "$method" "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
-  response=$(cat "$tmp_response")
-  rm -f "$tmp_response"
+# Report one parent-role mutation's captured answer and consume its file. A
+# refusal exits non-zero: 3 when a holder blocks the change, 1 otherwise, with
+# --json printing the server's answer either way.
+parent_role_report() {
+  local status="$1" response_file="$2" json="$3" success_filter="$4"
+  local response
+  response=$(cat "$response_file")
+  rm -f "$response_file"
   local code=0
   if [[ ! "$status" =~ ^2 ]]; then
     code=1
@@ -1221,7 +1219,10 @@ cmd_parent_role_assume() {
     --arg mechanism "$mechanism" \
     --arg override "$override" \
     '{session_id:$session_id, override:($override == "1")} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
-  parent_role_send POST "$issue_ref" "$payload" "$json" \
+  local tmp_response status
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
+  parent_role_report "$status" "$tmp_response" "$json" \
     "${PARENT_ROLE_HOLDER_JQ}"'"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder | parent_role_holder)"'
 }
 
@@ -1238,7 +1239,10 @@ cmd_parent_role_release() {
   require_tools
   local payload
   payload=$(jq -n --arg override "$override" '{override:($override == "1")}')
-  parent_role_send DELETE "$issue_ref" "$payload" "$json" \
+  local tmp_response status
+  tmp_response=$(mktemp)
+  status=$(api_send_capture DELETE "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
+  parent_role_report "$status" "$tmp_response" "$json" \
     "${PARENT_ROLE_HOLDER_JQ}"'if .released then "parent-role released checkpoint=\(.checkpoint.id | mandible_short_id) previous holder=\(.checkpoint.payload.previous_holder | parent_role_holder)" else "no parent-role holder; nothing released" end'
 }
 
