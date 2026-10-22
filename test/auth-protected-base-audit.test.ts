@@ -71,8 +71,8 @@ function fixture() {
         cwd: repo,
       });
     },
-    cleanup() {
-      queue.dispose();
+    async cleanup() {
+      await queue.dispose();
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     },
@@ -115,7 +115,7 @@ describe("protected-base history audit", () => {
       await approveFixtureRequest(f.queue, request.id);
       await waitUntil(() => f.calls.length === 1, "the merge executor to run");
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -139,7 +139,7 @@ describe("protected-base history audit", () => {
       await approveFixtureRequest(f.queue, request.id);
       await waitUntil(() => f.calls.length === 1, "the merge executor to run");
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -160,7 +160,7 @@ describe("protected-base history audit", () => {
       expect(f.queue.getRequest(request.id)?.status).toBe("pending");
       expect(f.calls).toHaveLength(0);
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -180,7 +180,7 @@ describe("protected-base history audit", () => {
         status: "unexpected", baseline_sha: first, unexpected: [], missing_merges: [second],
       });
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -202,7 +202,7 @@ describe("protected-base history audit", () => {
       const request = await f.submit("feature/topic");
       expect(f.queue.baseAuditForRequest(request.id)?.unexpected.map((commit) => commit.sha)).toEqual([delegated]);
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 });
