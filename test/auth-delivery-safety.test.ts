@@ -13,7 +13,7 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
-import { longestEventLoopBlockMs, useSlowGit } from "./helpers/event-loop-blocking.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 let repo: string;
 let db: ReturnType<typeof createMigratedDb>;
@@ -368,18 +368,23 @@ describe('runtime convergence recovery', () => {
     expect(git(repo, ['rev-parse', 'main'])).toBe(f.journal.binding.mergeCommit);
   });
 
-  it('leaves settled handoffs alone on the idle tick instead of re-verifying them with synchronous Git', async () => {
+  it('leaves settled handoffs alone on the idle tick instead of re-verifying them with Git', async () => {
     const f = await recoveryFixture();
     await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
     expect(f.journal.phase).toBe('acknowledged');
     expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('complete');
     const adopt = vi.fn();
-    const slow = useSlowGit(0.3);
+    const trace = path.join(repo, '.git', 'idle-git-calls.log');
+    const shimDir = fs.mkdtempSync(path.join(path.dirname(repo), 'mandible-git-trace-'));
+    const realGit = (process.env.PATH ?? '').split(path.delimiter).map(dir => path.join(dir, 'git')).find(candidate => fs.existsSync(candidate))!;
+    fs.writeFileSync(path.join(shimDir, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(trace)}\nexec ${JSON.stringify(realGit)} "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`);
     try {
-      expect(await longestEventLoopBlockMs(() => f.hooks.reconcileRuntimeHandoffs(adopt, vi.fn()))).toBeLessThan(150);
+      await f.hooks.reconcileRuntimeHandoffs(adopt, vi.fn());
     } finally {
-      fs.rmSync(slow.dir, { recursive: true, force: true });
+      fs.rmSync(shimDir, { recursive: true, force: true });
     }
+    expect(fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8') : '').toBe('');
     expect(adopt).not.toHaveBeenCalled();
     expect(f.ack).toHaveBeenCalledTimes(1);
   });
@@ -404,7 +409,7 @@ describe('runtime convergence recovery', () => {
     let finishLate!: (journal: RuntimeHandoffJournal) => void;
     f.observation.mockImplementationOnce(async current => new Promise(resolve => { finishLate = resolve; }));
     const late = queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
-    await vi.waitFor(() => expect(f.observation).toHaveBeenCalledTimes(1));
+    await waitUntil(() => f.observation.mock.calls.length === 1, 'the first recovery observation');
     await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
     const accepted = f.journal.recovery!.digest;
     finishLate({ ...f.journal, phase: 'failed', recovery: { ...f.journal.recovery!, digest: 'c'.repeat(64) } });
