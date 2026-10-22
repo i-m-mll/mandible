@@ -8,6 +8,7 @@ import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 type AssetManifest = {
   version: number;
@@ -16,13 +17,12 @@ type AssetManifest = {
   routes: Record<string, string>;
 };
 
+const uiDistDir = path.join(testRuntimeRoot, "ui-static-assets", "dist");
 let manifest: AssetManifest;
 
 beforeAll(() => {
-  execFileSync(process.execPath, ["ui/esbuild.config.js"], { cwd: process.cwd() });
-  manifest = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "ui", "dist", "asset-manifest.json"), "utf8"),
-  ) as AssetManifest;
+  execFileSync(process.execPath, ["ui/esbuild.config.js", "--outdir", uiDistDir], { cwd: process.cwd() });
+  manifest = JSON.parse(fs.readFileSync(path.join(uiDistDir, "asset-manifest.json"), "utf8")) as AssetManifest;
 });
 
 describe("UI static asset delivery", () => {
@@ -51,7 +51,7 @@ describe("UI static asset delivery", () => {
       expect(immutable.status).toBe(200);
       expect(immutable.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
 
-      const appPath = path.join(process.cwd(), "ui", "dist", "app.js");
+      const appPath = path.join(uiDistDir, "app.js");
       const appStat = fs.statSync(appPath);
       const revalidated = await fetch(`${origin}/dist/app.js`, {
         headers: { "If-Modified-Since": appStat.mtime.toUTCString() },
@@ -75,6 +75,7 @@ async function startServer(): Promise<{ server: http.Server; origin: string }> {
     router,
     getStartupInfo: () => null,
     instance,
+    uiDistDir,
   });
   const port = await new Promise<number>((resolve, reject) => {
     server.once("error", reject);
