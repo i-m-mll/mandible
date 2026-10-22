@@ -83,7 +83,7 @@ describe('LogsView', () => {
     window.history.replaceState(null, '', '#/logs?levels=error,warn&q=needle&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
     const loadLogs = vi.fn(async (): Promise<LogsResponse> => ({ entries: [], limit: 100, offset: 0,
       log_file: '', exists: true, source: 'daemon_log', older_cursor: null, has_older: false }));
-    render(<LogsView loadLogs={loadLogs} />);
+    render(<LogsView loadLogs={loadLogs} createSse={() => ({ connect: () => undefined, close: () => undefined, on: () => () => undefined })} />);
     fireEvent.input(screen.getByPlaceholderText('message, field, or id'), { target: { value: 'changed' } });
     await waitFor(() => expect(parseLogsHash().q).toBe('changed'));
     const context = new URLSearchParams(window.location.hash.split('?')[1]);
