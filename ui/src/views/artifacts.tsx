@@ -20,7 +20,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, writePersistedDetail } from '../detail-cache';
-import { parseArtifactVersionParam, shortRouteId } from '../routing';
+import { ARTIFACT_ROUTE_SELECTORS, routeHashWithParams, parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -306,6 +306,26 @@ export function ArtifactsView({
     initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: routeSelection.versionNo } : null,
   );
 
+  const routeKey = JSON.stringify([initialArtifactId, initialRef, initialSeriesRef, initialVersionNo]);
+  const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
+  const intentGenerationRef = useRef(0);
+  if (appliedRouteKey !== routeKey) {
+    setAppliedRouteKey(routeKey);
+    intentGenerationRef.current += 1;
+    deepLinkActiveRef.current = routeSelection.hasDeepLink;
+    const ownWrite = lastWrittenHashRef.current;
+    if (!(ownWrite && ownWrite.seriesRef === initialSeriesSelection && ownWrite.versionNo === initialVersionNo)) {
+      setSelectedSeriesRef(initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef));
+      setSelectedVersionNo(initialSeriesSelection ? initialVersionNo : null);
+      setSelectedArtifactId(null);
+      setSelectedArtifact(null);
+      setVersionHistory(null);
+      setResolution(null);
+      setError(null);
+      setDetailLoading(Boolean(initialArtifactId || initialRef));
+    }
+  }
+
   useEffect(() => {
     setListViewState((current) => {
       if (!initialRepo || current.filters.repo === initialRepo) return current;
@@ -443,16 +463,18 @@ export function ArtifactsView({
   useEffect(() => {
     if (!initialArtifactId) return;
     let cancelled = false;
+    const generation = intentGenerationRef.current;
+    const isCancelled = () => cancelled || generation !== intentGenerationRef.current;
     setDetailLoading(true);
     setError(null);
     setResolution(null);
     resolveArtifact(initialArtifactId)
       .then((next) => {
-        if (cancelled) return;
-        return applyArtifactDeepLinkSelection(next, () => cancelled);
+        if (isCancelled()) return;
+        return applyArtifactDeepLinkSelection(next, isCancelled);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isCancelled()) return;
         setSelectedSeriesRef(null);
         setSelectedVersionNo(null);
         setSelectedArtifactId(initialArtifactId);
@@ -460,7 +482,7 @@ export function ArtifactsView({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (!isCancelled()) setDetailLoading(false);
       });
     return () => {
       cancelled = true;
@@ -470,20 +492,22 @@ export function ArtifactsView({
   useEffect(() => {
     if (!initialRef) return;
     let cancelled = false;
+    const generation = intentGenerationRef.current;
+    const isCancelled = () => cancelled || generation !== intentGenerationRef.current;
     setDetailLoading(true);
     setError(null);
     setResolution(null);
     setSelectedArtifact(null);
     resolveArtifact(initialRef)
       .then((next) => {
-        if (cancelled) return;
+        if (isCancelled()) return;
         applyResolutionSelection(next);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!isCancelled()) setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (!isCancelled()) setDetailLoading(false);
       });
     return () => {
       cancelled = true;
@@ -637,6 +661,9 @@ export function ArtifactsView({
   const detailPending = Boolean(selectedArtifactId && !coherentSelectedArtifact);
 
   const selectSeries = useCallback((entry: ArtifactSeriesSummary) => {
+    intentGenerationRef.current += 1;
+    setDetailLoading(false);
+    setError(null);
     const ref = seriesRef(entry);
     setSelectedSeriesRef(ref);
     setSelectedVersionNo(null);
@@ -663,6 +690,7 @@ export function ArtifactsView({
   });
 
   const selectVersion = (versionNo: number | null) => {
+    intentGenerationRef.current += 1;
     setSelectedVersionNo(versionNo);
     const version = versionNo === null
       ? coherentVersionHistory?.versions[0] ?? null
@@ -795,7 +823,7 @@ export function ArtifactsView({
         {(requestDetailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
-        {!requestDetailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
+        {!detailError && !requestDetailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">No artifacts in this view.</div>
         )}
         {!requestDetailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
@@ -2215,9 +2243,10 @@ function writeArtifactHash(
   versionNo: number | null,
   lastWrittenHashRef: LastWrittenHashRef,
 ): void {
-  const nextHash = versionNo === null
-    ? seriesDetailHref(seriesRefValue)
-    : versionDetailHref(seriesRefValue, versionNo);
+  if (typeof window === 'undefined') return;
+  const nextHash = routeHashWithParams(window.location.hash, 'artifacts', {
+    series: seriesRefValue, version: versionNo === null ? null : String(versionNo),
+  }, ARTIFACT_ROUTE_SELECTORS);
   if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
     lastWrittenHashRef.current = { seriesRef: seriesRefValue, versionNo };
     window.location.hash = nextHash;
