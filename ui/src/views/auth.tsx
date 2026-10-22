@@ -498,7 +498,7 @@ function actionPayloadSummary(action: AuthRequestAction): string {
 function actionStateLabel(state: AuthRequestAction['state']): string {
   switch (state) {
     case 'staged': return 'Staged';
-    case 'applied': return 'Applied';
+    case 'applied': return 'Done';
     case 'failed': return 'Failed';
     case 'skipped_stale': return 'Skipped stale';
     case 'vetoed': return 'Vetoed';
@@ -538,6 +538,11 @@ function AuthActionBundle({
     normalizeExpandedActionIds,
     DEFAULT_EXPANDED_ACTION_IDS,
   );
+  const [bundleExpanded, setBundleExpanded] = usePersistedViewState(
+    `auth-action-bundle-expanded:${requestId}`,
+    (value, defaults) => typeof value === 'boolean' ? value : defaults,
+    true,
+  );
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
@@ -556,11 +561,12 @@ function AuthActionBundle({
   };
 
   return (
-    <section className="auth-action-bundle" aria-label="Deferred approval actions">
-      <div className="auth-action-bundle__header">
-        <span className="auth-action-bundle__title">On merge...</span>
-        <span className="auth-action-bundle__count">{actions.length}</span>
-      </div>
+    <CollapsiblePanel
+      title="Actions on merge"
+      expanded={bundleExpanded}
+      onExpandedChange={setBundleExpanded}
+      className="auth-action-bundle"
+    >
       <div className="auth-action-bundle__rows">
         {actions.map((action) => {
           const vetoed = action.state === 'vetoed';
@@ -576,30 +582,37 @@ function AuthActionBundle({
               className={`auth-action-row auth-action-row--${action.state}${canExpand ? ' auth-action-row--expandable' : ''}${expanded ? ' auth-action-row--expanded' : ''}`}
               title={action.outcome_detail ?? undefined}
             >
-              {canExpand ? (
-                <button
-                  type="button"
-                  className="auth-action-row__expand"
-                  aria-expanded={expanded}
-                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
-                  onClick={() => toggleExpanded(action.id)}
-                >
-                  <DisclosureChevronIcon expanded={expanded} size={13} />
-                </button>
-              ) : null}
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
-                  <IssuePill issueRef={action.target_issue_ref} context={repoId} />
-                  {action.state !== 'staged' && (
-                    <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
-                      {actionStateLabel(action.state)}
-                    </span>
-                  )}
+                  <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="row" />
                 </div>
-                {summary && <div className="auth-action-row__summary">{summary}</div>}
+                <div className="auth-action-row__summary">
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  {summary && <span> · {summary}</span>}
+                </div>
                 {expanded && detail && (
-                  <div className="auth-action-row__detail">{detail}</div>
+                  <div id={`auth-action-detail-${action.id}`} className="auth-action-row__detail">{detail}</div>
+                )}
+              </div>
+              <div className="auth-action-row__controls">
+                <span className="auth-action-row__disclosure">
+                  {canExpand && (
+                    <button
+                      type="button"
+                      className="auth-action-row__expand"
+                      aria-expanded={expanded}
+                      aria-controls={`auth-action-detail-${action.id}`}
+                      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                      onClick={() => toggleExpanded(action.id)}
+                    >
+                      <DisclosureChevronIcon expanded={expanded} size={13} />
+                    </button>
+                  )}
+                </span>
+                {action.state !== 'staged' && (
+                  <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
+                    {actionStateLabel(action.state)}
+                  </span>
                 )}
               </div>
               {canToggle && (
@@ -623,7 +636,7 @@ function AuthActionBundle({
           );
         })}
       </div>
-    </section>
+    </CollapsiblePanel>
   );
 }
 
@@ -731,11 +744,13 @@ async function copyAuthText(value: string): Promise<void> {
 type AuthDescriptionViewState = {
   descriptionExpanded: boolean;
   exactGitExpanded: boolean;
+  referencesExpanded: boolean;
 };
 
 const DEFAULT_AUTH_DESCRIPTION_VIEW_STATE: AuthDescriptionViewState = {
   descriptionExpanded: true,
   exactGitExpanded: false,
+  referencesExpanded: true,
 };
 
 function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<AuthDescriptionViewState>): AuthDescriptionViewState {
@@ -744,6 +759,7 @@ function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<Au
   return {
     descriptionExpanded: typeof stored.descriptionExpanded === 'boolean' ? stored.descriptionExpanded : defaults.descriptionExpanded,
     exactGitExpanded: typeof stored.exactGitExpanded === 'boolean' ? stored.exactGitExpanded : defaults.exactGitExpanded,
+    referencesExpanded: typeof stored.referencesExpanded === 'boolean' ? stored.referencesExpanded : defaults.referencesExpanded,
   };
 }
 
@@ -859,15 +875,7 @@ function AuthRequestDetail({
     ]),
     [structuredReferenceIds]
   );
-  const closureRefs = useMemo(
-    () => uniqueStrings([
-      ...(Array.isArray(request.issue_closures) ? request.issue_closures : []),
-      ...(Array.isArray(request.issues) ? request.issues as string[] : []),
-    ]),
-    [request.issue_closures, request.issues]
-  );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
-  const hasLinks = (referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink;
 
   const previousRequestIdRef = useRef<string | null>(null);
   const previousStatusRef = useRef<string | null>(null);
@@ -916,10 +924,6 @@ function AuthRequestDetail({
   // A daemon that predates `merge_signature` sends nothing; absent evidence is
   // "none", never "verified".
   const signatureClaim: MergeSignatureClaim = request.merge_signature ?? { state: 'none' };
-  const hasActionBundle = Boolean(actionBundle);
-  const panelsClass = hasActionBundle
-    ? 'auth-detail__panels auth-detail__panels--with-actions'
-    : 'auth-detail__panels auth-detail__panels--single';
 
   const createdAt = formatMetadataTimestamp(request.created_at ?? null);
   const lastExecutedAt = formatMetadataTimestamp(request.last_executed_at ?? null);
@@ -1136,26 +1140,6 @@ function AuthRequestDetail({
                   )}
                 </div>
               )}
-              {hasLinks && (
-                <div className="auth-detail__links">
-                  {referenceRefs.length > 0 && canIssueLink && (
-                    <span className="auth-card__issue-group">
-                      <span className="auth-card__issue-group-label">References</span>
-                      {referenceRefs.map((ref) => (
-                        <IssuePill key={ref} issueRef={ref} context={repoId} />
-                      ))}
-                    </span>
-                  )}
-                  {closureRefs.length > 0 && canIssueLink && (
-                    <span className="auth-card__issue-group">
-                      <span className="auth-card__issue-group-label">Closes</span>
-                      {closureRefs.map((ref) => (
-                        <IssuePill key={ref} issueRef={ref} context={repoId} />
-                      ))}
-                    </span>
-                  )}
-                </div>
-              )}
             </div>
           )}
         />
@@ -1260,7 +1244,7 @@ function AuthRequestDetail({
           </div>
         ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
-          <div className={panelsClass}>
+          <div className="auth-detail__panels">
             <div className="auth-detail__left-col">
               <CollapsiblePanel
                 title="Description"
@@ -1274,6 +1258,18 @@ function AuthRequestDetail({
                   <div className="spec-panel--empty">No Description was recorded for this historical request.</div>
                 )}
               </CollapsiblePanel>
+              {referenceRefs.length > 0 && canIssueLink && (
+                <CollapsiblePanel
+                  title="References"
+                  expanded={descriptionView.referencesExpanded}
+                  onExpandedChange={referencesExpanded => setDescriptionView(current => ({ ...current, referencesExpanded }))}
+                >
+                  <div className="auth-detail__reference-rows">
+                    {referenceRefs.map(ref => <IssuePill key={ref} issueRef={ref} context={repoId} layout="row" />)}
+                  </div>
+                </CollapsiblePanel>
+              )}
+              {actionBundle}
               {isCanonicalMessage && request.type === 'merge' && (
                 <CollapsiblePanel
                   title="Exact Git message"
@@ -1323,11 +1319,6 @@ function AuthRequestDetail({
                 />
               )}
             </div>
-            {hasActionBundle && (
-              <div className="auth-detail__right-col">
-                {actionBundle}
-              </div>
-            )}
           </div>
           </div>
         )}

@@ -7,6 +7,7 @@ export type IssuePillProps = {
   issueRef: string;
   /** The project or repo the ref was written in; a bare ref resolves there first. */
   context?: string;
+  layout?: 'pill' | 'row';
 };
 
 type ResolvedIssue = {
@@ -47,7 +48,7 @@ function resolveIssue(issueRef: string, context: string | undefined): Promise<Re
  * A linked issue: its id, qualified with its project when that is not the
  * context's, and its title. Unresolvable refs render verbatim.
  */
-export function IssuePill({ issueRef, context }: IssuePillProps): JSX.Element {
+export function IssuePill({ issueRef, context, layout = 'pill' }: IssuePillProps): JSX.Element {
   const ref = issueRef.trim();
   const [state, setState] = useState<{ ref: string; issue: ResolvedIssue | null } | null>(null);
 
@@ -66,12 +67,12 @@ export function IssuePill({ issueRef, context }: IssuePillProps): JSX.Element {
     const label = issue.sameProject || !issue.projectRef ? issue.shortId : `${issue.projectRef}/${issue.shortId}`;
     return (
       <a
-        className="issue-pill"
+        className={layout === 'row' ? 'issue-reference-row' : 'issue-pill'}
         href={issueRouteHref(issue.shortId, issue.projectRef || context)}
         onClick={(event) => event.stopPropagation()}
         title={issue.title ? `${label} ${issue.title}` : label}
       >
-        <span className="issue-pill__id">{label}</span>
+        <span className={layout === 'row' ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{label}</span>
         {issue.title && <span className="issue-pill__title">{issue.title}</span>}
       </a>
     );
@@ -81,12 +82,12 @@ export function IssuePill({ issueRef, context }: IssuePillProps): JSX.Element {
   const unresolved = issue === null;
   return (
     <a
-      className={`issue-pill${unresolved ? ' issue-pill--unresolved' : ''}`}
+      className={`${layout === 'row' ? 'issue-reference-row' : 'issue-pill'}${unresolved ? ' issue-pill--unresolved' : ''}`}
       href={issueRouteHref(target?.issue ?? ref, target?.project ?? context)}
       onClick={(event) => event.stopPropagation()}
       title={unresolved ? `No issue matches ${ref}` : ref}
     >
-      <span className="issue-pill__id">{ref}</span>
+      <span className={layout === 'row' ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{ref}</span>
     </a>
   );
 }

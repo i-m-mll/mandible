@@ -9,7 +9,9 @@ type PanelGeometry = {
   variant: 'with-actions' | 'single';
   columns: string;
   left: { left: number; right: number; top: number };
-  right: { left: number; right: number; top: number } | null;
+  references: { left: number; right: number; top: number };
+  actions: { left: number; right: number; top: number } | null;
+  breakdownTop: number;
   breakdown: {
     clientWidth: number;
     scrollWidth: number;
@@ -47,7 +49,8 @@ function renderPanelGeometry(): PanelGeometry[] {
         const doc = frame.contentDocument;
         const panels = doc.querySelector('.auth-detail__panels');
         const left = doc.querySelector('.auth-detail__left-col');
-        const right = doc.querySelector('.auth-detail__right-col');
+        const references = doc.querySelector('.auth-detail__reference-rows');
+        const actions = doc.querySelector('.auth-action-bundle');
         const breakdown = doc.querySelector('.auth-change-breakdown');
         const tabs = doc.querySelector('.auth-change-breakdown__tabs');
         const breakdownView = doc.querySelector('.auth-change-breakdown__view');
@@ -56,7 +59,9 @@ function renderPanelGeometry(): PanelGeometry[] {
           ...entry,
           columns: getComputedStyle(panels).gridTemplateColumns,
           left: edges(left),
-          right: right ? edges(right) : null,
+          references: edges(references),
+          actions: actions ? edges(actions) : null,
+          breakdownTop: edges(breakdown).top,
           breakdown: {
             clientWidth: breakdown.clientWidth,
             scrollWidth: breakdown.scrollWidth,
@@ -69,8 +74,8 @@ function renderPanelGeometry(): PanelGeometry[] {
         });
         if (results.length === cases.length) document.title = btoa(JSON.stringify(results));
       }, { once: true });
-      const right = entry.variant === 'with-actions'
-        ? '<aside class="auth-detail__right-col"><section class="auth-action-bundle">On merge...</section></aside>'
+      const actions = entry.variant === 'with-actions'
+        ? '<section class="collapsible-panel auth-action-bundle">Actions on merge</section>'
         : '';
       const breakdown = '<section class="collapsible-panel collapsible-panel--expanded auth-change-breakdown"><div class="collapsible-panel__header">Change breakdown</div>'
         + '<div class="collapsible-panel__body auth-change-breakdown__body"><div class="auth-change-breakdown__totals"><span><strong>4</strong> files</span><span><strong>+15</strong> added</span></div>'
@@ -79,9 +84,7 @@ function renderPanelGeometry(): PanelGeometry[] {
         + '<div class="auth-change-group"><button class="auth-change-group__row"><span class="auth-change-group__name">TypeScript</span><span>2</span><span>12</span><span>3</span><span>83%</span></button>'
         + '<ul class="auth-change-files"><li class="auth-change-file"><div class="auth-change-file__identity"><code class="auth-change-file__path">src/a-very-long-authentication-file-name.ts</code></div><div class="auth-change-file__metrics"><span>+10</span><span>−2</span><span>67%</span></div></li></ul></div></div></div></div></section>';
       frame.srcdoc = '<!doctype html><style>*{box-sizing:border-box}html,body{margin:0}.auth-detail-pane{width:100%}'
-        + collapsibleCss + authCss + '</style><section class="auth-detail-pane"><div class="auth-detail__body"><div class="auth-detail__panels auth-detail__panels--'
-        + entry.variant + '"><main class="auth-detail__left-col"><section class="panel">Commit Message</section><section class="panel">Specification</section>' + breakdown + '</main>'
-        + right + '</div></div></section>';
+        + collapsibleCss + authCss + '</style><section class="auth-detail-pane"><div class="auth-detail__body"><div class="auth-detail__panels"><main class="auth-detail__left-col"><section class="collapsible-panel">Description</section><section class="collapsible-panel auth-detail__reference-rows">References</section>' + actions + breakdown + '</main></div></div></section>';
       document.body.append(frame);
     }
   </script></body></html>`;
@@ -98,27 +101,19 @@ function renderPanelGeometry(): PanelGeometry[] {
 }
 
 describe('Auth detail responsive action layout', () => {
-  it('stacks by detail width, then splits near 1.5x the annotated width', () => {
-    const geometries = renderPanelGeometry();
-    const find = (width: number, variant: PanelGeometry['variant']) =>
-      geometries.find((entry) => entry.width === width && entry.variant === variant)!;
-
-    for (const width of [760, 1119]) {
-      const geometry = find(width, 'with-actions');
+  it('keeps references then actions before the breakdown at every detail width', () => {
+    for (const geometry of renderPanelGeometry()) {
       expect(geometry.columns.trim().split(/\s+/)).toHaveLength(1);
-      expect(geometry.right!.top).toBeGreaterThan(geometry.left.top);
+      expect(geometry.references.top).toBeGreaterThan(geometry.left.top);
+      if (geometry.variant === 'with-actions') {
+        expect(geometry.actions!.top).toBeGreaterThan(geometry.references.top);
+        expect(geometry.breakdownTop).toBeGreaterThan(geometry.actions!.top);
+        expect(geometry.actions!.left).toBe(geometry.references.left);
+        expect(geometry.actions!.right).toBe(geometry.references.right);
+      } else {
+        expect(geometry.actions).toBeNull();
+      }
     }
-
-    for (const width of [1120, 1400]) {
-      const geometry = find(width, 'with-actions');
-      expect(geometry.columns.trim().split(/\s+/)).toHaveLength(2);
-      expect(geometry.right!.left).toBeGreaterThan(geometry.left.right);
-      expect(geometry.right!.top).toBe(geometry.left.top);
-    }
-
-    const single = find(1400, 'single');
-    expect(single.columns.trim().split(/\s+/)).toHaveLength(1);
-    expect(single.right).toBeNull();
   });
 
   it('contains wide report tables and reflows file metrics at narrow detail widths', () => {
