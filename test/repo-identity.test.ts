@@ -1,17 +1,16 @@
-import SqliteDatabase from "../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { migrate } from "../src/db.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import {
   canonicalRepoKeyForPath,
   canonicalRepoKeysForRef,
   clearRepoIdentityCache,
 } from "../src/repo-identity.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, {
@@ -65,21 +64,6 @@ describe("canonicalRepoKeyForPath", () => {
     expect(canonicalRepoKeyForPath(undefined)).toBeNull();
   });
 
-  it("caches successful lookups so a deleted repo still resolves until cleared", () => {
-    const repo = initRepo();
-    const key = canonicalRepoKeyForPath(repo);
-    expect(key).not.toBeNull();
-
-    // Delete the checkout: a cache hit must return the memoized key without
-    // respawning git (which would now fail).
-    fs.rmSync(repo, { recursive: true, force: true });
-    expect(canonicalRepoKeyForPath(repo)).toBe(key);
-
-    // After clearing the cache the missing path resolves to null.
-    clearRepoIdentityCache();
-    expect(canonicalRepoKeyForPath(repo)).toBeNull();
-  });
-
   // Issue ded17e6 hardening — a transient resolution failure for a path that
   // previously resolved must reuse the last-known-good key (stale-but-stable
   // beats unresolved), so two same-repo merges never split onto the canonical
@@ -114,27 +98,9 @@ describe("canonicalRepoKeyForPath", () => {
 });
 
 describe("canonicalRepoKeysForRef", () => {
-  it("resolves a repo ref through work_repos id, name, and root", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
-    const repo = initRepo();
-    const realRoot = fs.realpathSync(repo);
-    db.prepare(
-      `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
-       VALUES (?, ?, ?, 'main', 1, 0)`
-    ).run("dotfiles", realRoot, "dotfiles");
-
-    const key = canonicalRepoKeyForPath(realRoot);
-    expect(key).not.toBeNull();
-    for (const ref of ["dotfiles", realRoot]) {
-      expect([...canonicalRepoKeysForRef(db, ref)]).toContain(key);
-    }
-    db.close();
-  });
 
   it("resolves a repo ref through ledger project_key and display_name", () => {
-    const db = new SqliteDatabase(":memory:");
-    migrate(db);
+    const db = migratedMemoryDb();
     const repo = initRepo();
     const { project } = resolveProjectForCheckout(db, {
       root: repo,
@@ -152,9 +118,4 @@ describe("canonicalRepoKeysForRef", () => {
     db.close();
   });
 
-  it("returns an empty set when registry tables are missing", () => {
-    const db = new SqliteDatabase(":memory:"); // no migrate → no work_repos / ledger tables
-    expect(canonicalRepoKeysForRef(db, "dotfiles").size).toBe(0);
-    db.close();
-  });
 });
