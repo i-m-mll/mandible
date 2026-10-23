@@ -2,6 +2,10 @@
   <img src="ui/icon-192.png" alt="Mandible logo" width="100" height="100">
 </p>
 
+<p align="center">
+  <img src="docs/images/mandible-approvals.png" alt="Mandible's Approvals view showing a merged request and its change description" width="66.67%">
+</p>
+
 # Mandible
 
 Mandible is an operations manager for AI agents. It consists of:
@@ -27,8 +31,6 @@ Mandible is an operations manager for AI agents. It consists of:
 - **Reversible branch cleanup**: merged branches go to trash custody and can be restored, ignored files included.
 - **Sandboxed agents** reach the ledger through a file spool when they have no network access.
 - **Self-updating**: Mandible merges its own changes only after automated candidate acceptance, then hands the running daemon over to the new build.
-
-![Mandible's Approvals view showing a merged request and its change description](docs/images/mandible-approvals.png)
 
 ## How it fits together
 
