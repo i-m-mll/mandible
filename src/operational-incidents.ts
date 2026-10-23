@@ -14,8 +14,12 @@ import {
   type OperationalIncidentProjection,
   type OperationalIncidentRemediation,
   type OperationalIncidentTelemetryEvent,
+  OPERATIONAL_INCIDENT_EVENTS,
 } from "./contracts.js";
 import type { Db } from "./db.js";
+import { broadcast } from "./sse.js";
+import { ulid } from "./users/ids.js";
+import { SYSTEM_USER_ID } from "./users/store.js";
 
 const CONDITIONS: readonly OperationalIncidentCondition[] = [
   "failed_permanent",
@@ -507,6 +511,46 @@ export function ingestOperationalIncidentEnvelope(
     return { schema: OPERATIONAL_INCIDENT_RECEIPT_SCHEMA, accepted } as const;
   });
   return apply();
+}
+
+export const DAEMON_INCIDENT_EXECUTOR = "mandible-daemon";
+
+/**
+ * Raise a fault the daemon detected in itself. One unresolved incident stands
+ * for each task, so a repeating failure raises it once until it is resolved.
+ */
+export function raiseDaemonIncident(
+  db: Db,
+  input: { task: string; exitClass: (typeof EXIT_CLASSES)[number]; observedAt?: number },
+): { incident_id: string; raised: boolean } {
+  const open = db.prepare(
+    `SELECT id FROM operational_incidents
+      WHERE executor = ? AND task = ? AND resolved_at IS NULL
+      ORDER BY first_seen DESC LIMIT 1`,
+  ).get(DAEMON_INCIDENT_EXECUTOR, input.task) as { id: string } | undefined;
+  if (open) return { incident_id: open.id, raised: false };
+  const observedAt = input.observedAt ?? Date.now();
+  const receipt = ingestOperationalIncidentEnvelope(db, {
+    schema: OPERATIONAL_INCIDENT_SCHEMA,
+    executor: { name: DAEMON_INCIDENT_EXECUTOR, version: "1" },
+    generation: { inventory_schema: "executor-inventory@3", inventory_digest: sha256(input.task), observed_at: observedAt },
+    provenance: { basis: "scheduler_computed", verification: "unverified_by_mandible" },
+    events: [{
+      event_id: ulid(observedAt),
+      event_seq: 1,
+      episode: { task: input.task, condition: "failed_permanent", first_seen: observedAt },
+      observation: "active",
+      observed_at: observedAt,
+      facts: { run_id: String(observedAt), run_status: "failed_permanent", exit_class: input.exitClass, finished_at: observedAt },
+      recovery: null,
+    }],
+  }, SYSTEM_USER_ID, observedAt);
+  const incidentId = receipt.accepted[0]!.incident_id;
+  broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, {
+    incident_ids: [incidentId],
+    badge_count: countOperationalIncidents(db).active_unacknowledged,
+  });
+  return { incident_id: incidentId, raised: true };
 }
 
 function project(row: IncidentRow): OperationalIncidentProjection {

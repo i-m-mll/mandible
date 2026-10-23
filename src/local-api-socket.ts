@@ -6,7 +6,7 @@ import type http from "node:http";
 import type { InstanceInfo } from "./types.js";
 import { getUserHome } from "./platform-paths.js";
 
-export function localApiSocketPath(instance: InstanceInfo, env: NodeJS.ProcessEnv = process.env): string {
+export function localApiSocketPath(instance: Pick<InstanceInfo, "role" | "instance_id">, env: NodeJS.ProcessEnv = process.env): string {
   const override = env.MANDIBLE_SOCKET?.trim();
   if (override) {
     if (!path.isAbsolute(override)) throw new Error("MANDIBLE_SOCKET must be an absolute path.");
@@ -21,7 +21,7 @@ export function localApiSocketPath(instance: InstanceInfo, env: NodeJS.ProcessEn
   return path.join(directory, `${name}.sock`);
 }
 
-function requirePrivateDirectory(directory: string, leaf = true): void {
+export function requirePrivateDirectory(directory: string, leaf = true): void {
   const parent = path.dirname(directory);
   if (parent !== directory) requirePrivateDirectory(parent, false);
   let created = false;

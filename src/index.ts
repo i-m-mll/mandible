@@ -32,6 +32,8 @@ import { broadcast, SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, createLocalSocketServer, startServer, attachWebSocketUpgrade } from "./server.js";
 import { localApiSocketPath, startLocalApiSocket } from "./local-api-socket.js";
 import { FileRpcTransport } from "./file-rpc-transport.js";
+import { SessionExecutionOutbox } from "./session-execution.js";
+import { executionOutboxDir } from "./session-execution-outbox.js";
 import {
   isDaemonReady,
   isDaemonWarm,
@@ -399,6 +401,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so the UI doesn't reload while the daemon is still alive but about to restart.
   const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   const socketPath = localApiSocketPath(instance);
+  const executionOutbox = new SessionExecutionOutbox(executionOutboxDir(socketPath), db, logger);
   const serverOptions: Parameters<typeof createServer>[0] = {
     db, sse, logger, version, router,
     startupEpoch,
@@ -485,7 +488,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
   try {
     fileRpcTransport.start();
+    executionOutbox.start();
   } catch (error) {
+    fileRpcTransport.stop();
+    executionOutbox.stop();
     await closeLocalSocket();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -736,6 +742,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     await workUnitReconciler.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
+    executionOutbox.stop();
     await closeLocalSocket();
     await authQueue.dispose();
     clearInterval(channelPruneTimer);
