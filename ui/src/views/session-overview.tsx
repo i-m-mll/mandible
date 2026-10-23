@@ -4,6 +4,8 @@
 // #/overview?session=<ref> selection, else the tab-local agent_session
 // binding. A prefix naming several sessions lists them to pick from. The
 // binding is display/navigation-only: it is never attached to a mutation.
+import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identities';
+import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
@@ -14,6 +16,9 @@ import {
   getSessions,
   invalidateApiGetCache,
   type SessionDescendant,
+  type Conversation,
+  type ConversationControlSnapshot,
+  type ConversationSpawnReceipt,
   type SessionOverview,
   type SessionOverviewAmbiguous,
   type SessionOverviewConversation,
@@ -28,6 +33,39 @@ import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 
+export type ManagedConversationOverview = {
+  conversation: Pick<Conversation, 'id' | 'title' | 'source' | 'cwd' | 'branch' | 'model' | 'started_at'> & { source_path?: string };
+  control: ConversationControlSnapshot | null;
+  spawn: ConversationSpawnReceipt | null;
+};
+
+function ManagedConversationFacts({ conversation, control, spawn }: ManagedConversationOverview): JSX.Element {
+  const provider = CONVERSATION_SOURCE_TO_PROVIDER[conversation.source] ?? conversation.source;
+  const matchingControl = control?.conversation_id === conversation.id ? control : null;
+  const failure = spawn?.error?.message ?? (
+    matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
+      : matchingControl?.controller.kind === 'failed' ? chatControlFailureNotice(matchingControl.controller.error).detail
+        : null
+  );
+  const status = spawn?.state === 'failed' ? 'Failed'
+    : spawn && (spawn.state === 'reserved' || spawn.state === 'starting') && (!matchingControl || matchingControl.turn.kind === 'none') ? spawn.state
+    : matchingControl ? matchingControl.turn.kind === 'none' ? matchingControl.controller.kind : matchingControl.turn.kind
+      : spawn?.state ?? null;
+  return (
+    <section className="session-overview__section" aria-label="Conversation">
+      <dl className="session-overview__facts">
+        <div className="session-overview__facts-wide"><dt>Conversation</dt><dd>{conversation.title}</dd></div>
+        <div><dt>Provider</dt><dd>{provider}</dd></div>
+        {status ? <div><dt>Status</dt><dd>{status}</dd></div> : null}
+        {conversation.model ? <div><dt>{conversation.source_path?.startsWith('mandible://') ? 'Requested model' : 'Recorded model'}</dt><dd>{conversation.model}</dd></div> : null}
+        {conversation.branch ? <div><dt>Branch</dt><dd>{overviewBranch(conversation.branch)}</dd></div> : null}
+        {conversation.cwd ? <div className="session-overview__facts-wide"><dt>Cwd</dt><dd className="session-overview__path">{conversation.cwd}</dd></div> : null}
+        <div><dt>Started</dt><dd>{formatTimestamp(conversation.started_at)}</dd></div>
+        {failure ? <div className="session-overview__facts-wide" role="alert"><dt>Failure</dt><dd>{failure}</dd></div> : null}
+      </dl>
+    </section>
+  );
+}
 type OverviewState =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -40,6 +78,7 @@ export type SessionOverviewViewProps = {
   initialSessionId: string | null;
   agentBinding: string | null;
   embedded?: boolean;
+  managedConversation?: ManagedConversationOverview;
 };
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
@@ -49,6 +88,10 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     return;
   }
   await getSessions<SessionRecord>();
+}
+
+function overviewBranch(branch: string | null): string {
+  return branch === 'HEAD' ? 'No named branch recorded' : branch ?? '—';
 }
 
 function formatTimestamp(value: unknown): string {
@@ -263,7 +306,7 @@ function SessionFacts({ session }: { session: SessionSummary }): JSX.Element {
     <dl className="session-overview__facts">
       <div><dt>Status</dt><dd><LivenessBadge liveness={session.liveness} /></dd></div>
       <div><dt>Provider</dt><dd>{session.provider ?? '—'}</dd></div>
-      <div><dt>Branch</dt><dd>{session.branch ?? '—'}</dd></div>
+      <div><dt>Branch</dt><dd>{overviewBranch(session.branch)}</dd></div>
       <div><dt>Cwd</dt><dd className="session-overview__path">{session.cwd ?? '—'}</dd></div>
       <div><dt>Started</dt><dd>{formatTimestamp(session.started_at)}</dd></div>
       <div><dt>Last activity</dt><dd>{formatTimestamp(session.last_activity)}</dd></div>
@@ -335,6 +378,7 @@ export function SessionOverviewView({
   initialSessionId,
   agentBinding,
   embedded = false,
+  managedConversation,
 }: SessionOverviewViewProps): JSX.Element {
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const routeRef = initialSessionId ?? agentBinding;
@@ -389,7 +433,7 @@ export function SessionOverviewView({
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
   useEffect(() => {
-    if (embedded || typeof window === 'undefined') return undefined;
+    if ((embedded && !managedConversation) || typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
       if (document.visibilityState !== 'visible') return;
       if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
@@ -447,6 +491,7 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
+      {managedConversation ? <ManagedConversationFacts {...managedConversation} /> : null}
       <AppOperationalNoticeOutlet registerAsMain={!embedded} />
       {errorMessage ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
@@ -469,7 +514,7 @@ export function SessionOverviewView({
         </dl>
       </DetailPaneModal>
 
-      {selectedRef && state.kind === 'not-found' ? (
+      {!managedConversation && selectedRef && state.kind === 'not-found' ? (
         <div className="session-overview__binding" role="status">
           No session matches <code>{shortUuid(selectedRef)}</code>.
         </div>
@@ -497,14 +542,14 @@ export function SessionOverviewView({
         </>
       ) : null}
 
-      {!selectedRef || (state.kind === 'not-found' && !embedded) ? (
+      {!managedConversation && (!selectedRef || (state.kind === 'not-found' && !embedded)) ? (
         <SessionPicker onSelect={handleSelect} onErrorChange={setPickerError} />
       ) : (
         <div className="session-overview__body">
-          {state.kind === 'loading' ? <p className="text-muted">Loading overview…</p> : null}
+          {state.kind === 'loading' && !managedConversation ? <p className="text-muted">Loading overview…</p> : null}
           {state.kind === 'resolved' ? (
             <>
-              {embedded ? (
+              {embedded && !managedConversation ? (
                 <section className="session-overview__section" aria-label="Session">
                   <SessionFacts session={state.overview.session} />
                 </section>

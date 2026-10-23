@@ -12,7 +12,8 @@ export function registeredOperationRouter(instance?: InstanceInfo): Router {
   for (const entry of registeredOperationMetadata()) {
     const expression = ts.transpileModule(`const descriptor = ${entry.expression}; descriptor;`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const descriptor = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", `${expression.replace(/descriptor;\s*$/, "return descriptor;")}`)(z, isInlineManagedArtifactByteRequest, documentArtifactImportEffects, documentHistoryImportEffects, () => { throw new Error("Persisted import effects require an owned database fixture"); });
+    const discoverModels = instance?.role !== 'preview' && (instance?.allowed_effects.includes('provider:send') ?? true);
+    const descriptor = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", `${expression.replace(/descriptor;\s*$/, "return descriptor;")}`)(z, isInlineManagedArtifactByteRequest, documentArtifactImportEffects, documentHistoryImportEffects, () => { throw new Error("Persisted import effects require an owned database fixture"); }, discoverModels);
     router[entry.method](entry.path, () => {}, { operation: descriptor, fileRpc: "deny" });
   }
   return router;

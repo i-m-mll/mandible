@@ -127,6 +127,9 @@ export function useAnchoredMenu({
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      // A nested popover owns Escape before its containing menu does.
+      const focusedMenu = (event.target as Element | null)?.closest?.('.app-anchored-menu');
+      if (focusedMenu && focusedMenu !== menu && menu.contains(focusedMenu)) return;
       event.preventDefault();
       dismissRef.current();
       (focusRef?.current ?? anchor).focus({ preventScroll: true });

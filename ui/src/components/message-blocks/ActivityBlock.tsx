@@ -60,35 +60,6 @@ function activityDetails(item: DisplayActivityItem, parts: readonly string[]): A
   return details;
 }
 
-function activityItemSignature(item: DisplayActivityItem): string {
-  if (item.type === 'provider-directive') {
-    return JSON.stringify({
-      kind: item.directive.kind,
-      directive: item.directive,
-      turn: item.turnId,
-    });
-  }
-  if (item.type === 'tool-call-activity') return `tool:${item.turnId}:${item.id}`;
-  if (item.type === 'thinking-block-activity') {
-    return JSON.stringify({ type: item.type, turn: item.turnId, content: item.content });
-  }
-  return JSON.stringify({
-    provider: item.identity.provider,
-    session: item.identity.session_id,
-    speaker: item.role,
-    kind: item.activity_kind,
-    turn: item.identity.native_turn_id ?? null,
-    parts: plainActivityParts(item),
-    severity: item.severity ?? null,
-    outcome: item.execution_outcome ?? null,
-    status: item.status ?? null,
-    elapsed: item.elapsed_ms ?? null,
-    toolName: item.tool_name ?? null,
-    toolId: item.tool_id ?? null,
-    relatedToolIds: item.related_tool_ids ?? [],
-  });
-}
-
 export type ActivityPresentation = {
   summary: string;
   details: ActivityDetail[];
@@ -108,13 +79,7 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
 
 export function presentActivityItems(items: readonly DisplayActivityItem[]): ActivityPresentation[] {
   const presentations: ActivityPresentation[] = [];
-  let previousSignature: string | undefined;
   for (const item of items) {
-    const signature = activityItemSignature(item);
-    if (signature === previousSignature) {
-      presentations[presentations.length - 1].members.push(item);
-      continue;
-    }
     const parts = item.type === 'activity' ? plainActivityParts(item)
       : item.type === 'thinking-block-activity' ? item.content.split('\n').map((part) => part.trim()).filter(Boolean)
         : [];
@@ -124,7 +89,6 @@ export function presentActivityItems(items: readonly DisplayActivityItem[]): Act
       details: activityDetails(item, parts),
       members: [item],
     });
-    previousSignature = signature;
   }
   return presentations;
 }
@@ -301,8 +265,10 @@ export function ActivityGroup({
   onExpandedChange,
   memberRefs,
   renderMember,
+  active = false,
 }: {
   items: readonly DisplayActivityItem[];
+  active?: boolean;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   memberRefs?: readonly (string | undefined)[];
@@ -316,8 +282,8 @@ export function ActivityGroup({
     || activityDetailLines(presentations).length > 0;
   return (
     <CompactActivityRow
-      className="activity-group"
-      icon={activityIcon(items[0])}
+      className={`activity-group${active ? ' activity-group--active' : ''}`}
+      icon={activityIcon((active && items.find((item) => item.type === 'tool-call-activity' && item.executionActive)) || items[0])}
       summary={summary}
       memberRefs={memberRefs?.filter(Boolean).join(' ')}
       disclosure={hasMemberDisclosure ? {

@@ -1,3 +1,4 @@
+import { resolveConversationId } from "./conversations/identity.js";
 import { getDb, type Db } from "./db.js";
 import type { ResolvedClientIdentity } from "./server.js";
 import { getOperatorId } from "./users/store.js";
@@ -291,6 +292,8 @@ const CONVERSATION_ALIASES: readonly IdSource[] = [
 
 function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
   const key = ref.trim();
+  const exact = db.prepare("SELECT id FROM conversations WHERE id = ?").get(key) as { id: string } | undefined;
+  if (exact) return { ok: true, id: resolveConversationId(db, exact.id) };
   if (CONVERSATION_ALIASES.some((source) => sourceMatches(db, source, key, false, []).length > 0)) return { ok: true, id: key };
   if (key.length < MIN_PREFIX_LENGTH) return NOT_FOUND;
   const conversations = new Set<string>();
@@ -301,7 +304,7 @@ function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
         WHERE ${source.column} >= ? AND ${source.column} < ? ORDER BY alias LIMIT ${MATCH_SAMPLE + 1}`,
     ).all(key, prefixUpperBound(key)) as Array<{ alias: string; id: string }>;
     for (const row of rows) {
-      conversations.add(row.id);
+      conversations.add(resolveConversationId(db, row.id));
       aliases.add(row.alias);
     }
   }

@@ -35,6 +35,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     },
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
+      "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
       "Line 1 of the first user message is read for the lineage marker; a message delivered in a create_thread <codex_delegation> envelope is read from its <input>, and its <source_thread_id> is the thread's creator. thread_source = agent_created_thread marks a thread another agent created.",
       "Messages, plans, tools, and semantic activity expose metadata.chat_item using the shared provider-neutral contract.",

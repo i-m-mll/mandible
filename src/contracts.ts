@@ -148,6 +148,7 @@ export type SseEvent<E extends MandibleEventType = MandibleEventType> = E extend
 
 export const USER_SETTING_KEYS = Object.freeze({
   appRailOrder: "app_rail_order",
+  managedChatDefaults: "managed_chat_defaults",
   uiFontFace: "ui_font_face",
   uiFontSize: "ui_font_size",
   detailFontFace: "detail_font_face",
@@ -629,6 +630,7 @@ export type ConversationExternalNavigation =
     };
 
 export type Conversation = {
+  identity_aliases?: string[];
   id: string;
   source: ConversationSource;
   source_path: string;

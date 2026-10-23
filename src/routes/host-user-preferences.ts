@@ -1,4 +1,6 @@
 import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
+import { getDb } from '../db.js';
+import { resolveConversationId } from '../conversations/identity.js';
 import {
   HostUserPreferencesError,
   HostUserPreferencesRevisionConflict,
@@ -75,7 +77,11 @@ export function registerHostUserPreferencesRoutes(
   server.get("/api/host-preferences/sidebar-order", async (req, res) => {
     try {
       const identity = requireIdentity(req);
-      sendJson(res, 200, await store.readSidebarOrder(identity.user_id));
+      const snapshot = await store.readSidebarOrder(identity.user_id);
+      if (snapshot.value.pinnedConversationIds) snapshot.value.pinnedConversationIds = [...new Set(
+        snapshot.value.pinnedConversationIds.map((id) => resolveConversationId(getDb(), id)),
+      )];
+      sendJson(res, 200, snapshot);
     } catch (error) {
       handleError(res, error);
     }
@@ -94,6 +100,9 @@ export function registerHostUserPreferencesRoutes(
         sendJson(res, 400, { error: "Invalid sidebar order", code: "invalid_sidebar_order" });
         return;
       }
+      if (value.pinnedConversationIds) value.pinnedConversationIds = [...new Set(
+        value.pinnedConversationIds.map((id) => resolveConversationId(getDb(), id)),
+      )];
       sendJson(res, 200, await store.writeSidebarOrder(
         identity.user_id,
         body.expected_revision as number,

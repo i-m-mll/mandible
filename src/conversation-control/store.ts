@@ -449,11 +449,11 @@ export class ConversationControlStore {
           turn = "running"; turnId = event.turn_id; break;
         }
         case "turn-waiting-user": {
-          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-user"]); if (invalid) return invalid;
+          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-user", "waiting-permission"]); if (invalid) return invalid;
           turn = "waiting-user"; break;
         }
         case "turn-waiting-permission": {
-          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-permission"]); if (invalid) return invalid;
+          const invalid = this.currentTurnError(row, event.turn_id, ["running", "waiting-permission", "waiting-user"]); if (invalid) return invalid;
           turn = "waiting-permission"; break;
         }
         case "turn-completed": {
@@ -497,8 +497,10 @@ export class ConversationControlStore {
         last_authoritative_signal = ?, updated_at = ? WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'`)
         .run(revision, providerSessionId, now, now, conversationId, generation);
       this.db.prepare("UPDATE conversations SET session_id = ? WHERE id = ? AND (session_id IS NULL OR session_id = '')").run(providerSessionId, conversationId);
-      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ? AND attempt_count = ? AND state = 'ready' AND provider_session_id IS NULL")
-        .run(providerSessionId, now, conversationId, generation);
+      // Startup attempt count and controller fencing generation are independent.
+      // mutateOwned already fences this authoritative native-identity binding.
+      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ? AND provider = ? AND schema_version = 'mandible-conversation-spawn-request@3' AND state = 'ready' AND provider_session_id IS NULL")
+        .run(providerSessionId, now, conversationId, row.provider);
       return null;
     }, { provider_session_id: providerSessionId });
   }
@@ -707,7 +709,7 @@ export class ConversationControlStore {
       capability = unavailable(revision, "controller-transition");
     } else if (["queued", "unknown"].includes(turn.kind)) {
       capability = unavailable(revision, "turn-transition");
-    } else if (["running", "waiting-permission"].includes(turn.kind)) {
+    } else if (["running", "waiting-permission", "waiting-user"].includes(turn.kind)) {
       capability = capabilities.steer
         ? { kind: "live-steer", revision, generation: owner.generation }
         : capabilities.queue

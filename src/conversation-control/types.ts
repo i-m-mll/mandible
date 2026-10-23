@@ -50,6 +50,7 @@ export type ControllerOwnership =
 export type ConversationControlError =
   | { kind: "conversation-not-found"; conversation_id: string }
   | { kind: "invalid-request"; field: string; message: string }
+  | { kind: "settings-drift"; desired_revision: number; message: string }
   | { kind: "capability-drift"; expected_revision: number; actual_revision: number }
   | { kind: "unsupported-operation"; operation: ConversationControlOperation | "stop"; capability: ConversationContinuationCapability }
   | { kind: "ownership-conflict"; owner: "external"; capability: ConversationContinuationCapability }
@@ -103,9 +104,25 @@ export type ProviderRuntimeEvent = {
   snapshot: { usage?: Record<string, unknown>; model_usage?: Record<string, unknown>; total_cost_usd?: number; duration_ms?: number; num_turns?: number };
 };
 
+export type ManagedQuestion = {
+  id: string; title: string; question: string;
+  options: { label: string; description?: string }[];
+  multi_select: boolean; allow_other: boolean; secret: boolean;
+};
+export type ManagedRequestResponse = {
+  conversation_id: string; generation: number; request_id: string;
+  decision: "allow" | "deny" | "allow_always" | "answer";
+  answers?: Record<string, string[]>;
+};
+export type ConversationRunOption = {
+  id: "model" | "effort" | "permission_mode"; label: string;
+  choices: { value: string; label: string; retained?: boolean }[];
+};
+
 export type ManagedPermissionRequest = {
   id: string; tool_name: string; tool_input: unknown; created_at: number; expires_at: number;
   title?: string; description?: string;
+  questions?: ManagedQuestion[];
 };
 
 export type ConversationRuntimeOptions = {
@@ -119,6 +136,22 @@ export type ConversationRuntimeOptions = {
   permission_mode?: "read-only" | "agent" | "agent-full-access" | "default" | "acceptEdits" | "bypassPermissions";
 };
 
+export const RUNTIME_SETTING_FIELDS = ["model", "effort", "permission_mode"] as const;
+export type RuntimeSettingField = typeof RUNTIME_SETTING_FIELDS[number];
+export type NativeRuntimeSettings = {
+  acknowledged_options: ConversationRuntimeOptions;
+  errors: Partial<Record<RuntimeSettingField, string>>;
+};
+export type RuntimeSettingsApplication = {
+  generation: number;
+  fields: Record<RuntimeSettingField, {
+    state: "acknowledged" | "pending" | "error";
+    timing: "current-session" | "next-response" | "next-turn";
+    error?: string;
+  }>;
+  acknowledged_options: ConversationRuntimeOptions;
+};
+
 export type ConversationSubmitRequest = {
   conversation_id: string;
   operation: ConversationControlOperation;
@@ -127,6 +160,7 @@ export type ConversationSubmitRequest = {
   message: string;
   attachments?: ChatAttachment[];
   message_anchor?: string;
+  /** Compatibility assertion against desired choices, never a settings mutation. */
   runtime_options?: ConversationRuntimeOptions;
   idempotency_key: string;
 };
@@ -187,6 +221,8 @@ export type ProviderLiveContentEvent = {
   generation: number;
   sequence: number;
   observed_at: number;
+  /** Mandible turn that owns this event; distinct from any native provider turn id. */
+  control_turn_id?: string;
   /** Exact provider-qualified Chat item/content-block identity. */
   identity: string;
   correlation?: {
@@ -208,12 +244,6 @@ export type ProviderDurableReconciliationEvent = {
   provider_event_id: string;
   /** Live identities proven to have exact durable Chat-item counterparts. */
   covered_identities: string[];
-  /**
-   * Provider-complete live items whose transient lifetime ends after a fresh
-   * terminal transcript is established, even when the provider exposes no
-   * cross-surface identity that could prove durable equivalence.
-   */
-  terminal_retired_identities?: string[];
 };
 
 export type ProviderTransientRetirementEvent = {
@@ -233,12 +263,8 @@ export type ProviderAdapterEvent =
   | ProviderTransientRetirementEvent;
 
 /**
- * Bounded live supplements for one provider controller generation.
- *
- * A provisional item lives only until its exact durable Chat-item identity is
- * observed, its controller disconnects, a newer generation replaces it, or
- * the oldest item crosses the bounded projection limit. The provider
- * transcript remains the durable authority throughout this lifecycle.
+ * Live supplements retained until exact durable coverage. Execution ending,
+ * disconnecting, or changing ownership never proves that content was saved.
  */
 export type ProviderLiveProjection = {
   conversation_id: string;

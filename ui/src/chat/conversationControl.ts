@@ -1,5 +1,35 @@
 import type { ConversationControlSnapshot } from '../api';
 
+export type ConversationExecutionState = {
+  phase: 'idle' | 'starting' | 'queued' | 'running' | 'waiting' | 'stopping' | 'terminal' | 'unknown';
+  isExecuting: boolean;
+  canInterrupt: boolean;
+  activeTurnId: string | null;
+  generation: number | null;
+};
+
+export function conversationExecutionState(snapshot: ConversationControlSnapshot | null | undefined): ConversationExecutionState {
+  if (!snapshot) return { phase: 'unknown', isExecuting: false, canInterrupt: false, activeTurnId: null, generation: null };
+  const { turn, controller, ownership } = snapshot;
+  const terminal = ['completed', 'failed', 'cancelled'].includes(turn.kind);
+  const active = ['running', 'queued', 'waiting-user', 'waiting-permission'].includes(turn.kind);
+  const owned = ownership.kind === 'mandible';
+  const phase: ConversationExecutionState['phase'] = terminal ? 'terminal'
+    : turn.kind === 'unknown' || (active && (controller.kind === 'failed' || controller.kind === 'stopped')) ? 'unknown'
+    : controller.kind === 'stopping' ? 'stopping'
+    : turn.kind === 'waiting-user' || turn.kind === 'waiting-permission' ? 'waiting'
+    : turn.kind === 'running' ? 'running'
+    : turn.kind === 'queued' ? 'queued'
+    : controller.kind === 'starting' ? 'starting' : 'idle';
+  return {
+    phase,
+    isExecuting: owned && phase === 'running' && controller.kind === 'running',
+    canInterrupt: owned && active && Boolean(snapshot.provider_capabilities?.stop) && phase !== 'unknown',
+    activeTurnId: active && 'turn_id' in turn ? turn.turn_id : null,
+    generation: ownership.generation,
+  };
+}
+
 /** A state that keeps Send blocked until something outside the composer changes. */
 export type ConversationControlBlocker = {
   key: string;

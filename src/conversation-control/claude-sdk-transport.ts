@@ -1,3 +1,5 @@
+import { RUNTIME_SETTING_FIELDS } from "./types.js";
+import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +40,7 @@ export class ClaudeSdkTransport {
   private recordListener?: (record: unknown) => void;
   private exitListener?: (exit: { code: number | null; signal: string | null; stderr: string }) => void;
   private readonly buffered: SDKMessage[] = [];
-  private readonly permissions = new Map<string, { request: ManagedPermissionRequest; resolve: (allow: boolean) => void }>();
+  private readonly permissions = new Map<string, { request: ManagedPermissionRequest; resolve: (answer: false | Record<string, unknown>) => void }>();
   private readonly allowedTools = new Set<string>();
   private nativeSessionId: string | null = null;
   private reservedId = "";
@@ -77,7 +79,9 @@ export class ClaudeSdkTransport {
       model: settings.model,
       effort: settings.effort as Options["effort"],
       permissionMode: settings.permission_mode as Options["permissionMode"] ?? "default",
-      allowDangerouslySkipPermissions: settings.permission_mode === "bypassPermissions",
+      // Enables the explicitly selectable live mode; permissionMode still controls
+      // behavior, and mandatory native questions/ask rules stay intact.
+      allowDangerouslySkipPermissions: true,
       systemPrompt: withMandibleInstructionsFragment(settings.system_prompt),
       settingSources: settings.setting_sources ?? ["user", "project", "local"],
       allowedTools: settings.allowed_tools,
@@ -97,15 +101,16 @@ export class ClaudeSdkTransport {
         return child;
       },
       canUseTool: async (tool, input, context) => {
-        if (this.allowedTools.has(tool)) return { behavior: "allow", updatedInput: input };
+        if (tool !== "AskUserQuestion" && this.allowedTools.has(tool)) return { behavior: "allow", updatedInput: input };
         const id = randomUUID();
         const request: ManagedPermissionRequest = {
           id, tool_name: tool, tool_input: input, created_at: Date.now(),
           expires_at: Date.now() + 120_000,
           title: context.title, description: context.description,
+          ...(tool === "AskUserQuestion" ? { questions: managedQuestions(input) } : {}),
         };
-        const allow = await new Promise<boolean>((resolve) => {
-          const finish = (value: boolean) => {
+        const allow = await new Promise<false | Record<string, unknown>>((resolve) => {
+          const finish = (value: false | Record<string, unknown>) => {
             clearTimeout(timer);
             context.signal.removeEventListener("abort", aborted);
             this.permissions.delete(id);
@@ -119,7 +124,7 @@ export class ClaudeSdkTransport {
           if (context.signal.aborted || this.closed) aborted();
           this.recordListener?.({ type: "control_request", request_id: id, request });
         });
-        return allow ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "Tool permission denied" };
+        return allow ? { behavior: "allow", updatedInput: allow } : { behavior: "deny", message: "Tool permission denied" };
       },
     };
     const cancelled = () => { void this.close(); };
@@ -173,18 +178,40 @@ export class ClaudeSdkTransport {
   onRecord(listener: (record: unknown) => void): void { this.recordListener = listener; for (const record of this.buffered.splice(0)) listener(record); }
   onExit(listener: NonNullable<ClaudeSdkTransport["exitListener"]>): void { this.exitListener = listener; }
   pendingPermissions(): ManagedPermissionRequest[] { return [...this.permissions.values()].map(({ request }) => request); }
-  decidePermission(id: string, decision: "allow" | "deny" | "allow_always"): boolean {
+  decidePermission(id: string, decision: "allow" | "deny" | "allow_always" | "answer", answers?: Record<string, string[]>): boolean {
     const pending = this.permissions.get(id);
     if (!pending) return false;
-    if (decision === "allow_always") this.allowedTools.add(pending.request.tool_name);
-    pending.resolve(decision !== "deny");
+    if (pending.request.tool_name === "AskUserQuestion" && !pending.request.questions) return false;
+    if (pending.request.questions) {
+      if (decision !== "answer" || !validQuestionAnswers(pending.request.questions, answers)) return false;
+      pending.resolve({ ...(pending.request.tool_input as Record<string, unknown>),
+        answers: Object.fromEntries(Object.entries(answers).map(([id, values]) => [id, values.join(", ")])) });
+    } else {
+      if (decision === "answer") return false;
+      if (decision === "allow_always") this.allowedTools.add(pending.request.tool_name);
+      pending.resolve(decision === "deny" ? false : pending.request.tool_input as Record<string, unknown>);
+    }
     return true;
   }
-  async interrupt(): Promise<void> { if (!this.query || this.closed) throw new Error("Claude controller unavailable"); await this.query.interrupt(); }
-  async configure(settings: ConversationRuntimeOptions): Promise<void> {
+  async modelChoices() {
     if (!this.query || this.closed) throw new Error("Claude controller unavailable");
-    await this.query.setModel(settings.model);
-    await this.query.setPermissionMode(settings.permission_mode as NonNullable<Options["permissionMode"]> ?? "default");
+    return (await this.query.supportedModels()).map(model => ({ value: model.value, label: model.displayName }));
+  }
+  async interrupt(): Promise<void> { if (!this.query || this.closed) throw new Error("Claude controller unavailable"); await this.query.interrupt(); }
+  async configure(settings: ConversationRuntimeOptions, current: ConversationRuntimeOptions) {
+    if (!this.query || this.closed) throw new Error("Claude controller unavailable");
+    const acknowledged = { ...current };
+    const errors: Partial<Record<"model" | "effort" | "permission_mode", string>> = {};
+    for (const field of RUNTIME_SETTING_FIELDS) {
+      if (settings[field] === undefined || settings[field] === current[field]) continue;
+      try {
+        if (field === "model") await this.query.setModel(settings.model);
+        else if (field === "effort") await this.query.applyFlagSettings({ effortLevel: settings.effort as Options["effort"] });
+        else await this.query.setPermissionMode(settings.permission_mode as NonNullable<Options["permissionMode"]>);
+        Object.assign(acknowledged, { [field]: settings[field] });
+      } catch (error) { errors[field] = error instanceof Error ? error.message : String(error); }
+    }
+    return { acknowledged_options: acknowledged, errors };
   }
   async close(): Promise<void> {
     if (this.closed) return;
