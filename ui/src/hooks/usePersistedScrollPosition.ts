@@ -8,7 +8,7 @@ function normalizeOffset(value: unknown): number {
 
 export type ScrollRestoration = {
   initialPosition?: number;
-  target?: { token: string; resolve: () => number | 'unavailable' | null };
+  target?: { token: string; resolve: () => number | null };
 };
 
 /** Preserve one scroll owner's position, or resolve an explicit destination after hydration. */
@@ -44,12 +44,6 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
         const offset = target.resolve();
         if (offset === null) return;
         targetPending = false;
-        if (offset === 'unavailable') {
-          pending = null;
-          restoring.current = false;
-          stopRestoring();
-          return;
-        }
         pending = normalizeOffset(offset);
       }
       node.scrollTop = Math.min(pending, Math.max(0, node.scrollHeight - node.clientHeight));

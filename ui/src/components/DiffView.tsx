@@ -5,6 +5,9 @@ import { diffFileKey, parseDiffFileIdentity, type DiffFileIdentity } from './dif
 import { CollapsiblePanel } from './shared/CollapsiblePanel';
 
 export type DiffViewMode = 'split' | 'unified';
+export type DiffTargetReady =
+  | { kind: 'file'; element: HTMLElement }
+  | { kind: 'unavailable'; element: HTMLElement };
 
 type Diff2HtmlOutputFormat = 'side-by-side' | 'line-by-line';
 
@@ -40,7 +43,7 @@ export type DiffViewProps = {
   onModeChange?: (mode: DiffViewMode) => void;
   target?: DiffFileIdentity & { navigationToken: string };
   contentReady?: boolean;
-  onTargetReady?: (token: string, heading: HTMLElement | null) => void;
+  onTargetReady?: (token: string, result: DiffTargetReady) => void;
 };
 
 function cx(...values: Array<string | undefined | false>): string {
@@ -146,6 +149,7 @@ export function DiffView({
   const [internalMode, setInternalMode] = useState<DiffViewMode>(initialMode);
   const [closedFiles, setClosedFiles] = useState<Set<string>>(() => new Set());
   const headings = useRef(new Map<string, HTMLElement>());
+  const unavailableNotice = useRef<HTMLDivElement>(null);
   const handledTarget = useRef<string | null>(null);
   const targetKey = target ? diffFileKey(target) : null;
   const activeMode = mode ?? internalMode;
@@ -157,8 +161,9 @@ export function DiffView({
   useLayoutEffect(() => {
     if (!target || !contentReady || handledTarget.current === target.navigationToken) return;
     if (!sections.some(section => diffFileKey(section) === targetKey)) {
+      if (!unavailableNotice.current) return;
       handledTarget.current = target.navigationToken;
-      onTargetReady?.(target.navigationToken, null);
+      onTargetReady?.(target.navigationToken, { kind: 'unavailable', element: unavailableNotice.current });
       return;
     }
     if (closedFiles.has(targetKey!)) {
@@ -172,7 +177,7 @@ export function DiffView({
     const heading = headings.current.get(targetKey!);
     if (!heading) return;
     handledTarget.current = target.navigationToken;
-    onTargetReady?.(target.navigationToken, heading.closest('button') ?? heading);
+    onTargetReady?.(target.navigationToken, { kind: 'file', element: heading.closest('button') ?? heading });
   }, [target?.navigationToken, targetKey, contentReady, sections, closedFiles]);
 
   const setMode = (nextMode: DiffViewMode) => {
@@ -198,7 +203,7 @@ export function DiffView({
       data-diff-mode={activeMode}
     >
       {target && contentReady && !sections.some(section => diffFileKey(section) === targetKey) && (
-        <div className="diff-viewer__empty" role="status">The selected file is unavailable in this request’s diff.</div>
+        <div ref={unavailableNotice} className="diff-viewer__empty" role="status">The selected file is unavailable in this request’s captured diff.</div>
       )}
       {sections.length > 0 ? (
         <>
