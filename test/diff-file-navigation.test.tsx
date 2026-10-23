@@ -57,7 +57,7 @@ it('opens a collapsed exact pair once, preserves sibling choices, and waits for 
   expect(screen.getByRole('button', { name: 'two/file.ts' }).getAttribute('aria-expanded')).toBe('true');
   expect(screen.getByRole('button', { name: 'one/file.ts' }).getAttribute('aria-expanded')).toBe('false');
   expect(ready).toHaveBeenCalledTimes(1);
-  expect(ready.mock.calls[0]![1]).toBe(screen.getByRole('button', { name: 'two/file.ts' }));
+  expect(ready.mock.calls[0]![1]).toEqual({ kind: 'file', element: screen.getByRole('button', { name: 'two/file.ts' }) });
   fireEvent.click(screen.getByRole('button', { name: 'two/file.ts' }));
   view.rerender(<DiffView diffText={`${text}\n`} target={target} onTargetReady={ready} />);
   expect(screen.getByRole('button', { name: 'two/file.ts' }).getAttribute('aria-expanded')).toBe('false');
@@ -67,6 +67,6 @@ it('opens a collapsed exact pair once, preserves sibling choices, and waits for 
   view.rerender(<DiffView diffText={text} target={{ ...target, navigationToken: 'visit-2' }} onTargetReady={ready} />);
   expect(ready).toHaveBeenCalledTimes(2);
   view.rerender(<DiffView diffText={text} target={{ oldPath: 'absent/file.ts', newPath: 'absent/file.ts', navigationToken: 'visit-3' }} onTargetReady={ready} />);
-  expect(ready.mock.calls[2]).toEqual(['visit-3', null]);
+  expect(ready.mock.calls[2]).toEqual(['visit-3', { kind: 'unavailable', element: screen.getByRole('status') }]);
   expect(screen.getByRole('status').textContent).toContain('unavailable');
 });

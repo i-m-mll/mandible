@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, configure, fireEvent, render, screen, waitFor } from './helpers/dom';
 import { RoutedAuthReview, navigationRequest, navigationRequestId } from './helpers/auth-navigation-fixture';
 import { authReviewHash } from '../ui/src/views/auth-review-navigation';
+import { establishTestClientAccess } from './helpers/local-client-access';
 
 beforeEach(() => {
   configure({ asyncUtilTimeout: 1000 });
@@ -132,4 +133,39 @@ it('keeps an edited restored visit mounted while another app tab owns history', 
   expect(body().scrollTop).toBe(260);
   expect(screen.getByRole('region', { name: 'TypeScript files' }).scrollTop).toBe(250);
   expect(screen.getByRole('button', { name: 'Description', exact: true }).getAttribute('aria-expanded')).toBe('false');
+});
+
+it('retains canonical detail content across compact-route summary reconciliation while explicit current values win', async () => {
+  await establishTestClientAccess();
+  const id = '5e68b070-1111-4444-8888-0123456789ab';
+  const full = { ...navigationRequest, id };
+  const summary = { ...full, title: 'Current list metadata', diff_summary: undefined, spec_content: undefined, output: undefined,
+    change_report: undefined, actions: undefined };
+  const detailCalls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith('/actions')) return Promise.resolve(new Response(JSON.stringify({ actions: full.actions }), { headers: { 'Content-Type': 'application/json' } }));
+    if (url.startsWith('/api/auth/request/')) {
+      detailCalls.push(url);
+      return detailCalls.length === 1 ? Promise.resolve(new Response(JSON.stringify(full), { headers: { 'Content-Type': 'application/json' } })) : new Promise<Response>(() => {});
+    }
+    return Promise.reject(new Error('Offline fixture'));
+  }));
+  window.localStorage.setItem(`auth-review-tab:${id}`, JSON.stringify('diff'));
+  window.localStorage.setItem(`auth-review-scroll:${id}:diff`, '184');
+  window.history.replaceState(null, '', `#/auth?request=${id.slice(0, 8)}&view=diff`);
+  const view = render(<RoutedAuthReview requests={[summary]} />);
+  await waitFor(() => expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(40));
+  view.rerender(<RoutedAuthReview requests={[{ ...summary, title: 'Refreshed list metadata' }]} />);
+  expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(40);
+  expect(document.querySelector('.detail-pane-shell__header')?.textContent).toContain('Refreshed list metadata');
+  expect(body().scrollTop).toBe(184);
+  expect(detailCalls).toEqual(['/api/auth/request/5e68b070']);
+  view.rerender(<RoutedAuthReview requests={[{ ...summary, diff_summary: '', spec_content: '', output: '', change_report: null, actions: [] }]} />);
+  expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(0);
+  expect(screen.getByRole('tabpanel', { name: 'Diff' }).textContent).toContain('No diff available');
+  fireEvent.click(screen.getByRole('tab', { name: 'Info', exact: true }));
+  await waitFor(info);
+  const breakdown = screen.getByText('Change breakdown').closest('section')!;
+  expect(breakdown.textContent).toContain('Unavailable');
 });

@@ -97,7 +97,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     session.sessionId = (await session.send('Target.attachToTarget', { targetId: target.targetId, flatten: true }, false)).sessionId;
     await session.send('Page.enable'); await session.send('Runtime.enable');
     const frames = () => session!.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-    for (const [width, height] of [[877, 1128], [360, 720]]) {
+    for (const [width, height] of process.env.MANDIBLE_SCROLL_DIAGNOSTIC_ONLY ? [] : [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await session.navigate(pathToFileURL(html).href + `?width=${width}`);
       await session.evaluate(`new Promise(resolve => {
@@ -151,6 +151,12 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       const top = await measure(); expect(top.item).toBe(0); expect(top.outer).toBe(expanded.outer);
       await session.evaluate("const i=document.querySelector('.auth-change-breakdown__items');i.scrollTop=i.scrollHeight;true"); await frames();
       await wheel('.auth-change-breakdown__items', -180);
+      await session.evaluate(`new Promise((resolve,reject)=>{
+        const deadline=performance.now()+1000;
+        const check=()=>{const node=document.querySelector('.auth-change-breakdown__items');
+          if(Math.abs(node.scrollTop-(node.scrollHeight-node.clientHeight))<1){resolve(true);return;}
+          if(performance.now()>deadline){reject(new Error('Native bottom-boundary scrolling did not settle'));return;}
+          requestAnimationFrame(check);};check();})`);
       const bottom = await measure(); expect(bottom.item).toBe(bottom.max); expect(bottom.outer).toBe(expanded.outer);
       await session.evaluate("document.querySelector('[role=tab][id$=directory]').click();true"); await frames();
       await session.evaluate("document.querySelector('.auth-change-group__row').click();true"); await frames();
@@ -172,7 +178,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       await session.evaluate("[...document.querySelectorAll('.auth-change-group__row')].find(node=>node.textContent.trim().startsWith('Generated')).click();true"); await frames();
       expect(await session.evaluate("document.querySelector('.auth-change-breakdown__items').clientHeight")).toBe(32);
     }
-    for (const [width, height] of [[877, 1128], [360, 720]]) {
+    for (const [width, height] of process.env.MANDIBLE_SCROLL_DIAGNOSTIC_ONLY ? [] : [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await session.navigate(pathToFileURL(navigationHtml).href + `?width=${width}`);
       const waitFor = (expression: string) => session!.evaluate(`new Promise((resolve,reject)=>{
@@ -221,6 +227,62 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       await session.navigate(destination, true); await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
       expect((await alignment()).gap).toBeCloseTo(8, 0);
     }
+    await session.send('Emulation.setDeviceMetricsOverride', { width: 877, height: 1128, deviceScaleFactor: 1, mobile: false });
+    const diagnosticUrl = pathToFileURL(navigationHtml).href + '?diagnostic=1';
+    const diagnosticRows: unknown[] = [];
+    const diagnostic = async (phase: string) => {
+      const row = await session!.evaluate(`(() => { const node=document.querySelector('.auth-detail__body');
+        return {phase:${JSON.stringify(phase)},top:node?.scrollTop,height:node?.clientHeight,scrollHeight:node?.scrollHeight,
+          saved:localStorage.getItem('auth-review-scroll:'+window.scrollDiagnostic.requestId+':diff'),hash:location.hash,
+          detailCalls:window.scrollDiagnostic.detailCalls,
+          events:window.scrollDiagnostic.events};})()`);
+      diagnosticRows.push(row);
+      if (process.env.MANDIBLE_SCROLL_DIAGNOSTIC_JSON) writeFileSync(process.env.MANDIBLE_SCROLL_DIAGNOSTIC_JSON, JSON.stringify(diagnosticRows, null, 2));
+      return row;
+    };
+    await session.navigate(diagnosticUrl); await frames();
+    const pending = await diagnostic('deferred mount');
+    expect(pending.top).toBe(0); expect(Number(pending.saved)).toBe(6758.5);
+    await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
+    const hydrated = await diagnostic('hydrated');
+    expect(Math.abs(hydrated.top - 6758.5)).toBeLessThanOrEqual(1);
+    expect(Number(hydrated.saved)).toBe(hydrated.top);
+    await session.navigate(diagnosticUrl, true); await frames();
+    await diagnostic('reload deferred mount');
+    await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
+    const reloaded = await diagnostic('reload hydrated');
+    expect(reloaded.top).toBe(hydrated.top); expect(Number(reloaded.saved)).toBe(hydrated.top);
+    await session.evaluate('window.scrollDiagnostic.unmount();true'); await frames();
+    await session.evaluate('window.scrollDiagnostic.summary();true'); await frames();
+    await diagnostic('remount deferred body');
+    await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
+    const remounted = await diagnostic('remount hydrated');
+    expect(remounted.top).toBe(hydrated.top); expect(Number(remounted.saved)).toBe(hydrated.top);
+    await session.navigate(pathToFileURL(navigationHtml).href + '?partial=1&small=1'); await frames();
+    await session.evaluate("document.querySelector('.auth-change-group__row').click();true"); await frames();
+    const partialOrigin = await session.evaluate(`(() => {
+      const body=document.querySelector('.auth-detail__body'); body.scrollTop=601.5;
+      const link=document.querySelector('.auth-change-breakdown__items a');link.focus({preventScroll:true});
+      return {top:body.scrollTop,href:link.getAttribute('href')};})()`);
+    expect(partialOrigin.top).toBeGreaterThan(0);
+    await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); await frames();
+    const missing = await session.evaluate(`(() => {
+      const notice=document.querySelector('.diff-viewer__empty[role=status]');const body=document.querySelector('.auth-detail__body');
+      return {hash:location.hash,text:notice?.textContent,gap:notice?notice.getBoundingClientRect().top-body.getBoundingClientRect().top:null,
+        visible:notice?notice.getBoundingClientRect().bottom<=body.getBoundingClientRect().bottom:false};})()`);
+    expect(missing.hash).toBe(partialOrigin.href);
+    expect(missing.text).toContain('captured diff');
+    expect(missing.gap).toBeCloseTo(8, 0); expect(missing.visible).toBe(true);
+    await session.evaluate('history.back();true'); await frames();
+    expect(await session.evaluate("document.querySelector('.auth-detail__body').scrollTop")).toBe(partialOrigin.top);
+    await session.navigate(pathToFileURL(navigationHtml).href + '?canonical=1&small=1'); await frames();
+    await diagnostic('compact UUID before detail resolution');
+    await session.evaluate('window.scrollDiagnostic.resolveDetail();true'); await frames();
+    const canonical = await diagnostic('compact UUID after canonical summary reconciliation');
+    expect(Math.abs(canonical.top - 6758.5)).toBeLessThanOrEqual(1);
+    expect(canonical.detailCalls).toBe(1);
+    expect(Number(canonical.saved)).toBe(canonical.top);
   } finally {
     session?.close();
     if (child.exitCode === null) {

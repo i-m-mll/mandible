@@ -196,6 +196,20 @@ function getAuthId(request: AuthRequest): string {
   return request.id || request.request_id || '';
 }
 
+type AuthBodyProjection = Pick<AuthRequest, 'diff_summary' | 'spec_content' | 'output' | 'change_report' | 'actions'>;
+
+function retainKnownAuthBody(request: AuthRequest, known?: AuthBodyProjection): AuthRequest {
+  if (!known) return request;
+  return {
+    ...request,
+    diff_summary: request.diff_summary === undefined ? known.diff_summary : request.diff_summary,
+    spec_content: request.spec_content === undefined ? known.spec_content : request.spec_content,
+    output: request.output === undefined ? known.output : request.output,
+    change_report: request.change_report === undefined ? known.change_report : request.change_report,
+    actions: request.actions === undefined ? known.actions : request.actions,
+  };
+}
+
 function getAuthTitle(request: AuthRequest): string {
   return request.title || request.summary || 'Approval Request';
 }
@@ -854,16 +868,14 @@ function AuthRequestDetail({
   };
   const bodyRef = useRef<HTMLDivElement>(null);
   const targetToken = navigation.file ? `${getAuthId(request)}:${navigation.token}` : undefined;
-  const targetReady = useRef<{ token: string; heading: HTMLElement | null } | null>(null);
+  const targetReady = useRef<{ token: string; element: HTMLElement } | null>(null);
   const scrollRestoring = usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`, {
     initialPosition: viewMode === 'abstract' ? restoredInfo?.outerOffset : undefined,
     target: viewMode === 'diff' && targetToken ? {
       token: targetToken,
       resolve: () => {
         if (targetReady.current?.token !== targetToken || !bodyRef.current) return null;
-        const heading = targetReady.current.heading;
-        if (!heading) return 'unavailable';
-        return bodyRef.current.scrollTop + heading.getBoundingClientRect().top - bodyRef.current.getBoundingClientRect().top - 8;
+        return bodyRef.current.scrollTop + targetReady.current.element.getBoundingClientRect().top - bodyRef.current.getBoundingClientRect().top - 8;
       },
     } : undefined,
   });
@@ -1321,9 +1333,9 @@ function AuthRequestDetail({
             diffText={diffRaw}
             target={navigation.file && targetToken ? { ...navigation.file, navigationToken: targetToken } : undefined}
             contentReady={request.diff_summary !== undefined}
-            onTargetReady={(token, heading) => {
+            onTargetReady={(token, result) => {
               if (token !== targetToken) return;
-              targetReady.current = { token, heading };
+              targetReady.current = { token, element: result.element };
               scrollRestoring.resolveTarget();
             }}
             mode={diffMode}
@@ -2744,8 +2756,9 @@ export function AuthQueueView({
   const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
   const selectedFetchFailed = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'error';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
-    if (selectedListRequest) return selectedListRequest;
-    return selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : null;
+    const detail = selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : undefined;
+    if (selectedListRequest) return retainKnownAuthBody(selectedListRequest, detail);
+    return detail ?? null;
   }, [selectedListRequest, selectedFetched]);
 
   // Issue f59b5bd — once a short-prefix selection resolves to a concrete
@@ -2803,10 +2816,7 @@ export function AuthQueueView({
   const selectedRequest = useMemo((): AuthRequest | null => {
     if (!selectedRequestRaw) return null;
     const hydration = hydratedBodies[getAuthId(selectedRequestRaw)];
-    return hydration ? {
-      ...selectedRequestRaw, ...hydration,
-      change_report: selectedRequestRaw.change_report !== undefined ? selectedRequestRaw.change_report : hydration.change_report,
-    } : selectedRequestRaw;
+    return retainKnownAuthBody(selectedRequestRaw, hydration);
   }, [selectedRequestRaw, hydratedBodies]);
 
   useEffect(() => {
