@@ -138,7 +138,16 @@ it("reports EPERM without positive zombie-only evidence", async () => {
   const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("real permission boundary"), { code: "EPERM" }); });
   try {
     supervisor.attach(exited);
-    await expect(supervisor.settle(exited)).rejects.toThrow("could not be cleaned up");
+    const result = supervisor.settle(exited);
+    await expect(result).rejects.toThrow("could not be cleaned up");
+    await expect(result).rejects.toMatchObject({ errors: expect.arrayContaining([
+      expect.objectContaining({ code: 'EPERM', processGroup: expect.objectContaining({
+        groupId: 2147483647,
+        child: expect.objectContaining({ capturedPid: 2147483647, exitCode: 0, signalCode: null }),
+        inspection: { members: [] },
+        probes: [{ signal: 0, outcome: 'EPERM' }, { signal: 0, outcome: 'EPERM' }],
+      }) }),
+    ]) });
   } finally {
     kill.mockRestore();
     await supervisor.close();
@@ -154,9 +163,20 @@ function privateRuntime() {
   };
 }
 
-it("settles sequential phases and reports normal and nonzero exits", async () => {
+it.each([false, true])("settles sequential phases and reports normal and nonzero exits after transient permission probe=%s", async (transientPermission) => {
   const supervisor = new ProcessGroupSupervisor({ graceMs: 100 });
   const roots: string[] = [];
+  const children: ReturnType<typeof spawn>[] = [];
+  let activeGroupId: number | undefined;
+  let permissionInjected = false;
+  const realKill = process.kill.bind(process);
+  const probe = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+    if (transientPermission && !permissionInjected && signal === 0 && pid === -activeGroupId!) {
+      permissionInjected = true;
+      throw Object.assign(new Error('Transient owned-group probe'), { code: 'EPERM' });
+    }
+    return realKill(pid, signal);
+  });
   const groupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-phase-descendant-"));
   temporaryRoots.push(groupRoot);
   const pidFile = path.join(groupRoot, "descendant.pid");
@@ -179,7 +199,10 @@ it("settles sequential phases and reports normal and nonzero exits", async () =>
         spawnChild: (env: NodeJS.ProcessEnv) => {
           roots.push(env.MANDIBLE_TEST_RUNTIME_ROOT!);
           if (code !== 0) expect(isAlive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(false);
-          return spawn(process.execPath, ["-e", code === 0 ? leaderScript : `process.exit(${code})`], { detached: true, env, stdio: "ignore" });
+          const child = spawn(process.execPath, ["-e", code === 0 ? leaderScript : `process.exit(${code})`], { detached: true, env, stdio: "ignore" });
+          children.push(child);
+          activeGroupId = child.pid;
+          return child;
         },
         monitorIntervalMs: 10,
       });
@@ -188,8 +211,16 @@ it("settles sequential phases and reports normal and nonzero exits", async () =>
       expect(fs.existsSync(roots.at(-1)!)).toBe(false);
       expect(isAlive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(false);
     }
+    expect(permissionInjected).toBe(transientPermission);
   } finally {
+    probe.mockRestore();
     await supervisor.close();
+    // A failing assertion must still reap these freshly captured owned groups.
+    for (const child of children) {
+      const cleanup = new ProcessGroupSupervisor({ graceMs: 100 });
+      try { cleanup.attach(child); await cleanup.settle(child); }
+      finally { await cleanup.close(); }
+    }
   }
 });
 

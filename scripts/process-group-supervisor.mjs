@@ -37,54 +37,92 @@ function groupMembers(groupId) {
   return result.stdout.trim().split("\n").filter(Boolean).map((line) => {
     const [pid, pgid, uid, state] = line.trim().split(/\s+/);
     if (![pid, pgid, uid].every((value) => /^\d+$/.test(value)) || !state) throw new Error("Invalid process-group inspection output.");
-    return { pid: Number(pid), pgid: Number(pgid), uid: Number(uid), zombie: state.startsWith("Z") };
+    return { pid: Number(pid), pgid: Number(pgid), uid: Number(uid), state, zombie: state.startsWith("Z") };
   }).filter((member) => member.pgid === groupId);
 }
 
-function signalGroup({ child, groupId }, signal) {
+function groupFailure(error, { child, groupId }, inspection, probes) {
+  const processGroup = {
+    groupId,
+    callerUid: process.getuid(),
+    child: { capturedPid: groupId, observedPid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode },
+    inspection,
+    probes,
+  };
+  return Object.assign(new Error(`${error.message}; process-group observation ${JSON.stringify(processGroup)}`, { cause: error }), {
+    code: error.code,
+    processGroup,
+  });
+}
+
+function signalGroup(active, signal) {
+  const { child, groupId } = active;
   if (!groupId) return;
+  let inspection;
   if (child.exitCode !== null || child.signalCode !== null) {
-    const members = groupMembers(groupId);
+    let members;
+    try { members = groupMembers(groupId); }
+    catch (error) {
+      throw groupFailure(error, active, { error: { message: error.message, cause: error.cause?.message } }, [{ signal, outcome: 'not-sent' }]);
+    }
+    inspection = { members };
     // An exited leader cannot become live again. Such a PID now names a reused
     // group, and a credential change also invalidates our signal authority.
     if (members.some((member) => member.uid !== process.getuid() || (member.pid === groupId && !member.zombie))) {
-      throw new Error(`Refusing to signal process group ${groupId}: owned leader exited and group custody changed.`);
+      throw groupFailure(new Error(`Refusing to signal process group ${groupId}: owned leader exited and group custody changed.`), active, inspection, [{ signal, outcome: 'refused-custody' }]);
     }
   }
   try {
     process.kill(-groupId, signal);
   } catch (error) {
-    if (error?.code === "ESRCH") return;
-    if (error?.code === "EPERM" && process.platform === "darwin" && !groupExists(groupId)) return;
-    throw error;
+    if (error?.code === 'ESRCH') return;
+    if (error?.code === 'EPERM' && process.platform === 'darwin') {
+      try { if (!groupExists(active)) return; }
+      catch (observationError) {
+        throw groupFailure(observationError, active, observationError.processGroup?.inspection ?? inspection, [
+          { signal, outcome: error.code }, ...(observationError.processGroup?.probes ?? []),
+        ]);
+      }
+    }
+    throw groupFailure(error, active, inspection, [{ signal, outcome: error.code }]);
   }
 }
 
-function groupExists(groupId) {
+function groupExists(active) {
+  const { groupId } = active;
   if (!groupId) return false;
   try {
     process.kill(-groupId, 0);
     return true;
   } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    if (error?.code === "EPERM" && process.platform === "darwin") {
-      const members = groupMembers(groupId);
+    if (error?.code === 'ESRCH') return false;
+    if (error?.code === 'EPERM' && process.platform === 'darwin') {
+      let members;
+      try { members = groupMembers(groupId); }
+      catch (inspectionError) {
+        throw groupFailure(error, active, { error: { message: inspectionError.message, cause: inspectionError.cause?.message } }, [{ signal: 0, outcome: error.code }]);
+      }
       // XNU excludes zombies from its group signal check and returns EPERM
       // when none remain signalable. Prove this exact state; live or foreign
       // members still constitute a permission/custody failure.
       if (members.length > 0 && members.every((member) => member.zombie && member.uid === process.getuid())) return false;
-      try { process.kill(-groupId, 0); } catch (retryError) {
-        if (retryError?.code === "ESRCH") return false;
-        throw retryError;
+      try {
+        process.kill(-groupId, 0);
+        return true;
+      } catch (retryError) {
+        if (retryError?.code === 'ESRCH') return false;
+        throw groupFailure(retryError, active, { members }, [
+          { signal: 0, outcome: error.code }, { signal: 0, outcome: retryError.code },
+        ]);
       }
     }
-    throw error;
+    throw groupFailure(error, active, undefined, [{ signal: 0, outcome: error.code }]);
   }
 }
 
-async function waitForGroupExit(groupId, timeoutMs) {
+async function waitForGroupExit(active, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  while (groupExists(groupId)) {
+  while (groupExists(active)) {
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -130,7 +168,7 @@ export class ProcessGroupSupervisor {
       const result = await waitForExit(child);
       if (this.#cleanup) {
         await this.#cleanup;
-      } else if (this.#active?.child === child && groupExists(this.#active.groupId)) {
+      } else if (this.#active?.child === child && groupExists(this.#active)) {
         await this.stopActive("SIGTERM");
       }
       return result;
@@ -168,9 +206,9 @@ export class ProcessGroupSupervisor {
     const { child, groupId } = active;
     signalGroup(active, signal);
     const leaderExit = waitForExit(child);
-    if (!await waitForGroupExit(groupId, this.#graceMs)) {
+    if (!await waitForGroupExit(active, this.#graceMs)) {
       signalGroup(active, "SIGKILL");
-      if (!await waitForGroupExit(groupId, this.#graceMs)) {
+      if (!await waitForGroupExit(active, this.#graceMs)) {
         throw new Error(`Process group ${groupId} survived SIGKILL.`);
       }
     }
