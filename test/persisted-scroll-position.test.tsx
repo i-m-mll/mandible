@@ -2,12 +2,12 @@
 import { useRef } from 'preact/hooks';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from './helpers/dom';
-import { usePersistedScrollPosition } from '../ui/src/hooks/usePersistedScrollPosition';
+import { usePersistedScrollPosition, type ScrollRestoration } from '../ui/src/hooks/usePersistedScrollPosition';
 
 let maxScroll = 1000;
-function Body({ scope, content = 'Review content' }: { scope: string; content?: string }) {
+function Body({ scope, content = 'Review content', restoration }: { scope: string; content?: string; restoration?: ScrollRestoration }) {
   const ref = useRef<HTMLDivElement>(null);
-  usePersistedScrollPosition(ref, scope);
+  usePersistedScrollPosition(ref, scope, restoration);
   return <div ref={node => {
     ref.current = node;
     if (!node || Object.hasOwn(node, 'scrollHeight')) return;
@@ -87,4 +87,21 @@ it('lets new user movement supersede a pending restore instead of jumping when c
   view.rerender(<Body scope="interrupted" content="Later content" />);
   await waitFor(() => expect(body.textContent).toBe('Later content'));
   expect(body.scrollTop).toBe(40);
+});
+
+it('keeps an applied explicit target and an in-memory override authoritative through unmount and ordinary remount', () => {
+  window.localStorage.setItem('target', '39');
+  const target = render(<Body scope="target" restoration={{ target: { token: 'exact-file', resolve: () => 250 } }} />);
+  expect(target.getByTestId('body').scrollTop).toBe(250);
+  target.unmount();
+  expect(window.localStorage.getItem('target')).toBe('250');
+  const revisit = render(<Body scope="target" />);
+  expect(revisit.getByTestId('body').scrollTop).toBe(250);
+  revisit.unmount();
+  const history = render(<Body scope="target" restoration={{ initialPosition: 184 }} />);
+  expect(history.getByTestId('body').scrollTop).toBe(184);
+  history.unmount();
+  expect(window.localStorage.getItem('target')).toBe('184');
+  const ordinary = render(<Body scope="target" />);
+  expect(ordinary.getByTestId('body').scrollTop).toBe(184);
 });

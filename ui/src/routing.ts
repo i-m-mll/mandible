@@ -72,7 +72,7 @@ export function routeHashWithParams(
 /** Keep the mounted router synchronized with a selection written without a history entry. */
 export function replaceRouteHash(hash: string): void {
   if (window.location.hash === hash) return;
-  window.history.replaceState(null, '', hash);
+  window.history.replaceState(window.history.state, '', hash);
   window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 

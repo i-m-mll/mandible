@@ -1,4 +1,8 @@
-import { useLayoutEffect, useMemo, useRef } from 'preact/hooks';
+import { createContext, type ComponentChildren } from 'preact';
+import { useContext } from 'preact/hooks';
+import { authReviewHash } from './auth-review-navigation';
+import type { DiffFileIdentity } from '../components/diff-file-identity';
+import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import type { AuthChangeFile, AuthChangeFileRole, AuthChangeKind, AuthChangeReport } from '../../../src/contracts';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
@@ -13,6 +17,9 @@ import {
   type AuthChangeBreakdownView,
   type AuthChangeBreakdownViewState,
 } from './auth-change-breakdown-state';
+
+type FileNavigation = { requestId: string; activate?: (file: AuthChangeFile) => void };
+const FileNavigationContext = createContext<FileNavigation>({ requestId: '' });
 
 type ChangeGroup = {
   id: string;
@@ -185,11 +192,19 @@ function ChangeGroupMetrics({
 }
 
 function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines: number }): JSX.Element {
+  const navigation = useContext(FileNavigationContext);
+  const identity: DiffFileIdentity = { oldPath: file.old_path, newPath: file.new_path };
   const status = FILE_STATUS[file.change_kind];
   const metadata = [...fileKindLabels(file), ...(file.generated ? ['generated'] : []), ...(file.vendor ? ['vendor'] : [])];
   const description = [fullPath(file), ...metadata].join(' · ');
   return (
-    <li className="auth-change-file">
+    <li>
+      <a className="auth-change-file" href={authReviewHash(window.location.hash, navigation.requestId, 'diff', identity)}
+        onClick={event => {
+          if (!navigation.activate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          navigation.activate(file);
+        }}>
       <div className="auth-change-file__identity">
         <span className={`auth-change-file__status auth-change-file__status--${file.change_kind}`} aria-label={status.label} title={status.label}>{status.letter}</span>
         <code className="auth-change-file__path" title={description} aria-label={description}>{fullPath(file)}</code>
@@ -200,6 +215,7 @@ function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines:
       >
         <FileMetrics file={file} totalLines={totalLines} />
       </div>
+      </a>
     </li>
   );
 }
@@ -267,69 +283,95 @@ function DirectoryBreadcrumbs({ state, setState }: {
   );
 }
 
-function BreakdownItems({ requestId, model, state, setState, totalLines }: {
-  requestId: string;
-  model: BreakdownViewModel;
-  state: AuthChangeBreakdownViewState;
-  setState: (next: AuthChangeBreakdownViewState) => void;
-  totalLines: number;
+function ChangeFiles({ files, totalLines }: { files: AuthChangeFile[]; totalLines: number }): JSX.Element {
+  return <ul className="auth-change-files">
+    {files.map((file, index) => <ChangeFileRow key={`${displayPath(file)}:${index}`} file={file} totalLines={totalLines} />)}
+  </ul>;
+}
+
+function ItemViewport({ storageKey, label, groupId, id, children, initialOffsets }: {
+  storageKey: string; label: string; groupId?: string; id?: string; children: ComponentChildren; initialOffsets?: Map<string, number>;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
-  const directory = state.view === 'directory' ? state.directoryPath.map(encodeURIComponent).join('/') : '';
-  usePersistedScrollPosition(ref, `auth-breakdown-scroll:${requestId}:${state.view}:${directory}`);
+  const [initialPosition] = useState(() => {
+    const position = initialOffsets?.get(storageKey);
+    initialOffsets?.delete(storageKey);
+    return position;
+  });
+  usePersistedScrollPosition(ref, storageKey, { initialPosition });
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
-    const updateGutter = () => node.parentElement?.style.setProperty('--auth-change-scrollbar-width', `${node.offsetWidth - node.clientWidth}px`);
+    const updateGutter = () => node.closest<HTMLElement>('.auth-change-breakdown__table-content')?.style.setProperty('--auth-change-scrollbar-width', `${node.offsetWidth - node.clientWidth}px`);
     updateGutter();
     const observer = new ResizeObserver(updateGutter);
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-  return (
-    <div ref={ref} className="auth-change-breakdown__items" role="region" aria-label="Change breakdown items" tabIndex={0}>
+  return <div ref={ref} id={id} data-change-group={groupId} data-auth-scroll-key={storageKey}
+    className={`auth-change-breakdown__items${groupId ? ' auth-change-breakdown__items--group' : ''}`}
+    role="region" aria-label={label} tabIndex={0}>{children}</div>;
+}
+
+function BreakdownItems({ requestId, model, state, setState, totalLines, initialOffsets }: {
+  requestId: string;
+  model: BreakdownViewModel;
+  state: AuthChangeBreakdownViewState;
+  setState: (next: AuthChangeBreakdownViewState) => void;
+  totalLines: number;
+  initialOffsets?: Map<string, number>;
+}): JSX.Element {
+  if (model.kind === 'groups') {
+    return <div className="auth-change-group-stack">
       {model.groups.map(group => {
-        const expanded = model.kind === 'groups' && state.expandedGroups.includes(group.id);
+        const expanded = state.expandedGroups.includes(group.id);
         const bodyId = `auth-change-group-${encodeURIComponent(requestId)}-${encodeURIComponent(group.id)}`;
-        return (
-          <div className="auth-change-group" key={group.id}>
-            <button type="button" className="auth-change-group__row"
-              aria-expanded={model.kind === 'groups' ? expanded : undefined}
-              aria-controls={model.kind === 'groups' ? bodyId : undefined}
-              onClick={() => model.kind === 'directory'
-                ? setState({ ...state, directoryPath: [...state.directoryPath, group.label] })
-                : toggleExpandedGroup(state, setState, group.id)}>
-              <span className="auth-change-group__name">
-                {model.kind === 'groups' && <DisclosureChevronIcon expanded={expanded} size={13} />}
-                <span>{group.label}{model.kind === 'directory' ? '/' : ''}</span>
-              </span>
-              <ChangeGroupMetrics group={group} totalLines={totalLines} />
-            </button>
-            {expanded && <ul id={bodyId} className="auth-change-files">
-              {group.files.map((file, index) => <ChangeFileRow key={`${displayPath(file)}:${index}`} file={file} totalLines={totalLines} />)}
-            </ul>}
-          </div>
-        );
+        return <div className="auth-change-group" key={group.id}>
+          <button type="button" className="auth-change-group__row auth-change-group__row--outside"
+            aria-expanded={expanded} aria-controls={bodyId}
+            onClick={() => toggleExpandedGroup(state, setState, group.id)}>
+            <span className="auth-change-group__name"><DisclosureChevronIcon expanded={expanded} size={13} /><span>{group.label}</span></span>
+            <ChangeGroupMetrics group={group} totalLines={totalLines} />
+          </button>
+          {expanded && <ItemViewport initialOffsets={initialOffsets} id={bodyId} groupId={group.id} label={`${group.label} files`}
+            storageKey={`auth-breakdown-scroll:${requestId}:${state.view}:group:${encodeURIComponent(group.id)}`}>
+            <ChangeFiles files={group.files} totalLines={totalLines} />
+          </ItemViewport>}
+        </div>;
       })}
-      {model.files.length > 0 && <ul className="auth-change-files auth-change-files--direct">
-        {model.files.map((file, index) => <ChangeFileRow key={`${displayPath(file)}:${index}`} file={file} totalLines={totalLines} />)}
-      </ul>}
-    </div>
-  );
+    </div>;
+  }
+  const directory = state.view === 'directory' ? state.directoryPath.map(encodeURIComponent).join('/') : '';
+  return <ItemViewport key={`auth-breakdown-scroll:${requestId}:${state.view}:${directory}`} initialOffsets={initialOffsets} label="Change breakdown items" storageKey={`auth-breakdown-scroll:${requestId}:${state.view}:${directory}`}>
+    {model.groups.map(group => <button type="button" className="auth-change-group__row" key={group.id}
+      onClick={() => setState({ ...state, directoryPath: [...state.directoryPath, group.label] })}>
+      <span className="auth-change-group__name"><span>{group.label}/</span></span>
+      <ChangeGroupMetrics group={group} totalLines={totalLines} />
+    </button>)}
+    {model.files.length > 0 && <ChangeFiles files={model.files} totalLines={totalLines} />}
+  </ItemViewport>;
 }
 
 export function AuthChangeBreakdown({
   requestId,
   report,
+  initialState,
+  initialOffsets,
+  onFileActivate,
 }: {
   requestId: string;
   report: AuthChangeReport | null | undefined;
+  initialState?: AuthChangeBreakdownViewState;
+  initialOffsets?: Record<string, number>;
+  onFileActivate?: (file: AuthChangeFile, state: AuthChangeBreakdownViewState) => void;
 }): JSX.Element {
   const [state, setState] = usePersistedViewState(
     authChangeBreakdownStorageKey(requestId),
     normalizeAuthChangeBreakdownViewState,
     DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE,
+    initialState,
   );
+  const restorationOffsets = useMemo(() => new Map(Object.entries(initialOffsets ?? {})), [initialOffsets]);
   const viewPanelId = `auth-change-breakdown-panel-${encodeURIComponent(requestId)}`;
   const model = useMemo(() => report ? breakdownView(report, state) : null, [report, state.view, state.directoryPath]);
   const columnWidths = useMemo(() => {
@@ -344,6 +386,7 @@ export function AuthChangeBreakdown({
   }, [report]);
 
   return (
+    <FileNavigationContext.Provider value={{ requestId, activate: onFileActivate ? file => onFileActivate(file, state) : undefined }}>
     <CollapsiblePanel
       title="Change breakdown"
       availability={report === undefined ? 'unknown' : report === null ? 'unavailable' : 'available'}
@@ -392,7 +435,7 @@ export function AuthChangeBreakdown({
                     <span>+</span><span>−</span><span>Share</span>
                   </div>
                   {model.groups.length + model.files.length > 0
-                    ? <BreakdownItems requestId={requestId} model={model} state={state} setState={setState} totalLines={report.totals.additions + report.totals.deletions} />
+                    ? <BreakdownItems initialOffsets={restorationOffsets} requestId={requestId} model={model} state={state} setState={setState} totalLines={report.totals.additions + report.totals.deletions} />
                     : <p className="auth-change-breakdown__empty">This directory is not present in the captured report.</p>}
                 </div>
               </div>
@@ -404,5 +447,6 @@ export function AuthChangeBreakdown({
         </>
       )}
     </CollapsiblePanel>
+    </FileNavigationContext.Provider>
   );
 }

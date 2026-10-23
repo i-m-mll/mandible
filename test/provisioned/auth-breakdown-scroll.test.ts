@@ -35,12 +35,12 @@ class ChromeSession {
       this.socket.send(JSON.stringify({ id, method, params, ...(attach && this.sessionId ? { sessionId: this.sessionId } : {}) }));
     });
   }
-  async navigate(url: string): Promise<void> {
+  async navigate(url: string, reload = false): Promise<void> {
     const loaded = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Chrome page load did not complete')), 5000);
+      const timer = setTimeout(() => reject(new Error(`Chrome page load did not complete: ${url} reload=${reload}`)), 5000);
       this.events.set('Page.loadEventFired', [() => { clearTimeout(timer); resolve(); }]);
     });
-    await Promise.all([loaded, this.send('Page.navigate', { url })]);
+    await Promise.all([loaded, reload ? this.send('Page.reload') : this.send('Page.navigate', { url })]);
   }
   async evaluate<T = any>(expression: string): Promise<T> {
     const result = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -65,6 +65,13 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     .auth-detail-pane{height:100%}.auth-detail__body{height:100%;overflow:auto}
     .auth-detail__body>*{flex:none}.additional-context{height:1100px}
   </style><div id="root"></div><script>${bundled.outputFiles[0]!.text.replaceAll('</script', '<\\/script')}</script>`);
+  const navigationBundle = buildSync({ entryPoints: [resolve('test/provisioned/fixtures/auth-file-navigation-fixture.tsx')], outdir: join(directory, 'navigation-assets'),
+    bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2020', jsx: 'automatic', jsxImportSource: 'preact' });
+  const navigationStyles = buildSync({ entryPoints: [resolve('ui/src/style.css')], bundle: true, write: false }).outputFiles[0]!.text.replace(/@import[^;]+;/g, '');
+  const navigationHtml = join(directory, 'navigation.html');
+  writeFileSync(navigationHtml, `<!doctype html><style>${navigationStyles}${navigationBundle.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text).join('\n')}
+    html,body,#root,.auth-sidebar-layout{height:100%;margin:0}#root{display:flex;flex-direction:column}
+  </style><div id="root"></div><script>${navigationBundle.outputFiles.find(file => file.path.endsWith('.js'))!.text.replaceAll('</script', '<\\/script')}</script>`);
   const child = spawnChromium(['--remote-debugging-port=0', `--user-data-dir=${join(directory, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let session: ChromeSession | undefined;
   try {
@@ -104,7 +111,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         const file=document.querySelector('.auth-change-file');
         return {header:rect('.auth-change-breakdown>.collapsible-panel__header'),tabs:rect('.auth-change-breakdown__tabs'),columns:rect('.auth-change-columns-header'),
           breadcrumbs:document.querySelector('.auth-change-directory__breadcrumbs')?rect('.auth-change-directory__breadcrumbs'):null,
-          outer:document.querySelector('#outer-review').scrollTop,item:item.scrollTop,max:item.scrollHeight-item.clientHeight,
+          outer:document.querySelector('#outer-review').scrollTop,item:item?.scrollTop??0,max:item?item.scrollHeight-item.clientHeight:0,
           file:file?{height:file.getBoundingClientRect().height,pathHeight:file.querySelector('code').getBoundingClientRect().height,
           lineHeight:parseFloat(getComputedStyle(file.querySelector('code')).lineHeight),fullPath:file.querySelector('code').textContent,title:file.querySelector('code').title,
           pathWidth:file.querySelector('code').clientWidth,pathScroll:file.querySelector('code').scrollWidth,metrics:rect('.auth-change-file__metrics'),
@@ -116,6 +123,13 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(expanded.tabs, `tabs stable after expansion at${width}`).toEqual(collapsed.tabs);
       expect(expanded.columns).toEqual(collapsed.columns);
       expect(expanded.header).toEqual(collapsed.header);
+      expect(await session.evaluate("document.querySelector('.auth-change-breakdown__items').clientHeight")).toBe(32 * 8);
+      const firstPanelHeight = await session.evaluate("document.querySelector('.auth-change-breakdown').getBoundingClientRect().height");
+      await session.evaluate("document.querySelectorAll('.auth-change-group__row')[1].click();true"); await frames();
+      expect(await session.evaluate("document.querySelector('.auth-change-breakdown').getBoundingClientRect().height")).toBeCloseTo(firstPanelHeight + 32 * 8, 0);
+      expect(await session.evaluate("[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.clientHeight)")).toEqual([256, 256]);
+      const groupHeadings = () => session!.evaluate("[...document.querySelectorAll('.auth-change-group__row--outside')].map(node=>node.getBoundingClientRect().top)");
+      const headingsBefore = await groupHeadings();
       const wheel = async (selector: string, distance: number) => {
         const point = await session!.evaluate(`(() => {const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+Math.min(40,r.width/2),y:r.top+Math.min(35,r.height/2)}})()`);
         await session!.send('Input.synthesizeScrollGesture', { ...point, yDistance: distance, xDistance: 0, speed: 3000, preventFling: true, gestureSourceType: 'mouse' });
@@ -125,6 +139,12 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       const middle = await measure();
       expect(middle.item).toBeGreaterThan(0);
       expect(middle.outer).toBe(expanded.outer);
+      expect(await groupHeadings()).toEqual(headingsBefore);
+      expect(await session.evaluate("document.querySelectorAll('.auth-change-breakdown__items')[1].scrollTop")).toBe(0);
+      await wheel('.auth-change-group:nth-child(2) .auth-change-breakdown__items', -120);
+      expect(await session.evaluate("document.querySelectorAll('.auth-change-breakdown__items')[1].scrollTop")).toBeGreaterThan(0);
+      expect((await measure()).item).toBe(middle.item);
+      expect(await groupHeadings()).toEqual(headingsBefore);
       expect(middle.tabs).toEqual(expanded.tabs); expect(middle.columns).toEqual(expanded.columns); expect(middle.header).toEqual(expanded.header);
       await session.evaluate("document.querySelector('.auth-change-breakdown__items').scrollTop=0;true"); await frames();
       await wheel('.auth-change-breakdown__items', 180);
@@ -148,6 +168,58 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       if (width === 360) expect(directoryAfter.file.pathScroll).toBeGreaterThan(directoryAfter.file.pathWidth);
       await wheel('.auth-change-breakdown__tabs', -180);
       expect((await measure()).outer, 'wheel outside items still scrolls the outer review').toBeGreaterThan(0);
+      await session.evaluate("document.querySelector('[role=tab][id$=flags]').click();true"); await frames();
+      await session.evaluate("[...document.querySelectorAll('.auth-change-group__row')].find(node=>node.textContent.trim().startsWith('Generated')).click();true"); await frames();
+      expect(await session.evaluate("document.querySelector('.auth-change-breakdown__items').clientHeight")).toBe(32);
+    }
+    for (const [width, height] of [[877, 1128], [360, 720]]) {
+      await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await session.navigate(pathToFileURL(navigationHtml).href + `?width=${width}`);
+      const waitFor = (expression: string) => session!.evaluate(`new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Missing browser state: '+${JSON.stringify(expression)}))},2500);
+        const ready=()=>{if(${expression}){clearTimeout(timer);observer.disconnect();resolve(true)}};
+        const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true,attributes:true});ready();})`);
+      await waitFor("document.querySelector('#auth-detail-panel-abstract .auth-change-group__row')"); await frames();
+      await session.evaluate("document.querySelectorAll('.auth-change-group__row')[0].click();true"); await frames();
+      await session.evaluate("document.querySelectorAll('.auth-change-group__row')[1].click();true"); await frames();
+      await session.evaluate(`document.querySelector('[aria-controls=auth-action-detail-navigation-action]').click();
+        document.querySelectorAll('.auth-change-breakdown__items')[0].scrollTop=184;
+        document.querySelectorAll('.auth-change-breakdown__items')[1].scrollTop=72;
+        document.querySelector('.auth-detail__body').scrollTop=220;true`); await frames();
+      const origin = await session.evaluate(`(() => {
+        const link=document.querySelectorAll('.auth-change-breakdown__items')[0].querySelectorAll('a')[8];
+        link.focus({preventScroll:true});
+        return {href:link.getAttribute('href'),outer:document.querySelector('.auth-detail__body').scrollTop,
+          items:[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.scrollTop),
+          disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])};})()`);
+      await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      const destination = await session.evaluate('window.location.href');
+      const alignment = () => session!.evaluate(`(() => {
+        const params=new URLSearchParams(location.hash.split('?')[1]);const path=params.get('diff_new')??params.get('diff_old');
+        const title=[...document.querySelectorAll('.diff-viewer__file-path')].find(node=>node.title===path);
+        const heading=title.closest('button'),body=document.querySelector('.auth-detail__body'),header=document.querySelector('.detail-pane-shell__header');
+        return {gap:heading.getBoundingClientRect().top-body.getBoundingClientRect().top,expanded:heading.getAttribute('aria-expanded'),
+          anchored:header.getBoundingClientRect().bottom<=body.getBoundingClientRect().top+1,outer:body.scrollTop,
+          sidebar:params.get('sidebar'),agent:params.get('agent_session'),state:history.state.fixtureState};})()`);
+      const aligned = await alignment();
+      expect(aligned.gap, `exact file below anchored header at ${width}`).toBeCloseTo(8, 0);
+      expect(aligned.expanded).toBe('true'); expect(aligned.anchored).toBe(true);
+      expect(aligned.outer).toBeGreaterThan(0); expect(aligned.sidebar).toBe('hidden'); expect(aligned.agent).toBe('fixture-agent');
+      expect(aligned.state).toBe('preserved');
+      await session.evaluate('history.back();true');
+      await waitFor("document.querySelector('#auth-detail-panel-abstract .auth-change-breakdown__items')"); await frames();
+      const restored = await session.evaluate(`({outer:document.querySelector('.auth-detail__body').scrollTop,
+        items:[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.scrollTop),
+        disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])})`);
+      expect(restored.outer).toBe(origin.outer); expect(restored.items).toEqual(origin.items); expect(restored.disclosures).toEqual(origin.disclosures);
+      await session.evaluate('history.forward();true');
+      await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      expect((await alignment()).gap).toBeCloseTo(8, 0);
+      await session.evaluate(`localStorage.setItem('auth-review-tab:file-navigation-request',JSON.stringify('console'));true`);
+      await session.navigate(destination, true); await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      expect((await alignment()).gap).toBeCloseTo(8, 0);
     }
   } finally {
     session?.close();
