@@ -198,7 +198,7 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
     expect(events).toHaveLength(2);
     expect(buildStreamState(events).nodes[0].key).toBe(buildStreamState(initial).nodes[0].key);
     expect(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], projected, aliases)).toEqual(events);
-    expect(buildStreamState(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], null, aliases)).nodes[0].key).toBe('intent:intent');
+    expect(buildStreamState(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], null, aliases)).nodes[0].key).toBe(buildStreamState(initial).nodes[0].key);
   });
 
   it('keeps first observation order through deltas and preserves identical distinct messages', () => {
@@ -218,7 +218,9 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
     const lazy = saved({ ...tool, input: undefined } as ChatItem, 0); lazy.source!.detailsLoaded = false;
     const pendingRow = groupActivityItemsForDisplay(buildStreamState(reconcileProviderProjection([lazy], projected, new Map(), snapshot())).nodes)[0];
     expect(pendingRow.kind === 'node' && pendingRow.node.key).toBe(liveRow.kind === 'node' && liveRow.node.key);
-    expect(pendingRow.kind === 'node' && pendingRow.node.kind === 'activity' && pendingRow.node.item).toMatchObject({ input: '{\n  "command": "pwd"\n}', executionActive: true });
+    if (pendingRow.kind !== 'node' || pendingRow.node.kind !== 'activity') throw new Error('Missing hydrated tool row');
+    expect(JSON.parse(String(pendingRow.node.item.input))).toEqual({ command: 'pwd' });
+    expect(pendingRow.node.item.executionActive).toBe(true);
     for (const terminal of ['completed', 'cancelled', 'failed', 'unknown']) {
       const events = reconcileProviderProjection([], projected, new Map(), snapshot(terminal));
       expect(events).toHaveLength(1);

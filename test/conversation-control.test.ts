@@ -820,7 +820,13 @@ describe("authoritative conversation control", () => {
 
 it("resumes without a message and persists settings independently of delivery retries", async () => {
   const service = new ConversationControlService(db);
-  const adapter = new FakeAdapter();
+  class UncertainAdapter extends FakeAdapter {
+    override async deliver(item: ConversationOutboxItem) {
+      await super.deliver(item); // Native dispatch happened, but its receipt was lost.
+      return { ok: false as const, error: { kind: 'delivery-uncertain' as const, delivery_id: item.id } };
+    }
+  }
+  const adapter = new UncertainAdapter();
   service.registerAdapter(adapter);
   expect(service.saveRuntimeSettings('conversation-1', 0, { model: 'retained-model', effort: 'high', permission_mode: 'read-only' }).ok).toBe(true);
   expect(service.saveRuntimeSettings('conversation-1', 0, { model: 'stale' })).toMatchObject({ ok: false, error: { kind: 'capability-drift', actual_revision: 1 } });
@@ -832,10 +838,12 @@ it("resumes without a message and persists settings independently of delivery re
   expect(adapter.lastAcquisition).toMatchObject({ kind: 'resume-provider-session', provider_session_id: 'provider-1', cwd: '/exact/checkout', runtime_options: { model: 'retained-model' } });
   if (!resumed.ok) throw new Error('resume failed');
   const submission = { ...request(resumed.value.revision, 'settings-delivery', 1), operation: 'send' as const, message: 'one bounded prompt' };
-  expect((await service.submit(submission)).ok).toBe(true);
+  expect(await service.submit(submission)).toMatchObject({ ok: false, error: { kind: 'delivery-uncertain' } });
   expect(service.saveRuntimeSettings('conversation-1', 1, { model: 'next-model' }).ok).toBe(true);
-  expect((await service.submit(submission)).ok).toBe(true);
+  expect(await service.submit(submission)).toMatchObject({ ok: false, error: { kind: 'delivery-uncertain' } });
   expect(adapter.deliveries).toBe(1);
+  expect(adapter.lastDelivery).toMatchObject({ message: 'one bounded prompt', idempotency_key: 'settings-delivery', runtime_options: { model: 'retained-model', effort: 'high', permission_mode: 'read-only' } });
+  expect(db.prepare('SELECT state, attempts, message, idempotency_key FROM conversation_control_outbox').get()).toEqual({ state: 'uncertain', attempts: 1, message: 'one bounded prompt', idempotency_key: 'settings-delivery' });
   const frozen = db.prepare('SELECT options_json FROM conversation_delivery_settings').get() as { options_json: string };
   expect(JSON.parse(frozen.options_json).model).toBe('retained-model');
   const reopened = new ConversationControlService(db);
@@ -890,12 +898,15 @@ it("retains startup defaults for the first send and preserves explicit per-chat 
 it("serializes native changes with queued dispatch and rejects stale draft restoration", async () => {
     let unblock!: () => void;
     let applying = false;
+    let entered!: () => void;
+    const applyEntered = new Promise<void>(resolve => { entered = resolve; });
     class LiveAdapter extends FakeAdapter {
       override readonly capabilities = { ...capabilities, steer: false };
       acknowledged = {};
       runtimeSettings() { return { acknowledged_options: this.acknowledged, errors: {} }; }
       async applyRuntimeSettings(input: { runtime_options: object }) {
         applying = true;
+        entered();
         await new Promise<void>(resolve => { unblock = resolve; });
         this.acknowledged = input.runtime_options;
         applying = false;
@@ -916,7 +927,7 @@ it("serializes native changes with queued dispatch and rejects stale draft resto
       kind: "turn-started", turn_id: started.value.turn.turn_id, at: Date.now() });
     expect(service.saveRuntimeSettings("conversation-1", 0, { effort: "high" }).ok).toBe(true);
     const application = service.applyRuntimeSettings("conversation-1");
-    await Promise.resolve(); await Promise.resolve();
+    await applyEntered;
     expect(applying).toBe(true);
     const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error("missing snapshot");
     const queued = service.submit({ ...request(snapshot.value.revision, "queued", snapshot.value.ownership.generation), operation: "queue" });
