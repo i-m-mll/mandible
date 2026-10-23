@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
+import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs, awaitReadiness, loopbackListening } from '../scripts/candidate-acceptance.mjs';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
@@ -62,6 +63,56 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
   }
 });
 
+
+it('waits for a late bind, and fails at once on a gateway status or at the deadline naming the last observation', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-ready-'));
+  let server: https.Server | undefined;
+  let late: import('node:net').Server | undefined;
+  try {
+    const generated = spawnSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+      '-subj', '/CN=app.mandible.localhost', '-addext', 'subjectAltName=DNS:app.mandible.localhost',
+      '-keyout', path.join(home, 'root.key'), '-out', path.join(home, 'root.crt')], { encoding: 'utf8', timeout: STATE_DEADLINE_MS });
+    expect(generated.status, generated.stderr).toBe(0);
+    const freePort = async () => {
+      const probe = net.createServer();
+      await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as net.AddressInfo).port;
+      await new Promise(resolve => probe.close(resolve));
+      return port;
+    };
+
+    // The daemon port: refused until it binds, then ready.
+    const port = await freePort();
+    let probes = 0;
+    const bound = awaitReadiness(async () => {
+      if (++probes === 3) { late = net.createServer(); late.listen(port, '127.0.0.1'); }
+      return loopbackListening(port);
+    }, () => true, { timeout: STATE_DEADLINE_MS, description: 'Bind', interval: 5 });
+    await expect(bound).resolves.toBe(true);
+    expect(probes).toBeGreaterThanOrEqual(3);
+    const unbound = await freePort();
+    await expect(awaitReadiness(() => loopbackListening(unbound), () => true, { timeout: 100, description: 'Bind', interval: 5 }))
+      .rejects.toThrow(/^Bind did not complete within 100ms; last observation: .*ECONNREFUSED/);
+
+    // The gateway: any non-200 answer, 502 included, ends the wait at once.
+    let statuses: number[] = [];
+    server = https.createServer({ key: fs.readFileSync(path.join(home, 'root.key')), cert: fs.readFileSync(path.join(home, 'root.crt')) }, (_request, response) => {
+      response.statusCode = statuses.shift() ?? 200;
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ ready: true }));
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+    const origin = `https://app.mandible.localhost:${(server.address() as net.AddressInfo).port}`;
+    const health = () => awaitReadiness(() => acceptanceHealth(origin, path.join(home, 'root.crt')), (value: { ready?: boolean }) => value.ready === true,
+      { timeout: STATE_DEADLINE_MS, description: 'Readiness', interval: 1 });
+    await expect(health()).resolves.toEqual({ ready: true });
+    statuses = [502];
+    await expect(health()).rejects.toThrow('Health HTTPS 502');
+  } finally {
+    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
+    if (late) await new Promise<void>(resolve => late!.close(() => resolve()));
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 it('separates startup traffic and health cadence from a repeated same-route request loop', async () => {
   const { assessRuntimeLogs } = await import('../scripts/runtime-log-assessment.mjs');
