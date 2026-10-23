@@ -766,13 +766,11 @@ async function copyAuthText(value: string): Promise<void> {
 
 type AuthDescriptionViewState = {
   descriptionExpanded: boolean;
-  exactGitExpanded: boolean;
   referencesExpanded: boolean;
 };
 
 const DEFAULT_AUTH_DESCRIPTION_VIEW_STATE: AuthDescriptionViewState = {
   descriptionExpanded: true,
-  exactGitExpanded: false,
   referencesExpanded: true,
 };
 
@@ -781,7 +779,6 @@ function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<Au
     ? value as Record<string, unknown> : {};
   return {
     descriptionExpanded: typeof stored.descriptionExpanded === 'boolean' ? stored.descriptionExpanded : defaults.descriptionExpanded,
-    exactGitExpanded: typeof stored.exactGitExpanded === 'boolean' ? stored.exactGitExpanded : defaults.exactGitExpanded,
     referencesExpanded: typeof stored.referencesExpanded === 'boolean' ? stored.referencesExpanded : defaults.referencesExpanded,
   };
 }
@@ -839,9 +836,6 @@ function AuthRequestDetail({
   });
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
-  // Issue 7d64d8f — a digest means these exact bytes are the merge commit
-  // message. It controls editability only; display still uses the shared,
-  // sanitized Markdown pipeline without mutating the stored source bytes.
   const canonicalDigest =
     typeof request.commit_message_digest === 'string' && request.commit_message_digest
       ? request.commit_message_digest
@@ -1311,16 +1305,6 @@ function AuthRequestDetail({
                 </CollapsiblePanel>
               )}
               {actionBundle}
-              {isCanonicalMessage && request.type === 'merge' && (
-                <CollapsiblePanel
-                  title="Exact Git message"
-                  expanded={descriptionView.exactGitExpanded}
-                  onExpandedChange={exactGitExpanded => setDescriptionView(current => ({ ...current, exactGitExpanded }))}
-                  className="auth-detail__git-message"
-                >
-                  <pre>{commitMsg}</pre>
-                </CollapsiblePanel>
-              )}
               {dirtyAction && (
                 <CollapsiblePanel
                   title="Protected-root changes"
