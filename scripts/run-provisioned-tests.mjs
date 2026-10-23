@@ -98,7 +98,7 @@ function poolSize() {
 
 function spawnVitest(unit, env) {
   return spawn(env.MANDIBLE_RUNTIME, [
-    "--smol", path.join(root, "node_modules", "vitest", "vitest.mjs"), "run", ...unit.args,
+    "--smol", path.join(root, "scripts", "run-vitest.js"), "run", ...unit.args,
   ], {
     cwd: root,
     detached: true,
