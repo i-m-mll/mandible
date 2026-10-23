@@ -1,3 +1,4 @@
+import { registerHookRoutes } from "../src/routes/hooks.js";
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -721,6 +722,7 @@ describe("work-unit custody takeover", () => {
       mode: () => "strict",
       recordUnattributedWrite: () => undefined,
     } });
+    registerHookRoutes(guarded);
     codexScan = "unavailable";
     registerWorkUnitRoutes(guarded, {} as never, undefined, {
       authQueue: queue, readCodexTaskLiveness: () => ({ status: codexScan }) });
@@ -750,6 +752,35 @@ describe("work-unit custody takeover", () => {
     ...(session ? { ambient_identity: { provider: "codex", provider_session_id: session } } : {}),
     url: `/api/work-units/custody-check?repo_id=${encodeURIComponent(projectKey)}&branch=feature/takeover` });
   const owner = (id: string) => db.prepare("SELECT owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(id);
+
+  it.each(["claude", "codex"])("keeps live %s custody through native turn stops, then permits physical-stop takeover", async (provider) => {
+    const id = await heldUnit("active");
+    db.prepare("UPDATE sessions SET app = ? WHERE id = 'holder-session'").run(provider);
+    db.prepare("UPDATE work_units SET provider = ? WHERE id = ?").run(provider, id);
+    const report = (hook_event_name: string, extra: Record<string, unknown> = {}) => guarded.invoke({ method: "POST",
+      url: "/api/hooks/session-execution", credential: "holder", body: { provider, session_id: "holder-thread", hook_event_name, turn_id: "native-turn", ...extra } });
+    for (const [event, extra, kind] of [
+      ["UserPromptSubmit", {}, "working"], ["Stop", {}, "stopped"], ["UserPromptSubmit", {}, "working"],
+      ...(provider === "claude"
+        ? [["StopFailure", { error: "rate_limit", error_details: "429 Too Many Requests", last_assistant_message: "API Error" }, "failure"]] as const
+        : [["Interrupt", {}, "interrupted"]] as const),
+      ["UserPromptSubmit", {}, "working"], ["SessionEnd", { reason: "exit" }, "ended"],
+    ] as const) {
+      const result = await report(event, extra);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ status: "applied", observation: { turn_id: "native-turn", state: { kind } } });
+      const observation = (result.body as { observation: { state: Record<string, unknown> } }).observation;
+      if (kind === "failure") expect(observation.state.error).toEqual({ type: "rate_limit", details: "429 Too Many Requests", message: "API Error", data: null });
+      else expect(observation.state).not.toHaveProperty("error");
+      expect((await assume("taker", id)).body).toMatchObject({ code: "custody_holder_live", holder_liveness: { state: "live", execution: { state: { kind } } } });
+    }
+    expect(owner(id)).toMatchObject({ custody_generation: 1 });
+    db.prepare("UPDATE sessions SET status = 'dead' WHERE id = 'holder-session'").run();
+    expect((await assume("taker", id)).status).toBe(200);
+    expect((await assume("rival", id)).body).toMatchObject({ code: "custody_generation_conflict" });
+    const receipt = db.prepare("SELECT prior_holder_liveness_json FROM work_unit_custody_events WHERE work_unit_id = ? AND authority_path = 'stopped_holder_takeover'").get(id) as { prior_holder_liveness_json: string };
+    expect(JSON.parse(receipt.prior_holder_liveness_json)).toMatchObject({ state: "stopped", execution: { state: { kind: "ended", reason: "exit" } } });
+  });
 
   it("lets one agent take over a stopped holder's unit and fences the previous holder", async () => {
     const id = await heldUnit("dead");

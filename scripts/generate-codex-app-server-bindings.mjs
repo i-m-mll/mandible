@@ -30,6 +30,8 @@ const entrypoints = [
   "v2/ThreadStartParams.ts",
   "v2/TurnInterruptParams.ts",
   "v2/TurnStartParams.ts",
+  "v2/TurnCompletedNotification.ts",
+  "v2/ErrorNotification.ts",
   "v2/TurnSteerParams.ts",
 ];
 

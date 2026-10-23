@@ -1,4 +1,7 @@
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
+import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
+import type { TurnError } from "./generated/codex-app-server/v2/TurnError.js";
+import type { SessionExecutionState } from "../contracts.js";
 import type {
   ActivityItem,
   ActivityKind,
@@ -17,10 +20,10 @@ import type {
   ControllerLease,
 } from "./adapter.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
-import type { ModelListResponse, ToolRequestUserInputResponse, TurnStartParams, TurnSteerParams } from "./generated/codex-app-server/index.js";
+import type { ModelListResponse, ToolRequestUserInputResponse, TurnStartParams, TurnSteerParams, ErrorNotification, TurnCompletedNotification } from "./generated/codex-app-server/index.js";
 import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
 import { CODEX_APP_SERVER_PROFILE } from "./provider-capabilities.js";
-import type { StructuredProcessExit, StructuredProcessSpawner } from "./structured-process.js";
+import { providerEnvironment, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
 import type {
   ConversationControlError,
   ConversationLifecycleEvent,
@@ -109,7 +112,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
-      client = await this.connectedClient();
+      client = await this.connectedClient(input);
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       if (input.kind === "resume-provider-session") {
         const stored = responseThread(await client.request("thread/read", { threadId: input.provider_session_id }));
@@ -145,6 +148,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (input.kind !== "start" && providerSessionId !== input.provider_session_id) {
         throw new UncertainCodexAcquisition("Codex App Server resumed a different thread identity");
       }
+      client.bindExecutionObserver(providerSessionId);
       const status = threadStatus(thread);
       if (status === "active") throw new UncertainCodexAcquisition("Codex thread already has an active provider controller");
       if (status !== "idle") {
@@ -248,6 +252,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         controller.activeNativeTurnId = nativeTurnId;
         controller.activeControlTurnId = item.turn_id;
         controller.state = "running";
+        this.execution(controller, "turn/start", { kind: "working" }, nativeTurnId);
         this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
         this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: item.turn_id, at: Date.now() }));
         const status = stringField(turn, "status");
@@ -409,11 +414,19 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       controller.intentionalStop = true;
       controller.state = "stopping";
       await controller.client.close();
+      this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
     }));
   }
 
-  private async connectedClient(): Promise<CodexAppServerClient> {
-    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess, executable: this.codexExecutable });
+  private async connectedClient(input: ControllerAcquisitionRequest): Promise<CodexAppServerClient> {
+    const env = providerEnvironment();
+    const sessionId = input.kind === "start" ? null : input.provider_session_id;
+    projectManagedProviderIdentity(env, "codex", sessionId, input.conversation_id);
+    env.MANDIBLE_EXECUTION_OBSERVER_ID = input.controller_instance_id;
+    if (sessionId) env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID = sessionId;
+    else delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID;
+    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess, executable: this.codexExecutable, env,
+      executionObserver: { controller_instance_id: input.controller_instance_id, provider_session_id: sessionId } });
     try {
       const account = object(await client.request("account/read", { refreshToken: false }));
       if (!object(account?.account)) {
@@ -584,15 +597,19 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return;
     }
     if (record.method === "turn/completed") {
-      const params = object(record.params);
-      if (stringField(params, "threadId") !== controller.providerSessionId) {
+      const completion = params as TurnCompletedNotification | null;
+      if (completion?.threadId !== controller.providerSessionId) {
         this.markAmbiguous(controller);
         return;
       }
-      this.finishTurn(controller, object(params?.turn));
+      this.finishTurn(controller, object(completion.turn));
       return;
     }
-    if (record.method === "error" && controller.activeControlTurnId) this.markAmbiguous(controller);
+    if (record.method === "error") {
+      const error = params as ErrorNotification | null;
+      if (!error || error.threadId !== controller.providerSessionId || error.turnId !== controller.activeNativeTurnId
+          || typeof error.willRetry !== "boolean") this.markAmbiguous(controller);
+    }
   }
 
   private acceptItem(controller: CodexController, params: Record<string, unknown> | null, complete: boolean): void {
@@ -845,6 +862,16 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       this.markAmbiguous(controller);
       return;
     }
+    const error = turn?.error as TurnError | null | undefined;
+    const code = error?.codexErrorInfo;
+    const data = object(code);
+    const state: SessionExecutionState = status === "completed" ? { kind: "stopped" }
+      : status === "interrupted" ? { kind: "interrupted" }
+      : status === "failed" ? { kind: "failure", error: {
+        type: typeof code === "string" ? code : data && Object.keys(data).length === 1 ? Object.keys(data)[0]! : null,
+        message: error?.message ?? null, details: error?.additionalDetails ?? null, data,
+      } } : { kind: "unknown" };
+    this.execution(controller, "turn/completed", state, nativeTurnId);
     const controlTurnId = controller.activeControlTurnId;
     controller.terminalNativeTurnIds.add(nativeTurnId);
     if (controller.terminalNativeTurnIds.size > 128) {
@@ -873,7 +900,15 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     this.lifecycle.emit(this.event(controller, { kind: "controller-waiting", at: now }));
   }
 
+  private execution(controller: CodexController, event: string, state: SessionExecutionState, turnId: string | null): void {
+    const observation: ProviderRuntimeEvent = { kind: "execution", conversation_id: controller.conversationId,
+      generation: controller.generation, controller_instance_id: controller.controllerInstanceId,
+      provider_session_id: controller.providerSessionId, source: "codex_app_server", state, event, turn_id: turnId };
+    for (const listener of this.runtimeListeners) listener(observation);
+  }
+
   private markAmbiguous(controller: CodexController): void {
+    this.execution(controller, "mandible:protocol-ambiguous", { kind: "unknown" }, controller.activeNativeTurnId);
     if (controller.activeControlTurnId) {
       this.lifecycle.emit(this.event(controller, {
         kind: "turn-unknown",
@@ -922,7 +957,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
 
   /** Stop a controller whose protocol Mandible can no longer trust, and give up its claim. */
   private async abandon(controller: CodexController): Promise<void> {
-    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
+    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now(), reason: "protocol-ambiguous" }));
     controller.intentionalStop = true;
     this.controllers.delete(controller.conversationId);
     await controller.client.close();

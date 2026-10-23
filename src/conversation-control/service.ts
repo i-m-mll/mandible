@@ -1,3 +1,5 @@
+import { SessionExecutionStore } from "../session-execution.js";
+import type { ProviderExecutionEvent } from "./types.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { providerModelLabel } from "../provider-run-option-catalog.js";
 import { effectiveManagedRuntimeOptions } from "../managed-chat-defaults.js";
@@ -95,6 +97,7 @@ export class ConversationControlService {
   private readonly logger: Logger;
   private readonly runtimeChanges = new Map<string, Promise<unknown>>();
   private readonly runtimeFailures = new Map<string, { generation: number; message: string }>();
+  private readonly pendingExecution = new Map<string, { adapter: ConversationControllerAdapter; request: ControllerAcquisitionRequest; events: ProviderExecutionEvent[] }>();
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
@@ -115,6 +118,7 @@ export class ConversationControlService {
     const unregister = this.adapters.register(adapter);
     const unsubscribe = adapter.subscribe((event): Result<void, ConversationControlError> => {
       const { conversation_id, generation, ...lifecycle } = event;
+      if (lifecycle.kind === "controller-released") this.endExecution(conversation_id, generation, lifecycle.reason === "protocol-ambiguous" ? "mandible:protocol-ambiguous" : "mandible:controller-released", adapter);
       const result = lifecycle.kind === "controller-released"
         ? this.store.release(conversation_id, generation)
         : lifecycle.kind === "provider-session-bound"
@@ -122,6 +126,7 @@ export class ConversationControlService {
           : lifecycle.kind === "controller-process"
             ? this.recordControllerProcess(conversation_id, generation, lifecycle.pid)
             : this.store.publishLifecycle(conversation_id, generation, lifecycle);
+      if (result.ok && lifecycle.kind === "provider-session-bound") this.flushExecution(conversation_id, generation);
       if (result.ok) this.notify(conversation_id);
       if (result.ok && lifecycle.kind === "controller-released") {
         this.retireProviderTransients(conversation_id, generation, "provider-disconnected");
@@ -132,6 +137,16 @@ export class ConversationControlService {
       return result;
     });
     const unsubscribeRuntime = adapter.subscribeRuntimeEvents?.((event) => {
+      if (event.kind === "execution") {
+        const pending = this.pendingExecution.get(event.controller_instance_id);
+        if (pending && pending.adapter === adapter && pending.request.conversation_id === event.conversation_id
+            && pending.request.generation === event.generation) {
+          pending.events.push(event);
+          return;
+        }
+        this.applyExecution(adapter, event);
+        return;
+      }
       const owned = this.ownedAdapter(event.conversation_id, event.generation);
       if (!owned.ok || owned.value !== adapter) return;
       const snapshot = this.getSnapshot(event.conversation_id);
@@ -323,8 +338,8 @@ export class ConversationControlService {
     const claimed = this.store.claimResume(input.conversation_id, input.expected_revision, input.expected_generation, adapter.capabilities, adapter.id);
     if (!claimed.ok) return claimed;
     this.notify(input.conversation_id);
-    const acquired = await this.serializeRuntime(input.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire({ kind: "resume-provider-session", conversation_id: input.conversation_id,
-      ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) })));
+    const acquired = await this.serializeRuntime(input.conversation_id, () => this.acquireWithExecution(adapter, { kind: "resume-provider-session", conversation_id: input.conversation_id,
+      ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) }));
     if (!acquired.ok) {
       const failed = this.store.publishLifecycle(input.conversation_id, claimed.value.generation, { kind: "controller-failed", at: Date.now(), error: acquired.error });
       if (!failed.ok) return failed;
@@ -334,6 +349,7 @@ export class ConversationControlService {
       return acquired;
     }
     if (input.signal?.aborted || acquired.value.provider_session_id !== claimed.value.provider_session_id || acquired.value.controller_instance_id !== claimed.value.controller_instance_id) {
+      this.pendingExecution.delete(claimed.value.controller_instance_id);
       const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
       if (!stopped.ok) return stopped;
       const released = this.store.release(input.conversation_id, claimed.value.generation);
@@ -343,9 +359,11 @@ export class ConversationControlService {
     const acquiredIdentity = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id);
     const published = acquiredIdentity.ok ? this.recordControllerProcess(input.conversation_id, claimed.value.generation, acquired.value.pid) : acquiredIdentity;
     if (!published.ok) {
+      this.pendingExecution.delete(claimed.value.controller_instance_id);
       const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
       return stopped.ok ? published : stopped;
     }
+    this.flushExecution(input.conversation_id, claimed.value.generation);
     this.notify(input.conversation_id);
     return this.getSnapshot(input.conversation_id);
   }
@@ -354,6 +372,7 @@ export class ConversationControlService {
     request: NewConversationControllerRequest,
     commit: (lease: NewConversationControllerLease) => void,
   ): Promise<Result<NewConversationControllerLease, ConversationControlError>> {
+    const runtimeOptions = request.runtime_options ?? {};
     const adapter = this.adapters.forProvider(request.provider);
     if (!adapter) {
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: null, provider: request.provider } };
@@ -365,14 +384,15 @@ export class ConversationControlService {
       generation: request.generation,
       controller_instance_id: controllerInstanceId,
       cwd: request.cwd,
-      runtime_options: request.runtime_options,
+      runtime_options: runtimeOptions,
       ...(request.signal ? { signal: request.signal } : {}),
     };
-    const acquired = await this.serializeRuntime(request.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire(acquisition)));
+    const acquired = await this.serializeRuntime(request.conversation_id, () => this.acquireWithExecution(adapter, acquisition));
     if (!acquired.ok) return acquired;
     if (acquired.value.controller_instance_id !== controllerInstanceId
         || acquired.value.provider_session_id === null && adapter.provider !== "claude_code"
         || acquired.value.provider_session_id !== null && !acquired.value.provider_session_id.trim()) {
+      this.pendingExecution.delete(controllerInstanceId);
       await trapAdapterCall(adapter.id, () => adapter.stop({
         conversation_id: request.conversation_id,
         provider_session_id: acquired.value.provider_session_id,
@@ -386,12 +406,15 @@ export class ConversationControlService {
       } };
     }
     const lease: NewConversationControllerLease = { ...acquired.value, adapter_id: adapter.id };
-    const stopAcquired = () => trapAdapterCall(adapter.id, () => adapter.stop({
-      conversation_id: request.conversation_id,
-      provider_session_id: lease.provider_session_id,
-      controller_instance_id: lease.controller_instance_id,
-      generation: request.generation,
-    }));
+    const stopAcquired = () => {
+      this.pendingExecution.delete(controllerInstanceId);
+      return trapAdapterCall(adapter.id, () => adapter.stop({
+        conversation_id: request.conversation_id,
+        provider_session_id: lease.provider_session_id,
+        controller_instance_id: lease.controller_instance_id,
+        generation: request.generation,
+      }));
+    };
     if (request.signal?.aborted) {
       await stopAcquired();
       return { ok: false, error: {
@@ -406,7 +429,7 @@ export class ConversationControlService {
       this.db.transaction(() => {
         commit(lease);
         this.db.prepare("INSERT OR IGNORE INTO conversation_runtime_settings (conversation_id, revision, options_json, updated_at) VALUES (?, 0, ?, ?)")
-          .run(request.conversation_id, JSON.stringify(request.runtime_options), Date.now());
+          .run(request.conversation_id, JSON.stringify(runtimeOptions), Date.now());
         const adopted = this.store.adoptNewController(
           request.conversation_id,
           request.generation,
@@ -425,6 +448,7 @@ export class ConversationControlService {
         message: thrown instanceof Error ? thrown.message : String(thrown),
       } };
     }
+    this.flushExecution(request.conversation_id, request.generation);
     this.notify(request.conversation_id);
     return { ok: true, value: lease };
   }
@@ -497,7 +521,7 @@ export class ConversationControlService {
           runtime_options: settings,
           cwd: location.cwd ?? undefined,
         };
-      const acquiredCall = await this.serializeRuntime(request.conversation_id, () => trapAdapterCall(adapter.id, () => adapter.acquire({ ...acquisition, runtime_options: this.retainedRuntimeOptions(request.conversation_id) })));
+      const acquiredCall = await this.serializeRuntime(request.conversation_id, () => this.acquireWithExecution(adapter, { ...acquisition, runtime_options: this.retainedRuntimeOptions(request.conversation_id) }));
       const acquired: typeof acquiredCall = acquiredCall.ok && (
         acquiredCall.value.controller_instance_id !== prepared.value.controller_instance_id
         || (prepared.value.provider_session_id !== null && acquiredCall.value.provider_session_id !== prepared.value.provider_session_id)
@@ -512,6 +536,7 @@ export class ConversationControlService {
         }
         : acquiredCall;
       if (!acquired.ok) {
+        this.pendingExecution.delete(acquisition.controller_instance_id);
         const controllerFailed = this.store.publishLifecycle(request.conversation_id, prepared.value.snapshot.ownership.generation, {
           kind: "controller-failed",
           at: Date.now(),
@@ -542,6 +567,7 @@ export class ConversationControlService {
         ? this.recordControllerProcess(request.conversation_id, prepared.value.snapshot.ownership.generation, acquired.value.pid)
         : acquiredIdentity;
       if (!published.ok) {
+        this.pendingExecution.delete(acquisition.controller_instance_id);
         const rolledBack = await trapAdapterCall(adapter.id, () => adapter.stop({
           conversation_id: request.conversation_id,
           provider_session_id: acquired.value.provider_session_id,
@@ -550,6 +576,7 @@ export class ConversationControlService {
         }));
         return rolledBack.ok ? published : rolledBack;
       }
+      this.flushExecution(request.conversation_id, prepared.value.snapshot.ownership.generation);
       this.notify(request.conversation_id);
     }
     const delivered = await this.dispatch(prepared.value.delivery_id);
@@ -635,6 +662,55 @@ export class ConversationControlService {
       : { ok: true, value: undefined };
   }
 
+  private async acquireWithExecution(adapter: ConversationControllerAdapter, request: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>> {
+    this.pendingExecution.set(request.controller_instance_id, { adapter, request, events: [] });
+    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire(request));
+    if (!acquired.ok) this.pendingExecution.delete(request.controller_instance_id);
+    return acquired;
+  }
+
+  private applyExecution(adapter: ConversationControllerAdapter, event: ProviderExecutionEvent): void {
+    if (adapter.provider !== "claude_code" && adapter.provider !== "codex") return;
+    const owned = this.ownedAdapter(event.conversation_id, event.generation);
+    const snapshot = this.getSnapshot(event.conversation_id);
+    if (!owned.ok || owned.value !== adapter || !snapshot.ok || snapshot.value.ownership.kind !== "mandible"
+        || snapshot.value.ownership.controller_instance_id !== event.controller_instance_id
+        || snapshot.value.provider_session_id !== event.provider_session_id
+        || (adapter.provider === "claude_code" ? "claude_sdk_hook" : "codex_app_server") !== event.source) return;
+    new SessionExecutionStore(this.db).apply({ ...event, provider: adapter.provider === "claude_code" ? "claude" : "codex",
+      controller_generation: event.generation });
+  }
+
+  private flushExecution(conversationId: string, generation: number): void {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok || snapshot.value.ownership.kind !== "mandible" || snapshot.value.ownership.generation !== generation
+        || !snapshot.value.provider_session_id) return;
+    const ownership = snapshot.value.ownership;
+    const pending = this.pendingExecution.get(ownership.controller_instance_id);
+    if (!pending) return;
+    this.pendingExecution.delete(ownership.controller_instance_id);
+    this.applyExecution(pending.adapter, { kind: "execution", conversation_id: conversationId, generation,
+      controller_instance_id: ownership.controller_instance_id, provider_session_id: snapshot.value.provider_session_id,
+      source: pending.adapter.provider === "claude_code" ? "claude_sdk_hook" : "codex_app_server",
+      event: "mandible:controller-acquired", turn_id: null, state: { kind: "unknown" } });
+    for (const event of pending.events) this.applyExecution(pending.adapter, event);
+  }
+
+  private endExecution(conversationId: string, generation: number, reason: string, adapter?: ConversationControllerAdapter): void {
+    const owned = this.ownedAdapter(conversationId, generation);
+    const snapshot = this.getSnapshot(conversationId);
+    if (!owned.ok || adapter && owned.value !== adapter || !snapshot.ok || snapshot.value.ownership.kind !== "mandible") return;
+    if (!snapshot.value.provider_session_id) {
+      this.pendingExecution.delete(snapshot.value.ownership.controller_instance_id);
+      return;
+    }
+    this.flushExecution(conversationId, generation);
+    this.applyExecution(owned.value, { kind: "execution", conversation_id: conversationId, generation,
+      controller_instance_id: snapshot.value.ownership.controller_instance_id, provider_session_id: snapshot.value.provider_session_id,
+      source: owned.value.provider === "claude_code" ? "claude_sdk_hook" : "codex_app_server",
+      event: reason, turn_id: null, state: reason === "mandible:protocol-ambiguous" ? { kind: "unknown" } : { kind: "ended", reason } });
+  }
+
   /** No controller survives a daemon restart, so every Mandible claim is ended and released. */
   async reconcileAfterRestart(): Promise<ConversationControlError[]> {
     const errors: ConversationControlError[] = [];
@@ -679,6 +755,7 @@ export class ConversationControlService {
         : { kind: turnOutcome, at: Date.now(), turn_id: snapshot.value.turn.turn_id, reason: "probe-ambiguous" });
       if (!turn.ok) return turn;
     }
+    this.endExecution(conversationId, generation, "mandible:controller-relinquished");
     return this.store.release(conversationId, generation);
   }
 

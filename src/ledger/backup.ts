@@ -278,6 +278,9 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   // activity. Keep it out of durable metadata backups so a dump never scans or
   // materializes a potentially multi-gigabyte log table.
   "daemon_log",
+  // The last execution state each provider session reported. It describes
+  // live runtime and is stale in any restored copy; the next hook rewrites it.
+  "provider_session_execution",
   "branches",
   "work_repos",
   "push_history",

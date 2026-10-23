@@ -22,6 +22,7 @@
  *   3. Delete every case here whose migration is at or below the new floor.
  */
 import crypto from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -92,6 +93,30 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
+  it("converges original execution v208 without losing native observations or preferences", () => {
+    const bytes = gunzipSync(fs.readFileSync(new URL('./fixtures/afe677c-schema-v208.db.gz', import.meta.url)));
+    const database = SqliteDatabase.fromSnapshot(bytes);
+    const fresh = new SqliteDatabase(); migrate(fresh);
+    const unknown = SqliteDatabase.fromSnapshot(bytes);
+    try {
+      const execution = database.prepare('SELECT * FROM provider_session_execution').all();
+      const preferences = database.prepare('SELECT * FROM user_settings').all();
+      expect(schemaVersion(database)).toBe('208');
+      migrate(database);
+      expect(database.prepare('SELECT * FROM provider_session_execution').all()).toEqual(execution);
+      expect(database.prepare('SELECT * FROM user_settings').all()).toEqual(preferences);
+      expect(sqliteMaster(database)).toEqual(sqliteMaster(fresh));
+      expect(tableInfo(database)).toEqual(tableInfo(fresh));
+      expect(schemaVersion(database)).toBe(String(CURRENT_SCHEMA_VERSION));
+      migrate(database);
+      expect(database.prepare('SELECT * FROM provider_session_execution').all()).toEqual(execution);
+      unknown.exec('CREATE INDEX unknown_execution_shape ON provider_session_execution(observed_at)');
+      expect(() => migrate(unknown)).toThrow('Unrecognized provider execution v208 migration collision');
+      expect(schemaVersion(unknown)).toBe('208');
+      expect(unknown.prepare('SELECT * FROM user_settings').all()).toEqual(preferences);
+    } finally { database.close(); fresh.close(); unknown.close(); }
+  });
+
   it("migrates the floor fixture to the schema a fresh database gets, and a daemon boots on the result", async () => {
     const freshPath = path.join(tempDir, "fresh.db");
     const migratedPath = path.join(tempDir, "migrated.db");

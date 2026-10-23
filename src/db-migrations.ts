@@ -13,6 +13,7 @@ import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
@@ -2130,6 +2131,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE user_settings_v207",
   ] },
   { version: 209, name: "durable_chat_identity_aliases", statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
+  { version: 210, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
 ];
 
 /**
@@ -2274,6 +2276,29 @@ function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
   return 178;
 }
 
+/** Reconcile the exact v208 execution lineage authored by afe677c. */
+function reconcileExecutionSchemaCollision(db: Db, found: number, through: number): number {
+  if (found !== 208) return found;
+  const objects = db.prepare("SELECT name, sql FROM sqlite_schema WHERE tbl_name = 'provider_session_execution' AND name NOT LIKE 'sqlite_%'")
+    .all() as { name: string; sql: string }[];
+  if (objects.length === 0) return found;
+  const preferences = db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'user_settings'").get() as { sql: string } | undefined;
+  const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+  if (objects.length !== 1 || objects[0].name !== 'provider_session_execution'
+      || normalize(objects[0].sql) !== normalize(SESSION_EXECUTION_SCHEMA_SQL)
+      || !preferences || normalize(preferences.sql) !== normalize(USER_SETTINGS_V172_SCHEMA_SQL)
+      || validateConversationIdentitySchema(db)) {
+    throw new Error('Unrecognized provider execution v208 migration collision');
+  }
+  if (through < 210) throw new Error('The provider execution v208 lineage must converge through v210');
+  db.transaction(() => {
+    applySchemaMigrations(db, MIGRATIONS.filter(item => item.version === 208 || item.version === 209));
+    // The exact validated execution table already implements canonical v210.
+    db.prepare("UPDATE meta SET value = '210' WHERE key = ?").run(SCHEMA_VERSION_KEY);
+  })();
+  return 210;
+}
+
 function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   if (migrations.length === 0) return;
   const setVersion = db.prepare(
@@ -2364,6 +2389,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
   }
 
+  found = reconcileExecutionSchemaCollision(db, found, through);
   found = reconcileCollidedChatPreviewSchema(db, found);
 
   if (found < 185 && through >= 185) {

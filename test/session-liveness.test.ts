@@ -1,3 +1,6 @@
+import { SessionExecutionStore } from "../src/session-execution.js";
+import { SESSION_EXECUTION_SCHEMA_SQL } from "../src/db-baseline.js";
+import { CONVERSATION_CONTROL_SCHEMA_SQL } from "../src/conversation-control/schema.js";
 /**
  * The canonical session-liveness rule and the consumers that act on it.
  *
@@ -30,6 +33,15 @@ const recordingArchiver = (archived: string[]): CodexThreadArchiver => ({
   unarchive: async () => undefined,
 });
 
+function nativeCodexFailure(db: Db, conversationId: string, thread: string): void {
+  db.prepare(`INSERT INTO conversation_control_state (conversation_id, provider, provider_session_id, generation, owner_kind, controller_state,
+    controller_instance_id, adapter_id, last_authoritative_signal, turn_state, updated_at)
+    VALUES (?, 'codex', ?, 1, 'mandible', 'ready', 'controller', 'adapter', 1, 'none', 1)`).run(conversationId, thread);
+  expect(new SessionExecutionStore(db).apply({ provider: "codex", provider_session_id: thread, source: "codex_app_server",
+    controller_instance_id: "controller", controller_generation: 1, event: "turn/completed", turn_id: "turn",
+    state: { kind: "failure", error: { type: "usageLimitExceeded", message: "limit", details: null, data: null } } }).status).toBe("applied");
+}
+
 describe("canonical session liveness", () => {
   let db: Db;
 
@@ -57,16 +69,20 @@ describe("canonical session liveness", () => {
     { session: "ended", console: "stopped", liveness: "stopped" },
   ])("resolves every alias of one agent to $liveness (session $session, console $console)", ({ session, console, liveness }) => {
     seedAgent(session, console);
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
+      VALUES ('execution-conv', 'codex', '/tmp/execution-thread', 'hash', 1, 'Thread', '2026-01-01', 0, ?, '2026-01-01', '2026-01-01')`).run(PROVIDER_THREAD);
+    nativeCodexFailure(db, 'execution-conv', PROVIDER_THREAD);
 
     for (const alias of [MANDIBLE_SESSION, CONSOLE_SESSION, PROVIDER_THREAD]) {
-      expect(resolveSessionAlias(db, alias)).toMatchObject({
+      expect(resolveSessionAlias(db, alias, { readCodexTaskLiveness: () => ({ status: "not_live" }) })).toMatchObject({
         supplied_id: alias,
         mandible_session_id: MANDIBLE_SESSION,
         console_session_id: CONSOLE_SESSION,
         provider_session_id: PROVIDER_THREAD,
         liveness,
+        execution: { state: { kind: "failure", error: { type: "usageLimitExceeded" } } },
       });
-      expect(sessionAliasLiveness(db, alias)).toBe(liveness);
+      expect(sessionAliasLiveness(db, alias, { readCodexTaskLiveness: () => ({ status: "not_live" }) })).toBe(liveness);
     }
   });
 
@@ -142,8 +158,11 @@ describe("a Codex lock check that cannot complete", () => {
         PRIMARY KEY (work_unit_id, thread_id)
       );
     `);
+    db.exec(SESSION_EXECUTION_SCHEMA_SQL);
+    db.exec(CONVERSATION_CONTROL_SCHEMA_SQL[0]!);
     db.prepare("INSERT INTO conversations (id, source, session_id, source_path) VALUES ('conv', 'codex', ?, ?)")
       .run(THREAD, rollout);
+    nativeCodexFailure(db, "conv", THREAD);
     const unit = db.prepare(
       `INSERT INTO work_units (id, state, provider, assigned_session_id, worker_provider_session_id, auth_request_id)
        VALUES (?, ?, 'codex', ?, ?, ?)`,
@@ -182,6 +201,11 @@ describe("a Codex lock check that cannot complete", () => {
   it("reads as unknown, so no consumer clears, archives, or takes over the holder", async () => {
     fs.writeFileSync(lockDir, "");
 
+    expect(sessionAliasLiveness(db, THREAD, { readCodexTaskLiveness: () => ({ status: "live" }) })).toBe("live");
+    await archiveFinishedWorkerThreads(db, { archiver: recordingArchiver(archived),
+      liveness: (database, id) => sessionAliasLiveness(database, id, { readCodexTaskLiveness: () => ({ status: "live" }) }),
+      resolveAlias: resolveSessionAlias, now: () => 0 });
+    expect(archived).toEqual([]);
     expect(sessionAliasLiveness(db, THREAD)).toBe("unknown");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: THREAD });

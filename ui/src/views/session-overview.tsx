@@ -1,3 +1,5 @@
+import { formatSessionExecution } from "../../../src/session-execution-format";
+import { acquireSharedSse } from "../sse-shared";
 // Session Overview: one page per agent session, for every provider. The page
 // is keyed on any session alias (a provider session id, a Claude subagent id,
 // a `sessions.id`, a console session id) or a prefix of one: the explicit
@@ -122,6 +124,20 @@ function overviewHref(sessionId: string): string {
   return `#/overview?session=${encodeURIComponent(shortRouteId(sessionId))}`;
 }
 
+function ExecutionObservation({ session }: { session: SessionSummary }): JSX.Element {
+  const observation = session.execution;
+  const failure = observation?.state.kind === 'failure' ? observation.state.error : null;
+  return <div>
+    <span>{formatSessionExecution(observation)}</span>
+    {observation && <small> · {observation.source} · {formatTimestamp(observation.observed_at)}</small>}
+    {failure?.message && <div>{failure.message}</div>}
+    {(failure?.details || failure?.data) && <details><summary>Error details</summary>
+      {failure.details && <pre>{failure.details}</pre>}{failure.data && <pre>{JSON.stringify(failure.data, null, 2)}</pre>}
+    </details>}
+    {observation?.source === 'codex_hook' && <small>External Codex does not report API failures</small>}
+  </div>;
+}
+
 function LivenessBadge({ liveness }: { liveness: SessionSummary['liveness'] }): JSX.Element {
   return <span className={`session-overview-badge session-overview-badge--${liveness}`}>{liveness}</span>;
 }
@@ -176,7 +192,7 @@ function ChildRow({ child }: { child: SessionDescendant }): JSX.Element {
         <a href={overviewHref(child.id)}>{shortUuid(child.id)}</a>
       </td>
       <td>{child.provider ?? '—'}</td>
-      <td><LivenessBadge liveness={child.liveness} /></td>
+      <td><LivenessBadge liveness={child.liveness} /><ExecutionObservation session={child} /></td>
       <td className="session-overview__cell-grow">{child.agent ? `${child.agent} · ` : ''}{child.title ?? child.branch ?? '—'}</td>
       <td>{child.depth}</td>
       <td>{formatTimestamp(child.last_activity ?? child.started_at)}</td>
@@ -305,6 +321,7 @@ function SessionFacts({ session }: { session: SessionSummary }): JSX.Element {
   return (
     <dl className="session-overview__facts">
       <div><dt>Status</dt><dd><LivenessBadge liveness={session.liveness} /></dd></div>
+      <div><dt>Execution</dt><dd><ExecutionObservation session={session} /></dd></div>
       <div><dt>Provider</dt><dd>{session.provider ?? '—'}</dd></div>
       <div><dt>Branch</dt><dd>{overviewBranch(session.branch)}</dd></div>
       <div><dt>Cwd</dt><dd className="session-overview__path">{session.cwd ?? '—'}</dd></div>
@@ -433,16 +450,20 @@ export function SessionOverviewView({
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
   useEffect(() => {
-    if ((embedded && !managedConversation) || typeof window === 'undefined') return undefined;
+    if (typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
       if (document.visibilityState !== 'visible') return;
       if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
       setRefreshToken((token) => token + 1);
     };
+    const events = acquireSharedSse();
+    events.on("session:execution-updated", refreshVisible);
+    events.connect();
     const interval = window.setInterval(refreshVisible, 15_000);
     window.addEventListener('focus', refreshVisible);
     document.addEventListener('visibilitychange', refreshVisible);
     return () => {
+      events.close();
       window.clearInterval(interval);
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
@@ -471,7 +492,7 @@ export function SessionOverviewView({
         copyLabel: 'Copy session id',
       }}
       title={sessionLabel(session)}
-      status={<LivenessBadge liveness={session.liveness} />}
+      status={<><LivenessBadge liveness={session.liveness} /><ExecutionObservation session={session} /></>}
       actions={(
         <details className="session-overview__menu">
           <summary aria-label="Session actions" title="Session actions">•••</summary>
