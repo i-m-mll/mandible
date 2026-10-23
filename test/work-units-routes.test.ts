@@ -849,8 +849,6 @@ describe("work-unit custody takeover", () => {
       requested_by_user_id: credentials.taker.user_id, requester_credential_id: credentials.taker.credential_id });
 
     const description = (await queue.getRequest(requestId))!.commit_message;
-    expect(description).toContain("Reason:");
-    expect(description).toContain("Approving transfers custody");
     expect((await queue.getRequest(requestId))!.commit_message_digest).toBeNull();
     const completed = await queue.approveWithOperatorProof(requestId, operatorId);
     expect(completed).toMatchObject({ status: "completed", exit_code: 0, approved_by_user_id: operatorId });

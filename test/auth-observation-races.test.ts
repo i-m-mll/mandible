@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { waitUntil } from "./helpers/wait-until.js";
@@ -171,7 +172,7 @@ for (const stage of ["age", "ssh-add"] as const) {
     fs.writeFileSync(path.join(bin, "age-plugin-yubikey"), "#!/bin/sh\nprintf 'private identity\\n'\n", { mode: 0o700 });
     const childMarker = path.join(config, "held-child.pid");
     const agentMarker = path.join(config, "agent-output");
-    const agentSocketDir = fs.mkdtempSync("/tmp/mandible-presence-agent-");
+    const agentSocketDir = fs.mkdtempSync(path.join(testRuntimeRoot, "a-"));
     const heldScript = path.join(config, "held.mjs");
     fs.writeFileSync(heldScript, `import fs from 'node:fs'; process.stdin.resume(); fs.writeFileSync(${JSON.stringify(childMarker)}, String(process.pid)); setInterval(() => {}, 1000);\n`);
     const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
@@ -182,7 +183,7 @@ for (const stage of ["age", "ssh-add"] as const) {
       fs.writeFileSync(path.join(bin, "ssh-add"), holdProgram, { mode: 0o700 });
     }
     const agentScript = path.join(config, "agent.mjs");
-    fs.writeFileSync(agentScript, `import fs from 'node:fs'; import {spawnSync} from 'node:child_process'; const result=spawnSync('/usr/bin/ssh-agent',['-a',${JSON.stringify(path.join(agentSocketDir, "agent.sock"))},'-s'],{encoding:'utf8',timeout:5000}); fs.writeFileSync(${JSON.stringify(agentMarker)},JSON.stringify({stdout:result.stdout,stderr:result.stderr,status:result.status})); process.stdout.write(result.stdout); process.exit(result.status??1);\n`);
+    fs.writeFileSync(agentScript, `import fs from 'node:fs'; import {spawnSync} from 'node:child_process'; const result=spawnSync('/usr/bin/ssh-agent',['-a',${JSON.stringify(path.join(agentSocketDir, "s"))},'-s'],{encoding:'utf8',timeout:5000}); fs.writeFileSync(${JSON.stringify(agentMarker)},JSON.stringify({stdout:result.stdout,stderr:result.stderr,status:result.status})); process.stdout.write(result.stdout); process.exit(result.status??1);\n`);
     fs.writeFileSync(path.join(bin, "ssh-agent"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(agentScript)}\n`, { mode: 0o700 });
     vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
     const leaseId = `private-presence-${stage}`;

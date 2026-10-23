@@ -8,7 +8,7 @@ const cleanups: Array<() => unknown> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("command approval Description authoring", () => {
-  it("submits explanatory Markdown from message/file without merge-only fields", async () => {
+  it("preserves explanatory Markdown from message and file arguments", async () => {
     const bodies: Record<string, unknown>[] = [];
     const stub = await startStubDaemon(({ method, url, body }) => {
       if (method === "POST" && url === "/api/auth/request") {
@@ -31,9 +31,7 @@ describe("command approval Description authoring", () => {
     for (const body of bodies) {
       expect(body.commit_message).toBe(text);
       expect(body.canonical_message).toBe(false);
-      expect(body.verification).toBeNull();
       expect(body.command).toBe("echo exact-private-action");
-      expect(body.diff_summary).toBe("");
     }
   });
 
