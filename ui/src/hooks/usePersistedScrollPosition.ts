@@ -1,19 +1,29 @@
 import type { RefObject } from 'preact';
-import { useLayoutEffect, useRef } from 'preact/hooks';
+import { useLayoutEffect, useMemo, useRef } from 'preact/hooks';
 import { readPersistedViewState, writePersistedViewState } from './usePersistedViewState';
 
 function normalizeOffset(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-/** Preserve plain scroll-owner position while delayed content reconciles. */
-export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageKey: string): Readonly<{ current: boolean }> {
+export type ScrollRestoration = {
+  initialPosition?: number;
+  target?: { token: string; resolve: () => number | 'unavailable' | null };
+};
+
+/** Preserve one scroll owner's position, or resolve an explicit destination after hydration. */
+export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageKey: string, restoration?: ScrollRestoration): Readonly<{ current: boolean; resolveTarget(): void }> {
   const restoring = useRef(false);
+  const resolveTarget = useRef(() => {});
+  const restorationRef = useRef(restoration);
+  restorationRef.current = restoration;
+  const targetToken = restoration?.target?.token;
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
-    let position = readPersistedViewState(storageKey, normalizeOffset, 0);
+    let position = restorationRef.current?.initialPosition ?? readPersistedViewState(storageKey, normalizeOffset, 0);
     let pending: number | null = position;
+    let targetPending = targetToken !== undefined;
     restoring.current = true;
     let applied = node.scrollTop;
     let resize: ResizeObserver | undefined;
@@ -28,9 +38,24 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     };
     const restore = () => {
       if (pending === null) return;
+      if (targetPending) {
+        const target = restorationRef.current?.target;
+        if (!target || target.token !== targetToken) return;
+        const offset = target.resolve();
+        if (offset === null) return;
+        targetPending = false;
+        if (offset === 'unavailable') {
+          pending = null;
+          restoring.current = false;
+          stopRestoring();
+          return;
+        }
+        pending = normalizeOffset(offset);
+      }
       node.scrollTop = Math.min(pending, Math.max(0, node.scrollHeight - node.clientHeight));
       applied = node.scrollTop;
       if (Math.abs(applied - pending) < 1) {
+        save(applied);
         pending = null;
         restoring.current = false;
         stopRestoring();
@@ -63,6 +88,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     const flush = () => {
       if (pending === null) save(node.scrollTop);
     };
+    resolveTarget.current = restore;
     restore();
     if (pending !== null) {
       resize = new ResizeObserver(observeContent);
@@ -78,6 +104,7 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
     node.addEventListener('load', observeContent, true);
     window.addEventListener('pagehide', flush);
     return () => {
+      resolveTarget.current = () => {};
       restoring.current = false;
       stopRestoring();
       node.removeEventListener('scroll', onScroll);
@@ -89,6 +116,6 @@ export function usePersistedScrollPosition(ref: RefObject<HTMLElement>, storageK
       window.removeEventListener('pagehide', flush);
       writePersistedViewState(storageKey, position);
     };
-  }, [ref, storageKey]);
-  return restoring;
+  }, [ref, storageKey, targetToken]);
+  return useMemo(() => ({ get current() { return restoring.current; }, resolveTarget: () => resolveTarget.current() }), []);
 }

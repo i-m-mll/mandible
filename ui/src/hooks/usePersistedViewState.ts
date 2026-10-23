@@ -9,7 +9,6 @@ export type PersistedViewStateNormalizer<T> = (
 type LoadedState<T> = {
   storageKey: string;
   value: T;
-  serialized: string | null;
 };
 
 type KeyedState<T> = {
@@ -62,7 +61,7 @@ function loadState<T>(
     value = fallback();
   }
 
-  return { storageKey, value, serialized: serialize(value) };
+  return { storageKey, value };
 }
 
 /** Synchronously flush browser-local intent, including before page navigation. */
@@ -98,6 +97,7 @@ export function usePersistedViewState<T>(
   storageKey: string,
   normalize: PersistedViewStateNormalizer<T>,
   defaults: T,
+  initialValue?: T,
 ): [T, Dispatch<StateUpdater<T>>] {
   const normalizeRef = useRef(normalize);
   const defaultsRef = useRef(defaults);
@@ -111,6 +111,7 @@ export function usePersistedViewState<T>(
       normalizeRef.current,
       defaultsRef.current,
     );
+    if (initialValue !== undefined) loadedRef.current.value = normalizeOrDefault(initialValue, normalize, defaults);
   }
   const loaded = loadedRef.current;
 
@@ -118,17 +119,6 @@ export function usePersistedViewState<T>(
     storageKey,
     value: loaded.value,
   }));
-
-  const persistedRef = useRef({
-    storageKey,
-    serialized: loaded.serialized,
-  });
-  if (persistedRef.current.storageKey !== storageKey) {
-    persistedRef.current = {
-      storageKey,
-      serialized: loaded.serialized,
-    };
-  }
 
   // Synchronize the keyed state after render. Until then, return the newly
   // loaded value below so callers never observe state belonging to another key.
@@ -140,17 +130,6 @@ export function usePersistedViewState<T>(
     ));
   }, [storageKey]);
 
-  useEffect(() => {
-    if (!storageKey || keyedState.storageKey !== storageKey) return;
-
-    const serialized = serialize(keyedState.value);
-    if (serialized === null || serialized === persistedRef.current.serialized) return;
-
-    if (writePersistedViewState(storageKey, keyedState.value)) {
-      persistedRef.current = { storageKey, serialized };
-    }
-  }, [keyedState, storageKey]);
-
   const setState = useCallback<Dispatch<StateUpdater<T>>>((next) => {
     setKeyedState((current) => {
       const base = current.storageKey === storageKey
@@ -159,6 +138,7 @@ export function usePersistedViewState<T>(
       const value = typeof next === 'function'
         ? (next as (previous: T) => T)(base)
         : next;
+      writePersistedViewState(storageKey, value);
       return { storageKey, value };
     });
   }, [storageKey]);

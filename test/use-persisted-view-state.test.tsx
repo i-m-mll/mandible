@@ -83,6 +83,25 @@ afterEach(() => {
 
 describe('usePersistedViewState', () => {
 
+  it('restores an in-memory visit and flushes ordered explicit updates synchronously', () => {
+    const { storage, values } = installStorage({ visit: JSON.stringify(DEFAULTS) });
+    let captured: string | null = null;
+    function Visit() {
+      const [state, setState] = usePersistedViewState('visit', normalizeViewState, DEFAULTS, { count: 7, label: 'historical' });
+      return <button onClick={() => {
+        setState(current => ({ ...current, count: current.count + 1 }));
+        setState(current => ({ ...current, count: current.count + 1 }));
+        captured = storage.getItem('visit');
+      }}>{state.count}</button>;
+    }
+    render(<Visit />);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(values.get('visit')).toBe(JSON.stringify(DEFAULTS));
+    fireEvent.click(screen.getByRole('button', { name: '7' }));
+    expect(captured).toBe(JSON.stringify({ count: 9, label: 'historical' }));
+    expect(screen.getByRole('button', { name: '9' })).toBeTruthy();
+  });
+
   it('falls back to normalized defaults for missing or malformed storage', () => {
     const { rerender } = render(<Probe storageKey="missing" />);
     expect(screen.getByLabelText('state').textContent).toBe(JSON.stringify(DEFAULTS));

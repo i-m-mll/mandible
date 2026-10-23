@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { render, cleanup, fireEvent, screen, waitFor } from './helpers/dom';
+import { render, cleanup, configure, fireEvent, screen, waitFor } from './helpers/dom';
 import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
 import { authBreakdownFixture } from './helpers/auth-breakdown-fixture';
 
 beforeEach(() => {
+  configure({ asyncUtilTimeout: 1000 });
   const values = new Map<string, string>();
   Object.defineProperty(window, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value),
@@ -23,7 +24,7 @@ it('retains full file semantics with Git status first and one detailed totals au
   const panel = view.container.querySelector('section')!;
   expect(panel.querySelector('.collapsible-panel__header [aria-label="Change totals"]')).toBeTruthy();
   expect(panel.querySelectorAll('[aria-label="Change totals"]')).toHaveLength(1);
-  const items = screen.getByRole('region', { name: 'Change breakdown items' });
+  const items = screen.getByRole('region', { name: 'TypeScript files' });
   expect(items.querySelector('[role="tablist"]')).toBeNull();
   expect(items.querySelector('.auth-change-columns-header')).toBeNull();
   expect(items.querySelectorAll('.auth-change-file')).toHaveLength(report.files.length);
@@ -43,7 +44,7 @@ it('retains full file semantics with Git status first and one detailed totals au
 it('preserves item positions by request, tab and directory through refetch, collapse and remount', async () => {
   const report = authBreakdownFixture();
   const view = render(<AuthChangeBreakdown requestId="read-a" report={report} />);
-  const items = () => screen.getByRole('region', { name: 'Change breakdown items' });
+  const items = () => screen.queryByRole('region', { name: 'Change breakdown items' }) ?? screen.getByRole('region', { name: 'TypeScript files' });
   fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
   items().scrollTop = 184; fireEvent.scroll(items());
   view.rerender(<AuthChangeBreakdown requestId="read-a" report={{ ...report, files: [...report.files] }} />);
@@ -64,10 +65,41 @@ it('preserves item positions by request, tab and directory through refetch, coll
   fireEvent.click(screen.getByRole('button', { name: 'Change breakdown', exact: true }));
   expect(items().scrollTop).toBe(184);
   view.rerender(<AuthChangeBreakdown requestId="read-b" report={report} />);
-  await waitFor(() => expect(items().scrollTop).toBe(0));
+  await waitFor(() => expect(screen.getByRole('button', { name: /TypeScript/ }).getAttribute('aria-expanded')).toBe('false'));
+  fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
+  expect(items().scrollTop).toBe(0);
   view.rerender(<AuthChangeBreakdown requestId="read-a" report={report} />);
   await waitFor(() => expect(items().scrollTop).toBe(184));
   view.unmount();
   render(<AuthChangeBreakdown requestId="read-a" report={report} />);
   expect(items().scrollTop).toBe(184);
+});
+
+it('keeps sibling group offsets independent and separates grouped modes', () => {
+  const report = authBreakdownFixture(32);
+  report.files.forEach((file, index) => { if (index % 2) file.language = 'JavaScript'; });
+  render(<AuthChangeBreakdown requestId="sibling-groups" report={report} />);
+  fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
+  fireEvent.click(screen.getByRole('button', { name: /JavaScript/ }));
+  const typescript = screen.getByRole('region', { name: 'TypeScript files' });
+  const javascript = screen.getByRole('region', { name: 'JavaScript files' });
+  typescript.scrollTop = 120; fireEvent.scroll(typescript);
+  javascript.scrollTop = 88; fireEvent.scroll(javascript);
+  expect(typescript.querySelector('button')).toBeNull();
+  expect(javascript.querySelector('button')).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
+  fireEvent.click(screen.getByRole('button', { name: /Implementation/ }));
+  const role = screen.getByRole('region', { name: 'Implementation files' });
+  expect(role.scrollTop).toBe(0);
+  role.scrollTop = 77; fireEvent.scroll(role);
+  fireEvent.click(screen.getByRole('tab', { name: 'Generated / vendor' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Generated\b/ }));
+  expect(screen.getByRole('region', { name: 'Generated files' }).querySelectorAll('a')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('tab', { name: 'Language' }));
+  expect(screen.getByRole('region', { name: 'TypeScript files' }).scrollTop).toBe(120);
+  expect(screen.getByRole('region', { name: 'JavaScript files' }).scrollTop).toBe(88);
+  fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
+  expect(screen.getByRole('region', { name: 'JavaScript files' }).scrollTop).toBe(88);
+  fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
+  expect(screen.getByRole('region', { name: 'Implementation files' }).scrollTop).toBe(77);
 });
