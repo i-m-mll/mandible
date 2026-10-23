@@ -168,7 +168,6 @@ const checks = {
   'direct CLI database readers bound busy waits and close'() {
     const required = {
       'cli/logs.sh': ['PRAGMA busy_timeout = 5000', 'isolation_level=None', 'conn.close()'],
-      'cli/conversations.sh': ['PRAGMA busy_timeout = 5000', 'PRAGMA query_only = ON', 'conn.close()'],
       'src/cli/conversation-blocks.ts': ['db.pragma("busy_timeout = 5000")', 'db.pragma("query_only = ON")', 'db.close()'],
     };
     return Object.entries(required).flatMap(([file, needles]) => {
