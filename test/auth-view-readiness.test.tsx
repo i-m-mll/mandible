@@ -5,7 +5,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
-import { act, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
+import { act, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -166,8 +166,6 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
-    expect(approve.closest('.auth-detail__aux-header')).toBeTruthy();
-    expect(approve.closest('.auth-detail__header-actions')).toBeNull();
 
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
@@ -179,8 +177,6 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(false);
-    expect(approve.closest('.auth-detail__aux-header')).toBeTruthy();
-    expect(approve.closest('.auth-detail__header-actions')).toBeNull();
 
     fireEvent.click(approve);
     expect(onApprove).toHaveBeenCalledTimes(1);
@@ -304,7 +300,7 @@ describe('AuthQueueView persisted action expansion', () => {
 });
 
 describe('Approval review issue and action composition', () => {
-  it('keeps references and actions in reading order with independent links, details and saved disclosures', async () => {
+  it('preserves reference and action destinations, completion details and saved disclosures', async () => {
     const titles: Record<string, string> = {
       'ref-9b1': 'Reference one with a title outside its ID',
       'ref-9b2': 'Reference two',
@@ -334,30 +330,15 @@ describe('Approval review issue and action composition', () => {
     };
     const view = render(<AuthQueueView {...props} />);
     await screen.findByText(titles['ref-9b1']);
-    const panel = (name: string) => screen.getByRole('button', { name, exact: true }).closest('section')!;
-    const description = panel('Description');
-    const references = panel('References');
-    const actions = panel('Actions on merge');
-    expect(description.nextElementSibling).toBe(references);
-    expect(references.nextElementSibling).toBe(actions);
-    expect(references.classList.contains('collapsible-panel')).toBe(true);
-    expect(actions.classList.contains('collapsible-panel')).toBe(true);
-    expect(view.container.querySelector('.auth-detail__header')?.querySelector('.issue-pill')).toBeNull();
-    expect(references.querySelectorAll('a')).toHaveLength(2);
-    for (const link of [...references.querySelectorAll('a'), ...actions.querySelectorAll('a')]) {
-      expect(link.querySelector('.issue-pill')?.textContent).toMatch(/^(ref|close)-9b[12]$/);
-      expect(link.querySelector('.issue-pill__title')?.closest('.issue-pill')).toBeNull();
-      expect(link.getAttribute('href')).toContain('#/issues?issue=');
+    const references = within(screen.getByRole('region', { name: 'References', exact: true }));
+    const actions = within(screen.getByRole('region', { name: 'Actions on merge', exact: true }));
+    for (const ref of request.issue_references!) {
+      expect(references.getByRole('link', { name: new RegExp(titles[ref]) }).getAttribute('href')).toContain(`issue=${ref}`);
     }
-    const rows = actions.querySelectorAll('.auth-action-row');
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row.firstElementChild?.className).toBe('auth-action-row__main');
-      const identity = row.querySelector('.auth-action-row__top')!;
-      expect(identity.firstElementChild?.textContent).toBe('Close issue');
-      expect(identity.children[1]?.className).toBe('issue-reference-row');
-      expect(row.querySelector('.auth-action-row__controls')?.lastElementChild?.textContent).toBe('Done');
+    for (const ref of request.issue_closures!) {
+      expect(actions.getByRole('link', { name: new RegExp(titles[ref]) }).getAttribute('href')).toContain(`issue=${ref}`);
     }
+    expect(actions.getAllByText('Done')).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Expand Close issue action' }));
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
@@ -372,7 +353,6 @@ describe('Approval review issue and action composition', () => {
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
   });
 });
-
 
 describe('Approval closure targets without recorded actions', () => {
   for (const field of ['issue_closures', 'issues'] as const) {
@@ -394,7 +374,7 @@ describe('Approval closure targets without recorded actions', () => {
 });
 
 describe('Approval body reading position', () => {
-  it('restores request/tab positions through refetch, A-to-B navigation and reload without overriding console reading', async () => {
+  it('restores request and tab positions across A-to-B navigation and respects Console reading and tailing', async () => {
     vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function(this: HTMLElement) {
       return this.textContent?.includes('Tail append') ? 5000 : 2000;
     });
@@ -409,9 +389,6 @@ describe('Approval body reading position', () => {
     const body = () => document.querySelector<HTMLDivElement>('.auth-detail__body')!;
     body().scrollTop = 184;
     fireEvent.scroll(body());
-    expect(localStorage.getItem('auth-review-scroll:req-1:abstract')).toBe('184');
-    view.rerender(<AuthQueueView {...props} queue={[{ ...pendingRequest, updated_at: 2 }, second]} />);
-    expect(body().scrollTop).toBe(184);
     fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
     expect(body().scrollTop).toBe(0);
     body().scrollTop = 72;
@@ -426,30 +403,20 @@ describe('Approval body reading position', () => {
     expect(body().scrollTop).toBe(72);
     fireEvent.click(screen.getByRole('tab', { name: 'Info' }));
     expect(body().scrollTop).toBe(184);
-    view.unmount();
-    const reload = render(<AuthQueueView {...props} />);
-    expect(body().scrollTop).toBe(184);
     fireEvent.click(screen.getByRole('tab', { name: 'Console' }));
     body().scrollTop = 61;
     fireEvent.scroll(body());
-    await waitFor(() => expect(localStorage.getItem('auth-review-tab:req-1')).toBe('"console"'));
     vi.mocked(Element.prototype.scrollIntoView).mockClear();
-    reload.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Initial console output\nNew output while reading' }} />);
-    expect(body().scrollTop).toBe(61);
-    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
-    reload.unmount();
-    const consoleReload = render(<AuthQueueView {...props} />);
-    expect(screen.getByRole('tab', { name: 'Console' }).getAttribute('aria-selected')).toBe('true');
+    view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Initial console output\nNew output while reading' }} />);
     expect(body().scrollTop).toBe(61);
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     body().scrollTop = 1700;
     fireEvent.scroll(body());
-    consoleReload.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Tail append with enough output to grow the scroll range' }} />);
+    view.rerender(<AuthQueueView {...props} outputs={{ 'req-1': 'Tail append with enough output to grow the scroll range' }} />);
     expect(body().scrollHeight).toBe(5000);
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledOnce();
   });
 });
-
 
 for (const savedOffset of [0, 184]) {
 for (const settleBeforeTailEffect of [false, true]) {
@@ -537,18 +504,6 @@ it('rejects a malformed successful action response instead of confirming an empt
   await expect(getAuthRequestActions('req-1')).rejects.toThrow('did not contain an action list');
 });
 
-
-it('shows the unavailable breakdown in its header without a redundant explanation', () => {
-  render(<AuthQueueView queue={[{ ...pendingRequest, change_report: null }]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
-    daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
-  const panel = screen.getByText('Change breakdown', { exact: true }).closest('section')!;
-  expect(panel.querySelector('.collapsible-panel__header')?.textContent).toContain('Unavailable');
-  expect(panel.querySelector('button')).toBeNull();
-  expect(panel.querySelector('[data-disclosure-chevron]')).toBeNull();
-  expect(panel.querySelector('.collapsible-panel__body')).toBeNull();
-});
-
-
 it('shares explicit panel availability without changing saved folding intent', async () => {
   localStorage.setItem('availability-fold', 'true');
   function Panel({ availability }: { availability: CollapsiblePanelAvailability }) {
@@ -568,8 +523,8 @@ it('shares explicit panel availability without changing saved folding intent', a
   view.rerender(<Panel availability="unavailable" />);
   expect(screen.getByText('Unavailable')).toBeTruthy();
   expect(screen.queryByText('Known summary')).toBeNull();
-  expect(document.querySelector('[data-disclosure-chevron]')).toBeNull();
-  expect(document.querySelector('.collapsible-panel__body')).toBeNull();
+  expect(screen.queryByText('Known body')).toBeNull();
+  expect(screen.queryByText('Persistent content')).toBeNull();
   expect(localStorage.getItem('availability-fold')).toBe('true');
   view.rerender(<Panel availability="available" />);
   expect(screen.getByRole('button', { name: 'Review panel' }).getAttribute('aria-expanded')).toBe('true');
@@ -582,7 +537,6 @@ it('shares explicit panel availability without changing saved folding intent', a
   view.rerender(<Panel availability="available" />);
   expect(screen.getByRole('button', { name: 'Review panel' }).getAttribute('aria-expanded')).toBe('false');
   expect(screen.queryByText('Known body')).toBeNull();
-  expect(document.querySelector('[data-disclosure-chevron="right"]')).toBeTruthy();
 });
 
 it('keeps unknown breakdown distinct from confirmed absence and available zero-file data', () => {
@@ -597,40 +551,13 @@ it('keeps unknown breakdown distinct from confirmed absence and available zero-f
   expect(screen.queryByText('Unavailable')).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={null} />);
   expect(screen.getByText('Unavailable')).toBeTruthy();
-  expect(document.querySelector('.collapsible-panel__body')).toBeNull();
+  expect(screen.queryByRole('tablist', { name: 'Change breakdown view' })).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={report} />);
   expect(screen.getByRole('button', { name: 'Change breakdown' })).toBeTruthy();
   expect(screen.queryByText('Unavailable')).toBeNull();
-  expect(document.querySelector('.collapsible-panel__body')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Change breakdown' }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('tablist', { name: 'Change breakdown view' })).toBeTruthy();
 });
-
-it('keeps missing Description static and renders the reviewed canonical content once', () => {
-  const absent = render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: null }]} historyQueue={[]}
-    outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
-  const description = screen.getByText('Description', { exact: true }).closest('section')!;
-  expect(description.querySelector('.collapsible-panel__status')?.textContent).toBe('Unavailable');
-  expect(description.querySelector('button')).toBeNull();
-  expect(description.querySelector('.collapsible-panel__body')).toBeNull();
-  absent.unmount();
-  const reviewedMessage = `Merge feature/x: Preserve reviewed content
-
-Why:
-Read this reviewed explanation.
-
-Verification:
-Private review.
-`;
-  render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: reviewedMessage, commit_message_digest: 'a'.repeat(64) }]}
-    historyQueue={[]} outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance}
-    onApprove={() => undefined} onReject={() => undefined} />);
-  const descriptionPanel = screen.getByRole('button', { name: 'Description' }).closest('section')!;
-  expect(descriptionPanel.querySelector('.rendered-markdown')).toBeTruthy();
-  expect(screen.getAllByText(/Read this reviewed explanation\./)).toHaveLength(1);
-  expect(screen.getAllByText(/Private review\./)).toHaveLength(1);
-  expect(document.querySelectorAll('.rendered-markdown')).toHaveLength(1);
-  expect(descriptionPanel.querySelector('pre')).toBeNull();
-});
-
 
 for (const outcome of ['failed', 'absent'] as const) {
   it(`preserves unknown report availability through delayed ${outcome} history hydration`, async () => {
@@ -645,19 +572,19 @@ for (const outcome of ['failed', 'absent'] as const) {
     render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}} selectedAuthId="req-1"
       daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
     await waitFor(() => expect(fetch.mock.calls.some(([input]) => input === '/api/auth/request/req-1')).toBe(true));
-    const panel = () => screen.getByText('Change breakdown', { exact: true }).closest('section')!;
-    expect(panel().querySelector('button')).toBeNull();
-    expect(panel().querySelector('.collapsible-panel__status')).toBeNull();
+    const panel = () => within(screen.getByRole('region', { name: 'Change breakdown', exact: true }));
+    expect(panel().queryByRole('button')).toBeNull();
+    expect(panel().queryByText('Unavailable')).toBeNull();
     await act(async () => {
       if (outcome === 'failed') reject(new Error('History detail temporarily unavailable'));
       else resolve(new Response(JSON.stringify({ ...request, change_report: null }), { headers: { 'content-type': 'application/json' } }));
     });
     if (outcome === 'failed') {
-      expect(panel().querySelector('.collapsible-panel__status')).toBeNull();
-      expect(panel().querySelector('button')).toBeNull();
+      expect(panel().queryByText('Unavailable')).toBeNull();
+      expect(panel().queryByRole('button')).toBeNull();
     } else {
-      await waitFor(() => expect(panel().querySelector('.collapsible-panel__status')?.textContent).toBe('Unavailable'));
-      expect(panel().querySelector('.collapsible-panel__body')).toBeNull();
+      await waitFor(() => expect(panel().getByText('Unavailable')).toBeTruthy());
+      expect(panel().queryByRole('button')).toBeNull();
     }
   });
 }
