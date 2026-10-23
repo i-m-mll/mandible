@@ -39,3 +39,26 @@
   outline: 1px dashed currentColor;
   outline-offset: -1px;
 }
+
+.issue-reference-row {
+  display: flex;
+  min-height: 24px;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.issue-reference-row > .issue-pill__title {
+  max-width: none;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.issue-reference-row:hover > .issue-pill__title {
+  text-decoration: underline;
+}

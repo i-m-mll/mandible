@@ -22,6 +22,7 @@ export type ToolCallActivity = {
   result: ToolResultContentBlock | null;
   turnId?: string;
   sessionId: string;
+  executionActive?: boolean;
   sourceIdentity?: {
     provider: string;
     sessionId: string;
@@ -56,6 +57,7 @@ export type PersistedBlockSource = {
 export type TextContentBlock = {
   type: 'text';
   text: string;
+  contentKey?: string;
   sourceIdentity?: {
     provider: string;
     sessionId: string;
@@ -66,12 +68,14 @@ export type TextContentBlock = {
 
 export type ThinkingContentBlock = {
   type: 'thinking';
+  contentKey?: string;
   thinking: string;
   source?: PersistedBlockSource;
 };
 
 export type PlanContentBlock = {
   type: 'plan';
+  contentKey?: string;
   text: string;
   source?: PersistedBlockSource;
 };
@@ -82,6 +86,8 @@ export type ToolUseContentBlock = {
   name: string;
   toolKind?: string;
   input: Record<string, unknown> | string;
+  contentKey?: string;
+  executionActive?: boolean;
   sourceIdentity?: {
     provider: string;
     sessionId: string;
@@ -124,6 +130,10 @@ export type CanonicalChatItemEvent = {
   type: 'chat:item';
   item: ChatItem;
   source?: PersistedBlockSource;
+  displayKey?: string;
+  intentId?: string;
+  executionActive?: boolean;
+  persistencePending?: boolean;
 };
 
 export type SystemInitEvent = {
@@ -267,7 +277,7 @@ export type RenderNodeActivity = {
   source?: PersistedBlockSource;
 };
 
-export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult | RenderNodeActivity;
+export type RenderNode = { kind: 'transcript_boundary'; key: string; entity: 'system' } | RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult | RenderNodeActivity;
 
 export type DisplayGroupMeta = {
   totalTokens?: number;

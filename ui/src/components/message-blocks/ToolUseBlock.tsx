@@ -34,6 +34,8 @@ export type ToolUseBlockProps = {
   onExpandedChange?: (expanded: boolean) => void;
   compact?: boolean;
   statusEmoji?: string;
+  active?: boolean;
+  detailsAvailable?: boolean;
   resultSelected?: boolean;
   selectMode?: boolean;
   onToggleResultSelect?: (shiftKey: boolean) => void;
@@ -235,6 +237,8 @@ export function ToolCard({
   onExpandedChange,
   compact,
   statusEmoji,
+  active = false,
+  detailsAvailable = false,
   resultSelected,
   selectMode,
   onToggleResultSelect,
@@ -261,6 +265,9 @@ export function ToolCard({
   }, [editLike, inputObj]);
 
   function renderInputPanel(): JSX.Element {
+    if (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0))) {
+      return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
+    }
     if (editLike) {
       return (
         <OverflowFade lines={10}>
@@ -316,7 +323,7 @@ export function ToolCard({
 
   return (
     <div
-      className={`tool-card${compact ? ' tool-card--compact' : ''}`}
+      className={`tool-card${active ? ' tool-card--active' : ''}${compact ? ' tool-card--compact' : ''}`}
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}

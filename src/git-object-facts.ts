@@ -9,16 +9,16 @@
  * Only definitive answers are remembered. A failure is asked again, because a
  * missing object can arrive later and a timed-out child said nothing.
  */
-import { execFileSync } from "node:child_process";
+import { childOutput } from "./child-observation.js";
 import { createHash } from "node:crypto";
 
 const MAX_FACTS = 16_384;
 const facts = new Map<string, unknown>();
 
 /** Remember `ask`'s value under `key` when it reports the value as definitive. */
-export function rememberedObjectFact<T>(key: string, ask: () => { value: T; definitive: boolean }): T {
+export async function rememberedObjectFact<T>(key: string, ask: () => Promise<{ value: T; definitive: boolean }>): Promise<T> {
   if (facts.has(key)) return facts.get(key) as T;
-  const { value, definitive } = ask();
+  const { value, definitive } = await ask();
   if (definitive) {
     if (facts.size >= MAX_FACTS) facts.delete(facts.keys().next().value!);
     facts.set(key, value);
@@ -34,16 +34,16 @@ const QUESTION_WORDS = new Set(["cat-file", "-t", "rev-parse", "--verify", "show
  * trimmed stdout, remembering a successful answer. Throws as `execFileSync`
  * does. Naming a ref or any other mutable revision is a programming error.
  */
-export function gitObjectAnswer(cwd: string, args: readonly string[], options: { env: NodeJS.ProcessEnv; timeout: number }): string {
+export async function gitObjectAnswer(cwd: string, args: readonly string[], options: { env: NodeJS.ProcessEnv; timeout: number }): Promise<string> {
   for (const arg of args) {
     if (!QUESTION_WORDS.has(arg) && !OBJECT_EXPRESSION.test(arg)) {
       throw new Error(`Git object question names a mutable revision or unknown option: ${arg}`);
     }
   }
-  return rememberedObjectFact(`git\0${cwd}\0${args.join("\0")}`, () => ({
-    value: execFileSync("git", args, { cwd, env: options.env, timeout: options.timeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(),
+  return (await rememberedObjectFact(`git\0${cwd}\0${args.join("\0")}`, async () => ({
+    value: (await childOutput("git", args, { cwd, env: options.env, timeout: options.timeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })).trim(),
     definitive: true,
-  }));
+  })));
 }
 
 export interface GitCommitFacts {
@@ -53,17 +53,17 @@ export interface GitCommitFacts {
 }
 
 /** Read immutable commit fields, without allowing mutable revision expressions. */
-export function gitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): GitCommitFacts {
-  return rememberedObjectFact(`commit\0${cwd}\0${oid}`, () => ({ value: readGitCommitFacts(cwd, oid, options), definitive: true }));
+export async function gitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): Promise<GitCommitFacts> {
+  return (await rememberedObjectFact(`commit\0${cwd}\0${oid}`, async () => ({ value: (await readGitCommitFacts(cwd, oid, options)), definitive: true })));
 }
 
 /** Observe the original object's bytes anew at a consequential security boundary. */
-export function readGitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): GitCommitFacts {
+export async function readGitCommitFacts(cwd: string, oid: string, options: { env: NodeJS.ProcessEnv; timeout: number }): Promise<GitCommitFacts> {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid)) throw new Error("Commit facts require a full object id.");
-  const output = execFileSync("git", ["--no-replace-objects", "cat-file", "--batch"], {
+  const output = (await childOutput("git", ["--no-replace-objects", "cat-file", "--batch"], {
     cwd, env: options.env, timeout: options.timeout, input: `${oid}\n`, maxBuffer: 16 * 1024 * 1024,
     stdio: ["pipe", "pipe", "pipe"],
-  });
+  }));
   const headerEnd = output.indexOf(10);
   const header = output.subarray(0, headerEnd).toString("ascii");
   const match = /^([0-9a-f]{40}|[0-9a-f]{64}) commit ([0-9]+)$/.exec(header);
@@ -83,9 +83,9 @@ export function readGitCommitFacts(cwd: string, oid: string, options: { env: Nod
   const encoding = fields.find(line => line.startsWith("encoding "))?.slice(9);
   // Git, rather than a second encoding implementation, converts legacy commit messages.
   const message = encoding && !/^utf-?8$/i.test(encoding)
-    ? execFileSync("git", ["--no-replace-objects", "show", "-s", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "--format=%B", oid], {
+    ? (await childOutput("git", ["--no-replace-objects", "show", "-s", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "--format=%B", oid], {
       cwd, env: options.env, timeout: options.timeout, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-    }).trim()
+    })).trim()
     : body.subarray(separator + 2).toString("utf8").trim();
   return Object.freeze({ tree, parents: Object.freeze(parents), message });
 }

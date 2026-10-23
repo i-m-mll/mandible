@@ -3,6 +3,7 @@ import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { preserveLegacyDocuments } from "./spaces/history.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
+import { CONVERSATION_IDENTITY_SCHEMA_SQL, reconcileConversationIdentities, validateConversationIdentitySchema } from './conversations/identity.js';
 import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
 import { recoverArtifactCustody } from './artifact-recovery.js';
 import { retainArtifactCommit } from './artifact-commit-source.js';
@@ -12,6 +13,7 @@ import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
@@ -44,10 +46,20 @@ const SCHEMA_VERSION_KEY = "schema_version";
 
 // Historical migration 170 admitted one user-scoped Chat view preference. Keep
 // its exact intermediate schema here: migrations are a byte-for-byte history,
-// while USER_SETTINGS_SCHEMA_SQL is the current baseline used by migration 171.
+// while v172 removes that preference and v208 adds managed Chat defaults.
 const USER_SETTINGS_V170_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'chat_bottom_shelf')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`;
+
+// Freeze v172's admitted keys independently of the current fresh baseline.
+const USER_SETTINGS_V172_SCHEMA_SQL = `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),
         value TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision >= 1),
         updated_at INTEGER NOT NULL,
@@ -794,7 +806,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "remove_chat_bottom_shelf_user_setting",
     statements: [
       "ALTER TABLE user_settings RENAME TO user_settings_v171",
-      USER_SETTINGS_SCHEMA_SQL,
+      USER_SETTINGS_V172_SCHEMA_SQL,
       `INSERT INTO settings (key, value, updated_at)
        SELECT 'chat_entity_link_action', json_extract(legacy.value, '$.clickAction'), legacy.updated_at
          FROM user_settings_v171 legacy
@@ -2112,6 +2124,14 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "worker_thread_archives",
     statements: [...WORKER_THREAD_ARCHIVES_SCHEMA_SQL],
   },
+  { version: 208, name: "managed_chat_user_defaults", statements: [
+    "ALTER TABLE user_settings RENAME TO user_settings_v207",
+    USER_SETTINGS_SCHEMA_SQL,
+    "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v207",
+    "DROP TABLE user_settings_v207",
+  ] },
+  { version: 209, name: "durable_chat_identity_aliases", statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
+  { version: 210, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
 ];
 
 /**
@@ -2213,6 +2233,24 @@ function getSchemaVersion(db: Db): number {
  * rebuilding or discarding preview-only Chat state.
  */
 function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
+  if (found === 194) {
+    const preference = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'user_settings'")
+      .get() as { sql: string } | undefined;
+    const defaults = preference?.sql.includes("'managed_chat_defaults'") ?? false;
+    const aliases = validateConversationIdentitySchema(db);
+    if (defaults || aliases) {
+      const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+      if (!defaults || !aliases || normalize(preference!.sql) !== normalize(USER_SETTINGS_SCHEMA_SQL)) {
+        throw new Error('Unrecognized October Chat v194 migration collision');
+      }
+      db.transaction(() => {
+        for (const migration of MIGRATIONS.filter(item => item.version === 193 || item.version === 194)) {
+          for (const statement of migration.statements) db.exec(statement);
+        }
+      })();
+    }
+    return found;
+  }
   if (found !== 177) return found;
   const archiveState = db.prepare(
     "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_archive_states'",
@@ -2238,6 +2276,29 @@ function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
   return 178;
 }
 
+/** Reconcile the exact v208 execution lineage authored by afe677c. */
+function reconcileExecutionSchemaCollision(db: Db, found: number, through: number): number {
+  if (found !== 208) return found;
+  const objects = db.prepare("SELECT name, sql FROM sqlite_schema WHERE tbl_name = 'provider_session_execution' AND name NOT LIKE 'sqlite_%'")
+    .all() as { name: string; sql: string }[];
+  if (objects.length === 0) return found;
+  const preferences = db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'user_settings'").get() as { sql: string } | undefined;
+  const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+  if (objects.length !== 1 || objects[0].name !== 'provider_session_execution'
+      || normalize(objects[0].sql) !== normalize(SESSION_EXECUTION_SCHEMA_SQL)
+      || !preferences || normalize(preferences.sql) !== normalize(USER_SETTINGS_V172_SCHEMA_SQL)
+      || validateConversationIdentitySchema(db)) {
+    throw new Error('Unrecognized provider execution v208 migration collision');
+  }
+  if (through < 210) throw new Error('The provider execution v208 lineage must converge through v210');
+  db.transaction(() => {
+    applySchemaMigrations(db, MIGRATIONS.filter(item => item.version === 208 || item.version === 209));
+    // The exact validated execution table already implements canonical v210.
+    db.prepare("UPDATE meta SET value = '210' WHERE key = ?").run(SCHEMA_VERSION_KEY);
+  })();
+  return 210;
+}
+
 function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   if (migrations.length === 0) return;
   const setVersion = db.prepare(
@@ -2250,7 +2311,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     normal = [];
     db.transaction(() => {
       for (const migration of group) {
-        for (const statement of migration.statements) db.exec(statement);
+        if (migration.version !== 209 || !validateConversationIdentitySchema(db)) {
+          for (const statement of migration.statements) db.exec(statement);
+        }
         if (migration.version === 190) preserveLegacyDocuments(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
@@ -2326,6 +2389,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
   }
 
+  found = reconcileExecutionSchemaCollision(db, found, through);
   found = reconcileCollidedChatPreviewSchema(db, found);
 
   if (found < 185 && through >= 185) {
@@ -2349,4 +2413,5 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     }
   }
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found && migration.version <= through));
+  if (through >= 209) reconcileConversationIdentities(db);
 }

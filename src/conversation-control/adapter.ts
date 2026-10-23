@@ -49,9 +49,12 @@ export interface ConversationControllerAdapter {
     controller_instance_id: string;
     generation: number;
   }): Promise<Result<void, ConversationControlError>>;
-  interrupt?(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>>;
+  interrupt?(input: { conversation_id: string; generation: number; turn_id?: string }): Promise<Result<void, ConversationControlError>>;
+  runtimeSettings?(conversationId: string, generation: number): import("./types.js").NativeRuntimeSettings | null;
+  applyRuntimeSettings?(input: { conversation_id: string; generation: number; runtime_options: ConversationRuntimeOptions }): Promise<Result<void, ConversationControlError>>;
+  modelChoices?(conversationId: string): Promise<Result<{ value: string; label: string }[], ConversationControlError>>;
   permissions?(conversationId: string): ManagedPermissionRequest[];
-  decidePermission?(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>>;
+  decidePermission?(input: import("./types.js").ManagedRequestResponse): Promise<Result<void, ConversationControlError>>;
   subscribe(listener: (event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>): () => void;
   subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void;
   subscribeRuntimeEvents?(listener: (event: ProviderRuntimeEvent) => void): () => void;

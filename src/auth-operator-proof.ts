@@ -1,4 +1,5 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { observeChild } from "./child-observation.js";
 import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -35,7 +36,7 @@ export async function signOperatorChallenge(
   signal?: AbortSignal,
 ): Promise<OperatorProofResult> {
   const gitEnv = operatorGitEnv();
-  const config = spawnSync("git", ["config", "--get", "user.signingkey"], {
+  const config = await observeChild("git", ["config", "--get", "user.signingkey"], {
     cwd: cwd ?? undefined, encoding: "utf8", timeout: 5_000,
     env: gitEnv,
   });
@@ -44,7 +45,7 @@ export async function signOperatorChallenge(
   if (!key || allowedSigners.length === 0) {
     return { ok: false, reason: "missing_key", detail: "Configure and register the operator signing key before approving." };
   }
-  const signerConfig = spawnSync("git", ["config", "--includes", "--null", "--show-scope", "--get-all", "gpg.ssh.program"], {
+  const signerConfig = await observeChild("git", ["config", "--includes", "--null", "--show-scope", "--get-all", "gpg.ssh.program"], {
     cwd: cwd ?? undefined, encoding: "utf8", timeout: 5_000, env: gitEnv,
   });
   if (signerConfig.status !== 0 && signerConfig.status !== 1) {
@@ -95,7 +96,7 @@ export async function signOperatorChallenge(
     writeFileSync(allowedPath, allowedSigners.join("\n") + "\n", { mode: 0o600 });
     for (const line of allowedSigners) {
       const credentialId = line.split(" ")[0]!;
-      const verified = spawnSync("/usr/bin/ssh-keygen", ["-Y", "verify", "-n", "mandible-auth", "-f", allowedPath, "-I", credentialId, "-s", signaturePath], {
+      const verified = await observeChild("/usr/bin/ssh-keygen", ["-Y", "verify", "-n", "mandible-auth", "-f", allowedPath, "-I", credentialId, "-s", signaturePath], {
         input: challenge, encoding: "utf8", timeout: 5_000,
       });
       if (verified.status === 0) return { ok: true, credentialId, signature: signed.signature };

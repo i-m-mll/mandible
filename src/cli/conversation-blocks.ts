@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseCommand, commandHelp, stringOption, numberOption, flagOption } from "./grammar.js";
 import SqliteDatabase from "../sqlite.js";
+import { resolveConversationId } from '../conversations/identity.js';
 import { getParserForFile } from "../parsers/index.js";
 import { getParserCapability, PARSER_CAPABILITIES } from "../parsers/capabilities.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
@@ -87,12 +88,13 @@ async function runLogs(args: CliArgs): Promise<void> {
 
 async function runConversations(args: CliArgs): Promise<void> {
   const dbPath = args.positional[0];
-  const ident = args.positional[1];
+  let ident = args.positional[1];
   if (!dbPath || !ident) throw new Error("missing database path or conversation id");
   const db = new SqliteDatabase(dbPath, { readonly: true });
   db.pragma("busy_timeout = 5000");
   db.pragma("query_only = ON");
   try {
+    ident = resolveConversationId(db, ident);
     const conversations = db.prepare(`
       SELECT * FROM conversations
       WHERE id = ? OR session_id = ?

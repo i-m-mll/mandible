@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
-import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
+import { cleanup, fireEvent, render, renderHook, act, screen, waitFor, within } from './helpers/dom.js';
 import { QueryClientProvider } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +17,7 @@ import type {
 import { ConversationsView, getConversationTitle } from '../ui/src/views/conversations.js';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../ui/src/state.js';
+import { useChatProjectDisclosure } from '../ui/src/views/chat-project-disclosure';
 import { reconcileShownProjects } from '../ui/src/views/conversation-view-state.js';
 import { queryClient } from '../ui/src/query/client.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
@@ -47,6 +48,7 @@ beforeEach(async () => {
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
   vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
+  window.sessionStorage.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
     unobserve(): void {}
@@ -208,6 +210,7 @@ describe('conversation sidebar groups', () => {
     ['codex', 'project', 'return'],
     ['claude_code', 'project', 'click'],
   ] as const)('keeps one accepted %s %s identity through readiness and its immediate first submit', async (provider, placementKind, submitKind) => {
+    const settingsTransport = globalThis.fetch;
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
     const sseFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === '/api/client-auth/whoami') {
@@ -216,6 +219,7 @@ describe('conversation sidebar groups', () => {
           effect_ceiling: ['ledger:read'],
         } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
+      if (!String(input).includes('/api/events/subscribe')) return settingsTransport(input, init);
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           streamController = controller;
@@ -280,6 +284,7 @@ describe('conversation sidebar groups', () => {
       kind: 'accepted', delivery_id: `delivery-${id}`, turn_id: `turn-${id}`, snapshot: readyControl,
     });
     const onNewConversation = vi.fn().mockResolvedValue({ conversation_id: id, spawn: spawnReceipt(id, provider, placement) });
+    if (placementKind === 'project') window.sessionStorage.setItem('mandible.chat.expandedProjects:v1', JSON.stringify(['prj-mandible']));
     renderView([], onNewConversation, null, 5);
 
     const newChat = placementKind === 'project'
@@ -312,6 +317,29 @@ describe('conversation sidebar groups', () => {
       [],
     );
     expect(composer.value).toBe('');
+    if (provider === 'codex' && placementKind === 'projectless') {
+      let releaseSave!: () => void;
+      let saving = false;
+      const transport = globalThis.fetch;
+      vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+        if (String(path).endsWith('/control/settings') && init?.method === 'PATCH') {
+          saving = true;
+          await new Promise<void>((resolve) => { releaseSave = resolve; });
+        }
+        return transport(path, init);
+      }));
+      const effort = await screen.findByRole('button', { name: 'Thinking effort' });
+      await waitFor(() => expect(effort.hasAttribute('disabled')).toBe(false));
+      fireEvent.click(effort);
+      fireEvent.click(screen.getByRole('option', { name: 'high', exact: true }));
+      fireEvent.input(composer, { target: { value: 'Use the new effort.' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      await waitFor(() => expect(saving).toBe(true));
+      expect(submit).toHaveBeenCalledTimes(1);
+      await act(async () => releaseSave());
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+      expect(submit).toHaveBeenLastCalledWith(expect.any(Object), 'Use the new effort.', undefined, {}, expect.any(String), []);
+    }
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {
@@ -362,6 +390,7 @@ describe('conversation sidebar groups', () => {
         })],
       };
     });
+    window.sessionStorage.setItem('mandible.chat.expandedProjects:v1', JSON.stringify(['prj-mandible']));
     renderView();
     await screen.findByRole('button', { name: 'Open conversation Project one' });
     await waitFor(() => expect(requests).toContainEqual(expect.objectContaining({
@@ -385,10 +414,10 @@ describe('conversation sidebar groups', () => {
       shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
     }));
     const request = vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
-      if (params.group_key === 'opaque:pinned') {
-        return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
+      if (params.group_key === 'opaque:chats') {
+        return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
       }
-      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
+      return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
     });
     renderView();
     await vi.advanceTimersByTimeAsync(350);
@@ -396,13 +425,13 @@ describe('conversation sidebar groups', () => {
     await waitFor(() => expect(first.getAttribute('aria-current')).toBe('true'));
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy());
-    const heading = screen.getByRole('button', { name: /^Pinned/ });
+    const heading = screen.getByRole('button', { name: /^Chats/ });
     fireEvent.click(heading);
 
     fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Pinned' } });
     await vi.advanceTimersByTimeAsync(350);
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
-      group_key: 'opaque:pinned', cursor: 'pin-cursor', search: 'Pinned', limit: 1,
+      group_key: 'opaque:chats', cursor: 'pin-cursor', search: 'Pinned', limit: 1,
       project_ids: ['prj-mandible'],
     })));
     expect(heading.getAttribute('aria-expanded')).toBe('false');
@@ -417,9 +446,9 @@ describe('conversation sidebar groups', () => {
     vi.stubGlobal('EventSource', FakeEventSource);
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
       if (params.group_key) {
-        return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
+        return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
       }
-      return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
+      return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
     });
     renderView();
     await screen.findByRole('button', { name: 'Open conversation Pinned one' });
@@ -478,6 +507,7 @@ describe('conversation sidebar groups', () => {
         backend_type: 'acp', transport_lane: 'acp',
       },
     ];
+    window.sessionStorage.setItem('mandible.chat.expandedProjects:v1', JSON.stringify(['prj-mandible']));
     renderView(sessions, vi.fn(), null, 5);
 
     const projectSection = (await screen.findByRole('button', { name: /^Mandible/ })).closest('section') as HTMLElement;
@@ -500,4 +530,27 @@ describe('conversation sidebar groups', () => {
     await waitFor(() => expect(window.location.hash).toContain('conversation=indexed-reserved'));
     expect(within(chatsSection).getByRole('button', { name: 'Open session Unscoped chat' })).toBeTruthy();
   });
+});
+
+it('starts folders folded, preserves independent choices on remount, and resets in a new session', () => {
+  let view = renderHook(useChatProjectDisclosure);
+  expect(view.result.current[0].has('project-a')).toBe(false);
+  expect(view.result.current[0].has('project-b')).toBe(false);
+  act(() => view.result.current[1]('project-a'));
+  view.rerender(); // Chat selection or data reconciliation does not reset disclosure.
+  expect(view.result.current[0].has('project-a')).toBe(true);
+  expect(view.result.current[0].has('project-b')).toBe(false);
+  view.unmount();
+  view = renderHook(useChatProjectDisclosure);
+  expect(view.result.current[0].has('project-a')).toBe(true);
+  act(() => view.result.current[1]('project-a'));
+  act(() => view.result.current[1]('project-b'));
+  view.unmount();
+  view = renderHook(useChatProjectDisclosure);
+  expect(view.result.current[0].has('project-a')).toBe(false);
+  expect(view.result.current[0].has('project-b')).toBe(true);
+  view.unmount();
+  window.sessionStorage.clear();
+  view = renderHook(useChatProjectDisclosure);
+  expect([...view.result.current[0]]).toEqual([]);
 });

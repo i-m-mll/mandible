@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   DiffView,
   type DiffViewClassNames,
   type DiffViewMode,
+  type DiffTargetReady,
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
@@ -23,7 +25,8 @@ import { DiffIcon, InfoIcon, TerminalIcon } from '../components/icons/TabIcons';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { usePersistedScrollPosition } from '../hooks/usePersistedScrollPosition';
+import { readPersistedViewState, writePersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   fetchAuthHooks,
@@ -54,6 +57,8 @@ import {
   type ProtectedBaseAudit,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
+import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
+import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
@@ -98,6 +103,7 @@ export type AuthRequest = {
   files_changed?: number;
   additions?: number;
   deletions?: number;
+  /** The authored Description, using its historical signed-record key. */
   commit_message?: string;
   // Issue 7d64d8f — present when commit_message is the agent-authored
   // canonical change message the merge will commit verbatim.
@@ -165,6 +171,8 @@ export type AuthQueueViewProps = {
   selectedAuthId?: string | null;
   /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
   initialRequestId?: string;
+  reviewRouteParams?: Record<string, string>;
+  reviewRouteActive?: boolean;
   sidebarHidden?: boolean;
   /**
    * Bug: 645f8a8 — daemon readiness gate. When false (daemon is rebuilding /
@@ -180,7 +188,6 @@ export type AuthQueueViewProps = {
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
-  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
   retainFinalizedSelection?: boolean;
@@ -188,6 +195,20 @@ export type AuthQueueViewProps = {
 
 function getAuthId(request: AuthRequest): string {
   return request.id || request.request_id || '';
+}
+
+type AuthBodyProjection = Pick<AuthRequest, 'diff_summary' | 'spec_content' | 'output' | 'change_report' | 'actions'>;
+
+function retainKnownAuthBody(request: AuthRequest, known?: AuthBodyProjection): AuthRequest {
+  if (!known) return request;
+  return {
+    ...request,
+    diff_summary: request.diff_summary === undefined ? known.diff_summary : request.diff_summary,
+    spec_content: request.spec_content === undefined ? known.spec_content : request.spec_content,
+    output: request.output === undefined ? known.output : request.output,
+    change_report: request.change_report === undefined ? known.change_report : request.change_report,
+    actions: request.actions === undefined ? known.actions : request.actions,
+  };
 }
 
 function getAuthTitle(request: AuthRequest): string {
@@ -441,6 +462,12 @@ function getActionCount(request: AuthRequest): number {
     : 0;
 }
 
+function getInlineActionList(request: AuthRequest): AuthRequestAction[] | undefined {
+  if (!Array.isArray(request.actions)) return undefined;
+  if (request.actions.length === 0 && typeof request.action_count === 'number' && request.action_count > 0) return undefined;
+  return request.actions;
+}
+
 function formatActionKind(kind: AuthRequestAction['kind']): string {
   switch (kind) {
     case 'comment_add': return 'Comment';
@@ -498,7 +525,7 @@ function actionPayloadSummary(action: AuthRequestAction): string {
 function actionStateLabel(state: AuthRequestAction['state']): string {
   switch (state) {
     case 'staged': return 'Staged';
-    case 'applied': return 'Applied';
+    case 'applied': return 'Done';
     case 'failed': return 'Failed';
     case 'skipped_stale': return 'Skipped stale';
     case 'vetoed': return 'Vetoed';
@@ -524,12 +551,16 @@ function AuthActionBundle({
   inFlightActionIds,
   instance,
   onToggleVeto,
+  viewStateRef,
+  initialViewState,
 }: {
   request: AuthRequest;
-  actions: AuthRequestAction[];
+  actions?: AuthRequestAction[];
   inFlightActionIds: Set<string>;
   instance?: InstanceInfo | null;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
+  viewStateRef?: RefObject<AuthActionViewState>;
+  initialViewState?: AuthActionViewState;
 }): JSX.Element | null {
   const requestId = getAuthId(request);
   const repoId = request.repo ?? '';
@@ -537,12 +568,25 @@ function AuthActionBundle({
     `auth-action-expanded:${requestId}`,
     normalizeExpandedActionIds,
     DEFAULT_EXPANDED_ACTION_IDS,
+    initialViewState?.actionIds,
   );
+  const [bundleExpanded, setBundleExpanded] = usePersistedViewState(
+    `auth-action-bundle-expanded:${requestId}`,
+    (value, defaults) => typeof value === 'boolean' ? value : defaults,
+    true,
+    initialViewState?.expanded,
+  );
+  if (viewStateRef) viewStateRef.current = { expanded: bundleExpanded, actionIds: expandedActionIds };
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
+  const actionRows = actions ?? [];
+  const declaredClosures = request.issue_closures ?? request.issues;
+  const unrecordedClosures = actionRows.length === 0 && Array.isArray(declaredClosures)
+    ? uniqueStrings(declaredClosures.filter((ref): ref is string => typeof ref === 'string'))
+    : [];
 
-  if (actions.length === 0) {
+  if (actionRows.length === 0 && unrecordedClosures.length === 0) {
     return null;
   }
 
@@ -556,13 +600,27 @@ function AuthActionBundle({
   };
 
   return (
-    <section className="auth-action-bundle" aria-label="Deferred approval actions">
-      <div className="auth-action-bundle__header">
-        <span className="auth-action-bundle__title">On merge...</span>
-        <span className="auth-action-bundle__count">{actions.length}</span>
-      </div>
+    <CollapsiblePanel
+      title="Actions on merge"
+      expanded={bundleExpanded}
+      onExpandedChange={setBundleExpanded}
+      className="auth-action-bundle"
+    >
       <div className="auth-action-bundle__rows">
-        {actions.map((action) => {
+        {unrecordedClosures.map(ref => (
+          <div key={ref} className="auth-action-row">
+            <div className="auth-action-row__main">
+              <div className="auth-action-row__top">
+                <span className="auth-action-row__kind">Close issue</span>
+                <IssuePill issueRef={ref} context={repoId} layout="row" />
+              </div>
+            </div>
+          </div>
+        ))}
+        {actions !== undefined && unrecordedClosures.length > 0 && (
+          <div className="auth-action-row__summary">No action status recorded.</div>
+        )}
+        {actionRows.map((action) => {
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
@@ -576,30 +634,35 @@ function AuthActionBundle({
               className={`auth-action-row auth-action-row--${action.state}${canExpand ? ' auth-action-row--expandable' : ''}${expanded ? ' auth-action-row--expanded' : ''}`}
               title={action.outcome_detail ?? undefined}
             >
-              {canExpand ? (
-                <button
-                  type="button"
-                  className="auth-action-row__expand"
-                  aria-expanded={expanded}
-                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
-                  onClick={() => toggleExpanded(action.id)}
-                >
-                  <DisclosureChevronIcon expanded={expanded} size={13} />
-                </button>
-              ) : null}
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
-                  <IssuePill issueRef={action.target_issue_ref} context={repoId} />
-                  {action.state !== 'staged' && (
-                    <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
-                      {actionStateLabel(action.state)}
-                    </span>
-                  )}
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="row" />
                 </div>
                 {summary && <div className="auth-action-row__summary">{summary}</div>}
                 {expanded && detail && (
-                  <div className="auth-action-row__detail">{detail}</div>
+                  <div id={`auth-action-detail-${action.id}`} className="auth-action-row__detail">{detail}</div>
+                )}
+              </div>
+              <div className="auth-action-row__controls">
+                <span className="auth-action-row__disclosure">
+                  {canExpand && (
+                    <button
+                      type="button"
+                      className="auth-action-row__expand"
+                      aria-expanded={expanded}
+                      aria-controls={`auth-action-detail-${action.id}`}
+                      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                      onClick={() => toggleExpanded(action.id)}
+                    >
+                      <DisclosureChevronIcon expanded={expanded} size={13} />
+                    </button>
+                  )}
+                </span>
+                {action.state !== 'staged' && (
+                  <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
+                    {actionStateLabel(action.state)}
+                  </span>
                 )}
               </div>
               {canToggle && (
@@ -623,7 +686,7 @@ function AuthActionBundle({
           );
         })}
       </div>
-    </section>
+    </CollapsiblePanel>
   );
 }
 
@@ -728,6 +791,25 @@ async function copyAuthText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
+type AuthDescriptionViewState = {
+  descriptionExpanded: boolean;
+  referencesExpanded: boolean;
+};
+
+const DEFAULT_AUTH_DESCRIPTION_VIEW_STATE: AuthDescriptionViewState = {
+  descriptionExpanded: true,
+  referencesExpanded: true,
+};
+
+function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<AuthDescriptionViewState>): AuthDescriptionViewState {
+  const stored = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  return {
+    descriptionExpanded: typeof stored.descriptionExpanded === 'boolean' ? stored.descriptionExpanded : defaults.descriptionExpanded,
+    referencesExpanded: typeof stored.referencesExpanded === 'boolean' ? stored.referencesExpanded : defaults.referencesExpanded,
+  };
+}
+
 function AuthRequestDetail({
   request,
   history,
@@ -737,10 +819,11 @@ function AuthRequestDetail({
   actions,
   executionOutput,
   notice,
-  onUpdateField,
-  mutationsAllowed = true,
   autoShowConsoleOnApproval = true,
   autoReturnToAbstractOnSuccess = true,
+  navigation,
+  restoredInfo,
+  actionViewStateRef,
 }: {
   request: AuthRequest;
   history?: boolean;
@@ -751,18 +834,64 @@ function AuthRequestDetail({
   actions?: JSX.Element | null;
   executionOutput?: string;
   notice?: JSX.Element | null;
-  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
-  mutationsAllowed?: boolean;
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
+  navigation: AuthReviewNavigation;
+  restoredInfo?: AuthInfoSnapshot;
+  actionViewStateRef: RefObject<AuthActionViewState>;
 }): JSX.Element {
-  const [showCommit, setShowCommit] = useState(true);
-  const [showSpec, setShowSpec] = useState(false);
-  const [showDirtyNote, setShowDirtyNote] = useState(true);
-  const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
+  useLayoutEffect(() => {
+    if (!restoredInfo) return;
+    const id = getAuthId(request);
+    writePersistedViewState(authChangeBreakdownStorageKey(id), restoredInfo.breakdown);
+    writePersistedViewState(`auth-description-view:${id}`, restoredInfo.description);
+    writePersistedViewState(`auth-action-expanded:${id}`, restoredInfo.actions.actionIds);
+    writePersistedViewState(`auth-action-bundle-expanded:${id}`, restoredInfo.actions.expanded);
+    for (const [key, position] of Object.entries(restoredInfo.itemOffsets)) writePersistedViewState(key, position);
+  }, [restoredInfo]);
+  const [descriptionView, setDescriptionView] = usePersistedViewState(
+    `auth-description-view:${getAuthId(request)}`,
+    normalizeAuthDescriptionViewState,
+    DEFAULT_AUTH_DESCRIPTION_VIEW_STATE,
+    restoredInfo?.description,
+  );
+  const [showSpec, setShowSpec] = useState(restoredInfo?.showSpec ?? false);
+  const [showDirtyNote, setShowDirtyNote] = useState(restoredInfo?.showDirtyNote ?? true);
+  const [savedViewMode, setSavedViewMode] = usePersistedViewState<'abstract' | 'console' | 'diff'>(
+    `auth-review-tab:${getAuthId(request)}`,
+    (value, defaults) => value === 'abstract' || value === 'console' || value === 'diff' ? value : defaults,
+    autoShowConsoleOnApproval && isAuthExecutingStatus(getAuthStatus(request)) ? 'console' : 'abstract',
+  );
+  const viewMode = navigation.view === 'info' ? 'abstract' : navigation.view ?? savedViewMode;
+  const setViewMode = (view: 'abstract' | 'console' | 'diff') => {
+    setSavedViewMode(view);
+    navigateAuthReviewView(getAuthId(request), view === 'abstract' ? 'info' : view);
+  };
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const targetToken = navigation.file ? `${getAuthId(request)}:${navigation.token}` : undefined;
+  const targetReady = useRef<{ token: string; result: DiffTargetReady } | null>(null);
+  const [unmatchedTarget, setUnmatchedTarget] = useState<string | null>(null);
+  const scrollRestoring = usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`, {
+    initialPosition: viewMode === 'abstract' ? restoredInfo?.outerOffset : undefined,
+    target: viewMode === 'diff' && targetToken ? {
+      token: targetToken,
+      resolve: () => {
+        if (targetReady.current?.token !== targetToken || !bodyRef.current) return null;
+        if (targetReady.current.result.kind === 'unavailable') return 0;
+        return bodyRef.current.scrollTop + targetReady.current.result.element.getBoundingClientRect().top - bodyRef.current.getBoundingClientRect().top - 8;
+      },
+    } : undefined,
+  });
+  useLayoutEffect(() => {
+    const node = bodyRef.current;
+    if (!node || !targetToken || viewMode !== 'diff') return;
+    const update = () => node.style.setProperty('--auth-diff-target-scroll-space', `${Math.max(0, node.clientHeight - 8)}px`);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => { observer.disconnect(); node.style.removeProperty('--auth-diff-target-scroll-space'); };
+  }, [targetToken, viewMode]);
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
-  const [editingCommitMsg, setEditingCommitMsg] = useState(false);
-  const [editCommitValue, setEditCommitValue] = useState('');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -777,9 +906,6 @@ function AuthRequestDetail({
   });
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
-  // Issue 7d64d8f — a digest means these exact bytes are the merge commit
-  // message. It controls editability only; display still uses the shared,
-  // sanitized Markdown pipeline without mutating the stored source bytes.
   const canonicalDigest =
     typeof request.commit_message_digest === 'string' && request.commit_message_digest
       ? request.commit_message_digest
@@ -790,8 +916,8 @@ function AuthRequestDetail({
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
   const { branch: commitBranch, body: commitBody } = useMemo(
-    () => parseBranchTag(commitMsg),
-    [commitMsg],
+    () => isCanonicalMessage ? parseBranchTag(commitMsg) : { branch: null, body: commitMsg },
+    [commitMsg, isCanonicalMessage],
   );
   const commitHtml = useMemo(
     () => commitBody ? linkifyArtifactRefs(renderMarkdown(commitBody)) : '',
@@ -842,15 +968,7 @@ function AuthRequestDetail({
     ]),
     [structuredReferenceIds]
   );
-  const closureRefs = useMemo(
-    () => uniqueStrings([
-      ...(Array.isArray(request.issue_closures) ? request.issue_closures : []),
-      ...(Array.isArray(request.issues) ? request.issues as string[] : []),
-    ]),
-    [request.issue_closures, request.issues]
-  );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
-  const hasLinks = (referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink;
 
   const previousRequestIdRef = useRef<string | null>(null);
   const previousStatusRef = useRef<string | null>(null);
@@ -858,27 +976,41 @@ function AuthRequestDetail({
     const selectionChanged = previousRequestIdRef.current !== fullId;
     const previous = previousStatusRef.current;
 
-    if (selectionChanged) {
-      setViewMode(autoShowConsoleOnApproval && isAuthExecutingStatus(status) ? 'console' : 'abstract');
-    } else if (autoShowConsoleOnApproval && isAuthExecutingStatus(status)
+    if (!navigation.view && !selectionChanged && autoShowConsoleOnApproval && isAuthExecutingStatus(status)
       && (previous === null || !isAuthExecutingStatus(previous))) {
-      setViewMode('console');
+      setSavedViewMode('console');
     }
-    if (autoReturnToAbstractOnSuccess && status === 'completed'
+    if (!navigation.view && !selectionChanged && autoReturnToAbstractOnSuccess && status === 'completed'
       && (request.exit_code == null || request.exit_code === 0)
       && previous !== null && isAuthExecutingStatus(previous)) {
-      setViewMode('abstract');
+      setSavedViewMode('abstract');
     }
 
     previousRequestIdRef.current = fullId;
     previousStatusRef.current = status;
   }, [autoReturnToAbstractOnSuccess, autoShowConsoleOnApproval, fullId, request.exit_code, status]);
 
-  useEffect(() => {
-    if (viewMode === 'console' && consoleEndRef.current) {
+  const previousConsole = useRef<{ key: string; text: string } | null>(null);
+  const consoleKey = `${fullId}:${viewMode}`;
+  const sameConsole = previousConsole.current?.key === consoleKey;
+  const wasRestoringScroll = scrollRestoring.current;
+  const consoleWasAtTail = bodyRef.current
+    ? bodyRef.current.scrollHeight - bodyRef.current.scrollTop - bodyRef.current.clientHeight < 48
+    : true;
+  const hasConsoleReadingPosition = readPersistedViewState<number | null>(
+    `auth-review-scroll:${fullId}:console`,
+    value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null,
+    null,
+  ) !== null;
+  useLayoutEffect(() => {
+    const freshOutput = sameConsole && previousConsole.current?.text !== consoleText;
+    const hydratingSavedConsole = hasConsoleReadingPosition && !previousConsole.current?.text.trim();
+    previousConsole.current = { key: consoleKey, text: consoleText };
+    if (viewMode === 'console' && consoleEndRef.current
+      && ((!sameConsole && !hasConsoleReadingPosition) || (freshOutput && !hydratingSavedConsole && consoleWasAtTail && !wasRestoringScroll && !scrollRestoring.current))) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [viewMode, consoleText]);
+  }, [consoleKey, consoleText]);
 
   const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
@@ -899,10 +1031,6 @@ function AuthRequestDetail({
   // A daemon that predates `merge_signature` sends nothing; absent evidence is
   // "none", never "verified".
   const signatureClaim: MergeSignatureClaim = request.merge_signature ?? { state: 'none' };
-  const hasActionBundle = Boolean(actionBundle);
-  const panelsClass = hasActionBundle
-    ? 'auth-detail__panels auth-detail__panels--with-actions'
-    : 'auth-detail__panels auth-detail__panels--single';
 
   const createdAt = formatMetadataTimestamp(request.created_at ?? null);
   const lastExecutedAt = formatMetadataTimestamp(request.last_executed_at ?? null);
@@ -1009,10 +1137,18 @@ function AuthRequestDetail({
       headerClassName="auth-detail__header"
       headerPrimaryClassName="auth-detail__header-primary"
       subheaderClassName="auth-detail__aux-header"
+      bodyRef={bodyRef}
       bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
       headerRef={headerRef}
       subheader={subheader}
-      notice={notice}
+      notice={<>
+        {notice}
+        {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
+          <DetailPaneNotice severity="warning" density="compact">
+            This request has no captured change matching the selected before/after paths.
+          </DetailPaneNotice>
+        )}
+      </>}
       overlays={overlays}
       header={(
         <DetailPaneHeader
@@ -1119,26 +1255,6 @@ function AuthRequestDetail({
                   )}
                 </div>
               )}
-              {hasLinks && (
-                <div className="auth-detail__links">
-                  {referenceRefs.length > 0 && canIssueLink && (
-                    <span className="auth-card__issue-group">
-                      <span className="auth-card__issue-group-label">References</span>
-                      {referenceRefs.map((ref) => (
-                        <IssuePill key={ref} issueRef={ref} context={repoId} />
-                      ))}
-                    </span>
-                  )}
-                  {closureRefs.length > 0 && canIssueLink && (
-                    <span className="auth-card__issue-group">
-                      <span className="auth-card__issue-group-label">Closes</span>
-                      {closureRefs.map((ref) => (
-                        <IssuePill key={ref} issueRef={ref} context={repoId} />
-                      ))}
-                    </span>
-                  )}
-                </div>
-              )}
             </div>
           )}
         />
@@ -1222,13 +1338,21 @@ function AuthRequestDetail({
         )}
 
         {viewMode === 'diff' ? (
-          <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff">
+          <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff" style={targetToken ? { paddingBottom: 'var(--auth-diff-target-scroll-space, 0px)' } : undefined}>
           <DiffView
             diffText={diffRaw}
+            target={navigation.file && targetToken ? { ...navigation.file, navigationToken: targetToken } : undefined}
+            contentReady={request.diff_summary !== undefined}
+            onTargetReady={(token, result) => {
+              if (token !== targetToken) return;
+              targetReady.current = { token, result };
+              setUnmatchedTarget(result.kind === 'unavailable' ? token : null);
+              scrollRestoring.resolveTarget();
+            }}
             mode={diffMode}
             onModeChange={setDiffMode}
             ariaLabel="Approval request changes"
-            emptyMessage="No diff available for this request."
+            emptyMessage={request.diff_summary === undefined ? null : "No diff available for this request."}
             className="auth-detail__diff-view"
             classNames={AUTH_DIFF_VIEW_CLASS_NAMES}
           />
@@ -1243,73 +1367,29 @@ function AuthRequestDetail({
           </div>
         ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
-          <div className={panelsClass}>
+          <div className="auth-detail__panels collapsible-panel-region--persistent-disclosures">
             <div className="auth-detail__left-col">
               <CollapsiblePanel
-                title="Commit message"
-                expanded={showCommit}
-                onExpandedChange={setShowCommit}
+                title="Description"
+                availability={request.commit_message === undefined ? 'unknown' : commitHtml ? 'available' : 'unavailable'}
+                expanded={descriptionView.descriptionExpanded}
+                onExpandedChange={descriptionExpanded => setDescriptionView(current => ({ ...current, descriptionExpanded }))}
                 bodyClassName="spec-panel"
-                actions={onUpdateField && mutationsAllowed
-                    && (status === 'pending' || (failedLike && !isCanonicalMessage))
-                    && !editingCommitMsg && (
-                    <button
-                      type="button"
-                      className="panel__edit-btn"
-                      onClick={() => {
-                        setEditCommitValue(commitMsg);
-                        setEditingCommitMsg(true);
-                      }}
-                    >
-                      edit
-                    </button>
-                  )}
               >
-                  {editingCommitMsg ? (
-                    <>
-                      <textarea
-                        className="panel__edit-textarea"
-                        aria-label="Commit message"
-                        value={editCommitValue}
-                        onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
-                        disabled={!mutationsAllowed}
-                        rows={8}
-                      />
-                      <div className="panel__edit-actions">
-                        <button
-                          type="button"
-                          className="panel__edit-save"
-                          disabled={!mutationsAllowed}
-                          onClick={() => {
-                            const id = getAuthId(request);
-                            if (id && onUpdateField && mutationsAllowed) {
-                              void onUpdateField(id, 'commit_message', editCommitValue);
-                            }
-                            setEditingCommitMsg(false);
-                          }}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className="panel__edit-cancel"
-                          onClick={() => setEditingCommitMsg(false)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </>
-                  ) : commitHtml ? (
-                    <div
-                      className="rendered-markdown"
-                      dangerouslySetInnerHTML={{ __html: commitHtml }}
-                    />
-                  ) : (
-                    <div className="spec-panel--empty">
-                      No commit message provided. Merge will use git's default message.
-                    </div>
-                  )}
+                <div className="rendered-markdown" dangerouslySetInnerHTML={{ __html: commitHtml }} />
               </CollapsiblePanel>
+              {referenceRefs.length > 0 && canIssueLink && (
+                <CollapsiblePanel
+                  title="References"
+                  expanded={descriptionView.referencesExpanded}
+                  onExpandedChange={referencesExpanded => setDescriptionView(current => ({ ...current, referencesExpanded }))}
+                >
+                  <div className="auth-detail__reference-rows">
+                    {referenceRefs.map(ref => <IssuePill key={ref} issueRef={ref} context={repoId} layout="row" />)}
+                  </div>
+                </CollapsiblePanel>
+              )}
+              {actionBundle}
               {dirtyAction && (
                 <CollapsiblePanel
                   title="Protected-root changes"
@@ -1345,15 +1425,31 @@ function AuthRequestDetail({
               {authType === 'merge' && (
                 <AuthChangeBreakdown
                   requestId={fullId}
-                  report={request.change_report ?? null}
+                  report={request.change_report}
+                  initialState={restoredInfo?.breakdown}
+                  initialOffsets={restoredInfo?.itemOffsets}
+                  onFileActivate={(file, breakdown) => {
+                    const itemOffsets: Record<string, number> = {};
+                    const prefix = `auth-breakdown-scroll:${fullId}:`;
+                    try {
+                      for (let index = 0; index < window.localStorage.length; index += 1) {
+                        const key = window.localStorage.key(index);
+                        if (key?.startsWith(prefix)) itemOffsets[key] = readPersistedViewState(key, value => typeof value === 'number' && value >= 0 ? value : 0, 0);
+                      }
+                    } catch { /* Active owners below remain authoritative when storage is unavailable. */ }
+                    for (const node of bodyRef.current?.querySelectorAll<HTMLElement>('[data-auth-scroll-key]') ?? []) {
+                      const key = node.dataset.authScrollKey;
+                      if (key?.startsWith(prefix)) itemOffsets[key] = node.scrollTop;
+                    }
+                    navigateAuthFile(fullId, { oldPath: file.old_path, newPath: file.new_path }, {
+                      requestId: fullId, breakdown, description: descriptionView,
+                      actions: actionViewStateRef.current ?? { expanded: true, actionIds: [] },
+                      showSpec, showDirtyNote, outerOffset: bodyRef.current?.scrollTop ?? 0, itemOffsets,
+                    });
+                  }}
                 />
               )}
             </div>
-            {hasActionBundle && (
-              <div className="auth-detail__right-col">
-                {actionBundle}
-              </div>
-            )}
           </div>
           </div>
         )}
@@ -1902,12 +1998,13 @@ export function AuthQueueView({
   branchesByRepo,
   selectedAuthId: externalSelectedId,
   initialRequestId,
+  reviewRouteParams = {},
+  reviewRouteActive = true,
   onSelectAuth,
   onNavigateRequest,
   onApprove,
   onReject,
   onRetry,
-  onUpdateField,
   sidebarHidden = false,
   daemonReady = true,
   instance = null,
@@ -1915,6 +2012,8 @@ export function AuthQueueView({
   autoReturnToAbstractOnSuccess = true,
   retainFinalizedSelection = true,
 }: AuthQueueViewProps): JSX.Element {
+  const reviewNavigation = useAuthReviewNavigation(reviewRouteParams, reviewRouteActive);
+  const actionViewStateRef = useRef<AuthActionViewState>({ expanded: true, actionIds: [] });
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -1951,7 +2050,7 @@ export function AuthQueueView({
     diff_summary: string;
     spec_content: string;
     output: string;
-    change_report: AuthChangeReport | null;
+    change_report?: AuthChangeReport | null;
   };
   const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
 
@@ -2668,8 +2767,9 @@ export function AuthQueueView({
   const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
   const selectedFetchFailed = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'error';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
-    if (selectedListRequest) return selectedListRequest;
-    return selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : null;
+    const detail = selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : undefined;
+    if (selectedListRequest) return retainKnownAuthBody(selectedListRequest, detail);
+    return detail ?? null;
   }, [selectedListRequest, selectedFetched]);
 
   // Issue f59b5bd — once a short-prefix selection resolves to a concrete
@@ -2713,7 +2813,7 @@ export function AuthQueueView({
             diff_summary: typeof hydrated.diff_summary === 'string' ? hydrated.diff_summary : '',
             spec_content: typeof hydrated.spec_content === 'string' ? hydrated.spec_content : '',
             output: typeof hydrated.output === 'string' ? hydrated.output : '',
-            change_report: hydrated.change_report ?? null,
+            change_report: hydrated.change_report,
           },
         }));
       })
@@ -2727,14 +2827,14 @@ export function AuthQueueView({
   const selectedRequest = useMemo((): AuthRequest | null => {
     if (!selectedRequestRaw) return null;
     const hydration = hydratedBodies[getAuthId(selectedRequestRaw)];
-    return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
+    return retainKnownAuthBody(selectedRequestRaw, hydration);
   }, [selectedRequestRaw, hydratedBodies]);
 
   useEffect(() => {
     if (!selectedRequest) return;
     const requestId = getAuthId(selectedRequest);
-    const inlineActions = Array.isArray(selectedRequest.actions) ? selectedRequest.actions : [];
-    if (inlineActions.length > 0) {
+    const inlineActions = getInlineActionList(selectedRequest);
+    if (inlineActions !== undefined) {
       // Issue 80ced49: the queue prop's inline actions are a first-paint seed,
       // not an authoritative refresh. This effect re-runs whenever the selected
       // request object is re-derived (body hydration rewrites its identity), and
@@ -2742,10 +2842,6 @@ export function AuthQueueView({
       // veto toggle, silently reverting the user's action. Seed once per request
       // and let the actions refetch below carry real server updates.
       seedActionListForRequest(requestId, inlineActions);
-    }
-    if (getActionCount(selectedRequest) === 0) {
-      setActionListForRequest(requestId, []);
-      return;
     }
     let active = true;
     getAuthRequestActions(requestId)
@@ -3146,10 +3242,16 @@ export function AuthQueueView({
           const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
           const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
           const isHistory = isHistoryStatus(status, exitCode);
-          const requestActions = actionLists.get(id) ?? (Array.isArray(request.actions) ? request.actions : []);
+          const inlineActions = getInlineActionList(request);
+          const requestActions = actionLists.get(id) ?? inlineActions;
           const actionError = actionErrors.get(id) ?? null;
+          const restoredInfo = reviewNavigation.info?.requestId === id ? reviewNavigation.info : undefined;
           return (
             <AuthRequestDetail
+              key={`${id}:${restoredInfo ? reviewNavigation.token : 'current'}`}
+              navigation={reviewNavigation}
+              restoredInfo={restoredInfo}
+              actionViewStateRef={actionViewStateRef}
               request={request}
               history={isHistory}
               failureSummary={failureSummary}
@@ -3184,18 +3286,18 @@ export function AuthQueueView({
                   {actionError.message}
                 </DetailPaneNotice>
               ) : null}
-              actionBundle={requestActions.length > 0 ? (
+              actionBundle={(
                 <AuthActionBundle
                   request={request}
                   actions={requestActions}
                   inFlightActionIds={inFlightActionIds}
                   instance={instance}
                   onToggleVeto={handleToggleActionVeto}
+                  viewStateRef={actionViewStateRef}
+                  initialViewState={restoredInfo?.actions}
                 />
-              ) : undefined}
+              )}
               actions={renderDetailActions(request)}
-              onUpdateField={onUpdateField}
-              mutationsAllowed={canPerformOperation(instance, 'PUT', `/api/auth/request/${encodeURIComponent(id)}`)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />

@@ -62,3 +62,17 @@
   max-height: 500px;
   overflow-y: auto;
 }
+
+.collapsible-panel__title,
+.collapsible-panel__status {
+  color: var(--text-chrome-muted);
+  font: 400 var(--text-md)/1.35 var(--font-sans);
+}
+
+.collapsible-panel__actions {
+  gap: 8px;
+}
+
+.collapsible-panel-region--persistent-disclosures .collapsible-panel__toggle [data-disclosure-chevron] {
+  opacity: 1;
+}

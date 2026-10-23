@@ -1,13 +1,17 @@
 import type { ComponentChildren } from 'preact';
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import { html as diff2htmlHtml } from 'diff2html';
+import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { html as diff2htmlHtml, parse as diff2htmlParse } from 'diff2html';
+import { diffFileKey, parseDiffFileIdentity, type DiffFileIdentity } from './diff-file-identity';
 import { CollapsiblePanel } from './shared/CollapsiblePanel';
 
 export type DiffViewMode = 'split' | 'unified';
+export type DiffTargetReady =
+  | { kind: 'file'; element: HTMLElement }
+  | { kind: 'unavailable' };
 
 type Diff2HtmlOutputFormat = 'side-by-side' | 'line-by-line';
 
-export type UnifiedDiffSection = {
+export type UnifiedDiffSection = DiffFileIdentity & {
   filename: string;
   hunks: string;
   raw: string;
@@ -37,6 +41,9 @@ export type DiffViewProps = {
   initialMode?: DiffViewMode;
   mode?: DiffViewMode;
   onModeChange?: (mode: DiffViewMode) => void;
+  target?: DiffFileIdentity & { navigationToken: string };
+  contentReady?: boolean;
+  onTargetReady?: (token: string, result: DiffTargetReady) => void;
 };
 
 function cx(...values: Array<string | undefined | false>): string {
@@ -65,8 +72,8 @@ export function parseUnifiedDiffSections(raw: string): UnifiedDiffSection[] {
   for (const part of parts) {
     const trimmed = part.trim();
     if (!trimmed) continue;
-    const headerMatch = trimmed.match(/^diff --git a\/(.+?) b\/(.+)/m);
-    const filename = headerMatch ? headerMatch[2] : 'unknown';
+    const identity = parseDiffFileIdentity(trimmed) ?? { oldPath: null, newPath: null };
+    const filename = identity.newPath ?? identity.oldPath ?? 'Changes';
     const lines = trimmed.split('\n').filter((line) => {
       if (line.startsWith('diff --git ')) return false;
       if (line.startsWith('index ')) return false;
@@ -81,7 +88,7 @@ export function parseUnifiedDiffSections(raw: string): UnifiedDiffSection[] {
       if (line.startsWith('rename to')) return false;
       return true;
     });
-    sections.push({ filename, hunks: lines.join('\n'), raw: trimmed });
+    sections.push({ ...identity, filename, hunks: lines.join('\n'), raw: trimmed });
   }
   return sections;
 }
@@ -112,7 +119,9 @@ function getDiffOutputFormat(mode: DiffViewMode): Diff2HtmlOutputFormat {
 function renderDiff2Html(raw: string, mode: DiffViewMode): string | null {
   if (!raw.trim()) return null;
   try {
-    const html = diff2htmlHtml(raw, {
+    const files = diff2htmlParse(raw);
+    if (files.length === 0) return null;
+    const html = diff2htmlHtml(files, {
       outputFormat: getDiffOutputFormat(mode),
       drawFileList: false,
       matching: 'lines',
@@ -132,19 +141,44 @@ export function DiffView({
   initialMode = 'split',
   mode,
   onModeChange,
+  target,
+  contentReady = true,
+  onTargetReady,
 }: DiffViewProps): JSX.Element {
   const sections = useMemo(() => parseUnifiedDiffSections(diffText), [diffText]);
   const [internalMode, setInternalMode] = useState<DiffViewMode>(initialMode);
-  const [expandedFiles, setExpandedFiles] = useState<Set<number>>(() => new Set());
+  const [closedFiles, setClosedFiles] = useState<Set<string>>(() => new Set());
+  const headings = useRef(new Map<string, HTMLElement>());
+  const handledTarget = useRef<{ token: string; kind: DiffTargetReady['kind'] } | null>(null);
+  const targetKey = target ? diffFileKey(target) : null;
   const activeMode = mode ?? internalMode;
   const renderedSections = useMemo(
     () => sections.map((section) => renderDiff2Html(section.raw, activeMode)),
     [sections, activeMode],
   );
 
-  useEffect(() => {
-    setExpandedFiles(new Set(sections.map((_, index) => index)));
-  }, [sections]);
+  useLayoutEffect(() => {
+    if (!target || !contentReady) return;
+    const kind = sections.some(section => diffFileKey(section) === targetKey) ? 'file' : 'unavailable';
+    if (handledTarget.current?.token === target.navigationToken && handledTarget.current.kind === kind) return;
+    if (kind === 'unavailable') {
+      handledTarget.current = { token: target.navigationToken, kind };
+      onTargetReady?.(target.navigationToken, { kind });
+      return;
+    }
+    if (closedFiles.has(targetKey!)) {
+      setClosedFiles(previous => {
+        const next = new Set(previous);
+        next.delete(targetKey!);
+        return next;
+      });
+      return;
+    }
+    const heading = headings.current.get(targetKey!);
+    if (!heading) return;
+    handledTarget.current = { token: target.navigationToken, kind };
+    onTargetReady?.(target.navigationToken, { kind: 'file', element: heading.closest('button') ?? heading });
+  }, [target?.navigationToken, targetKey, contentReady, sections, closedFiles]);
 
   const setMode = (nextMode: DiffViewMode) => {
     if (mode === undefined) {
@@ -153,11 +187,11 @@ export function DiffView({
     onModeChange?.(nextMode);
   };
 
-  const toggleFile = (index: number) => {
-    setExpandedFiles((prev) => {
+  const toggleFile = (key: string) => {
+    setClosedFiles((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -205,16 +239,18 @@ export function DiffView({
             </div>
           </div>
           {sections.map((section, index) => {
-            const expanded = expandedFiles.has(index);
+            const key = diffFileKey(section);
+            const expanded = !closedFiles.has(key);
             const diffHtml = renderedSections[index];
             return (
               <CollapsiblePanel
-                key={`${section.filename}-${index}`}
+                key={key}
                 className={cx('diff-viewer__file', classNames?.file)}
                 toggleClassName={cx('diff-viewer__file-header', classNames?.fileHeader)}
                 bodyClassName={cx('diff-viewer__file-body', classNames?.fileBody)}
                 title={(
                   <span
+                    ref={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}
                     className={cx('diff-viewer__file-path', classNames?.filePath)}
                     title={section.filename}
                   >
@@ -222,7 +258,7 @@ export function DiffView({
                   </span>
                 )}
                 expanded={expanded}
-                onExpandedChange={() => toggleFile(index)}
+                onExpandedChange={() => toggleFile(key)}
               >
                 {diffHtml ? (
                   <div

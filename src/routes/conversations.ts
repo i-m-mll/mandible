@@ -1,4 +1,6 @@
+import { MAX_ORDERED_SIDEBAR_IDS } from "../host-user-preferences.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
+import { resolveConversationId } from '../conversations/identity.js';
 // API routes for the chat log / conversation system.
 
 import { createHash } from "node:crypto";
@@ -120,6 +122,8 @@ function mapConversation(row: ConversationRow, externalNavigation?: Conversation
     ended_at: row.ended_at,
     block_count: row.block_count,
     session_id: row.session_id,
+    identity_aliases: (getDb().prepare('SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ? ORDER BY alias_id')
+      .all(row.id) as { alias_id: string }[]).map((alias) => alias.alias_id),
     project_path: row.project_path,
     cwd: row.cwd,
     branch: row.branch,
@@ -208,15 +212,17 @@ const MAX_SIDEBAR_PROJECTS = 500;
 const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
 
 function parseSidebarIds(raw: string | undefined, name: string): string[] {
+  const maxIds = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS : MAX_SIDEBAR_PROJECTS;
+  const maxLength = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS * 65 : MAX_SIDEBAR_PROJECT_IDS_LENGTH;
   if (raw === undefined || raw === "") return [];
-  if (raw.length > MAX_SIDEBAR_PROJECT_IDS_LENGTH) {
-    throw new Error(`${name} exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
+  if (raw.length > maxLength) {
+    throw new Error(`${name} exceeds ${maxLength} characters`);
   }
   const values = raw.split(",").map((value) => value.trim());
   if (values.some((value) => !value)) throw new Error(`${name} contains an empty id`);
   const ids = [...new Set(values)];
-  if (ids.length > MAX_SIDEBAR_PROJECTS) {
-    throw new Error(`${name} accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
+  if (ids.length > maxIds) {
+    throw new Error(`${name} accepts at most ${maxIds} ids`);
   }
   return ids;
 }
@@ -863,7 +869,7 @@ export function registerConversationRoutes(
     }
   }, { operation: { id: "post:/api/conversations/export/transform", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
-  // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
+  // GET /api/conversations/sidebar — all matching pins and independently paged Projects and Chats.
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
     const lifecycle = query.lifecycle || "active";
@@ -876,7 +882,7 @@ export function registerConversationRoutes(
     const clientPinsAuthoritative = Object.prototype.hasOwnProperty.call(query, "pinned_ids");
     try {
       requestedProjectIds = parseSidebarProjectIds(query.project_ids);
-      clientPinnedIds = parseSidebarIds(query.pinned_ids, "pinned_ids");
+      clientPinnedIds = [...new Set(parseSidebarIds(query.pinned_ids, "pinned_ids").map((id) => resolveConversationId(db, id)))];
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       return;
@@ -897,7 +903,7 @@ export function registerConversationRoutes(
       return;
     }
 
-    const conditions: string[] = [];
+    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
     const params: unknown[] = [];
     conditions.push(lifecycle === "archived" ? "a.conversation_id IS NOT NULL" : "a.conversation_id IS NULL");
     if (query.source) {
@@ -959,7 +965,9 @@ export function registerConversationRoutes(
         s.updated_at AS spawn_updated_at
       FROM conversations c
       LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
-      LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
+      LEFT JOIN conversation_spawn_requests s ON s.id = COALESCE(
+        (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = c.id ORDER BY alias_id LIMIT 1), c.id
+      ) AND s.schema_version = 'mandible-conversation-spawn-request@3'
       LEFT JOIN ledger_projects p ON p.id = s.project_id
       ${where}`).all(...params) as ProjectedConversationRow[])
       ;
@@ -1102,9 +1110,9 @@ export function registerConversationRoutes(
 
     const groupMode = query.group === "true" || query.group === "1";
     const excludeSubagents = groupMode || query.exclude_subagents === "true" || query.exclude_subagents === "1";
-    const parentIdFilter = query.parent_id || null;
+    const parentIdFilter = query.parent_id ? resolveConversationId(db, query.parent_id) : null;
 
-    const conditions: string[] = [];
+    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
     const params: unknown[] = [];
 
     // Filter by source

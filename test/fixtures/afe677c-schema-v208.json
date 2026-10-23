@@ -1,0 +1,10 @@
+{
+  "source_commit": "139ea14468f77cc7ff337e062e34c535105f9777",
+  "schema_version": 208,
+  "source_floor_sha256": "b63c11311564d28daf78486a2824b52f5e4db206b55041ac88fd741564103c1e",
+  "database_sha256": "279ee44c88e197e2eb742ac88b5b4acbed67393198edebbcd63a4cfeca5e423b",
+  "compressed_sha256": "b2ebc037a712ce3e6dd4b05993a84e83d062207505bd1a849d16857d0c41d96a",
+  "generation": "Original source test/helpers/schema-snapshot.migrateFixtureThrough(208), then seeded one user preference and recorded one native failure through its original hook mapper/store; serialize and gzip.",
+  "preference_user_id": "01M5KKZXXKRBC2ST1XA9MHJRYQ",
+  "authored_by": "Codex (GPT) <codex@openai.com>"
+}

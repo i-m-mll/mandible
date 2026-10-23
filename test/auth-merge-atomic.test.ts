@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -222,7 +223,7 @@ describe("atomic auth merge", () => {
     const db = migratedMemoryDb();
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
-    const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  command: "echo checkpoint", title: "Atomic checkpoint" }));
     // Issue 08a5f04 (review F1) — the output endpoint is lifecycle-locked to
     // executing requests; the real merge posts its checkpoints mid-execution.
     db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
@@ -251,7 +252,7 @@ describe("atomic auth merge", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${port}`,
       });
       expect(result.status, result.stderr).toBe(0);
-      const output = queue.getRequest(request.id)?.output ?? "";
+      const output = (await queue.getRequest(request.id))?.output ?? "";
       expect(output).toContain("MANDIBLE_MERGE_PREPARED");
       expect(output).toContain("MANDIBLE_MERGE_APPLIED");
       expect(output.indexOf("MANDIBLE_MERGE_PREPARED")).toBeLessThan(
@@ -260,7 +261,7 @@ describe("atomic auth merge", () => {
       expect(git(["rev-parse", "main"])).not.toBe(base);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      queue.dispose();
+      (await queue.dispose());
       flushDaemonLogger();
       db.close();
     }

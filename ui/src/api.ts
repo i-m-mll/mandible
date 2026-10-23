@@ -1,3 +1,4 @@
+import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DOMAIN_EVENTS, isBriefingEvent } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
@@ -956,7 +957,7 @@ export async function getAuthRequestActions(requestId: string): Promise<AuthRequ
   if (payload && typeof payload === 'object' && Array.isArray((payload as { actions?: unknown }).actions)) {
     return (payload as { actions: AuthRequestAction[] }).actions;
   }
-  return [];
+  throw new Error('Approval action response did not contain an action list.');
 }
 
 export async function setAuthRequestActionVeto(
@@ -1134,15 +1135,6 @@ export async function createAuthClearance(input: {
 export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
   const response = await apiPost(`/api/auth/clearances/${encodeURIComponent(id)}/revoke`);
   return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
-}
-
-// Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
-// from the dashboard so stale content can be corrected before approval.
-export async function updateAuthRequestField(
-  requestId: string,
-  fields: Record<string, unknown>,
-): Promise<void> {
-  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {
@@ -1639,6 +1631,18 @@ export async function updateUserTypographySetting(
 ): Promise<UserTypographySetting> {
   const response = await apiPut(`/api/user-settings/${key}`, { value });
   return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
+export async function getManagedChatDefaults(): Promise<ManagedChatDefaults> {
+  const response = await apiGet('/api/user-settings/managed_chat_defaults');
+  const snapshot = await parseMaybeJson(response) as { value: string | null };
+  return parseManagedChatDefaults(snapshot.value);
+}
+
+export async function updateManagedChatDefaults(value: ManagedChatDefaults): Promise<ManagedChatDefaults> {
+  const response = await apiPut('/api/user-settings/managed_chat_defaults', { value: JSON.stringify(value) });
+  const snapshot = await parseMaybeJson(response) as { value: string };
+  return parseManagedChatDefaults(snapshot.value);
 }
 
 export type {

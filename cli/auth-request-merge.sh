@@ -410,25 +410,6 @@ detect_protected_branch() {
 # requires --message or --message-file plus --verification for a merge. It is
 # composed and validated here, before any protected-root or Git side effect.
 
-change_message_body=""
-if [[ -n "$change_message_file" ]]; then
-  if [[ "$change_message_file" == "-" ]]; then
-    change_message_body=$(cat)
-  else
-    if [[ ! -f "$change_message_file" ]]; then
-      echo "Error: --message-file '${change_message_file}' does not exist" >&2
-      exit 2
-    fi
-    change_message_body=$(cat "$change_message_file")
-  fi
-else
-  change_message_body="$change_message_text"
-fi
-
-if [[ -z "${change_message_body//[[:space:]]/}" ]]; then
-  echo "Error: the change message is empty" >&2
-  exit 2
-fi
 reject_machine_owned_lines "$change_message_body"
 
 validate_verification_text "$verification_text"

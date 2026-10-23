@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
@@ -35,7 +36,7 @@ beforeEach(() => {
     executor: async () => { executorCalls += 1; return new Promise(() => {}); },
   });
 });
-afterEach(() => { vi.unstubAllEnvs(); queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); });
 
 function prepareMergeFixture() {
   commitOnBranch(repo, "feature/delivery", { "delivered.txt": "reviewed bytes\n" });
@@ -44,9 +45,9 @@ function prepareMergeFixture() {
   git(repo, ["config", "core.hooksPath", ".git/hooks"]);
 }
 
-function submitMerge(issueClosures: string[] = []) {
-  const request = queue.submit({ type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
-    repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures });
+async function submitMerge(issueClosures: string[] = []) {
+  const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
+    repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures }));
   recordPassingCandidateAcceptance(db, request.id);
   return request;
 }
@@ -59,7 +60,7 @@ function protectedState() {
 describe("protected delivery evidence", () => {
   beforeEach(prepareMergeFixture);
   it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
-    queue.dispose();
+    (await queue.dispose());
     const installationHome = path.join(repo, ".git", "private-installation");
     vi.stubEnv("MANDIBLE_HOME", installationHome);
     let journal: RuntimeHandoffJournal | null = null;
@@ -73,24 +74,24 @@ describe("protected delivery evidence", () => {
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}\\n'; exit 75`, "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, "handoff-close");
-    const request = submitMerge([issue.id]);
+    const request = (await submitMerge([issue.id]));
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
-    await hooks.runPending(queue.getRequest(request.id)!);
+    await hooks.runPending((await queue.getRequest(request.id))!);
     let run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
     const attemptHistory = run.attempt_history;
     expect(run).toMatchObject({ state: "pending", exit_code: 75, attempts: 1 });
-    expect(await hooks.runPending(queue.getRequest(request.id)!)).toEqual([]);
+    expect(await hooks.runPending((await queue.getRequest(request.id))!)).toEqual([]);
     expect(hooks.grantRetry(request.id)).toBe(0);
     db.prepare("UPDATE auth_hook_executions SET state = 'running' WHERE id = ?").run(run.id);
     hooks.reclaimInterruptedRuns(request.id);
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("running");
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...verifyRuntimeHandoffPublication(db, binding) }, bindingDigest: "a".repeat(64), phase: "complete", receipt: { health: "candidate" } };
+    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) }, bindingDigest: "a".repeat(64), phase: "complete", receipt: { health: "candidate" } };
     await queue.resumeHookConvergence();
-    expect(queue.getRequest(request.id)?.status).toBe("executing");
+    expect((await queue.getRequest(request.id))?.status).toBe("executing");
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("failed");
     expect(acknowledgements).toBe(0);
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "open" });
@@ -99,8 +100,8 @@ describe("protected delivery evidence", () => {
     run = hooks.getRun(request.id, run.hook_id)!;
     expect(run).toMatchObject({ state: "complete", exit_code: 0, attempts: 1 });
     expect(run.attempt_history).toEqual(attemptHistory);
-    expect(queue.getRequest(request.id)).toMatchObject({ status: "completed", exit_code: 0 });
-    expect(getAttributionEvidence(db, queue.getRequest(request.id)!.execution_evidence_id!)?.details.publication_verified).toBe(true);
+    expect((await queue.getRequest(request.id))).toMatchObject({ status: "completed", exit_code: 0 });
+    expect(getAttributionEvidence(db, (await queue.getRequest(request.id))!.execution_evidence_id!)?.details.publication_verified).toBe(true);
     expect(acknowledgements).toBe(1);
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
     // The DB acceptance survived; startup retries only helper acknowledgment.
@@ -113,55 +114,55 @@ describe("protected delivery evidence", () => {
   });
 
   it("runs frozen native post-hooks once with original arguments and refuses changed hook bytes", async () => {
-    queue.dispose();
+    (await queue.dispose());
     const hooks = new AuthHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     for (const name of ["post-commit", "post-merge"]) fs.writeFileSync(path.join(repo, ".git", "hooks", name), `#!/bin/sh\nprintf '${name}:%s:%s:%s\\n' "$#" "\${1-}" "$(git rev-parse ORIG_HEAD)" >> .git/native-audit\n`, { mode: 0o755 });
-    const request = submitMerge();
+    const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
-    queue.setResult(request.id, 0, publication.output);
-    await hooks.runPending(queue.getRequest(request.id)!);
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    (await queue.setResult(request.id, 0, publication.output));
+    await hooks.runPending((await queue.getRequest(request.id))!);
     expect(fs.readFileSync(path.join(repo, ".git", "native-audit"), "utf8")).toBe(`post-commit:0::${request.merge_preflight_base_sha}\npost-merge:1:0:${request.merge_preflight_base_sha}\n`);
-    await hooks.runPending(queue.getRequest(request.id)!);
+    await hooks.runPending((await queue.getRequest(request.id))!);
     expect(hooks.listRuns(request.id).every(run => run.state === "complete" && run.attempts === 1)).toBe(true);
     commitOnBranch(repo, "feature/changed-hook", { "other.txt": "next bytes\n" });
-    const next = queue.submit({ type: "merge", title: "Changed hook", command: "mandible auth merge feature/changed-hook --into main", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/changed-hook", merge_head_sha: git(repo, ["rev-parse", "feature/changed-hook"]), execution_mode: "local" });
+    const next = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Changed hook", command: "mandible auth merge feature/changed-hook --into main", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/changed-hook", merge_head_sha: git(repo, ["rev-parse", "feature/changed-hook"]), execution_mode: "local" }));
     await queue.approveWithOperatorProof(next.id, operatorId);
     fs.appendFileSync(path.join(repo, ".git", "hooks", "post-merge"), "# changed after review\n");
-    queue.setResult(next.id, 0, publishTestCandidate(repo, queue.getRequest(next.id)!).output);
-    await hooks.runPending(queue.getRequest(next.id)!);
+    (await queue.setResult(next.id, 0, publishTestCandidate(repo, (await queue.getRequest(next.id))!).output));
+    await hooks.runPending((await queue.getRequest(next.id))!);
     expect(hooks.getRun(next.id, "native-git-post-merge")?.exit_code).not.toBe(0);
     expect(hooks.convergence(next.id).state).toBe("pending");
   });
 
   it("reconstructs only the frozen signed first-upgrade candidate and refuses binding or checkout drift", async () => {
-    queue.dispose();
+    (await queue.dispose());
     const hooks = new AuthHookManager(db);
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
-    const request = submitMerge();
+    const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_preflight_base_sha = NULL, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    const proof = verifyRuntimeHandoffPublication(db, binding);
+    const proof = (await verifyRuntimeHandoffPublication(db, binding));
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
     const restore = tamperLooseGitObject(repo, publication.mergeSha, object => { object[object.indexOf(Buffer.from("\n\n")) + 2]! ^= 1; });
-    try { expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("does not match its object id"); }
+    try { await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("does not match its object id"); }
     finally { restore(); }
-    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, commandDigest: "f".repeat(64) })).toThrow("binding differs");
+    await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, commandDigest: "f".repeat(64) }))())).rejects.toThrow("binding differs");
     // An executor checkout never gains destination authority from matching runtime bytes.
-    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } })).toThrow("unregistered");
+    await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } }))())).rejects.toThrow("unregistered");
     git(repo, ["update-ref", "refs/heads/main", request.merge_preflight_base_sha!, publication.mergeSha]);
-    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("checkout differs");
+    await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("checkout differs");
   });
 
 
   it.each(["base", "head", "pin", "hook"] as const)("revalidates %s after asynchronous operator signing", async (changed) => {
-    const request = submitMerge();
+    const request = (await submitMerge());
     const approving = queue.approveWithOperatorProof(request.id, operatorId);
     if (changed === "base") git(repo, ["update-ref", "refs/heads/main", request.merge_head_sha!]);
     if (changed === "head") {
@@ -172,7 +173,7 @@ describe("protected delivery evidence", () => {
     if (changed === "hook") fs.writeFileSync(path.join(repo, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const expectedBase = git(repo, ["rev-parse", "main"]);
     await expect(approving).rejects.toThrow();
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
     expect(hookCalls).toBe(0);
     expect(git(repo, ["rev-parse", "main"])).toBe(expectedBase);
@@ -180,22 +181,22 @@ describe("protected delivery evidence", () => {
 
 
   it("refuses native preparation hooks before proof or protected mutation", async () => {
-    const request = submitMerge();
+    const request = (await submitMerge());
     const before = protectedState();
     fs.writeFileSync(path.join(repo, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow("unsupported native hooks");
     expect(protectedState()).toEqual(before);
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
   });
 
   it("does not close an issue or run hooks when an executor claims zero without a publication receipt", async () => {
     const project = createLedgerProject(db, repo);
     const issue = createLedgerIssue(db, project.project.id, "closure-proof");
-    const request = submitMerge([issue.id]);
+    const request = (await submitMerge([issue.id]));
     await queue.approveWithOperatorProof(request.id, operatorId);
     const before = protectedState();
-    const result = queue.setResult(request.id, 0, "ok");
+    const result = (await queue.setResult(request.id, 0, "ok"));
     expect(result.exit_code).not.toBe(0);
     expect(result.error).toContain("publication receipt");
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "open" });
@@ -204,51 +205,55 @@ describe("protected delivery evidence", () => {
   });
 
   it("retains applied publication state when its result is missing and completes on exact recovered evidence", async () => {
-    const request = submitMerge();
+    const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    await waitUntil(() => executorCalls === 1, "the approved executor to start");
+    const callsBeforeResult = executorCalls;
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const withoutReceipt = publication.output.split("MANDIBLE_MERGE_RESULT")[0]!;
-    const stuck = queue.setResult(request.id, 0, withoutReceipt);
+    const stuck = (await queue.setResult(request.id, 0, withoutReceipt));
     expect(stuck.status).toBe("executing");
     expect(stuck.merge_atomic_enabled).toBe(true);
-    expect(() => queue.update(request.id, { status: "pending" })).toThrow();
-    const recovered = queue.setResult(request.id, 0, publication.output);
+    await expect((async () => (await queue.update(request.id, { status: "pending" }))())).rejects.toThrow();
+    const recovered = (await queue.setResult(request.id, 0, publication.output));
     expect(recovered).toMatchObject({ status: "completed", exit_code: 0 });
     const evidence = getAttributionEvidence(db, recovered.execution_evidence_id!);
     expect(evidence?.details).toMatchObject({ publication_verified: true, verified: true, commit_sha: publication.mergeSha, signer_user_id: operatorId });
     expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
-    expect(() => queue.setResult(request.id, 0, publication.output)).toThrow();
-    expect(executorCalls).toBe(0);
+    await expect((async () => (await queue.setResult(request.id, 0, publication.output))())).rejects.toThrow();
+    expect(executorCalls).toBe(callsBeforeResult);
   });
 
   it("keeps nonzero post-publication result reports recoverable", async () => {
-    const request = submitMerge();
+    const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
-    const reported = queue.setResult(request.id, 75, publication.output.split("MANDIBLE_MERGE_RESULT")[0]!, "checkout cleanup interrupted");
+    await waitUntil(() => executorCalls === 1, "the approved executor to start");
+    const callsBeforeResult = executorCalls;
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const reported = (await queue.setResult(request.id, 75, publication.output.split("MANDIBLE_MERGE_RESULT")[0]!, "checkout cleanup interrupted"));
     expect(reported).toMatchObject({ status: "executing", exit_code: null, merge_atomic_enabled: true });
-    expect(() => queue.retry(request.id)).toThrow();
-    const completed = queue.setResult(request.id, 0, publication.output);
+    await expect((async () => (await queue.retry(request.id))())).rejects.toThrow();
+    const completed = (await queue.setResult(request.id, 0, publication.output));
     expect(completed).toMatchObject({ status: "completed", exit_code: 0 });
     expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
-    expect(executorCalls).toBe(0);
+    expect(executorCalls).toBe(callsBeforeResult);
   });
 
   it("recovers the original receipt after a later signed publication without changing its checkout", async () => {
-    const request = submitMerge();
+    const request = (await submitMerge());
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const first = publishTestCandidate(repo, queue.getRequest(request.id)!);
-    queue.setResult(request.id, 75, first.output.split("MANDIBLE_MERGE_RESULT")[0]!);
+    const first = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    (await queue.setResult(request.id, 75, first.output.split("MANDIBLE_MERGE_RESULT")[0]!));
     commitOnBranch(repo, "feature/later", { "later.txt": "later bytes\n" });
-    const later = queue.submit({ type: "merge", title: "Later publication", command: "mandible auth merge feature/later --into main", repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/later", merge_head_sha: git(repo, ["rev-parse", "feature/later"]), execution_mode: "local" });
+    const later = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Later publication", command: "mandible auth merge feature/later --into main", repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/later", merge_head_sha: git(repo, ["rev-parse", "feature/later"]), execution_mode: "local" }));
     await queue.approveWithOperatorProof(later.id, operatorId);
-    const second = publishTestCandidate(repo, queue.getRequest(later.id)!);
+    const second = publishTestCandidate(repo, (await queue.getRequest(later.id))!);
     const before = protectedState();
-    const internals = queue as unknown as { inspectStaleMerge(request: unknown): unknown; finishRecoveredAtomicMerge(request: unknown, sha: string): Promise<void> };
-    expect(internals.inspectStaleMerge(queue.getRequest(request.id)!)).toEqual({ outcome: "atomic_applied", mergeSha: first.mergeSha });
+    const internals = queue as unknown as { inspectStaleMerge(request: unknown): Promise<unknown>; finishRecoveredAtomicMerge(request: unknown, sha: string): Promise<void> };
+    expect(await internals.inspectStaleMerge((await queue.getRequest(request.id))!)).toEqual({ outcome: "atomic_applied", mergeSha: first.mergeSha });
     const callsBeforeRecovery = executorCalls;
-    await internals.finishRecoveredAtomicMerge(queue.getRequest(request.id)!, first.mergeSha);
-    const completed = queue.getRequest(request.id)!;
+    await internals.finishRecoveredAtomicMerge((await queue.getRequest(request.id))!, first.mergeSha);
+    const completed = (await queue.getRequest(request.id))!;
     expect(completed).toMatchObject({ status: "completed", exit_code: 0 });
     expect(getAttributionEvidence(db, completed.execution_evidence_id!)?.details.commit_sha).toBe(first.mergeSha);
     expect(git(repo, ["rev-parse", "main"])).toBe(second.mergeSha);
@@ -257,46 +262,46 @@ describe("protected delivery evidence", () => {
     expect(executorCalls).toBe(callsBeforeRecovery);
   });
 
-  it("preserves terminal requests rather than inferring delivery from branch ancestry", () => {
-    const request = submitMerge();
+  it("preserves terminal requests rather than inferring delivery from branch ancestry", async () => {
+    const request = (await submitMerge());
     git(repo, ["merge", "--no-ff", "--no-edit", "feature/delivery"]);
-    queue.dispose();
+    (await queue.dispose());
     queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(hookCalls).toBe(0);
   });
 });
 
 describe('runtime convergence recovery', () => {
   beforeEach(prepareMergeFixture);
-  it('refuses absent or conflicting source registration before accepting repository identity', () => {
+  it('refuses absent or conflicting source registration before accepting repository identity', async () => {
     const destination = createLedgerProject(db, fs.realpathSync(repo)).project;
     const source = createAuthCheckRepo();
-    expect(validateRuntimeSource(db, repo, repo)).toMatchObject({ ok: true, projectId: destination.id });
-    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('mandible project add-checkout') });
+    expect((await validateRuntimeSource(db, repo, repo))).toMatchObject({ ok: true, projectId: destination.id });
+    expect((await validateRuntimeSource(db, source, repo))).toMatchObject({ ok: false, reason: expect.stringContaining('mandible project add-checkout') });
     const conflicting = createLedgerProject(db, fs.realpathSync(source)).project;
-    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('different canonical projects') });
+    expect((await validateRuntimeSource(db, source, repo))).toMatchObject({ ok: false, reason: expect.stringContaining('different canonical projects') });
     addOrUpdateCheckout(db, destination.id, { root: fs.realpathSync(source) });
-    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('different Git repositories') });
+    expect((await validateRuntimeSource(db, source, repo))).toMatchObject({ ok: false, reason: expect.stringContaining('different Git repositories') });
     expect(conflicting.id).not.toBe(destination.id);
   });
 
-  it('refuses unregistered runtime source during preparation before approval or execution', () => {
+  it('refuses unregistered runtime source during preparation before approval or execution', async () => {
     const source = createAuthCheckRepo();
     try {
       createLedgerProject(db, fs.realpathSync(repo));
       vi.stubEnv('MANDIBLE_PRODUCTION_ROOT', source);
       const input = { repo: 'mandible', cwd: repo, base_branch: 'main', head_branch: 'feature/delivery' };
-      expect(queue.checkMergeIndependence(input)).toMatchObject({ status: 'error', reason: expect.stringContaining('mandible project add-checkout') });
+      expect((await queue.checkMergeIndependence(input))).toMatchObject({ status: 'error', reason: expect.stringContaining('mandible project add-checkout') });
       expect(executorCalls).toBe(0);
       expect(hookCalls).toBe(0);
       vi.stubEnv('MANDIBLE_PRODUCTION_ROOT', repo);
-      expect(queue.checkMergeIndependence(input)).toMatchObject({ status: 'clean' });
+      expect((await queue.checkMergeIndependence(input))).toMatchObject({ status: 'clean' });
     } finally { fs.rmSync(source, { recursive: true, force: true }); }
   });
 
   async function recoveryFixture(interruptAck = false, fileBacked = false) {
-    queue.dispose();
+    (await queue.dispose());
     if (fileBacked) {
       const filename = path.join(repo, '.git/recovery.db');
       fs.writeFileSync(filename, db.serialize()); db.close();
@@ -333,16 +338,16 @@ describe('runtime convergence recovery', () => {
     vi.spyOn(queue as any, 'runBackgroundFinalizers').mockImplementation(async (id: string) => { db.prepare('UPDATE auth_requests SET merge_finalized_at = ? WHERE id = ?').run(Date.now(), id); });
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, 'builtin-mandible-rebuild');
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, 'recover-close');
-    const request = submitMerge([issue.id]);
+    const request = (await submitMerge([issue.id]));
     await queue.approveWithOperatorProof(request.id, operatorId);
-    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
-    queue.setResult(request.id, 0, publication.output);
+    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    (await queue.setResult(request.id, 0, publication.output));
     await (queue as any).finalizerQueue.drain();
-    await hooks.runPending(queue.getRequest(request.id)!);
+    await hooks.runPending((await queue.getRequest(request.id))!);
     const run = hooks.getRun(request.id, 'builtin-mandible-rebuild')!;
     db.prepare("UPDATE auth_hook_executions SET state = 'failed' WHERE id = ?").run(run.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...verifyRuntimeHandoffPublication(db, binding) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
+    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
     const credential = mintApiToken(db, 'private-pepper', operatorId).credential;
     const actor = { user_id: operatorId, credential_id: credential.id, evidence_method: 'api_token' as const, authority_path: 'operator_recovery' as const };
     return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };
@@ -350,10 +355,10 @@ describe('runtime convergence recovery', () => {
 
   it('accepts the hook before exposing completion, preserves terminal history and replays interrupted acknowledgment once', async () => {
     const f = await recoveryFixture(true);
-    const before = queue.getRequest(f.request.id)!;
+    const before = (await queue.getRequest(f.request.id))!;
     const history = queue.listLifecycleEvents(f.request.id);
     // Verification-only recovery leaves unrelated requests alone, expired or not.
-    const unrelated = queue.submit({ type: 'config-change', title: 'Unrelated pending request', command: 'true', cwd: repo });
+    const unrelated = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: 'config-change', title: 'Unrelated pending request', command: 'true', cwd: repo }));
     db.prepare('UPDATE auth_requests SET expires_at = 0 WHERE id = ?').run(unrelated.id);
     const unrelatedBefore = db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(unrelated.id);
     await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toMatchObject({ code: 'recovery_refused', message: expect.stringContaining('ack interrupted') });
@@ -367,7 +372,7 @@ describe('runtime convergence recovery', () => {
     expect(f.observation).toHaveBeenCalledTimes(1);
     expect(f.restart).not.toHaveBeenCalled();
     expect(queue.listLifecycleEvents(f.request.id)).toEqual(history);
-    expect(queue.getRequest(f.request.id)).toMatchObject({ output: before.output, status: before.status, approved_at: before.approved_at, resolved_at: before.resolved_at });
+    expect((await queue.getRequest(f.request.id))).toMatchObject({ output: before.output, status: before.status, approved_at: before.approved_at, resolved_at: before.resolved_at });
     expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
     expect(git(repo, ['rev-parse', 'main'])).toBe(f.journal.binding.mergeCommit);
     expect(db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(unrelated.id)).toEqual(unrelatedBefore);
@@ -463,23 +468,23 @@ describe('runtime convergence recovery', () => {
 
 describe("consequential non-Git approval", () => {
   it("keeps missing, cancelled, and drifted proof pending without starting execution", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo }));
     const before = protectedState();
-    expect(() => queue.approve(request.id)).toThrow("signing proof");
+    await expect((async () => (await queue.approve(request.id))())).rejects.toThrow("signing proof");
     const cancelled = queue.approveWithOperatorProof(request.id, operatorId);
     queue.cancelOperatorProof(request.id, operatorId);
     await expect(cancelled).rejects.toThrow("cancelled");
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     const drifted = queue.approveWithOperatorProof(request.id, operatorId);
-    queue.update(request.id, { title: "Changed reviewed action" });
-    await expect(drifted).rejects.toThrow("reviewed request changed");
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    (await queue.update(request.id, { title: "Changed reviewed action" }));
+    await expect(drifted).rejects.toThrow("Observed request version is no longer current");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
     expect(hookCalls).toBe(0);
     expect(protectedState()).toEqual(before);
   });
   it("records verified action-bound proof for consequential non-Git approval", async () => {
-    const request = queue.submit({ type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo });
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo }));
     const approved = await queue.approveWithOperatorProof(request.id, operatorId);
     expect(approved.status).toBe("executing");
     const evidence = getAttributionEvidence(db, approved.execution_evidence_id!);

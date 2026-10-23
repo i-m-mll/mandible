@@ -1,3 +1,8 @@
+import fs from "node:fs";
+import { runCli, scratchDir } from "./helpers/cli-process.js";
+import { ConversationControlService } from "../src/conversation-control/service.js";
+import { SessionExecutionStore } from "../src/session-execution.js";
+import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
@@ -165,7 +170,7 @@ describe("structured conversation controller adapters", () => {
 
 it("keeps Codex approvals and usage on the exact owned turn and interrupts without releasing",async()=>{
  const adapter=new CodexAppServerControllerAdapter({spawnProcess:spawner('codex',[]),codexExecutable:'codex'});adapters.push(adapter);
- const events=lifecycle(adapter);const usage:unknown[]=[];adapter.subscribeRuntimeEvents(event=>usage.push(event));
+ const events=lifecycle(adapter);const usage:unknown[]=[];adapter.subscribeRuntimeEvents(event=>{if(event.kind === "usage") usage.push(event);});
  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
  expect((await adapter.deliver(delivery('send','approval-turn','permission'))).ok).toBe(true);
  await waitFor(()=>adapter.permissions('conversation-1').length===1);
@@ -178,4 +183,84 @@ it("keeps Codex approvals and usage on the exact owned turn and interrupts witho
  expect((await adapter.interrupt({conversation_id:'conversation-1',generation:4})).ok).toBe(true);
  await waitFor(()=>events.some(event=>event.kind==='turn-cancelled'));
  expect(await adapter.probe({conversation_id:'conversation-1',generation:4,controller_instance_id:'controller-1',provider_session_id:'codex-thread'})).toMatchObject({ok:true,value:{kind:'owned'}});
+});
+
+it("routes Codex request_user_input by exact question ID and rejects permission-style answers", async () => {
+  const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner('codex', []), codexExecutable: 'codex' }); adapters.push(adapter);
+  const events = lifecycle(adapter);
+  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
+  expect(await adapter.modelChoices('conversation-1')).toEqual({ ok: true, value: [{ value: 'fixture-model', label: 'Fixture model' }] });
+  expect((await adapter.deliver(delivery('send', 'question-turn', 'question'))).ok).toBe(true);
+  await waitUntil(() => adapter.permissions('conversation-1').length === 1);
+  const request = adapter.permissions('conversation-1')[0];
+  expect(request.questions).toMatchObject([{ id: 'direction', allow_other: false }]);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'allow' })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'answer', answers: { wrong: ['Left'] } })).ok).toBe(false);
+  expect((await adapter.decidePermission({ conversation_id: 'conversation-1', generation: 4, request_id: request.id, decision: 'answer', answers: { direction: ['Left'] } })).ok).toBe(true);
+  await waitUntil(() => events.some(event => event.kind === 'turn-completed'));
+  expect(events.some(event => event.kind === 'turn-waiting-user')).toBe(true);
+  expect(adapter.permissions('conversation-1')).toEqual([]);
+});
+
+it("persists authoritative Codex terminal errors through retries, duplicates and idle updates until the next accepted turn", async () => {
+  const db = migratedMemoryDb();
+  const spawned: NodeJS.ProcessEnv[] = [];
+  const nativeState = scratchDir("codex-managed");
+  const fixtureSpawn = spawner("codex", [], { FAKE_CODEX_NATIVE_STATE: nativeState });
+  const adapter = new CodexAppServerControllerAdapter({ codexExecutable: "codex", spawnProcess: (command, args, options) => {
+    spawned.push(options.env ?? {}); return fixtureSpawn(command, args, options);
+  } });
+  const events = lifecycle(adapter);
+  const service = new ConversationControlService(db);
+  const unregister = service.registerAdapter(adapter);
+  const execution = new SessionExecutionStore(db);
+  try {
+    const acquired = await service.acquireNew({ conversation_id: "conversation-1", provider: "codex", generation: 4, cwd: "/tmp" }, (lease) => {
+      db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
+        VALUES ('conversation-1', 'codex', '/tmp/codex-transcript', 'hash', 1, 'Codex', '2026-01-01', 0, ?, '2026-01-01', '2026-01-01')`).run(lease.provider_session_id);
+    });
+    expect(acquired.ok, JSON.stringify(acquired)).toBe(true);
+    const childEnv = spawned.at(-1)!;
+    const observer = await runCli([path.resolve("hooks/session-execution.sh"), "codex"], {
+      command: "bash", input: JSON.stringify({ session_id: "codex-new-thread", hook_event_name: "Stop" }),
+      env: { ...childEnv, MANDIBLE_BASE: "", MANDIBLE_SOCKET: path.join(nativeState, "absent.sock") },
+    });
+    expect(observer).toEqual({ status: 0, stdout: "", stderr: "" });
+    expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "unknown" });
+    const submit = async (message: string) => {
+      const snapshot = service.getSnapshot("conversation-1");
+      if (!snapshot.ok) throw new Error(JSON.stringify(snapshot.error));
+      const submitted = await service.submit({ conversation_id: "conversation-1", operation: "send", expected_revision: snapshot.value.revision,
+        expected_generation: 4, idempotency_key: crypto.randomUUID(), message });
+      expect(submitted.ok, JSON.stringify(submitted)).toBe(true);
+    };
+    for (const [message, type, data] of [
+      ["retry-failure", "usageLimitExceeded", null],
+      ["object-failure", "responseStreamDisconnected", { responseStreamDisconnected: { httpStatusCode: 429 } }],
+      ["no-code-failure", null, null],
+    ] as const) {
+      await submit(message);
+      await waitFor(() => execution.read("codex", "codex-new-thread")?.state.kind === "failure");
+      expect(execution.read("codex", "codex-new-thread")).toMatchObject({ source: "codex_app_server", controller_generation: 4,
+        event: "turn/completed", turn_id: expect.stringMatching(/^native-/), state: { kind: "failure", error: { type, data, message: "native failure", details: "native detail" } } });
+    }
+    expect(events.filter(event => event.kind === "turn-failed")).toHaveLength(3);
+    expect(events.some(event => event.kind === "turn-unknown" || event.kind === "controller-released")).toBe(false);
+    await submit("hold");
+    expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "working" });
+    expect((await service.interrupt("conversation-1", 4)).ok).toBe(true);
+    await waitFor(() => execution.read("codex", "codex-new-thread")?.state.kind === "interrupted");
+    await submit("normal");
+    await waitFor(() => execution.read("codex", "codex-new-thread")?.state.kind === "stopped");
+    expect((await service.stop("conversation-1", 4)).ok).toBe(true);
+    expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "ended", reason: "mandible:controller-relinquished" });
+    const stopped = service.getSnapshot("conversation-1");
+    if (!stopped.ok) throw new Error(JSON.stringify(stopped.error));
+    expect((await service.resume({ conversation_id: "conversation-1", expected_generation: 4,
+      expected_revision: stopped.value.revision, cwd: "/tmp" })).ok).toBe(true);
+    expect(spawned.at(-1)?.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID).toBe("codex-new-thread");
+    expect(execution.read("codex", "codex-new-thread")).toMatchObject({ controller_generation: 5, state: { kind: "unknown" } });
+    await service.close();
+    expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "ended", reason: "mandible:controller-released" });
+  } finally { await service.close(); unregister(); db.close(); fs.rmSync(nativeState, { recursive: true, force: true }); }
 });

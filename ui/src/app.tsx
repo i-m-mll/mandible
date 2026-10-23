@@ -31,7 +31,6 @@ import {
   rejectAuthRequest,
   retryAuthRequest,
   scanIssues,
-  updateAuthRequestField,
   updateAppThemePreference,
   updateSetting,
   updateUserAppRailOrderSetting,
@@ -975,7 +974,7 @@ function App(): JSX.Element {
       const hash = window.location.hash || '#/spaces';
       const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
       if (boundHash !== hash) {
-        window.history.replaceState(null, '', boundHash);
+        window.history.replaceState(window.history.state, '', boundHash);
       }
       setRoute(parseRouteFromHash(boundHash));
       if (hasExplicitStartupDestination(window.location.hash)) setStartupDestinationPending(false);
@@ -1996,7 +1995,7 @@ function App(): JSX.Element {
   const handleSelectAuth = (id: string | null) => dispatch({ type: 'setSelectedAuthId', id });
   const handleNavigateAuthRequest = (id: string | null) => {
     if (routeRef.current.tab !== 'auth') return;
-    replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id }));
+    replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id, view: null, diff_old: null, diff_new: null }));
   };
 
   useEffect(() => {
@@ -2050,17 +2049,6 @@ function App(): JSX.Element {
   };
 
   // Bug: 2c826ca — allow editing auth request fields from the dashboard
-  const handleUpdateAuthField = async (requestId: string, field: string, value: string) => {
-    try {
-      await updateAuthRequestField(requestId, { [field]: value });
-      // Refresh the queue to pick up the updated field
-      const queue = await getAuthQueue<AuthRequest>();
-      dispatch({ type: 'setAuthQueue', queue });
-    } catch {
-      return;
-    }
-  };
-
   const handleRescan = async () => {
     try {
       // Trigger a full scan on the server before fetching results
@@ -2380,7 +2368,7 @@ function App(): JSX.Element {
     );
     if (destination) {
       const hash = hashWithAgentSession(destination, getAgentPageBinding());
-      window.history.replaceState(null, '', hash);
+      window.history.replaceState(window.history.state, '', hash);
       setRoute(parseRouteFromHash(hash));
       setStartupDestinationPending(false);
     }
@@ -2963,6 +2951,8 @@ function App(): JSX.Element {
               branchesByRepo={authBranchesByRepo}
               selectedAuthId={state.selectedAuthId}
               initialRequestId={tabRoute.params.request}
+              reviewRouteParams={tabRoute.params}
+              reviewRouteActive={route.tab === 'auth'}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               daemonReady={daemonReady}
               instance={instanceInfo}
@@ -2971,7 +2961,6 @@ function App(): JSX.Element {
               onApprove={handleApprove}
               onReject={handleReject}
               onRetry={handleRetry}
-              onUpdateField={handleUpdateAuthField}
               autoShowConsoleOnApproval={enabledSetting(state.settings, AUTH_AUTO_SHOW_CONSOLE_SETTING)}
               autoReturnToAbstractOnSuccess={enabledSetting(state.settings, AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING)}
               retainFinalizedSelection={enabledSetting(state.settings, AUTH_RETAIN_FINALIZED_SELECTION_SETTING)}

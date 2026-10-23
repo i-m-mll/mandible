@@ -9,7 +9,6 @@ export type PersistedViewStateNormalizer<T> = (
 type LoadedState<T> = {
   storageKey: string;
   value: T;
-  serialized: string | null;
 };
 
 type KeyedState<T> = {
@@ -62,7 +61,19 @@ function loadState<T>(
     value = fallback();
   }
 
-  return { storageKey, value, serialized: serialize(value) };
+  return { storageKey, value };
+}
+
+/** Synchronously flush browser-local intent, including before page navigation. */
+export function writePersistedViewState(storageKey: string, value: unknown): boolean {
+  const serialized = serialize(value);
+  if (!storageKey || typeof window === 'undefined' || serialized === null) return false;
+  try {
+    window.localStorage.setItem(storageKey, serialized);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Read the same normalized browser-local state used by the hook without writing it back. */
@@ -86,6 +97,7 @@ export function usePersistedViewState<T>(
   storageKey: string,
   normalize: PersistedViewStateNormalizer<T>,
   defaults: T,
+  initialValue?: T,
 ): [T, Dispatch<StateUpdater<T>>] {
   const normalizeRef = useRef(normalize);
   const defaultsRef = useRef(defaults);
@@ -99,6 +111,7 @@ export function usePersistedViewState<T>(
       normalizeRef.current,
       defaultsRef.current,
     );
+    if (initialValue !== undefined) loadedRef.current.value = normalizeOrDefault(initialValue, normalize, defaults);
   }
   const loaded = loadedRef.current;
 
@@ -106,17 +119,6 @@ export function usePersistedViewState<T>(
     storageKey,
     value: loaded.value,
   }));
-
-  const persistedRef = useRef({
-    storageKey,
-    serialized: loaded.serialized,
-  });
-  if (persistedRef.current.storageKey !== storageKey) {
-    persistedRef.current = {
-      storageKey,
-      serialized: loaded.serialized,
-    };
-  }
 
   // Synchronize the keyed state after render. Until then, return the newly
   // loaded value below so callers never observe state belonging to another key.
@@ -128,21 +130,6 @@ export function usePersistedViewState<T>(
     ));
   }, [storageKey]);
 
-  useEffect(() => {
-    if (!storageKey || keyedState.storageKey !== storageKey) return;
-
-    const serialized = serialize(keyedState.value);
-    if (serialized === null || serialized === persistedRef.current.serialized) return;
-
-    try {
-      if (typeof window === 'undefined') return;
-      window.localStorage.setItem(storageKey, serialized);
-      persistedRef.current = { storageKey, serialized };
-    } catch {
-      // Browser storage is best-effort (private mode, disabled storage, quota).
-    }
-  }, [keyedState, storageKey]);
-
   const setState = useCallback<Dispatch<StateUpdater<T>>>((next) => {
     setKeyedState((current) => {
       const base = current.storageKey === storageKey
@@ -151,6 +138,7 @@ export function usePersistedViewState<T>(
       const value = typeof next === 'function'
         ? (next as (previous: T) => T)(base)
         : next;
+      writePersistedViewState(storageKey, value);
       return { storageKey, value };
     });
   }, [storageKey]);

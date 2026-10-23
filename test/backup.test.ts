@@ -14,6 +14,7 @@ import {
 import { issueSearchExpression, searchLedgerIssues } from "../src/ledger/issue-search.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { resolveConversationId } from "../src/conversations/identity.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
 import { migratedMemoryDb, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
@@ -82,7 +83,11 @@ describe("backup routes", () => {
   let tempHome = "";
   let db: import("../src/db.js").Db | undefined;
 
-  afterEach(() => {
+  let backupService: import("../src/metadata-backup-service.js").MetadataBackupService | undefined;
+
+  afterEach(async () => {
+    await backupService?.close();
+    backupService = undefined;
     db?.close();
     db = undefined;
     process.env.HOME = originalHome;
@@ -105,11 +110,11 @@ describe("backup routes", () => {
 
     const { registerBackupRoutes } = await import("../src/routes/backup.js");
     const routes = new TestRoutes();
-    registerBackupRoutes(routes);
+    backupService = registerBackupRoutes(routes);
     return { routes, db };
   }
 
-  it("runs an in-process metadata dump and excludes reproducible or runtime rows", async () => {
+  it("runs a worker metadata dump and excludes reproducible or runtime rows", async () => {
     const { routes, db } = await setupBackupRoutes();
     const dotfilesBin = path.join(tempHome, ".dotfiles", "bin");
     const sentinel = path.join(tempHome, "external-script-ran");
@@ -338,6 +343,13 @@ describe("metadata backup coverage", () => {
       const store = new LedgerStore(db);
       const issue = store.createIssue({ ...SYSTEM_ACTOR, project_id: project.id, title: "Backed up", body: "line one\nline two" });
       store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "a comment with 'quotes' and unicode \u00e9" });
+      const conversation = db.prepare(`INSERT INTO conversations
+        (id, source, source_path, source_hash, source_mtime, started_at, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      conversation.run("creation-shell", "claude_code", "mandible://chat/creation-shell", "shell", 1, "2026-10-06T00:00:00Z", "native-session");
+      conversation.run("indexed-transcript", "claude_code", "/private/transcript.jsonl", "transcript", 2, "2026-10-06T00:00:01Z", "native-session");
+      db.prepare(`INSERT INTO conversation_identity_aliases (alias_id, canonical_id, proof_json, created_at)
+        VALUES (?, ?, ?, ?)`).run("creation-shell", "indexed-transcript",
+          JSON.stringify({ schema: "mandible-chat-identity-repair@1", shell: { id: "creation-shell" }, canonical: { id: "indexed-transcript" } }), 1000);
 
       const schema = (target: SqliteDatabase) => (target.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name",
@@ -351,6 +363,7 @@ describe("metadata backup coverage", () => {
       expect(schema(restored)).toEqual(schema(db));
       for (const table of METADATA_BACKUP_TABLES) expect(rows(restored, table), table).toEqual(rows(db, table));
       expect(rows(restored, "ledger_comments")).toHaveLength(1);
+      expect(resolveConversationId(restored, "creation-shell")).toBe("indexed-transcript");
       expect(restored.pragma("foreign_key_check")).toEqual([]);
       expect(restored.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
 

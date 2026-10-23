@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
@@ -49,8 +50,8 @@ function setDependencyResult(
   ).run(values.status, values.exitCode, values.finalizedAt, id);
 }
 
-function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
-  const seed = queue.submit({ type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" });
+async function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): Promise<string> {
+  const seed = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" }));
   const columns = database.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
   const names = columns.map(({ name }) => `"${name}"`);
   const selections = columns.map(({ name }) => name === "id" ? "?" : `"${name}"`);
@@ -63,14 +64,14 @@ function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
 }
 
 describe("auth dependency readiness", () => {
-  it("classifies every durable dependency state and permits only finalized success", () => {
+  it("classifies every durable dependency state and permits only finalized success", async () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({ type: "commit",
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
+    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo dependent",
       title: "Dependent",
       depends_on_id: dependency.id,
-    });
+    }));
 
     expect(queue.dependencyForRequest(dependent)?.state).toBe("pending");
 
@@ -95,21 +96,21 @@ describe("auth dependency readiness", () => {
 
     expect(queue.dependencyForRequest({ depends_on_id: "does-not-exist" })?.state).toBe("missing");
 
-    const ambiguousPrefix = createAmbiguousRequestPrefix(database, queue);
+    const ambiguousPrefix = (await createAmbiguousRequestPrefix(database, queue));
     expect(queue.dependencyForRequest({ depends_on_id: ambiguousPrefix })?.state).toBe("ambiguous");
-    queue.dispose();
+    (await queue.dispose());
   });
 
   it("uses the same projection in detail, queue, and history", async () => {
     const { db: database, queue, router } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
-    const active = queue.submit({ type: "commit",
+    const active = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo active", title: "Active dependent", depends_on_id: dependency.id,
-    });
-    const historical = queue.submit({ type: "commit",
+    }));
+    const historical = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo historical", title: "Historical dependent", depends_on_id: dependency.id,
-    });
+    }));
     setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
 
     const detail = await router.invoke({ method: "GET", url: `/api/auth/request/${active.id}` });
@@ -123,15 +124,15 @@ describe("auth dependency readiness", () => {
     expect((detail.body as { dependency: unknown }).dependency).toMatchObject({ state: "ready" });
     expect(queueRow?.dependency).toMatchObject({ state: "ready" });
     expect(historyRow?.dependency).toMatchObject({ state: "ready" });
-    queue.dispose();
+    (await queue.dispose());
   });
 
   it("blocks ordinary approval until the dependency is durably finalized", async () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({ type: "commit",
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
+    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo dependent", title: "Dependent", depends_on_id: dependency.id,
-    });
+    }));
 
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/Dependency .* is pending/);
     setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
@@ -145,7 +146,7 @@ describe("auth dependency readiness", () => {
       .run("missing-dependency", dependent.id);
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is missing/);
 
-    const ambiguousPrefix = createAmbiguousRequestPrefix(database, queue);
+    const ambiguousPrefix = (await createAmbiguousRequestPrefix(database, queue));
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
       .run(ambiguousPrefix, dependent.id);
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is ambiguous/);
@@ -154,6 +155,6 @@ describe("auth dependency readiness", () => {
       .run(dependency.id, dependent.id);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
     expect((await approveFixtureRequest(queue, dependent.id)).status).toBe("executing");
-    queue.dispose();
+    (await queue.dispose());
   });
 });

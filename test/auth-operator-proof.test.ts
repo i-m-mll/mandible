@@ -65,12 +65,14 @@ describe("fresh operator proof", () => {
     const program = join(repo, "waiting-signer");
     writeFileSync(program, '#!/bin/bash\nexec /bin/sleep 30\n', { mode: 0o700 });
     writeFileSync(join(repo, ".gitconfig"), `[gpg "ssh"]\n  program = "${program}"\n`);
-    vi.useFakeTimers();
+    const realSetTimeout = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) =>
+      realSetTimeout(callback, delay === 60_000 ? 1 : delay, ...args)) as typeof setTimeout);
     try {
       const proof = signOperatorChallenge(repo, "challenge", allowed);
-      vi.advanceTimersByTime(60_000);
       expect(await proof).toMatchObject({ ok: false, reason: "timeout" });
-    } finally { vi.useRealTimers(); }
+      expect(timer).toHaveBeenCalledWith(expect.any(Function), 60_000);
+    } finally { timer.mockRestore(); }
   });
 
   it("verifies registered operator proof bound to exact challenge bytes", async () => {

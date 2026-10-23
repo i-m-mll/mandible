@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -278,25 +279,25 @@ describe("durable hook execution state (issue 27241e6)", () => {
           return { exit_code: 0, output: "merge-ok\n" };
         },
       });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Durable convergence",
         repo: "durable-repo",
         cwd: dir,
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
-      await waitFor(() => queue.getRequest(request.id)?.status === "completed");
+      await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
 
       // The merge succeeded and the queue is unblocked, but the hook did not.
       expect(executorCalls).toBe(1);
-      expect(queue.getRequest(request.id)!.exit_code).toBe(0);
+      expect((await queue.getRequest(request.id))!.exit_code).toBe(0);
       expect(queue.convergenceForRequest(request.id).state).toBe("pending");
 
       // Simulate a daemon killed mid-attempt: the attempt was persisted before
       // the spawn, so the durable row is left in `running`.
       db.prepare("UPDATE auth_hook_executions SET state = 'running' WHERE auth_request_id = ?")
         .run(request.id);
-      queue.dispose();
+      (await queue.dispose());
       expect(
         db.prepare("SELECT state, attempts FROM auth_hook_executions WHERE auth_request_id = ?")
           .get(request.id),
@@ -322,7 +323,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       expect(run.state).toBe("complete");
       expect(run.attempts).toBe(2);
       expect(run.attempt_history.map((entry) => entry.outcome)).toEqual(["failed", "ok"]);
-      resumedQueue.dispose();
+      (await resumedQueue.dispose());
     } finally {
       db.close();
     }
@@ -346,14 +347,14 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Bounded retry",
         repo: "bounded-repo",
         cwd: dir,
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
-      await waitFor(() => queue.getRequest(request.id)?.status === "completed");
+      await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
 
       // Attempts 2 and 3 come from the resume sweep; the fourth is refused.
       await queue.resumeHookConvergence();
@@ -370,10 +371,10 @@ describe("durable hook execution state (issue 27241e6)", () => {
       expect(queue.convergenceForRequest(request.id).state).toBe("failed");
 
       // The merge itself is untouched: still completed, still exit 0.
-      const merged = queue.getRequest(request.id)!;
+      const merged = (await queue.getRequest(request.id))!;
       expect(merged.status).toBe("completed");
       expect(merged.exit_code).toBe(0);
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
     }
@@ -397,14 +398,14 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Dedup alert",
         repo: "alert-repo",
         cwd: dir,
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
-      await waitFor(() => queue.getRequest(request.id)?.status === "completed");
+      await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
       await queue.resumeHookConvergence();
       await queue.resumeHookConvergence();
       await queue.resumeHookConvergence();
@@ -421,7 +422,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       expect(
         db.prepare("SELECT COUNT(*) AS count FROM ledger_issues").get(),
       ).toEqual({ count: 0 });
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
     }
@@ -477,7 +478,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: 'echo "merge-ok"',
         title: "Withhold closure",
         cwd: repoRoot,
@@ -488,9 +489,9 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
             kind: "issue_close" as const, target_issue_ref: target.short_id, payload: { on_stale: "skip" },
           })),
         ],
-      });
+      }));
       await approveFixtureRequest(queue, request.id);
-      await waitFor(() => queue.getRequest(request.id)?.status === "completed");
+      await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
 
       // Merge succeeded; convergence did not. The closure stays staged and the
       // issue stays open, while the non-closure action still ran.
@@ -518,7 +519,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
       await queue.resumeHookConvergence();
       expect(queue.listActions(request.id)).toEqual(applied);
       expect(statuses()).toEqual(["closed", "open", "closed"]);
-      queue.dispose();
+      (await queue.dispose());
     } finally {
       db.close();
     }
@@ -646,12 +647,12 @@ describe("hook registry", () => {
     hookManager.create({ repo_pattern: "*", auth_type: "commit", command: "echo hook-executed", label: "Integration test hook", position: 0 });
     const queue = new AuthQueue({ db, hookManager });
     try {
-      const request = queue.submit({ type: "commit", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" });
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" }));
       await approveFixtureRequest(queue, request.id);
-      await waitFor(() => queue.getRequest(request.id)?.status === "completed");
-      expect(queue.getRequest(request.id)?.output).toContain("hook-executed");
+      await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
+      expect((await queue.getRequest(request.id))?.output).toContain("hook-executed");
     } finally {
-      queue.dispose();
+      (await queue.dispose());
       db.close();
     }
   });

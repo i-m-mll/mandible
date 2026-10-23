@@ -1,3 +1,5 @@
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { SessionExecutionStore } from "../src/session-execution.js";
 // @vitest-environment node
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -19,17 +21,19 @@ import {
   resetHookNotificationAttentionForTests,
 } from "../src/claude-hook-attention.js";
 import { setDb, type Db } from "../src/db.js";
-import { scratchDir } from "./helpers/cli-process.js";
+import { runCli, scratchDir } from "./helpers/cli-process.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { registerHookRoutes } from "../src/routes/hooks.js";
-import { Router } from "../src/server.js";
+import { Router, createServer, createLocalSocketServer } from "../src/server.js";
+import { SseManager, setSseManager } from "../src/sse.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 
 let db: Db;
 let router: Router;
 let tempDir = "";
 
 beforeEach(() => {
-  tempDir = scratchDir("claude-hooks");
+  tempDir = scratchDir("h");
   db = migratedMemoryDb();
   setDb(db);
   resetHookNotificationAttentionForTests();
@@ -38,9 +42,105 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSseManager(null);
   vi.useRealTimers();
   db.close();
   resetHookNotificationAttentionForTests();
+});
+
+describe("execution observation boundaries", () => {
+  it("maps only supported native events and protects parent and managed identities", async () => {
+    const events = new SseManager();
+    const emitted = vi.spyOn(events, "broadcast");
+    setSseManager(events);
+    const post = (body: Record<string, unknown>) => router.invoke({ method: "POST", url: "/api/hooks/session-execution", body });
+    const base = { provider: "claude", session_id: "native-1", hook_event_name: "StopFailure", error: "cloud_credential_error", error_details: "native details" };
+    expect((await post(base)).body).toMatchObject({ status: "applied", observation: { state: { kind: "failure", error: { type: "cloud_credential_error" } } } });
+    expect((await post({ ...base, hook_event_name: "SessionStart", source: "compact" })).body).toMatchObject({ status: "applied", observation: { event: "SessionStart", state: { kind: "failure" } } });
+    expect((await post({ ...base, agent_id: "subagent", hook_event_name: "Stop" })).body).toMatchObject({ status: "unchanged" });
+    for (const bad of [{ ...base, error: null }, { ...base, provider: "codex" }, { ...base, hook_event_name: "Interrupt" }, { ...base, hook_event_name: "SubagentStop" }]) {
+      expect((await post(bad)).status).toBe(400);
+    }
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, block_count, session_id, created_at, updated_at)
+      VALUES ('managed-conversation', 'claude_code', '/tmp/native-1', 'hash', 1, 'Managed', '2026-01-01', 0, 'native-1', '2026-01-01', '2026-01-01')`).run();
+    db.prepare(`INSERT INTO conversation_control_state (conversation_id, provider, provider_session_id, generation, owner_kind, controller_state,
+      controller_instance_id, adapter_id, last_authoritative_signal, turn_state, updated_at)
+      VALUES ('managed-conversation', 'claude_code', 'native-1', 2, 'mandible', 'ready', 'controller-2', 'adapter', 1, 'none', 1)`).run();
+    const store = new SessionExecutionStore(db);
+    const managed = { provider: "claude" as const, provider_session_id: "native-1", source: "claude_sdk_hook" as const,
+      controller_instance_id: "controller-2", controller_generation: 2, state: { kind: "working" as const }, event: "UserPromptSubmit", turn_id: null };
+    expect(store.apply(managed).status).toBe("applied");
+    expect(store.apply(managed).status).toBe("unchanged");
+    expect(emitted.mock.calls.map(([event]) => event.type)).toEqual(["session:execution-updated", "session:execution-updated", "session:execution-updated"]);
+    expect(emitted.mock.calls.at(-1)?.[0].data).toMatchObject({ provider: "claude", provider_session_id: "native-1", observation: { source: "claude_sdk_hook", controller_generation: 2 } });
+    const authoritative = store.read("claude", "native-1");
+    expect((await post(base)).body).toEqual({ status: "handled_by_managed_observer", observation: authoritative });
+    expect(store.apply({ ...managed, controller_generation: 1, state: { kind: "stopped" } })).toEqual({ status: "stale_controller", observation: authoritative });
+    expect(store.apply({ ...managed, controller_instance_id: "old-controller" }).status).toBe("stale_controller");
+    expect(store.apply({ ...managed, provider_session_id: "different-native-id" }).status).toBe("stale_controller");
+    expect((await router.invoke({ method: "GET", url: "/api/hooks/session-execution?provider=claude&session_id=native-1" })).body).toEqual({ observation: authoritative });
+    expect(db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+  });
+
+  it.each(["claude", "codex"])("delivers %s payload identity through the silent shell observer", async (provider) => {
+    const socket = path.join(tempDir, "s");
+    const options: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: "test", router,
+      getStartupInfo: () => null, instance: { role: "main", instance_id: "observer-test", installation_id: "test-installation",
+        public_origin: "http://localhost", backend_generation: "observer-1", allowed_effects: PRODUCTION_EFFECTS,
+        writable_roots: [tempDir], preview_root: null, user_preferences_root: tempDir, db_path: path.join(tempDir, "db"),
+        db_path_source: "test", source_db_path: null, source_db_path_source: null } };
+    router = new Router({ instance: options.instance });
+    registerHookRoutes(router);
+    options.router = router;
+    createServer(options).close();
+    const server = createLocalSocketServer(options);
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      const binding = path.join(tempDir, "observer.json");
+      fs.writeFileSync(binding, JSON.stringify({ controller_instance_id: "inherited-controller", provider_session_id: "unrelated-parent" }));
+      const stdout = await runScriptWithInput("bash", [path.resolve("hooks/session-execution.sh"), provider], JSON.stringify({
+        session_id: "payload-native", hook_event_name: "UserPromptSubmit", prompt: "private prompt", transcript_path: "private path",
+      }), { env: { ...process.env, MANDIBLE_BASE: "", MANDIBLE_SOCKET: socket, MANDIBLE_SESSION_ID: "unrelated-parent",
+        MANDIBLE_EXECUTION_OBSERVER_ID: "inherited-controller", MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE: binding } });
+      expect(stdout).toBe("");
+      expect(new SessionExecutionStore(db).read(provider as "claude" | "codex", "payload-native")?.event).toBe("UserPromptSubmit");
+      const store = new SessionExecutionStore(db);
+      expect(store.read(provider as "claude" | "codex", "payload-native")?.state).toEqual({ kind: "working" });
+      expect(store.read(provider as "claude" | "codex", "unrelated-parent")).toBeNull();
+      const spool = path.join(tempDir, "rpc");
+      const transport = new FileRpcTransport({ router, dir: spool, pollIntervalMs: 10 });
+      transport.start();
+      try {
+        expect(await runScriptWithInput("bash", [path.resolve("hooks/session-execution.sh"), provider], JSON.stringify({
+          session_id: "file-native", hook_event_name: "Stop", last_assistant_message: "private normal message",
+        }), { env: { ...process.env, MANDIBLE_BASE: `file://${spool}`, MANDIBLE_SESSION_ID: "unrelated-parent" } })).toBe("");
+        expect((await router.invoke({ method: "GET", transport: "file-rpc",
+          url: `/api/hooks/session-execution?provider=${provider}&session_id=file-native` })).body)
+          .toMatchObject({ observation: { state: { kind: "stopped" } } });
+      } finally { transport.stop(); }
+
+      expect(db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+it("ends the whole observer before the provider timeout when file RPC is unavailable", async () => {
+  const spool = path.join(tempDir, "unavailable-rpc");
+  fs.mkdirSync(spool);
+  const started = performance.now();
+  const result = await runCli([path.resolve("hooks/session-execution.sh"), "codex"], {
+    command: "bash", input: JSON.stringify({ session_id: "deadline-native", hook_event_name: "Stop" }),
+    env: { MANDIBLE_BASE: `file://${spool}`, MANDIBLE_SESSION_ID: undefined,
+      MANDIBLE_EXECUTION_OBSERVER_ID: undefined, MANDIBLE_EXECUTION_OBSERVER_SESSION_ID: undefined,
+      MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE: undefined },
+  });
+  expect(result.status).not.toBe(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("total observation deadline exceeded");
+  expect(performance.now() - started).toBeLessThan(3000);
 });
 
 describe("Claude hook routes", () => {

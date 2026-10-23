@@ -1225,24 +1225,15 @@
           {"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},
           {"kind": "option","names": ["--title"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
           {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--issue","--ref-issue","--references-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
+          {"kind":"choice","hint":"required Description explaining the action being approved","items":[{"kind":"option","names":["--message"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},{"kind":"option","names":["--message-file"],"values":[{"kind":"argument","name":"file","value":{"type":"string"}}]}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--verification"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--diff-summary"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--handoff"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--dirty-policy"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--dirty-branch-prefix"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--supersedes"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "value","value": {"type": "integer","min": 0}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "value","value": {"type": "integer","min": 0}}]}},
           {"kind": "optional","item": {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--drop-superseded-action"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}}},
-          {"kind": "optional","item": {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--closes-issue","--close-issue"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}}},
-          {"kind": "optional","item": {"kind": "option","names": ["--promote-briefing"],"values": [{"kind": "argument","name": "value1","value": {"type": "string"}},{"kind": "argument","name": "value2","value": {"type": "string"}},{"kind": "argument","name": "value3","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--target"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--timeout"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--force","-f"],"values": []}}
+          {"kind": "optional","item": {"kind": "option","names": ["--timeout"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}}
         ]
       }
     },

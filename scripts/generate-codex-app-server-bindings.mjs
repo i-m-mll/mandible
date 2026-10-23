@@ -20,12 +20,18 @@ const entrypoints = [
   "InitializeParams.ts",
   "ClientNotification.ts",
   "v2/GetAccountParams.ts",
+  "v2/ModelListParams.ts",
+  "v2/ModelListResponse.ts",
+  "v2/ToolRequestUserInputParams.ts",
+  "v2/ToolRequestUserInputResponse.ts",
   "v2/ThreadReadParams.ts",
   "v2/ThreadUnarchiveParams.ts",
   "v2/ThreadResumeParams.ts",
   "v2/ThreadStartParams.ts",
   "v2/TurnInterruptParams.ts",
   "v2/TurnStartParams.ts",
+  "v2/TurnCompletedNotification.ts",
+  "v2/ErrorNotification.ts",
   "v2/TurnSteerParams.ts",
 ];
 

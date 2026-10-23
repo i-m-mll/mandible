@@ -1,3 +1,4 @@
+import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import type {
   ActivityItem,
   ActivityKind,
@@ -17,6 +18,7 @@ import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { chatItemIdentityKey } from "./provider-live.js";
 import { claudeAttachmentContent } from "./attachment-delivery.js";
 import { ClaudeSdkTransport, type ClaudeSdk } from "./claude-sdk-transport.js";
+import type { ExecutionTransition } from "../session-execution.js";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ConversationControlError,
@@ -43,6 +45,7 @@ type ClaudeController = {
   nativeIdentityBound: boolean;
   identityPendingRecords: unknown[];
   process: ClaudeSdkTransport;
+  settingsErrors: import("./types.js").NativeRuntimeSettings["errors"];
   queuedTurns: string[];
   consumedTogether: string[];
   messageTurns: Map<string, string>;
@@ -56,6 +59,7 @@ type ClaudeController = {
   providerSequence: number;
   liveMessageId: string | null;
   liveText: Map<string, string>;
+  liveTools: Map<number, Record<string, unknown>>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -92,6 +96,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         nativeIdentityBound: processOwner.providerSessionId !== null,
         identityPendingRecords: [],
         process: processOwner,
+        settingsErrors: {},
         state: "ready",
         activeTurnId: null,
         queuedTurns: [],
@@ -105,6 +110,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         providerSequence: 0,
         liveMessageId: null,
         liveText: new Map(),
+        liveTools: new Map(),
       };
       this.controllers.set(input.conversation_id, controller);
       processOwner.onRecord((record) => this.acceptRecord(controller, record));
@@ -140,8 +146,10 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
 
     try {
       const owned = controller.value;
-      const settings = item.operation === "queue" ? owned.acquisition.runtime_options ?? {} : item.runtime_options;
-      const immutable = ["effort", "system_prompt", "max_turns", "max_cost_usd", "setting_sources", "allowed_tools"] as const;
+      const settings = item.operation === "queue"
+        ? { ...owned.acquisition.runtime_options, ...Object.fromEntries(RUNTIME_SETTING_FIELDS.map(key => [key, item.runtime_options[key]]).filter(([, value]) => value !== undefined)) }
+        : item.runtime_options;
+      const immutable = ["system_prompt", "max_turns", "max_cost_usd", "setting_sources", "allowed_tools"] as const;
       const changed = immutable.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(owned.acquisition.runtime_options?.[key]));
       if (changed) {
         if (owned.activeTurnId) throw new Error("Startup settings can change only between turns");
@@ -160,8 +168,10 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
         replacement.onExit((exit) => this.processExited(owned, exit));
         owned.acquisition = acquisition;
       } else {
-        await owned.process.configure(settings);
-        owned.acquisition.runtime_options = settings;
+        const configured = await owned.process.configure(settings, owned.acquisition.runtime_options ?? {});
+        owned.acquisition.runtime_options = configured.acknowledged_options;
+        owned.settingsErrors = configured.errors;
+        if (Object.keys(configured.errors).length) throw new Error(Object.values(configured.errors).join("; "));
       }
     }
     catch (error) { return { ok: false, error: adapterFailure(this.id, "configuration-failed", error) }; }
@@ -227,23 +237,44 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     return { ok: true, value: undefined };
   }
 
-  async interrupt(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>> {
+  async interrupt(input: { conversation_id: string; generation: number; turn_id?: string }): Promise<Result<void, ConversationControlError>> {
     const controller = this.controllers.get(input.conversation_id);
-    if (!controller || controller.generation !== input.generation || !controller.activeTurnId) {
+    if (!controller || controller.generation !== input.generation || !controller.activeTurnId || (input.turn_id !== undefined && input.turn_id !== controller.activeTurnId)) {
       return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Claude has no owned active turn") };
     }
     try { controller.interrupting = true; await controller.process.interrupt(); return { ok: true, value: undefined }; }
-    catch (error) { return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+    catch (error) { controller.interrupting = false; return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+  }
+
+  runtimeSettings(conversationId: string, generation: number) {
+    const owned = this.controllers.get(conversationId);
+    return owned?.generation === generation ? { acknowledged_options: { ...owned.acquisition.runtime_options }, errors: { ...owned.settingsErrors } } : null;
+  }
+
+  async applyRuntimeSettings(input: { conversation_id: string; generation: number; runtime_options: import("./types.js").ConversationRuntimeOptions }): Promise<Result<void, ConversationControlError>> {
+    const owned = this.controllers.get(input.conversation_id);
+    if (!owned || owned.generation !== input.generation) return { ok: false, error: adapterFailure(this.id, "controller-unavailable", "Claude controller unavailable") };
+    const configured = await owned.process.configure(input.runtime_options, owned.acquisition.runtime_options ?? {});
+    owned.acquisition.runtime_options = configured.acknowledged_options;
+    owned.settingsErrors = configured.errors;
+    return { ok: true, value: undefined };
+  }
+
+  async modelChoices(conversationId: string): Promise<Result<{ value: string; label: string }[], ConversationControlError>> {
+    const controller = this.controllers.get(conversationId);
+    if (!controller) return { ok: false, error: adapterFailure(this.id, "controller-unavailable", "Claude controller unavailable") };
+    try { return { ok: true, value: await controller.process.modelChoices() }; }
+    catch (error) { return { ok: false, error: adapterFailure(this.id, "model-inventory-failed", error) }; }
   }
 
   permissions(conversationId: string) { return this.controllers.get(conversationId)?.process.pendingPermissions() ?? []; }
 
-  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+  async decidePermission(input: import("./types.js").ManagedRequestResponse): Promise<Result<void, ConversationControlError>> {
     const controller = this.controllers.get(input.conversation_id);
-    if (!controller || controller.generation !== input.generation || !controller.process.decidePermission(input.request_id, input.decision)) {
+    if (!controller || controller.generation !== input.generation || !controller.process.decidePermission(input.request_id, input.decision, input.answers)) {
       return { ok: false, error: adapterFailure(this.id, "permission-not-found", "Permission request is no longer pending on this controller") };
     }
-    this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
+    if (!controller.process.pendingPermissions().length && controller.activeTurnId) this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: controller.activeTurnId, at: Date.now() }));
     return { ok: true, value: undefined };
   }
 
@@ -267,6 +298,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       controller.state = "stopping";
       this.rejectPending(controller, adapterFailure(this.id, "controller-closed", "Claude controller closed"));
       await controller.process.close();
+      this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
     }));
   }
 
@@ -281,15 +313,30 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       void this.abandon(controller);
       return;
     }
-    if (record.type === "system" && record.subtype === "init" && sessionId && !controller.nativeIdentityBound) {
+    if ((record.type === "execution_hook" || record.type === "system" && record.subtype === "init") && sessionId && !controller.nativeIdentityBound) {
       const bound = this.lifecycle.emit(this.event(controller, { kind: "provider-session-bound", provider_session_id: sessionId, at: Date.now() }));
       if (!bound.ok) { void this.abandon(controller); return; }
       controller.nativeIdentityBound = true;
       for (const pendingRecord of controller.identityPendingRecords.splice(0)) this.acceptRecord(controller, pendingRecord);
     }
     if (!controller.nativeIdentityBound) { controller.identityPendingRecords.push(value); return; }
+    if (record.type === "execution_hook") {
+      const transition = record.transition as ExecutionTransition;
+      const event: ProviderRuntimeEvent = { kind: "execution", conversation_id: controller.conversationId,
+        generation: controller.generation, controller_instance_id: controller.controllerInstanceId,
+        provider_session_id: controller.providerSessionId, source: "claude_sdk_hook",
+        state: transition.state, event: transition.event, turn_id: transition.turn_id,
+        preserve_existing: transition.preserve_existing };
+      for (const listener of this.runtimeListeners) listener(event);
+      return;
+    }
     if (record.type === "user") {
-      this.acknowledgeUser(controller, record);
+      if (controller.pending && record.uuid === controller.pending.item.id) this.acknowledgeUser(controller, record);
+      else if (typeof record.uuid === "string") {
+        for (const item of this.claudeContentItems(controller, record.uuid, "user", object(record.message)?.content, "complete")) {
+          this.emitItem(controller, item);
+        }
+      }
       return;
     }
     // The SDK may consume several queued prompts in one native turn. Track
@@ -317,7 +364,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       return;
     }
     if (record.type === "control_request" && controller.activeTurnId) {
-      this.lifecycle.emit(this.event(controller, { kind: "turn-waiting-permission", turn_id: controller.activeTurnId, at: Date.now() }));
+      this.lifecycle.emit(this.event(controller, { kind: Array.isArray(object(record.request)?.questions) ? "turn-waiting-user" : "turn-waiting-permission", turn_id: controller.activeTurnId, at: Date.now() }));
       return;
     }
     if (record.type === "control_response" && controller.activeTurnId) {
@@ -353,7 +400,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     const content = object(record.message)?.content;
     const items = this.claudeContentItems(
       controller,
-      pending.item.idempotency_key,
+      providerMessageId ?? pending.item.idempotency_key,
       "user",
       content ?? pending.item.message,
       "complete",
@@ -379,6 +426,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const message = object(stream.message);
       controller.liveMessageId = typeof message?.id === "string" && message.id ? message.id : null;
       controller.liveText.clear();
+      controller.liveTools.clear();
       return;
     }
     if (stream.type === "content_block_start") {
@@ -386,6 +434,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const index = Number(stream.index);
       const content = object(stream.content_block);
       if (!messageId || !Number.isInteger(index) || index < 0 || !content) return;
+      if (content.type === "tool_use") controller.liveTools.set(index, content);
       const [item] = this.claudeContentItems(
         controller,
         messageId,
@@ -403,6 +452,19 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       const messageId = controller.liveMessageId;
       const index = Number(stream.index ?? 0);
       if (!messageId || !Number.isInteger(index) || index < 0 || !delta) return;
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const tool = controller.liveTools.get(index);
+        if (!tool) return;
+        const key = `input:${messageId}:${index}`;
+        const json = `${controller.liveText.get(key) ?? ""}${delta.partial_json}`;
+        controller.liveText.set(key, json);
+        let input: unknown = json;
+        try { input = JSON.parse(json); } catch { /* Partial JSON remains visible until complete. */ }
+        const [item] = this.claudeContentItems(controller, messageId, "assistant",
+          [{ ...tool, input }], "streaming", undefined, index);
+        if (item) this.emitItem(controller, item);
+        return;
+      }
       const activityKind: ActivityKind | null = delta.type === "thinking_delta" ? "thinking" : null;
       const fragment = delta.type === "text_delta" ? delta.text
         : delta.type === "thinking_delta" ? delta.thinking
@@ -446,6 +508,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       generation: controller.generation,
       sequence: ++controller.providerSequence,
       observed_at: Date.now(),
+      ...(controller.activeTurnId ? { control_turn_id: controller.activeTurnId } : {}),
       identity,
       ...(correlation ? { correlation } : {}),
       item,
@@ -650,8 +713,9 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     const turnId = controller.activeTurnId;
     controller.activeTurnId = null;
     const now = Date.now();
-    if (controller.interrupting) {
-      controller.interrupting = false;
+    const interrupted = controller.interrupting;
+    controller.interrupting = false;
+    if (interrupted && record.is_error === true && record.subtype === "error_during_execution") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-cancelled", turn_id: turnId, at: now }));
     } else if (record.is_error === false && record.subtype === "success") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-completed", turn_id: turnId, at: now }));
@@ -739,7 +803,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     if (controller.activeTurnId) {
       this.lifecycle.emit(this.event(controller, { kind: "turn-unknown", turn_id: controller.activeTurnId, at: Date.now(), reason: "probe-ambiguous" }));
     }
-    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now() }));
+    this.lifecycle.emit(this.event(controller, { kind: "controller-released", at: Date.now(), reason: "protocol-ambiguous" }));
     controller.intentionalStop = true;
     this.controllers.delete(controller.conversationId);
     this.rejectPending(controller, adapterFailure(this.id, "ambiguous-protocol", "Claude emitted an ambiguous protocol record"));

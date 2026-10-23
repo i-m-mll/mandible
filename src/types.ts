@@ -250,6 +250,7 @@ export interface AuthRequest {
   title: string;
   cwd: string | null;
   diff_summary: string | null;
+  /** The authored Description. Historical storage/wire key retained for signed evidence. */
   commit_message: string | null;
   // Issue 7d64d8f — SHA-256 of the canonical change message bytes. Non-null
   // exactly when `commit_message` is an agent-authored canonical change
@@ -378,7 +379,8 @@ export interface AuthRequestInput {
   title: string;
   cwd?: string | null;
   diff_summary?: string | null;
-  commit_message?: string | null;
+  /** Required authored Description for new submissions; validated at the queue boundary. */
+  commit_message: string;
   // Issue 7d64d8f — declares that `commit_message` is an agent-authored
   // canonical change message. The daemon canonicalizes the bytes, stores them
   // back, and records their digest; only then does the merge consume them

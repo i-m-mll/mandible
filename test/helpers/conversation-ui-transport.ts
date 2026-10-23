@@ -1,6 +1,7 @@
 import { fireEvent as nativeEvent } from '@testing-library/dom';
 import { act } from '@testing-library/preact';
 import { vi } from 'vitest';
+import { conversationRunOptions } from '../../src/conversation-control/runtime-options';
 import * as api from '../../ui/src/api';
 
 /** Supply the structure half of the same explicit transcript fixture, without a second window read. */
@@ -24,9 +25,17 @@ export function mockConversationStructureFromWindow(): void {
 
 /** Managed settings are fetched separately from transcript and terminal metadata. */
 export function mockManagedSettings(runtime_options: api.ConversationRuntimeOptions = { model: 'gpt-5.6-sol', effort: 'medium', permission_mode: 'agent' }): void {
-  vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL) => {
-    if (String(path).endsWith('/control/settings')) return new Response(JSON.stringify({ ok: true,
-      value: { revision: 1, runtime_options, usage: [] } }), { headers: { 'content-type': 'application/json' } });
+  let revision = 1;
+  vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+    if (String(path).endsWith('/control/settings')) {
+      if (init?.method === 'PATCH') {
+        runtime_options = { ...runtime_options, ...JSON.parse(String(init.body)).runtime_options };
+        revision++;
+      }
+      return new Response(JSON.stringify({ ok: true,
+        value: { revision, runtime_options, usage: [] } }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (String(path).endsWith('/control/options')) return new Response(JSON.stringify({ ok: true, value: conversationRunOptions('codex', [{value: runtime_options.model ?? 'gpt-5.6-sol', label: runtime_options.model ?? 'gpt-5.6-sol'}, {value: 'edited-model', label: 'edited-model'}]) }), { headers: { 'content-type': 'application/json' } });
     if (String(path).endsWith('/control/permissions')) return new Response(JSON.stringify({ ok: true, value: [] }),
       { headers: { 'content-type': 'application/json' } });
     throw new Error(`Unmocked UI request: ${String(path)}`);

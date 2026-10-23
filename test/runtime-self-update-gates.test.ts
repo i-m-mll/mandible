@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 // Issue a09b4d2 — a stale runtime handoff lock let approvals proceed while it
 // blocked every rebuild, and the failure looked like a manual restart. These
@@ -54,20 +55,20 @@ function holdHandoffLock(phase = "failed") {
 interface AcceptanceRun { input: CandidateAcceptanceInput; settle: (outcome: CandidateAcceptanceOutcome) => void }
 
 /** Submit a self-update with durable custody of its delivery work unit, which names the acceptance owner. */
-function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput> = {}) {
+async function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput> = {}) {
   if (!patch.supersedes_request_id) {
     db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
       VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, credentialId);
   }
-  return queue.submit({ type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
+  return (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
     repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch,
     merge_head_sha: git(repo, ["rev-parse", branch]), execution_mode: "local",
     requester_evidence_method: "api_token", requester_credential_id: credentialId, require_delivery_custody: true,
-    issue_references: ["5e1f0d0"], ...patch }, operatorId);
+    issue_references: ["5e1f0d0"], ...patch }, operatorId));
 }
 
-function acceptanceOf(id: string) {
-  return queue.candidateAcceptanceForRequest(queue.getRequest(id)!);
+async function acceptanceOf(id: string) {
+  return queue.candidateAcceptanceForRequest((await queue.getRequest(id))!);
 }
 
 function acceptanceExecutor(input: CandidateAcceptanceInput) {
@@ -98,9 +99,9 @@ beforeEach(() => {
     executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
-  queue.dispose();
+  (await queue.dispose());
   db.close();
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
@@ -108,24 +109,24 @@ afterEach(() => {
 
 describe("runtime handoff lock gate", () => {
   it("refuses check, submission and approval of a self-update while a lock is held", async () => {
-    const request = submit();
+    const request = (await submit());
     holdHandoffLock();
-    const check = queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" });
+    const check = (await queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" }));
     expect(check).toMatchObject({ status: "error", reason: expect.stringMatching(/Runtime handoff lock .* phase failed \(Candidate runtime readiness failed\)/) });
-    expect(() => submit("feature/other")).toThrow(/Runtime handoff lock/);
+    await expect((async () => (await submit("feature/other"))())).rejects.toThrow(/Runtime handoff lock/);
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
-    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect((await queue.getRequest(request.id))?.status).toBe("pending");
     // Other repositories do not self-update the installation and stay unaffected.
     db.prepare("UPDATE auth_hooks SET repo_pattern = 'mandible' WHERE id = 'builtin-mandible-rebuild'").run();
-    expect(queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" }).status).toBe("clean");
+    expect((await queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" })).status).toBe("clean");
   });
 });
 
 describe("candidate acceptance gate", () => {
   it("runs acceptance on submission and approves only after the exact current candidate passes", async () => {
-    const request = submit();
+    const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    const current = queue.getRequest(request.id)!;
+    const current = (await queue.getRequest(request.id))!;
     expect(runs[0]!.input).toMatchObject({ repoRoot: repo, pinSha: current.merge_candidate_pin_sha, workUnitId: "wu-feature/self-update", projectId });
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: "running", pin_sha: current.merge_candidate_pin_sha,
       tree_sha: current.merge_candidate_tree_sha, base_sha: current.merge_preflight_base_sha, head_sha: current.merge_head_sha });
@@ -136,39 +137,39 @@ describe("candidate acceptance gate", () => {
 
     runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
     await queue.drainCandidateAcceptances();
-    expect(acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
+    expect((await acceptanceOf(request.id))).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
 
-    await queue.runCandidateAcceptance(queue.getRequest(request.id)!);
+    await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
-    expect(acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+    expect((await acceptanceOf(request.id))).toMatchObject({ state: "passed" });
 
     await queue.approveWithOperatorProof(request.id, operatorId);
-    expect(queue.getRequest(request.id)?.status).toBe("executing");
+    expect((await queue.getRequest(request.id))?.status).toBe("executing");
   });
 
   it("aborts the superseded request's run and runs the replacement's candidate", async () => {
-    const original = submit();
+    const original = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     git(repo, ["checkout", "feature/self-update"]);
     fs.writeFileSync(path.join(repo, "runtime.txt"), "revised\n");
     git(repo, ["commit", "-am", "revise candidate"]);
     git(repo, ["checkout", "main"]);
-    const replacement = submit("feature/self-update", { supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 });
+    const replacement = (await submit("feature/self-update", { supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 }));
 
     expect(runs[0]!.input.signal.aborted).toBe(true);
     expect(latestCandidateAcceptance(db, original.id)).toMatchObject({ status: "failed", error: "The request is superseded." });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running'").all();
     expect(open).toEqual([{ auth_request_id: replacement.id }]);
-    expect(runs[1]!.input.pinSha).toBe(queue.getRequest(replacement.id)!.merge_candidate_pin_sha);
+    expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
   });
 
   it("re-pins a candidate the handoff lock left stale and runs its acceptance once the lock is released, with no approval", async () => {
     commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
-    const request = submit();
+    const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
@@ -178,28 +179,28 @@ describe("candidate acceptance gate", () => {
     const lock = holdHandoffLock("complete");
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
     const finalizer = queue as unknown as { revalidatePendingMergeRequestsSerialized(request: unknown): Promise<void> };
-    await finalizer.revalidatePendingMergeRequestsSerialized(queue.getRequest("merge-sibling"));
+    await finalizer.revalidatePendingMergeRequestsSerialized((await queue.getRequest("merge-sibling")));
     await queue.refreshPendingCandidates();
-    expect(queue.getRequest(request.id)!.merge_candidate_pin_sha).toBe(runs[0]!.input.pinSha);
+    expect((await queue.getRequest(request.id))!.merge_candidate_pin_sha).toBe(runs[0]!.input.pinSha);
     expect(runs).toHaveLength(1);
 
     // The first idle tick after the lock is released brings the candidate current.
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
-    const repinned = queue.getRequest(request.id)!;
+    const repinned = (await queue.getRequest(request.id))!;
     expect(repinned).toMatchObject({ status: "pending", merge_preflight_base_sha: git(repo, ["rev-parse", "main"]) });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(repinned.merge_candidate_pin_sha);
-    expect(acceptanceOf(request.id)).toMatchObject({ state: "running" });
+    expect((await acceptanceOf(request.id))).toMatchObject({ state: "running" });
   });
 
   it("passes over an unchanged candidate on the idle tick without blocking the event loop on Git", async () => {
-    const request = submit();
+    const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
     await queue.refreshPendingCandidates();
-    const pin = queue.getRequest(request.id)!.merge_candidate_pin_sha;
+    const pin = (await queue.getRequest(request.id))!.merge_candidate_pin_sha;
 
     const slow = useSlowGit(0.3);
     try {
@@ -208,14 +209,14 @@ describe("candidate acceptance gate", () => {
     } finally {
       fs.rmSync(slow.dir, { recursive: true, force: true });
     }
-    expect(queue.getRequest(request.id)!.merge_candidate_pin_sha).toBe(pin);
+    expect((await queue.getRequest(request.id))!.merge_candidate_pin_sha).toBe(pin);
     expect(runs).toHaveLength(1);
   });
 
   it("runs a run a restart interrupted again at startup", async () => {
-    const request = submit();
+    const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    queue.dispose();
+    (await queue.dispose());
     queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
@@ -226,7 +227,7 @@ describe("candidate acceptance gate", () => {
 
 describe("rebuild failure", () => {
   it("reports a refused rebuild with its reason and clears the restart window", async () => {
-    queue.dispose();
+    (await queue.dispose());
     const events: SseEvent[] = [];
     const failed: string[] = [];
     const restart = vi.fn();
@@ -236,9 +237,9 @@ describe("rebuild failure", () => {
       broadcast: (event) => { events.push(event); },
       restartAvailability: { markRebuildStarted: (id = "") => id, markShutdownStarted: () => true, markRebuildFailed: (id) => { failed.push(id); return true; } },
       executor: async (options) => publishFixtureExecution(queue, options) });
-    const request = queue.submit({ type: "merge", command: "mandible auth merge feature/self-update --into main", title: "Self-update",
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", command: "mandible auth merge feature/self-update --into main", title: "Self-update",
       repo: "mandible", cwd: repo, base_branch: "main", head_branch: "feature/self-update",
-      merge_head_sha: git(repo, ["rev-parse", "feature/self-update"]), execution_mode: "daemon" });
+      merge_head_sha: git(repo, ["rev-parse", "feature/self-update"]), execution_mode: "daemon" }));
     await approveFixtureRequest(queue, request.id);
     await waitForStatus(queue, request.id, "completed");
     await waitUntilPasses(() => expect(events.some((event) => event.event === "mandible:rebuild-failed")).toBe(true));

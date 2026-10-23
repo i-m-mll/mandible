@@ -1,11 +1,17 @@
 import type { JSX } from 'preact';
 
 export type SidebarReorderBinding = {
+  handleOnly: boolean;
   dragging: boolean;
   dropTarget: boolean;
   root: {
     'data-sidebar-reorder-id': string;
     onClickCapture(event: JSX.TargetedMouseEvent<HTMLElement>): void;
+    onPointerDown?: SidebarReorderBinding['handle']['onPointerDown'];
+    onPointerMove?: SidebarReorderBinding['handle']['onPointerMove'];
+    onPointerUp?: SidebarReorderBinding['handle']['onPointerUp'];
+    onPointerCancel?: SidebarReorderBinding['handle']['onPointerCancel'];
+    onLostPointerCapture?: SidebarReorderBinding['handle']['onLostPointerCapture'];
   };
   control: {
     'aria-describedby': string;

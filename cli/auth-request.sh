@@ -9,11 +9,12 @@
 #   <branch>                Source branch (merge requests only)
 #   --title <text>          Dashboard title
 #
-# Canonical change message (issues 7d64d8f, 4720024), required for merges:
-#   --message <text>        Agent-authored change message (mutually exclusive with
+# Description, required for every approval type:
+#   --message <text>        Authored review document (mutually exclusive with
 #                           --message-file)
-#   --message-file <file>   Read the agent-authored change message from a file
+#   --message-file <file>   Read the authored Description from a file
 #                           ('-' reads stdin)
+# Merge-only:
 #   --verification <text>   Verification section text: the checks run and their
 #                           results
 #
@@ -187,8 +188,8 @@ if [[ "$auth_type" == "merge" ]]; then
     exit 2
   fi
 else
-  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || $change_message_set -eq 1 || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
-    echo "Error: branches, merge messages, closure, handoff, and protected-root options require --type merge" >&2
+  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
+    echo "Error: branches, verification, closure, handoff, and protected-root options require --type merge" >&2
     exit 2
   fi
   if [[ $command_set -ne 1 || -z "${command//[[:space:]]/}" ]]; then
@@ -200,6 +201,30 @@ else
     exit 2
   fi
 fi
+change_message_body=""
+if [[ -n "$change_message_file" ]]; then
+  if [[ "$change_message_file" == "-" ]]; then
+    change_message_body=$(cat)
+  else
+    if [[ ! -f "$change_message_file" ]]; then
+      echo "Error: --message-file '${change_message_file}' does not exist" >&2
+      exit 2
+    fi
+    change_message_body=$(cat "$change_message_file")
+  fi
+else
+  change_message_body="$change_message_text"
+fi
+
+if [[ -z "${change_message_body//[[:space:]]/}" ]]; then
+  echo "Error: the Description is empty" >&2
+  exit 2
+fi
+
+if [[ "$auth_type" != "merge" ]]; then
+  commit_message="$change_message_body"
+fi
+
 if [[ ${#SUPERSEDED_ACTION_DISPOSITIONS[@]} -gt 0 && -z "$supersedes_request_id" ]]; then
   echo "Error: --drop-superseded-action requires --supersedes" >&2
   exit 2

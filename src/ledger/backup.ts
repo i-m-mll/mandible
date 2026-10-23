@@ -41,6 +41,7 @@ export const METADATA_BACKUP_TABLES = [
   "console_session_usage",
   "console_session_telemetry",
   "conversations",
+  "conversation_identity_aliases",
   // Durable source identity and restore metadata (migration 140). These rows
   // are the compact map from a conversation to provider or managed-custody
   // bytes, including stable block aliases and the exact parser epoch needed to
@@ -277,6 +278,9 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   // activity. Keep it out of durable metadata backups so a dump never scans or
   // materializes a potentially multi-gigabyte log table.
   "daemon_log",
+  // The last execution state each provider session reported. It describes
+  // live runtime and is stale in any restored copy; the next hook rewrites it.
+  "provider_session_execution",
   "branches",
   "work_repos",
   "push_history",
@@ -379,7 +383,20 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
     path.dirname(outputPath),
     `.${path.basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  const file = fs.openSync(temporaryPath, "wx", 0o600);
+  try {
+    const result = writeMetadataBackupFile(db, temporaryPath);
+    fs.renameSync(temporaryPath, outputPath);
+    return { ...result, path: outputPath };
+  } catch (error) {
+    try { fs.unlinkSync(temporaryPath); } catch { /* preserve the original failure */ }
+    throw error;
+  }
+}
+
+/** Write and flush one unpublished file; its owner controls final publication. */
+export function writeMetadataBackupFile(db: Db, outputPath: string): MetadataBackupResult {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const file = fs.openSync(outputPath, "wx", 0o600);
   try {
     db.transaction(() => {
       let buffer = "";
@@ -396,10 +413,9 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
     }).deferred();
     fs.fsyncSync(file);
     fs.closeSync(file);
-    fs.renameSync(temporaryPath, outputPath);
   } catch (error) {
     try { fs.closeSync(file); } catch { /* already closed */ }
-    try { fs.unlinkSync(temporaryPath); } catch { /* preserve the original failure */ }
+    try { fs.unlinkSync(outputPath); } catch { /* preserve the original failure */ }
     throw error;
   }
   const stat = fs.statSync(outputPath);

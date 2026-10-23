@@ -81,12 +81,12 @@ describe("classifyGitFailure", () => {
 });
 
 describe("resolveAuthMergeExecutionContext branch verification", () => {
-  it("reports a genuinely absent branch as absent", () => {
+  it("reports a genuinely absent branch as absent", async () => {
     const repo = createRepo();
     const db = createSharedMigratedDb({ now: 1 });
     try {
       registerRepo(db, repo);
-      expect(() =>
+      await expect(
         resolveAuthMergeExecutionContext(db, {
           type: "merge",
           command: "mandible auth merge feature/missing --into main",
@@ -94,13 +94,13 @@ describe("resolveAuthMergeExecutionContext branch verification", () => {
           base_branch: "main",
           head_branch: "feature/missing",
         }),
-      ).toThrow(/local branch 'feature\/missing' does not exist/);
+      ).rejects.toThrow(/local branch 'feature\/missing' does not exist/);
     } finally {
       db.close();
     }
   });
 
-  it("reports an unrunnable git as a spawn failure, never as a missing branch", () => {
+  it("reports an unrunnable git as a spawn failure, never as a missing branch", async () => {
     const repo = createRepo();
     const db = createSharedMigratedDb({ now: 1 });
     const originalPath = process.env.PATH;
@@ -111,7 +111,7 @@ describe("resolveAuthMergeExecutionContext branch verification", () => {
       process.env.PATH = path.join(repo, "no-such-bin");
       let message = "";
       try {
-        resolveAuthMergeExecutionContext(db, {
+        await resolveAuthMergeExecutionContext(db, {
           type: "merge",
           command: "mandible auth merge feature/x --into main",
           target_repo_root: repo,
@@ -137,20 +137,20 @@ describe("resolveAuthMergeExecutionContext branch verification", () => {
 // approval-context path still collapsing every git outcome into null, so a
 // daemon-health failure was reported as an unregistered repository.
 describe("repoRootFromGitCommonDir failure honesty", () => {
-  it("reports a root inside a repository, git's answer outside one, and a spawn failure as such", () => {
+  it("reports a root inside a repository, git's answer outside one, and a spawn failure as such", async () => {
     const repo = createRepo();
-    expect(probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: repo, failure: null });
+    expect(await probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: repo, failure: null });
 
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-norepo-")));
     tempDirs.push(dir);
-    const outside = probeRepoRootFromGitCommonDir(dir);
+    const outside = await probeRepoRootFromGitCommonDir(dir);
     expect(outside.root).toBeNull();
     expect(outside.failure?.kind).toBe("exit");
 
     const originalPath = process.env.PATH;
     try {
       process.env.PATH = path.join(repo, "no-such-bin");
-      expect(probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: null, failure: { kind: "spawn", errno: "ENOENT" } });
+      expect(await probeRepoRootFromGitCommonDir(repo)).toMatchObject({ root: null, failure: { kind: "spawn", errno: "ENOENT" } });
     } finally {
       process.env.PATH = originalPath;
     }

@@ -1,7 +1,9 @@
-import { accessSync, constants } from "node:fs";
-import { platform } from "node:os";
+import { join } from "node:path";
+import { accessSync, constants, mkdtempSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
 import type {
   ClientNotification,
+  ModelListParams,
   GetAccountParams,
   InitializeParams,
   ThreadReadParams,
@@ -15,6 +17,7 @@ import type {
 import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
 
 type CodexRequestParams = {
+  "model/list": ModelListParams;
   initialize: InitializeParams;
   "account/read": GetAccountParams;
   "thread/start": ThreadStartParams;
@@ -66,10 +69,11 @@ export class CodexAppServerClient {
   private exitListener: ((exit: StructuredProcessExit) => void) | null = null;
   private malformedListener: (() => void) | null = null;
 
-  private constructor(private readonly processOwner: StructuredJsonProcess) {
+  private constructor(private readonly processOwner: StructuredJsonProcess, private readonly observer: { directory: string; controller_instance_id: string } | null) {
     processOwner.onRecord((record) => this.accept(record));
     processOwner.onMalformed(() => this.malformedListener?.());
     processOwner.onExit((exit) => {
+      if (this.observer) rmSync(this.observer.directory, { recursive: true, force: true });
       for (const request of this.pending.values()) {
         clearTimeout(request.timer);
         request.reject(new Error(exit.stderr || `Codex App Server exited with ${exit.code ?? exit.signal}`));
@@ -79,26 +83,41 @@ export class CodexAppServerClient {
     });
   }
 
-  static async connect(options: { spawnProcess?: StructuredProcessSpawner; executable?: string } = {}): Promise<CodexAppServerClient> {
+  static async connect(options: { spawnProcess?: StructuredProcessSpawner; executable?: string; env?: NodeJS.ProcessEnv;
+    executionObserver?: { controller_instance_id: string; provider_session_id: string | null } } = {}): Promise<CodexAppServerClient> {
     const command = codexAppServerExecutable({ override: options.executable });
-    const processOwner = await StructuredJsonProcess.start(
-      command,
-      ["app-server", "--listen", "stdio://"],
-      { spawnProcess: options.spawnProcess },
-    );
-    const client = new CodexAppServerClient(processOwner);
+    const observer = options.executionObserver ? {
+      directory: mkdtempSync(join(tmpdir(), "mandible-execution-observer-")),
+      controller_instance_id: options.executionObserver.controller_instance_id,
+    } : null;
+    let client: CodexAppServerClient | null = null;
     try {
+      const env = { ...options.env };
+      if (observer) env.MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE = join(observer.directory, "session.json");
+      const processOwner = await StructuredJsonProcess.start(command, ["app-server", "--listen", "stdio://"],
+        { spawnProcess: options.spawnProcess, ...(options.env || observer ? { env } : {}) });
+      client = new CodexAppServerClient(processOwner, observer);
+      if (options.executionObserver?.provider_session_id) client.bindExecutionObserver(options.executionObserver.provider_session_id);
       await client.request("initialize", {
         clientInfo: { name: "mandible", title: "Mandible", version: "0.1.0" },
-        capabilities: { experimentalApi: false, requestAttestation: false },
+        capabilities: { experimentalApi: true, requestAttestation: false },
       });
       const initialized: ClientNotification = { method: "initialized" };
-      processOwner.write(initialized);
+      client.processOwner.write(initialized);
       return client;
     } catch (error) {
-      await processOwner.close();
+      if (client) await client.close();
+      if (observer) rmSync(observer.directory, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  bindExecutionObserver(providerSessionId: string): void {
+    if (!this.observer) return;
+    const staged = join(this.observer.directory, "session.tmp");
+    writeFileSync(staged, JSON.stringify({ controller_instance_id: this.observer.controller_instance_id,
+      provider_session_id: providerSessionId }), { mode: 0o600 });
+    renameSync(staged, join(this.observer.directory, "session.json"));
   }
 
   get alive(): boolean {

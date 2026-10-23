@@ -752,7 +752,7 @@ export function registerWorkUnitRoutes(
     sendJson(res, 200, custodyCheck(db, rows[0] ? mapRow(rows[0]) : null, identity, req, sessionManager, readCodexTask));
   }, { operation: { id: "get:/api/work-units/custody-check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  server.post("/api/work-units/:id/custody/assume", (req, res) => {
+  server.post("/api/work-units/:id/custody/assume", async (req, res) => {
     const identity = durableCredential(req);
     if (!identity) {
       sendJson(res, 401, { error: "Work-unit custody requires an authenticated durable client credential." });
@@ -802,9 +802,9 @@ export function registerWorkUnitRoutes(
     let authorityPath: CustodyAuthorityPath = "operator_recovery";
     let checkpointId: string | null = null;
     let priorLiveness: HolderLiveness | null = null;
-    const blocked = (liveness: HolderLiveness): void => {
+    const blocked = async (liveness: HolderLiveness): Promise<void> => {
       if (body.request_approval === true) {
-        requestCustodyApproval(req, res, unit, identity, liveness, body.reason!.trim());
+        (await requestCustodyApproval(req, res, unit, identity, liveness, body.reason!.trim()));
         return;
       }
       sendJson(res, 409, liveHolderRefusal(db, unit, liveness, sameCredential));
@@ -819,7 +819,7 @@ export function registerWorkUnitRoutes(
         return;
       }
       priorLiveness = holding.liveness;
-      if (holding.state !== "stopped") return blocked(holding.liveness);
+      if (holding.state !== "stopped") return (await blocked(holding.liveness));
       authorityPath = "stopped_holder_takeover";
     } else if (!operatorRecovery && unit.kind === "integration") {
       if (!unit.ledger_issue_id || !body.parent_role_checkpoint_id) {
@@ -843,7 +843,7 @@ export function registerWorkUnitRoutes(
       authorityPath = "parent_role_handoff";
     } else if (!operatorRecovery) {
       priorLiveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
-      if (priorLiveness.state !== "stopped") return blocked(priorLiveness);
+      if (priorLiveness.state !== "stopped") return (await blocked(priorLiveness));
       authorityPath = "stopped_holder_takeover";
     }
     try {
@@ -875,14 +875,14 @@ export function registerWorkUnitRoutes(
    * Queue one custody-transfer auth request for the operator, or return the
    * caller's existing pending request for the same unit and generation.
    */
-  function requestCustodyApproval(
+  async function requestCustodyApproval(
     req: RequestLike,
     res: Parameters<typeof sendJson>[0],
     unit: WorkUnit,
     identity: { user_id: string; credential_id: string },
     liveness: HolderLiveness,
     reason: string,
-  ): void {
+  ): Promise<void> {
     if (unit.kind === "integration" && unit.owner_credential_id !== identity.credential_id) {
       sendJson(res, 409, { error: "Integration custody transfers use the parent-role checkpoint or operator recovery." });
       return;
@@ -913,13 +913,13 @@ export function registerWorkUnitRoutes(
         ? db.prepare("SELECT root FROM ledger_project_checkouts WHERE project_id = ? ORDER BY created_at, id LIMIT 1")
           .get(project.project.id) as { root: string } | undefined
         : undefined;
-      let request: ReturnType<AuthQueue["submit"]>;
+      let request: Awaited<ReturnType<AuthQueue["submit"]>>;
       try {
-        request = options.authQueue.submit({
+        request = (await options.authQueue.submit({
           type: "custody-transfer",
           command,
           title: `Transfer custody of ${unit.branch ?? unit.issue_id} to ${requester.user_slug ?? identity.user_id}`,
-          // The reviewed abstract the operator reads before approving.
+          // The authored Description bound to this custody transfer.
           commit_message: [
             `${unit.branch ? `\`${unit.branch}\`` : `Work unit \`${unit.id}\``} is held by ${holderLabel(holder)}, ` +
               `whose session ${livenessLabel(liveness)}. ${holderLabel(requester)} asks for custody.`,
@@ -938,7 +938,7 @@ export function registerWorkUnitRoutes(
           conversation_id: session.provider_session_id,
           requester_evidence_method: "api_token",
           requester_credential_id: identity.credential_id,
-        }, identity.user_id);
+        }, identity.user_id));
       } catch (error) {
         sendJson(res, 409, { error: error instanceof Error ? error.message : String(error), code: "custody_approval_refused" });
         return;

@@ -89,3 +89,18 @@ it('shows ambiguity for the current explicit target and preserves context on a d
   expect(params.get('agent_session')).toBe('bound');
   expect(params.get('sentinel')).toBe('a&b+c');
 });
+
+
+it('shows known managed conversation facts while canonical overview metadata is pending', async () => {
+  const lookup = deferred<SessionOverview>();
+  vi.mocked(getSessionOverview).mockReturnValue(lookup.promise);
+  render(<SessionOverviewView initialSessionId="native" embedded managedConversation={{
+    conversation: { id: 'chat', title: 'New managed chat', source: 'codex', cwd: '/project', branch: 'feature/chat', model: 'requested-model', started_at: null, source_path: 'mandible://conversation/chat' },
+    control: null, spawn: null,
+  }} />);
+  expect(screen.getByText('New managed chat')).toBeTruthy();
+  expect(screen.getByText('requested-model')).toBeTruthy();
+  expect(screen.queryByText('Loading overview…')).toBeNull();
+  await act(async () => lookup.resolve(overview('native')));
+  expect(screen.getByText('New managed chat')).toBeTruthy();
+});

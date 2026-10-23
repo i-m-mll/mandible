@@ -185,7 +185,7 @@ export function registerTools(
         .optional()
         .describe("Working directory (repo root or worktree)"),
       message: z
-        .string()
+        .string().refine(value => value.trim().length > 0, "Description must not be blank")
         .describe(
           "Required canonical change message, used verbatim as the merge commit message: an outcome subject line, " +
             "a blank line, a short Why paragraph, then a line reading 'Verification:' followed by exactly the " +

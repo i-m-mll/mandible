@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 const provider = process.argv[2];
@@ -21,19 +23,32 @@ lines.on("line", (line) => {
     activeTurnId=null;
     return;
   }
+  if (request.id === "question-1" && request.result) {
+    send({ method: "serverRequest/resolved", params: { threadId: approvalThread, requestId: request.id } });
+    const answered = request.result.answers?.direction?.answers?.[0] === "Left";
+    send({ method: "turn/completed", params: { threadId: approvalThread, turn: { id: activeTurnId, status: answered ? "completed" : "failed" } } });
+    activeTurnId = null;
+    return;
+  }
   if (request.method === "initialized") return;
   const respond = (result) => send({ id: request.id, result });
   if (request.method === "initialize") respond({ userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" });
+  else if (request.method === "model/list") respond({ data: [{ model: "fixture-model", displayName: "Fixture model" }], nextCursor: null });
   else if (request.method === "account/read") respond({ account: { type: "chatgpt", email: null, planType: "plus" }, requiresOpenaiAuth: true });
   else if (request.method === "thread/unarchive") {
     if (process.env.FAKE_CODEX_UNARCHIVE_FAIL === "1") send({ id: request.id, error: { code: -32600, message: "Archive restore refused" } });
     else { archived = false; respond({ thread: { id: process.env.FAKE_CODEX_RESTORED_ID ?? request.params.threadId } }); }
+  }
+  else if (request.method === "thread/resume" && request.params.threadId === "codex-new-thread"
+    && process.env.FAKE_CODEX_NATIVE_STATE && !fs.existsSync(path.join(process.env.FAKE_CODEX_NATIVE_STATE, "rollout"))) {
+    send({ id: request.id, error: { code: -32600, message: "no rollout found for thread id codex-new-thread" } });
   }
   else if (request.method === "thread/resume" && archived) send({ id: request.id, error: { code: -32600, message: "Thread remains archived" } });
   else if (request.method === "thread/resume") respond({ thread: { id: request.params.threadId, status: { type: process.env.FAKE_CODEX_RESUME_STATUS ?? "idle" } } });
   else if (request.method === "thread/start") respond({ thread: { id: "codex-new-thread", status: { type: "idle" } } });
   else if (request.method === "thread/read") respond({ thread: { id: request.params.threadId, path: `/tmp/codex/${archived ? "archived_sessions" : "sessions"}/${request.params.threadId}.jsonl`, status: { type: process.env.FAKE_CODEX_THREAD_STATUS ?? "idle" } } });
   else if (request.method === "turn/start") {
+    if (process.env.FAKE_CODEX_NATIVE_STATE) fs.writeFileSync(path.join(process.env.FAKE_CODEX_NATIVE_STATE, "rollout"), "materialized");
     outputBatch = [];
     activeTurnId = `native-${request.params.clientUserMessageId}`;
     const turn = { id: activeTurnId, status: "inProgress" };
@@ -72,7 +87,24 @@ lines.on("line", (line) => {
       send({ method:"thread/tokenUsage/updated", params:{ threadId:approvalThread,turnId:activeTurnId,tokenUsage:{total:{inputTokens:12,outputTokens:3,totalTokens:15}} } });
       send({ id:"approval-1", method:"item/commandExecution/requestApproval", params:{ threadId:approvalThread,turnId:activeTurnId,command:"true",reason:"bounded approval fixture" } });
     }
-    if (!["hold","permission"].includes(request.params.input[0]?.text)) {
+    if (request.params.input[0]?.text === "question") {
+      approvalThread = request.params.threadId;
+      send({ id: "question-1", method: "item/tool/requestUserInput", params: { threadId: approvalThread, turnId: activeTurnId, itemId: "question-item", questions: [
+        { id: "direction", header: "Direction", question: "Which direction?", isOther: false, isSecret: false, options: [{ label: "Left", description: "Go left" }, { label: "Right", description: "Go right" }] }
+      ] } });
+    }
+    if (["retry-failure", "object-failure", "no-code-failure"].includes(request.params.input[0]?.text)) {
+      const code = request.params.input[0].text === "object-failure" ? { responseStreamDisconnected: { httpStatusCode: 429 } }
+        : request.params.input[0].text === "no-code-failure" ? null : "usageLimitExceeded";
+      const error = { message: "native failure", ...(code === null ? {} : { codexErrorInfo: code }), additionalDetails: "native detail" };
+      for (const willRetry of [true, false]) send({ method: "error", params: {
+        threadId: request.params.threadId, turnId: activeTurnId, willRetry, error } });
+      const completion = { method: "turn/completed", params: { threadId: request.params.threadId,
+        turn: { id: activeTurnId, status: "failed", error } } };
+      send(completion); send(completion);
+      send({ method: "thread/status/changed", params: { threadId: request.params.threadId, status: { type: "idle" } } });
+      send({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 100 } } } });
+    } else if (!["hold","permission","question"].includes(request.params.input[0]?.text)) {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;
     }

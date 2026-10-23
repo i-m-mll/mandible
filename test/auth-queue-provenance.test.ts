@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
@@ -37,13 +38,13 @@ describe("auth queue", () => {
       });
     }
 
-    function submitPinnedRequest(
+    async function submitPinnedRequest(
       queue: AuthQueue,
       repo: string,
       headBranch: string,
       command = `mandible auth merge ${headBranch} --into main`,
     ) {
-      const request = queue.submit({
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command,
         title: `Merge ${headBranch}`,
@@ -52,7 +53,7 @@ describe("auth queue", () => {
         head_branch: headBranch,
         merge_head_sha: git(repo, ["rev-parse", headBranch]),
         cwd: repo,
-      });
+      }));
       expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
       return request;
     }
@@ -72,7 +73,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/forge-target");
+        const request = (await submitPinnedRequest(queue, repo, "feature/forge-target"));
         // Signed but UNRECORDED base advance (no completed queue request).
         const newBase = signedMergeIntoMain(repo, "feature/rogue");
         // A completed request exists for the attacker to target, but its
@@ -82,14 +83,14 @@ describe("auth queue", () => {
           .run("forge-decoy");
 
         // The append is refused by the lifecycle lock…
-        expect(() => queue.appendOutput("forge-decoy", mergeResultOutput(newBase)))
+        await expect((async () => (await queue.appendOutput("forge-decoy", mergeResultOutput(newBase)))())).rejects
           .toThrow(/only be appended while a request is executing/);
         // …and the transition stays unaccounted, so approval fails strict.
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect((await queue.getRequest(request.id))?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -113,8 +114,8 @@ describe("auth queue", () => {
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const first = submitPinnedRequest(queue, repo, "feature/ev-a");
-        const second = submitPinnedRequest(queue, repo, "feature/ev-b");
+        const first = (await submitPinnedRequest(queue, repo, "feature/ev-a"));
+        const second = (await submitPinnedRequest(queue, repo, "feature/ev-b"));
 
         // Authorized advance whose structured evidence records the genuine
         // merge SHA while the output marker is forged to a different SHA.
@@ -143,10 +144,10 @@ describe("auth queue", () => {
           .run(shaLessEvidence.id, "merge-ev-2");
 
         await expect(approveFixtureRequest(queue, second.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(second.id)?.status).toBe("pending");
+        expect((await queue.getRequest(second.id))?.status).toBe("pending");
         expect(calls).toHaveLength(1);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -166,7 +167,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/reuse-target");
+        const request = (await submitPinnedRequest(queue, repo, "feature/reuse-target"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/reuse-sib", "merge-reuse-1");
         // Second completed request claiming the SAME merge SHA in its output.
         insertSiblingMergeRequest(db, repo, "merge-reuse-2", "feature/reuse-decoy", "completed");
@@ -175,10 +176,10 @@ describe("auth queue", () => {
         ).run(mergeResultOutput(newBase), "merge-reuse-2");
 
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect((await queue.getRequest(request.id))?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -198,7 +199,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const request = submitPinnedRequest(queue, repo, "feature/octo-target");
+        const request = (await submitPinnedRequest(queue, repo, "feature/octo-target"));
         // Signed octopus merge: first parent main, then octo-1 AND octo-2.
         insertSiblingMergeRequest(db, repo, "merge-octo", "feature/octo-1", "completed");
         git(repo, ["checkout", "main"]);
@@ -210,10 +211,10 @@ describe("auth queue", () => {
         ).run(mergeResultOutput(octoSha), "merge-octo");
 
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect((await queue.getRequest(request.id))?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -250,7 +251,7 @@ describe("auth queue", () => {
           public_material: fs.readFileSync(`${outsiderKeyPath}.pub`, "utf8").trim(),
         });
 
-        const request = submitPinnedRequest(queue, repo, "feature/signer-target");
+        const request = (await submitPinnedRequest(queue, repo, "feature/signer-target"));
         // Sibling merge recorded with the operator as approver but signed by
         // the outsider's (registered, trusted) key.
         git(repo, ["config", "user.signingkey", outsiderKeyPath]);
@@ -258,10 +259,10 @@ describe("auth queue", () => {
         git(repo, ["config", "user.signingkey", operatorSigning.keyPath]);
 
         await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect((await queue.getRequest(request.id))?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }
@@ -282,8 +283,8 @@ describe("auth queue", () => {
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
         configureSigningCredential(db, repo, "ssh_key");
 
-        const multi = submitPinnedRequest(queue, repo, "feature/multi");
-        const long = submitPinnedRequest(queue, repo, "feature/long");
+        const multi = (await submitPinnedRequest(queue, repo, "feature/multi"));
+        const long = (await submitPinnedRequest(queue, repo, "feature/long"));
 
         let base = "";
         for (let index = 1; index <= 3; index += 1) {
@@ -302,10 +303,10 @@ describe("auth queue", () => {
         const refusal = approveFixtureRequest(queue, long.id);
         await expect(refusal).rejects.toThrow(STRICT_MESSAGE);
         await expect(refusal).rejects.toThrow(/beyond the cap for automatic attestation/);
-        expect(queue.getRequest(long.id)?.status).toBe("pending");
+        expect((await queue.getRequest(long.id))?.status).toBe("pending");
         expect(calls).toHaveLength(1);
       } finally {
-        queue.dispose();
+        (await queue.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
       }

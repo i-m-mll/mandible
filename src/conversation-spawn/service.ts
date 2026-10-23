@@ -53,7 +53,7 @@ export class ConversationSpawnService {
     if (recoverInterrupted) this.terminalizeInterrupted();
   }
 
-  reserve(input: ConversationSpawnRequest): Result<ConversationSpawnReceipt> {
+  reserve(input: ConversationSpawnRequest, runtimeOptions?: import("../conversation-control/types.js").ConversationRuntimeOptions): Result<ConversationSpawnReceipt> {
     const validated = this.validate(input);
     if (!validated.ok) return validated;
     const request = validated.value;
@@ -85,7 +85,7 @@ export class ConversationSpawnService {
         at,
         at,
       );
-      this.event(request.idempotency_key, "reserved", { request_digest: digest }, at);
+      this.event(request.idempotency_key, "reserved", { request_digest: digest, ...(runtimeOptions ? { runtime_options: runtimeOptions } : {}) }, at);
     })();
     return this.get(request.idempotency_key);
   }
@@ -374,6 +374,9 @@ export class ConversationSpawnService {
   }
 
   private receipt(row: SpawnRow): ConversationSpawnReceipt {
+    const reserved = this.db.prepare("SELECT event_json FROM conversation_spawn_events WHERE spawn_id = ? AND event_kind = 'reserved' ORDER BY ordinal LIMIT 1")
+      .get(row.id) as { event_json: string } | undefined;
+    const runtimeOptions = reserved ? JSON.parse(reserved.event_json).runtime_options : undefined;
     return {
       schema: row.schema_version === CONVERSATION_SPAWN_REQUEST_SCHEMA
         ? CONVERSATION_SPAWN_RECEIPT_SCHEMA
@@ -381,6 +384,7 @@ export class ConversationSpawnService {
           ? "mandible-conversation-spawn-receipt@2"
           : "mandible-conversation-spawn-receipt@1",
       reservation_id: row.id,
+      ...(runtimeOptions ? { runtime_options: runtimeOptions } : {}),
       request: JSON.parse(row.request_json),
       state: row.state,
       attempt_count: row.attempt_count,

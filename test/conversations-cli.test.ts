@@ -1,12 +1,14 @@
 // @vitest-environment node
-import fs from "node:fs";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { fileRpc, runCli, scratchDir, startStubDaemon } from "./helpers/cli-process.js";
 import type { FileRpcHandler } from "./helpers/file-rpc-responder.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
-import type SqliteDatabase from "../src/sqlite.js";
+import { setDb } from "../src/db.js";
+import { createServer, Router } from "../src/server.js";
+import { SseManager } from "../src/sse.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
 const cleanups: Array<() => unknown> = [];
 afterEach(async () => {
@@ -93,9 +95,7 @@ describe("conversations CLI", () => {
     expect(result.stderr).toContain("--limit 500 exceeds the server cap; at most 20 hits are returned");
   });
 
-  // Issue 6f6b0ce: the local transport lists from the SQLite index, a path the
-  // file-RPC cases never reach.
-  it("lists from a local index with provider, tag, and limit filters", async () => {
+  it("lists through the daemon with provider, tag, and limit filters", async () => {
     const db = migratedMemoryDb();
     const insert = db.prepare(`
       INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, session_id, tags)
@@ -104,13 +104,22 @@ describe("conversations CLI", () => {
     insert.run("conv-old", "codex", "/logs/old.jsonl", "Older", "2026-06-11T00:00:00.000Z", "session-old", '["keep"]');
     insert.run("conv-new", "codex", "/logs/new.jsonl", "Newer", "2026-06-12T00:00:00.000Z", "session-new", '["keep"]');
     insert.run("conv-claude", "claude_code", "/logs/claude.jsonl", "Claude", "2026-06-13T00:00:00.000Z", "session-claude", "[]");
-    const dbPath = path.join(scratchDir("conversations-db"), "mandible.db");
-    fs.writeFileSync(dbPath, (db as unknown as SqliteDatabase).serialize());
-    db.close();
-
+    insert.run("conv-untagged", "codex", "/logs/untagged.jsonl", "Untagged", "2026-06-14T00:00:00.000Z", "session-untagged", '[]');
+    setDb(db);
+    const instance = MAIN_CLI_INSTANCE_RESPONSE.instance;
+    const router = new Router({ instance });
+    registerConversationRoutes(router);
+    const server = createServer({ db, router, instance, sse: new SseManager(), logger: () => undefined,
+      version: 'cli-list-fixture', getStartupInfo: () => null });
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port));
+    });
+    cleanups.push(() => db.close());
+    cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
     const result = await runCli(["conversations", "list", "--provider", "codex", "--tag", "keep", "--limit", "1", "--json"], {
       cwd: scratchDir("cwd"),
-      env: { MANDIBLE_DB: dbPath },
+      env: { MANDIBLE_BASE: `http://127.0.0.1:${port}`, MANDIBLE_PORT: String(port) },
     });
 
     expect(result.status, result.stderr).toBe(0);

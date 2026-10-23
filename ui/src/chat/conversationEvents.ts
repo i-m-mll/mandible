@@ -1,7 +1,9 @@
+import type { ConversationControlSnapshot, ProviderLiveContentEvent } from '../../../src/conversation-control/types';
+import { conversationExecutionState } from './conversationControl';
 import type { ConversationBlock, ProviderLiveProjection } from '../api';
 import type { ChatItem } from '../../../src/parsers/types';
 import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
-import type { AssistantEvent, StreamEvent } from '../components/stream-renderer/types';
+import type { AssistantEvent, CanonicalChatItemEvent, StreamEvent } from '../components/stream-renderer/types';
 
 export function deriveStreamingState(events: StreamEvent[]): boolean {
   const last = events[events.length - 1];
@@ -23,11 +25,13 @@ export function flushPendingSSE(
   pendingSSERef.current = [];
   if (pending.length === 0) return;
   setStreamEvents((prev) => {
-    const newEvents = pending.filter((pe) => {
-      const peJson = JSON.stringify(pe);
-      return !prev.some((existing) => JSON.stringify(existing) === peJson);
-    });
-    const merged = newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+    const merged = [...prev];
+    for (const event of pending) {
+      const identity = stableProviderEventIdentity(event);
+      const index = identity === null ? -1 : merged.findIndex((existing) => stableProviderEventIdentity(existing) === identity);
+      if (index < 0) merged.push(event);
+      else merged[index] = event;
+    }
     setStreaming(deriveStreamingState(merged));
     return merged;
   });
@@ -38,12 +42,7 @@ export function computeLiveTail(
   memEvents: StreamEvent[],
 ): StreamEvent[] {
   const historyIds = new Set(historyEvents.map(stableProviderEventIdentity).filter((id): id is string => id !== null));
-  let lastReconciled = -1;
-  for (let index = 0; index < memEvents.length; index += 1) {
-    const identity = stableProviderEventIdentity(memEvents[index]);
-    if (identity && historyIds.has(identity)) lastReconciled = index;
-  }
-  return memEvents.slice(lastReconciled + 1).filter((event) => {
+  return memEvents.filter((event) => {
     const identity = stableProviderEventIdentity(event);
     return identity === null || !historyIds.has(identity);
   });
@@ -63,28 +62,76 @@ export function stableProviderEventIdentity(event: StreamEvent): string | null {
 export function reconcileProviderProjection(
   historyEvents: StreamEvent[],
   projection: ProviderLiveProjection | null,
+  intentAliases: Map<string, string> = new Map(),
+  snapshot?: ConversationControlSnapshot | null,
 ): StreamEvent[] {
-  if (!projection || projection.events.length === 0) return historyEvents;
-  const historyIds = new Set(historyEvents.map(stableProviderEventIdentity).filter((id): id is string => id !== null));
-  const latest = new Map<string, Extract<ProviderLiveProjection['events'][number], { kind: 'provisional-content' }>>();
-  for (const candidate of projection.events) {
-    if (candidate.kind !== 'provisional-content') continue;
-    const canonicalIdentity = chatItemIdentityKey(candidate.item);
-    if (canonicalIdentity === null
-      || canonicalIdentity !== candidate.identity
-      || candidate.item.provenance.source !== 'live-provider-event'
-      || historyIds.has(`chat-item:${candidate.identity}`)) continue;
+  const latest = new Map<string, ProviderLiveContentEvent>();
+  for (const candidate of projection?.events ?? []) {
+    if (candidate.kind !== 'provisional-content'
+      || chatItemIdentityKey(candidate.item) !== candidate.identity
+      || candidate.item.provenance.source !== 'live-provider-event') continue;
     const prior = latest.get(candidate.identity);
-    if (!prior
-      || candidate.generation > prior.generation
-      || (candidate.generation === prior.generation && candidate.sequence > prior.sequence)) {
-      latest.set(candidate.identity, candidate);
+    if (!prior || candidate.generation > prior.generation
+      || (candidate.generation === prior.generation && candidate.sequence > prior.sequence)) latest.set(candidate.identity, candidate);
+    if (candidate.correlation && candidate.item.type === 'message' && candidate.item.role === 'user') {
+      intentAliases.set(candidate.identity, `intent:${candidate.correlation.intent_id}`);
     }
   }
-  const provisional = [...latest.values()]
-    .sort((left, right) => left.generation - right.generation || left.sequence - right.sequence)
-    .map((candidate): StreamEvent => ({ type: 'chat:item', item: candidate.item }));
-  return provisional.length > 0 ? [...historyEvents, ...provisional] : historyEvents;
+  const execution = conversationExecutionState(snapshot);
+  const nativeTurns = new Map([...latest.values()].flatMap((candidate) => candidate.correlation && candidate.item.identity.native_turn_id
+    ? [[candidate.item.identity.native_turn_id, candidate.correlation.turn_id] as const] : []));
+  const executing = (candidate: ProviderLiveContentEvent): boolean => execution.isExecuting
+    && candidate.generation === execution.generation
+    && (candidate.control_turn_id ?? nativeTurns.get(candidate.item.identity.native_turn_id ?? '') ?? candidate.item.identity.native_turn_id) === execution.activeTurnId
+    && candidate.item.type === 'tool-call' && candidate.item.phase === 'call'
+    && (candidate.item.content_completion === 'streaming' || candidate.item.identity.provider === 'claude_code')
+    && candidate.item.execution_outcome === undefined;
+  const acknowledged = new Set([...latest.values()].flatMap((candidate) => candidate.correlation ? [candidate.correlation.intent_id] : []));
+  const history = historyEvents.map((event): StreamEvent => {
+    if (event.type !== 'chat:item') return event;
+    const canonical = event as CanonicalChatItemEvent;
+    const identity = chatItemIdentityKey(canonical.item, { allowTranscriptCoordinates: true });
+    const displayKey = canonical.intentId ? `intent:${canonical.intentId}` : identity && intentAliases.get(identity);
+    return displayKey ? { ...canonical, displayKey } : canonical;
+  });
+  const durable = new Map(history.map((event, index) => [stableProviderEventIdentity(event), index] as const));
+  const candidates = [...latest.values()].filter((candidate) => candidate.item.provenance.source_event_type !== 'optimistic-user-prompt'
+    || !acknowledged.has(candidate.item.identity.native_item_id ?? ''));
+  const insertions = new Map<number, StreamEvent[]>();
+  let priorAnchor = -1;
+  candidates.forEach((candidate, index) => {
+    const durableIndex = durable.get(`chat-item:${candidate.identity}`);
+    if (durableIndex !== undefined) {
+      priorAnchor = durableIndex;
+      history[durableIndex] = { ...history[durableIndex], executionActive: executing(candidate) };
+      const event = history[durableIndex] as CanonicalChatItemEvent;
+      // Display windows omit lazy tool bodies. Keep the already observed input
+      // until exact source details arrive; the durable row still owns position.
+      if (event.source?.detailsLoaded === false) {
+        history[durableIndex] = { ...event, item: { ...candidate.item, ...event.item,
+          ...(event.item.type === 'tool-call' && candidate.item.type === 'tool-call'
+            ? { input: candidate.item.input, output: candidate.item.output } : { parts: candidate.item.parts }),
+        } as ChatItem };
+      }
+      return;
+    }
+    const nextAnchor = candidates.slice(index + 1).map((next) => durable.get(`chat-item:${next.identity}`))
+      .find((position) => position !== undefined && position > priorAnchor);
+    const chronologicalAnchor = history.findIndex((event, position) => {
+      if (position <= priorAnchor || event.type !== 'chat:item') return false;
+      const timestamp = (event as CanonicalChatItemEvent).source?.timestamp;
+      return Boolean(timestamp && Date.parse(timestamp) >= candidate.observed_at);
+    });
+    const position = nextAnchor ?? (chronologicalAnchor >= 0 ? chronologicalAnchor : history.length);
+    const displayKey = candidate.item.provenance.source_event_type === 'optimistic-user-prompt'
+      ? `intent:${candidate.item.identity.native_item_id}` : intentAliases.get(candidate.identity);
+    const events = insertions.get(position) ?? [];
+    events.push({ type: 'chat:item', item: candidate.item, displayKey,
+      executionActive: executing(candidate), persistencePending: ['terminal', 'unknown', 'idle'].includes(execution.phase) });
+    insertions.set(position, events);
+  });
+  return history.flatMap((event, index) => [...(insertions.get(index) ?? []), event])
+    .concat(insertions.get(history.length) ?? []);
 }
 
 function parseMetadata(json: string): Record<string, unknown> {
@@ -137,7 +184,9 @@ export function conversationBlocksToStreamEvents(
       const identity = item && item.provenance.source === 'verified-provider-transcript'
         ? chatItemIdentityKey(item, { allowTranscriptCoordinates: true })
         : null;
-      if (item && identity) events.push({ type: 'chat:item', item, source });
+      if (item && identity) events.push({ type: 'chat:item', item, source,
+        ...(typeof metadata.client_intent_id === 'string' ? { intentId: metadata.client_intent_id } : {}),
+      });
     }
   }
 

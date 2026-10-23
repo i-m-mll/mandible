@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 
 import fs from "node:fs";
@@ -62,10 +63,10 @@ function createLedgerIssue(db: Db, alias = "act123", branch?: string) {
   return { repoRoot, issue };
 }
 
-function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue['submit']>[0]) {
+async function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue['submit']>[0]) {
   const head = payload.command.match(/auth merge ([^ ]+)/)![1];
-  return queue.submit({ ...payload, execution_mode: 'daemon', base_branch: 'main', head_branch: head,
-    merge_head_sha: git(payload.cwd!, ['rev-parse', head]) });
+  return (await queue.submit({ ...AUTH_MERGE_REVIEW,  ...payload, execution_mode: 'daemon', base_branch: 'main', head_branch: head,
+    merge_head_sha: git(payload.cwd!, ['rev-parse', head]) }));
 }
 
 describe("auth request action schema", () => {
@@ -124,7 +125,7 @@ describe("auth request action execution", () => {
       const { repoRoot, issue } = createLedgerIssue(db, "exec123", "exec");
       let now = 10_000;
       const queue = new AuthQueue({ db, now: () => now });
-      const request = submitActionMerge(queue, {
+      const request = (await submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/exec --into main",
         title: "Execute staged actions",
@@ -138,7 +139,7 @@ describe("auth request action execution", () => {
           { kind: "checkpoint_add", target_issue_ref: issue.short_id, payload: { kind: "handoff", payload: { ok: true } } },
           { kind: "issue_close", target_issue_ref: issue.short_id, payload: { reason_comment: "Merged cleanly" } },
         ],
-      });
+      }));
 
       // Issue 08a5f04 (review F2) — canonical-command verification needs the
       // structured branches; the fixture cwd is not a git repo, so they are
@@ -147,7 +148,7 @@ describe("auth request action execution", () => {
       now = 11_000;
       await completeFixturePublication(queue, request.id);
 
-      const finalized = queue.getRequest(request.id)!;
+      const finalized = (await queue.getRequest(request.id))!;
       expect(db.prepare(
         "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
       ).get(request.id)).toEqual({ count: 1 });
@@ -202,7 +203,7 @@ describe("auth request action execution", () => {
       now = 12_000;
       const restarted = new AuthQueue({ db, now: () => now });
       try {
-        restarted.getRequest(request.id);
+        (await restarted.getRequest(request.id));
         expect(
           db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?").get(issue.id),
         ).toEqual({ count: 2 });
@@ -213,7 +214,7 @@ describe("auth request action execution", () => {
           "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
         ).get(request.id)).toEqual({ count: 1 });
       } finally {
-        restarted.dispose();
+        (await restarted.dispose());
       }
     } finally {
       db.close();
@@ -225,7 +226,7 @@ describe("auth request action execution", () => {
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "fail123", "fail");
       const queue = new AuthQueue({ db, now: () => 20_000 });
-      const request = submitActionMerge(queue, {
+      const request = (await submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/fail --into main",
         title: "Failure isolation",
@@ -237,7 +238,7 @@ describe("auth request action execution", () => {
           { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "still-applied" } },
           { kind: "comment_add", target_issue_ref: issue.short_id, payload: { body: "Vetoed" } },
         ],
-      });
+      }));
       const actions = queue.listActions(request.id);
       const operator = getOperator(db)!;
       const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `action-fixture-${crypto.randomUUID()}` });
@@ -286,7 +287,7 @@ describe("auth request action execution", () => {
       const lastFresh = target("guard6");
       queue = new AuthQueue({ db, now: () => 30_000, backgroundMaintenance: false });
       const skip = { on_stale: "skip" };
-      const request = submitActionMerge(queue, {
+      const request = (await submitActionMerge(queue, {
         type: "merge", command: "mandible auth merge feature/stale --into main",
         title: "Independent guarded closures", cwd: repoRoot, repo: path.basename(repoRoot),
         actions: [
@@ -297,7 +298,7 @@ describe("auth request action execution", () => {
           { kind: "issue_close", target_issue_ref: injected.short_id, payload: skip },
           { kind: "issue_close", target_issue_ref: lastFresh.short_id, payload: skip },
         ],
-      });
+      }));
       const apply = (queue as any).applyDeferredLedgerAction.bind(queue);
       (queue as any).applyDeferredLedgerAction = (request: unknown, action: { ordinal: number }) => {
         if (action.ordinal === 5) throw new Error("Injected target execution failure");
@@ -319,26 +320,27 @@ describe("auth request action execution", () => {
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
       expect(store.getIssue(fresh.id).resolution).toBe("delivered");
 
-      const current = queue.getRequest(request.id)!;
-      (queue as any).applyLedgerCompletionForRequest(current);
-      (queue as any).releaseWithheldClosures(current);
+      await queue.drainFinalizers();
+      const current = (await queue.getRequest(request.id))!;
+      (await (queue as any).applyLedgerCompletionForRequest(current));
+      (await (queue as any).releaseWithheldClosures(current));
       expect(queue.listActions(request.id)).toEqual(actions);
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
-    } finally { queue?.dispose(); db.close(); }
+    } finally { (await queue?.dispose()); db.close(); }
   });
 
-  it("creates resolves operational links for staged issue_close actions", () => {
+  it("creates resolves operational links for staged issue_close actions", async () => {
     const db = createMigratedDb();
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "link123");
       const queue = new AuthQueue({ db, now: () => 50_000 });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo link",
         title: "Link staged close",
         cwd: repoRoot,
         repo: path.basename(repoRoot),
         actions: [{ kind: "issue_close", target_issue_ref: issue.short_id, payload: {} }],
-      });
+      }));
 
       expect(
         db.prepare(
@@ -360,7 +362,7 @@ describe("auth request action execution", () => {
 });
 
 describe("auth request action queue persistence", () => {
-  it("submits actions with target digests and edits one row without touching siblings", () => {
+  it("submits actions with target digests and edits one row without touching siblings", async () => {
     const db = createMigratedDb();
     try {
       const { repoRoot, issue } = createLedgerIssue(db);
@@ -368,7 +370,7 @@ describe("auth request action queue persistence", () => {
       let now = 1000;
       const queue = new AuthQueue({ db, now: () => now });
 
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo staged",
         title: "Staged actions",
         cwd: repoRoot,
@@ -378,7 +380,7 @@ describe("auth request action queue persistence", () => {
           { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "ready" } },
           { kind: "checkpoint_add", target_issue_ref: issue.short_id, payload: { kind: "handoff", payload: { ok: true } } },
         ],
-      });
+      }));
 
       const before = queue.listActions(request.id);
       expect(before).toHaveLength(3);
@@ -414,16 +416,16 @@ describe("auth request action queue persistence", () => {
     }
   });
 
-  it("denies CRUD after a request succeeds", () => {
+  it("denies CRUD after a request succeeds", async () => {
     const db = createMigratedDb();
     try {
       const queue = new AuthQueue({ db });
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo done",
         title: "Done",
         actions: [{ kind: "issue_close", target_issue_ref: "abc123", payload: {} }],
-      });
-      seedHistoricalAuthCompletion(queue, request.id, "ok");
+      }));
+      (await seedHistoricalAuthCompletion(queue, request.id, "ok"));
 
       expect(() => queue.addAction(request.id, {
         kind: "label_add",
@@ -472,7 +474,7 @@ describe("auth request action routes", () => {
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/request",
-        body: {
+        body: { ...AUTH_MERGE_REVIEW,
           command: "echo merge",
           title: "Promote reviewed policy",
           type: "merge",
@@ -524,7 +526,7 @@ describe("auth request action routes", () => {
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/request",
-        body: {
+        body: { ...AUTH_MERGE_REVIEW,
           command: "echo merge",
           title: "Stale policy promotion",
           type: "merge",
@@ -565,7 +567,7 @@ describe("auth request action routes", () => {
       const submit = await router.invoke({
         method: "POST",
         url: "/api/auth/request",
-        body: {
+        body: { ...AUTH_MERGE_REVIEW,
           command: "echo route",
           title: "Route staged actions",
           session_id: "auth-action-route-session",
@@ -615,11 +617,11 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-      const request = queue.submit({ type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo route",
         title: "Route veto",
         actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],
-      });
+      }));
       const action = queue.listActions(request.id)[0];
 
       const veto = await router.invoke({
@@ -638,7 +640,7 @@ describe("auth request action routes", () => {
       expect(restore.status).toBe(200);
       expect((restore.body as { action: { state: string } }).action.state).toBe("staged");
 
-      seedHistoricalAuthCompletion(queue, request.id, "ok");
+      (await seedHistoricalAuthCompletion(queue, request.id, "ok"));
       const denied = await router.invoke({
         method: "POST",
         url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
@@ -665,7 +667,7 @@ describe("auth request action routes", () => {
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/request",
-        body: {
+        body: { ...AUTH_MERGE_REVIEW,
           command: "echo bad",
           title: "Bad staged action",
           session_id: "auth-action-invalid-session",

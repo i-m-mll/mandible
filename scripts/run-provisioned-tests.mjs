@@ -44,8 +44,8 @@ function declaredResource(file) {
   return declared ?? null;
 }
 
-/** macOS lockf and launchd. */
-const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "runtime-handoff-full.test.ts"]);
+/** macOS lockf, launchd and native descriptor inspection. */
+const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "runtime-handoff-full.test.ts", "sqlite-close-lifetime.test.ts"]);
 
 function suiteFiles() {
   return readdirSync(path.join(root, SUITE_DIR))
@@ -98,7 +98,7 @@ function poolSize() {
 
 function spawnVitest(unit, env) {
   return spawn(env.MANDIBLE_RUNTIME, [
-    "--smol", path.join(root, "node_modules", "vitest", "vitest.mjs"), "run", ...unit.args,
+    "--smol", path.join(root, "scripts", "run-vitest.js"), "run", ...unit.args,
   ], {
     cwd: root,
     detached: true,

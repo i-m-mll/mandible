@@ -34,6 +34,7 @@ import { afterAll, afterEach, expect } from "vitest";
 
 import { AuthHookManager } from "../../src/auth-hooks.js";
 import { AuthQueue } from "../../src/auth-queue.js";
+import type { SseEvent } from "../../src/contracts.js";
 import type { Db } from "../../src/db.js";
 import {
   createLedgerIssue as createSharedLedgerIssue,
@@ -496,10 +497,26 @@ export function createNoopHookManager(): AuthHookManager {
 }
 
 export async function waitForStatus(queue: AuthQueue, id: string, status: string) {
-  return waitUntil(() => {
-    const request = queue.getRequest(id);
+  return waitUntil(async () => {
+    const request = (await queue.getRequest(id));
     return request?.status === status ? request : undefined;
   }, `request ${id} to reach status ${status}`, 20);
+}
+
+/** Observe Stage 2 completion without waiting for hooks, restart, or Stage 3. */
+export async function awaitFixtureResolution<T>(queue: AuthQueue, id: string, operation: () => Promise<T>): Promise<T> {
+  const internal = queue as unknown as { broadcast: (event: SseEvent) => void };
+  const broadcast = internal.broadcast;
+  let resolved = false;
+  internal.broadcast = event => {
+    broadcast(event);
+    if (event.event === "auth:resolved" && (event.data as { request_id?: string }).request_id === id) resolved = true;
+  };
+  try {
+    const result = await operation();
+    await waitUntil(() => resolved, `request ${id} to emit auth:resolved`);
+    return result;
+  } finally { internal.broadcast = broadcast; }
 }
 
 export function insertMandibleSession(
@@ -584,11 +601,11 @@ export function recordPassingCandidateAcceptance(db: Db, requestId: string): voi
 export async function approveFixtureRequest(queue: AuthQueue, id: string): Promise<ReturnType<AuthQueue['approve']>> {
   const db = (queue as unknown as { db: Db }).db;
   recordPassingCandidateAcceptance(db, id);
-  let request = queue.getRequest(id)!;
+  let request = (await queue.getRequest(id))!;
   // Command-state tests need a real signing context even when their command
   // has no repository semantics. Set it through the normal pending edit API.
   if (!request.cwd && !request.command.includes('auth merge')) {
-    request = queue.update(id, { cwd: createAuthCheckRepo() });
+    request = (await queue.update(id, { cwd: createAuthCheckRepo() }));
   }
   if (request.cwd && fs.existsSync(path.join(request.cwd, '.git')) &&
       !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
@@ -598,17 +615,17 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
 }
 
 /** Stored historical rows test projections/recovery, never execution authority. */
-export function seedHistoricalAuthCompletion(queue: AuthQueue, id: string, output = '', exitCode = 0, error: string | null = null): void {
+export async function seedHistoricalAuthCompletion(queue: AuthQueue, id: string, output = '', exitCode = 0, error: string | null = null): Promise<void> {
   const db = (queue as unknown as { db: Db }).db;
-  const request = queue.getRequest(id)!;
+  const request = (await queue.getRequest(id))!;
   db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = ?, error = ?, output = ?, resolved_at = ?, updated_at = ? WHERE id = ?")
     .run(exitCode, error, output, request.created_at, request.created_at, id);
 }
 
 /** A historical interrupted process, without invented signing evidence. */
-export function seedHistoricalAuthExecution(queue: AuthQueue, id: string): void {
+export async function seedHistoricalAuthExecution(queue: AuthQueue, id: string): Promise<void> {
   const db = (queue as unknown as { db: Db }).db;
-  const request = queue.getRequest(id)!;
+  const request = (await queue.getRequest(id))!;
   db.prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?")
     .run(request.created_at, request.created_at, id);
 }
@@ -616,7 +633,7 @@ export function seedHistoricalAuthExecution(queue: AuthQueue, id: string): void 
 /** A real signed exact-candidate receipt from the delivery fixture. */
 export async function publishFixtureExecution(queue: AuthQueue, options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>[0]) {
   const { publishTestCandidate } = await import('./auth-delivery-fixtures.js');
-  const { output } = publishTestCandidate(options.cwd!, queue.getRequest(options.request_id)!);
+  const { output } = publishTestCandidate(options.cwd!, (await queue.getRequest(options.request_id))!);
   options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
   return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
 }
@@ -645,13 +662,25 @@ export async function approvePausedFixtureRequest(queue: AuthQueue, id: string):
 
 /** Publish exact signed bytes, then release the ordinary executor completion path. */
 export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
-  const request = queue.getRequest(id)!;
+  const request = (await queue.getRequest(id))!;
   const output = request.type === 'merge'
     ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
     : 'ok';
   const release = pausedFixtureExecutions.get(queue)?.get(id);
   if (!release) throw new Error('Fixture execution was not paused.');
-  release(output);
-  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
-  await waitForStatus(queue, id, 'completed');
+  await awaitFixtureResolution(queue, id, async () => {
+    release(output);
+    (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
+    await waitForStatus(queue, id, 'completed');
+  });
 }
+
+export const AUTH_COMMAND_REVIEW = {
+  commit_message: "Exercise the requested action in the isolated authorization fixture.",
+};
+
+export const AUTH_MERGE_REVIEW = {
+  commit_message: "Exercise the reviewed private merge.\n\nWhy:\nVerify the authorization contract against an isolated Git fixture.\n\nVerification:\nThe fixture validates the requested state transition.\n",
+  canonical_message: true,
+  verification: "The fixture validates the requested state transition.",
+};

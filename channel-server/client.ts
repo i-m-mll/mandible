@@ -317,7 +317,8 @@ export async function submitAuth(payload: {
   cwd?: string | null;
   diff_summary?: string | null;
   canonical_message?: boolean;
-  commit_message?: string | null;
+  /** The required authored Description; merges use its exact canonical Git bytes. */
+  commit_message: string;
   verification?: string | null;
   repo?: string;
   base_branch?: string;

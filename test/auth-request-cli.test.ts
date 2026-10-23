@@ -212,7 +212,7 @@ describe("action-specific request preparation", () => {
       const result = await runAsync([
         "auth", "request", "--type", "config-change", "--command", command,
         "--cwd", executionDir, "--repo", "example", "--title", "Apply reviewed settings",
-        "--issue", "settings123", "--no-watch",
+        "--issue", "settings123", "--message", "Apply the reviewed settings without changing application data.", "--no-watch",
       ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
       expect(result.status, result.stderr).toBe(0);
       expect(server.checkBodies).toEqual([]);
@@ -249,7 +249,7 @@ describe("action-specific request preparation", () => {
   it("never executes a command when queue submission is unavailable", () => {
     const result = run([
       "auth", "request", "--type", "data-delete", "--command", "touch should-not-exist",
-      "--cwd", homeDir, "--repo", "example", "--title", "Review", "--issue", "example", "--no-watch",
+      "--cwd", homeDir, "--repo", "example", "--title", "Review", "--issue", "example", "--message", "Delete the explicitly reviewed private fixture.", "--no-watch",
     ]);
     expect(result.status).toBe(1);
     expect(result.stdout).not.toContain("request submitted");

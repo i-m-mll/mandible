@@ -39,6 +39,8 @@ export function chatSpawnFailureNotice(failure: ConversationSpawnFailure): ChatF
 
 export function chatControlFailureNotice(error: ConversationControlError): ChatFailureNoticeModel {
   switch (error.kind) {
+    case 'settings-drift':
+      return { title: 'Conversation settings changed.', detail: error.message, retryable: false, diagnostics: diagnostics({ desired_revision: error.desired_revision }) };
     case 'adapter-failure':
       return {
         title: 'The provider could not complete this action.',

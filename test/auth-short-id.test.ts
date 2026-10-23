@@ -1,3 +1,4 @@
+import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 //
 // The auth request short-id contract (issues f59b5bd, 22ace1c). Deep links
@@ -57,11 +58,11 @@ function column<T>(database: Db, id: string, name: string): T {
 describe("auth request short ids", () => {
   it("resolves an unambiguous prefix to the full request record", async () => {
     const { router, queue } = setup();
-    const request = queue.submit({
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
       command: "mandible auth merge feature/linked --into main",
       title: "Session-linked request",
       session_id: "sess-deep-link-1",
-    });
+    }));
 
     const response = await router.invoke({ method: "GET", url: `/api/auth/request/${request.id.slice(0, 8)}` });
 
@@ -83,13 +84,13 @@ describe("auth request short ids", () => {
       expect(response.status).toBe(409);
       expect(String((response.body as { error: string }).error)).toContain("Ambiguous");
     }
-    expect(queue.getRequest(firstId)?.title).toBe("First");
-    expect(queue.getRequest(secondId)?.title).toBe("Second");
+    expect((await queue.getRequest(firstId))?.title).toBe("First");
+    expect((await queue.getRequest(secondId))?.title).toBe("Second");
   });
 
   it("resolves a declared request ref in the queue's database, not the process singleton", async () => {
     const { router, queue } = setup();
-    const request = queue.submit({ command: "echo isolated", title: "Isolated" });
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  command: "echo isolated", title: "Isolated" }));
     const singleton = migratedMemoryDb();
     const prefix = request.id.slice(0, 8);
     insertLegacyRequest(singleton, `${prefix}-other-1`, "Singleton one");
@@ -115,12 +116,12 @@ describe("auth request short ids", () => {
 
   it("revises the canonical row through a short id and invalidates its retained candidate", async () => {
     const { router, queue, db: database } = setup();
-    const request = queue.submit({
+    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,
       type: "config-change",
       command: "echo candidate",
       title: "Candidate",
       merge_head_sha: "1111111111111111111111111111111111111111",
-    });
+    }));
     database.prepare(
       `UPDATE auth_requests SET merge_preflight_base_sha = ?,
         merge_preflight_queue_fingerprint = ?, merge_candidate_tree_sha = ?,
@@ -148,7 +149,7 @@ describe("auth request short ids", () => {
     });
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(queue.getRequest(request.id)).toMatchObject({
+    expect((await queue.getRequest(request.id))).toMatchObject({
       title: "Short-id update",
       merge_head_sha: "2222222222222222222222222222222222222222",
       merge_preflight_base_sha: null,
@@ -161,29 +162,29 @@ describe("auth request short ids", () => {
 
   it("applies every mutator to the row the short id resolves to", async () => {
     const { router, queue, db: database } = setup();
-    const submit = (branch: string, status?: string) => {
-      const request = queue.submit({ command: `mandible auth merge feature/${branch} --into main`, title: branch });
+    const submit = async (branch: string, status?: string) => {
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  command: `mandible auth merge feature/${branch} --into main`, title: branch }));
       if (status) database.prepare("UPDATE auth_requests SET status = ?, exit_code = 1 WHERE id = ?").run(status, request.id);
       return request;
     };
     const post = (id: string, action: string, body: Record<string, unknown> = {}) =>
       router.invoke({ method: "POST", url: `/api/auth/request/${id.slice(0, 8)}/${action}`, body });
 
-    const rejected = submit("reject");
-    queue.reject(rejected.id.slice(0, 8), "not now", { user_id: getOperator(database)!.id, evidence_method: "operator" });
+    const rejected = (await submit("reject"));
+    (await queue.reject(rejected.id.slice(0, 8), "not now", { user_id: getOperator(database)!.id, evidence_method: "operator" }));
     expect(column(database, rejected.id, "status")).toBe("rejected");
 
-    const skipped = submit("skip");
+    const skipped = (await submit("skip"));
     expect((await post(skipped.id, "skip")).status).toBe(200);
     expect(column(database, skipped.id, "skipped_at")).not.toBeNull();
 
     for (const action of ["retry", "requeue"]) {
-      const failed = submit(action, "completed");
+      const failed = (await submit(action, "completed"));
       expect((await post(failed.id, action)).status).toBe(200);
       expect(column(database, failed.id, "status")).toBe("pending");
     }
 
-    const executing = submit("output");
+    const executing = (await submit("output"));
     database.prepare("UPDATE auth_requests SET status = 'executing', exit_code = NULL WHERE id = ?").run(executing.id);
     expect((await post(executing.id, "output", { chunk: "merge output line\n" })).status).toBe(202);
     expect(column<string>(database, executing.id, "output")).toContain("merge output line");
@@ -191,7 +192,7 @@ describe("auth request short ids", () => {
 
   it("retires delete and dismiss as 410 without touching the row or emitting a deletion", async () => {
     const { router, queue, db: database, events } = setup();
-    const request = queue.submit({ command: "mandible auth merge feature/retired --into main", title: "Retired routes" });
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  command: "mandible auth merge feature/retired --into main", title: "Retired routes" }));
     const shortUrl = `/api/auth/request/${request.id.slice(0, 8)}`;
 
     const deleted = await router.invoke({ method: "DELETE", url: shortUrl, body: { reason: "superseded" } });

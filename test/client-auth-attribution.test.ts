@@ -1,3 +1,4 @@
+import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -67,8 +68,8 @@ describe("client-auth durable attribution", () => {
     });
   });
 
-  afterEach(() => {
-    authQueue.dispose();
+  afterEach(async () => {
+    (await authQueue.dispose());
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -190,7 +191,7 @@ describe("client-auth durable attribution", () => {
     const submit = (sessionId: string) => router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo codex",
         title: "Codex desktop auth request",
         session_id: sessionId,
@@ -231,6 +232,7 @@ describe("client-auth durable attribution", () => {
       method: "POST",
       url: "/api/auth/request",
       body: {
+        ...AUTH_MERGE_REVIEW,
         command: "echo attributed",
         title: "Attributed auth request",
         session_id: "auth-request-agent-session",
@@ -264,7 +266,7 @@ describe("client-auth durable attribution", () => {
     });
     db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
       .run(executionEvidence.id, requestId);
-    authQueue.update(requestId, { title: "Attributed auth request with signature" });
+    (await authQueue.update(requestId, { title: "Attributed auth request with signature" }));
     expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
       request: {
         execution_evidence: {
@@ -347,7 +349,7 @@ describe("client-auth durable attribution", () => {
     const mismatched = await router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo mismatch",
         title: "Mismatched auth request",
         session_id: "auth-request-agent-session",
@@ -356,7 +358,7 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(mismatched.status).toBe(201);
-    expect(authQueue.getRequest((mismatched.body as { request_id: string }).request_id)?.requested_by_user_id)
+    expect((await authQueue.getRequest((mismatched.body as { request_id: string }).request_id))?.requested_by_user_id)
       .toBe(operatorId);
 
     const conflictingAgent = createUser(db, {
@@ -373,7 +375,7 @@ describe("client-auth durable attribution", () => {
     const conflicting = await router.invoke({
       method: "POST",
       url: "/api/auth/request",
-      body: {
+      body: { ...AUTH_MERGE_REVIEW,
         command: "echo conflict",
         title: "Conflicting session claims",
         session_id: "auth-request-agent-session",
@@ -382,7 +384,7 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(conflicting.status).toBe(201);
-    expect(authQueue.getRequest((conflicting.body as { request_id: string }).request_id)?.requested_by_user_id)
+    expect((await authQueue.getRequest((conflicting.body as { request_id: string }).request_id))?.requested_by_user_id)
       .toBe(agent.id);
   });
 });
