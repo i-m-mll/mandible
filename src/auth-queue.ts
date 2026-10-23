@@ -73,7 +73,7 @@ import {
   type CandidateAcceptanceExecutor,
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
-import type { CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
+import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
 import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
@@ -406,6 +406,7 @@ export interface AuthMergeCheckReport {
   stale_requests?: AuthMergeStaleRequest[];
   target_head_sha?: string | null;
   queue_fingerprint?: string | null;
+  publication_blocker?: AuthPublicationBlocker | null;
   reason?: string;
 }
 
@@ -804,6 +805,16 @@ export class AuthQueue {
     return lock ? runtimeHandoffLockRefusal(lock) : null;
   }
 
+  private publicationBlocker(repo: string | null | undefined): AuthPublicationBlocker | null {
+    const message = this.selfUpdateBlock(repo);
+    return message ? { code: "runtime_handoff_lock", message } : null;
+  }
+
+  publicationBlockerForRequest(request: Pick<AuthRequest, "type" | "command" | "repo">): AuthPublicationBlocker | null {
+    if (!isAuthMergeCommand(request)) return null;
+    return this.publicationBlocker(request.repo);
+  }
+
   private candidateAcceptanceApplies(request: Pick<AuthRequest, "id" | "type" | "command" | "repo" | "merge_head_sha" | "change_report">): boolean {
     if (!isAuthMergeCommand(request) || !this.hookManager.selfUpdatesRuntime(request.repo)) return false;
     const report = request.change_report === undefined
@@ -856,6 +867,8 @@ export class AuthQueue {
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running" || acceptance.state === "passed") return acceptance;
+    const blocker = this.publicationBlockerForRequest(request);
+    if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
     runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;
@@ -890,7 +903,7 @@ export class AuthQueue {
    * whose candidate the base moved past, which starts its acceptance. At
    * startup, also start acceptance of exact candidates without a passing or
    * running result, since a restart interrupts runs; the tick never repeats a
-   * failed verdict. Nothing happens while the runtime handoff lock is held.
+   * failed verdict. Nothing launches while the runtime handoff lock is held.
    * Each request is handled once merges on its repository have settled.
    */
   async refreshPendingCandidates(startup = false): Promise<void> {
@@ -900,7 +913,10 @@ export class AuthQueue {
       const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
       for (const { id } of rows) {
         const request = this.readRequestByExactId(id);
-        if (!request || !this.candidateAcceptanceApplies(request) || (!startup && await this.mergeCandidateExactUnblocking(request))) continue;
+        if (!request || !this.candidateAcceptanceApplies(request)) continue;
+        const exact = await this.mergeCandidateExactUnblocking(request);
+        const acceptance = this.candidateAcceptanceForRequest(request);
+        if (!startup && exact && acceptance?.state !== "none" && acceptance?.state !== "stale") continue;
         await this.onObservedRepoChain(request, () => this.startCandidateAcceptanceAutomatically(id, true));
       }
     } finally { finishObservation(); }
@@ -945,13 +961,20 @@ export class AuthQueue {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Runtime handoff retirement");
+      let retirement: unknown;
       try {
-        const retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
+        retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
         authLog("warn", "auth_runtime_handoff_retired", { subsystem: "auth", binding_digest: input.bindingDigest, user_id: actor.user_id });
-        return retirement;
       } catch (error) {
         throw new AuthQueueError("invalid_status", errorMessage(error) ?? String(error));
       }
+      try { await this.refreshPendingCandidates(); }
+      catch (error) {
+        authLog("warn", "auth_candidate_acceptance_release_refresh_failed", {
+          subsystem: "auth", binding_digest: input.bindingDigest, error: errorMessage(error) ?? String(error),
+        });
+      }
+      return retirement;
     } finally { finishObservation(); }
   }
 
@@ -1209,13 +1232,8 @@ export class AuthQueue {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  /**
-   * Bug: 681739e — park a request that cannot start because a self-merge
-   * restart is in progress. The execution never began, so the repository is
-   * untouched; revert the row to pending (dropping the just-issued approval) so
-   * it survives the restart and can be re-approved against the rebuilt code.
-   */
-  private async parkExecutionForRestart(request: AuthRequest): Promise<void> {
+  /** Park an execution that reached its turn after publication became blocked. */
+  private async parkExecutionForRestart(request: AuthRequest, reason = "Execution parked for daemon restart."): Promise<void> {
     this.inFlight.delete(request.id);
     this.executionEnvs.delete(request.id);
     const now = this.now();
@@ -1239,7 +1257,7 @@ export class AuthQueue {
           appendAuthLifecycleEvent(this.db, {
             requestId: request.id, eventType: "revised", priorStatus: "executing",
             nextStatus: "pending", actor: systemAction(),
-            reason: "Execution parked for daemon restart.", occurredAt: now,
+            reason, occurredAt: now,
           });
         }
       })();
@@ -1255,9 +1273,10 @@ export class AuthQueue {
     if (parked) {
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: parked } });
     }
-    authLog("info", "auth_execution_parked_for_restart", {
+    authLog("info", "auth_execution_parked", {
       subsystem: "auth",
       auth_request_id: request.id,
+      reason,
     });
   }
 
@@ -2532,8 +2551,7 @@ export class AuthQueue {
         const readiness = (await validateRuntimeSource(this.db, process.env.MANDIBLE_PRODUCTION_ROOT, context.targetRepoRoot));
         if (!readiness.ok) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: readiness.reason };
       }
-      const handoffLock = this.selfUpdateBlock(repo);
-      if (handoffLock) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: handoffLock };
+      const publicationBlocker = this.publicationBlocker(repo);
       const worktreeReady = (await this.checkMergeWorktreeReady(cwd));
       if (worktreeReady.status === "error") {
         return {
@@ -2728,7 +2746,8 @@ export class AuthQueue {
         checked_requests: checked,
         conflicts: [],
         target_head_sha: targetHeadSha,
-        queue_fingerprint: queueFingerprint
+        queue_fingerprint: queueFingerprint,
+        publication_blocker: publicationBlocker,
       };
     } finally { finishObservation(); }
   }
@@ -5342,8 +5361,9 @@ export class AuthQueue {
     // Bug: 681739e — admission is closed while a self-merge restart is pending.
     // Park the request now rather than chaining an execution that the imminent
     // process.exit would kill mid-merge.
-    if (this._rebuilding) {
-      (await this.parkExecutionForRestart(request));
+    const publicationBlocker = this.publicationBlockerForRequest(request);
+    if (this._rebuilding || publicationBlocker) {
+      (await this.parkExecutionForRestart(request, publicationBlocker?.message));
       if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
@@ -5373,8 +5393,9 @@ export class AuthQueue {
               // Bug: 681739e — a self-merge restart may have been scheduled after
               // this execution was chained but before it reached the head of the
               // queue. Re-check admission here so it parks instead of starting.
-              if (this._rebuilding) {
-                (await this.parkExecutionForRestart(request));
+              const queuedPublicationBlocker = this.publicationBlockerForRequest(request);
+              if (this._rebuilding || queuedPublicationBlocker) {
+                (await this.parkExecutionForRestart(request, queuedPublicationBlocker?.message));
                 return;
               }
               execution = await this.prepareAuthExecution(request, admitted);

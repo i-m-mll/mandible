@@ -13,6 +13,7 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
+import { observeRuntimeHealthCoverage } from '../src/runtime-health-contract.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -39,6 +40,28 @@ export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storag
   return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
 }
 
+export async function observeAcceptanceHealth({
+  probe,
+  now = Date.now,
+  wait = delay,
+  observationMs = 31_000,
+  deadlineMs = 62_000,
+}) {
+  const result = await observeRuntimeHealthCoverage({
+    probe,
+    healthOf: value => value,
+    validate: (value, initial) => {
+      if (value.startup_epoch !== initial.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance observation.');
+    },
+    now,
+    wait,
+    pollMs: 500,
+    observationMs,
+    deadlineMs,
+  });
+  return result.value;
+}
+
 export function copyAcceptanceCa(sourceHome, home) {
   const source = localCaPaths(sourceHome);
   if (assertLocalCaIdentity(source).state !== 'trusted') throw new Error('Acceptance requires an already trusted installation CA; run explicit secure-local-connections setup first.');
@@ -53,7 +76,7 @@ export function copyAcceptanceCa(sourceHome, home) {
   return ca;
 }
 
-export function acceptanceHealth(origin, rootCert) {
+export function acceptanceHealth(origin, rootCert, signal) {
   return new Promise((resolve, reject) => {
     const request = https.get(`${origin}/api/health`, {
       ca: fs.readFileSync(rootCert),
@@ -69,6 +92,12 @@ export function acceptanceHealth(origin, rootCert) {
       });
     });
     request.setTimeout(1500, () => request.destroy(new Error('Acceptance HTTPS health timed out')));
+    if (signal) {
+      const abort = () => request.destroy(signal.reason instanceof Error ? signal.reason : new Error('Acceptance health observation aborted'));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      request.once('close', () => signal.removeEventListener('abort', abort));
+    }
     request.on('error', reject);
   });
 }
@@ -173,10 +202,10 @@ async function main() {
     daemon = launch(runtime, [path.join(root, 'dist', 'index.js')], env, 'daemon');
     gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
     let health;
-    const probe = async () => {
+    const probe = async (signal) => {
       if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
       if (gateway.exitCode !== null || gateway.signalCode !== null) throw new Error('Owned HTTPS gateway exited before acceptance completed.');
-      const value = await acceptanceHealth(origin, ca.rootCert);
+      const value = await acceptanceHealth(origin, ca.rootCert, signal);
       if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) throw new Error('Wrong or stale instance answered acceptance health.');
       return value;
     };
@@ -206,13 +235,15 @@ async function main() {
     const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
     if (!evidence.passed || !evidence.rendered || !evidence.edit) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
     result.checks.desktop_interaction = evidence;
-    // Observe a full diagnostics interval while the real dashboard stays open.
-    const observationEnd = Date.now() + 31000;
-    while (Date.now() < observationEnd) {
-      const current = await probe();
-      if (current.startup_epoch !== health.startup_epoch || current.eventLoop?.warning || desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Runtime restarted, stalled, or closed during observation.');
-      await delay(500);
-    }
+    // Observe beyond the requested interval until one completed sampler window
+    // proves coverage of its end. The deadline is fixed, so a stalled or stale
+    // sampler fails instead of extending its own acceptance indefinitely.
+    await observeAcceptanceHealth({
+      probe: async (_deadline, signal) => {
+        if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app closed during acceptance observation.');
+        return probe(signal);
+      },
+    });
     result.status = 'passed';
   } catch (error) { result.error = error.message; }
   finally {

@@ -13,6 +13,7 @@ import type {
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
+  AuthPublicationBlocker,
   AuthChangeReport,
   AuthOutputChunk,
   ArtifactRecord,
@@ -45,6 +46,7 @@ export type {
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
+  AuthPublicationBlocker,
   AuthChangeReport,
   AuthOutputChunk,
   ArtifactRecord,
@@ -265,6 +267,7 @@ export interface AuthRequest {
   /** Issue 8ae6b5f — where a protected-root dirty policy moved uncommitted work. */
   protected_root_dirty_action?: ProtectedRootDirtyAction | null;
   repo?: string;
+  publication_blocker?: AuthPublicationBlocker | null;
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;
