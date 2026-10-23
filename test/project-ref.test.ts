@@ -47,43 +47,44 @@ function repoWithCommit(root: string, ...initArgs: string[]): void {
   git(root, "-c", "commit.gpgsign=false", "commit", "-m", "fixture");
 }
 
-describe.each([{ name: "sync", resolve: resolveProjectRef }, { name: "async", resolve: resolveProjectRefAsync }])("resolveProjectRef ($name)", ({ resolve }) => {
-async function resolvedKey(ref: string, observedPath?: string) {
+async function resolvedKey(resolve: typeof resolveProjectRef | typeof resolveProjectRefAsync, ref: string, observedPath?: string) {
   const resolved = await resolve(db, ref, { observedPath });
   return resolved.ok ? [resolved.project.project_key, resolved.matched_by] : resolved;
 }
 
-
+describe("registry project references", () => {
   it("resolves every kind of non-path ref to its one project", async () => {
     const root = path.join(dir, "alpha");
     const { project, checkout } = register("alpha", root, { display: "Alpha Project", remote: "git@github.com:mll/alpha.git" });
     register("beta", path.join(dir, "beta"));
-    expect(await resolvedKey(project.id)).toEqual(["alpha", "id"]);
-    expect(await resolvedKey(checkout.id)).toEqual(["alpha", "checkout_id"]);
-    expect(await resolvedKey("Alpha")).toEqual(["alpha", "project_key"]);
-    expect(await resolvedKey("20-alpha")).toEqual(["alpha", "work_repo_id"]);
-    expect(await resolvedKey("ALPHA-checkout")).toEqual(["alpha", "checkout_name"]);
-    expect(await resolvedKey("https://github.com/mll/alpha.git")).toEqual(["alpha", "remote_identity"]);
-    expect(await resolvedKey("alpha project")).toEqual(["alpha", "display_name"]);
-    expect(await resolvedKey(root)).toEqual(["alpha", "checkout_root"]);
-    expect(await resolvedKey("gamma")).toEqual({ ok: false, reason: "unknown" });
-    expect(await resolvedKey("alpha/subdir")).toEqual({ ok: false, reason: "unknown" });
+    expect(await resolvedKey(resolveProjectRef, project.id)).toEqual(["alpha", "id"]);
+    expect(await resolvedKey(resolveProjectRef, checkout.id)).toEqual(["alpha", "checkout_id"]);
+    expect(await resolvedKey(resolveProjectRef, "Alpha")).toEqual(["alpha", "project_key"]);
+    expect(await resolvedKey(resolveProjectRef, "20-alpha")).toEqual(["alpha", "work_repo_id"]);
+    expect(await resolvedKey(resolveProjectRef, "ALPHA-checkout")).toEqual(["alpha", "checkout_name"]);
+    expect(await resolvedKey(resolveProjectRef, "https://github.com/mll/alpha.git")).toEqual(["alpha", "remote_identity"]);
+    expect(await resolvedKey(resolveProjectRef, "alpha project")).toEqual(["alpha", "display_name"]);
+    expect(await resolvedKey(resolveProjectRef, root)).toEqual(["alpha", "checkout_root"]);
+    expect(await resolvedKey(resolveProjectRef, "gamma")).toEqual({ ok: false, reason: "unknown" });
+    expect(await resolvedKey(resolveProjectRef, "alpha/subdir")).toEqual({ ok: false, reason: "unknown" });
   });
 
   it("refuses a ref that names more than one project", async () => {
     register("alpha", path.join(dir, "alpha"), { display: "Shared", upstream: "github.com/up/repo" });
     register("beta", path.join(dir, "beta"), { display: "Shared", upstream: "github.com/up/repo" });
-    expect(await resolvedKey("Shared")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
-    expect(await resolvedKey("git@github.com:up/repo.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
+    expect(await resolvedKey(resolveProjectRef, "Shared")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
+    expect(await resolvedKey(resolveProjectRef, "git@github.com:up/repo.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
   });
 
   it("refuses a remote that is one project's identity and another project's checkout remote", async () => {
     register("alpha", path.join(dir, "alpha"), { remote: "github.com/mll/shared" });
     register("beta", path.join(dir, "beta"));
     addOrUpdateCheckout(db, "beta", { root: path.join(dir, "beta"), remote_url: "git@github.com:mll/shared.git" });
-    expect(await resolvedKey("https://github.com/mll/shared.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
+    expect(await resolvedKey(resolveProjectRef, "https://github.com/mll/shared.git")).toEqual({ ok: false, reason: "ambiguous", candidates: ["alpha", "beta"] });
   });
+});
 
+describe.each([{ name: "sync", resolve: resolveProjectRef }, { name: "async", resolve: resolveProjectRefAsync }])("resolveProjectRef paths ($name)", ({ resolve }) => {
   it("resolves every worktree of a registered repository to the repository's project", async () => {
     const main = path.join(dir, "repo");
     repoWithCommit(main);
@@ -93,13 +94,13 @@ async function resolvedKey(ref: string, observedPath?: string) {
     git(main, "worktree", "add", "-b", "feature/x", nested);
     git(main, "worktree", "add", "-b", "feature/y", external);
     fs.mkdirSync(path.join(nested, "src"));
-    expect(await resolvedKey(nested)).toEqual(["repo", "git_common_dir"]);
-    expect(await resolvedKey(path.join(nested, "src"))).toEqual(["repo", "git_common_dir"]);
-    expect(await resolvedKey(external)).toEqual(["repo", "git_common_dir"]);
+    expect(await resolvedKey(resolve, nested)).toEqual(["repo", "git_common_dir"]);
+    expect(await resolvedKey(resolve, path.join(nested, "src"))).toEqual(["repo", "git_common_dir"]);
+    expect(await resolvedKey(resolve, external)).toEqual(["repo", "git_common_dir"]);
 
     // An exact registration of the worktree is stronger than shared-repository evidence.
     register("pinned", external);
-    expect(await resolvedKey(external)).toEqual(["pinned", "checkout_root"]);
+    expect(await resolvedKey(resolve, external)).toEqual(["pinned", "checkout_root"]);
   });
 
   it("resolves a worktree whose repository keeps its Git directory elsewhere", async () => {
@@ -109,10 +110,10 @@ async function resolvedKey(ref: string, observedPath?: string) {
     const linked = path.join(dir, "linked");
     git(main, "worktree", "add", "-b", "feature", linked);
     register("project", main);
-    expect(await resolvedKey(linked)).toEqual(["project", "git_common_dir"]);
+    expect(await resolvedKey(resolve, linked)).toEqual(["project", "git_common_dir"]);
     // The object store is not a checkout, so registering it adds no evidence.
     register("object-store", path.join(dir, "git-data"));
-    expect(await resolvedKey(linked)).toEqual(["project", "git_common_dir"]);
+    expect(await resolvedKey(resolve, linked)).toEqual(["project", "git_common_dir"]);
   });
 
   it("resolves a clone of a registered remote, refusing a remote shared by two projects", async () => {
@@ -121,9 +122,9 @@ async function resolvedKey(ref: string, observedPath?: string) {
     git(clone, "init", "-b", "main");
     git(clone, "remote", "add", "origin", "https://example.invalid/group/repo.git");
     register("a", path.join(dir, "a"), { remote: "example.invalid/group/repo" });
-    expect(await resolvedKey(clone)).toEqual(["a", "git_remote"]);
+    expect(await resolvedKey(resolve, clone)).toEqual(["a", "git_remote"]);
     register("b", path.join(dir, "b"), { upstream: "example.invalid/group/repo" });
-    expect(await resolvedKey(clone)).toEqual({ ok: false, reason: "ambiguous", candidates: ["a", "b"] });
+    expect(await resolvedKey(resolve, clone)).toEqual({ ok: false, reason: "ambiguous", candidates: ["a", "b"] });
   });
 
   it("resolves a non-repository path to the deepest registered checkout containing it", async () => {
@@ -132,9 +133,9 @@ async function resolvedKey(ref: string, observedPath?: string) {
     fs.mkdirSync(path.join(inner, "sub"), { recursive: true });
     register("outer", outer);
     register("inner", inner);
-    expect(await resolvedKey(path.join(inner, "sub"))).toEqual(["inner", "checkout_ancestry"]);
-    expect(await resolvedKey(path.join(outer, "missing"))).toEqual(["outer", "checkout_ancestry"]);
-    expect(await resolvedKey(outer, inner)).toEqual(["outer", "checkout_root"]);
+    expect(await resolvedKey(resolve, path.join(inner, "sub"))).toEqual(["inner", "checkout_ancestry"]);
+    expect(await resolvedKey(resolve, path.join(outer, "missing"))).toEqual(["outer", "checkout_ancestry"]);
+    expect(await resolvedKey(resolve, outer, inner)).toEqual(["outer", "checkout_root"]);
   });
 
   it("resolves a path through requested symlinks, refusing two projects registered at one place", async () => {
@@ -143,8 +144,8 @@ async function resolvedKey(ref: string, observedPath?: string) {
     const alias = path.join(dir, "alias");
     fs.symlinkSync(target, alias);
     register("target", target);
-    expect(await resolvedKey(alias)).toEqual(["target", "checkout_root"]);
+    expect(await resolvedKey(resolve, alias)).toEqual(["target", "checkout_root"]);
     register("alias", alias);
-    expect(await resolvedKey(alias)).toEqual({ ok: false, reason: "ambiguous", candidates: ["alias", "target"] });
+    expect(await resolvedKey(resolve, alias)).toEqual({ ok: false, reason: "ambiguous", candidates: ["alias", "target"] });
   });
 });

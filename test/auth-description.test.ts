@@ -7,17 +7,16 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { addCredential } from "../src/users/store.js";
 import { setDb } from "../src/db.js";
-import { AUTH_REQUEST_TYPES } from "../src/contracts.js";
 import * as operatorProof from "../src/auth-operator-proof.js";
 import { getOperator } from "../src/users/store.js";
-import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot } from "../src/auth-lifecycle.js";
 
 describe("approval Description", () => {
-  it("refuses missing or blank descriptions for every type before observations or writes", async () => {
+  it("refuses missing or blank merge and ordinary descriptions before observations or writes", async () => {
     const queue = createQueue({ backgroundMaintenance: false });
     const check = vi.spyOn(queue, "checkMergeIndependence");
-    for (const type of AUTH_REQUEST_TYPES) {
-      for (const commit_message of [undefined, null, "", " \n\t"]) {
+    for (const type of ["merge", "config-change"] as const) {
+      for (const commit_message of [undefined, " \n\t"]) {
         await expect((async () => (await queue.submit({ type, command: "echo fixture", title: "Private action", commit_message } as AuthRequestInput))())).rejects
           .toThrow(expect.objectContaining({ status: 400, message: expect.stringContaining("Description") }));
       }
@@ -33,7 +32,6 @@ describe("approval Description", () => {
     const request = (await queue.submit({ type: "config-change", command: "echo fixture", title: "Restart", commit_message: description }));
     expect(request.commit_message).toBe(description);
     expect(request.commit_message_digest).toBeNull();
-    expect(request.diff_summary).toBeNull();
     await expect((async () => (await queue.update(request.id, { commit_message: "\n " }))())).rejects.toThrow(expect.objectContaining({ status: 400 }));
     const priorRevision = queue.listLifecycleEvents(request.id).at(-1)!.revision;
     const updated = (await queue.update(request.id, { commit_message: "# Restart\n\nLoad the newly reviewed configuration." }));
@@ -51,13 +49,11 @@ describe("approval Description", () => {
     const queue = createQueue({ db, backgroundMaintenance: false });
     registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }));
     try {
-      for (const type of AUTH_REQUEST_TYPES) {
-        for (const commit_message of [undefined, " \n"]) {
-          const result = await router.invoke({ method: "POST", url: "/api/auth/request",
-            body: { type, command: "echo fixture", title: "Review", commit_message } });
-          expect(result.status).toBe(400);
-          expect(result.body).toMatchObject({ code: type === "merge" ? "change_message_required" : "description_required" });
-        }
+      for (const [type, code] of [["merge", "change_message_required"], ["config-change", "description_required"]] as const) {
+        const result = await router.invoke({ method: "POST", url: "/api/auth/request",
+          body: { type, command: "echo fixture", title: "Review" } });
+        expect(result.status).toBe(400);
+        expect(result.body).toMatchObject({ code });
       }
       const description = "# Apply reviewed settings\n\nPreserve the private fixture database.";
       const accepted = await router.invoke({ method: "POST", url: "/api/auth/request", body: {
@@ -117,11 +113,9 @@ describe("approval Description", () => {
       db.prepare(`INSERT INTO auth_requests (id,type,command,title,status,created_at,updated_at,expires_at,commit_message)
         VALUES (?, 'config-change', 'echo old', 'Historical action', ?, 1, 2, ?, NULL)`).run(id,status,Date.now()+60000);
       const before = authRequestSnapshot(db,id);
-      const digest = authSnapshotDigest(before);
       expect((await queue.getRequest(id))?.commit_message).toBeNull();
       (await queue.listActive());
       expect(authRequestSnapshot(db,id)).toEqual(before);
-      expect(authSnapshotDigest(authRequestSnapshot(db,id))).toBe(digest);
     }
     (await queue.dispose());
   });

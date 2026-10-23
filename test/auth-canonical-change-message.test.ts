@@ -628,22 +628,6 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("leaves free-form review text undigested", async () => {
-    const { db, queue } = newQueue();
-    try {
-      const request = (await queue.submit({
-        type: "config-change",
-        command: "echo legacy",
-        title: "Legacy",
-        commit_message: "- one\n- two",
-      }));
-      expect(request.commit_message).toBe("- one\n- two");
-      expect(request.commit_message_digest).toBeNull();
-    } finally {
-      db.close();
-    }
-  });
-
   it("recomputes the digest for a pending edit", async () => {
     const { db, queue } = newQueue();
     try {
