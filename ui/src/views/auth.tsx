@@ -4,6 +4,7 @@ import {
   DiffView,
   type DiffViewClassNames,
   type DiffViewMode,
+  type DiffTargetReady,
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
@@ -868,14 +869,16 @@ function AuthRequestDetail({
   };
   const bodyRef = useRef<HTMLDivElement>(null);
   const targetToken = navigation.file ? `${getAuthId(request)}:${navigation.token}` : undefined;
-  const targetReady = useRef<{ token: string; element: HTMLElement } | null>(null);
+  const targetReady = useRef<{ token: string; result: DiffTargetReady } | null>(null);
+  const [unmatchedTarget, setUnmatchedTarget] = useState<string | null>(null);
   const scrollRestoring = usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`, {
     initialPosition: viewMode === 'abstract' ? restoredInfo?.outerOffset : undefined,
     target: viewMode === 'diff' && targetToken ? {
       token: targetToken,
       resolve: () => {
         if (targetReady.current?.token !== targetToken || !bodyRef.current) return null;
-        return bodyRef.current.scrollTop + targetReady.current.element.getBoundingClientRect().top - bodyRef.current.getBoundingClientRect().top - 8;
+        if (targetReady.current.result.kind === 'unavailable') return 0;
+        return bodyRef.current.scrollTop + targetReady.current.result.element.getBoundingClientRect().top - bodyRef.current.getBoundingClientRect().top - 8;
       },
     } : undefined,
   });
@@ -1138,7 +1141,14 @@ function AuthRequestDetail({
       bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
       headerRef={headerRef}
       subheader={subheader}
-      notice={notice}
+      notice={<>
+        {notice}
+        {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
+          <DetailPaneNotice severity="warning" density="compact">
+            This request has no captured change matching the selected before/after paths.
+          </DetailPaneNotice>
+        )}
+      </>}
       overlays={overlays}
       header={(
         <DetailPaneHeader
@@ -1335,7 +1345,8 @@ function AuthRequestDetail({
             contentReady={request.diff_summary !== undefined}
             onTargetReady={(token, result) => {
               if (token !== targetToken) return;
-              targetReady.current = { token, element: result.element };
+              targetReady.current = { token, result };
+              setUnmatchedTarget(result.kind === 'unavailable' ? token : null);
               scrollRestoring.resolveTarget();
             }}
             mode={diffMode}

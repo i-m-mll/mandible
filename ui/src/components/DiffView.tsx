@@ -7,7 +7,7 @@ import { CollapsiblePanel } from './shared/CollapsiblePanel';
 export type DiffViewMode = 'split' | 'unified';
 export type DiffTargetReady =
   | { kind: 'file'; element: HTMLElement }
-  | { kind: 'unavailable'; element: HTMLElement };
+  | { kind: 'unavailable' };
 
 type Diff2HtmlOutputFormat = 'side-by-side' | 'line-by-line';
 
@@ -149,8 +149,7 @@ export function DiffView({
   const [internalMode, setInternalMode] = useState<DiffViewMode>(initialMode);
   const [closedFiles, setClosedFiles] = useState<Set<string>>(() => new Set());
   const headings = useRef(new Map<string, HTMLElement>());
-  const unavailableNotice = useRef<HTMLDivElement>(null);
-  const handledTarget = useRef<string | null>(null);
+  const handledTarget = useRef<{ token: string; kind: DiffTargetReady['kind'] } | null>(null);
   const targetKey = target ? diffFileKey(target) : null;
   const activeMode = mode ?? internalMode;
   const renderedSections = useMemo(
@@ -159,11 +158,12 @@ export function DiffView({
   );
 
   useLayoutEffect(() => {
-    if (!target || !contentReady || handledTarget.current === target.navigationToken) return;
-    if (!sections.some(section => diffFileKey(section) === targetKey)) {
-      if (!unavailableNotice.current) return;
-      handledTarget.current = target.navigationToken;
-      onTargetReady?.(target.navigationToken, { kind: 'unavailable', element: unavailableNotice.current });
+    if (!target || !contentReady) return;
+    const kind = sections.some(section => diffFileKey(section) === targetKey) ? 'file' : 'unavailable';
+    if (handledTarget.current?.token === target.navigationToken && handledTarget.current.kind === kind) return;
+    if (kind === 'unavailable') {
+      handledTarget.current = { token: target.navigationToken, kind };
+      onTargetReady?.(target.navigationToken, { kind });
       return;
     }
     if (closedFiles.has(targetKey!)) {
@@ -176,7 +176,7 @@ export function DiffView({
     }
     const heading = headings.current.get(targetKey!);
     if (!heading) return;
-    handledTarget.current = target.navigationToken;
+    handledTarget.current = { token: target.navigationToken, kind };
     onTargetReady?.(target.navigationToken, { kind: 'file', element: heading.closest('button') ?? heading });
   }, [target?.navigationToken, targetKey, contentReady, sections, closedFiles]);
 
@@ -202,9 +202,6 @@ export function DiffView({
       aria-label={ariaLabel}
       data-diff-mode={activeMode}
     >
-      {target && contentReady && !sections.some(section => diffFileKey(section) === targetKey) && (
-        <div ref={unavailableNotice} className="diff-viewer__empty" role="status">The selected file is unavailable in this request’s captured diff.</div>
-      )}
       {sections.length > 0 ? (
         <>
           <div className={cx('diff-viewer__toolbar', classNames?.toolbar)}>

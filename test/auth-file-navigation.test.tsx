@@ -93,9 +93,31 @@ it('honors an exact direct destination over a saved Console tab and cancels a de
   const pending = { ...navigationRequest, diff_summary: undefined, spec_content: undefined, output: undefined };
   const view = render(<RoutedAuthReview requests={[pending]} />);
   await waitFor(diff);
-  expect(screen.queryByRole('status')?.textContent ?? '').not.toContain('selected file is unavailable');
+  expect(screen.queryByRole('status')).toBeNull();
   view.rerender(<RoutedAuthReview requests={[navigationRequest]} />);
   await waitFor(() => expect(screen.getByRole('button', { name: file.new_path! }).getAttribute('aria-expanded')).toBe('true'));
+  const validDestination = window.location.hash;
+  const mismatched = { oldPath: navigationRequest.change_report!.files[0]!.old_path, newPath: file.new_path };
+  act(() => {
+    window.history.pushState(null, '', authReviewHash(window.location.hash, navigationRequestId, 'diff', mismatched));
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  });
+  const mismatchedDestination = window.location.hash;
+  const warning = await screen.findByRole('status');
+  expect(warning.closest('[data-detail-pane-slot="notice"]')).toBeTruthy();
+  expect(diff().contains(warning)).toBe(false);
+  expect(warning.textContent).toContain('no captured change matching');
+  expect(window.location.hash).toContain('agent_session=fixture-agent');
+  expect(window.location.hash).toContain('sidebar=hidden');
+  view.rerender(<RoutedAuthReview requests={[{ ...navigationRequest }]} />);
+  expect(screen.getByRole('status')).toBe(warning);
+  expect(window.location.hash).toBe(mismatchedDestination);
+  act(() => window.history.back());
+  await waitFor(() => expect(window.location.hash).toBe(validDestination));
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  act(() => window.history.forward());
+  await waitFor(() => expect(window.location.hash).toBe(mismatchedDestination));
+  await screen.findByRole('status');
   fireEvent.click(screen.getByRole('tab', { name: 'Console', exact: true }));
   await waitFor(() => screen.getByRole('tabpanel', { name: 'Console' }));
   expect(window.location.hash).not.toContain('diff_old');
@@ -108,7 +130,8 @@ it('honors an exact direct destination over a saved Console tab and cancels a de
   view.rerender(<RoutedAuthReview requests={[navigationRequest, other]} />);
   await waitFor(() => expect(screen.queryByRole('button', { name: file.new_path! })).toBeNull());
   view.rerender(<RoutedAuthReview requests={[navigationRequest, { ...other, diff_summary: '' }]} />);
-  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('selected file is unavailable'));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('no captured change matching'));
+  expect(body().contains(screen.getByRole('status'))).toBe(false);
 });
 
 it('keeps an edited restored visit mounted while another app tab owns history', async () => {

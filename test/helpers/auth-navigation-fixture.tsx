@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { AppShellProvider } from '../../ui/src/app-shell';
 import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
 import { parseRouteFromHash } from '../../ui/src/routing';
@@ -33,15 +33,18 @@ export function RoutedAuthReview({ requests = [navigationRequest], active = true
   const authRoute = useRef(route);
   if (route.tab === 'auth') authRoute.current = route;
   const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const registerMainNoticeHost = useCallback((host: HTMLElement) => {
+    setNoticeHost(host);
+    return () => setNoticeHost(current => current === host ? null : current);
+  }, []);
   useEffect(() => {
     const update = () => setRoute(parseRouteFromHash(window.location.hash));
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     return () => { window.removeEventListener('hashchange', update); window.removeEventListener('popstate', update); };
   }, []);
-  return <AppShellProvider value={{ active: true, noticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
+  return <AppShellProvider value={{ active: true, noticeHost, registerMainNoticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
     registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>
-    <div ref={setNoticeHost} />
     <AuthQueueView queue={requests} historyQueue={[]} outputs={{}} initialRequestId={authRoute.current.params.request}
       reviewRouteParams={authRoute.current.params} reviewRouteActive={active} sidebarHidden onApprove={() => undefined} onReject={() => undefined} onRetry={() => undefined} />
   </AppShellProvider>;
