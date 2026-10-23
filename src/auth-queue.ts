@@ -63,6 +63,7 @@ import type { AuthHook, RebuildFailure } from "./types.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 import {
   CandidateAcceptanceRuns,
   candidateAcceptanceProjection,
@@ -803,8 +804,12 @@ export class AuthQueue {
     return lock ? runtimeHandoffLockRefusal(lock) : null;
   }
 
-  private candidateAcceptanceApplies(request: Pick<AuthRequest, "type" | "command" | "repo">): boolean {
-    return isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo);
+  private candidateAcceptanceApplies(request: Pick<AuthRequest, "id" | "type" | "command" | "repo" | "merge_head_sha" | "change_report">): boolean {
+    if (!isAuthMergeCommand(request) || !this.hookManager.selfUpdatesRuntime(request.repo)) return false;
+    const report = request.change_report === undefined
+      ? parseChangeReport((this.db.prepare("SELECT change_report_json FROM auth_requests WHERE id = ?").get(request.id) as { change_report_json: unknown } | undefined)?.change_report_json)
+      : request.change_report;
+    return authRequestChangesBuildInputs({ ...request, change_report: report });
   }
 
   /** The request's current retained candidate as acceptance binds it, or null when it has none. */
@@ -814,7 +819,7 @@ export class AuthQueue {
   }
 
   /** Issue 7d83fe5 — acceptance of the request's current candidate; null when acceptance does not apply. */
-  candidateAcceptanceForRequest(request: CandidateRef & Pick<AuthRequest, "id" | "type" | "command" | "repo">): CandidateAcceptanceProjection | null {
+  candidateAcceptanceForRequest(request: CandidateRef & Pick<AuthRequest, "id" | "type" | "command" | "repo" | "change_report">): CandidateAcceptanceProjection | null {
     if (!this.candidateAcceptanceApplies(request)) return null;
     const candidate = this.acceptanceCandidate(request);
     const open = Boolean(candidate && this.acceptanceRuns?.isOpen(request.id, candidate.pin_sha));
@@ -5656,7 +5661,7 @@ export class AuthQueue {
       const evidenceFailure = (await this.successfulMergeEvidenceFailure(mergedRequest));
       this.assertExecution(request.id, execution);
       if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
-      if (mergedRequest.repo === "mandible") {
+      if (this.hasPlannedRuntimeRebuild(mergedRequest)) {
         // Issue ff784d8 — the full blocked/splash window begins before
         // post-merge hooks, at the same boundary that closes admission.
         this.beginRebuildWindow(request.id);
@@ -5844,7 +5849,7 @@ export class AuthQueue {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(id);
       if (!request || request.status !== "completed" || request.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(request))) continue;
-      if (request.repo === 'mandible') this.beginRebuildWindow(request.id);
+      if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
       try {
         const results = await this.hookManager.runPending(request, (hookLabel, text) => {
           this.handleOutput({
@@ -5912,7 +5917,7 @@ export class AuthQueue {
         await this.finalizerQueue.drain();
         return (await this.afterConvergenceHook(this.requireRequest(request.id)));
       }
-      if (request.repo === 'mandible') this.beginRebuildWindow(request.id);
+      if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
       this.hookManager.grantRetry(request.id, hookId);
       await this.hookManager.runPending(request, (hookLabel, text) => {
         this.handleOutput({
@@ -5941,9 +5946,13 @@ export class AuthQueue {
   private activeConvergenceDrain: string | null = null;
   private readonly scheduledConvergenceDrains = new Set<string>();
 
+  private hasPlannedRuntimeRebuild(request: Pick<AuthRequest, "id" | "repo">): boolean {
+    return request.repo === "mandible" && Boolean(this.hookManager.getRun?.(request.id, MANDIBLE_REBUILD_HOOK_ID));
+  }
+
   private async afterConvergenceHook(request: AuthRequest): Promise<AuthConvergence> {
     const convergence = (await this.settleConvergence(request));
-    if (request.status !== 'completed' || request.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(request)) || request.repo !== 'mandible') return convergence;
+    if (request.status !== 'completed' || request.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(request)) || !this.hasPlannedRuntimeRebuild(request)) return convergence;
     const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
     const key = admitted;
     if (!key) {

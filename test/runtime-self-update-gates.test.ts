@@ -12,6 +12,7 @@ import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
@@ -71,6 +72,16 @@ async function acceptanceOf(id: string) {
   return queue.candidateAcceptanceForRequest((await queue.getRequest(id))!);
 }
 
+async function reviewedChanges(branch: string) {
+  const base = git(repo, ["rev-parse", "main"]);
+  const head = git(repo, ["rev-parse", branch]);
+  const result = await collectAuthMergeReview(repo, {
+    base_sha: base, head_sha: head, merge_base_sha: git(repo, ["merge-base", base, head]),
+  }, { report: true, diffSummary: false });
+  if (!result.ok) throw new Error(result.error.message);
+  return result.value.report!;
+}
+
 function acceptanceExecutor(input: CandidateAcceptanceInput) {
   return new Promise<CandidateAcceptanceOutcome>((settle) => {
     runs.push({ input, settle });
@@ -123,6 +134,49 @@ describe("runtime handoff lock gate", () => {
 });
 
 describe("candidate acceptance gate", () => {
+  it("skips documentation-only changes on submission, startup, manual runs, summaries, and approval", async () => {
+    commitOnBranch(repo, "feature/docs", { "README.md": "# Mandible\n", "docs/images/screenshot.png": "image" });
+    const request = await submit("feature/docs", { change_report: await reviewedChanges("feature/docs") });
+    await queue.drainCandidateAcceptances();
+    await queue.refreshPendingCandidates(true);
+    expect(await queue.runCandidateAcceptance((await queue.getRequest(request.id))!)).toBeNull();
+    expect(await acceptanceOf(request.id)).toBeNull();
+    const { change_report: omittedReport, ...summary } = (await queue.getRequest(request.id))!;
+    void omittedReport;
+    expect(queue.candidateAcceptanceForRequest(summary)).toBeNull();
+    expect(queue.candidateAcceptanceForRequest({ ...request, merge_head_sha: "f".repeat(40) })).not.toBeNull();
+    expect(runs).toHaveLength(0);
+    expect(latestCandidateAcceptance(db, request.id)).toBeNull();
+    advanceMainViaAuthorizedMerge(db, repo, "feature/other", "merge-other");
+    await queue.approveWithOperatorProof(request.id, operatorId);
+    expect((await queue.getRequest(request.id))?.status).toBe("executing");
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each([
+    "src/index.ts", "ui/header-logo.svg", "package.json", "bun.lock", ".bun-version",
+    "tsconfig.json", "config/canonical-origin.json", "src-tauri/Cargo.toml", "scripts/candidate-acceptance.mjs",
+  ])("requires exact-candidate acceptance when reviewed changes touch %s", async (file) => {
+    commitOnBranch(repo, "feature/build-input", { [file]: "changed\n", "docs/note.md": "documentation\n" });
+    const request = await submit("feature/build-input", { change_report: await reviewedChanges("feature/build-input") });
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
+  });
+
+  it("requires acceptance for a source renamed into documentation", async () => {
+    commitOnBranch(repo, "feature/source", { "src/example.ts": "export const value = 1;\n" });
+    git(repo, ["merge", "--ff-only", "feature/source"]);
+    git(repo, ["checkout", "-b", "feature/rename"]);
+    fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+    git(repo, ["mv", "src/example.ts", "docs/example.md"]);
+    git(repo, ["commit", "-m", "move source to docs"]);
+    git(repo, ["checkout", "main"]);
+    const report = await reviewedChanges("feature/rename");
+    expect(report.files).toEqual([expect.objectContaining({ old_path: "src/example.ts", new_path: "docs/example.md", change_kind: "renamed" })]);
+    await submit("feature/rename", { change_report: report });
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+  });
+
   it("runs acceptance on submission and approves only after the exact current candidate passes", async () => {
     const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));

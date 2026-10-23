@@ -53,6 +53,7 @@ beforeAll(() => {
     fs.copyFileSync(path.join(process.cwd(), "cli", name), path.join(template, "cli", name));
   }
   fs.copyFileSync(path.join(process.cwd(), "scripts", "local-session-production-runner.mjs"), path.join(template, "scripts", "local-session-production-runner.mjs"));
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "build-revision.mjs"), path.join(template, "scripts", "build-revision.mjs"));
   fs.writeFileSync(path.join(template, "scripts", "local-front-door.mjs"), 'import fs from "node:fs";\nfs.appendFileSync(process.env.MANDIBLE_TEST_TRACE, "gateway\\n");\n');
   fs.writeFileSync(path.join(template, "scripts", "local-runtime.mjs"), 'import fs from "node:fs";\nfs.appendFileSync(process.env.MANDIBLE_TEST_RUNTIME_TRACE, "runtime\\n");\n');
   git(template, "init", "-q", "-b", "main");
@@ -141,6 +142,8 @@ describe("post-merge build hook", () => {
   it("rebuilds after a Mandible merge, deploys the desktop for native or shared paths, and installs instructions for contract or source paths", () => {
     const cases = [
       { changed: "src/index.ts", desktop: false, instructions: true },
+      { changed: "ui/header-logo.svg", desktop: false, instructions: false },
+      { changed: "bin/mandible", desktop: false, instructions: false },
       { changed: "cli/instructions-contract.md", desktop: false, instructions: true },
       { changed: "src-tauri/src/lib.rs", desktop: true, instructions: false },
       { changed: "package.json", desktop: true, instructions: true },

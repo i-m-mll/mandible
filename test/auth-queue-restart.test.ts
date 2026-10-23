@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
+import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import type { SseEvent } from "../src/types.js";
 import { commitOnBranch, createAuthCheckRepo, createMigratedDb, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 
@@ -24,6 +25,47 @@ function admittedRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun
 
 describe("auth queue", () => {
   describe("self-rebuild event ordering", () => {
+    it("merges documentation without acceptance, a rebuild hook, or restart signals while retaining other hooks", async () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+      try {
+        commitOnBranch(repo, "feature/docs", { "README.md": "# Mandible\n", "docs/images/screenshot.png": "image" });
+        registerWorkRepo(db, repo);
+        const base = git(repo, ["rev-parse", "main"]);
+        const head = git(repo, ["rev-parse", "feature/docs"]);
+        const review = await collectAuthMergeReview(repo, { base_sha: base, head_sha: head, merge_base_sha: base });
+        if (!review.ok) throw new Error(review.error.message);
+        const hooks = new AuthHookManager(db);
+        db.prepare("UPDATE auth_hooks SET command = 'printf unexpected-rebuild' WHERE id = 'builtin-mandible-rebuild'").run();
+        const other = hooks.create({ repo_pattern: "mandible", auth_type: "merge", command: "printf documentation-hook", label: "Other hook" });
+        const events: SseEvent[] = [];
+        const restart = vi.fn();
+        const acceptance = vi.fn(async () => ({ status: "passed" as const, result: null, error: null }));
+        queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false,
+          broadcast: event => events.push(event), restartFn: restart, candidateAcceptanceExecutor: acceptance,
+          executor: async options => publishFixtureExecution(queue!, options) });
+        const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", title: "Documentation",
+          command: "mandible auth merge feature/docs --into main", repo: "mandible", cwd: repo,
+          base_branch: "main", head_branch: "feature/docs", merge_head_sha: head,
+          change_report: review.value.report, execution_mode: "daemon" });
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
+        await queue.dispose();
+        expect(acceptance).not.toHaveBeenCalled();
+        expect(hooks.getRun(request.id, "builtin-mandible-rebuild")).toBeNull();
+        expect(hooks.getRun(request.id, other.id)).toMatchObject({ state: "complete", output: "documentation-hook" });
+        expect(events.filter(event => ["mandible:rebuilding", "mandible:rebuild-failed"].includes(event.event))).toEqual([]);
+        expect(queue.isRebuilding).toBe(false);
+        expect(queue.rebuildFailure).toBeNull();
+        expect(restart).not.toHaveBeenCalled();
+      } finally {
+        await queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
     // Bugs 645f8a8 and 03d6cb0: the splash is up (mandible:rebuilding) before
     // the post-merge hooks run, and auth:resolved reaches subscribers before the
     // daemon shuts down for the restart.

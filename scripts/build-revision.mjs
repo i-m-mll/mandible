@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const SOURCE_PATHS = ["package.json", ".bun-version", "bun.lock", "bunfig.toml", "tsconfig.json", "src", "channel-server", "ui", "scripts", "bin", "cli", "config", "src-tauri"];
 
+export function isBuildSourcePath(file) {
+  return SOURCE_PATHS.some(source => file === source || file.startsWith(`${source}/`));
+}
+
 function git(root, ...args) {
   const result = spawnSync("git", args, {
     cwd: root,
@@ -100,6 +104,7 @@ export function readBuildRevision(root) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const command = process.argv[2];
-  if (command !== "write") throw new Error("Usage: build-revision.mjs write");
-  process.stdout.write(`${writeBuildRevision(root)}\n`);
+  if (command === "source-paths") process.stdout.write(`${SOURCE_PATHS.join("\n")}\n`);
+  else if (command === "write") process.stdout.write(`${writeBuildRevision(root)}\n`);
+  else throw new Error("Usage: build-revision.mjs write|source-paths");
 }

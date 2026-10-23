@@ -1,3 +1,4 @@
+export function isBuildSourcePath(file: string): boolean;
 export function compiledBuildDigest(root: string): string;
 export function readBuildRevision(root: string): string;
 export function writeBuildRevision(root: string): string;

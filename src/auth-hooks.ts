@@ -31,6 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { readRuntimeHandoffLock, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
@@ -438,6 +439,11 @@ export class AuthHookManager {
     return rows.map(mapHookRow);
   }
 
+  private matchingHooksForRequest(request: AuthRequest): AuthHook[] {
+    return this.findMatchingHooks(request.repo, request.type)
+      .filter(hook => hook.id !== MANDIBLE_REBUILD_HOOK_ID || authRequestChangesBuildInputs(request));
+  }
+
   // --- Durable execution state ------------------------------------------------
 
   private hasDurableTables(): boolean {
@@ -461,7 +467,7 @@ export class AuthHookManager {
    */
   planRuns(request: AuthRequest, additionalHooks: AuthHook[] = []): AuthHookRun[] {
     if (!this.hasDurableTables()) return [];
-    const hooks = [...additionalHooks, ...this.findMatchingHooks(request.repo, request.type)];
+    const hooks = [...additionalHooks, ...this.matchingHooksForRequest(request)];
     const now = Date.now();
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO auth_hook_executions (
@@ -643,7 +649,7 @@ export class AuthHookManager {
     if (!this.hasDurableTables()) {
       // Legacy/partial DBs (old fixtures) keep the pre-27241e6 behaviour rather
       // than losing hook execution entirely.
-      const hooks = this.findMatchingHooks(request.repo, request.type);
+      const hooks = this.matchingHooksForRequest(request);
       const results: AuthHookExecutionResult[] = [];
       for (const hook of hooks) {
         results.push(await this.spawnHook(hook.id, hook.label, hook.command, request, {
