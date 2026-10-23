@@ -66,7 +66,13 @@ it('opens a collapsed exact pair once, preserves sibling choices, and waits for 
   expect(ready).toHaveBeenCalledTimes(1);
   view.rerender(<DiffView diffText={text} target={{ ...target, navigationToken: 'visit-2' }} onTargetReady={ready} />);
   expect(ready).toHaveBeenCalledTimes(2);
-  view.rerender(<DiffView diffText={text} target={{ oldPath: 'absent/file.ts', newPath: 'absent/file.ts', navigationToken: 'visit-3' }} onTargetReady={ready} />);
-  expect(ready.mock.calls[2]).toEqual(['visit-3', { kind: 'unavailable', element: screen.getByRole('status') }]);
-  expect(screen.getByRole('status').textContent).toContain('unavailable');
+  const mismatched = { oldPath: 'one/file.ts', newPath: 'two/file.ts', navigationToken: 'visit-3' };
+  view.rerender(<DiffView diffText={text} target={mismatched} onTargetReady={ready} />);
+  expect(ready.mock.calls[2]).toEqual(['visit-3', { kind: 'unavailable' }]);
+  expect(screen.queryByRole('status')).toBeNull();
+  view.rerender(<DiffView diffText={`${text}\n`} target={mismatched} onTargetReady={ready} />);
+  expect(ready).toHaveBeenCalledTimes(3);
+  const rename = 'diff --git a/one/file.ts b/two/file.ts\nsimilarity index 100%\nrename from one/file.ts\nrename to two/file.ts';
+  view.rerender(<DiffView diffText={rename} target={mismatched} onTargetReady={ready} />);
+  expect(ready.mock.calls[3]).toEqual(['visit-3', { kind: 'file', element: screen.getByRole('button', { name: 'two/file.ts' }) }]);
 });
