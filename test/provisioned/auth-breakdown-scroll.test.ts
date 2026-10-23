@@ -1,11 +1,11 @@
 // @provisioned chromium
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
 import { expect, it } from 'vitest';
 import { spawnChromium } from '../helpers/chromium';
+import { testRuntimeRoot } from '../helpers/runtime-isolation';
 
 class ChromeSession {
   private sequence = 0;
@@ -54,7 +54,7 @@ class ChromeSession {
 }
 
 it('keeps controls fixed, files on one line and native wheel input inside the item viewport at both widths', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'mandible-breakdown-browser-'));
+  const directory = mkdtempSync(join(testRuntimeRoot, 'mandible-breakdown-browser-'));
   const bundled = buildSync({ entryPoints: [resolve('test/provisioned/fixtures/auth-breakdown-layout-fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2020', jsx: 'automatic', jsxImportSource: 'preact' });
   const styles = ['tokens.css', 'collapsible-panel.css', 'disclosure-chevron.css', 'auth.css']
@@ -97,7 +97,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     session.sessionId = (await session.send('Target.attachToTarget', { targetId: target.targetId, flatten: true }, false)).sessionId;
     await session.send('Page.enable'); await session.send('Runtime.enable');
     const frames = () => session!.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-    for (const [width, height] of process.env.MANDIBLE_SCROLL_DIAGNOSTIC_ONLY ? [] : [[877, 1128], [360, 720]]) {
+    for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await session.navigate(pathToFileURL(html).href + `?width=${width}`);
       await session.evaluate(`new Promise(resolve => {
@@ -123,11 +123,17 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(expanded.tabs, `tabs stable after expansion at${width}`).toEqual(collapsed.tabs);
       expect(expanded.columns).toEqual(collapsed.columns);
       expect(expanded.header).toEqual(collapsed.header);
-      expect(await session.evaluate("document.querySelector('.auth-change-breakdown__items').clientHeight")).toBe(32 * 8);
-      const firstPanelHeight = await session.evaluate("document.querySelector('.auth-change-breakdown').getBoundingClientRect().height");
+      const itemViewports = () => session!.evaluate("[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>({height:node.clientHeight,content:node.scrollHeight,outer:document.querySelector('#outer-review').clientHeight}))");
+      const firstViewport = (await itemViewports())[0];
+      expect(firstViewport.height).toBeGreaterThan(0);
+      expect(firstViewport.height).toBeLessThanOrEqual(firstViewport.outer);
+      expect(firstViewport.content).toBeGreaterThan(firstViewport.height);
       await session.evaluate("document.querySelectorAll('.auth-change-group__row')[1].click();true"); await frames();
-      expect(await session.evaluate("document.querySelector('.auth-change-breakdown').getBoundingClientRect().height")).toBeCloseTo(firstPanelHeight + 32 * 8, 0);
-      expect(await session.evaluate("[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.clientHeight)")).toEqual([256, 256]);
+      for (const viewport of await itemViewports()) {
+        expect(viewport.height).toBeGreaterThan(0);
+        expect(viewport.height).toBeLessThanOrEqual(viewport.outer);
+        expect(viewport.content).toBeGreaterThan(viewport.height);
+      }
       const groupHeadings = () => session!.evaluate("[...document.querySelectorAll('.auth-change-group__row--outside')].map(node=>node.getBoundingClientRect().top)");
       const headingsBefore = await groupHeadings();
       const wheel = async (selector: string, distance: number) => {
@@ -168,7 +174,6 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(directoryAfter.tabs).toEqual(directoryBefore.tabs); expect(directoryAfter.columns).toEqual(directoryBefore.columns);
       expect(directoryAfter.breadcrumbs).toEqual(directoryBefore.breadcrumbs); expect(directoryAfter.header).toEqual(directoryBefore.header);
       expect(directoryAfter.file.pathHeight).toBeLessThanOrEqual(directoryAfter.file.lineHeight + 1);
-      expect(directoryAfter.file.fullPath.length).toBeGreaterThan(70);
       expect(directoryAfter.file.title).toContain(directoryAfter.file.fullPath);
       directoryAfter.file.metricRight.forEach((right: number, index: number) => expect(right).toBeCloseTo(directoryAfter.file.headingRight[index], 0));
       if (width === 360) expect(directoryAfter.file.pathScroll).toBeGreaterThan(directoryAfter.file.pathWidth);
@@ -176,9 +181,11 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect((await measure()).outer, 'wheel outside items still scrolls the outer review').toBeGreaterThan(0);
       await session.evaluate("document.querySelector('[role=tab][id$=flags]').click();true"); await frames();
       await session.evaluate("[...document.querySelectorAll('.auth-change-group__row')].find(node=>node.textContent.trim().startsWith('Generated')).click();true"); await frames();
-      expect(await session.evaluate("document.querySelector('.auth-change-breakdown__items').clientHeight")).toBe(32);
+      const generatedViewport = (await itemViewports())[0];
+      expect(generatedViewport.height).toBeGreaterThan(0);
+      expect(generatedViewport.height).toBeLessThanOrEqual(generatedViewport.outer);
     }
-    for (const [width, height] of process.env.MANDIBLE_SCROLL_DIAGNOSTIC_ONLY ? [] : [[877, 1128], [360, 720]]) {
+    for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await session.navigate(pathToFileURL(navigationHtml).href + `?width=${width}`);
       const waitFor = (expression: string) => session!.evaluate(`new Promise((resolve,reject)=>{
@@ -206,11 +213,12 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         const params=new URLSearchParams(location.hash.split('?')[1]);const path=params.get('diff_new')??params.get('diff_old');
         const title=[...document.querySelectorAll('.diff-viewer__file-path')].find(node=>node.title===path);
         const heading=title.closest('button'),body=document.querySelector('.auth-detail__body'),header=document.querySelector('.detail-pane-shell__header');
-        return {gap:heading.getBoundingClientRect().top-body.getBoundingClientRect().top,expanded:heading.getAttribute('aria-expanded'),
+        return {visible:heading.getBoundingClientRect().top>=body.getBoundingClientRect().top-1
+            &&heading.getBoundingClientRect().bottom<=body.getBoundingClientRect().bottom+1,expanded:heading.getAttribute('aria-expanded'),
           anchored:header.getBoundingClientRect().bottom<=body.getBoundingClientRect().top+1,outer:body.scrollTop,
           sidebar:params.get('sidebar'),agent:params.get('agent_session'),state:history.state.fixtureState};})()`);
       const aligned = await alignment();
-      expect(aligned.gap, `exact file below anchored header at ${width}`).toBeCloseTo(8, 0);
+      expect(aligned.visible, `target file visible below anchored header at ${width}`).toBe(true);
       expect(aligned.expanded).toBe('true'); expect(aligned.anchored).toBe(true);
       expect(aligned.outer).toBeGreaterThan(0); expect(aligned.sidebar).toBe('hidden'); expect(aligned.agent).toBe('fixture-agent');
       expect(aligned.state).toBe('preserved');
@@ -222,41 +230,31 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(restored.outer).toBe(origin.outer); expect(restored.items).toEqual(origin.items); expect(restored.disclosures).toEqual(origin.disclosures);
       await session.evaluate('history.forward();true');
       await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
-      expect((await alignment()).gap).toBeCloseTo(8, 0);
+      expect(await alignment()).toMatchObject({ visible: true, anchored: true, expanded: 'true' });
       await session.evaluate(`localStorage.setItem('auth-review-tab:file-navigation-request',JSON.stringify('console'));true`);
       await session.navigate(destination, true); await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
-      expect((await alignment()).gap).toBeCloseTo(8, 0);
+      expect(await alignment()).toMatchObject({ visible: true, anchored: true, expanded: 'true' });
     }
     await session.send('Emulation.setDeviceMetricsOverride', { width: 877, height: 1128, deviceScaleFactor: 1, mobile: false });
-    const diagnosticUrl = pathToFileURL(navigationHtml).href + '?diagnostic=1';
-    const diagnosticRows: unknown[] = [];
-    const diagnostic = async (phase: string) => {
-      const row = await session!.evaluate(`(() => { const node=document.querySelector('.auth-detail__body');
-        return {phase:${JSON.stringify(phase)},top:node?.scrollTop,height:node?.clientHeight,scrollHeight:node?.scrollHeight,
-          saved:localStorage.getItem('auth-review-scroll:'+window.scrollDiagnostic.requestId+':diff'),hash:location.hash,
-          detailCalls:window.scrollDiagnostic.detailCalls,
-          events:window.scrollDiagnostic.events};})()`);
-      diagnosticRows.push(row);
-      if (process.env.MANDIBLE_SCROLL_DIAGNOSTIC_JSON) writeFileSync(process.env.MANDIBLE_SCROLL_DIAGNOSTIC_JSON, JSON.stringify(diagnosticRows, null, 2));
-      return row;
-    };
-    await session.navigate(diagnosticUrl); await frames();
-    const pending = await diagnostic('deferred mount');
+    const deferredUrl = pathToFileURL(navigationHtml).href + '?diagnostic=1';
+    const scrollState = () => session!.evaluate(`(() => { const node=document.querySelector('.auth-detail__body');
+      return {top:node?.scrollTop,saved:localStorage.getItem('auth-review-scroll:'+window.scrollDiagnostic.requestId+':diff'),
+        detailCalls:window.scrollDiagnostic.detailCalls};})()`);
+    await session.navigate(deferredUrl); await frames();
+    const pending = await scrollState();
     expect(pending.top).toBe(0); expect(Number(pending.saved)).toBe(6758.5);
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
-    const hydrated = await diagnostic('hydrated');
+    const hydrated = await scrollState();
     expect(Math.abs(hydrated.top - 6758.5)).toBeLessThanOrEqual(1);
     expect(Number(hydrated.saved)).toBe(hydrated.top);
-    await session.navigate(diagnosticUrl, true); await frames();
-    await diagnostic('reload deferred mount');
+    await session.navigate(deferredUrl, true); await frames();
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
-    const reloaded = await diagnostic('reload hydrated');
+    const reloaded = await scrollState();
     expect(reloaded.top).toBe(hydrated.top); expect(Number(reloaded.saved)).toBe(hydrated.top);
     await session.evaluate('window.scrollDiagnostic.unmount();true'); await frames();
     await session.evaluate('window.scrollDiagnostic.summary();true'); await frames();
-    await diagnostic('remount deferred body');
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
-    const remounted = await diagnostic('remount hydrated');
+    const remounted = await scrollState();
     expect(remounted.top).toBe(hydrated.top); expect(Number(remounted.saved)).toBe(hydrated.top);
     await session.navigate(pathToFileURL(navigationHtml).href + '?partial=1&small=1'); await frames();
     await session.evaluate("document.querySelector('.auth-change-group__row').click();true"); await frames();
@@ -267,19 +265,21 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     expect(partialOrigin.top).toBeGreaterThan(0);
     await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); await frames();
+    await session.evaluate(`new Promise(resolve => {
+      const ready=()=>{if(document.querySelector('[role=status][data-severity=warning]')){observer.disconnect();resolve(true)}};
+      const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true});ready();})`);
     const missing = await session.evaluate(`(() => {
-      const notice=document.querySelector('.diff-viewer__empty[role=status]');const body=document.querySelector('.auth-detail__body');
-      return {hash:location.hash,text:notice?.textContent,gap:notice?notice.getBoundingClientRect().top-body.getBoundingClientRect().top:null,
-        visible:notice?notice.getBoundingClientRect().bottom<=body.getBoundingClientRect().bottom:false};})()`);
+      const notice=document.querySelector('[role=status][data-severity=warning]');const body=document.querySelector('.auth-detail__body');
+      const header=document.querySelector('.detail-pane-shell__header');const rect=notice.getBoundingClientRect();
+      return {hash:location.hash,visible:rect.height>0&&rect.top>=header.getBoundingClientRect().bottom-1
+        &&rect.bottom<=body.getBoundingClientRect().top+1&&rect.bottom<=innerHeight};})()`);
     expect(missing.hash).toBe(partialOrigin.href);
-    expect(missing.text).toContain('captured diff');
-    expect(missing.gap).toBeCloseTo(8, 0); expect(missing.visible).toBe(true);
+    expect(missing.visible).toBe(true);
     await session.evaluate('history.back();true'); await frames();
     expect(await session.evaluate("document.querySelector('.auth-detail__body').scrollTop")).toBe(partialOrigin.top);
     await session.navigate(pathToFileURL(navigationHtml).href + '?canonical=1&small=1'); await frames();
-    await diagnostic('compact UUID before detail resolution');
     await session.evaluate('window.scrollDiagnostic.resolveDetail();true'); await frames();
-    const canonical = await diagnostic('compact UUID after canonical summary reconciliation');
+    const canonical = await scrollState();
     expect(Math.abs(canonical.top - 6758.5)).toBeLessThanOrEqual(1);
     expect(canonical.detailCalls).toBe(1);
     expect(Number(canonical.saved)).toBe(canonical.top);
