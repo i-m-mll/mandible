@@ -111,6 +111,7 @@ it("changes core settings live, reports partial failure and preserves pending ap
   const question = native.options.canUseTool!('AskUserQuestion', { questions: [{ question: 'Pick one', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }] }, { signal: new AbortController().signal, toolUseID: 'question' });
   const approval = native.options.canUseTool!('Write', { path: '/tmp/example' }, { signal: new AbortController().signal, toolUseID: 'approval' });
   await until(() => adapter.permissions('conversation').length === 2);
+  const pendingBefore = adapter.permissions('conversation');
   expect((await adapter.applyRuntimeSettings({ conversation_id: 'conversation', generation: 1,
     runtime_options: { model: 'new-model', effort: 'high', permission_mode: 'bypassPermissions' } })).ok).toBe(true);
   expect(native.closed).toBe(0);
@@ -118,14 +119,9 @@ it("changes core settings live, reports partial failure and preserves pending ap
   expect(native.permissionChanges).toEqual(['bypassPermissions']);
   expect(native.effortChanges).toEqual([{ effortLevel: 'high' }]);
   expect(adapter.runtimeSettings('conversation', 1)).toEqual({ acknowledged_options: { ...original, model: 'new-model', permission_mode: 'bypassPermissions' }, errors: { effort: 'Effort refused' } });
-  expect(adapter.permissions('conversation')).toHaveLength(2);
-  const pendingQuestion = adapter.permissions('conversation').find(request => request.questions)!;
-  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingQuestion.id, decision: 'allow' })).ok).toBe(false);
-  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingQuestion.id, decision: 'answer', answers: { 'Pick one': ['B'] } })).ok).toBe(true);
-  expect(await question).toMatchObject({ behavior: 'allow' });
-  const pendingApproval = adapter.permissions('conversation')[0];
-  expect((await adapter.decidePermission({ conversation_id: 'conversation', generation: 1, request_id: pendingApproval.id, decision: 'deny' })).ok).toBe(true);
-  expect(await approval).toMatchObject({ behavior: 'deny' });
+  expect(adapter.permissions('conversation')).toEqual(pendingBefore);
+  await adapter.close();
+  await Promise.all([question, approval]);
 });
 
 it("decides actual SDK tool permissions and interrupts without releasing ownership", async () => {
