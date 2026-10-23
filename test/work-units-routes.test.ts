@@ -1,4 +1,5 @@
 import { registerHookRoutes } from "../src/routes/hooks.js";
+import { SessionExecutionStore, applyExecutionEnvelope } from "../src/session-execution.js";
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -757,8 +758,8 @@ describe("work-unit custody takeover", () => {
     const id = await heldUnit("active");
     db.prepare("UPDATE sessions SET app = ? WHERE id = 'holder-session'").run(provider);
     db.prepare("UPDATE work_units SET provider = ? WHERE id = ?").run(provider, id);
-    const report = (hook_event_name: string, extra: Record<string, unknown> = {}) => guarded.invoke({ method: "POST",
-      url: "/api/hooks/session-execution", credential: "holder", body: { provider, session_id: "holder-thread", hook_event_name, turn_id: "native-turn", ...extra } });
+    const report = (hook_event_name: string, extra: Record<string, unknown> = {}) => applyExecutionEnvelope(new SessionExecutionStore(db),
+      { provider, session_id: "holder-thread", hook_event_name, turn_id: "native-turn", ...extra }, Date.now());
     for (const [event, extra, kind] of [
       ["UserPromptSubmit", {}, "working"], ["Stop", {}, "stopped"], ["UserPromptSubmit", {}, "working"],
       ...(provider === "claude"
@@ -766,10 +767,10 @@ describe("work-unit custody takeover", () => {
         : [["Interrupt", {}, "interrupted"]] as const),
       ["UserPromptSubmit", {}, "working"], ["SessionEnd", { reason: "exit" }, "ended"],
     ] as const) {
-      const result = await report(event, extra);
-      expect(result.status).toBe(200);
-      expect(result.body).toMatchObject({ status: "applied", observation: { turn_id: "native-turn", state: { kind } } });
-      const observation = (result.body as { observation: { state: Record<string, unknown> } }).observation;
+      const result = report(event, extra);
+      if (!result.ok) throw new Error(result.error);
+      expect(result.value).toMatchObject({ status: "applied", observation: { turn_id: "native-turn", state: { kind } } });
+      const observation = result.value.observation as { state: Record<string, unknown> };
       if (kind === "failure") expect(observation.state.error).toEqual({ type: "rate_limit", details: "429 Too Many Requests", message: "API Error", data: null });
       else expect(observation.state).not.toHaveProperty("error");
       expect((await assume("taker", id)).body).toMatchObject({ code: "custody_holder_live", holder_liveness: { state: "live", execution: { state: { kind } } } });
