@@ -1,5 +1,5 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
-import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { IconTabList } from './components/shared/IconTabList';
 
 type AppRightSidebarCommon = {
@@ -121,6 +121,27 @@ export function AppShellProvider({ value, children }: { value: AppShellContextVa
 
 export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
+}
+
+function documentVisible(): boolean {
+  return typeof document === 'undefined' || document.visibilityState === 'visible';
+}
+
+/**
+ * True while this view is active: its tab is the current route and the document is visible.
+ * A view holds live data (polling, SSE-driven refetches, on-demand loads) only while active;
+ * while inactive it records what went stale and refreshes once when this turns true again.
+ */
+export function useViewActive(): boolean {
+  const { active } = useAppShell();
+  const [visible, setVisible] = useState(documentVisible);
+  useEffect(() => {
+    const update = () => setVisible(documentVisible());
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+  return active && visible;
 }
 
 /** Register this mounted view's one bounded initial read with the app warmup barrier. */
