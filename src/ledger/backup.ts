@@ -41,6 +41,7 @@ export const METADATA_BACKUP_TABLES = [
   "console_session_usage",
   "console_session_telemetry",
   "conversations",
+  "conversation_identity_aliases",
   // Durable source identity and restore metadata (migration 140). These rows
   // are the compact map from a conversation to provider or managed-custody
   // bytes, including stable block aliases and the exact parser epoch needed to
