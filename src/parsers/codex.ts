@@ -848,6 +848,8 @@ export class CodexParser implements ConversationParser {
           if (pendingUserBlockIndex !== null && typeof evt.client_id === "string" && evt.client_id) {
             blocks[pendingUserBlockIndex].dag_uuid = evt.client_id;
             blocks[pendingUserBlockIndex].metadata.client_intent_id = evt.client_id;
+            const item = blocks[pendingUserBlockIndex].metadata.chat_item;
+            if (item) item.identity.native_item_id = evt.client_id;
           }
           pendingUserBlockIndex = null;
         } else if (evt.type === "token_count") {

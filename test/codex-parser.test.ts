@@ -463,6 +463,7 @@ describe("CodexParser", () => {
           source_event_type: "user",
           provider_turn_id: providerTurnId,
           client_intent_id: clientIntentId,
+          chat_item: expect.objectContaining({ identity: expect.objectContaining({ native_item_id: clientIntentId }) }),
         }),
       }),
     ]);

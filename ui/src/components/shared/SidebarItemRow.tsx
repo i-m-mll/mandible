@@ -123,7 +123,7 @@ export function SidebarItemRow({
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
       </button>
-      {provider?.mark || actions || reorder ? (
+      {provider?.mark || actions || reorder?.handleOnly ? (
         <span
           ref={(element) => {
             trailingRef.current = element;
@@ -131,7 +131,7 @@ export function SidebarItemRow({
           }}
           className="sidebar-item-row__trailing contextual-action-scope"
         >
-          {reorder ? (
+          {reorder?.handleOnly ? (
             <span className="sidebar-item-row__reorder contextual-action-group">
               <SidebarReorderHandle binding={reorder} />
             </span>

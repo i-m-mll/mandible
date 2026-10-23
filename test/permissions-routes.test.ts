@@ -14,8 +14,13 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
+import { DEFAULT_MANAGED_CHAT_OPTIONS } from "../src/managed-chat-defaults.js";
+import { USER_SETTING_KEYS } from "../src/contracts.js";
+import { writeUserSetting } from "../src/user-settings.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
+import { ConversationControlService } from "../src/conversation-control/service.js";
+import { CLAUDE_SDK_MANAGED_PROFILE } from "../src/conversation-control/provider-capabilities.js";
 import { registerConversationControlRoutes } from "../src/routes/conversation-control.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
@@ -203,7 +208,7 @@ describe("restricted project route enforcement", () => {
       provider: "codex",
       generation: 1,
       cwd: "/work/spawn-project",
-      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+      runtime_options: { model: "gpt-5.6-sol", effort: "medium", permission_mode: "agent-full-access" },
       signal: expect.any(AbortSignal),
     }), expect.any(Function));
     expect(db.prepare("SELECT source, session_id, cwd FROM conversations WHERE id = ?")
@@ -226,9 +231,11 @@ describe("restricted project route enforcement", () => {
     expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: "claude_code",
       cwd: "/work/spawn-project",
-      runtime_options: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
+      runtime_options: { model: "claude-opus-5-5", effort: "medium", permission_mode: "bypassPermissions" },
     }), expect.any(Function));
 
+    const chosen = { ...structuredClone(DEFAULT_MANAGED_CHAT_OPTIONS), codex: { model: "gpt-5.6-sol", effort: "high", permission_mode: "read-only" } };
+    writeUserSetting(db, agent.id, USER_SETTING_KEYS.managedChatDefaults, JSON.stringify(chosen));
     failNext = true;
     const failed = await router.invoke({
       ...input,
@@ -246,6 +253,15 @@ describe("restricted project route enforcement", () => {
       });
       expect(row.error_json).not.toContain("secret");
     });
+
+    writeUserSetting(db, agent.id, USER_SETTING_KEYS.managedChatDefaults, JSON.stringify(DEFAULT_MANAGED_CHAT_OPTIONS));
+    const retried = await router.invoke({
+      method: "POST", url: "/api/conversation-spawns/10000000-0000-4000-8000-000000000002/retry",
+      body: { expected_generation: 1 }, credential: token, transport: "http",
+    });
+    expect(retried.status).toBe(202);
+    expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({ runtime_options: chosen.codex }), expect.any(Function));
+    expect(retried.body).toMatchObject({ spawn: { runtime_options: chosen.codex } });
 
     waitForCancellation = true;
     const starting = await router.invoke({
@@ -318,7 +334,21 @@ describe("restricted project route enforcement", () => {
       getSnapshot: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
       getLiveProjection: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
     };
-    registerConversationControlRoutes(previewRouter, control as never, { db, instance });
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at,
+      block_count, session_id, model, created_at, updated_at)
+      VALUES (?, 'claude_code', '/tmp/copied-transcript.jsonl', 'hash', 1, 'Copied chat',
+      '2026-01-01T00:00:00Z', 0, 'provider-1', 'stored-provider-model', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run(conversationId);
+    const descriptorService = new ConversationControlService(db);
+    const discover = vi.fn(async () => ({ ok: false as const, error: {
+      kind: 'adapter-failure' as const, adapter_id: 'copied-controller', code: 'discovery-failed', message: 'Discovery failed', retryable: false,
+    } }));
+    descriptorService.registerAdapter({ id: 'copied-controller', provider: 'claude_code', capabilities: CLAUDE_SDK_MANAGED_PROFILE.capabilities,
+      subscribe: () => () => {}, subscribeProviderEvents: () => () => {}, modelChoices: discover } as never);
+    vi.spyOn(descriptorService, 'getSnapshot').mockReturnValue({ ok: true, value: {
+      provider: 'claude_code', ownership: { kind: 'mandible', adapter_id: 'copied-controller', generation: 1 }, controller: { kind: 'running' },
+    } } as never);
+    const controlsWithDescriptors = { ...control, runOptions: descriptorService.runOptions.bind(descriptorService) };
+    registerConversationControlRoutes(previewRouter, controlsWithDescriptors as never, { db, instance });
     const submit = (id = conversationId, generation = 1) => previewRouter.invoke({
       method: "POST",
       url: `/api/conversations/${id}/control/submit`,
@@ -333,6 +363,15 @@ describe("restricted project route enforcement", () => {
       },
     });
 
+    const descriptorRead = await previewRouter.invoke({ method: 'GET', url: `/api/conversations/${conversationId}/control/options`, credential: token, transport: 'http' });
+    expect(descriptorRead).toMatchObject({ status: 200, body: { ok: true, value: [
+      { id: 'model', choices: expect.arrayContaining([{ value: 'stored-provider-model', label: 'stored-provider-model' }]) },
+      { id: 'effort' }, { id: 'permission_mode' },
+    ] } });
+    expect(discover).not.toHaveBeenCalled();
+    expect(instance.allowed_effects).not.toContain('provider:send');
+    expect(await descriptorService.runOptions(conversationId, { discoverModels: true })).toMatchObject({ ok: false, error: { code: 'discovery-failed' } });
+    expect(discover).toHaveBeenCalledOnce();
     expect(await submit()).toMatchObject({
       status: 403,
       body: { error: "effect_forbidden" },

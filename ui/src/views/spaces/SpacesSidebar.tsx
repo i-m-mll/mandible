@@ -802,7 +802,6 @@ export function SpacesSidebar({
                 root: `spaces-group-${kg.key}`,
                 heading: `spaces-group-toggle-${kg.key}`,
                 action: `create-in-${kg.key}`,
-                dragHandle: `spaces-group-header-${kg.key}`,
               }}
               action={{
                 label: `Create space in ${projectName}`,

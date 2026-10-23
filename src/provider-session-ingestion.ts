@@ -1,17 +1,8 @@
 import type { Db } from "./db.js";
 import { columnExists } from "./db-introspection.js";
 
-export const PROVIDER_TO_CONVERSATION_SOURCE: Readonly<Record<string, string>> = Object.freeze({
-  codex: "codex",
-  claude: "claude_code",
-  gemini: "gemini",
-});
-
-export const CONVERSATION_SOURCE_TO_PROVIDER: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(
-    Object.entries(PROVIDER_TO_CONVERSATION_SOURCE).map(([provider, source]) => [source, provider]),
-  ),
-);
+import { CONVERSATION_SOURCE_TO_PROVIDER } from "./provider-identities.js";
+export { CONVERSATION_SOURCE_TO_PROVIDER, PROVIDER_TO_CONVERSATION_SOURCE } from "./provider-identities.js";
 
 export type ProviderSessionIngestion =
   | {

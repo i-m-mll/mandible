@@ -1,3 +1,6 @@
+import { requireIdentity } from "../client-auth/authz.js";
+import { readManagedChatDefaults } from "../user-settings.js";
+import type { ConversationRuntimeOptions } from "../conversation-control/types.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import fs from "node:fs";
 import type { Db } from "../db.js";
@@ -32,12 +35,6 @@ function cwdFor(db: Db, request: ConversationSpawnRequest): string {
   return root;
 }
 
-function runtimeOptions(request: ConversationSpawnRequest) {
-  return request.provider === "codex"
-    ? { model: "gpt-5.6-sol", permission_mode: "agent-full-access" as const }
-    : { model: "claude-opus-5", permission_mode: "bypassPermissions" as const };
-}
-
 export function registerConversationSpawnRoutes(
   server: RouteRegistrar,
   db: Db,
@@ -54,7 +51,7 @@ export function registerConversationSpawnRoutes(
     return result;
   };
 
-  const runAttempt = async (request: ConversationSpawnRequest, generation: number): Promise<void> => {
+  const runAttempt = async (request: ConversationSpawnRequest, generation: number, runtimeOptions: ConversationRuntimeOptions): Promise<void> => {
     const reservationId = request.idempotency_key;
     const controller = new AbortController();
     const attempt = { generation, controller };
@@ -72,7 +69,7 @@ export function registerConversationSpawnRoutes(
         provider: request.provider,
         generation,
         cwd,
-        runtime_options: runtimeOptions(request),
+        runtime_options: runtimeOptions,
         signal: controller.signal,
       }, (lease: NewConversationControllerLease) => {
         const assigned = spawns.assignRuntime(reservationId, generation, lease.controller_instance_id);
@@ -134,7 +131,8 @@ export function registerConversationSpawnRoutes(
 
   server.post("/api/conversation-spawns", globalCapabilityRoute("spawn_console", async (req, res) => {
     const request = req.body as ConversationSpawnRequest;
-    const reserved = spawns.reserve(request);
+    const defaults = readManagedChatDefaults(db, requireIdentity(req).user_id);
+    const reserved = spawns.reserve(request, defaults[request?.provider]);
     if (!reserved.ok) {
       sendJson(res, statusFor(reserved.error), reserved);
       return;
@@ -156,7 +154,7 @@ export function registerConversationSpawnRoutes(
       return;
     }
     publish(reserved.value.reservation_id);
-    void runAttempt(canonicalRequest, begun.value.attempt_count);
+    void runAttempt(canonicalRequest, begun.value.attempt_count, reserved.value.runtime_options ?? defaults[canonicalRequest.provider]);
     const current = spawns.get(reserved.value.reservation_id);
     const currentSpawn = current.ok ? current.value : begun.value;
     sendJson(res, 202, {
@@ -179,7 +177,9 @@ export function registerConversationSpawnRoutes(
     }
     const request = begun.value.request as ConversationSpawnRequest;
     publish(req.params.id);
-    void runAttempt(request, begun.value.attempt_count);
+    const runtimeOptions = begun.value.runtime_options
+      ?? readManagedChatDefaults(db, requireIdentity(req).user_id)[request.provider];
+    void runAttempt(request, begun.value.attempt_count, runtimeOptions);
     const current = spawns.get(req.params.id);
     const currentSpawn = current.ok ? current.value : begun.value;
     sendJson(res, 202, { ok: true, spawn: currentSpawn, conversation_id: currentSpawn.reservation_id });

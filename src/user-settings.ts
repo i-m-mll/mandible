@@ -1,3 +1,4 @@
+import { parseManagedChatDefaults } from "./managed-chat-defaults.js";
 import type { Db } from "./db.js";
 import {
   USER_SETTING_KEYS,
@@ -18,6 +19,9 @@ export function parseUserSettingKey(value: string): UserSettingKey | null {
 }
 
 export function normalizeUserSettingValue(key: UserSettingKey, value: string): string | null {
+  if (key === USER_SETTING_KEYS.managedChatDefaults) {
+    try { return JSON.stringify(parseManagedChatDefaults(value)); } catch { return null; }
+  }
   if (key === USER_SETTING_KEYS.appRailOrder) return value;
   if (key === USER_SETTING_KEYS.uiFontFace || key === USER_SETTING_KEYS.detailFontFace) {
     return value === "system-ui" || value === "space-grotesk" ? value : null;
@@ -62,4 +66,8 @@ export function writeUserSetting(
      RETURNING value, revision`,
   ).get(userId, key, value, now) as { value: string; revision: number };
   return { version: 1, key, value: row.value, revision: row.revision };
+}
+
+export function readManagedChatDefaults(db: Db, userId: string) {
+  return parseManagedChatDefaults(readUserSetting(db, userId, USER_SETTING_KEYS.managedChatDefaults).value);
 }

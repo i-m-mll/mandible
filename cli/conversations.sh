@@ -416,99 +416,13 @@ if [[ "${1:-}" == "scan-credentials" ]]; then
   exit $?
 fi
 
-# Exact reads and search always traverse the daemon's shared resolver/freshness
-# barrier, including the normal local transport. The Python/SQLite code below
-# serves only `list` and cannot bypass catch-up.
+# List and exact reads share the daemon identity and freshness boundary.
 case "${1:-}" in
-  search) shift; conversation_search "$@"; exit $? ;;
-  show) shift; file_rpc_show "$@"; exit $? ;;
-  blocks) shift; file_rpc_blocks "$@"; exit $? ;;
-  export) shift; conversation_export_api "$@"; exit $? ;;
+  list) shift; file_rpc_list "$@" ;;
+  search) shift; conversation_search "$@" ;;
+  show) shift; file_rpc_show "$@" ;;
+  blocks) shift; file_rpc_blocks "$@" ;;
+  export) shift; conversation_export_api "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "Unknown conversations subcommand: $1" >&2; usage >&2; exit 1 ;;
 esac
-
-if [[ ! -f "$MANDIBLE_DB" ]]; then
-  echo "Error: Mandible database not found at $MANDIBLE_DB" >&2
-  exit 1
-fi
-
-export MANDIBLE_PARSED_COMMAND
-MANDIBLE_PARSED_COMMAND=$(mandible_parse_command conversations "$@") || exit $?
-exec python3 - "$MANDIBLE_DB" <<'PY'
-from __future__ import annotations
-
-import datetime as dt
-import json
-import os
-import sqlite3
-import sys
-from typing import Any
-
-
-def map_provider(value: str) -> str | None:
-    return {"claude": "claude_code", "codex": "codex", "gemini": "gemini", "all": None}[value]
-
-
-def parse_since(value: str | None) -> str | None:
-    if not value:
-        return None
-    if value.endswith("d") and value[:-1].isdigit():
-        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=int(value[:-1]))
-        return cutoff.isoformat()
-    return value
-
-
-def connect(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA query_only = ON")
-    return conn
-
-
-def main() -> int:
-    parsed = json.loads(os.environ["MANDIBLE_PARSED_COMMAND"])
-    if parsed["command"] != "conversations.list":
-        raise SystemExit(f"Unsupported conversations command: {parsed['command']}")
-    options = parsed["options"]
-    params: list[Any] = []
-    where = ["1=1"]
-    source = map_provider(options.get("provider", "all"))
-    if source:
-        where.append("source = ?")
-        params.append(source)
-    if options.get("tag"):
-        where.append("EXISTS (SELECT 1 FROM json_each(conversations.tags) WHERE json_each.value = ?)")
-        params.append(options["tag"])
-    since = parse_since(options.get("since"))
-    if since:
-        where.append("started_at >= ?")
-        params.append(since)
-    params.append(int(options.get("limit", 20)))
-    conn = connect(sys.argv[1])
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT id, source, title, started_at, updated_at, block_count, session_id, cwd, branch, model, source_path, tags
-            FROM conversations
-            WHERE {' AND '.join(where)}
-            ORDER BY started_at DESC
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
-    finally:
-        conn.close()
-    data = [{key: row[key] for key in row.keys()} for row in rows]
-    for item in data:
-        item["tags"] = json.loads(item["tags"])
-    if options.get("json"):
-        print(json.dumps(data, indent=2))
-    else:
-        for row in data:
-            print(f"{row['id'][:8]}\t{row['source']}\t{row['started_at']}\t{row['block_count']}\t{row['title']}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-PY

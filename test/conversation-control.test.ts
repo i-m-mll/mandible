@@ -62,6 +62,7 @@ class FakeAdapter implements ConversationControllerAdapter {
   deliveries = 0;
   stops = 0;
   lastAcquisition: ControllerAcquisitionRequest | null = null;
+  lastDelivery: ConversationOutboxItem | null = null;
   invalidateOnAcquire = false;
   invalidLeaseOnAcquire = false;
   pid: number | undefined;
@@ -100,6 +101,7 @@ class FakeAdapter implements ConversationControllerAdapter {
   async deliver(item: ConversationOutboxItem): Promise<Result<import("../src/conversation-control/types.js").ProviderDeliveryReceipt, ConversationControlError>> {
     if (!this.delivered.has(item.id)) {
       this.deliveries += 1;
+      this.lastDelivery = item;
       this.delivered.add(item.id);
     }
     return { ok: true, value: {
@@ -366,7 +368,7 @@ describe("authoritative conversation control", () => {
     expect(service.saveRuntimeSettings("conversation-1", 0, { model: "future-turn" }).ok).toBe(true);
     const retried = await service.submit(submission);
     expect(retried.ok).toBe(true);
-    expect(adapter.lastAcquisition?.runtime_options).toEqual({});
+    expect(adapter.lastAcquisition?.runtime_options).toMatchObject({ model: "future-turn" });
     expect(adapter.acquisitions).toBe(2);
     expect(adapter.deliveries).toBe(1);
     expect(db.prepare("SELECT state, attempts, generation FROM conversation_control_outbox WHERE idempotency_key = 'same-draft'").get())
@@ -450,20 +452,20 @@ describe("authoritative conversation control", () => {
     expect(replaced).toMatchObject({
       revision: 4,
       generation: 2,
-      events: [expect.objectContaining({ item: expect.objectContaining({
+      events: [{ ...updated, observed_at: first.observed_at }, second, expect.objectContaining({ item: expect.objectContaining({
         identity: expect.objectContaining({ native_item_id: "native-3" }),
       }) })],
     });
     expect(mergeProviderLiveProjection(replaced, liveEvent(liveMessage("late", "old owner"), 1, 99))).toBe(replaced);
   });
 
-  it("bounds transient projection custody by evicting the oldest observed item", () => {
+  it("retains uncovered content instead of evicting the oldest observed item", () => {
     let projection = emptyProviderLiveProjection("conversation-1");
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("one", "1"), 1, 1), 2);
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("two", "2"), 1, 2), 2);
-    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("three", "3"), 1, 3), 2);
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("one", "1"), 1, 1));
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("two", "2"), 1, 2));
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("three", "3"), 1, 3));
     expect(projection.events.map((event) => event.kind === "provisional-content"
-      ? event.item.identity.native_item_id : null)).toEqual(["two", "three"]);
+      ? event.item.identity.native_item_id : null)).toEqual(["one", "two", "three"]);
   });
 
   it("does not let durable text coverage erase a live reasoning sibling", () => {
@@ -492,7 +494,7 @@ describe("authoritative conversation control", () => {
     })]);
   });
 
-  it("retires a disconnected generation and rejects its late provider events", async () => {
+  it("retains disconnected content and rejects late provider events", async () => {
     const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
     const service = new ConversationControlService(db, { onProviderEvent: (event) => emitted.push(event) });
     const adapter = new FakeAdapter();
@@ -521,7 +523,7 @@ describe("authoritative conversation control", () => {
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: { generation, events: [] },
+      value: { generation, events: [itemEvent, expect.objectContaining({ kind: "transient-retirement" })] },
     });
     expect(emitted.at(-1)).toMatchObject({
       kind: "transient-retirement",
@@ -723,15 +725,14 @@ describe("authoritative conversation control", () => {
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: { events: [expect.objectContaining({ identity: assistantEvent.identity })] },
+      value: { events: [expect.objectContaining({ identity: assistantEvent.identity }), expect.objectContaining({ identity: completeLiveOnly.identity })] },
     });
     expect(emitted.at(-1)).toMatchObject({
       kind: "durable-reconciliation",
       covered_identities: [userEvent.identity],
-      terminal_retired_identities: [completeLiveOnly.identity],
     });
     expect(diagnostics).toEqual([expect.objectContaining({
-      ingest_status: "ingested:fresh", retired_live_count: 2, retained_live_count: 1,
+      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 2,
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
   });
@@ -862,3 +863,68 @@ it("keeps initialized Claude identity pending and binds it once", () => {
   expect(store.bindProviderSession('conversation-1',2,'different').ok).toBe(false);
   expect(db.prepare("SELECT session_id FROM conversations WHERE id = 'conversation-1'").get()).toEqual({session_id:'native'});
 });
+
+it("retains startup defaults for the first send and preserves explicit per-chat choices", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter(); service.registerAdapter(adapter);
+    const defaults = { model: "gpt-5.6-sol", effort: "high", permission_mode: "read-only" } as const;
+    const started = await service.acquireNew({ conversation_id: "conversation-1", provider: "codex", generation: 1, cwd: root, runtime_options: defaults }, () => undefined);
+    expect(started.ok).toBe(true);
+    const settings = service.getRuntimeSettings("conversation-1");
+    expect(settings).toMatchObject({ ok: true, value: { runtime_options: defaults } });
+    const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error('missing snapshot');
+    expect(service.saveRuntimeSettings("conversation-1", 0, { effort: "low" }).ok).toBe(true);
+    expect(await service.submit({ ...request(snapshot.value.revision, "stale-send", snapshot.value.ownership.generation), runtime_options: { effort: "high" } }))
+      .toMatchObject({ ok: false, error: { kind: "settings-drift", desired_revision: 1 } });
+    const submitted = { ...request(snapshot.value.revision, "first-send", snapshot.value.ownership.generation), operation: "send" as const };
+    expect((await service.submit(submitted)).ok).toBe(true);
+    expect(adapter.lastDelivery?.runtime_options).toEqual({ ...defaults, effort: "low" });
+    expect(service.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { ...defaults, effort: "low" } } });
+    const current = service.getRuntimeSettings("conversation-1"); if (!current.ok) throw new Error('missing settings');
+    expect(service.saveRuntimeSettings("conversation-1", current.value.revision, { model: "explicit-model" }).ok).toBe(true);
+    const reopened = new ConversationControlService(db);
+    expect(reopened.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { runtime_options: { model: "explicit-model", effort: "low", permission_mode: "read-only" } } });
+    await service.close();
+  });
+
+it("serializes native changes with queued dispatch and rejects stale draft restoration", async () => {
+    let unblock!: () => void;
+    let applying = false;
+    class LiveAdapter extends FakeAdapter {
+      override readonly capabilities = { ...capabilities, steer: false };
+      acknowledged = {};
+      runtimeSettings() { return { acknowledged_options: this.acknowledged, errors: {} }; }
+      async applyRuntimeSettings(input: { runtime_options: object }) {
+        applying = true;
+        await new Promise<void>(resolve => { unblock = resolve; });
+        this.acknowledged = input.runtime_options;
+        applying = false;
+        return { ok: true as const, value: undefined };
+      }
+      override async deliver(item: ConversationOutboxItem) {
+        expect(applying).toBe(false);
+        this.acknowledged = item.runtime_options;
+        return super.deliver(item);
+      }
+    }
+    const service = new ConversationControlService(db);
+    const adapter = new LiveAdapter(); service.registerAdapter(adapter);
+    expect((await service.submit(request(0, "start"))).ok).toBe(true);
+    const started = service.getSnapshot("conversation-1");
+    if (!started.ok || started.value.turn.kind !== "queued") throw new Error("missing queued turn");
+    adapter.emit({ conversation_id: "conversation-1", generation: started.value.ownership.generation,
+      kind: "turn-started", turn_id: started.value.turn.turn_id, at: Date.now() });
+    expect(service.saveRuntimeSettings("conversation-1", 0, { effort: "high" }).ok).toBe(true);
+    const application = service.applyRuntimeSettings("conversation-1");
+    await Promise.resolve(); await Promise.resolve();
+    expect(applying).toBe(true);
+    const snapshot = service.getSnapshot("conversation-1"); if (!snapshot.ok) throw new Error("missing snapshot");
+    const queued = service.submit({ ...request(snapshot.value.revision, "queued", snapshot.value.ownership.generation), operation: "queue" });
+    expect(service.saveRuntimeSettings("conversation-1", 1, { permission_mode: "read-only" }).ok).toBe(true);
+    unblock();
+    expect((await application).ok).toBe(true);
+    const queuedResult = await queued; expect(queuedResult.ok, JSON.stringify(queuedResult)).toBe(true);
+    expect(adapter.lastDelivery?.runtime_options).toMatchObject({ effort: "high", permission_mode: "read-only" });
+    expect(service.getRuntimeSettings("conversation-1")).toMatchObject({ ok: true, value: { revision: 2, runtime_options: { effort: "high", permission_mode: "read-only" } } });
+    await service.close();
+  });

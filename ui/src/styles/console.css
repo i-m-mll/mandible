@@ -578,10 +578,6 @@
   font-size: 12px;
 }
 
-.session-controls__select {
-  min-height: 38px;
-}
-
 .session-controls__input {
   min-height: 38px;
   background: var(--bg-page);
@@ -952,44 +948,22 @@
   width: 100%;
 }
 
-.stream-live-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: var(--space-1) 0 var(--space-5);
-  padding: var(--space-2) var(--space-3);
-  border-radius: 999px;
-  background: var(--surface-overlay-muted);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
+.tool-card--active > .compact-activity > .compact-activity__row > .compact-activity__icon,
+.activity-group--active > .compact-activity__row > .compact-activity__icon {
+  color: var(--accent-blue, #3b82f6);
+  animation: tool-execution-pulse 1.2s ease-in-out infinite;
 }
 
-.stream-live-indicator__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent-fg);
-  animation: stream-pulse 1.4s ease-in-out infinite;
+@keyframes tool-execution-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
 }
 
-.stream-live-indicator__label {
-  letter-spacing: 0;
+@media (prefers-reduced-motion: reduce) {
+  .tool-card--active > .compact-activity > .compact-activity__row > .compact-activity__icon,
+  .activity-group--active > .compact-activity__row > .compact-activity__icon { animation: none; }
 }
 
-/* Bug: 4891ce4 — Token count and timer in inline streaming indicator */
-.stream-live-indicator__tokens {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  opacity: 0.6;
-}
-
-.stream-live-indicator__timer {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  opacity: 0.6;
-}
 
 /* Jump-to-bottom floating button */
 .stream-renderer__scroll-btn {
@@ -1559,11 +1533,6 @@
   letter-spacing: 0.04em;
 }
 
-.session-controls__select--compact {
-  width: min(220px, 30vw);
-  min-height: 30px;
-}
-
 @media (max-width: 720px) {
   .composer__meta-row {
     align-items: stretch;
@@ -1602,4 +1571,11 @@
   line-height: 1.5;
   opacity: 0.85;
   padding: 16px 24px;
+}
+
+
+.stream-renderer__persistence-notice {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: var(--space-2) var(--space-4);
 }

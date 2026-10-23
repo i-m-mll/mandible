@@ -2,6 +2,7 @@ import { accessSync, constants } from "node:fs";
 import { platform } from "node:os";
 import type {
   ClientNotification,
+  ModelListParams,
   GetAccountParams,
   InitializeParams,
   ThreadReadParams,
@@ -15,6 +16,7 @@ import type {
 import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
 
 type CodexRequestParams = {
+  "model/list": ModelListParams;
   initialize: InitializeParams;
   "account/read": GetAccountParams;
   "thread/start": ThreadStartParams;
@@ -90,7 +92,7 @@ export class CodexAppServerClient {
     try {
       await client.request("initialize", {
         clientInfo: { name: "mandible", title: "Mandible", version: "0.1.0" },
-        capabilities: { experimentalApi: false, requestAttestation: false },
+        capabilities: { experimentalApi: true, requestAttestation: false },
       });
       const initialized: ClientNotification = { method: "initialized" };
       processOwner.write(initialized);

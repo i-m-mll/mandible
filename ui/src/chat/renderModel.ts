@@ -1,4 +1,5 @@
 import { useMemo } from 'preact/hooks';
+import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
 import type {
   AssistantEvent,
   CanonicalChatItemEvent,
@@ -35,23 +36,16 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
-/** Empty Codex turn lifecycle records are useful transport facts, not Chat content. */
+/** Empty status and thought transport records are hidden only in Chat. */
 export function isRoutineActivityStatus(item: ActivityItem): boolean {
-  if (item.activity_kind !== 'status'
-      || item.provenance.provider !== 'codex'
-      || !['task_started', 'task_complete'].includes(item.provenance.source_event_type)
-      || !['started', 'complete'].includes(item.status ?? '')
-      || (item.severity !== undefined && item.severity !== 'info')
-      || (item.execution_outcome !== undefined && item.execution_outcome !== 'unknown')) return false;
-  return item.parts.every((part) => part.text.trim() === '');
+  return ['status', 'thinking', 'reasoning-summary'].includes(item.activity_kind)
+    && (item.severity === undefined || item.severity === 'info')
+    && (item.execution_outcome === undefined || item.execution_outcome === 'unknown')
+    && item.parts.every((part) => part.text.trim() === '');
 }
 
 export function chatItemStableKey(item: ChatItem): string {
-  const identity = item.identity;
-  const native = identity.native_item_id ?? identity.native_tool_id;
-  return native
-    ? `${identity.provider}:${identity.session_id}:${native}:${identity.native_content_index ?? 'item'}`
-    : `${identity.provider}:${identity.session_id}:${identity.source_record_ordinal}:${identity.source_sub_block_ordinal}`;
+  return chatItemIdentityKey(item, { allowTranscriptCoordinates: true })!;
 }
 
 function toolValueText(value: unknown, fallback: string): string {
@@ -116,6 +110,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   let resultEvent: ResultEvent | null = null;
   let pendingAssistant: AssistantEvent | null = null;
   let pendingCanonicalTurnId: string | undefined;
+  let pendingCanonicalRowKey: string | undefined;
   const pendingResults = new Map<string, ToolResultContentBlock>();
   let userMsgIdx = 0;
 
@@ -127,12 +122,13 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
       const turn = buildTurn(pendingAssistant, pendingResults);
       nodes.push({
         kind: 'assistant_turn',
-        key: turn.id,
+        key: pendingCanonicalRowKey ?? turn.id,
         entity: 'assistant',
         turn,
       });
       pendingAssistant = null;
       pendingCanonicalTurnId = undefined;
+      pendingCanonicalRowKey = undefined;
       for (const [toolUseId, result] of pendingResults) {
         if (!toolUseIds.has(toolUseId)) {
           nodes.push({
@@ -172,12 +168,10 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
     if (event.type === 'chat:item') {
       const canonical = event as CanonicalChatItemEvent;
       const item = canonical.item;
-      const key = chatItemStableKey(item);
+      const key = canonical.displayKey ?? chatItemStableKey(item);
       const source = canonical.source;
       const turnId = item.identity.native_turn_id;
-      const turnEventId = boundarySegment > 0
-        ? `${turnId ?? key}@${source?.position ?? key}`
-        : turnId ?? key;
+      const turnEventId = turnId ?? key;
       if (pendingAssistant && pendingCanonicalTurnId && turnId && pendingCanonicalTurnId !== turnId) {
         flushPendingTurn();
       }
@@ -212,13 +206,15 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             message: { id: turnEventId, role: 'assistant', content: [] },
           };
           pendingCanonicalTurnId = turnId;
+          pendingCanonicalRowKey = key;
         }
         pendingAssistant.message.content.push(item.type === 'plan'
-          ? { type: 'plan', text: chatItemText(item), source }
+          ? { type: 'plan', text: chatItemText(item), source, contentKey: key }
           : {
               type: 'text',
               text: chatItemText(item),
               source,
+              contentKey: key,
               sourceIdentity: {
                 provider: item.identity.provider,
                 sessionId: item.identity.session_id,
@@ -238,6 +234,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
               message: { id: turnEventId, role: 'assistant', content: [] },
             };
             pendingCanonicalTurnId = turnId;
+          pendingCanonicalRowKey = key;
           }
           pendingAssistant.message.content.push({
             type: 'tool_use',
@@ -251,7 +248,13 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
               turnId: item.identity.native_turn_id,
             },
             source,
+            contentKey: key,
+            executionActive: canonical.executionActive,
           });
+          if (toolItem.output !== undefined) pendingResults.set(toolId, boundToolResultBlock({
+            type: 'tool_result', tool_use_id: toolId, content: toolValueText(toolItem.output, ''),
+            is_error: toolItem.execution_outcome === 'failed',
+          }));
         } else {
           const result = boundToolResultBlock({
             type: 'tool_result',
@@ -272,13 +275,15 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
           }
         }
       } else if (item.type === 'activity') {
-        if (isRoutineActivityStatus(item)) continue;
+        if (isRoutineActivityStatus(item) && source?.detailsLoaded !== false) continue;
+        if (isRoutineActivityStatus(item) && source?.hasBody === false) continue;
         flushPendingTurn();
-        nodes.push({ kind: 'activity', key, entity: item.role, item, source });
+        nodes.push({ kind: 'activity', key, entity: item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
       }
     } else if (event.type === 'transcript:boundary') {
       flushPendingTurn();
       boundarySegment += 1;
+      nodes.push({ kind: 'transcript_boundary', key: `gap:${boundarySegment}`, entity: 'system' });
     } else if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
       initEvent = event as SystemInitEvent;
     } else if (event.type === 'transcript:semantic') {
@@ -326,29 +331,13 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
       }
       if (hasText) {
         const joinedText = textParts.join('\n');
-        const existingSyntheticIdx = nodes.findIndex(
-          (n) => n.kind === 'user_message' && n.source === 'synthetic' && n.text === joinedText,
-        );
-        if (existingSyntheticIdx >= 0) {
-          nodes[existingSyntheticIdx] = {
-            kind: 'user_message',
-            key: userEvent.uuid ?? nodes[existingSyntheticIdx].key,
-            entity: 'user',
-            text: joinedText,
-            source: 'stream',
-            persisted: (userEvent.message.content.find((block) => block.type === 'text') as { source?: import('../components/stream-renderer/types').PersistedBlockSource } | undefined)?.source,
-          };
-        } else {
-          flushPendingTurn();
-          nodes.push({
-            kind: 'user_message',
-            key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
-            entity: 'user',
-            text: joinedText,
-            source: 'stream',
-            persisted: (userEvent.message.content.find((block) => block.type === 'text') as { source?: import('../components/stream-renderer/types').PersistedBlockSource } | undefined)?.source,
-          });
-        }
+        flushPendingTurn();
+        nodes.push({
+          kind: 'user_message',
+          key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+          entity: 'user', text: joinedText, source: 'stream',
+          persisted: (userEvent.message.content.find((block) => block.type === 'text') as { source?: import('../components/stream-renderer/types').PersistedBlockSource } | undefined)?.source,
+        });
       }
     } else if (event.type === 'result') {
       resultEvent = event as ResultEvent;
@@ -391,6 +380,10 @@ export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
   const runs: Array<{ speaker: DisplayGroup['speaker']; nodes: RenderNode[] }> = [];
 
   for (const node of nodes) {
+    if (node.kind === 'transcript_boundary') {
+      runs.push({ speaker: 'system', nodes: [] });
+      continue;
+    }
     const previous = runs[runs.length - 1];
     if (previous && previous.speaker === node.entity) {
       previous.nodes.push(node);
@@ -490,7 +483,7 @@ function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
       fragmentBlocks = [];
       expanded.push({
         ...node,
-        key: `${node.key}:fragment:${fragmentIndex++}`,
+        key: fragment[0].contentKey ?? `${node.key}:fragment:${fragmentIndex++}`,
         turn: {
           ...node.turn,
           assistantEvent: {
@@ -516,10 +509,11 @@ function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
             : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
           sessionId: node.turn.assistantEvent.session_id,
           sourceIdentity: block.sourceIdentity,
+          executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
         };
         expanded.push({
           kind: 'activity',
-          key: `tool-call:${node.turn.id}:${block.source?.blockId ?? block.id}`,
+          key: block.contentKey ?? `tool-call:${block.id}`,
           entity: 'assistant',
           item,
           source: block.source,
@@ -528,6 +522,7 @@ function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
       }
 
       if (block.type === 'thinking') {
+        if (!block.thinking.trim() && block.source?.detailsLoaded !== false) return;
         flushFragment();
         const item: ThinkingBlockActivity = {
           type: 'thinking-block-activity',
@@ -660,6 +655,7 @@ function contentBlockToMarkdown(block: ContentBlock, toolResults?: Map<string, T
 }
 
 export function renderNodeToMarkdown(node: RenderNode): string {
+  if (node.kind === 'transcript_boundary') return '';
   if (node.kind === 'user_message') {
     return `## User\n\n${node.text.trim()}`;
   }
