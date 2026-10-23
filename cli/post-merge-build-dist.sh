@@ -20,14 +20,6 @@ runtime="$("$repo_root/scripts/bun-runtime.sh")"
 export MANDIBLE_RUNTIME="$runtime"
 export PATH="$(dirname "$runtime"):$PATH"
 
-# Managed self-updates must replace the loaded definition and the build only
-# after the old process drains. Admission
-# returns 75 only after an independently supervised convergence owner and the
-# dependency-free old-runner guard are durable; the old daemon then drains.
-if [[ "${MANDIBLE_AUTH_REPO:-}" == "mandible" && "${MANDIBLE_HOOK_ID:-}" == "builtin-mandible-rebuild" && -z "${MANDIBLE_RUNTIME_HANDOFF_JOURNAL:-}" ]]; then
-  "$runtime" "$repo_root/scripts/runtime-handoff.mjs" arm "$repo_root"
-fi
-
 dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-bun install --frozen-lockfile --force}"
 build_command="${MANDIBLE_POST_MERGE_BUILD_COMMAND:-bun run build}"
 desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop-app.sh}"
@@ -51,9 +43,12 @@ elif git rev-parse --verify --quiet HEAD^1 >/dev/null \
 fi
 
 if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
-  build_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
-    package.json .bun-version bun.lock bunfig.toml tsconfig.json \
-    src channel-server ui/src ui/index.html ui/esbuild.config.js scripts cli config src-tauri)"
+  source_paths="$("$runtime" "$repo_root/scripts/build-revision.mjs" source-paths)"
+  build_source_paths=()
+  while IFS= read -r source_path; do
+    build_source_paths+=("$source_path")
+  done <<< "$source_paths"
+  build_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- "${build_source_paths[@]}")"
   if [[ -n "$build_changes" ]]; then
     build_needed=true
   fi
@@ -77,6 +72,13 @@ else
   build_needed=true
   desktop_build_needed=true
   instruction_install_needed=true
+fi
+
+# Managed self-updates must replace the loaded definition and the build only
+# after the old process drains. Admission returns 75 after the independent
+# convergence owner and old-runner guard are durable.
+if [[ "$build_needed" == "true" && "${MANDIBLE_AUTH_REPO:-}" == "mandible" && "${MANDIBLE_HOOK_ID:-}" == "builtin-mandible-rebuild" && -z "${MANDIBLE_RUNTIME_HANDOFF_JOURNAL:-}" ]]; then
+  "$runtime" "$repo_root/scripts/runtime-handoff.mjs" arm "$repo_root"
 fi
 
 # Keep the daemon-selected runtime PATH. A login shell can silently switch
