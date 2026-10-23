@@ -10,6 +10,10 @@ import { resolveExactConversation } from '../src/conversations/freshness.js';
 import { triggerTargetedIngest, ingestBatchForWorker } from '../src/ingestion.js';
 import { registerConversationRoutes } from '../src/routes/conversations.js';
 import { Router } from '../src/server.js';
+import { ConversationControlService } from '../src/conversation-control/service.js';
+import { registerConversationControlRoutes } from '../src/routes/conversation-control.js';
+import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
+import { setupOperator } from '../src/users/store.js';
 
 let root: string;
 let db: Db;
@@ -86,10 +90,21 @@ it('repairs an exact historical pair without rekeying transcript material and pr
   expect(proof.shell.id).toBe(shellId);
   expect(proof.collisions.find((row: { table: string }) => row.table === 'conversation_runtime_settings').rows).toHaveLength(2);
   expect(() => db.prepare('DELETE FROM conversation_identity_aliases').run()).toThrow('immutable');
-  const router = new Router();
+  const operator = setupOperator(db, { slug: 'identity-operator', display_name: 'Operator' });
+  const auth = new ClientAuthenticator(db, { secretsDir: path.join(root, 'auth') });
+  const { token } = auth.mintApiToken(operator.id);
+  const router = new Router({ clientAuth: auth });
+  registerConversationControlRoutes(router, new ConversationControlService(db), { db });
   registerConversationRoutes(router);
   const oldRoute = await router.invoke({ method: 'GET', url: `/api/conversations/${shellId}` });
   expect(oldRoute.body).toMatchObject({ conversation: { id: canonical.id, starred: true }, total: 1 });
+  for (const ref of [canonical.id, shellId, shellId.slice(0, 12)]) {
+    const options = await router.invoke({ method: 'GET', url: `/api/conversations/${ref}/control/options`, transport: 'http', credential: token });
+    expect(options.status).toBe(200);
+    expect(options.body).toMatchObject({ ok: true, value: expect.arrayContaining([
+      expect.objectContaining({ id: 'model', choices: expect.arrayContaining([expect.objectContaining({ value: 'newer' })]) }),
+    ]) });
+  }
   const pins = await router.invoke({ method: 'GET', url: `/api/conversations/sidebar?pinned_ids=${shellId}&exclude_subagents=true` });
   expect(JSON.stringify(pins.body)).toContain(canonical.id);
   const list = await router.invoke({ method: 'GET', url: '/api/conversations?exclude_subagents=true' });

@@ -156,7 +156,7 @@ export function registerConversationControlRoutes(
   server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute(async (req, res) => {
     const result = await control.runOptions(req.params.id, { discoverModels });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: discoverModels ? ["ledger:read", "provider:send"] : ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: discoverModels ? ["ledger:read", "provider:send"] : ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
   server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.getRuntimeSettings(req.params.id);
