@@ -111,6 +111,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   let pendingAssistant: AssistantEvent | null = null;
   let pendingCanonicalTurnId: string | undefined;
   let pendingCanonicalRowKey: string | undefined;
+  const renderedCanonicalTurns = new Set<string>();
   const pendingResults = new Map<string, ToolResultContentBlock>();
   let userMsgIdx = 0;
 
@@ -120,9 +121,14 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         .filter((block) => block.type === 'tool_use')
         .map((block) => block.type === 'tool_use' ? block.id : ''));
       const turn = buildTurn(pendingAssistant, pendingResults);
+      // A known native turn survives bounded-window prepends. Further segments
+      // after gaps or activity keep distinct content identities.
+      const key = pendingCanonicalTurnId && !renderedCanonicalTurns.has(pendingCanonicalTurnId)
+        ? pendingCanonicalTurnId : pendingCanonicalRowKey ?? turn.id;
+      if (pendingCanonicalTurnId) renderedCanonicalTurns.add(pendingCanonicalTurnId);
       nodes.push({
         kind: 'assistant_turn',
-        key: pendingCanonicalRowKey ?? turn.id,
+        key,
         entity: 'assistant',
         turn,
       });

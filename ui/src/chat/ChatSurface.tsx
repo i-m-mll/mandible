@@ -799,7 +799,8 @@ export function ChatSurface({
     let targetFound = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
     if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
       itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
-        item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
+        item.kind === 'group' && item.group.nodes.some((node) => node.kind === 'assistant_turn'
+          ? node.turn.id === navigationTarget.turnId : node.key === navigationTarget.turnId)
       )) : -1;
       if (itemIndex < 0 && navigationTarget.blockId) {
         itemIndex = items.findIndex((item) => (

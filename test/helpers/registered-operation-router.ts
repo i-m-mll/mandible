@@ -7,9 +7,9 @@ import { isInlineManagedArtifactByteRequest } from "../../src/security/operation
 import type { InstanceInfo } from "../../src/types.js";
 
 /** Read the descriptors actually authored on registrations, without starting their services. */
-export function registeredOperationRouter(instance?: InstanceInfo): Router {
+export function registeredOperationRouter(instance?: InstanceInfo, files?: string[]): Router {
   const router = new Router(instance ? { instance } : {});
-  for (const entry of registeredOperationMetadata()) {
+  for (const entry of registeredOperationMetadata(files)) {
     const expression = ts.transpileModule(`const descriptor = ${entry.expression}; descriptor;`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     const discoverModels = instance?.role !== 'preview' && (instance?.allowed_effects.includes('provider:send') ?? true);
