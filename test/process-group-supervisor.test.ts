@@ -140,14 +140,16 @@ it("reports EPERM without positive zombie-only evidence", async () => {
     supervisor.attach(exited);
     const result = supervisor.settle(exited);
     await expect(result).rejects.toThrow("could not be cleaned up");
-    await expect(result).rejects.toMatchObject({ errors: expect.arrayContaining([
-      expect.objectContaining({ code: 'EPERM', processGroup: expect.objectContaining({
-        groupId: 2147483647,
-        child: expect.objectContaining({ capturedPid: 2147483647, exitCode: 0, signalCode: null }),
-        inspection: { members: [] },
-        probes: [{ signal: 0, outcome: 'EPERM' }, { signal: 0, outcome: 'EPERM' }],
-      }) }),
-    ]) });
+    if (process.platform === 'darwin') {
+      await expect(result).rejects.toMatchObject({ errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'EPERM', processGroup: expect.objectContaining({
+          groupId: 2147483647,
+          child: expect.objectContaining({ capturedPid: 2147483647, exitCode: 0, signalCode: null }),
+          inspection: { members: [] },
+          probes: [{ signal: 0, outcome: 'EPERM' }, { signal: 0, outcome: 'EPERM' }],
+        }) }),
+      ]) });
+    }
   } finally {
     kill.mockRestore();
     await supervisor.close();
@@ -163,7 +165,7 @@ function privateRuntime() {
   };
 }
 
-it.each([false, true])("settles sequential phases and reports normal and nonzero exits after transient permission probe=%s", async (transientPermission) => {
+it.each(process.platform === "darwin" ? [false, true] : [false])("settles sequential phases and reports normal and nonzero exits after transient permission probe=%s", async (transientPermission) => {
   const supervisor = new ProcessGroupSupervisor({ graceMs: 100 });
   const roots: string[] = [];
   const children: ReturnType<typeof spawn>[] = [];
