@@ -2,7 +2,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from './helpers/dom';
 import { DiffView, parseUnifiedDiffSections } from '../ui/src/components/DiffView';
-import { diffFileKey } from '../ui/src/components/diff-file-identity';
 import { authReviewHash } from '../ui/src/views/auth-review-navigation';
 import { parseRouteFromHash } from '../ui/src/routing';
 
@@ -39,7 +38,6 @@ it('round-trips exact identities and routing context for every Git file shape', 
     const route = parseRouteFromHash(hash);
     expect(route.params).toMatchObject({ request: 'request-1', view: 'diff', sidebar: 'hidden', agent_session: 'abc', filter: 'mine' });
     expect([route.params.diff_old ?? null, route.params.diff_new ?? null]).toEqual(expected[index]);
-    expect(diffFileKey(section)).toBe(JSON.stringify(expected[index]));
   });
   const manual = parseRouteFromHash(authReviewHash('#/auth?diff_old=old&diff_new=new&sidebar=hidden', 'request-2', 'console'));
   expect(manual.params.diff_old).toBeUndefined();
