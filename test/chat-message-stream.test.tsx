@@ -124,12 +124,25 @@ afterEach(() => {
 describe('chat message stream render model', () => {
 
   it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {
-    const events = conversationBlocksToStreamEvents('session', [persistedBlock(
-      'visible-middle-block',
-      canonicalItem({ type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'middle' }], ordinal: 0, turn: 'stable-turn-start' }),
-    )]);
-    const state = buildStreamState(events);
-    expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: 'stable-turn-start' });
+    const earlier = persistedBlock('earlier-block', canonicalItem({
+      type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'earlier' }], ordinal: 0, turn: 'stable-turn-start',
+    }));
+    const middle = persistedBlock('visible-middle-block', canonicalItem({
+      type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'middle' }], ordinal: 1, turn: 'stable-turn-start',
+    }));
+    const bounded = buildStreamState(conversationBlocksToStreamEvents('session', [middle]));
+    const expanded = buildStreamState(conversationBlocksToStreamEvents('session', [earlier, middle]));
+    expect(bounded.nodes[0]).toMatchObject({ kind: 'assistant_turn', turn: { id: 'stable-turn-start' } });
+    expect(expanded.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: bounded.nodes[0].key, turn: { id: 'stable-turn-start' } });
+    expect(groupMessagesForDisplay(expanded.nodes)[0].id).toBe(groupMessagesForDisplay(bounded.nodes)[0].id);
+    const split = buildStreamState([
+      ...conversationBlocksToStreamEvents('session', [earlier]),
+      { type: 'transcript:boundary' },
+      ...conversationBlocksToStreamEvents('session', [middle]),
+    ]).nodes.filter(node => node.kind === 'assistant_turn');
+    expect(split).toHaveLength(2);
+    expect(new Set(split.map(node => node.key)).size).toBe(2);
+    expect(split.map(node => node.turn.id)).toEqual(['stable-turn-start', 'stable-turn-start']);
   });
 
   it('keeps downstream same-speaker row keys stable across prepends and bounds each row', () => {
@@ -270,7 +283,7 @@ describe('ChatSurface stream behavior', () => {
     });
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
       if (this.classList.contains('stream-renderer__virtual-row')) {
-        return domRect(0, 0, 600, /:(18|19):0/.test(this.dataset.virtualKey ?? '') ? 600 : 150);
+        return domRect(0, 0, 600, this.querySelector('[data-block-id="b18"], [data-block-id="b19"]') ? 600 : 150);
       }
       return domRect(0, 0, 600, this.classList.contains('stream-renderer__scroll') ? 500 : 0);
     });
@@ -313,17 +326,16 @@ describe('ChatSurface stream behavior', () => {
     expect(scroll.scrollTop).toBe(3300);
     view.rerender(<ChatSurface events={events(19)} streaming={false} transcript={transcript(19)} />);
 
-    const loadedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
-      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+    const loadedRow = view.container.querySelector('[data-block-id="b19"]')?.closest<HTMLElement>('[data-virtual-kind="group"]');
     expect(loadedRow).toBeTruthy();
-    const rowStart = Number.parseFloat(loadedRow.style.transform.split(',')[1]);
+    const rowStart = Number.parseFloat(loadedRow!.style.transform.split(',')[1]);
     expect(rowStart).toBeLessThan(3300);
     expect(scroll.scrollTop).toBeGreaterThanOrEqual(rowStart);
-    expect(scroll.scrollTop).toBeLessThan(rowStart + loadedRow.getBoundingClientRect().height);
+    expect(scroll.scrollTop).toBeLessThan(rowStart + loadedRow!.getBoundingClientRect().height);
     const readingInset = scroll.scrollTop - rowStart;
     view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
-    const preservedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
-      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+    const preservedRow = view.container.querySelector('[data-block-id="b19"]')?.closest<HTMLElement>('[data-virtual-kind="group"]')!;
+    expect(preservedRow.dataset.virtualKey).toBe(loadedRow!.dataset.virtualKey);
     const preservedStart = Number.parseFloat(preservedRow.style.transform.split(',')[1]);
     expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
   });
@@ -594,7 +606,12 @@ describe('ChatSurface stream behavior', () => {
         }),
       }),
     }));
+    blocks.splice(52, 0, { ...blocks[51], id: 'block-51-tool', metadata_json: JSON.stringify({
+      chat_item: canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'anchor-tool',
+        tool_name: 'Shell', input: { command: 'pwd' }, ordinal: 51, turn: 'turn-51' }),
+    }) });
     const scrollIntoView = vi.fn();
+    const navigationResult = vi.fn();
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
     vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(30000);
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
@@ -609,7 +626,7 @@ describe('ChatSurface stream behavior', () => {
       value: scrollIntoView,
     });
 
-    render(
+    const view = render(
       <ChatSurface
         events={conversationBlocksToStreamEvents('history-anchor', blocks)}
         streaming={false}
@@ -623,5 +640,12 @@ describe('ChatSurface stream behavior', () => {
     expect(exactBlock).toBeTruthy();
     expect(document.activeElement).toBe(exactBlock);
     expect(document.querySelectorAll('[data-virtual-kind]').length).toBeLessThan(40);
+    view.rerender(<ChatSurface
+      events={conversationBlocksToStreamEvents('history-anchor', blocks)} streaming={false}
+      sessionInfo={{ sessionId: 'block-anchor' }}
+      navigationTarget={{ key: 'native-turn-anchor-51', kind: 'turn', turnId: 'turn-51', blockId: null, smooth: false }}
+      onNavigationResult={navigationResult}
+    />);
+    await waitFor(() => expect(navigationResult).toHaveBeenCalledWith({ key: 'native-turn-anchor-51', status: 'revealed' }));
   });
 });
