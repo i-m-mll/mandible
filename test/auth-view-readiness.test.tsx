@@ -216,7 +216,6 @@ describe('Auth Description presentation', () => {
       expect(screen.getByText('Preserve the existing service.')).toBeTruthy();
       expect(screen.queryByText(/git.*default/i)).toBeNull();
       expect(document.querySelector('.rendered-markdown script')).toBeNull();
-      expect(screen.queryByText('Exact Git message')).toBeNull();
       expect(screen.queryByText('edit')).toBeNull();
     });
   }
@@ -232,45 +231,47 @@ describe('Auth Description disclosure persistence', () => {
   });
   const expanded = (name: string) => screen.getByRole('button', { name }).getAttribute('aria-expanded');
 
-  it('preserves explicit Description and exact Git toggles across refetch, request switches and remount', async () => {
+  it('preserves explicit Description and References toggles across refetch, request switches and remount', async () => {
     const view = render(<AuthQueueView {...props()} />);
     expect(expanded('Description')).toBe('true');
-    expect(expanded('Exact Git message')).toBe('false');
+    expect(expanded('References')).toBe('true');
     expect(localStorage.getItem('auth-description-view:req-1')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Description' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Exact Git message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'References' }));
     await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1'))
-      .toBe(JSON.stringify({ descriptionExpanded: false, exactGitExpanded: true, referencesExpanded: true })));
+      .toBe(JSON.stringify({ descriptionExpanded: false, referencesExpanded: false })));
 
     view.rerender(<AuthQueueView {...props()} queue={[{ ...first, updated_at: 2 }, second]} />);
     expect(expanded('Description')).toBe('false');
-    expect(expanded('Exact Git message')).toBe('true');
+    expect(expanded('References')).toBe('false');
     view.rerender(<AuthQueueView {...props('req-2')} />);
     await waitFor(() => expect(expanded('Description')).toBe('true'));
-    expect(expanded('Exact Git message')).toBe('false');
+    expect(expanded('References')).toBe('true');
     expect(localStorage.getItem('auth-description-view:req-2')).toBeNull();
     view.rerender(<AuthQueueView {...props('req-1')} />);
     await waitFor(() => expect(expanded('Description')).toBe('false'));
-    expect(expanded('Exact Git message')).toBe('true');
+    expect(expanded('References')).toBe('false');
     view.unmount();
     render(<AuthQueueView {...props()} />);
     expect(expanded('Description')).toBe('false');
-    expect(expanded('Exact Git message')).toBe('true');
-    expect(screen.getByText(/Merge feature\/x: Preserve the reviewed explanation/).textContent).toBe(message);
+    expect(expanded('References')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Description' }));
+    expect(screen.getAllByText(/Preserve the reviewed explanation/)).toHaveLength(1);
+    expect(screen.getAllByText(/Private checks pass\./)).toHaveLength(1);
   });
 
   it('uses independent strict boolean defaults without rewriting malformed storage on initial read', async () => {
-    const invalid = JSON.stringify({ descriptionExpanded: 'false', exactGitExpanded: 1 });
+    const invalid = JSON.stringify({ descriptionExpanded: 'false', referencesExpanded: 1 });
     localStorage.setItem('auth-description-view:req-1', invalid);
     const view = render(<AuthQueueView {...props()} />);
     expect(expanded('Description')).toBe('true');
-    expect(expanded('Exact Git message')).toBe('false');
+    expect(expanded('References')).toBe('true');
     await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1')).toBe(invalid));
     view.unmount();
-    localStorage.setItem('auth-description-view:req-1', JSON.stringify({ descriptionExpanded: false, exactGitExpanded: 'true' }));
+    localStorage.setItem('auth-description-view:req-1', JSON.stringify({ descriptionExpanded: false, referencesExpanded: 'true' }));
     render(<AuthQueueView {...props()} />);
     expect(expanded('Description')).toBe('false');
-    expect(expanded('Exact Git message')).toBe('false');
+    expect(expanded('References')).toBe('true');
   });
 });
 
@@ -603,7 +604,7 @@ it('keeps unknown breakdown distinct from confirmed absence and available zero-f
   expect(document.querySelector('.collapsible-panel__body')).toBeTruthy();
 });
 
-it('makes confirmed missing Description static and keeps canonical raw Git content discoverable', () => {
+it('keeps missing Description static and renders the reviewed canonical content once', () => {
   const absent = render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: null }]} historyQueue={[]}
     outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
   const description = screen.getByText('Description', { exact: true }).closest('section')!;
@@ -611,16 +612,23 @@ it('makes confirmed missing Description static and keeps canonical raw Git conte
   expect(description.querySelector('button')).toBeNull();
   expect(description.querySelector('.collapsible-panel__body')).toBeNull();
   absent.unmount();
-  const raw = 'Merge feature/x: Preserve exact bytes\n\nWhy:\nRead this raw message.\n\nVerification:\nPrivate review.\n';
-  render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: raw, commit_message_digest: 'a'.repeat(64) }]}
+  const reviewedMessage = `Merge feature/x: Preserve reviewed content
+
+Why:
+Read this reviewed explanation.
+
+Verification:
+Private review.
+`;
+  render(<AuthQueueView queue={[{ ...pendingRequest, commit_message: reviewedMessage, commit_message_digest: 'a'.repeat(64) }]}
     historyQueue={[]} outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance}
     onApprove={() => undefined} onReject={() => undefined} />);
-  const toggle = screen.getByRole('button', { name: 'Exact Git message' });
-  expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  expect(toggle.querySelector('[data-disclosure-chevron="right"]')).toBeTruthy();
-  expect(toggle.closest('.collapsible-panel-region--persistent-disclosures')).toBeTruthy();
-  fireEvent.click(toggle);
-  expect(toggle.closest('section')?.querySelector('pre')?.textContent).toBe(raw);
+  const descriptionPanel = screen.getByRole('button', { name: 'Description' }).closest('section')!;
+  expect(descriptionPanel.querySelector('.rendered-markdown')).toBeTruthy();
+  expect(screen.getAllByText(/Read this reviewed explanation\./)).toHaveLength(1);
+  expect(screen.getAllByText(/Private review\./)).toHaveLength(1);
+  expect(document.querySelectorAll('.rendered-markdown')).toHaveLength(1);
+  expect(descriptionPanel.querySelector('pre')).toBeNull();
 });
 
 
