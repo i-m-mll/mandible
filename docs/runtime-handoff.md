@@ -180,9 +180,12 @@ names the exact bytes of the segment before it. A byte appended between the
 final size check and the truncate would be lost, so rotation's thread is the
 file's only writer. The daemon's stderr writes are synchronous and run on that
 thread, and Bun relays worker-thread output through it. Child processes pipe
-their stderr, and the daemon logs each line as a `child_process_stderr` warning
-with the child's attribution; `bun run check` refuses daemon code that lets a
-child inherit the daemon's stderr. A rotated 16 MiB log takes about 15–50 ms of
+their stderr, and the daemon logs it as `child_process_stderr` warnings with
+the child's attribution, one row per pipe read of whole lines, capped at 16 Ki
+characters with the omitted count recorded. A stack trace or warning dump is
+therefore one or two rows; only a child that keeps writing approaches the storm
+rule. `bun run check` refuses daemon code that lets a child inherit the
+daemon's stderr. A rotated 16 MiB log takes about 15–50 ms of
 that thread.
 
 Observation locates the newest `server_started` line, walking back from the live
