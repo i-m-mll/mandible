@@ -749,12 +749,14 @@ export class AuthQueue {
         // A completed rebuild whose handoff cannot be finished yet: nothing on
         // its row can record this. Each sweep retries it; this reports a new failure.
         authLog("error", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
-        try { raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }); }
+        try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
         catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
       },
       (id) => {
         authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
-        try { resolveDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}` }); }
+        const incidentId = this.handoffIncidents.get(id);
+        this.handoffIncidents.delete(id);
+        try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
         catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
       },
     );
@@ -1054,6 +1056,10 @@ export class AuthQueue {
     this.expiryTimer.unref();
   }
 
+  /** Daemon incidents this queue raised and resolves once their condition clears. */
+  private readonly handoffIncidents = new Map<string, string>();
+  private idleConvergenceIncident: string | null = null;
+
   /** The idle tick's convergence; a failure is reported, never discarded. */
   private async convergeWhileIdle(): Promise<void> {
     try {
@@ -1062,9 +1068,14 @@ export class AuthQueue {
     } catch (error) {
       if (this.disposed || !this.isDbOpen()) return;
       authLog("error", "auth_idle_convergence_failed", { subsystem: "auth", error: errorMessage(error) ?? String(error) });
-      try { raiseDaemonIncident(this.db, { task: "auth-idle-convergence", exitClass: "runner" }); }
+      try { this.idleConvergenceIncident = raiseDaemonIncident(this.db, { task: "auth-idle-convergence", exitClass: "runner" }).incident_id; }
       catch (incidentError) { authLog("error", "auth_idle_convergence_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
+      return;
     }
+    const incidentId = this.idleConvergenceIncident;
+    this.idleConvergenceIncident = null;
+    try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: "auth-idle-convergence" }); }
+    catch (incidentError) { authLog("error", "auth_idle_convergence_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
   }
 
   async dispose(): Promise<void> {

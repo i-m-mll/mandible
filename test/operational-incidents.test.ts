@@ -9,7 +9,11 @@ import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src
 import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
 import {
   acknowledgeOperationalIncident,
+  closeOperationalIncident,
+  getOperationalIncident,
   ingestOperationalIncidentEnvelope,
+  raiseDaemonIncident,
+  resolveDaemonIncident,
   listOperationalIncidents,
   OperationalIncidentError,
   parseOperationalIncidentEnvelope,
@@ -97,6 +101,19 @@ describe("operational incident ledger and reconciliation", () => {
       at,
     );
   }
+
+  it("daemon_incident_resolution_touches_only_the_incident_it_raised", () => {
+    const task = "runtime-handoff-reconcile/request";
+    const first = raiseDaemonIncident(db, { task, exitClass: "runner", observedAt: 1_000 }).incident_id;
+    closeOperationalIncident(db, first, humanId, "Handled by hand.", getOperationalIncident(db, first).updated_at, 2_000);
+    const second = raiseDaemonIncident(db, { task, exitClass: "runner", observedAt: 3_000 }).incident_id;
+
+    expect(resolveDaemonIncident(db, { incidentId: first, task, observedAt: 4_000 })).toBeNull();
+    expect(getOperationalIncident(db, second).resolved).toBe(false);
+    expect(resolveDaemonIncident(db, { incidentId: second, task: "auth-idle-convergence", observedAt: 4_000 })).toBeNull();
+    expect(resolveDaemonIncident(db, { incidentId: second, task, observedAt: 4_000 })).toEqual({ incident_id: second });
+    expect(getOperationalIncident(db, second)).toMatchObject({ resolved: true, resolution_kind: "successful_run" });
+  });
 
   it("operational_incidents_run_status_vocabulary_is_terminal_only", () => {
     // `facts` describes a finished run — `finished_at` is mandatory — so a

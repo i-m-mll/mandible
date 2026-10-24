@@ -342,6 +342,9 @@ it("reports an idle convergence that fails after recording a rebuild failure", a
   } }));
   vi.spyOn(queue as unknown as { settleConvergence: () => Promise<void> }, "settleConvergence").mockRejectedValue(new Error("convergence write failed"));
 
-  await (queue as unknown as { convergeWhileIdle: () => Promise<void> }).convergeWhileIdle();
+  const converge = () => (queue as unknown as { convergeWhileIdle: () => Promise<void> }).convergeWhileIdle();
+  await converge();
   expect(incident(db, "auth-idle-convergence")).toEqual({ resolved_at: null });
+  await converge();
+  expect(incident(db, "auth-idle-convergence")?.resolved_at).toEqual(expect.any(Number));
 });
