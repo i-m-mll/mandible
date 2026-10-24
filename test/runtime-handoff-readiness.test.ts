@@ -84,7 +84,7 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   } as unknown as RuntimeHandoffJournal;
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoff: () => journal,
-    readRuntimeHandoffHead: () => journal,
+    readRuntimeHandoffPhase: () => journal.phase,
     verifyRuntimeHandoffReceipt: async () => { throw new Error("no receipt"); },
     acknowledgeRuntimeHandoff: async () => { throw new Error("no receipt"); },
   } });
@@ -128,7 +128,7 @@ it("validates only unsettled handoff journals and revisits a settled one only af
   const phaseReads: string[] = [];
   const validatedReads: string[] = [];
   const hooks = new AuthHookManager(db, { handoffClient: {
-    readRuntimeHandoffHead: (_home, requestId) => { phaseReads.push(requestId); const phase = phases.get(requestId); return phase ? { phase } : null; },
+    readRuntimeHandoffPhase: (_home, requestId) => { phaseReads.push(requestId); return phases.get(requestId); },
     readRuntimeHandoff: (_home, requestId, executionId) => {
       validatedReads.push(requestId);
       return { schema: "mandible-runtime-handoff@1", bindingDigest: "b".repeat(64), phase: phases.get(requestId)!,
@@ -183,7 +183,7 @@ it("finishes a recovery whose acceptance committed before the daemon stopped, an
   const completed: string[] = [];
   const acknowledged: string[] = [];
   const hooks = new AuthHookManager(db, { handoffClient: {
-    readRuntimeHandoffHead: (_home, requestId) => journals.get(requestId) ?? null,
+    readRuntimeHandoffPhase: (_home, requestId) => journals.get(requestId)?.phase,
     readRuntimeHandoff: (_home, requestId) => journals.get(requestId) ?? null,
     completeRuntimeHandoffRecovery: async (journal) => { completed.push(journal.binding.requestId); journal.phase = "complete"; return journal; },
     verifyRuntimeHandoffReceipt: async () => {},
@@ -202,40 +202,75 @@ it("finishes a recovery whose acceptance committed before the daemon stopped, an
   expect(acknowledged).toEqual(["recovered"]);
 });
 
-it("reports a recovery that cannot be finished once, and retries it only after its journal changes", async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-stuck-"));
+function terminalHandoff(id: string, output: string, journal: Partial<RuntimeHandoffJournal>) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-retry-"));
   cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
   vi.stubEnv("MANDIBLE_HOME", home);
   const db = createMigratedDb();
   cleanups.push(() => db.close());
   const now = Date.now();
-  const digest = "d".repeat(64);
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
-    VALUES ('stuck', 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(now, now, now + 60_000);
+    VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(id, now, now, now + 60_000);
   db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
-    VALUES ('stuck-run', 'stuck', 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run("c".repeat(64), `MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${digest}`, now, now);
-  const journal = { schema: "mandible-runtime-handoff@1", bindingDigest: "b".repeat(64), phase: "failed", updatedAt: now,
-    recovery: { digest, failureDigest: "f", receipt: {}, actor: {}, observedAt: now },
-    binding: { requestId: "stuck", executionId: "stuck-run", hookId: "builtin-mandible-rebuild", commandDigest: "c".repeat(64) } } as unknown as RuntimeHandoffJournal;
+    VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), output, now, now);
+  return { db, journal: { schema: "mandible-runtime-handoff@1", bindingDigest: "b".repeat(64), ...journal,
+    binding: { requestId: id, executionId: `${id}-run`, hookId: "builtin-mandible-rebuild", commandDigest: "c".repeat(64) } } as RuntimeHandoffJournal };
+}
+
+it("retries a completed handoff whose receipt probe failed transiently, and acknowledges it on the next sweep", async () => {
+  const { db, journal } = terminalHandoff("transient", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  let probes = 0;
+  const hooks = new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoffPhase: () => journal.phase,
+    readRuntimeHandoff: () => journal,
+    verifyRuntimeHandoffReceipt: async () => { probes += 1; if (probes === 1) throw new Error("Runtime handoff handoff-verify failed: health exceeded 900 ms"); },
+    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
+    retireFailedRuntimeHandoff: () => undefined,
+  } });
+  const stuck = vi.fn();
+  const cleared = vi.fn();
+  const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {}, stuck, cleared);
+
+  await sweep();
+  expect(journal.phase).toBe("complete");
+  expect(stuck).toHaveBeenCalledTimes(1);
+  await sweep();
+  expect(journal.phase).toBe("acknowledged");
+  await sweep();
+  expect(cleared).toHaveBeenCalledWith("transient");
+  expect(stuck).toHaveBeenCalledTimes(1);
+});
+
+it("keeps retrying a recovery that cannot be finished, reporting it once per distinct failure", async () => {
+  const digest = "d".repeat(64);
+  const { db, journal } = terminalHandoff("stuck", `MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${digest}`, {
+    phase: "failed", recovery: { digest, failureDigest: "f", receipt: {}, actor: {}, observedAt: Date.now() },
+  });
+  let failure: string | null = "Recovery observation changed before acceptance (attempt 1).";
   let completions = 0;
   const hooks = new AuthHookManager(db, { handoffClient: {
-    readRuntimeHandoffHead: () => journal,
+    readRuntimeHandoffPhase: () => journal.phase,
     readRuntimeHandoff: () => journal,
-    completeRuntimeHandoffRecovery: async () => { completions += 1; throw new Error("Recovery observation changed before acceptance."); },
+    completeRuntimeHandoffRecovery: async () => {
+      completions += 1;
+      if (failure) throw new Error(failure.replace(/\d+/, String(completions)));
+      journal.phase = "complete";
+      return journal;
+    },
     verifyRuntimeHandoffReceipt: async () => {},
-    acknowledgeRuntimeHandoff: async () => {},
+    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
     retireFailedRuntimeHandoff: () => undefined,
   } });
   const stuck = vi.fn();
   const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {}, stuck);
 
-  await sweep(); await sweep(); await sweep();
-  expect(completions).toBe(1);
+  for (let tick = 0; tick < 4; tick++) await sweep();
+  expect(completions).toBe(4);
   expect(stuck).toHaveBeenCalledTimes(1);
-  expect(stuck).toHaveBeenCalledWith("stuck", expect.stringContaining("Recovery observation changed"));
-
-  journal.updatedAt = now + 1;
+  failure = "Converged file changed.";
   await sweep(); await sweep();
-  expect(completions).toBe(2);
   expect(stuck).toHaveBeenCalledTimes(2);
+  failure = null;
+  await sweep();
+  expect(journal.phase).toBe("acknowledged");
 });

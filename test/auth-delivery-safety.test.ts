@@ -68,7 +68,7 @@ describe("protected delivery evidence", () => {
     let acknowledgements = 0;
     const hooks = new AuthHookManager(db, { handoffClient: {
       readRuntimeHandoff: async (home) => home === installationHome ? journal : null,
-      readRuntimeHandoffHead: async (home) => home === installationHome ? journal : null,
+      readRuntimeHandoffPhase: async (home) => home === installationHome ? journal?.phase : undefined,
       verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
       acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("acknowledgment interrupted"); if (journal) journal.phase = "acknowledged"; },
     } });
@@ -323,7 +323,7 @@ describe('runtime convergence recovery', () => {
     const persist = vi.fn((current: RuntimeHandoffJournal) => { Object.assign(journal!, current); });
     const hooks = new AuthHookManager(db, { handoffClient: {
       readRuntimeHandoff: () => journal,
-      readRuntimeHandoffHead: () => journal,
+      readRuntimeHandoffPhase: () => journal?.phase,
       verifyRuntimeHandoffReceipt: async () => {},
       acknowledgeRuntimeHandoff: ack,
       observeFailedRuntimeHandoff: observation,
