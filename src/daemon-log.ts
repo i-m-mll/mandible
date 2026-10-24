@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
 import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
@@ -307,6 +309,18 @@ export function stopDaemonLogger(): void {
 }
 
 /**
+ * Log each line a child process writes to its piped stderr as a
+ * `child_process_stderr` warning. Children never share the daemon's stderr:
+ * rotation copies and then truncates that file, and only writes made on the
+ * rotating thread are certain to land in either the rotated segment or the
+ * live file.
+ */
+export function logChildStderr(stream: Readable, fields: Record<string, unknown>): void {
+  createInterface({ input: stream, crlfDelay: Infinity })
+    .on("line", (line) => singleton.log("warn", "child_process_stderr", { ...fields, line }));
+}
+
+/**
  * The file this process's stderr is expected to be redirected to.
  *
  * This is the single source of truth for that path. The daemon never opens it —
@@ -382,10 +396,11 @@ export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void
  * Truncating in place keeps the inode, and every writer is opened O_APPEND, so
  * the next write resumes at offset 0.
  *
- * The copy repeats until the size stops changing, so the only bytes that can be
- * lost are those another thread or process appends between the final size
- * check and the truncate. This thread's own log lines cannot: its stderr file
- * writes are synchronous, and rotation runs on the same thread.
+ * The copy repeats until the size stops changing. A byte appended between the
+ * final size check and the truncate would be lost, so this thread is the
+ * file's only writer: its stderr file writes are synchronous, Bun relays
+ * worker-thread output through it, and children pipe their stderr to
+ * logChildStderr instead of inheriting the daemon's.
  */
 function moveLiveBytesToSegment(filePath: string, segmentPath: string): { bytes: number; sha256: string } {
   const live = fs.openSync(filePath, "r+");

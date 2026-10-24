@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { logChildStderr } from "../daemon-log.js";
 import type { HookCallback, Options, Query, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
@@ -110,8 +111,9 @@ export class ClaudeSdkTransport {
       } },
       hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
       spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }) => {
-        const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+        const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
         this.processId = child.pid;
+        logChildStderr(child.stderr, { subsystem: "claude", session_id: providerId, pid: child.pid });
         return child;
       },
       canUseTool: async (tool, input, context) => {

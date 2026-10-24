@@ -176,10 +176,14 @@ The daemon rotates its own stderr log once it reaches
 file into `<log>.1` until its size stops changing, truncates the live file in
 place (the inode stays the same), and appends a `stderr_log_rotated` record to
 the live file with that segment's byte count and sha256. Each file therefore
-names the exact bytes of the segment before it. Only bytes that another thread
-or process appends between the final size check and the truncate can be lost.
-The daemon's own log lines cannot, because its stderr file writes are
-synchronous and run on the same thread as rotation.
+names the exact bytes of the segment before it. A byte appended between the
+final size check and the truncate would be lost, so rotation's thread is the
+file's only writer. The daemon's stderr writes are synchronous and run on that
+thread, and Bun relays worker-thread output through it. Child processes pipe
+their stderr, and the daemon logs each line as a `child_process_stderr` warning
+with the child's attribution; `bun run check` refuses daemon code that lets a
+child inherit the daemon's stderr. A rotated 16 MiB log takes about 15–50 ms of
+that thread.
 
 Observation locates the newest `server_started` line, walking back from the live
 file through `.1`, `.2` and so on, and checks each segment's size and digest

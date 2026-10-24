@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +14,7 @@ import {
   flushDaemonLogger,
   pruneDaemonLogs,
   rotateStderrLogSegments,
+  logChildStderr,
 } from "../src/daemon-log.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { STDERR_LOG_ROTATED } from "../src/stderr-log-chain.js";
@@ -148,6 +150,19 @@ describe("daemon logger", () => {
       repo_id: "repo-1",
     });
     expect(JSON.parse(String(info.fields_json))).toMatchObject({ value: 42 });
+  });
+
+  it("logs each line of a child's piped stderr with its attribution", async () => {
+    configureDaemonLogger(db);
+    const child = spawn("/bin/sh", ["-c", "printf 'first\\nsecond' >&2"], { stdio: ["ignore", "ignore", "pipe"] });
+    logChildStderr(child.stderr, { subsystem: "claude", session_id: "session-1", pid: child.pid });
+    await new Promise((resolve) => child.once("close", resolve));
+    flushDaemonLogger();
+    const rows = db.prepare("SELECT level, event, session_id, fields_json FROM daemon_log ORDER BY ts, rowid").all() as Array<{ level: string; event: string; session_id: string; fields_json: string }>;
+    expect(rows.map((row) => ({ ...row, fields_json: JSON.parse(row.fields_json) }))).toEqual(["first", "second"].map((line) => ({
+      level: "warn", event: "child_process_stderr", session_id: "session-1",
+      fields_json: { subsystem: "claude", session_id: "session-1", pid: child.pid, line },
+    })));
   });
 
   // The daemon does not open this file: its spawner redirected stderr here and
