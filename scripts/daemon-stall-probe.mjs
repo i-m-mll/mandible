@@ -93,14 +93,16 @@ const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
 
 function healthRequest() {
   return new Promise(resolve => {
+    let outcome = "closed without a response";
     const req = http.request(
       { socketPath, path: "/api/health", method: "GET", agent, headers: { host: "localhost" } },
       res => {
-        res.on("data", () => {});
-        res.on("end", () => resolve(res.statusCode === 200 ? null : `HTTP ${res.statusCode}`));
+        res.resume();
+        res.on("end", () => { outcome = res.statusCode === 200 ? null : `HTTP ${res.statusCode}`; });
       },
     );
-    req.on("error", error => resolve(error.message));
+    req.on("error", error => { outcome = error.message; });
+    req.on("close", () => resolve(outcome));
     req.end();
   });
 }
