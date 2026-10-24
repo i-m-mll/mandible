@@ -550,6 +550,44 @@ export function raiseDaemonIncident(
   return { incident_id: incidentId, raised: true };
 }
 
+/**
+ * Resolve the daemon's own unresolved incident for a task once its condition
+ * has cleared: the daemon reports a newer successful run of the same episode.
+ */
+export function resolveDaemonIncident(
+  db: Db,
+  input: { task: string; observedAt?: number },
+): { incident_id: string } | null {
+  const open = db.prepare(
+    `SELECT * FROM operational_incidents
+      WHERE executor = ? AND task = ? AND resolved_at IS NULL
+      ORDER BY first_seen DESC LIMIT 1`,
+  ).get(DAEMON_INCIDENT_EXECUTOR, input.task) as IncidentRow | undefined;
+  if (!open) return null;
+  const raised = (JSON.parse(open.latest_telemetry_json) as { event: OperationalIncidentTelemetryEvent }).event;
+  const observedAt = Math.max(input.observedAt ?? Date.now(), open.first_seen + 1);
+  ingestOperationalIncidentEnvelope(db, {
+    schema: OPERATIONAL_INCIDENT_SCHEMA,
+    executor: { name: DAEMON_INCIDENT_EXECUTOR, version: "1" },
+    generation: { inventory_schema: "executor-inventory@3", inventory_digest: sha256(input.task), observed_at: observedAt },
+    provenance: { basis: "scheduler_computed", verification: "unverified_by_mandible" },
+    events: [{
+      event_id: ulid(observedAt),
+      event_seq: 2,
+      episode: raised.episode,
+      observation: "recovered",
+      observed_at: observedAt,
+      facts: raised.facts,
+      recovery: { basis: "newer_successful_run", run_id: String(observedAt), run_status: "succeeded", finished_at: observedAt },
+    }],
+  }, SYSTEM_USER_ID, observedAt);
+  broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, {
+    incident_ids: [open.id],
+    badge_count: countOperationalIncidents(db).active_unacknowledged,
+  });
+  return { incident_id: open.id };
+}
+
 function project(row: IncidentRow): OperationalIncidentProjection {
   return {
     id: row.id,

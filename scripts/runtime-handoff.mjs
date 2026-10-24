@@ -440,10 +440,16 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
 }
 
 export async function acknowledgeRuntimeHandoff(binding) {
-  const journal = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId);
-  if (!journal || journal.bindingDigest !== bindingDigest(binding)) throw new Error('Runtime handoff acknowledgment binding differs.');
-  await verifyRuntimeHandoffReceipt(journal, { probe: true });
+  const read = () => {
+    const current = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId);
+    if (!current || current.bindingDigest !== bindingDigest(binding)) throw new Error('Runtime handoff acknowledgment binding differs.');
+    return current;
+  };
+  await verifyRuntimeHandoffReceipt(read(), { probe: true });
+  // Another acknowledger may have advanced the journal during the probe.
+  const journal = read();
   if (journal.phase === 'acknowledged') return;
+  if (journal.phase !== 'complete') throw new Error('Runtime handoff changed during acknowledgment.');
   if (!journal.cleanupStartedAt) save(journal, { cleanupStartedAt: Date.now() });
   // The helper is an exact independently owned job; never bootout a domain.
   const target = `${binding.domain}/${journal.helperLabel}`;

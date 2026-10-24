@@ -454,24 +454,43 @@ it('replays accepted recovery with the qualified controller and still rejects a 
   expect(fs.readFileSync(path.join(dir, 'journal.json'), 'utf8')).toBe(before);
 });
 
-it('records the start of acknowledgment cleanup once, however often a failed cleanup is retried', async () => {
+/** A copy of the handoff scripts whose current verifier runs `controller`, plus a completed journal on disk. */
+async function completedHandoff(controller: string) {
   const { home, dir, binding, journal } = fixture();
   const repo = createAuthCheckRepo(); roots.push(repo);
   const qualified = installQualifiedController(home);
-  const identity = { pid: 123, startedAt: 'retained exact start', startupEpoch: 'retained epoch' };
-  fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), `console.log(${JSON.stringify(JSON.stringify({ process: identity }))});`);
+  fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), controller);
   const completedBinding = { ...binding, root: repo, mergeCommit: git(repo, ['rev-parse', 'HEAD']), domain: `gui/${process.getuid!()}`, stagedFiles: {} };
   const completed = { ...journal, binding: completedBinding, bindingDigest: bindingDigest(completedBinding), environment: {},
     phase: 'complete', recovery: { digest: 'accepted-recovery' }, helperLabel: 'bio.mll.mandible.test.absent-helper', helperPlist: path.join(home, 'absent.plist'),
-    receipt: { bindingDigest: bindingDigest(completedBinding), evidence: { process: identity }, files: {} } };
+    receipt: { bindingDigest: bindingDigest(completedBinding), evidence: { process: HANDOFF_PROCESS }, files: {} } };
   fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(completed));
+  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
+  return { dir, binding: completedBinding, runtime, journalFile: path.join(dir, 'journal.json') };
+}
+const HANDOFF_PROCESS = { pid: 123, startedAt: 'retained exact start', startupEpoch: 'retained epoch' };
+const answerProcess = `console.log(${JSON.stringify(JSON.stringify({ process: HANDOFF_PROCESS }))});`;
+
+it('records the start of acknowledgment cleanup once, however often a failed cleanup is retried', async () => {
+  const { dir, binding, runtime, journalFile } = await completedHandoff(answerProcess);
   // Generated material that changed type blocks cleanup on every attempt.
   fs.mkdirSync(path.join(dir, 'helper.log'));
-  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
 
-  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('changed type');
-  const first = fs.readFileSync(path.join(dir, 'journal.json'), 'utf8');
+  await expect(runtime.acknowledgeRuntimeHandoff(binding)).rejects.toThrow('changed type');
+  const first = fs.readFileSync(journalFile, 'utf8');
   expect(JSON.parse(first).cleanupStartedAt).toEqual(expect.any(Number));
-  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('changed type');
-  expect(fs.readFileSync(path.join(dir, 'journal.json'), 'utf8')).toBe(first);
+  await expect(runtime.acknowledgeRuntimeHandoff(binding)).rejects.toThrow('changed type');
+  expect(fs.readFileSync(journalFile, 'utf8')).toBe(first);
+});
+
+it('leaves a journal another acknowledger advanced during the probe as that acknowledger wrote it', async () => {
+  // The probe stands in for the concurrent acknowledger finishing first.
+  const { binding, runtime, journalFile } = await completedHandoff(`import fs from 'node:fs';
+const file = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
+const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (journal.phase === 'complete') fs.writeFileSync(file, JSON.stringify({ ...journal, phase: 'acknowledged', cleanupStartedAt: 1, acceptedAt: 2 }));
+${answerProcess}`);
+
+  await expect(runtime.acknowledgeRuntimeHandoff(binding)).resolves.toBeUndefined();
+  expect(JSON.parse(fs.readFileSync(journalFile, 'utf8'))).toMatchObject({ phase: 'acknowledged', cleanupStartedAt: 1, acceptedAt: 2 });
 });
