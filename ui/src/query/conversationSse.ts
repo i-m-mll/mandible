@@ -72,7 +72,7 @@ export function applyConversationSse(
 
   const appendBlocks = data.append?.blocks ?? [];
   if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
-    void client.refetchQueries({ queryKey: conversationKeys.windows(data.id), type: 'active' });
+    void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });
     return;
   }
 
@@ -131,7 +131,7 @@ export function applyConversationSse(
     }
     const next = applyConversationAppendPayload(flattened, data);
     if (!next) {
-      void client.refetchQueries({ queryKey: key, exact: true, type: 'all' });
+      void client.invalidateQueries({ queryKey: key, exact: true });
       continue;
     }
     const endPosition = next.blocks.at(-1)?.position ?? cached.window.end_position;
