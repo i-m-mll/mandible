@@ -826,7 +826,7 @@ describe("worker thread archival", () => {
   describe("archive candidates", () => {
     const request = { id: "auth-1", type: "merge", issues: [], issue_closures: ["done123"] } as unknown as AuthRequest;
 
-    function candidateDb(setup: (db: InstanceType<typeof SqliteDatabase>) => void) {
+    async function candidateDb(setup: (db: InstanceType<typeof SqliteDatabase>) => void) {
       const db = new SqliteDatabase(":memory:");
       db.exec(`
         CREATE TABLE work_units (
@@ -843,7 +843,7 @@ describe("worker thread archival", () => {
       `);
       setup(db);
       try {
-        return listCompletedWorkerThreadArchiveCandidates(db, request);
+        return await listCompletedWorkerThreadArchiveCandidates(db, request);
       } finally {
         db.close();
       }
@@ -874,8 +874,8 @@ describe("worker thread archival", () => {
         db.prepare(`INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, worker_provider_session_id, auth_request_id)
           VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'thread-parent', 'auth-1')`).run();
       }],
-    ])("excludes %s", (_label, setup) => {
-      expect(candidateDb(setup)).toEqual([]);
+    ])("excludes %s", async (_label, setup) => {
+      expect(await candidateDb(setup)).toEqual([]);
     });
 
     it.each([
@@ -896,8 +896,8 @@ describe("worker thread archival", () => {
           VALUES ('wu-b', 'done123', 'resolved', 'console-worker-b', 'codex', 'thread-direct-b', 'auth-1'),
                  ('wu-a', 'done123', 'resolved', 'console-worker-a', 'codex', 'thread-direct-a', 'auth-1')`).run();
       }, { provider_session_id: "thread-worker-a", console_session_id: "console-worker-a", mandible_session_id: null, issue_id: "done123", work_unit_id: "wu-a" }],
-    ])("selects %s", (_label, setup, expected) => {
-      expect(candidateDb(setup)).toEqual([expected]);
+    ])("selects %s", async (_label, setup, expected) => {
+      expect(await candidateDb(setup)).toEqual([expected]);
     });
   });
 });

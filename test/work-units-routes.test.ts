@@ -1,7 +1,7 @@
 import { registerHookRoutes } from "../src/routes/hooks.js";
 import { SessionExecutionStore, applyExecutionEnvelope } from "../src/session-execution.js";
 import http from "node:http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
 import { setDb, type Db } from "../src/db.js";
@@ -20,6 +20,10 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager,
 } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { clearCodexTaskLivenessCache } from "../src/codex-task-liveness.js";
+import { longestEventLoopBlockMs, useStubCommand } from "./helpers/event-loop-blocking.js";
 
 let db: Db;
 let router: Router;
@@ -697,6 +701,7 @@ describe("work-unit custody takeover", () => {
   let issueId: string;
   let operatorId: string;
   let codexScan: "live" | "not_live" | "unavailable";
+  let clientAuth: ClientAuthGate;
   const credentials: Record<string, { user_id: string; credential_id: string; slug: string }> = {};
 
   beforeEach(() => {
@@ -715,14 +720,15 @@ describe("work-unit custody takeover", () => {
     }
     queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
       executor: async () => { throw new Error("custody transfers never reach the executor"); } });
-    guarded = new Router({ clientAuth: {
+    clientAuth = {
       authenticate: (token) => credentials[token] ? {
         user_id: credentials[token].user_id, slug: credentials[token].slug, method: "api_token", source: "in_process",
         credential_id: credentials[token].credential_id, effect_ceiling: PRODUCTION_EFFECTS,
       } : null,
       mode: () => "strict",
       recordUnattributedWrite: () => undefined,
-    } });
+    };
+    guarded = new Router({ clientAuth });
     registerHookRoutes(guarded);
     codexScan = "unavailable";
     registerWorkUnitRoutes(guarded, {} as never, undefined, {
@@ -730,8 +736,37 @@ describe("work-unit custody takeover", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
+    clearCodexTaskLivenessCache();
     (await queue.dispose());
     fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("reads a Codex holder's writer lock off the event loop for the custody check", async () => {
+    const thread = "019a0000-0000-7000-8000-0000000000e5";
+    const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "custody-codex-"));
+    const lockDir = path.join(codexRoot, "thread-writer-locks");
+    fs.mkdirSync(lockDir);
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, session_id, cwd, branch, updated_at)
+      VALUES ('codex-holder', 'codex', ?, 'sha', 1, 'Codex holder', '2026-10-24T00:00:00Z', ?, ?, 'feature/takeover', '2026-10-24T00:00:00Z')`)
+      .run(path.join(codexRoot, "sessions", "2026", "10", "24", `rollout-${thread}.jsonl`), thread, repo);
+    const scanned = new Router({ clientAuth });
+    registerWorkUnitRoutes(scanned, {} as never, undefined, { authQueue: queue });
+    expect((await scanned.invoke({ method: "POST", url: "/api/work-units/claim", credential: "holder",
+      ambient_identity: { provider: "codex", provider_session_id: thread },
+      body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover" } })).status).toBe(201);
+    clearCodexTaskLivenessCache();
+    useStubCommand("lsof", `sleep 0.3\nprintf 'p4242\\nccodex\\nn%s\\n' ${JSON.stringify(path.join(lockDir, `${thread}.lock`))}`);
+
+    let body: unknown;
+    const blockedMs = await longestEventLoopBlockMs(async () => {
+      body = (await scanned.invoke({ method: "GET", credential: "taker",
+        url: `/api/work-units/custody-check?repo_id=${encodeURIComponent(projectKey)}&branch=feature/takeover` })).body;
+    });
+
+    expect(blockedMs).toBeLessThan(50);
+    expect(body).toMatchObject({ outcome: "held", holder_liveness: { state: "live" } });
+    fs.rmSync(codexRoot, { recursive: true, force: true });
   });
 
   async function heldUnit(holderStatus: "active" | "dead"): Promise<string> {

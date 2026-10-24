@@ -31,7 +31,7 @@ import type { LivenessState } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
-import { readCodexTaskLiveness } from "./codex-task-liveness.js";
+import { readCodexTaskLiveness, withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
 import {
   resolveProviderSessionIngestion,
   type ProviderSessionIngestion,
@@ -94,6 +94,24 @@ export type ProviderTaskLivenessReader = (
 
 export interface SessionLivenessOptions {
   readCodexTaskLiveness?: ProviderTaskLivenessReader;
+}
+
+export type SessionAliasResolver = (db: Db, sessionId: string) => SessionAliasResolution | null;
+
+/**
+ * A resolver for a decision that acts on liveness: its Codex answers come from
+ * lock scans made for this decision, never from a display read's older scan.
+ * `probe` asks the questions the decision will ask, so the scans they need
+ * run, off the event loop, before the resolver is returned.
+ */
+export function freshSessionAliasResolver(
+  probe: (resolve: SessionAliasResolver) => unknown,
+): Promise<SessionAliasResolver> {
+  return withFreshCodexTaskLiveness((read) => {
+    const resolve: SessionAliasResolver = (db, id) => resolveSessionAlias(db, id, { readCodexTaskLiveness: read });
+    probe(resolve);
+    return resolve;
+  });
 }
 
 /**

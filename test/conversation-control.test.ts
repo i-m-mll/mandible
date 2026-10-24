@@ -582,6 +582,9 @@ describe("authoritative conversation control", () => {
     first.kill();
     expect(before.emit({ conversation_id: "conversation-1", generation: submitted.value.snapshot.ownership.generation,
       kind: "controller-process", pid: replacement.pid!, at: Date.now() })).toEqual([{ ok: true, value: undefined }]);
+    await waitUntil(() => (db.prepare(
+      "SELECT json_extract(owner_detail_json, '$.controller_process.pid_start') AS start FROM conversation_control_state WHERE conversation_id = ?",
+    ).get("conversation-1") as { start: string | null }).start, "the replacement's recorded start time");
 
     const restarted = new ConversationControlService(db);
     const after = new FakeAdapter();

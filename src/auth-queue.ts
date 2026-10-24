@@ -8015,7 +8015,7 @@ export class AuthQueue {
     }
     const logSummary = options.logSummary ?? true;
     try {
-      const candidates = listCompletedWorkerThreadArchiveCandidates(this.db, completed);
+      const candidates = await listCompletedWorkerThreadArchiveCandidates(this.db, completed);
       for (const candidate of candidates) {
         const archived = await safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
         if (archived) {

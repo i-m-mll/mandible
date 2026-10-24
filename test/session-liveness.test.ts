@@ -15,7 +15,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { archiveFinishedWorkerThreads, type CodexThreadArchiver } from "../src/codex-thread-archive.js";
-import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof } from "../src/codex-task-liveness.js";
+import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof, withFreshCodexTaskLiveness } from "../src/codex-task-liveness.js";
 import { setDb, type Db } from "../src/db.js";
 import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
 import SqliteDatabase from "../src/sqlite.ts";
@@ -198,6 +198,11 @@ describe("a Codex lock check that cannot complete", () => {
     }
   });
 
+  const freshLiveness = () => withFreshCodexTaskLiveness((read) =>
+    sessionAliasLiveness(db, THREAD, { readCodexTaskLiveness: read }));
+  const freshHolderState = () => withFreshCodexTaskLiveness((read) =>
+    classifyHolderLiveness(db, heldUnit(), undefined, read).state);
+
   it("reads as unknown, so no consumer clears, archives, or takes over the holder", async () => {
     fs.writeFileSync(lockDir, "");
 
@@ -206,11 +211,11 @@ describe("a Codex lock check that cannot complete", () => {
       liveness: (database, id) => sessionAliasLiveness(database, id, { readCodexTaskLiveness: () => ({ status: "live" }) }),
       resolveAlias: resolveSessionAlias, now: () => 0 });
     expect(archived).toEqual([]);
-    expect(sessionAliasLiveness(db, THREAD)).toBe("unknown");
+    expect(await freshLiveness()).toBe("unknown");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: THREAD });
     expect(archived).toEqual([]);
-    expect(classifyHolderLiveness(db, heldUnit()).state).toBe("unknown");
+    expect(await freshHolderState()).toBe("unknown");
     expect(logged("codex_task_liveness_unavailable")).toEqual([
       expect.objectContaining({ level: "error", target: lockDir }),
     ]);
@@ -221,8 +226,10 @@ describe("a Codex lock check that cannot complete", () => {
     fs.mkdirSync(lockDir);
     clearCodexTaskLivenessCache();
 
+    expect(await freshLiveness()).toBe("stopped");
+    // A display read answers from that scan without waiting for another.
     expect(sessionAliasLiveness(db, THREAD)).toBe("stopped");
-    expect(classifyHolderLiveness(db, heldUnit()).state).toBe("stopped");
+    expect(await freshHolderState()).toBe("stopped");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: null });
     expect(archived).toEqual([THREAD]);
