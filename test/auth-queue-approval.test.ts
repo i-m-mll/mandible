@@ -145,7 +145,7 @@ describe("auth queue", () => {
       }));
 
       await approveFixtureRequest(queue, first.id);
-      await waitForStatus(queue, first.id, "completed");
+      await waitForStatus(queue, first.id, "failed");
 
       expect(calls).toHaveLength(1);
       expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(reviewedBase);
@@ -206,7 +206,7 @@ describe("auth queue", () => {
 
       const approved = await approveFixtureRequest(queue, request.id);
       expect(approved.status).toBe("executing");
-      await waitForStatus(queue, request.id, "completed");
+      await waitForStatus(queue, request.id, "failed");
 
       expect(calls).toHaveLength(1);
       const env = calls[0]!;
@@ -332,7 +332,7 @@ describe("auth queue", () => {
 
       const ordinary = (await submit("ordinary"));
       await approveFixtureRequest(queue, ordinary.id);
-      await waitForStatus(queue, ordinary.id, "completed");
+      await waitForStatus(queue, ordinary.id, "failed");
       expect(envs.at(-1)?.MANDIBLE_AUTH_ATOMIC).toBe("1");
       expect((await queue.getRequest(ordinary.id))?.merge_candidate_pin_sha).toBeTruthy();
 
@@ -698,7 +698,7 @@ describe("auth queue", () => {
           approverUserId: operatorId,
           env: {},
         }));
-        const failed = await waitForStatus(queue, request.id, "completed");
+        const failed = await waitForStatus(queue, request.id, "failed");
         expect(executed).toBe(false);
         expect(failed.error).toMatch(mismatch === "approver" ? /approver does not match/ : /lease is not valid/);
         (await queue.dispose());
@@ -778,7 +778,7 @@ describe("auth queue", () => {
           command: `mandible auth merge ${submission.head_branch} --into main`,
         });
         expect((await approveFixtureRequest(queue, requestId)).status).toBe("executing");
-        await waitForStatus(queue, requestId, "completed");
+        await waitForStatus(queue, requestId, "failed");
       }
     } finally {
       (await queue.dispose());

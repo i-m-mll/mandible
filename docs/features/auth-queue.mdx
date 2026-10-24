@@ -24,13 +24,14 @@ The type defaults to `merge` if not specified, which maintains backward compatib
 An auth request moves through a well-defined state machine:
 
 ```
-pending → executing → completed (exit_code 0 = success, non-zero = failure)
+pending → executing → completed (exit_code 0)
+pending → executing → failed (non-zero exit_code; nothing was merged unless the output says otherwise)
 pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
 pending → withdrawn (exact requester credential or session)
 pending → superseded (one explicit atomic replacement)
 pending → expired (TTL exceeded, default 24 hours)
-completed (failed) → pending (via retry)
+failed → pending (via retry)
 expired → pending (via retry)
 needs_rebase → pending (via retry after rebasing or integration)
 ```
@@ -40,7 +41,8 @@ needs_rebase → pending (via retry after rebasing or integration)
 - **pending** — Waiting for the user to act. The request is visible in the dashboard queue.
 - **executing** — The user approved and the command is running. Output streams to the dashboard in real time.
 - **needs_rebase** — Another approved merge changed the target branch and this queued request now conflicts. Rebase or consolidate the branch, then retry the request.
-- **completed** — Execution finished. Check `exit_code`: 0 means success, anything else is a failure. Completed requests are immutable history; a new attempt requires a new request.
+- **completed** — Execution succeeded (`exit_code` 0). Completed requests are immutable history; a new attempt requires a new request.
+- **failed** — Execution exited non-zero. `failure_reason` says why in one line, for example `signing failed: user presence not confirmed; no ref changed`. Retry returns the request to `pending` for a new approval. Every execution stays in the request's lifecycle revisions, and `execution_attempts` on the request lists them, so a failure remains visible after a successful retry.
 - **rejected** — The user explicitly declined the request.
 - **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
 - **withdrawn** — The exact original requester withdrew a still-pending request with a reason.

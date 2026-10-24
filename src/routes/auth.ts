@@ -2,6 +2,7 @@ import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-acti
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
+import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
@@ -309,7 +310,7 @@ export function registerAuthRoutes(
     }
 
     // Bug: 929c6d0 — include error_output: tail of executor output for failed requests
-    const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+    const errorOutput = (request.status === "failed" && request.output)
       ? tailLines(request.output, 20)
       : null;
 
@@ -337,6 +338,7 @@ export function registerAuthRoutes(
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       lifecycle_events: authQueue.listLifecycleEvents(request.id),
+      execution_attempts: listAuthExecutionAttempts(db, request.id),
     });
   }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -648,6 +650,7 @@ export function registerAuthRoutes(
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         publication_blocker: authQueue.publicationBlockerForRequest(r),
         base_audit: authQueue.baseAuditForRequest(r.id),
+        execution_attempts: listAuthExecutionAttempts(db, r.id),
         ...authAttributionReadFields(attributionResolver, r),
       };
     });
@@ -684,6 +687,7 @@ export function registerAuthRoutes(
         convergence: authQueue.convergenceForRequest(r.id),
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         publication_blocker: authQueue.publicationBlockerForRequest(r),
+        execution_attempts: listAuthExecutionAttempts(db, r.id),
         ...authAttributionReadFields(attributionResolver, r),
       })),
     });

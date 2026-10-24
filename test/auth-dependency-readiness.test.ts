@@ -78,7 +78,7 @@ describe("auth dependency readiness", () => {
     setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
     expect(queue.dependencyForRequest(dependent)?.state).toBe("failed");
 
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 9, finalizedAt: 10 });
+    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 9, finalizedAt: 10 });
     expect(queue.dependencyForRequest(dependent)?.state).toBe("failed");
 
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
@@ -137,7 +137,7 @@ describe("auth dependency readiness", () => {
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/Dependency .* is pending/);
     setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 1, finalizedAt: 42 });
+    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 1, finalizedAt: 42 });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is unfinalized/);

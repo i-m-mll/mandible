@@ -1,4 +1,5 @@
 import { authPublicationSnapshot } from "./auth-publication.js";
+import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
@@ -110,4 +111,34 @@ export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestL
   return db.prepare(
     "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision",
   ).all(requestId) as AuthRequestLifecycleEvent[];
+}
+
+/**
+ * Issue cc8fe29 — every execution a request has had, read from its lifecycle.
+ * A retry reuses the request row, so the row alone shows only the latest
+ * execution. Events recorded before the `failed` state existed carry
+ * `completed` with the non-zero exit in their snapshot; the snapshot decides.
+ */
+export function listAuthExecutionAttempts(db: Db, requestId: string): AuthExecutionAttempt[] {
+  const rows = db.prepare(`SELECT revision, occurred_at, event_type, reason,
+      json_extract(snapshot_json, '$.request.exit_code') AS exit_code,
+      json_extract(snapshot_json, '$.request.error') AS error,
+      CASE WHEN json_extract(snapshot_json, '$.request.error') IS NULL
+        THEN json_extract(snapshot_json, '$.request.output') END AS output
+    FROM auth_request_lifecycle_events
+    WHERE auth_request_id = ? AND event_type IN ('completed', 'failed')
+    ORDER BY revision`).all(requestId) as Array<{
+      revision: number; occurred_at: number; event_type: string; reason: string | null;
+      exit_code: number | null; error: string | null; output: string | null;
+    }>;
+  return rows.map((row) => {
+    const failed = row.event_type === "failed" || row.exit_code !== 0;
+    return {
+      revision: row.revision,
+      occurred_at: row.occurred_at,
+      result: failed ? "failed" : "succeeded",
+      exit_code: row.exit_code,
+      failure_reason: failed ? describeAuthExecutionFailure(row.error ?? row.output ?? row.reason, row.exit_code) : null,
+    };
+  });
 }

@@ -190,7 +190,7 @@ describe("auth queue", () => {
         const otherState = otherRepo ? git(otherRepo, ["status", "--porcelain"]) : null;
         (await queue.dispose());
         queue = new AuthQueue({ db, now: () => 6 * 60 * 1000 });
-        const recovered = await waitForStatus(queue, request.id, "completed");
+        const recovered = await waitForStatus(queue, request.id, "failed");
         expect(recovered.exit_code).toBe(1);
         expect(recovered.execution_evidence_id).toBeNull();
         expect(recovered.merge_finalized_at).toBeNull();

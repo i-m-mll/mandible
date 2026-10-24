@@ -53,6 +53,7 @@ import {
   isAuthDependencyReady,
   type AuthChangeReport,
   type AuthDependencyProjection,
+  type AuthExecutionAttempt,
   type CandidateAcceptanceProjection,
   type ProtectedBaseAudit,
 } from '../../../src/contracts';
@@ -93,6 +94,10 @@ export type AuthRequest = {
   status?: string;
   state?: string;
   exit_code?: number | null;
+  /** Issue cc8fe29 — why a `failed` execution failed. */
+  failure_reason?: string | null;
+  /** Issue cc8fe29 — every execution of this request, oldest first (detail route only). */
+  execution_attempts?: AuthExecutionAttempt[];
   error?: string | null;
   output?: string;
   stats?: {
@@ -309,19 +314,19 @@ function getResolvedAtMs(request: AuthRequest): number {
   return created ?? Date.now();
 }
 
-function isFailedLikeStatus(status: string, exitCode?: number | null): boolean {
-  if (status === 'needs_rebase') return true;
-  if (status === 'expired') return true;
-  if (status !== 'completed') return false;
-  return exitCode != null && exitCode !== 0;
+/** Issue cc8fe29 — shown once a request has failed at least once or run more than once. */
+function visibleExecutionAttempts(request: AuthRequest): AuthExecutionAttempt[] {
+  const attempts = request.execution_attempts ?? [];
+  return attempts.length > 1 || attempts.some((attempt) => attempt.result === 'failed') ? attempts : [];
 }
 
-function isHistoryStatus(status: string, exitCode?: number | null): boolean {
-  if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'dismissed' || status === 'error') {
-    return true;
-  }
-  if (status !== 'completed') return false;
-  return exitCode == null || exitCode === 0;
+function isFailedLikeStatus(status: string): boolean {
+  return status === 'failed' || status === 'needs_rebase' || status === 'expired';
+}
+
+function isHistoryStatus(status: string): boolean {
+  return status === 'completed' || status === 'rejected' || status === 'withdrawn' || status === 'superseded'
+    || status === 'dismissed' || status === 'error';
 }
 
 function isAuthExecutingStatus(status: string): boolean {
@@ -371,7 +376,6 @@ function getStatusLabel(request: AuthRequest): string {
   if (isAuthExecutingStatus(status)) return 'Executing';
   if (status === 'needs_rebase') return 'Needs rebase';
   if (status === 'completed') {
-    if (request.exit_code != null && request.exit_code !== 0) return 'Failed';
     const type = getAuthType(request);
     if (type === 'merge') {
       const convergence = getConvergence(request);
@@ -449,7 +453,7 @@ const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, 
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
-  if (isFailedLikeStatus(status, request.exit_code ?? null)) {
+  if (isFailedLikeStatus(status)) {
     return 'status-pill status-pill--failed';
   }
   return `status-pill status-pill--${status.toLowerCase()}`;
@@ -690,26 +694,6 @@ function AuthActionBundle({
   );
 }
 
-function buildFailureSummary(request: AuthRequest, outputs: Record<string, string>): string | null {
-  const id = getAuthId(request);
-  const errorText = typeof request.error === 'string' ? request.error.trim() : '';
-  const outputText =
-    outputs[id] ||
-    (typeof request.output === 'string' ? request.output : '');
-  const source = errorText || outputText.trim();
-  if (!source) {
-    return null;
-  }
-  const lines = source
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) {
-    return null;
-  }
-  return truncateSummary(lines.slice(-3).join(' / '), 240);
-}
-
 /** Strip ANSI escape sequences from a string for clean console display. */
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
@@ -738,7 +722,7 @@ function getStatusOrder(request: AuthRequest): number {
   const status = getAuthStatus(request);
   if (status === 'pending') return 0;
   if (status === 'approved' || status === 'executing') return 1;
-  if (isFailedLikeStatus(status, request.exit_code ?? null)) return 2;
+  if (isFailedLikeStatus(status)) return 2;
   return 3;
 }
 
@@ -813,8 +797,6 @@ function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<Au
 function AuthRequestDetail({
   request,
   history,
-  failureSummary,
-  attemptCount,
   actionBundle,
   actions,
   executionOutput,
@@ -827,8 +809,6 @@ function AuthRequestDetail({
 }: {
   request: AuthRequest;
   history?: boolean;
-  failureSummary?: string | null;
-  attemptCount?: number | null;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
@@ -939,17 +919,18 @@ function AuthRequestDetail({
   const stats = getStats(request);
   const status = getAuthStatus(request);
   const statusLabel = getStatusLabel(request);
-  const completedConvergence = status === 'completed' && (request.exit_code ?? 0) === 0
+  const completedConvergence = status === 'completed'
     ? getConvergence(request)
     : null;
   const statusClass = getStatusClass(request);
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
   const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
   const baseAudit = status === 'pending' ? request.base_audit ?? null : null;
-  const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
+  const failedLike = isFailedLikeStatus(status);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showFailure = failedLike;
-  const attemptLabel = attemptCount && attemptCount > 1 ? `Attempt ${attemptCount}` : null;
+  const executionAttempts = visibleExecutionAttempts(request);
+  const attemptLabel = executionAttempts.length > 1 ? `Attempt ${executionAttempts.length}` : null;
   const requestHash = getRequestHash(request);
   const fullId = getAuthId(request);
 
@@ -981,14 +962,13 @@ function AuthRequestDetail({
       setSavedViewMode('console');
     }
     if (!navigation.view && !selectionChanged && autoReturnToAbstractOnSuccess && status === 'completed'
-      && (request.exit_code == null || request.exit_code === 0)
       && previous !== null && isAuthExecutingStatus(previous)) {
       setSavedViewMode('abstract');
     }
 
     previousRequestIdRef.current = fullId;
     previousStatusRef.current = status;
-  }, [autoReturnToAbstractOnSuccess, autoShowConsoleOnApproval, fullId, request.exit_code, status]);
+  }, [autoReturnToAbstractOnSuccess, autoShowConsoleOnApproval, fullId, status]);
 
   const previousConsole = useRef<{ key: string; text: string } | null>(null);
   const consoleKey = `${fullId}:${viewMode}`;
@@ -1275,14 +1255,36 @@ function AuthRequestDetail({
               )}
             </div>
             <p className="auth-failure__summary">
-              {failureSummary ||
-                (status === 'expired'
-                  ? 'Expired without a response.'
-                  : status === 'needs_rebase'
-                    ? 'Another auth merge changed the target branch; rebase and retry this request.'
-                    : 'No output captured.')}
+              {status === 'expired'
+                ? 'Expired without a response.'
+                : status === 'needs_rebase'
+                  ? 'Another auth merge changed the target branch; rebase and retry this request.'
+                  : request.failure_reason}
             </p>
           </div>
+        )}
+
+        {executionAttempts.length > 0 && (
+          <section className="auth-executions" aria-label="Executions">
+            <h3 className="auth-executions__title">Executions</h3>
+            <ol className="auth-executions__list">
+              {executionAttempts.map((attempt) => (
+                <li
+                  key={attempt.revision}
+                  className={`auth-executions__item auth-executions__item--${attempt.result}`}
+                >
+                  <span className="auth-executions__result">
+                    {attempt.result === 'failed' ? 'Failed' : 'Succeeded'}
+                    {attempt.exit_code != null && attempt.exit_code !== 0 ? ` (exit ${attempt.exit_code})` : ''}
+                  </span>
+                  <span className="auth-executions__time">{formatMetadataTimestamp(attempt.occurred_at)}</span>
+                  {attempt.failure_reason && (
+                    <span className="auth-executions__reason">{attempt.failure_reason}</span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </section>
         )}
 
         {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
@@ -1469,8 +1471,7 @@ function AuthSidebarItem({
 }): JSX.Element {
   const id = getAuthId(request);
   const status = getAuthStatus(request);
-  const exitCode = request.exit_code ?? null;
-  const failedLike = isFailedLikeStatus(status, exitCode);
+  const failedLike = isFailedLikeStatus(status);
 
   // Determine dot class for status indicator
   let dotStatus: string;
@@ -1494,7 +1495,7 @@ function AuthSidebarItem({
   const baseBranch = request.base_branch ?? request.base ?? '';
   const branchInfo = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : headBranch;
 
-  const isHistory = isHistoryStatus(status, exitCode);
+  const isHistory = isHistoryStatus(status);
   const timestampLabel = isHistory
     ? getResolvedTimestampLabel(request)
     : getSubmissionTimestampLabel(request);
@@ -2135,25 +2136,23 @@ export function AuthQueueView({
   }, []);
 
   // Detect newly resolved requests by comparing queue status changes.
-  const prevQueueRef = useRef<Map<string, { status: string; exitCode: number | null }>>(
+  const prevQueueRef = useRef<Map<string, { status: string }>>(
     new Map(),
   );
-  const [retryCounts, setRetryCounts] = useState<Map<string, number>>(() => new Map());
   useEffect(() => {
     const prevStatuses = prevQueueRef.current;
-    const nextStatuses = new Map<string, { status: string; exitCode: number | null }>();
+    const nextStatuses = new Map<string, { status: string }>();
 
     for (const request of queue) {
       const id = getAuthId(request);
       const status = getAuthStatus(request);
-      const exitCode = request.exit_code ?? null;
-      nextStatuses.set(id, { status, exitCode });
+      nextStatuses.set(id, { status });
 
       const prevStatus = prevStatuses.get(id);
       if (
         prevStatus &&
-        !isHistoryStatus(prevStatus.status, prevStatus.exitCode) &&
-        isHistoryStatus(status, exitCode)
+        !isHistoryStatus(prevStatus.status) &&
+        isHistoryStatus(status)
       ) {
         setRecentlyResolved((prev) => {
           const next = new Map(prev);
@@ -2182,18 +2181,6 @@ export function AuthQueueView({
         }, RESOLVED_LINGER_MS);
         timersRef.current.set(id, timer);
       }
-
-      if (
-        prevStatus &&
-        isFailedLikeStatus(prevStatus.status, prevStatus.exitCode) &&
-        status === 'pending'
-      ) {
-        setRetryCounts((prev) => {
-          const next = new Map(prev);
-          next.set(id, (next.get(id) ?? 0) + 1);
-          return next;
-        });
-      }
     }
 
     prevQueueRef.current = nextStatuses;
@@ -2208,7 +2195,7 @@ export function AuthQueueView({
       queue.filter((r) => {
         const status = getAuthStatus(r);
         return status === 'pending' || isAuthExecutingStatus(status) ||
-          isFailedLikeStatus(status, r.exit_code ?? null);
+          isFailedLikeStatus(status);
       }),
     [queue],
   );
@@ -2240,7 +2227,7 @@ export function AuthQueueView({
       ? historyQueue
       : queue.filter((r) => {
           const status = getAuthStatus(r);
-          return isHistoryStatus(status, r.exit_code ?? null);
+          return isHistoryStatus(status);
         });
     // Exclude items still lingering from recent resolution AND items already in active queue
     const filtered = source.filter((r) => {
@@ -2912,9 +2899,8 @@ export function AuthQueueView({
   const renderDetailActions = (request: AuthRequest): JSX.Element | null => {
     const id = getAuthId(request);
     const status = getAuthStatus(request);
-    const exitCode = request.exit_code ?? null;
-    const isFailed = isFailedLikeStatus(status, exitCode);
-    const isHistory = isHistoryStatus(status, exitCode);
+    const isFailed = isFailedLikeStatus(status);
+    const isHistory = isHistoryStatus(status);
     if (isHistory && !isFailed) {
       // Completed and terminal dispositions have no actions.
       return null;
@@ -3236,12 +3222,8 @@ export function AuthQueueView({
           const request = selectedRequest;
           const id = getAuthId(request);
           const status = getAuthStatus(request);
-          const exitCode = request.exit_code ?? null;
-          const isFailed = isFailedLikeStatus(status, exitCode);
-          const retryCount = retryCounts.get(id) ?? 0;
-          const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
-          const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
-          const isHistory = isHistoryStatus(status, exitCode);
+          const isFailed = isFailedLikeStatus(status);
+          const isHistory = isHistoryStatus(status);
           const inlineActions = getInlineActionList(request);
           const requestActions = actionLists.get(id) ?? inlineActions;
           const actionError = actionErrors.get(id) ?? null;
@@ -3254,8 +3236,6 @@ export function AuthQueueView({
               actionViewStateRef={actionViewStateRef}
               request={request}
               history={isHistory}
-              failureSummary={failureSummary}
-              attemptCount={attemptCount}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
               notice={actionError ? (

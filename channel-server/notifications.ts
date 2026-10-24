@@ -424,6 +424,7 @@ export function buildAuthChannelEvent(
   if (exitCode !== null) headlineParts.push(`exit ${exitCode}`);
 
   const lines: string[] = [headlineParts.join(" ")];
+  if (typeof d.failure_reason === "string") lines.push(`Reason: ${d.failure_reason}`);
   if (errorText) lines.push(`Error: ${errorText}`);
   // Bug: 929c6d0 — include executor output when it differs from the error
   // message (error may be a brief summary, error_output is the raw tail).

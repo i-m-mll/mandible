@@ -128,7 +128,7 @@ describe("auth queue", () => {
           .run(genuineEvidence.id, mergeResultOutput("f".repeat(40)), "merge-ev-1");
 
         await approveFixtureRequest(queue, first.id);
-        await waitForStatus(queue, first.id, "completed");
+        await waitForStatus(queue, first.id, "failed");
         expect(calls).toHaveLength(1);
         expect(calls[0]!.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(base1);
 
@@ -293,7 +293,7 @@ describe("auth queue", () => {
         }
 
         await approveFixtureRequest(queue, multi.id);
-        await waitForStatus(queue, multi.id, "completed");
+        await waitForStatus(queue, multi.id, "failed");
         expect(calls).toHaveLength(1);
         expect(calls[0]!.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(base);
 

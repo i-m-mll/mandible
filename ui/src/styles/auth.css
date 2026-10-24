@@ -2279,3 +2279,54 @@
 
 .auth-change-file:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .auth-change-file:hover { background: var(--surface-overlay-muted); }
+
+/* Issue cc8fe29 — every execution of a request, so a failed run stays visible after a retry. */
+.auth-executions {
+  margin-top: 12px;
+}
+
+.auth-executions__title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.auth-executions__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.auth-executions__item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-executions__result {
+  font-weight: 600;
+}
+
+.auth-executions__item--failed .auth-executions__result {
+  color: var(--accent-red);
+}
+
+.auth-executions__item--succeeded .auth-executions__result {
+  color: var(--auth-result-completed);
+}
+
+.auth-executions__time {
+  color: var(--text-secondary);
+}
+
+.auth-executions__reason {
+  flex-basis: 100%;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  word-break: break-word;
+}

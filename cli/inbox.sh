@@ -208,6 +208,13 @@ cmd_watch() {
         print "Auth request ${request_id}: completed (exit ${exit_code})"
         exit 0
         ;;
+      failed)
+        local exit_code reason
+        exit_code=$(printf '%s' "$response" | jq -r '.exit_code // "null"')
+        reason=$(printf '%s' "$response" | jq -r '.failure_reason // "no reason recorded"')
+        print "Auth request ${request_id}: failed (exit ${exit_code}) — ${reason}"
+        exit 1
+        ;;
       rejected|withdrawn|superseded|expired|dismissed)
         local error
         error=$(printf '%s' "$response" | jq -r '.error // "none"')
