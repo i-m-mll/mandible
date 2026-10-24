@@ -592,6 +592,8 @@ describe.sequential("trash custody", () => {
 
     expect(scanner.getBranch(repoRoot, "feature/trash")).toMatchObject({
       default_branch: "trunk",
+      ahead_default: 0,
+      behind_default: 0,
       worktree_inventory_known: true,
       worktree_status_known: true,
       default_comparison_known: true,

@@ -179,6 +179,7 @@ export interface SqliteStatement {
 export interface SqliteDatabase {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
+  transaction(callback: () => void): () => void;
 }
 
 const workScannerLog = getDaemonLogger();
@@ -668,20 +669,112 @@ function parseWorktreeList(output: string): WorktreeInfo[] {
   return worktrees;
 }
 
-function parseLastCommit(output: string | null): LastCommit | null {
-  if (!output) {
-    return null;
+interface BranchRef {
+  branch: string;
+  last_commit: LastCommit;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  default_comparison: { ahead: number; behind: number } | null;
+}
+
+const BRANCH_REF_FIELDS = [
+  "%(refname)",
+  "%(objectname)",
+  "%(subject)",
+  "%(authorname)",
+  "%(authordate:iso-strict)",
+  "%(upstream:short)",
+  "%(upstream:track,nobracket)",
+];
+
+function countIn(track: string, label: "ahead" | "behind"): number {
+  const match = new RegExp(`\\b${label} (\\d+)`).exec(track);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Every local branch with its tip, upstream divergence, and divergence from
+ * `defaultBranch`, read in one Git process rather than several per branch.
+ */
+async function readBranchRefs(
+  repoRoot: string,
+  defaultBranch: string | null,
+  signal: AbortSignal,
+): Promise<BranchRef[]> {
+  const fields = defaultBranch
+    ? [...BRANCH_REF_FIELDS, `%(ahead-behind:${localBranchRef(defaultBranch)})`]
+    : BRANCH_REF_FIELDS;
+  const output = await runGit(["for-each-ref", `--format=${fields.join("%1f")}`, "refs/heads"], { cwd: repoRoot, signal });
+  const refs: BranchRef[] = [];
+  for (const line of (output ?? "").split("\n")) {
+    const [refname, hash, message, author, date, upstream, track, defaultCounts] = line.split("\u001f");
+    if (!refname?.startsWith("refs/heads/")) continue;
+    const [aheadDefault, behindDefault] = (defaultCounts ?? "").split(" ").map((value) => Number.parseInt(value, 10));
+    refs.push({
+      branch: refname.slice("refs/heads/".length),
+      last_commit: { hash, message, author, date },
+      upstream: upstream || null,
+      ahead: countIn(track ?? "", "ahead"),
+      behind: countIn(track ?? "", "behind"),
+      default_comparison: Number.isInteger(aheadDefault) && Number.isInteger(behindDefault)
+        ? { ahead: aheadDefault, behind: behindDefault }
+        : null,
+    });
   }
-  const parts = output.split("\u001f");
-  if (parts.length < 4) {
-    return null;
-  }
-  const [hash, message, author, date] = parts;
+  return refs;
+}
+
+const BRANCH_COLUMNS = [
+  "repo_root",
+  "branch",
+  "is_current",
+  "is_worktree",
+  "worktree_path",
+  "is_dirty",
+  "ahead",
+  "behind",
+  "ahead_default",
+  "behind_default",
+  "default_branch",
+  "worktree_inventory_known",
+  "worktree_status_known",
+  "default_comparison_known",
+  "has_upstream",
+  "upstream",
+  "last_commit_hash",
+  "last_commit_message",
+  "last_commit_author",
+  "last_commit_date",
+  "diff_stat",
+] as const;
+
+type BranchRow = Record<(typeof BRANCH_COLUMNS)[number] | "updated_at", string | number | null>;
+
+function branchRow(data: BranchData, updatedAt: string): BranchRow {
   return {
-    hash,
-    message,
-    author,
-    date,
+    repo_root: data.repo_root,
+    branch: data.branch,
+    is_current: toDbBool(data.is_current),
+    is_worktree: toDbBool(data.is_worktree),
+    worktree_path: data.worktree_path,
+    is_dirty: toDbBool(data.is_dirty),
+    ahead: data.ahead,
+    behind: data.behind,
+    ahead_default: data.ahead_default,
+    behind_default: data.behind_default,
+    default_branch: data.default_branch,
+    worktree_inventory_known: toDbBool(data.worktree_inventory_known === true),
+    worktree_status_known: toDbBool(data.worktree_status_known === true),
+    default_comparison_known: toDbBool(data.default_comparison_known === true),
+    has_upstream: toDbBool(data.has_upstream),
+    upstream: data.upstream ?? null,
+    last_commit_hash: data.last_commit?.hash ?? null,
+    last_commit_message: data.last_commit?.message ?? null,
+    last_commit_author: data.last_commit?.author ?? null,
+    last_commit_date: data.last_commit?.date ?? null,
+    diff_stat: data.diff_stat,
+    updated_at: updatedAt,
   };
 }
 
@@ -728,7 +821,8 @@ export class WorkScanner {
   private repoInfos: RepoInfo[] = [];
   private stopped = false;
   private readonly scanAbort = new AbortController();
-  private readonly repoRefreshes = new Set<Promise<RepoInfo>>();
+  private readonly repoRefreshes = new Map<string, Promise<RepoInfo>>();
+  private readonly scanSnapshots = new Map<string, { scannedAt: number; inventory: WorktreeInventory }>();
   private repoDiscoveryStatus: "pending" | "ready" | "failed" = "pending";
   private repoInfoRefresh: Promise<void> | null = null;
   private readonly repoScans = new Map<string, Promise<{ updated: number; removed: number }>>();
@@ -839,35 +933,7 @@ export class WorkScanner {
 
   getBranches(repoRoot: string): BranchData[] {
     const rows = this.db
-      .prepare(
-        `
-        SELECT
-          repo_root,
-          branch,
-          is_current,
-          is_worktree,
-          worktree_path,
-          is_dirty,
-          ahead,
-          behind,
-          ahead_default,
-          behind_default,
-          default_branch,
-          worktree_inventory_known,
-          worktree_status_known,
-          default_comparison_known,
-          has_upstream,
-          upstream,
-          last_commit_hash,
-          last_commit_message,
-          last_commit_author,
-          last_commit_date,
-          diff_stat
-        FROM branches
-        WHERE repo_root = ?
-        ORDER BY branch ASC
-        `,
-      )
+      .prepare(`SELECT ${BRANCH_COLUMNS.join(", ")} FROM branches WHERE repo_root = ? ORDER BY branch ASC`)
       .all(repoRoot) as Array<Record<string, unknown>>;
 
     let configuredProtected = parseProtectedBranchSetting(DEFAULT_PROTECTED_BRANCHES_SETTING);
@@ -934,18 +1000,6 @@ export class WorkScanner {
         path: branch.worktree_path as string,
         is_current: branch.is_current,
       }));
-  }
-
-  async getWorktreeInventory(repoRoot: string, options: { signal?: AbortSignal } = {}): Promise<WorktreeInventory> {
-    const inventory = await this.listWorktrees(repoRoot, options.signal);
-    return {
-      known: inventory.known,
-      worktrees: inventory.worktrees.map((worktree) => ({
-        path: worktree.path,
-        branch: worktree.branch,
-        is_current: pathsReferToSameLocation(worktree.path, repoRoot),
-      })),
-    };
   }
 
   async getCommits(
@@ -1037,7 +1091,7 @@ export class WorkScanner {
   async stop(): Promise<void> {
     this.stopped = true;
     this.scanAbort.abort();
-    const results = await Promise.allSettled([this.activeScan?.promise, this.repoInfoRefresh, ...this.repoRefreshes]);
+    const results = await Promise.allSettled([this.activeScan?.promise, this.repoInfoRefresh, ...this.repoRefreshes.values()]);
     for (const result of results) {
       if (result.status === "rejected" && (result.reason?.cause?.code ?? result.reason?.code) !== "ABORT_ERR") {
         workScannerLog("warn", "work_scanner_drain_failed", { error: String(result.reason) });
@@ -1164,20 +1218,38 @@ export class WorkScanner {
     }
   }
 
-  // Explicit refresh and startup share the same cancellable scan path.
+  /**
+   * The repository's stored scan and the worktree inventory it was taken
+   * against. A scan this process completed within the skip window is served
+   * as stored; otherwise, or when `refresh` is set, the repository is rescanned.
+   */
+  async getRepoScan(idOrPath: string, options: { refresh: boolean }): Promise<{ repo: RepoInfo; inventory: WorktreeInventory }> {
+    const repo = this.getRepoById(idOrPath);
+    const snapshot = repo && this.scanSnapshots.get(repo.root);
+    if (repo && snapshot && !options.refresh && Date.now() - snapshot.scannedAt < this.scanSkipWindowMs) {
+      return { repo, inventory: snapshot.inventory };
+    }
+    const refreshed = await this.refreshRepoAsync(idOrPath);
+    const inventory = this.scanSnapshots.get(refreshed.root)?.inventory;
+    if (!inventory) throw new Error("Work scanner is stopped");
+    return { repo: refreshed, inventory };
+  }
+
+  /** Rescan one repository; concurrent callers for the same repository share one refresh. */
   refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
     if (this.stopped) return Promise.reject(new Error("Work scanner is stopped"));
-    const refresh = this.runRepoRefresh(idOrPath);
-    this.repoRefreshes.add(refresh);
-    void refresh.then(() => this.repoRefreshes.delete(refresh), () => this.repoRefreshes.delete(refresh));
+    const repo = this.getRepoById(idOrPath);
+    if (!repo) return Promise.reject(new Error("repo not found"));
+    const active = this.repoRefreshes.get(repo.root);
+    if (active) return active;
+    const refresh = this.runRepoRefresh(repo);
+    this.repoRefreshes.set(repo.root, refresh);
+    const clear = () => { if (this.repoRefreshes.get(repo.root) === refresh) this.repoRefreshes.delete(repo.root); };
+    void refresh.then(clear, clear);
     return refresh;
   }
 
-  private async runRepoRefresh(idOrPath: string): Promise<RepoInfo> {
-    const repo = this.getRepoById(idOrPath);
-    if (!repo) {
-      throw new Error("repo not found");
-    }
+  private async runRepoRefresh(repo: RepoInfo): Promise<RepoInfo> {
     if (!fs.existsSync(repo.root) || !(await this.isGitRepo(repo.root))) {
       throw new Error("repository is unavailable or is not a Git repository");
     }
@@ -1694,222 +1766,88 @@ export class WorkScanner {
       }
     }
 
-    const branches = await listLocalBranches(repoRoot, this.scanAbort.signal);
     const canonicalDefaultBranch = this.getCanonicalCheckoutDefaultBranch(repoRoot);
     const defaultBranch = canonicalDefaultBranch.branch || await this.detectDefaultBranch(repoRoot);
     const defaultBranchKnown = canonicalDefaultBranch.known && Boolean(await runGit(
       ["rev-parse", "--verify", "--quiet", `refs/heads/${defaultBranch}^{commit}`],
       { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal },
     ));
+    const refs = await readBranchRefs(repoRoot, defaultBranchKnown ? defaultBranch : null, this.scanAbort.signal);
     const now = new Date().toISOString();
 
-    const pending: Array<() => boolean> = [];
-    for (const branch of branches) {
+    const rows: Array<{ row: BranchRow; data: BranchData }> = [];
+    for (const ref of refs) {
+      const branch = ref.branch;
       const worktreePath = worktreeByBranch.get(branch) ?? null;
-      const isWorktree = worktreePath !== null;
-      const isCurrent = currentBranch === branch;
       const status = worktreePath
         ? await this.getWorktreeStatus(worktreePath)
         : { is_dirty: false, diff_stat: null, known: worktreeInventory.known };
-      const lastCommit = await this.getLastCommit(repoRoot, branch);
-      const aheadBehind = await this.getAheadBehind(repoRoot, branch);
-      const aheadBehindDefault = await this.getAheadBehindDefault(
-        repoRoot,
-        branch,
-        defaultBranch,
-        defaultBranchKnown,
-      );
-
-      const row = {
+      const defaultComparison = ref.default_comparison;
+      const data: BranchData = {
         repo_root: repoRoot,
         branch,
-        is_current: toDbBool(isCurrent),
-        is_worktree: toDbBool(isWorktree),
+        is_current: currentBranch === branch,
+        is_worktree: worktreePath !== null,
         worktree_path: worktreePath,
-        is_dirty: toDbBool(status.is_dirty),
-        ahead: aheadBehind.ahead,
-        behind: aheadBehind.behind,
-        ahead_default: aheadBehindDefault.ahead_default,
-        behind_default: aheadBehindDefault.behind_default,
-        default_branch: aheadBehindDefault.default_branch,
-        worktree_inventory_known: toDbBool(worktreeInventory.known),
-        worktree_status_known: toDbBool(status.known),
-        default_comparison_known: toDbBool(aheadBehindDefault.known),
-        has_upstream: toDbBool(aheadBehind.has_upstream),
-        upstream: aheadBehind.upstream,
-        last_commit_hash: lastCommit?.hash ?? null,
-        last_commit_message: lastCommit?.message ?? null,
-        last_commit_author: lastCommit?.author ?? null,
-        last_commit_date: lastCommit?.date ?? null,
+        is_dirty: status.is_dirty,
+        ahead: ref.ahead,
+        behind: ref.behind,
+        has_upstream: ref.upstream !== null,
+        upstream: ref.upstream,
+        ahead_default: defaultComparison?.ahead ?? 0,
+        behind_default: defaultComparison?.behind ?? 0,
+        default_branch: defaultBranch || "—",
+        worktree_inventory_known: worktreeInventory.known,
+        worktree_status_known: status.known,
+        default_comparison_known: defaultComparison !== null,
+        last_commit: ref.last_commit,
+        last_commit_date: ref.last_commit.date,
         diff_stat: status.diff_stat,
-        updated_at: now,
       };
-
-      pending.push(() => {
-        const existing = this.db
-          .prepare(
-            `
-            SELECT
-              repo_root,
-              branch,
-              is_current,
-              is_worktree,
-              worktree_path,
-              is_dirty,
-              ahead,
-              behind,
-              ahead_default,
-              behind_default,
-              default_branch,
-              worktree_inventory_known,
-              worktree_status_known,
-              default_comparison_known,
-              has_upstream,
-              upstream,
-              last_commit_hash,
-              last_commit_message,
-              last_commit_author,
-              last_commit_date,
-              diff_stat
-            FROM branches
-            WHERE repo_root = ? AND branch = ?
-            `,
-          )
-          .get(repoRoot, branch) as Record<string, unknown> | undefined;
-
-        const changed = !existing || rowChanged(existing, row);
-        this.db
-          .prepare(
-            `
-            INSERT INTO branches (
-              repo_root,
-              branch,
-              is_current,
-              is_worktree,
-              worktree_path,
-              is_dirty,
-              ahead,
-              behind,
-              ahead_default,
-              behind_default,
-              default_branch,
-              worktree_inventory_known,
-              worktree_status_known,
-              default_comparison_known,
-              has_upstream,
-              upstream,
-              last_commit_hash,
-              last_commit_message,
-              last_commit_author,
-              last_commit_date,
-              diff_stat,
-              updated_at
-            ) VALUES (
-              @repo_root,
-              @branch,
-              @is_current,
-              @is_worktree,
-              @worktree_path,
-              @is_dirty,
-              @ahead,
-              @behind,
-              @ahead_default,
-              @behind_default,
-              @default_branch,
-              @worktree_inventory_known,
-              @worktree_status_known,
-              @default_comparison_known,
-              @has_upstream,
-              @upstream,
-              @last_commit_hash,
-              @last_commit_message,
-              @last_commit_author,
-              @last_commit_date,
-              @diff_stat,
-              @updated_at
-            )
-            ON CONFLICT(repo_root, branch) DO UPDATE SET
-              is_current = excluded.is_current,
-              is_worktree = excluded.is_worktree,
-              worktree_path = excluded.worktree_path,
-              is_dirty = excluded.is_dirty,
-              ahead = excluded.ahead,
-              behind = excluded.behind,
-              ahead_default = excluded.ahead_default,
-              behind_default = excluded.behind_default,
-              default_branch = excluded.default_branch,
-              worktree_inventory_known = excluded.worktree_inventory_known,
-              worktree_status_known = excluded.worktree_status_known,
-              default_comparison_known = excluded.default_comparison_known,
-              has_upstream = excluded.has_upstream,
-              upstream = excluded.upstream,
-              last_commit_hash = excluded.last_commit_hash,
-              last_commit_message = excluded.last_commit_message,
-              last_commit_author = excluded.last_commit_author,
-              last_commit_date = excluded.last_commit_date,
-              diff_stat = excluded.diff_stat,
-              updated_at = excluded.updated_at
-            `,
-          )
-          .run(row);
-
-        if (changed) {
-          const branchData: BranchData = {
-            repo_root: repoRoot,
-            branch,
-            is_current: isCurrent,
-            is_worktree: isWorktree,
-            worktree_path: worktreePath,
-            is_dirty: status.is_dirty,
-            ahead: aheadBehind.ahead,
-            behind: aheadBehind.behind,
-            has_upstream: aheadBehind.has_upstream,
-            upstream: aheadBehind.upstream,
-            ahead_default: aheadBehindDefault.ahead_default,
-            behind_default: aheadBehindDefault.behind_default,
-            default_branch: aheadBehindDefault.default_branch,
-            worktree_inventory_known: worktreeInventory.known,
-            worktree_status_known: status.known,
-            default_comparison_known: aheadBehindDefault.known,
-            last_commit: lastCommit,
-            last_commit_date: lastCommit?.date ?? null,
-            diff_stat: status.diff_stat,
-          };
-          this.emit({
-            event: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
-            type: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
-            data: { ...branchData, repo_id: repoId },
-
-      });
-      }
-      return changed;
-      });
+      rows.push({ data, row: branchRow(data, now) });
     }
     if (this.stopped) return { updated: 0, removed: 0 };
-    let updated = 0;
-    for (const apply of pending) {
-      if (this.stopped) return { updated, removed: 0 };
-      if (apply()) updated += 1;
-      await yieldToEventLoop();
-    }
-    if (this.stopped) return { updated, removed: 0 };
 
+    const select = this.db.prepare(`SELECT ${BRANCH_COLUMNS.join(", ")} FROM branches WHERE repo_root = ? AND branch = ?`);
+    const upsert = this.db.prepare(`
+      INSERT INTO branches (${[...BRANCH_COLUMNS, "updated_at"].join(", ")})
+      VALUES (${[...BRANCH_COLUMNS, "updated_at"].map((column) => `@${column}`).join(", ")})
+      ON CONFLICT(repo_root, branch) DO UPDATE SET
+        ${[...BRANCH_COLUMNS.slice(2), "updated_at"].map((column) => `${column} = excluded.${column}`).join(",\n        ")}
+    `);
+    const changed: BranchData[] = [];
     let removed = 0;
-    if (branches.length === 0) {
-      const info = this.db
-        .prepare("SELECT COUNT(*) as count FROM branches WHERE repo_root = ?")
-        .get(repoRoot) as { count?: number };
-      removed = info?.count ? Number(info.count) : 0;
-      this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(repoRoot);
-    } else {
-      const placeholders = branches.map(() => "?").join(",");
-      const deleteSql = `DELETE FROM branches WHERE repo_root = ? AND branch NOT IN (${placeholders})`;
-      const stmt = this.db.prepare(deleteSql);
-      const result = stmt.run(repoRoot, ...branches);
-      removed = Number(result.changes);
+    this.db.transaction(() => {
+      for (const { row, data } of rows) {
+        const existing = select.get(repoRoot, row.branch) as Record<string, unknown> | undefined;
+        upsert.run(row);
+        if (!existing || rowChanged(existing, row)) changed.push(data);
+      }
+      const names = refs.map((ref) => ref.branch);
+      const result = names.length === 0
+        ? this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(repoRoot)
+        : this.db.prepare(`DELETE FROM branches WHERE repo_root = ? AND branch NOT IN (${names.map(() => "?").join(",")})`).run(repoRoot, ...names);
+      removed = Number(result.changes ?? 0);
+    })();
+    this.scanSnapshots.set(repoRoot, {
+      scannedAt: Date.now(),
+      inventory: {
+        known: worktreeInventory.known,
+        worktrees: worktrees.map((worktree) => ({
+          path: worktree.path,
+          branch: worktree.branch,
+          is_current: pathsReferToSameLocation(worktree.path, repoRoot),
+        })),
+      },
+    });
+    for (const data of changed) {
+      this.emit({
+        event: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
+        type: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
+        data: { ...data, repo_id: repoId },
+      });
     }
-
-    return { updated, removed };
+    return { updated: changed.length, removed };
   }
 
   private async listWorktrees(repoRoot: string, signal?: AbortSignal): Promise<{ worktrees: WorktreeInfo[]; known: boolean }> {
@@ -1972,14 +1910,6 @@ export class WorkScanner {
     return { branch: "", known: false };
   }
 
-  private async getLastCommit(repoRoot: string, branch: string): Promise<LastCommit | null> {
-    const output = await runGit(
-      ["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", localBranchRef(branch)],
-      { cwd: repoRoot,  signal: this.scanAbort.signal },
-    );
-    return parseLastCommit(output);
-  }
-
   private async getCherryStatus(
     repoRoot: string,
     defaultBranch: string,
@@ -2030,21 +1960,6 @@ export class WorkScanner {
     return "unique";
   }
 
-  private async getUpstreamInfo(
-    repoRoot: string,
-    branch: string,
-  ): Promise<{ has_upstream: boolean; upstream: string | null }> {
-    const upstream = await runGit(["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`], {
-      cwd: repoRoot,
-      signal: this.scanAbort.signal,
-
-    });
-    if (!upstream) {
-      return { has_upstream: false, upstream: null };
-    }
-    return { has_upstream: true, upstream };
-  }
-
   private async detectDefaultBranch(repoRoot: string): Promise<string> {
     const candidates = ["main", "develop"];
     for (const candidate of candidates) {
@@ -2055,69 +1970,5 @@ export class WorkScanner {
       }
     }
     return "";
-  }
-
-  private async getAheadBehindDefault(
-    repoRoot: string,
-    branch: string,
-    defaultBranch: string,
-    defaultBranchKnown = true,
-  ): Promise<{ ahead_default: number; behind_default: number; default_branch: string; known: boolean }> {
-    if (!defaultBranchKnown || !defaultBranch) {
-      return {
-        ahead_default: 0,
-        behind_default: 0,
-        default_branch: defaultBranch || "\u2014",
-        known: false,
-      };
-    }
-    if (branch === defaultBranch) {
-      return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: true };
-    }
-    const output = await runGit(
-      ["rev-list", "--left-right", "--count", `${localBranchRef(defaultBranch)}...${localBranchRef(branch)}`],
-      { cwd: repoRoot,  signal: this.scanAbort.signal },
-    );
-    if (!output) {
-      return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: false };
-    }
-    const [behindRaw, aheadRaw] = output.trim().split(/\s+/);
-    const behind = Number.parseInt(behindRaw ?? "0", 10);
-    const ahead = Number.parseInt(aheadRaw ?? "0", 10);
-    return {
-      ahead_default: Number.isNaN(ahead) ? 0 : ahead,
-      behind_default: Number.isNaN(behind) ? 0 : behind,
-      default_branch: defaultBranch,
-      known: !Number.isNaN(ahead) && !Number.isNaN(behind),
-    };
-  }
-
-  private async getAheadBehind(
-    repoRoot: string,
-    branch: string,
-  ): Promise<{ ahead: number; behind: number; has_upstream: boolean; upstream: string | null }> {
-    const upstreamInfo = await this.getUpstreamInfo(repoRoot, branch);
-    if (!upstreamInfo.has_upstream || !upstreamInfo.upstream) {
-      return { ahead: 0, behind: 0, has_upstream: false, upstream: null };
-    }
-    const output = await runGit(
-      ["rev-list", "--left-right", "--count", `${upstreamInfo.upstream}...${localBranchRef(branch)}`],
-      {
-      cwd: repoRoot,
-      signal: this.scanAbort.signal,
-
-      },
-    );
-    if (!output) {
-      return { ahead: 0, behind: 0, ...upstreamInfo };
-    }
-    const [behindRaw, aheadRaw] = output.trim().split(/\s+/);
-    const behind = Number.parseInt(behindRaw ?? "0", 10);
-    const ahead = Number.parseInt(aheadRaw ?? "0", 10);
-    return {
-      ahead: Number.isNaN(ahead) ? 0 : ahead,
-      behind: Number.isNaN(behind) ? 0 : behind,
-      ...upstreamInfo,
-    };
   }
 }

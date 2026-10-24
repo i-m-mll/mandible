@@ -430,9 +430,8 @@ describe("restricted project route enforcement", () => {
     const workScanner = {
       getRepos: () => [repo],
       getRepoById: (id: string) => id === repo.id ? repo : undefined,
-      refreshRepoAsync: vi.fn(async () => repo),
+      getRepoScan: vi.fn(async () => ({ repo, inventory: { known: true, worktrees: [] } })),
       getBranches: () => [],
-      getWorktreeInventory: () => ({ known: true, worktrees: [] }),
       scanAllAsync: vi.fn(async () => ({ scanned_repos: 0 })),
     };
     registerProviderRoutes(router);
@@ -449,7 +448,7 @@ describe("restricted project route enforcement", () => {
     expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(403);
     expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(403);
     expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(403);
-    expect(workScanner.refreshRepoAsync).not.toHaveBeenCalled();
+    expect(workScanner.getRepoScan).not.toHaveBeenCalled();
 
     addGrant(db, {
       subject_type: "user",
@@ -461,7 +460,7 @@ describe("restricted project route enforcement", () => {
     expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(200);
     expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(200);
     expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(200);
-    expect(workScanner.refreshRepoAsync).toHaveBeenCalledOnce();
+    expect(workScanner.getRepoScan).toHaveBeenCalledOnce();
   });
 
   it("authorizes artifact content against the original pinned version ref", async () => {
