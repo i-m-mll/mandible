@@ -414,15 +414,21 @@ it('runs the staged bundled helper without activating imported command-line entr
 });
 
 
-it('replays accepted recovery with the qualified controller and still rejects a changed process', async () => {
-  const { home, dir, binding, journal } = fixture();
-  const repo = createAuthCheckRepo(); roots.push(repo);
+/** Copy the handoff controller and the daemon modules it imports, as a qualified installation lays them out. */
+function installQualifiedController(home: string): string {
   const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
   for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
     fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
   }
   fs.mkdirSync(path.join(home, 'src'));
   for (const name of ['runtime-health-contract.ts', 'stderr-log-chain.ts']) fs.copyFileSync(path.join(process.cwd(), 'src', name), path.join(home, 'src', name));
+  return qualified;
+}
+
+it('replays accepted recovery with the qualified controller and still rejects a changed process', async () => {
+  const { home, dir, binding, journal } = fixture();
+  const repo = createAuthCheckRepo(); roots.push(repo);
+  const qualified = installQualifiedController(home);
   const legacyMarker = path.join(home, 'legacy-controller-used');
   const legacy = `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(legacyMarker)}, 'used'); console.log(JSON.stringify({ health: { ready: true } }));`;
   fs.writeFileSync(path.join(dir, 'controller.mjs'), legacy);
@@ -451,12 +457,7 @@ it('replays accepted recovery with the qualified controller and still rejects a 
 it('records the start of acknowledgment cleanup once, however often a failed cleanup is retried', async () => {
   const { home, dir, binding, journal } = fixture();
   const repo = createAuthCheckRepo(); roots.push(repo);
-  const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
-  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
-    fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
-  }
-  fs.mkdirSync(path.join(home, 'src'));
-  fs.copyFileSync(path.join(process.cwd(), 'src/runtime-health-contract.ts'), path.join(home, 'src/runtime-health-contract.ts'));
+  const qualified = installQualifiedController(home);
   const identity = { pid: 123, startedAt: 'retained exact start', startupEpoch: 'retained epoch' };
   fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), `console.log(${JSON.stringify(JSON.stringify({ process: identity }))});`);
   const completedBinding = { ...binding, root: repo, mergeCommit: git(repo, ['rev-parse', 'HEAD']), domain: `gui/${process.getuid!()}`, stagedFiles: {} };
