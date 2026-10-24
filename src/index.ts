@@ -524,7 +524,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     const errors = await conversationControl.reconcileAfterRestart();
     if (errors.length > 0) logger("warn", "conversation_control_reconciliation_errors", { errors });
     sessionRegistry.onLifecycle((session) => conversationControl.syncRegisteredOwnership(session));
-    sessionRegistry.reapDead();
+    await sessionRegistry.reapDead();
     conversationControl.syncRegisteredOwnership();
   }
 
@@ -709,7 +709,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
     const scannerDrain = workScanner.stop();
-    reaperTimer.stop();
+    const reaperDrain = reaperTimer.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -756,6 +756,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await scannerDrain;
+    await reaperDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);
