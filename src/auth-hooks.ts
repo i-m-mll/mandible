@@ -64,11 +64,15 @@ export interface RuntimeHandoffJournal {
   acknowledgedAt?: number;
   bridgeInstalled?: boolean;
   recovery?: { digest: string; failureDigest: string; receipt: unknown; actor: unknown; observedAt: number };
+  updatedAt?: number;
 }
+
+/** A journal's phase and last save, read without validation. */
+export type RuntimeHandoffHead = Pick<RuntimeHandoffJournal, "phase" | "updatedAt">;
 
 export interface RuntimeHandoffClient {
   readRuntimeHandoff(home: string, requestId: string, executionId: string): RuntimeHandoffJournal | null | Promise<RuntimeHandoffJournal | null>;
-  readRuntimeHandoffPhase(home: string, requestId: string, executionId: string): string | undefined | Promise<string | undefined>;
+  readRuntimeHandoffHead(home: string, requestId: string, executionId: string): RuntimeHandoffHead | null | Promise<RuntimeHandoffHead | null>;
   verifyRuntimeHandoffReceipt(journal: RuntimeHandoffJournal, options: { probe: boolean }): Promise<unknown>;
   observeFailedRuntimeHandoff?(journal: RuntimeHandoffJournal, actor: unknown): Promise<RuntimeHandoffJournal>;
   persistRuntimeRecoveryObservation?(journal: RuntimeHandoffJournal): void;
@@ -300,6 +304,13 @@ export class AuthHookManager {
    * entry, so a sweep revisits only runs that changed.
    */
   private readonly settledHandoffs = new Map<string, string>();
+  /**
+   * Requests whose reconciliation failed on a terminal run, which cannot record
+   * the failure, valued by the run's version and the journal's last save. The
+   * failure is reported once and retried only after either changes or an
+   * operator recovery or retirement.
+   */
+  private readonly stuckHandoffs = new Map<string, string>();
 
   constructor(db?: Db, options: { handoffClient?: RuntimeHandoffClient } = {}) {
     this.db = db ?? getDb();
@@ -326,7 +337,8 @@ export class AuthHookManager {
 
   async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {
     const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
-    return runtime.retireFailedRuntimeHandoff(getMandibleHome(), { ...input, actor });
+    try { return await runtime.retireFailedRuntimeHandoff(getMandibleHome(), { ...input, actor }); }
+    finally { this.stuckHandoffs.clear(); }
   }
 
   runtimeHandoffOwnsRequest(requestId: string): boolean {
@@ -347,7 +359,7 @@ export class AuthHookManager {
 
   async verifyCurrentRuntimeHandoff(request: AuthRequest, actor: unknown, guard: () => void): Promise<void> {
     try { await this.verifyCurrentRuntimeHandoffOnce(request, actor, guard); }
-    finally { this.settledHandoffs.delete(request.id); }
+    finally { this.settledHandoffs.delete(request.id); this.stuckHandoffs.delete(request.id); }
   }
 
   private async verifyCurrentRuntimeHandoffOnce(request: AuthRequest, actor: unknown, guard: () => void): Promise<void> {
@@ -387,6 +399,7 @@ export class AuthHookManager {
   async reconcileRuntimeHandoffs(
     adopt: (binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>) => Promise<() => void>,
     onFailed: (requestId: string, handoffError: string) => void | Promise<void>,
+    onStuck: (requestId: string, error: string) => void | Promise<void> = () => {},
   ): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
     const versions = this.db.prepare("SELECT auth_request_id, state, attempts, updated_at FROM auth_hook_executions WHERE hook_id = ? ORDER BY created_at ASC").all(MANDIBLE_REBUILD_HOOK_ID) as Array<Pick<AuthHookRun, "auth_request_id" | "state" | "attempts" | "updated_at">>;
@@ -401,13 +414,17 @@ export class AuthHookManager {
         continue;
       }
       let handoffError: string | undefined;
+      let observation = `${runVersion(run)}|unreadable`;
       try {
         const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
         const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(moduleUrl);
-        if (runtimeHandoffSettled(run, await runtime.readRuntimeHandoffPhase(getMandibleHome(), run.auth_request_id, run.id))) {
+        const head = await runtime.readRuntimeHandoffHead(getMandibleHome(), run.auth_request_id, run.id);
+        if (runtimeHandoffSettled(run, head?.phase)) {
           settled();
           continue;
         }
+        observation = `${runVersion(run)}|${head?.phase}:${head?.updatedAt}`;
+        if (this.stuckHandoffs.get(run.auth_request_id) === observation) continue;
         let journal = await runtime.readRuntimeHandoff(getMandibleHome(), run.auth_request_id, run.id);
         if (runtimeHandoffSettled(run, journal?.phase)) continue;
         if (!journal) throw new Error("The retained runtime handoff journal is unavailable");
@@ -451,7 +468,12 @@ export class AuthHookManager {
         const refused = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
           truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
         );
-        if (Number(refused.changes) > 0) await onFailed(run.auth_request_id, handoffError ?? (error instanceof Error ? error.message : String(error)));
+        const message = handoffError ?? (error instanceof Error ? error.message : String(error));
+        if (Number(refused.changes) > 0) await onFailed(run.auth_request_id, message);
+        else if (this.stuckHandoffs.get(run.auth_request_id) !== observation) {
+          this.stuckHandoffs.set(run.auth_request_id, observation);
+          await onStuck(run.auth_request_id, message);
+        }
       }
     }
     return [...new Set(accepted)];
