@@ -26,8 +26,9 @@ prints every request slower than --threshold-ms with its start time.
   --out <dir>            Directory for samples (default: a new temp directory)
   --json                 One JSON object per line instead of text
 
-On exit it prints a summary to stderr: request count, stalls, and stalls
-grouped by second of the minute, which separates periodic jobs by phase.`;
+On exit it prints a summary to stderr: request count, stalls, and the phases
+at which stalls recur every 30 s or 60 s, which identify periodic jobs. The
+phase of a daemon timer is set when the daemon starts, so it moves on restart.`;
 
 const { values: opts } = parseArgs({
   options: {
@@ -137,22 +138,73 @@ let requests = 0;
 let stopping = false;
 const startedAt = Date.now();
 
-function summarize() {
-  const bySecond = new Map();
+const PERIODS_S = [30, 60];
+const MIN_PERIODS = 3;
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+// A periodic job stalls at the same phase of every period, while other load
+// stalls at random phases. For each phase (a 2 s window, because timer phase
+// jitters across a second boundary), take the worst stall that started in it
+// during each complete period, and report the phases whose median over
+// periods is still a stall. A 30 s job also recurs every 60 s, so 60 s phases
+// already explained by a 30 s phase are left out.
+function recurring(endedAt) {
+  const worstBySecond = new Map();
   for (const stall of stalls) {
-    const second = new Date(stall.start).getUTCSeconds();
-    const bucket = bySecond.get(second) ?? { count: 0, maxMs: 0 };
-    bucket.count += 1;
-    bucket.maxMs = Math.max(bucket.maxMs, stall.ms);
-    bySecond.set(second, bucket);
+    const second = Math.floor(Date.parse(stall.start) / 1000);
+    worstBySecond.set(second, Math.max(worstBySecond.get(second) ?? 0, stall.ms));
   }
-  const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(0);
+  const lines = [];
+  const explained = new Set();
+  for (const periodS of PERIODS_S) {
+    const first = Math.ceil(startedAt / 1000 / periodS);
+    const last = Math.floor(endedAt / 1000 / periodS) - 1;
+    const periods = last - first + 1;
+    if (periods < MIN_PERIODS) {
+      lines.push(`  every ${periodS} s: needs ${MIN_PERIODS} complete periods, have ${Math.max(periods, 0)}`);
+      continue;
+    }
+    const phases = [];
+    for (let phase = 0; phase < periodS; phase += 1) {
+      const perPeriod = [];
+      for (let period = first; period <= last; period += 1) {
+        const second = period * periodS + phase;
+        perPeriod.push(Math.max(worstBySecond.get(second) ?? 0, worstBySecond.get(second + 1) ?? 0));
+      }
+      phases.push({ phase, typical: median(perPeriod), perPeriod });
+    }
+    const taken = new Set([...explained].flatMap(phase => [phase, phase + 30].filter(p => p < periodS)));
+    const chosen = [];
+    for (const candidate of phases.sort((a, b) => b.typical - a.typical)) {
+      if (chosen.length === 3 || candidate.typical <= thresholdMs) break;
+      const { phase } = candidate;
+      if ([-1, 0, 1].some(d => taken.has((phase + d + periodS) % periodS))) continue;
+      taken.add(phase);
+      chosen.push(candidate);
+    }
+    for (const { phase, typical, perPeriod } of chosen) {
+      if (periodS === 30) explained.add(phase);
+      const at = periodS === 30 ? `:${pad(phase)}/:${pad(phase + 30)}` : `:${pad(phase)}`;
+      lines.push(`  every ${periodS} s at ${at} (+1 s)  median ${typical} ms over ${periods} periods (${perPeriod.join(", ")})`);
+    }
+  }
+  return lines;
+}
+
+const pad = n => String(n).padStart(2, "0");
+
+function summarize() {
+  const endedAt = Date.now();
+  const elapsedS = ((endedAt - startedAt) / 1000).toFixed(0);
   const worst = stalls.reduce((max, stall) => Math.max(max, stall.ms), 0);
   const lines = [
     `${requests} requests in ${elapsedS} s; ${stalls.length} over ${thresholdMs} ms; worst ${worst} ms`,
-    ...[...bySecond.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([second, { count, maxMs }]) => `  :${String(second).padStart(2, "0")}  ${count} stalls, max ${maxMs} ms`),
+    "recurring stalls (UTC second of the minute):",
+    ...recurring(endedAt),
   ];
   if (outDir) lines.push(`samples: ${outDir}`);
   console.error(lines.join("\n"));
