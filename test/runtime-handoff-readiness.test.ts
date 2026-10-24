@@ -159,3 +159,45 @@ it("validates only unsettled handoff journals and revisits a settled one only af
   await sweep();
   expect(validatedReads).toEqual(["old-2"]);
 });
+
+it("finishes a recovery whose acceptance committed before the daemon stopped, and only then treats it as settled", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-recovery-crash-"));
+  cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+  vi.stubEnv("MANDIBLE_HOME", home);
+  const db = createMigratedDb();
+  cleanups.push(() => db.close());
+  const now = Date.now();
+  const accepted = "d".repeat(64);
+  const runs: Array<[string, string]> = [["recovered", accepted], ["other-recovery", "e".repeat(64)]];
+  const journals = new Map<string, RuntimeHandoffJournal>();
+  for (const [id, journalDigest] of runs) {
+    db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
+      VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(id, now, now, now + 60_000);
+    // The recovery transaction committed the row; the journal is still failed.
+    db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
+      VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), `MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${accepted}`, now, now);
+    journals.set(id, { schema: "mandible-runtime-handoff@1", bindingDigest: "b".repeat(64), phase: "failed", error: "first window stalled",
+      recovery: { digest: journalDigest, failureDigest: "f", receipt: {}, actor: {}, observedAt: now },
+      binding: { requestId: id, executionId: `${id}-run`, hookId: "builtin-mandible-rebuild", commandDigest: "c".repeat(64) } } as unknown as RuntimeHandoffJournal);
+  }
+  const completed: string[] = [];
+  const acknowledged: string[] = [];
+  const hooks = new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoffPhase: (_home, requestId) => journals.get(requestId)?.phase,
+    readRuntimeHandoff: (_home, requestId) => journals.get(requestId) ?? null,
+    completeRuntimeHandoffRecovery: async (journal) => { completed.push(journal.binding.requestId); journal.phase = "complete"; return journal; },
+    verifyRuntimeHandoffReceipt: async () => {},
+    acknowledgeRuntimeHandoff: async (binding) => { acknowledged.push(binding.requestId); journals.get(binding.requestId)!.phase = "acknowledged"; },
+    retireFailedRuntimeHandoff: () => undefined,
+  } });
+  const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {});
+
+  await sweep();
+  expect(completed).toEqual(["recovered"]);
+  expect(acknowledged).toEqual(["recovered"]);
+  expect(journals.get("other-recovery")!.phase).toBe("failed");
+  await sweep();
+  await sweep();
+  expect(completed).toEqual(["recovered"]);
+  expect(acknowledged).toEqual(["recovered"]);
+});
