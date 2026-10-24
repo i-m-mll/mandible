@@ -28,6 +28,7 @@ import {
   ConversationSidebarCursorError,
   buildConversationSidebar,
   type ConversationSidebarProject,
+  type ConversationSidebarRow,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
 import type { RouteRegistrar } from "../server.js";
@@ -206,6 +207,31 @@ function mapSidebarConversation(
     canonical_project_key: row.canonical_project_key ?? null,
     ...(spawn ? { spawn } : {}),
   };
+}
+
+const SIDEBAR_CONVERSATION_FROM = `FROM conversations c
+      LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
+      LEFT JOIN conversation_spawn_requests s ON s.id = COALESCE(
+        (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = c.id ORDER BY alias_id LIMIT 1), c.id
+      ) AND s.schema_version = 'mandible-conversation-spawn-request@3'
+      LEFT JOIN ledger_projects p ON p.id = s.project_id`;
+
+function hydrateSidebarConversations(
+  db: ReturnType<typeof getDb>,
+  ids: readonly string[],
+): Map<string, ProjectedConversationRow> {
+  if (ids.length === 0) return new Map();
+  const rows = db.prepare(`SELECT c.*,
+        s.schema_version AS spawn_schema_version, s.request_json AS spawn_request_json,
+        s.state AS spawn_state, s.attempt_count AS spawn_attempt_count,
+        s.native_session_id AS spawn_native_session_id,
+        s.provider_session_id AS spawn_provider_session_id,
+        s.provider_receipt_json AS spawn_provider_receipt_json,
+        s.error_json AS spawn_error_json, s.created_at AS spawn_created_at,
+        s.updated_at AS spawn_updated_at
+      ${SIDEBAR_CONVERSATION_FROM}
+      WHERE c.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as ProjectedConversationRow[];
+  return new Map(rows.map((row) => [row.id, row]));
 }
 
 const MAX_SIDEBAR_PROJECTS = 500;
@@ -953,24 +979,13 @@ export function registerConversationRoutes(
       sort,
     })).digest("base64url");
 
-    let rows = (db.prepare(`SELECT c.*, s.project_id AS canonical_project_id,
+    let rows = db.prepare(`SELECT c.id, c.source, c.project_path, c.cwd, c.starred, c.started_at, c.block_count,
+        s.project_id AS canonical_project_id,
         CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS canonical_placement_explicit,
-        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key,
-        s.schema_version AS spawn_schema_version, s.request_json AS spawn_request_json,
-        s.state AS spawn_state, s.attempt_count AS spawn_attempt_count,
-        s.native_session_id AS spawn_native_session_id,
-        s.provider_session_id AS spawn_provider_session_id,
-        s.provider_receipt_json AS spawn_provider_receipt_json,
-        s.error_json AS spawn_error_json, s.created_at AS spawn_created_at,
-        s.updated_at AS spawn_updated_at
-      FROM conversations c
-      LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
-      LEFT JOIN conversation_spawn_requests s ON s.id = COALESCE(
-        (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = c.id ORDER BY alias_id LIMIT 1), c.id
-      ) AND s.schema_version = 'mandible-conversation-spawn-request@3'
-      LEFT JOIN ledger_projects p ON p.id = s.project_id
-      ${where}`).all(...params) as ProjectedConversationRow[])
-      ;
+        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key
+      ${SIDEBAR_CONVERSATION_FROM}
+      ${where}`).all(...params) as Array<ConversationSidebarRow | ProjectedConversationRow>;
+    const pendingSpawns = new Map<string, ProjectedConversationRow>();
     if (!query.starred && !(Number.isFinite(minBlocks) && minBlocks > 0)) {
       const spawnRows = db.prepare(`SELECT s.*, a.archived_at FROM conversation_spawn_requests s
         LEFT JOIN conversation_archive_states a ON a.conversation_id = s.id
@@ -1001,7 +1016,7 @@ export function registerConversationRoutes(
           created_at: spawn.created_at,
           updated_at: spawn.updated_at,
         } as ConversationSpawnReceipt;
-        rows.push({
+        const pending: ProjectedConversationRow = {
           id: spawn.id,
           source,
           source_path: `mandible://chat/${spawn.id}`,
@@ -1031,7 +1046,9 @@ export function registerConversationRoutes(
           canonical_project_key: spawn.project_id ? projects.find((project) => project.id === spawn.project_id)?.project_key ?? null : null,
           canonical_placement_explicit: 1,
           spawn: receipt,
-        });
+        };
+        pendingSpawns.set(pending.id, pending);
+        rows.push(pending);
       }
     }
     const searchTargets = new Map<string, string>();
@@ -1061,16 +1078,31 @@ export function registerConversationRoutes(
         sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
         return;
       }
-      const externalNavigation = projectConversationExternalNavigation(db, rows);
+      const pageRows = groups.flatMap((group) => group.rows);
+      const hydrated = hydrateSidebarConversations(
+        db,
+        pageRows.filter((row) => !pendingSpawns.has(row.id)).map((row) => row.id),
+      );
+      const fullRow = (row: ConversationSidebarRow): ProjectedConversationRow | null => {
+        const full = pendingSpawns.get(row.id) ?? hydrated.get(row.id);
+        return full
+          ? { ...full, canonical_project_id: row.canonical_project_id, canonical_project_key: row.canonical_project_key }
+          : null;
+      };
+      const pages = groups.map((group) => ({
+        group,
+        rows: group.rows.map(fullRow).filter((row): row is ProjectedConversationRow => row !== null),
+      }));
+      const externalNavigation = projectConversationExternalNavigation(db, pages.flatMap((page) => page.rows));
       sendJson(res, 200, {
-        groups: groups.map((group) => ({
+        groups: pages.map(({ group, rows: pageConversations }) => ({
           key: group.key,
           kind: group.kind,
           label: group.label,
           ...(group.project_id ? { project_id: group.project_id } : {}),
           ...(group.project_key ? { project_key: group.project_key } : {}),
           total: group.total,
-          conversations: group.rows.map((row) => ({
+          conversations: pageConversations.map((row) => ({
             ...mapSidebarConversation(row, fullTextSearch),
             ...(searchTargets.has(row.id)
               ? { search_target: { block: searchTargets.get(row.id)! } }

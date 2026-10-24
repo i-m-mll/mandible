@@ -18,6 +18,7 @@ import {
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
   CONVERSATION_OPENING_LINEAGE_SQL,
+  CONVERSATION_SIDEBAR_INDEX_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -2132,6 +2133,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 209, name: "durable_chat_identity_aliases", statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
   { version: 210, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
+  { version: 211, name: "conversation_sidebar_indexes", statements: [...CONVERSATION_SIDEBAR_INDEX_SQL] },
 ];
 
 /**
