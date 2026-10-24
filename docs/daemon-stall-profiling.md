@@ -77,6 +77,11 @@ The probe only reads health, so it is safe against production.
    PROF=$(mktemp -d)   # outside $ROOT, which finalize must account for
    ```
 
+   The preview needs one owning delivery work unit. To profile a branch that
+   is checked out elsewhere, such as an integration branch, check its head out
+   as `wt new integration/<name> <branch>` and pass the work unit you are
+   delivering under: `--owner-project mandible --owner-work-unit <id>`.
+
 3. Restart that preview daemon under the profiler. `run.sh` is the preview's
    own launch script; it passes the environment through, and Bun reads extra
    flags from `BUN_OPTIONS`:
@@ -110,8 +115,12 @@ The probe only reads health, so it is safe against production.
    instead, for example
    `curl --unix-socket "$SOCK" http://localhost/api/work/repos/mandible/audit`.
 
-   Watch the daemon's memory (`ps -o rss= -p "$(cat "$PIDFILE")"`). On main at
-   20579683 a sustained sidebar replay grew a profiled preview past 13 GB RSS.
+   Keep a profiled run to about five minutes. The profiler keeps every sample
+   in memory until exit: under the production mix a profiled preview's RSS grew
+   about 300 MB a minute (13 GB after 12 minutes of a saturating replay), while
+   the same preview unprofiled held at 225 MB. A profiled preview therefore
+   also trips the daemon's memory warning; that warning is not evidence about
+   the code under test.
 
 5. Stop the daemon. Bun writes the profile when the process exits, which can
    take 15 s after SIGTERM:
