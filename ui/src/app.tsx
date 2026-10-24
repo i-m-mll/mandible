@@ -1,5 +1,5 @@
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
-import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
+import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
@@ -26,6 +26,7 @@ import {
   getWorkRepos,
   invalidateApiGetCache,
   normalizeInstanceInfo,
+  sameInstanceInfo,
   loadOperationCatalog,
   triggerWorkScan,
   rejectAuthRequest,
@@ -1099,9 +1100,14 @@ function App(): JSX.Element {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [navigateToHash, navigateToSettings]);
 
+  // The daemon pushes `dashboard:badges` on every change; this GET resyncs only
+  // on mount and SSE reconnect. A push that lands while it is in flight is newer.
+  const dashboardBadgePushesRef = useRef(0);
   const loadDashboardBadges = useCallback(async () => {
+    const pushesAtStart = dashboardBadgePushesRef.current;
     try {
-      setDashboardBadges(await getDashboardBadges());
+      const counts = await getDashboardBadges();
+      if (dashboardBadgePushesRef.current === pushesAtStart) setDashboardBadges(counts);
     } catch {
       // Cached full-view state remains a usable fallback when the aggregate is unavailable.
     }
@@ -1323,8 +1329,11 @@ function App(): JSX.Element {
       })
       .catch(() => setStartupSettingsReady(true));
     routeWarmupSettingsLoadRef.current = settingsLoad;
-    void loadDashboardBadges();
-  }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData]);
+  }, [accessReady, route.tab, loadVisibleRouteData]);
+
+  useEffect(() => {
+    if (accessReady) void loadDashboardBadges();
+  }, [accessReady, loadDashboardBadges]);
 
   useEffect(() => {
     if (!accessReady || startupRouteWarmupStartedRef.current) return undefined;
@@ -1401,16 +1410,6 @@ function App(): JSX.Element {
   useEffect(() => {
     if (!accessReady) return;
     const client = acquireSharedSse();
-    // Coalesced badge refresh: an event burst schedules exactly one trailing
-    // fetch instead of one per event. Reconnect resync still fetches immediately.
-    let badgeTimer: number | null = null;
-    const scheduleBadgeRefresh = () => {
-      if (badgeTimer !== null) return;
-      badgeTimer = window.setTimeout(() => {
-        badgeTimer = null;
-        void loadDashboardBadges();
-      }, 500);
-    };
     // Coalesced graph-token bump while the graph tab is active and visible.
     let graphTokenTimer: number | null = null;
     const scheduleGraphBump = () => {
@@ -1443,11 +1442,16 @@ function App(): JSX.Element {
       if (authEventRequiresProjectionRefresh(payload.type)) {
         scheduleAuthProjectionRefresh();
       }
-      scheduleBadgeRefresh();
     };
     const briefingHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
-      scheduleBadgeRefresh();
+    };
+    const dashboardBadgesHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      const counts = DASHBOARD_BADGE_COUNTS.safeParse(payload.data);
+      if (!counts.success) return;
+      dashboardBadgePushesRef.current += 1;
+      setDashboardBadges(counts.data);
     };
     const managedReminderHandler = (payload: SSEPayload) => {
       handler(payload);
@@ -1668,6 +1672,7 @@ function App(): JSX.Element {
       client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('tasks.commands.changed', taskCommandHandler),
       client.on('heartbeat', heartbeatHandler),
+      client.on('dashboard:badges', dashboardBadgesHandler),
       client.on('ledger:issue:created', ledgerHandler),
       client.on('ledger:issue:updated', ledgerHandler),
       client.on('ledger:issue:closed', ledgerHandler),
@@ -1741,7 +1746,6 @@ function App(): JSX.Element {
     client.connect();
 
     return () => {
-      if (badgeTimer !== null) window.clearTimeout(badgeTimer);
       if (graphTokenTimer !== null) window.clearTimeout(graphTokenTimer);
       if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
       if (authProjectionRefreshTimer !== null) window.clearTimeout(authProjectionRefreshTimer);
@@ -1784,12 +1788,11 @@ function App(): JSX.Element {
       }
       if (route.tab === 'issues') invalidateApiGetCache('/api/issues');
       void loadVisibleRouteData(route.tab);
-      void loadDashboardBadges();
       void refreshRailOrder();
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData, refreshRailOrder]);
+  }, [accessReady, route.tab, loadVisibleRouteData, refreshRailOrder]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
@@ -1827,7 +1830,7 @@ function App(): JSX.Element {
           catch (error) { console.error('Operation catalog unavailable', error); }
           if (cancelled) return;
         }
-        setInstanceInfo(normalized);
+        setInstanceInfo((current) => (sameInstanceInfo(current, normalized) ? current : normalized));
       }
       setDaemonWarm(daemonIsWarm(health));
       const previousEpoch = getLastSeenStartupEpoch();
@@ -2014,7 +2017,6 @@ function App(): JSX.Element {
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       dispatch({ type: 'authResolved', requestId, status: 'approved' });
-      void loadDashboardBadges();
     } catch (err) {
       // Bug: f690657 — do NOT dispatch a local status change on failure.
       // Dispatching status:'error' made isHistoryStatus() return true, which hid
@@ -2031,7 +2033,6 @@ function App(): JSX.Element {
     try {
       await rejectAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'rejected' });
-      void loadDashboardBadges();
     } catch {
       // Do not set a local error status — the server state is unchanged.
       // The action simply failed; inFlight cleanup in runAction is sufficient.
@@ -2042,7 +2043,6 @@ function App(): JSX.Element {
     try {
       await retryAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'pending' });
-      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -2114,7 +2114,6 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
       dispatch({ type: 'ackInboxContinuation', sessionId });
-      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -2124,7 +2123,6 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('auth_result', requestId);
       dispatch({ type: 'ackInboxAuthResult', requestId });
-      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -2134,7 +2132,6 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('managed_reminder_occurrence', occurrenceId);
       dispatch({ type: 'ackInboxManagedReminderOccurrence', occurrenceId });
-      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -2173,7 +2170,6 @@ function App(): JSX.Element {
     try {
       await ackAllInbox();
       dispatch({ type: 'ackAllInboxItems' });
-      void loadDashboardBadges();
     } catch {
       return;
     }

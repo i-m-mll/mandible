@@ -11,7 +11,6 @@ import { getDb, type Db } from "../db.js";
 import {
   acknowledgeOperationalIncident,
   closeOperationalIncident,
-  countOperationalIncidents,
   ingestOperationalIncidentEnvelope,
   listOperationalIncidents,
   OperationalIncidentError,
@@ -78,10 +77,7 @@ export function registerOperationalIncidentRoutes(
       const publisher = requireMappedTaskExecutor(db, req, envelope.executor.name);
       const result = ingestOperationalIncidentEnvelope(db, envelope, publisher.userId);
       const incidentIds = [...new Set(result.accepted.map((receipt) => receipt.incident_id))];
-      broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, {
-        incident_ids: incidentIds,
-        badge_count: countOperationalIncidents(db).active_unacknowledged,
-      });
+      broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, { incident_ids: incidentIds });
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
@@ -123,10 +119,7 @@ export function registerOperationalIncidentRoutes(
         throw new OperationalIncidentError("expected_attention must be 'unacknowledged'");
       }
       const result = acknowledgeOperationalIncident(db, req.params.id, actorUserId);
-      broadcast(OPERATIONAL_INCIDENT_EVENTS.acknowledged, {
-        incident_ids: [req.params.id],
-        badge_count: countOperationalIncidents(db).active_unacknowledged,
-      });
+      broadcast(OPERATIONAL_INCIDENT_EVENTS.acknowledged, { incident_ids: [req.params.id] });
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
@@ -150,10 +143,7 @@ export function registerOperationalIncidentRoutes(
         body.reason,
         body.expected_updated_at as number,
       );
-      broadcast(OPERATIONAL_INCIDENT_EVENTS.closed, {
-        incident_ids: [req.params.id],
-        badge_count: countOperationalIncidents(db).active_unacknowledged,
-      });
+      broadcast(OPERATIONAL_INCIDENT_EVENTS.closed, { incident_ids: [req.params.id] });
       sendJson(res, 200, { incident });
     } catch (error) {
       handleError(res, error);

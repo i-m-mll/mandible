@@ -149,7 +149,7 @@ describe('app shell', () => {
         return putResponse;
       }
       if (url === '/api/dashboard/badges') {
-        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 }), {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0, work: 0, incidents: 0, tasks: 0 }), {
           headers: { 'content-type': 'application/json' },
         }));
       }
@@ -237,7 +237,7 @@ describe('app shell', () => {
         }), { headers: { 'content-type': 'application/json' } }));
       }
       if (url === '/api/dashboard/badges') {
-        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 })));
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0, work: 0, incidents: 0, tasks: 0 })));
       }
       return Promise.resolve(new Response(JSON.stringify([])));
     }));

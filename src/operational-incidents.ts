@@ -546,10 +546,7 @@ export function raiseDaemonIncident(
     }],
   }, SYSTEM_USER_ID, observedAt);
   const incidentId = receipt.accepted[0]!.incident_id;
-  broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, {
-    incident_ids: [incidentId],
-    badge_count: countOperationalIncidents(db).active_unacknowledged,
-  });
+  broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, { incident_ids: [incidentId] });
   return { incident_id: incidentId, raised: true };
 }
 
