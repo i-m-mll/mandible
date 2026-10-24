@@ -59,7 +59,8 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { useLiveRefresh, useRouteLoad } from '../app-shell';
+import { useLiveLoad } from '../app-shell';
+import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
@@ -918,27 +919,24 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       setError(null);
       return next;
     } catch (loadError) {
-      if (!mounted.current || signal?.aborted || sequence !== inventorySequence.current) return null;
+      if (!mounted.current || refreshAbandoned(signal) || sequence !== inventorySequence.current) return null;
       setError(loadError instanceof Error ? loadError.message : String(loadError));
       return null;
     } finally {
-      if (mounted.current && !signal?.aborted && sequence === inventorySequence.current) setLoading(false);
+      if (mounted.current && !refreshAbandoned(signal) && sequence === inventorySequence.current) setLoading(false);
     }
   }, []);
 
-  useRouteLoad((registerInitialRouteLoad) => {
+  useEffect(() => {
     mounted.current = true;
-    const controller = new AbortController();
-    registerInitialRouteLoad(load(controller.signal));
-    return () => {
-      mounted.current = false;
-      controller.abort();
-    };
-  }, [load]);
-  const refreshInventory = useLiveRefresh(() => {
-    invalidateApiGetCache('/api/tasks');
-    return load();
-  }, TASKS_POLL_INTERVAL_MS);
+    return () => { mounted.current = false; };
+  }, []);
+  const inventoryLoadedRef = useRef(false);
+  const refreshInventory = useLiveLoad((signal) => {
+    if (inventoryLoadedRef.current) invalidateApiGetCache('/api/tasks');
+    inventoryLoadedRef.current = true;
+    return load(signal);
+  }, [], TASKS_POLL_INTERVAL_MS);
   useEffect(() => {
     window.addEventListener('managed-reminder:sse', refreshInventory);
     return () => window.removeEventListener('managed-reminder:sse', refreshInventory);
@@ -978,57 +976,46 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const selectedTargetExecutor = selectedExecutorTask?.executor ?? null;
   const selectedTargetTaskId = selectedExecutorTask?.task.task_id ?? null;
 
-  const reloadCommandsRef = useRef<(() => Promise<unknown>) | null>(null);
-  useLiveRefresh(() => reloadCommandsRef.current?.(), TASKS_POLL_INTERVAL_MS);
   const commandsTargetRef = useRef<string | null>(null);
-  useRouteLoad((registerInitialCommandsLoad) => {
+  useLiveLoad(async (signal) => {
     if (!selectedTargetKey || !selectedTargetExecutor || !selectedTargetTaskId) {
+      if (commandsTargetRef.current === null) return;
       commandsTargetRef.current = null;
       setCommands([]);
       setCommandAvailable(false);
       setCommandError(null);
       return;
     }
-    const controller = new AbortController();
     const targetKey = selectedTargetKey;
-    const loadCommands = async () => {
-      try {
-        const commandList = await getTaskCommands({
-          executor: selectedTargetExecutor,
-          taskId: selectedTargetTaskId,
-        }, controller.signal);
-        if (!mounted.current || controller.signal.aborted) return;
-        setCommands(commandList.commands);
-        const pendingKey = pendingRequestKeys.current.get(targetKey);
-        if (pendingKey && commandList.commands.some((command) => command.request_key === pendingKey)) {
-          pendingRequestKeys.current.delete(targetKey);
-        }
-        setCommandAvailable(true);
-        setCommandError(null);
-      } catch (commandLoadError) {
-        if (!mounted.current || controller.signal.aborted) return;
-        setCommandAvailable(false);
-        setCommandError(
-          commandLoadError instanceof Error ? commandLoadError.message : String(commandLoadError),
-        );
-      }
-    };
     if (commandsTargetRef.current !== targetKey) {
       commandsTargetRef.current = targetKey;
       setCommands([]);
       setCommandAvailable(false);
       setCommandError(null);
-    }
-    registerInitialCommandsLoad(loadCommands());
-    reloadCommandsRef.current = () => {
+    } else {
       invalidateApiGetCache('/api/tasks/commands');
-      return loadCommands();
-    };
-    return () => {
-      controller.abort();
-      reloadCommandsRef.current = null;
-    };
-  }, [selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
+    }
+    try {
+      const commandList = await getTaskCommands({
+        executor: selectedTargetExecutor,
+        taskId: selectedTargetTaskId,
+      }, signal);
+      if (!mounted.current || signal.aborted) return;
+      setCommands(commandList.commands);
+      const pendingKey = pendingRequestKeys.current.get(targetKey);
+      if (pendingKey && commandList.commands.some((command) => command.request_key === pendingKey)) {
+        pendingRequestKeys.current.delete(targetKey);
+      }
+      setCommandAvailable(true);
+      setCommandError(null);
+    } catch (commandLoadError) {
+      if (!mounted.current || refreshAbandoned(signal)) return;
+      setCommandAvailable(false);
+      setCommandError(
+        commandLoadError instanceof Error ? commandLoadError.message : String(commandLoadError),
+      );
+    }
+  }, [selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId], TASKS_POLL_INTERVAL_MS);
 
   const selectedCommands = useMemo(
     () => commands.filter((command) =>
@@ -1154,46 +1141,33 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const commandState = activeIntent?.command?.state;
   const intentPending = Boolean(commandId)
     && commandState !== 'applied' && commandState !== 'rejected' && commandState !== 'cancelled';
-  const reconcileIntentRef = useRef<(() => Promise<unknown>) | null>(null);
-  const refreshIntent = useLiveRefresh(
-    () => reconcileIntentRef.current?.(),
-    intentPending ? 2_000 : undefined,
-  );
-  useEffect(() => {
+  const refreshIntent = useLiveLoad(async (signal) => {
     if (!commandId || !intentPending) return;
-    let disposed = false;
-    const reconcile = async () => {
-      try {
-        const command = await getTaskCommand(commandId);
-        if (disposed || !mounted.current) return;
-        setCommands((current) => [command, ...current.filter((row) => row.id !== command.id)]);
-        setActiveIntent((current) => current?.command?.id === command.id
-          ? { ...current, command }
-          : current);
-        if (command.state === 'rejected' && command.rejection_reason === 'stale_target') {
-          invalidateApiGetCache('/api/tasks');
-          void load();
-        }
-      } catch (reconcileError) {
-        if (!disposed && mounted.current) {
-          setCommandError(reconcileError instanceof Error ? reconcileError.message : String(reconcileError));
-        }
+    try {
+      const command = await getTaskCommand(commandId, signal);
+      if (!mounted.current || signal.aborted) return;
+      setCommands((current) => [command, ...current.filter((row) => row.id !== command.id)]);
+      setActiveIntent((current) => current?.command?.id === command.id
+        ? { ...current, command }
+        : current);
+      if (command.state === 'rejected' && command.rejection_reason === 'stale_target') refreshInventory();
+    } catch (reconcileError) {
+      if (mounted.current && !refreshAbandoned(signal)) {
+        setCommandError(reconcileError instanceof Error ? reconcileError.message : String(reconcileError));
       }
-    };
+    }
+  }, [commandId, intentPending], intentPending ? 2_000 : undefined);
+  useEffect(() => {
+    if (!commandId || !intentPending) return undefined;
     const onSse = (event: Event) => {
       const detail = (event as CustomEvent<{
         data?: { command_id?: string };
       }>).detail;
       if (detail?.data?.command_id === commandId) refreshIntent();
     };
-    reconcileIntentRef.current = reconcile;
     window.addEventListener('task-command:sse', onSse);
-    return () => {
-      disposed = true;
-      reconcileIntentRef.current = null;
-      window.removeEventListener('task-command:sse', onSse);
-    };
-  }, [commandId, intentPending, load, refreshIntent]);
+    return () => window.removeEventListener('task-command:sse', onSse);
+  }, [commandId, intentPending, refreshIntent]);
 
   // "No executor has ever posted" and "an executor posted an empty inventory"
   // are different facts and must not share a message.

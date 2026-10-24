@@ -594,8 +594,13 @@ function startCachedGet(
   return request;
 }
 
+/** Why a cached read stopped waiting: the signal's own reason, such as a refresh deadline. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The request was cancelled.', 'AbortError');
+}
+
 function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) return Promise.reject(new DOMException('The request was cancelled.', 'AbortError'));
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
   request.consumers += 1;
   let released = false;
   const release = () => {
@@ -614,7 +619,7 @@ function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSign
     const onAbort = () => {
       signal.removeEventListener('abort', onAbort);
       release();
-      reject(new DOMException('The request was cancelled.', 'AbortError'));
+      reject(abortReason(signal));
     };
     signal.addEventListener('abort', onAbort, { once: true });
     request.promise.then(
@@ -638,9 +643,7 @@ async function cachedApiGetJson<T>(
   path: string,
   options: CachedJsonOptions = {},
 ): Promise<T> {
-  if (options.signal?.aborted) {
-    throw new DOMException('The request was cancelled.', 'AbortError');
-  }
+  if (options.signal?.aborted) throw abortReason(options.signal);
   const resolvedOptions = {
     ttlMs: options.ttlMs ?? DEFAULT_GET_CACHE_TTL_MS,
     staleWhileRevalidateMs: options.staleWhileRevalidateMs ?? DEFAULT_GET_CACHE_STALE_MS,
@@ -872,10 +875,13 @@ export type SessionOverviewAmbiguous = {
   candidates: SessionSummary[];
 };
 
-export async function getSessionOverview(sessionRef: string): Promise<SessionOverview | SessionOverviewAmbiguous> {
+export async function getSessionOverview(
+  sessionRef: string,
+  signal?: AbortSignal,
+): Promise<SessionOverview | SessionOverviewAmbiguous> {
   return cachedApiGetJson<SessionOverview | SessionOverviewAmbiguous>(
     `/api/sessions/${encodeURIComponent(sessionRef)}/overview`,
-    WARMED_ROUTE_GET_OPTIONS,
+    { ...WARMED_ROUTE_GET_OPTIONS, signal },
   );
 }
 
@@ -2596,7 +2602,7 @@ export async function getLogs(params?: {
   limit?: number;
   offset?: number;
   before?: string;
-}): Promise<LogsResponse> {
+}, signal?: AbortSignal): Promise<LogsResponse> {
   const query = new URLSearchParams();
   if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
   if (params?.level) query.set('level', params.level);
@@ -2612,7 +2618,7 @@ export async function getLogs(params?: {
   const qs = query.toString();
   return cachedApiGetJson<LogsResponse>(
     `/api/system/logs${qs ? '?' + qs : ''}`,
-    WARMED_ROUTE_GET_OPTIONS,
+    { ...WARMED_ROUTE_GET_OPTIONS, signal },
   );
 }
 

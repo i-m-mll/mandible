@@ -10,7 +10,8 @@ import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identitie
 import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { AppOperationalNoticeOutlet, useLiveRefresh, useRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveLoad, useRouteLoad } from '../app-shell';
+import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   ApiError,
@@ -403,7 +404,6 @@ export function SessionOverviewView({
   const [result, setResult] = useState<{ ref: string | null; state: OverviewState; error?: string }>({ ref: null, state: { kind: 'idle' } });
   const state: OverviewState = result.ref === selectedRef ? result.state : selectedRef ? { kind: 'loading' } : { kind: 'idle' };
   const [pickerError, setPickerError] = useState<string | null>(null);
-  const [refreshToken, setRefreshToken] = useState(0);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const scrollOwnerRef = useRef<HTMLDivElement>(null);
 
@@ -411,17 +411,20 @@ export function SessionOverviewView({
     setSelection((current) => current.routeRef === routeRef ? current : { routeRef, value: routeRef });
   }, [routeRef]);
 
-  useRouteLoad((registerInitialRouteLoad) => {
-    if (!selectedRef) {
-      return;
-    }
-    let cancelled = false;
-    const setState = (state: OverviewState) => setResult({ ref: selectedRef, state });
-    setResult((current) => current.ref === selectedRef && current.state.kind === 'resolved'
-      ? current : { ref: selectedRef, state: { kind: 'loading' } });
-    const initialLoad = getSessionOverview(selectedRef)
+  // One live load: on activation and selection change, every 15 s, on execution events and
+  // window focus. The last good snapshot stays visible while a refresh runs.
+  const loadedOverviewRef = useRef<string | null>(null);
+  const refreshOverview = useLiveLoad((signal) => {
+    if (!selectedRef) return undefined;
+    const ref = selectedRef;
+    if (loadedOverviewRef.current === ref) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(ref)}/overview`);
+    loadedOverviewRef.current = ref;
+    const setState = (state: OverviewState) => setResult({ ref, state });
+    setResult((current) => current.ref === ref && current.state.kind === 'resolved'
+      ? current : { ref, state: { kind: 'loading' } });
+    return getSessionOverview(ref, signal)
       .then((payload) => {
-        if (cancelled) return;
+        if (signal.aborted) return;
         if (payload.status === 'ambiguous') {
           setState({ kind: 'ambiguous', result: payload });
           return;
@@ -430,27 +433,16 @@ export function SessionOverviewView({
         if (!embedded && !initialSessionId) writeSessionParamToHash(payload.session.id);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (refreshAbandoned(signal)) return;
         if (err instanceof ApiError && err.status === 404) setState({ kind: 'not-found' });
         else {
           const message = err instanceof Error ? err.message : 'Failed to load overview';
-          setResult((current) => current.ref === selectedRef && current.state.kind === 'resolved'
+          setResult((current) => current.ref === ref && current.state.kind === 'resolved'
             ? { ...current, error: message }
-            : { ref: selectedRef, state: { kind: 'error', message } });
+            : { ref, state: { kind: 'error', message } });
         }
       });
-    registerInitialRouteLoad(initialLoad);
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRef, embedded, initialSessionId, refreshToken]);
-
-  // Local ledger state stays fresh without a user-operated refresh control.
-  // Keep the last good snapshot visible while a background reconciliation runs.
-  const refreshOverview = useLiveRefresh(() => {
-    if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
-    setRefreshToken((token) => token + 1);
-  }, 15_000);
+  }, [selectedRef, embedded, initialSessionId], 15_000);
   useEffect(() => {
     const events = acquireSharedSse();
     events.on("session:execution-updated", refreshOverview);

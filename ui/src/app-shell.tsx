@@ -1,6 +1,6 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { createCoalescedRefresh, type CoalescedRefresh } from './lib/coalesced-refresh';
+import { createCoalescedRefresh, type CoalescedRefresh, type RefreshRun } from './lib/coalesced-refresh';
 import { IconTabList } from './components/shared/IconTabList';
 
 type AppRightSidebarCommon = {
@@ -201,27 +201,39 @@ export function useRouteLoad(
 }
 
 /**
- * Live updates for an active view: requests `refresh` every `intervalMs` (when given) and on
- * each call of the returned signal, only while the view is active. Requests coalesce: at most
- * one refresh is in flight (while the promise `refresh` returns is pending) and one pending,
- * and refreshes start at least `LIVE_REFRESH_MIN_INTERVAL_MS` apart. Signals while inactive
- * are dropped, because activation reloads the view through `useRouteLoad`.
+ * A live view's load, run through one coalesced refresh (`createCoalescedRefresh`) while the
+ * view is active (`useViewActive`). It loads at once when the view becomes active and when
+ * `deps` change while it is active, aborting a load in flight. Every `intervalMs` (when
+ * given) and on each call of the returned signal it requests a refresh: requests coalesce
+ * into at most one in flight and one pending, started at least `LIVE_REFRESH_MIN_INTERVAL_MS`
+ * apart, so a signal during a load becomes the trailing refresh. `load` receives the run's
+ * AbortSignal; it is aborted when the view becomes inactive, when the load is superseded, or
+ * past the run deadline, whose `RefreshDeadlineError` `load` shows as a failed load (see
+ * `refreshAbandoned`). Signals while inactive are dropped, because activation loads anyway.
+ * The first load is registered with the app warmup barrier.
  */
-export function useLiveRefresh(refresh: () => unknown, intervalMs?: number): () => void {
+export function useLiveLoad(load: RefreshRun, deps: readonly unknown[], intervalMs?: number): () => void {
   const active = useViewActive();
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
+  const register = useRegisterInitialRouteLoad();
+  const loadRef = useRef(load);
+  loadRef.current = load;
   const scheduler = useRef<CoalescedRefresh | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) return undefined;
-    const current = createCoalescedRefresh(() => refreshRef.current());
+    const current = createCoalescedRefresh((signal) => loadRef.current(signal));
     scheduler.current = current;
-    const timer = intervalMs === undefined ? undefined : window.setInterval(() => current.request(), intervalMs);
     return () => {
-      window.clearInterval(timer);
       current.stop();
       if (scheduler.current === current) scheduler.current = null;
     };
+  }, [active]);
+  useLayoutEffect(() => {
+    if (active && scheduler.current) register(scheduler.current.restart());
+  }, [active, ...deps]);
+  useEffect(() => {
+    if (!active || intervalMs === undefined) return undefined;
+    const timer = window.setInterval(() => scheduler.current?.request(), intervalMs);
+    return () => window.clearInterval(timer);
   }, [active, intervalMs]);
   return useCallback(() => scheduler.current?.request(), []);
 }

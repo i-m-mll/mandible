@@ -5,7 +5,8 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
-import { AppOperationalNoticeOutlet, useLiveRefresh, useRouteLoad, useViewActive } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveLoad, useViewActive } from '../app-shell';
+import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -341,14 +342,14 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const autoScrollRef = useRef(true);
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
-  const fetchLogs = useCallback(async (initial = false) => {
+  const fetchLogs = useCallback(async (initial: boolean, signal: AbortSignal) => {
     if (hasStartedLoadRef.current) invalidateApiGetCache('/api/system/logs');
     hasStartedLoadRef.current = true;
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     if (!hasLoadedRef.current || initial) setLoading(true);
     try {
-      const result = await loadLogs(filterParam(filters));
+      const result = await loadLogs(filterParam(filters), signal);
       if (requestSeq !== requestSeqRef.current) return;
       setEntries((current) => {
         if (initial || !hasLoadedRef.current) return result.entries.slice(-MAX_RENDERED_LOG_ROWS);
@@ -370,11 +371,11 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
       setLastFailedAt(null);
       hasLoadedRef.current = true;
     } catch (err) {
-      if (requestSeq !== requestSeqRef.current) return;
+      if (requestSeq !== requestSeqRef.current || refreshAbandoned(signal)) return;
       setError(err instanceof Error ? err.message : String(err));
       setLastFailedAt(new Date());
     } finally {
-      if (requestSeq === requestSeqRef.current) {
+      if (requestSeq === requestSeqRef.current && !refreshAbandoned(signal)) {
         setLoading(false);
       }
     }
@@ -409,20 +410,18 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     }
   }, [filters, hasOlder, loadLogs, loadingOlder, olderCursor]);
 
+  // One live load: on activation and filter change, every 30 s, and on any event.
   const loadedFiltersRef = useRef<LogFilters | null>(null);
-  useRouteLoad((registerInitialRouteLoad) => {
-    if (loadedFiltersRef.current === filters) {
-      registerInitialRouteLoad(fetchLogs());
-      return;
-    }
+  const refreshLogs = useLiveLoad((signal) => {
+    if (loadedFiltersRef.current === filters) return fetchLogs(false, signal);
     loadedFiltersRef.current = filters;
     updateHash(filters);
     hasLoadedRef.current = false;
     setEntries([]);
     setOlderCursor(null);
     setHasOlder(false);
-    registerInitialRouteLoad(fetchLogs(true));
-  }, [filters, fetchLogs]);
+    return fetchLogs(true, signal);
+  }, [filters], 30_000);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
@@ -442,7 +441,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   }, []);
 
   const viewActive = useViewActive();
-  const refreshLogs = useLiveRefresh(() => fetchLogs(), 30_000);
   useEffect(() => {
     if (!viewActive) return undefined;
     let closed = false;
