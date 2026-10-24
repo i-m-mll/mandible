@@ -1847,6 +1847,11 @@ export class WorkScanner {
         data: { ...data, repo_id: repoId },
       });
     }
+    this.emit({
+      event: DOMAIN_EVENTS.WORK_REPO_SCANNED,
+      type: DOMAIN_EVENTS.WORK_REPO_SCANNED,
+      data: { repo_id: repoId, branches_updated: changed.length, branches_removed: removed },
+    });
     return { updated: changed.length, removed };
   }
 

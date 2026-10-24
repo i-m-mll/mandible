@@ -103,6 +103,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   WORK_BRANCH_UPDATED: "work:branch:updated",
   WORK_SCAN_COMPLETED: "work:scan:completed",
   WORK_SCAN_STARTED: "work:scan:started",
+  WORK_REPO_SCANNED: "work:repo:scanned",
   WORKFLOW_UPDATED: "workflow:updated",
 } as const);
 
@@ -117,6 +118,10 @@ export type MandibleEventType = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENT
 export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_updated: z.number(),
   branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
 export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
+/** One repository's stored scan was replaced, including a scan that only removed branches. */
+export const WORK_REPO_SCAN_PAYLOAD = z.object({ repo_id: z.string().min(1), branches_updated: z.number(),
+  branches_removed: z.number() });
+export type WorkRepoScan = z.infer<typeof WORK_REPO_SCAN_PAYLOAD>;
 
 /** A repository scanned within this window is current; scans and the Work view treat it as fresh. */
 export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
@@ -150,6 +155,7 @@ export type EventPayload<E extends MandibleEventType> =
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
   : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
   : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
+  : E extends typeof DOMAIN_EVENTS.WORK_REPO_SCANNED ? WorkRepoScan
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
   : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
   : E extends BriefingEvent ? { briefing_id: string; round_id?: string | null; [key: string]: unknown }
@@ -2456,6 +2462,7 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
   [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
   [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
+  [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
     ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),
   ...[DOMAIN_EVENTS.SESSION_CHILD_ADDED, DOMAIN_EVENTS.SESSION_CHILD_ENDED].map((event): [MandibleEventType, z.ZodType] =>
