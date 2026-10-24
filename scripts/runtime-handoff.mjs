@@ -74,13 +74,11 @@ export function readRuntimeHandoff(home, requestId, executionId) {
   return journal && validateJournal(journal);
 }
 /**
- * The recorded phase and last save without validation, which re-hashes the
- * pinned runtime. It only decides whether a handoff needs another look;
- * acting requires readRuntimeHandoff.
+ * The recorded phase without validation, which re-hashes the pinned runtime.
+ * It only decides that a handoff needs no action; acting requires readRuntimeHandoff.
  */
-export function readRuntimeHandoffHead(home, requestId, executionId) {
-  const journal = readJournalFile(home, requestId, executionId);
-  return journal && { phase: journal.phase, updatedAt: journal.updatedAt };
+export function readRuntimeHandoffPhase(home, requestId, executionId) {
+  return readJournalFile(home, requestId, executionId)?.phase;
 }
 function save(journal, changes) {
   Object.assign(journal, changes, { updatedAt: Date.now() });
@@ -446,7 +444,7 @@ export async function acknowledgeRuntimeHandoff(binding) {
   if (!journal || journal.bindingDigest !== bindingDigest(binding)) throw new Error('Runtime handoff acknowledgment binding differs.');
   await verifyRuntimeHandoffReceipt(journal, { probe: true });
   if (journal.phase === 'acknowledged') return;
-  save(journal, { cleanupStartedAt: Date.now() });
+  if (!journal.cleanupStartedAt) save(journal, { cleanupStartedAt: Date.now() });
   // The helper is an exact independently owned job; never bootout a domain.
   const target = `${binding.domain}/${journal.helperLabel}`;
   const loaded = spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 });

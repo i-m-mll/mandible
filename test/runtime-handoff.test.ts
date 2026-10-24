@@ -447,3 +447,30 @@ it('replays accepted recovery with the qualified controller and still rejects a 
   await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('process changed');
   expect(fs.readFileSync(path.join(dir, 'journal.json'), 'utf8')).toBe(before);
 });
+
+it('records the start of acknowledgment cleanup once, however often a failed cleanup is retried', async () => {
+  const { home, dir, binding, journal } = fixture();
+  const repo = createAuthCheckRepo(); roots.push(repo);
+  const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
+  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
+    fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
+  }
+  fs.mkdirSync(path.join(home, 'src'));
+  fs.copyFileSync(path.join(process.cwd(), 'src/runtime-health-contract.ts'), path.join(home, 'src/runtime-health-contract.ts'));
+  const identity = { pid: 123, startedAt: 'retained exact start', startupEpoch: 'retained epoch' };
+  fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), `console.log(${JSON.stringify(JSON.stringify({ process: identity }))});`);
+  const completedBinding = { ...binding, root: repo, mergeCommit: git(repo, ['rev-parse', 'HEAD']), domain: `gui/${process.getuid!()}`, stagedFiles: {} };
+  const completed = { ...journal, binding: completedBinding, bindingDigest: bindingDigest(completedBinding), environment: {},
+    phase: 'complete', recovery: { digest: 'accepted-recovery' }, helperLabel: 'bio.mll.mandible.test.absent-helper', helperPlist: path.join(home, 'absent.plist'),
+    receipt: { bindingDigest: bindingDigest(completedBinding), evidence: { process: identity }, files: {} } };
+  fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(completed));
+  // Generated material that changed type blocks cleanup on every attempt.
+  fs.mkdirSync(path.join(dir, 'helper.log'));
+  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
+
+  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('changed type');
+  const first = fs.readFileSync(path.join(dir, 'journal.json'), 'utf8');
+  expect(JSON.parse(first).cleanupStartedAt).toEqual(expect.any(Number));
+  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('changed type');
+  expect(fs.readFileSync(path.join(dir, 'journal.json'), 'utf8')).toBe(first);
+});

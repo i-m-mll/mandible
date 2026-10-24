@@ -753,12 +753,13 @@ export class AuthQueue {
         this.failRebuild(request, handoffError);
       },
       (id, error) => {
-        // A completed rebuild whose handoff cannot be finished: nothing on its
-        // row can record this, and it is retried only once its run or journal changes.
+        // A completed rebuild whose handoff cannot be finished yet: nothing on
+        // its row can record this. Each sweep retries it; this reports a new failure.
         authLog("error", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
         try { raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }); }
         catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
       },
+      (id) => { authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id }); },
     );
     for (const id of ids) {
       const request = this.getRequestById(id);
