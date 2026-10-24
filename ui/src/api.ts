@@ -1170,8 +1170,10 @@ export async function getWorkCompare(
   return (await response.json()) as WorkCompareResult;
 }
 
-export async function getWorkRepoAudit(repoId: string): Promise<WorkRepoAudit> {
-  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/audit`);
+/** Read a repository's branch audit; `refresh` makes the daemon rescan instead of serving a fresh stored scan. */
+export async function getWorkRepoAudit(repoId: string, options: { refresh?: boolean } = {}): Promise<WorkRepoAudit> {
+  const query = options.refresh ? '?refresh=1' : '';
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/audit${query}`);
   return (await parseMaybeJson(response)) as WorkRepoAudit;
 }
 

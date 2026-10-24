@@ -30,6 +30,8 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 import { browserSessionFetch } from '../client-auth-token';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
+import { useViewActive } from '../app-shell';
+import { WORK_SCAN_SKIP_WINDOW_MS } from '../../../src/contracts';
 
 export type WorkRepo = {
   id?: string;
@@ -186,6 +188,16 @@ type AuditNotice = {
 };
 
 const WORK_COMMIT_LIMIT = 50;
+const WORK_RESCAN_INTERVAL_MS = 60_000;
+
+/** When a read was issued, and under which scan generation. */
+type Freshness = { requestedAt: number; generation: number };
+
+function isFresh(freshness: Freshness | undefined, generation: number, now: number): boolean {
+  return freshness !== undefined
+    && freshness.generation === generation
+    && now - freshness.requestedAt < WORK_SCAN_SKIP_WINDOW_MS;
+}
 
 function sortBranches(branches: WorkBranch[], sortKey: BranchSortKey): WorkBranch[] {
   // Separate pinned (protected) from non-pinned
@@ -822,6 +834,18 @@ export function WorkOverviewView({
   const [auditActingKey, setAuditActingKey] = useState<string | null>(null);
   const [auditNotices, setAuditNotices] = useState<Record<string, AuditNotice | null>>({});
   const auditRequestSequence = useRef<Record<string, number>>({});
+  const auditFreshness = useRef<Record<string, Freshness>>({});
+  const commitRequestSequence = useRef<Record<string, number>>({});
+  const commitFreshness = useRef<Record<string, Freshness>>({});
+  const viewActive = useViewActive();
+  // Each work:scan:completed advances the generation; data read under an older one is stale.
+  const [scanGeneration, setScanGeneration] = useState(0);
+  const scanGenerationRef = useRef(scanGeneration);
+  scanGenerationRef.current = scanGeneration;
+  const onRescanRef = useRef(onRescan);
+  onRescanRef.current = onRescan;
+  const paramsRef = useRef(params);
+  paramsRef.current = params;
 
   // Outer-level filters
   const [repoFilterInput, setRepoFilterInput] = useState('');
@@ -907,30 +931,23 @@ export function WorkOverviewView({
   }, [showExcluded]);
 
   useEffect(() => {
-    const refreshRepos = () => { void fetchRepos(showExcluded); };
-    window.addEventListener('work:scan:completed', refreshRepos);
-    return () => window.removeEventListener('work:scan:completed', refreshRepos);
-  }, [showExcluded]);
+    const advance = () => setScanGeneration((generation) => generation + 1);
+    window.addEventListener('work:scan:completed', advance);
+    return () => window.removeEventListener('work:scan:completed', advance);
+  }, []);
+
+  const reposGeneration = useRef(0);
+  useEffect(() => {
+    if (!viewActive || reposGeneration.current === scanGeneration) return;
+    reposGeneration.current = scanGeneration;
+    void fetchRepos(showExcluded);
+  }, [viewActive, scanGeneration, showExcluded]);
 
   useEffect(() => {
-    const refresh = () => {
-      if (!canRunScan) return;
-      void onRescan();
-    };
-    const interval = window.setInterval(refresh, 60_000);
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        refresh();
-      }
-    };
-    window.addEventListener('focus', refresh);
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refresh);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [onRescan, canRunScan]);
+    if (!viewActive || !canRunScan) return undefined;
+    const interval = window.setInterval(() => { void onRescanRef.current(); }, WORK_RESCAN_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [viewActive, canRunScan]);
 
   // Bug: b5abaea — Subscribe to push SSE events forwarded via window CustomEvents
   useEffect(() => {
@@ -1060,7 +1077,7 @@ export function WorkOverviewView({
   const compareKey = JSON.stringify([selectedRepo?.repoId, compareFrom, compareTo, compareMode]);
   const compareResult = resolvedCompareKey === compareKey ? localCompareResult : null;
 
-  const loadAudit = async (repoId: string) => {
+  const loadAudit = async (repoId: string, options: { refresh?: boolean } = {}) => {
     const sequence = (auditRequestSequence.current[repoId] ?? 0) + 1;
     auditRequestSequence.current[repoId] = sequence;
     if (!canPerformOperation(
@@ -1071,14 +1088,16 @@ export function WorkOverviewView({
       setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: false, error: null } }));
       return;
     }
+    auditFreshness.current[repoId] = { requestedAt: Date.now(), generation: scanGenerationRef.current };
     setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: true, error: null } }));
     try {
-      const audit = await getWorkRepoAudit(repoId);
+      const audit = await getWorkRepoAudit(repoId, options);
       if (auditRequestSequence.current[repoId] !== sequence) return;
       setAudits((prev) => ({ ...prev, [repoId]: audit }));
       setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: false, error: null } }));
     } catch (error) {
       if (auditRequestSequence.current[repoId] !== sequence) return;
+      delete auditFreshness.current[repoId];
       setAuditLoadStates((prev) => ({
         ...prev,
         [repoId]: {
@@ -1089,9 +1108,16 @@ export function WorkOverviewView({
     }
   };
 
+  const canAuditSelectedRepo = selectedRepoId !== null && canPerformOperation(
+    instance,
+    'GET',
+    `/api/work/repos/${encodeURIComponent(selectedRepoId)}/audit`,
+  );
   useEffect(() => {
-    if (selectedRepoId) void loadAudit(selectedRepoId);
-  }, [selectedRepoId, instance]);
+    if (!viewActive || !selectedRepoId) return;
+    if (isFresh(auditFreshness.current[selectedRepoId], scanGeneration, Date.now())) return;
+    void loadAudit(selectedRepoId);
+  }, [viewActive, selectedRepoId, canAuditSelectedRepo, scanGeneration]);
 
   const handleTrashAuditEntry = async (repoId: string, entry: WorkAuditEntry) => {
     if (!entry.trash_request || !canPerformOperation(
@@ -1125,8 +1151,8 @@ export function WorkOverviewView({
             }));
             return;
           }
-          await loadAudit(repoId);
         }
+        await loadAudit(repoId, { refresh: true });
       }
     } catch (error) {
       setAuditNotices((prev) => ({
@@ -1159,29 +1185,37 @@ export function WorkOverviewView({
     updateWorkHash({ repo: selectedRepo.repoId, branch: fallback });
   }, [selectedRepo, selectedBranches, explicitBranch, routeChanged]);
 
+  const commitsRepoId = selectedRepo?.repoId ?? null;
+  const commitsBranchName = selectedBranch ? getBranchName(selectedBranch) : null;
+  const canReadSelectedCommits = commitsRepoId !== null && commitsBranchName !== null && canPerformOperation(
+    instance,
+    'GET',
+    `/api/work/repos/${encodeURIComponent(commitsRepoId)}/branches/${encodeURIComponent(commitsBranchName)}/commits`,
+  );
   useEffect(() => {
-    if (!selectedRepo || !selectedBranch) {
+    if (!viewActive || !commitsRepoId || !commitsBranchName) {
       return;
     }
-    const branchName = getBranchName(selectedBranch);
-    const key = commitKey(selectedRepo.repoId, branchName);
-    if (!canPerformOperation(
-      instance,
-      'GET',
-      `/api/work/repos/${encodeURIComponent(selectedRepo.repoId)}/branches/${encodeURIComponent(branchName)}/commits`,
-    )) {
+    const repoId = commitsRepoId;
+    const branchName = commitsBranchName;
+    const key = commitKey(repoId, branchName);
+    if (!canReadSelectedCommits) {
       setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: null } }));
       return;
     }
+    if (isFresh(commitFreshness.current[key], scanGeneration, Date.now())) return;
+    const sequence = (commitRequestSequence.current[key] ?? 0) + 1;
+    commitRequestSequence.current[key] = sequence;
+    commitFreshness.current[key] = { requestedAt: Date.now(), generation: scanGeneration };
     setCommitLoadState((prev) => ({ ...prev, [key]: { loading: true, error: null } }));
-    let cancelled = false;
-    getRepoBranchCommits(selectedRepo.repoId, branchName, { limit: WORK_COMMIT_LIMIT, offset: 0 })
+    getRepoBranchCommits(repoId, branchName, { limit: WORK_COMMIT_LIMIT, offset: 0 })
       .then((page) => {
-        if (cancelled) return;
+        if (commitRequestSequence.current[key] !== sequence) return;
         setCommitPages((prev) => ({ ...prev, [key]: page }));
         setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: null } }));
         setSelectedCommits((prev) => {
-          if (params.repo === selectedRepo.repoId && params.branch === branchName && params.commit) return prev;
+          const route = paramsRef.current;
+          if (route.repo === repoId && route.branch === branchName && route.commit) return prev;
           const current = prev[key];
           if (current && page.commits.some((commit) => commit.hash === current)) {
             return prev;
@@ -1191,15 +1225,18 @@ export function WorkOverviewView({
         });
       })
       .catch((error) => {
-        if (cancelled) return;
+        if (commitRequestSequence.current[key] !== sequence) return;
+        delete commitFreshness.current[key];
         const message = error instanceof Error ? error.message : String(error);
         setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: message } }));
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRepo?.repoId, selectedBranchName, instance, params.repo, params.branch, params.commit]);
+  }, [viewActive, commitsRepoId, commitsBranchName, canReadSelectedCommits, scanGeneration]);
 
+  const canCompareSelectedRepo = commitsRepoId !== null && canPerformOperation(
+    instance,
+    'GET',
+    `/api/work/repos/${encodeURIComponent(commitsRepoId)}/compare`,
+  );
   useEffect(() => {
     if (!selectedRepo || !compareFrom || !compareTo) {
       setCompareResult(null);
@@ -1207,11 +1244,7 @@ export function WorkOverviewView({
       setCompareLoading(false);
       return;
     }
-    if (!canPerformOperation(
-      instance,
-      'GET',
-      `/api/work/repos/${encodeURIComponent(selectedRepo.repoId)}/compare`,
-    )) {
+    if (!canCompareSelectedRepo) {
       setCompareResult(null);
       setCompareError(null);
       setCompareLoading(false);
@@ -1236,7 +1269,7 @@ export function WorkOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedRepo?.repoId, compareFrom, compareTo, compareMode, instance]);
+  }, [selectedRepo?.repoId, compareFrom, compareTo, compareMode, canCompareSelectedRepo]);
 
   const repoTitleCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1774,7 +1807,7 @@ export function WorkOverviewView({
                       ...prev,
                       [repoId]: prev[repoId] === false,
                     }))}
-                    onRefresh={() => void loadAudit(repoId)}
+                    onRefresh={() => void loadAudit(repoId, { refresh: true })}
                     onConfirm={setAuditConfirmingKey}
                     onCancel={() => setAuditConfirmingKey(null)}
                     onTrash={(entry) => void handleTrashAuditEntry(repoId, entry)}
