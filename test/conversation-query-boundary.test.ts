@@ -162,7 +162,9 @@ describe('Chat Query authority', () => {
       [block('b0', 0)],
       1,
     ));
-    await client.fetchQuery({ queryKey: initialKey, queryFn: refetch });
+    const shown = new QueryObserver(client, { queryKey: initialKey, queryFn: refetch, staleTime: Infinity });
+    const unsubscribe = shown.subscribe(() => undefined);
+    await waitUntilPasses(() => expect(client.getQueryData(initialKey)).toBeDefined());
     client.setQueryData(exactKey, window(
       { kind: 'block', requested_value: 'b1', position: 1, block_id: 'b1', turn_id: null },
       [block('b0', 0), block('b1', 1), block('b2', 2)],
@@ -182,5 +184,6 @@ describe('Chat Query authority', () => {
       append: { from_position: 3, blocks: [block('b3', 3)] },
     });
     await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
+    unsubscribe();
   });
 });

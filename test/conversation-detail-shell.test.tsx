@@ -896,12 +896,79 @@ describe('Chat route intent', () => {
     if (state === 'cancelled') {
       expect(screen.getByText('Transcript A')).toBeTruthy();
       expect(screen.queryByText('Transcript B')).toBeNull();
-    } else {
-      await screen.findByText('Transcript B');
-      expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining({ turn: 'B-block' }));
     }
     expect(api.getConversationWindow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ block: 'foreign-block' }));
     expect(window.location.hash).toBe('#/issues?issue=another&block=foreign-block&context=issues-context');
+    if (state === 'pending') {
+      expect(api.getConversationWindow).not.toHaveBeenCalledWith('B', expect.anything());
+      window.history.replaceState(null, '', '#/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
+      mounted.rerender(scoped(true));
+      await screen.findByText('Transcript B');
+      expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining({ turn: 'B-block' }));
+    }
   });
 
+});
+
+describe('open transcript liveness follows the active view', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('fetches nothing while hidden and refetches once on activation, keeping scroll and rows', async () => {
+    const blocks = [
+      makeTranscriptBlock({ id: 'live-0', position: 0, content: 'Earlier turn' }),
+      makeTranscriptBlock({ id: 'live-1', position: 1, content: 'Latest turn' }),
+    ];
+    const live = mockConversationDetail(defaultControl, blocks);
+    vi.useFakeTimers();
+    const view = (active: boolean) => (
+      <AppShellProvider value={{
+        rightSidebar: null,
+        registerRightSidebar: () => () => undefined,
+        updateRightSidebar: () => undefined,
+        registerInitialRouteLoad: () => undefined,
+        setViewSidebarWidth: () => undefined,
+        active,
+      }}>
+        <ConversationsView
+          conversations={[live]}
+          consoleSessions={[]}
+          initialConversationId={live.id}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewConversation={() => undefined}
+        />
+      </AppShellProvider>
+    );
+    const mounted = render(view(true));
+    for (let step = 0; step < 10; step += 1) await act(() => vi.advanceTimersByTimeAsync(100));
+    const row = screen.getByText(/Earlier turn/);
+    const scroll = mounted.container.querySelector('.stream-renderer__scroll') as HTMLElement;
+    scroll.scrollTop = 700;
+    fireEvent.scroll(scroll);
+    const windowReads = () => vi.mocked(api.getConversationWindow).mock.calls.length;
+    const before = windowReads();
+
+    const grown = [
+      ...blocks,
+      makeTranscriptBlock({ id: 'live-2', position: 2, content: 'Hidden reply' }),
+      makeTranscriptBlock({ id: 'live-3', position: 3, content: 'Hidden follow-up' }),
+    ];
+    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload({ ...live, block_count: 4 }, grown));
+
+    mounted.rerender(view(false));
+    for (let second = 0; second < 600; second += 1) {
+      applyConversationSse(queryClient, 'conversation:updated', second % 2 === 0
+        ? { id: live.id, block_count: 4 }
+        : { id: live.id, block_count: 4, append: { from_position: 3, blocks: [grown[3]] } });
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+    }
+    expect(windowReads()).toBe(before);
+
+    mounted.rerender(view(true));
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(windowReads()).toBe(before + 1);
+    expect(screen.getByText(/Earlier turn/)).toBe(row);
+    expect(scroll.scrollTop).toBe(700);
+    expect(screen.getByText(/Hidden follow-up/)).toBeTruthy();
+  });
 });
