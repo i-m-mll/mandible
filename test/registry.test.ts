@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import {
@@ -9,7 +11,9 @@ import {
   readPidStartTime,
 } from "../src/registry.js";
 import { migrate } from "../src/db.js";
+import { ReaperTimer } from "../src/session-reaper.js";
 import type { Session } from "../src/types.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
 type SqliteDb = InstanceType<typeof SqliteDatabase>;
@@ -136,5 +140,103 @@ describe("session registry", () => {
     } while (cursor);
     expect(seen.sort()).toEqual(["page-0", "page-1", "page-2", "page-3", "page-4"]);
     expect(registry.listSessionsPage({ scope: "all" })).toMatchObject({ total: 6, nextCursor: null, limit: null });
+  });
+});
+
+/** Run `body` with a `ps` first on PATH that runs `script` (sh) before or instead of the real one. */
+async function withPs<T>(name: string, script: string, body: () => Promise<T>): Promise<T> {
+  const dir = path.join(testRuntimeRoot, `ps-${name}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const realPath = process.env.PATH ?? "";
+  fs.writeFileSync(path.join(dir, "ps"), `#!/bin/sh\nPATH='${realPath}'\n${script}\n`, { mode: 0o755 });
+  process.env.PATH = `${dir}:${realPath}`;
+  try {
+    return await body();
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
+
+/** A running child with its recorded start time. */
+async function liveProcess(): Promise<{ pid: number; pidStart: string; stop: () => Promise<unknown> }> {
+  const child = spawn("sleep", ["30"]);
+  const pid = child.pid ?? 0;
+  const pidStart = await waitUntil(() => readPidStartTime(pid), "the child's start time");
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  return { pid, pidStart, stop: () => (child.kill(), exited) };
+}
+
+/** Registration judges liveness itself, so a session goes stale only after it is registered live. */
+function registerLive(db: SqliteDb, registry: SessionRegistry, id: string, process: { pid: number; pidStart: string }): void {
+  registry.registerSession({ id, app: "claude", pid: process.pid, pid_start: process.pidStart, status: "active" });
+  expect(registry.getSession(id)?.status).toBe("active");
+}
+
+function reusePid(db: SqliteDb, id: string): void {
+  db.prepare("UPDATE sessions SET pid_start = ? WHERE id = ?").run("1970-01-01T00:00:00.000Z", id);
+}
+
+describe("session reaper", () => {
+  it("keeps the event loop free while ps is slow, and ends only sessions whose process is gone or reused", async () => {
+    const db = new SqliteDatabase(":memory:");
+    db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
+    const registry = new SessionRegistry(db);
+    const live = await liveProcess();
+    const reused = await liveProcess();
+    const gone = await liveProcess();
+    try {
+      registerLive(db, registry, "live", live);
+      registerLive(db, registry, "reused", reused);
+      registerLive(db, registry, "gone", gone);
+      reusePid(db, "reused");
+      await gone.stop();
+
+      const { maxGapMs, tickMs } = await withPs("slow", 'sleep 0.3\nexec ps "$@"', async () => {
+        let maxGapMs = 0;
+        let last = performance.now();
+        let probed = () => {};
+        const probe = setInterval(() => {
+          const now = performance.now();
+          maxGapMs = Math.max(maxGapMs, now - last);
+          last = now;
+          probed();
+        }, 2);
+        const started = performance.now();
+        try {
+          await new ReaperTimer(registry, () => undefined).tick();
+          const tickMs = performance.now() - started;
+          await new Promise<void>((resolve) => { probed = resolve; });
+          return { maxGapMs, tickMs };
+        } finally {
+          clearInterval(probe);
+        }
+      });
+
+      expect(tickMs).toBeGreaterThanOrEqual(300);
+      expect(maxGapMs).toBeLessThan(50);
+      const status = (id: string) => (db.prepare("SELECT status FROM sessions WHERE id = ?").get(id) as { status: string }).status;
+      expect({ live: status("live"), reused: status("reused"), gone: status("gone") })
+        .toEqual({ live: "active", reused: "dead", gone: "dead" });
+    } finally {
+      await Promise.all([live.stop(), reused.stop()]);
+      db.close();
+    }
+  });
+
+  it("ends no session for want of a start time when ps cannot answer", async () => {
+    const db = new SqliteDatabase(":memory:");
+    db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
+    const registry = new SessionRegistry(db);
+    const live = await liveProcess();
+    try {
+      registerLive(db, registry, "reused", live);
+      reusePid(db, "reused");
+      const reaped = await withPs("broken", "echo 'ps: unavailable' >&2\nexit 2", () => registry.reapDead());
+      expect(reaped).toEqual([]);
+      expect((await registry.reapDead()).map((session) => session.id)).toEqual(["reused"]);
+    } finally {
+      await live.stop();
+      db.close();
+    }
   });
 });

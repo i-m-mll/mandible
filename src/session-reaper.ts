@@ -6,6 +6,7 @@ import type { Logger } from "./types.js";
 /** Periodically ends registered sessions whose processes are gone. */
 export class ReaperTimer {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
   private totalReaped = 0;
   private totalRuns = 0;
 
@@ -19,21 +20,32 @@ export class ReaperTimer {
   start(): void {
     if (this.timer) return;
     this.log("info", "reaper_timer_started", { interval_ms: this.intervalMs });
-    this.timer = setInterval(() => this.tick(), this.intervalMs);
+    this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
   }
 
-  stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-    this.log("info", "reaper_timer_stopped");
+  /** Stop the timer; the returned promise settles when any running reap has finished. */
+  stop(): Promise<void> {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.log("info", "reaper_timer_stopped");
+    }
+    return this.inFlight ?? Promise.resolve();
   }
 
-  private tick(): void {
+  /** Reap once; a tick that arrives while one is running joins it. */
+  tick(): Promise<void> {
+    this.inFlight ??= this.reap().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async reap(): Promise<void> {
     const start = Date.now();
     try {
-      const reaped = this.registry.reapDead().length;
+      const reaped = (await this.registry.reapDead()).length;
       const duration = Date.now() - start;
       this.totalReaped += reaped;
       this.totalRuns++;
