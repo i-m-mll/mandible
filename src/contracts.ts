@@ -218,6 +218,7 @@ export type AuthRequestStatus =
   | "superseded"
   | "expired"
   | "completed"
+  | "failed"
   | "dismissed";
 
 export type AuthRequestOutcome =
@@ -256,24 +257,12 @@ export function isAuthDependencyReady(
 }
 
 /**
- * Bug 93c57c4 — derive the terminal outcome from lifecycle status plus exit
- * code at read time. `status` is the lifecycle; `outcome` is the result.
- *
- * This lived as two byte-equivalent private copies, in `auth-queue.ts` (which
- * fills the `auth:resolved` SSE payload agents wait on) and `routes/inbox.ts`
- * (which fills the session inbox). Both ended in a silent `default: return
- * null`, and `null` means "still in lifecycle" — so a new terminal
- * `AuthRequestStatus` would have made a finished request report as in-flight
- * forever, through both surfaces, with no compile error in either. Verified:
- * adding a status variant produced zero `tsc` errors repo-wide.
- *
- * One definition, and the `default` now binds `status` to `never`, so the next
- * variant is a compile error here instead of a hang there.
+ * Bug 93c57c4 — the terminal outcome of a lifecycle status. `status` is the
+ * lifecycle; `outcome` is the result. The `default` binds `status` to `never`,
+ * so a new terminal status is a compile error here rather than a request that
+ * reports as in-flight forever.
  */
-export function computeAuthRequestOutcome(
-  status: AuthRequestStatus,
-  exitCode: number | null,
-): AuthRequestOutcome {
+export function computeAuthRequestOutcome(status: AuthRequestStatus): AuthRequestOutcome {
   switch (status) {
     case "rejected":
       return "rejected";
@@ -288,11 +277,12 @@ export function computeAuthRequestOutcome(
     case "needs_rebase":
       return "needs_rebase";
     case "completed":
-      return exitCode === 0 ? "succeeded" : "failed";
+      return "succeeded";
+    case "failed":
+      return "failed";
     case "pending":
     case "executing":
     case "approved":
-      // Genuinely still in lifecycle — the one honest `null`.
       return null;
     default: {
       const _never: never = status;
@@ -300,6 +290,48 @@ export function computeAuthRequestOutcome(
       return null;
     }
   }
+}
+
+/** Issue cc8fe29 — one execution of an auth request, read from its lifecycle revisions. */
+export interface AuthExecutionAttempt {
+  revision: number;
+  occurred_at: number;
+  result: "succeeded" | "failed";
+  exit_code: number | null;
+  failure_reason: string | null;
+}
+
+/** Issue cc8fe29 — an execution that exits non-zero failed; only exit 0 completes. */
+export function authExecutionStatus(exitCode: number): "completed" | "failed" {
+  return exitCode === 0 ? "completed" : "failed";
+}
+
+const ANSI_ESCAPE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const BOX_DRAWING_ONLY = /^[\s\u2500-\u257f]*$/;
+
+/**
+ * Issue cc8fe29 — one line saying why an execution failed, read from its
+ * recorded error text (or output when no error was recorded). Signing failures
+ * name the cause, and the ref outcome is stated only when the executor said so.
+ */
+export function describeAuthExecutionFailure(text: string | null, exitCode: number | null): string {
+  const plain = (text ?? "").replace(ANSI_ESCAPE, "");
+  const unchanged = /no ref or worktree was changed/i.test(plain) ? "; no ref changed" : "";
+  if (/signed commit creation failed|couldn't sign message|signing .* failed|failed to sign/i.test(plain)) {
+    const cause = /confirm user presence/i.test(plain)
+      ? "user presence not confirmed"
+      : /no such identity|no signing key|key not found|agent refused/i.test(plain)
+        ? "signing key unavailable"
+        : null;
+    return `signing failed${cause ? `: ${cause}` : ""}${unchanged}`;
+  }
+  const lines = plain.split("\n").map((line) => line.replace(/[\u2500-\u257f]/g, "").trim())
+    .filter((line) => line.length > 0 && !BOX_DRAWING_ONLY.test(line));
+  const last = lines.at(-1);
+  const exit = exitCode == null ? "execution failed" : `exited ${exitCode}`;
+  if (!last) return `${exit}; no output recorded`;
+  const summary = last.length > 200 ? `${last.slice(0, 199)}…` : last.replace(/[.;:,]+$/, "");
+  return /no ref or worktree was changed/i.test(last) ? `${exit}: ${summary}` : `${exit}: ${summary}${unchanged}`;
 }
 
 export type AuthExecutionMode = "daemon" | "remote";

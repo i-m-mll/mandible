@@ -18,6 +18,15 @@ if [[ "$json" == 1 ]]; then
 fi
 printf '%s\n' "$response" | jq -r '
   "\(.id[0:8]) [\(.status)] \(.title)",
+  (if .status == "failed" then
+    "  failed: \(.failure_reason)",
+    "  retry: open the request in the Mandible app and choose Retry; it returns to pending for a new approval"
+  else empty end),
+  ((.execution_attempts // []) as $runs |
+    if ($runs | length) > 1 or any($runs[]; .result == "failed") then
+      "  executions:",
+      ($runs[] | "    revision \(.revision) \(.occurred_at / 1000 | floor | strflocaltime("%Y-%m-%d %H:%M:%S")) \(.result)\(if .exit_code != null then " (exit \(.exit_code))" else "" end)\(if .failure_reason then ": \(.failure_reason)" else "" end)")
+    else empty end),
   (if .base_branch then "  \(.repo // "?"): \(.head_branch // "?") -> \(.base_branch)" else empty end),
   (if .merge_preflight_base_sha then "  reviewed base \(.merge_preflight_base_sha[0:10])" else empty end),
   (.base_audit as $a |

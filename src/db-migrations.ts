@@ -11,6 +11,7 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
   SESSION_EXECUTION_SCHEMA_SQL,
@@ -2134,6 +2135,43 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 209, name: "durable_chat_identity_aliases", statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
   { version: 210, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
   { version: 211, name: "conversation_sidebar_indexes", statements: [...CONVERSATION_SIDEBAR_INDEX_SQL] },
+  // Issue cc8fe29 — a failed execution is its own lifecycle state. The
+  // lifecycle table is rebuilt to admit `failed` revisions, copying every
+  // immutable revision verbatim. A request recorded as `completed` with a
+  // non-zero exit becomes `failed` through one appended revision whose snapshot
+  // is the prior snapshot with only its status changed, so the request's
+  // lifecycle digest still matches its row.
+  { version: 212, name: "auth_failed_execution_state", statements: [
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v210",
+    ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+    "INSERT INTO auth_request_lifecycle_events SELECT * FROM auth_request_lifecycle_events_v210",
+    "DROP TABLE auth_request_lifecycle_events_v210",
+    `WITH reclassified AS (
+       SELECT ar.id, ar.exit_code, ar.custody_work_unit_id, wu.custody_generation,
+         json_set(latest.snapshot_json, '$.request.status', 'failed') AS snapshot_json,
+         latest.revision + 1 AS revision
+       FROM auth_requests ar
+       JOIN auth_request_lifecycle_events latest ON latest.auth_request_id = ar.id
+         AND latest.revision = (SELECT MAX(revision) FROM auth_request_lifecycle_events WHERE auth_request_id = ar.id)
+       LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
+       WHERE ar.status = 'completed' AND ar.exit_code IS NOT NULL AND ar.exit_code != 0
+     )
+     INSERT INTO auth_request_lifecycle_events (
+       id, auth_request_id, revision, event_type, prior_status, next_status,
+       snapshot_json, snapshot_sha256, reason, custody_work_unit_id, custody_generation,
+       authority_path, occurred_at
+     )
+     SELECT lower(hex(randomblob(16))), id, revision, 'revised', 'completed', 'failed',
+       snapshot_json, mandible_sha256(snapshot_json),
+       'Reclassified as failed: the recorded execution exited ' || exit_code || ' and did not complete.',
+       custody_work_unit_id, CASE WHEN custody_work_unit_id IS NULL THEN NULL ELSE custody_generation END,
+       'legacy', CAST(unixepoch('subsec') * 1000 AS INTEGER)
+     FROM reclassified`,
+    "UPDATE auth_requests SET status = 'failed' WHERE status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0",
+  ] },
 ];
 
 /**

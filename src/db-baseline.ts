@@ -25,7 +25,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 211;
+export const BASELINE_SCHEMA_VERSION = 212;
 
 // Issue effe9ef — the Chat sidebar scans every top-level conversation on each
 // request. The partial index covers every column that scan reads, so it never
@@ -37,6 +37,37 @@ export const CONVERSATION_SIDEBAR_INDEX_SQL: readonly string[] = [
     ON conversations(started_at, id, source, starred, block_count, project_path, cwd, source_path, title)
     WHERE parent_conversation_id IS NULL`,
   "CREATE INDEX idx_conversation_identity_aliases_canonical ON conversation_identity_aliases(canonical_id, alias_id)",
+];
+
+// Issue cc8fe29 — immutable auth request lifecycle revisions. `failed` records
+// an execution that exited non-zero. Shared by the fresh baseline and v212.
+export const AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE auth_request_lifecycle_events (
+        id TEXT PRIMARY KEY,
+        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        event_type TEXT NOT NULL CHECK(event_type IN ('legacy_snapshot','submitted','revised','approved','executing','rejected','withdrawn','superseded','needs_rebase','expired','completed','failed')),
+        prior_status TEXT,
+        next_status TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+        snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256) = 64 AND snapshot_sha256 NOT GLOB '*[^0-9a-f]*'),
+        prior_snapshot_json TEXT CHECK(prior_snapshot_json IS NULL OR json_valid(prior_snapshot_json)),
+        prior_snapshot_sha256 TEXT CHECK(prior_snapshot_sha256 IS NULL OR length(prior_snapshot_sha256) = 64),
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT,
+        evidence_id TEXT,
+        credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        reason TEXT,
+        related_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT,
+        custody_generation INTEGER,
+        authority_path TEXT CHECK(authority_path IN ('custodian','operator_recovery','system','legacy')),
+        occurred_at INTEGER NOT NULL,
+        UNIQUE(auth_request_id, revision)
+      )`,
+  "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
+  "CREATE TRIGGER auth_request_lifecycle_events_immutable_update BEFORE UPDATE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
+  "CREATE TRIGGER auth_request_lifecycle_events_immutable_delete BEFORE DELETE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
 ];
 
 // Issue 23f8142 — the parent session a conversation's provider declares, which
@@ -332,10 +363,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE auth_hook_executions (\n        id                TEXT PRIMARY KEY,\n        auth_request_id   TEXT NOT NULL,\n        hook_id           TEXT NOT NULL,\n        hook_label        TEXT NOT NULL DEFAULT '',\n        command           TEXT NOT NULL,\n        command_digest    TEXT NOT NULL CHECK(length(command_digest) = 64),\n        position          INTEGER NOT NULL DEFAULT 0,\n        required          INTEGER NOT NULL DEFAULT 1,\n        state             TEXT NOT NULL DEFAULT 'pending'\n                          CHECK(state IN ('pending','running','complete','failed')),\n        attempts          INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),\n        max_attempts      INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts >= 1),\n        exit_code         INTEGER,\n        output            TEXT NOT NULL DEFAULT '',\n        attempt_history   TEXT NOT NULL DEFAULT '[]',\n        started_at        INTEGER,\n        finished_at       INTEGER,\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(auth_request_id, hook_id)\n      )",
   "CREATE TABLE \"auth_request_actions\" (\n        id TEXT PRIMARY KEY,\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,\n        ordinal INTEGER NOT NULL,\n        kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add','briefing_group_promote')),\n        target_issue_ref TEXT NOT NULL,\n        payload TEXT NOT NULL,\n        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),\n        target_digest TEXT,\n        staged_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        applied_at INTEGER,\n        outcome_detail TEXT\n      )",
   "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, acknowledged_by TEXT, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_session_id TEXT, target_repo_root TEXT, delivered_at INTEGER, conversation_id TEXT, approval_source TEXT NOT NULL DEFAULT 'manual', approval_lease_id TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
-  "CREATE TABLE auth_request_lifecycle_events (\n        id TEXT PRIMARY KEY,\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,\n        revision INTEGER NOT NULL CHECK(revision >= 1),\n        event_type TEXT NOT NULL CHECK(event_type IN ('legacy_snapshot','submitted','revised','approved','executing','rejected','withdrawn','superseded','needs_rebase','expired','completed')),\n        prior_status TEXT,\n        next_status TEXT NOT NULL,\n        snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),\n        snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256) = 64 AND snapshot_sha256 NOT GLOB '*[^0-9a-f]*'),\n        prior_snapshot_json TEXT CHECK(prior_snapshot_json IS NULL OR json_valid(prior_snapshot_json)),\n        prior_snapshot_sha256 TEXT CHECK(prior_snapshot_sha256 IS NULL OR length(prior_snapshot_sha256) = 64),\n        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,\n        evidence_method TEXT,\n        evidence_id TEXT,\n        credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        reason TEXT,\n        related_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,\n        custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT,\n        custody_generation INTEGER,\n        authority_path TEXT CHECK(authority_path IN ('custodian','operator_recovery','system','legacy')),\n        occurred_at INTEGER NOT NULL,\n        UNIQUE(auth_request_id, revision)\n      )",
-  "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
-  "CREATE TRIGGER auth_request_lifecycle_events_immutable_update BEFORE UPDATE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
-  "CREATE TRIGGER auth_request_lifecycle_events_immutable_delete BEFORE DELETE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
+  ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   "CREATE TABLE auth_request_merge_succeeded_facts (\n        auth_request_id   TEXT PRIMARY KEY,\n        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        base_branch       TEXT NOT NULL,\n        completed_at      INTEGER NOT NULL,\n        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),\n        recorded_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE branches (\n  repo_root     TEXT NOT NULL,\n  branch        TEXT NOT NULL,\n  is_current    INTEGER NOT NULL DEFAULT 0,\n  is_worktree   INTEGER DEFAULT 0,\n  worktree_path TEXT,\n  is_dirty      INTEGER DEFAULT 0,\n  ahead         INTEGER DEFAULT 0,\n  behind        INTEGER DEFAULT 0,\n  last_commit_hash    TEXT,\n  last_commit_message TEXT,\n  last_commit_author  TEXT,\n  last_commit_date    TEXT,\n  diff_stat     TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '', worktree_inventory_known INTEGER NOT NULL DEFAULT 0, worktree_status_known INTEGER NOT NULL DEFAULT 0, default_comparison_known INTEGER NOT NULL DEFAULT 0, has_upstream INTEGER NOT NULL DEFAULT 0, upstream TEXT,\n  PRIMARY KEY (repo_root, branch)\n)",

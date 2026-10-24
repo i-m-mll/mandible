@@ -260,7 +260,7 @@ This asynchronous delivery model means the agent doesn't need to be running when
 
 ### Merge Conflict
 
-If the merge has conflicts, the command exits with a non-zero code. The request is marked as `completed` with a non-zero `exit_code`, and the error output shows the conflict details. If another approved merge invalidates a still-pending request before approval, Mandible moves that request to `needs_rebase` and delivers the result to the submitting session's inbox. The user or agent can:
+If the merge has conflicts, the command exits with a non-zero code. The request is marked `failed` with the non-zero `exit_code`, its `failure_reason` summarizes the cause, and the error output shows the conflict details. If another approved merge invalidates a still-pending request before approval, Mandible moves that request to `needs_rebase` and delivers the result to the submitting session's inbox. The user or agent can:
 - Have the agent resolve conflicts on the feature branch.
 - Retry the request after resolution.
 

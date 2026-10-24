@@ -136,11 +136,9 @@ interface AuthResultRow {
   delivered_at: number | null;
 }
 
-// Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
-// The mapping is canonical in contracts.ts; this file used to hold a second
-// copy that would have had to be edited in lockstep with the auth-queue one.
+// Bug: 93c57c4 — the status-to-outcome mapping is canonical in contracts.ts.
 function computeOutcome(row: AuthResultRow): AuthRequestOutcome {
-  return computeAuthRequestOutcome(row.status, row.exit_code);
+  return computeAuthRequestOutcome(row.status);
 }
 
 // Bug: 4e32923 — auth_result tier classification used for scoped inbox delivery.
@@ -154,7 +152,7 @@ const COLUMNS_AUTH_RESULT =
   "id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch, " +
   "post_merge_handoff, issue_references, issue_closures, issue_ids, target_session_id, target_repo_root, delivered_at";
 
-const RESOLVED_STATUSES = "('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')";
+const RESOLVED_STATUSES = "('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')";
 
 interface TierRow {
   row: AuthResultRow;
@@ -691,7 +689,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
+           AND status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId, conversationId];
     } else {
@@ -702,7 +700,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
+           AND status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId];
     }
@@ -781,7 +779,7 @@ export function registerInboxRoutes(
       "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
     ).run(ack.value);
     db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
+      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
     ).run(ack.value);
     db.prepare(
       `UPDATE managed_task_occurrences

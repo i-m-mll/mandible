@@ -93,7 +93,7 @@ describe("auth queue", () => {
     const events: SseEvent[] = [];
     const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
     try {
-      await waitUntil(async () => (await restarted.getRequest(request.id))?.status === "completed", "stale execution recovery");
+      await waitUntil(async () => (await restarted.getRequest(request.id))?.status === "failed", "stale execution recovery");
       const recovered = (await restarted.getRequest(request.id));
       expect(recovered?.exit_code).toBe(1);
       expect(recovered?.error).toContain("missing repository, base branch, or head branch metadata");
@@ -252,13 +252,13 @@ describe("auth queue", () => {
     });
     const failed = (await failing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "git merge --gpg-sign feature/x", title: "Merge feature/x" }));
     await approveFixtureRequest(failing, failed.id);
-    expect(await waitForStatus(failing, failed.id, "completed"))
+    expect(await waitForStatus(failing, failed.id, "failed"))
       .toMatchObject({ exit_code: 1, error: expect.stringContaining("fatal: merge failed") });
 
     const throwing = createQueue({ executor: async () => { throw new Error("Spawn failed: ENOENT"); } });
     const thrown = (await throwing.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "nonexistent-command", title: "Bad command" }));
     await approveFixtureRequest(throwing, thrown.id);
-    expect(await waitForStatus(throwing, thrown.id, "completed"))
+    expect(await waitForStatus(throwing, thrown.id, "failed"))
       .toMatchObject({ exit_code: 1, error: "Spawn failed: ENOENT" });
   });
 });

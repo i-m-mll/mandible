@@ -32,7 +32,7 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
-import { computeAuthRequestOutcome, isAuthDependencyReady } from "./contracts.js";
+import { authExecutionStatus, computeAuthRequestOutcome, describeAuthExecutionFailure, isAuthDependencyReady } from "./contracts.js";
 import { assertNever } from "./exhaustive.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
@@ -1297,7 +1297,7 @@ export class AuthQueue {
     const requeuedIds: string[] = [];
 
     const complete = this.db.prepare(
-      "UPDATE auth_requests SET status = 'completed', exit_code = ?, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
+      "UPDATE auth_requests SET status = ?, exit_code = ?, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
     );
     const requeue = this.db.prepare(
       `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
@@ -1307,10 +1307,11 @@ export class AuthQueue {
     );
     const completeRecovered = (request: AuthRequest, exitCode: number, error: string | null) => {
       this.db.transaction(() => {
-        complete.run(exitCode, now, now, error, request.id);
+        const status = authExecutionStatus(exitCode);
+        complete.run(status, exitCode, now, now, error, request.id);
         appendAuthLifecycleEvent(this.db, {
-          requestId: request.id, eventType: "completed", priorStatus: request.status,
-          nextStatus: "completed", actor: systemAction(), reason: error, occurredAt: now,
+          requestId: request.id, eventType: status, priorStatus: request.status,
+          nextStatus: status, actor: systemAction(), reason: error, occurredAt: now,
         });
       })();
     };
@@ -2806,12 +2807,10 @@ export class AuthQueue {
       };
     }
 
-    const outcome = computeAuthRequestOutcome(dependency.status, dependency.exit_code);
+    const outcome = computeAuthRequestOutcome(dependency.status);
     const state = dependency.status !== "completed"
       ? (outcome === null ? "pending" : "failed")
-      : dependency.exit_code !== 0
-        ? "failed"
-        : dependency.merge_finalized_at == null
+      : dependency.merge_finalized_at == null
           ? "unfinalized"
           : "ready";
     return {
@@ -3156,8 +3155,7 @@ export class AuthQueue {
       const rows = this.db
         .prepare(
           "SELECT * FROM auth_requests WHERE " +
-            "status IN ('pending', 'approved', 'executing', 'expired', 'needs_rebase') " +
-            "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0) " +
+            "status IN ('pending', 'approved', 'executing', 'expired', 'needs_rebase', 'failed') " +
             "OR (status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') AND resolved_at >= ?) " +
             "ORDER BY created_at ASC"
         )
@@ -3170,7 +3168,7 @@ export class AuthQueue {
   listHistory(limit = 50): AuthRequest[] {
     const rows = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
+        "SELECT * FROM auth_requests WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
       .all(limit) as Record<string, unknown>[];
@@ -3187,7 +3185,7 @@ export class AuthQueue {
     const rows = this.db
       .prepare(
         `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests ` +
-          "WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
+          "WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
       .all(limit) as Record<string, unknown>[];
@@ -3708,13 +3706,14 @@ export class AuthQueue {
       ? `Work-unit custody transferred to credential ${result.work_unit.owner_credential_id} at generation ${result.work_unit.custody_generation}.\n`
       : `${result.error}\n`;
     const error = result.ok ? null : result.error;
+    const status = authExecutionStatus(result.ok ? 0 : 1);
     this.db.transaction(() => {
       this.db.prepare(
-        "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, last_executed_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
-      ).run(now, now, now, result.ok ? 0 : 1, output, error, request.id);
+        "UPDATE auth_requests SET status = ?, resolved_at = ?, updated_at = ?, last_executed_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
+      ).run(status, now, now, now, result.ok ? 0 : 1, output, error, request.id);
       appendAuthLifecycleEvent(this.db, {
-        requestId: request.id, eventType: "completed", priorStatus: request.status,
-        nextStatus: "completed", actor: systemAction(), reason: error, occurredAt: now,
+        requestId: request.id, eventType: status, priorStatus: request.status,
+        nextStatus: status, actor: systemAction(), reason: error, occurredAt: now,
       });
     })();
     const completed = this.requireRequest(request.id);
@@ -5232,18 +5231,19 @@ export class AuthQueue {
       const commitEvidence = exitCode === 0 ? await this.prepareSuccessfulSignatureEvidence({ ...request, output }) : (stored: AuthRequest) => stored;
       this.assertObservation(request.id, observed);
       const completed = this.db.transaction(() => {
+        const status = authExecutionStatus(exitCode);
         this.writeResolvedRequest(
           request,
-          "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
-          [now, now, exitCode, output, error ?? null]
+          "UPDATE auth_requests SET status = ?, resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
+          [status, now, now, exitCode, output, error ?? null]
         );
         const stored = this.requireRequest(request.id);
         const evidenced = exitCode === 0 ? commitEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
         appendAuthLifecycleEvent(this.db, {
           requestId: request.id,
-          eventType: "completed",
+          eventType: status,
           priorStatus: request.status,
-          nextStatus: "completed",
+          nextStatus: status,
           actor: evidenced.execution_evidence_id
             ? { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id }
             : systemAction(),
@@ -6103,18 +6103,19 @@ export class AuthQueue {
       const commitEvidence = exitCode === 0 ? await this.prepareSuccessfulSignatureEvidence(prior) : (stored: AuthRequest) => stored;
       this.assertObservation(prior.id, observed);
       const completed = this.db.transaction(() => {
+        const status = authExecutionStatus(exitCode);
         this.db
           .prepare(
-            "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?"
+            "UPDATE auth_requests SET status = ?, resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?"
           )
-          .run(now, now, exitCode, errorText, id);
+          .run(status, now, now, exitCode, errorText, id);
         const stored = this.requireRequest(id);
         const evidenced = exitCode === 0 ? commitEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
         appendAuthLifecycleEvent(this.db, {
           requestId: id,
-          eventType: "completed",
+          eventType: status,
           priorStatus: prior.status,
-          nextStatus: "completed",
+          nextStatus: status,
           actor: evidenced.execution_evidence_id
             ? { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id }
             : systemAction(),
@@ -7274,7 +7275,7 @@ export class AuthQueue {
 
     const now = this.now();
     // Find sibling requests targeting the same branch merge that are still
-    // actionable (pending, expired, or failed-completed). Approved requests are
+    // actionable (pending, expired, or failed). Approved requests are
     // excluded — they may already be executing and need separate handling.
     const args: unknown[] = [
       completed.id,
@@ -7287,8 +7288,7 @@ export class AuthQueue {
     // fallback in repoRefsMatch.
     const where =
       "id != ? AND base_branch = ? AND head_branch = ? " +
-      "AND (status IN ('pending', 'expired') " +
-      "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0))";
+      "AND status IN ('pending', 'expired', 'failed')";
 
     const completedRepo = completed.repo ?? null;
     const completedObservation = this.observationToken(completed.id, completed);
@@ -8059,7 +8059,7 @@ export class AuthQueue {
   // The mapping itself is canonical in contracts.ts — routes/inbox.ts derives the
   // same fact and previously carried its own copy.
   private computeOutcome(request: AuthRequest): AuthRequestOutcome {
-    return computeAuthRequestOutcome(request.status, request.exit_code);
+    return computeAuthRequestOutcome(request.status);
   }
 
   private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
@@ -8068,7 +8068,7 @@ export class AuthQueue {
     // `error` field carries the stored error message (which now includes the
     // tail output for daemon-executed requests). `error_output` is a separate
     // field with the raw tail in case consumers want the unprocessed output.
-    const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+    const errorOutput = (request.status === "failed" && request.output)
       ? tailLines(request.output, 20)
       : null;
 
@@ -8078,6 +8078,7 @@ export class AuthQueue {
       status: request.status,
       outcome: this.computeOutcome(request),
       exit_code: request.exit_code,
+      failure_reason: request.failure_reason ?? null,
       error: request.error,
       error_output: errorOutput,
       resolved_at: request.resolved_at,
@@ -8143,13 +8144,7 @@ export class AuthQueue {
   }
 
   private isFailedLike(request: AuthRequest): boolean {
-    if (request.status === "expired" || request.status === "needs_rebase") {
-      return true;
-    }
-    if (request.status !== "completed") {
-      return false;
-    }
-    return request.exit_code != null && request.exit_code !== 0;
+    return request.status === "failed" || request.status === "expired" || request.status === "needs_rebase";
   }
 
   private requireActionEditableRequest(id: string): AuthRequest {
@@ -8431,6 +8426,12 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
         ? (row.execution_mode as "remote" | "daemon")
         : "daemon",
     status: row.status as AuthRequestStatus,
+    failure_reason: row.status === "failed"
+      ? describeAuthExecutionFailure(
+        row.error == null ? (row.output == null ? null : String(row.output)) : String(row.error),
+        row.exit_code == null ? null : Number(row.exit_code),
+      )
+      : null,
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
     last_executed_at: row.last_executed_at == null ? null : Number(row.last_executed_at),

@@ -179,7 +179,7 @@ describe("auth request short ids", () => {
     expect(column(database, skipped.id, "skipped_at")).not.toBeNull();
 
     for (const action of ["retry", "requeue"]) {
-      const failed = (await submit(action, "completed"));
+      const failed = (await submit(action, "failed"));
       expect((await post(failed.id, action)).status).toBe(200);
       expect(column(database, failed.id, "status")).toBe("pending");
     }

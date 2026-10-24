@@ -561,7 +561,7 @@ describe("auth queue", () => {
 
       // Approval of a re-pinned sibling takes the exact-candidate fast path.
       await approveFixtureRequest(queue, other.id);
-      await waitForStatus(queue, other.id, "completed");
+      await waitForStatus(queue, other.id, "failed");
       expect(envs.at(-1)).toMatchObject({
         MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
         MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: newBase,
@@ -600,7 +600,7 @@ describe("auth queue", () => {
       void (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
       expect((await queue.getRequest(pending.id))?.merge_preflight_base_sha).toBe(staleBase);
       await expect(approveFixtureRequest(queue, pending.id)).rejects.toThrow(/Refusal: execution_chain_busy/);
-      releaseExec(); await waitForStatus(queue, execRequest.id, 'completed'); await queue.drainFinalizers();
+      releaseExec(); await waitForStatus(queue, execRequest.id, 'failed'); await queue.drainFinalizers();
       expect((await queue.getRequest(pending.id))).toMatchObject({ status: 'pending', merge_preflight_base_sha: git(repo, ['rev-parse', 'main']) });
       expect((await queue.getRequest(pending.id))?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
     } finally { releaseExec?.(); (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }

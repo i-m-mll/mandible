@@ -296,6 +296,8 @@ export interface AuthRequest {
   dependency?: AuthDependencyProjection | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
+  /** Issue cc8fe29 — why a `failed` execution failed, derived from its recorded error. */
+  failure_reason?: string | null;
   created_at: number;
   updated_at: number;
   last_executed_at: number | null;
@@ -326,7 +328,7 @@ export interface AuthRequest {
 
 export type AuthRequestLifecycleEventType =
   | "legacy_snapshot" | "submitted" | "revised" | "approved" | "executing"
-  | "rejected" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed";
+  | "rejected" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed" | "failed";
 
 export interface AuthLifecycleActor {
   user_id: string;
