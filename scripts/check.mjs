@@ -91,6 +91,17 @@ const checks = {
     return sites.length === 1 ? [] : [`chokidar.watch( appears ${sites.length} times (${sites.join(', ') || 'nowhere'}); expected once, in src/ingestion.ts`];
   },
 
+  // The daemon rotates its stderr log by copying and truncating it. A child
+  // that inherits that stderr can append between the rotation's final size
+  // check and its truncate, and those bytes reach neither the rotated segment
+  // nor the live log (docs/runtime-handoff.md). Children pipe stderr and the
+  // daemon logs it, so the rotating thread is the file's only writer.
+  'daemon children never inherit its stderr'() {
+    const signs = /['"]inherit['"]|stdio:[^\n]*process\.std(?:out|err)|stdio:\s*\[[^\]\n]*\b[12]\s*[,\]]|\bfork\(|\bBun\.spawn(?:Sync)?\(/;
+    return walk('src', (file) => /\.tsx?$/.test(file)).flatMap((file) => read(file).split('\n').flatMap((line, index) =>
+      signs.test(line) ? [`${file}:${index + 1}: a daemon child shares the daemon's stderr; pipe it and log its lines`] : []));
+  },
+
   // Chrome under a test HOME without --use-mock-keychain raises a modal
   // "Keychain not found" dialog on the operator's screen per launch, so every
   // launch in tests and scripts goes through the one launcher that passes it.
