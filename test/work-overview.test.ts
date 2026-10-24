@@ -9,6 +9,7 @@ vi.mock("../src/sse", () => ({
 }));
 
 import { WorkScanner } from "../src/work-scanner";
+import { DOMAIN_EVENTS, parseDomainEvent, type SseEvent } from "../src/contracts";
 import { registerWorkRoutes } from "../src/routes/work";
 import type { Db } from "../src/db";
 import { Router } from "../src/server";
@@ -353,10 +354,21 @@ describe.sequential("WorkScanner", () => {
       expect(branchNames()).toEqual(["main", "renamed"]);
 
       await scanner.stop();
-      scanner = new WorkScanner({ db, repo_roots: [isolatedRepo], scan_skip_window_ms: 0 });
+      const events: SseEvent[] = [];
+      scanner = new WorkScanner({ db, repo_roots: [isolatedRepo], scan_skip_window_ms: 0, on_event: (event) => { events.push(event); } });
       run("git branch stale-window", isolatedRepo);
       await scanner.getRepoScan(isolatedRepo, { refresh: false });
       expect(branchNames()).toEqual(["main", "renamed", "stale-window"]);
+
+      events.length = 0;
+      run("git branch -D stale-window", isolatedRepo);
+      await scanner.getRepoScan(isolatedRepo, { refresh: true });
+      expect(branchNames()).toEqual(["main", "renamed"]);
+      const repoScans = events.filter((event) => event.type === DOMAIN_EVENTS.WORK_REPO_SCANNED);
+      expect(repoScans.map((event) => event.data)).toEqual([
+        { repo_id: expect.any(String), branches_updated: 0, branches_removed: 1 },
+      ]);
+      expect(parseDomainEvent({ type: repoScans[0]!.type, data: repoScans[0]!.data }).ok).toBe(true);
     } finally {
       await scanner.stop();
     }
