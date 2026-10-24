@@ -8,9 +8,11 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeLogStartupOffset, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
+import { rotateStderrLogSegments } from '../src/daemon-log.ts';
+import { resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 const roots: string[] = [];
@@ -132,7 +134,7 @@ it('classifies only timed pre-observation health logs as historical', () => {
   expect(assessRuntimeLogs(`${JSON.stringify({ level: 'warn', message: 'daemon_memory_warning' })}\n`, { historicalBefore: cutoff }).failures[0]).toContain('Untimed');
 });
 
-it('runs real recovery observation through complete log and journal evidence', async () => {
+function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number) => string[]) {
   const { home, dir, binding } = fixture();
   const repo = createAuthCheckRepo(); roots.push(repo);
   const nativeApp = path.join(home, 'Mandible.app');
@@ -149,10 +151,7 @@ it('runs real recovery observation through complete log and journal evidence', a
   const processStartedAt = execFileSync('/bin/ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
   const fakeStart = Date.now();
   const log = path.join(home, 'daemon.log');
-  fs.writeFileSync(log, [
-    JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() }),
-    JSON.stringify({ level: 'warn', message: 'daemon_event_loop_lag', time: new Date(fakeStart - 1000).toISOString(), p95_ms: 199.4, max_ms: 3841.2 }),
-  ].join('\n') + '\n');
+  fs.writeFileSync(log, logLines(processStartedAt, fakeStart).join('\n') + '\n');
   const completedBinding = { ...binding, root: repo, nativeApp, mergeCommit: git(repo, ['rev-parse', 'HEAD']) };
   const failed = { schema: 'mandible-runtime-handoff@1', binding: completedBinding, bindingDigest: bindingDigest(completedBinding), phase: 'failed', attempts: 1, error: 'Candidate runtime changed or became unhealthy.', updatedAt: fakeStart - 500, database: path.join(home, 'mandible.db') };
   fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(failed));
@@ -162,6 +161,16 @@ it('runs real recovery observation through complete log and journal evidence', a
     const stat = fs.statSync(log);
     return { process: { pid: process.pid, startedAt: processStartedAt, startupEpoch: 'epoch' }, backend: { file: backend }, gateway: { file: gateway }, daemonLog: { path: log, dev: stat.dev, ino: stat.ino, size: stat.size }, health: { instance: { db_path: failed.database }, ...sample } };
   };
+  return { home, binding, executable, processStartedAt, fakeStart, log, failed, evidence };
+}
+
+const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
+
+it('runs real recovery observation through complete log and journal evidence', async () => {
+  const { home, binding, executable, fakeStart, log, failed, evidence } = recoveryFixture((processStartedAt, fakeStart) => [
+    startupLine(processStartedAt),
+    JSON.stringify({ level: 'warn', message: 'daemon_event_loop_lag', time: new Date(fakeStart - 1000).toISOString(), p95_ms: 199.4, max_ms: 3841.2 }),
+  ]);
   let time = fakeStart;
   let probes = 0;
   await expect(observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
@@ -280,32 +289,102 @@ request.on('error', error => { console.error(error.message); process.exitCode = 
   }
 });
 
-it('requires the current process startup boundary and refuses rotated or truncated log coverage', () => {
+const rotate = (log: string) => rotateStderrLogSegments({ filePath: log, maxBytes: 1, keepSegments: 3 });
+const info = (message: string, time: number) => JSON.stringify({ level: 'info', message, time: new Date(time).toISOString() }) + '\n';
+const freshProbe = (evidence: (sample: ReturnType<typeof diagnostics>) => unknown, fakeStart: number, onProbe: (probe: number) => void = () => {}) => {
+  let probes = 0;
+  return async () => {
+    onProbe(++probes);
+    return probes === 1 ? evidence(diagnostics(1, fakeStart - 30, fakeStart - 10)) : evidence(diagnostics(2, fakeStart - 10, fakeStart + 10));
+  };
+};
+
+it('recovers a live generation whose startup has rotated out of the current log', async () => {
+  const { fakeStart, log, failed, evidence } = recoveryFixture((processStartedAt, fakeStart) => [
+    startupLine(processStartedAt),
+    JSON.stringify({ level: 'warn', message: 'daemon_event_loop_lag', time: new Date(fakeStart - 5000).toISOString(), p95_ms: 199.4, max_ms: 3841.2 }),
+  ]);
+  rotate(log);
+  fs.appendFileSync(log, info('between_rotations', fakeStart - 4000));
+  rotate(log);
+  fs.appendFileSync(log, info('after_rotation', fakeStart - 3000));
+  const covered = [`${log}.2`, `${log}.1`, log].reduce((total, file) => total + fs.statSync(file).size, 0);
+  let time = fakeStart;
+  const recovered = await observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
+    observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+    probe: freshProbe(evidence, fakeStart),
+  });
+  expect(recovered.recovery.receipt).toMatchObject({
+    daemonLogOffset: 0,
+    daemonLogBytes: covered,
+    daemonLogSegments: [{ path: `${log}.2` }, { path: `${log}.1` }],
+    historicalDiagnostics: { logEvents: { retained: [{ event: 'daemon_event_loop_lag' }] } },
+  });
+});
+
+it('still assesses every rotated segment back to startup', async () => {
+  const { fakeStart, log, failed, evidence } = recoveryFixture(processStartedAt => [startupLine(processStartedAt)]);
+  fs.appendFileSync(log, JSON.stringify({ level: 'error', message: 'ingestion_worker_error', time: new Date(fakeStart - 5000).toISOString() }) + '\n');
+  rotate(log);
+  fs.appendFileSync(log, info('after_rotation', fakeStart - 3000));
+  let time = fakeStart;
+  await expect(observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
+    observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+    probe: freshProbe(evidence, fakeStart),
+  })).rejects.toMatchObject({ code: 'log_assessment_failed', evidence: { failures: [expect.stringContaining('ingestion_worker_error')] } });
+});
+
+it('refuses a rotation during observation, even one the samples do not see', async () => {
+  const filler = (fakeStart: number) => Array.from({ length: 20 }, (_, index) => info(`filler_${index}`, fakeStart - 2000).trimEnd());
+  for (const regrow of [false, true]) {
+    const { fakeStart, log, failed, evidence } = recoveryFixture((processStartedAt, fakeStart) => [startupLine(processStartedAt), ...filler(fakeStart)]);
+    const before = fs.statSync(log).size;
+    let time = fakeStart;
+    await expect(observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
+      observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+      probe: freshProbe(evidence, fakeStart, probe => {
+        if (probe !== 2) return;
+        rotate(log);
+        while (regrow && fs.statSync(log).size <= before) fs.appendFileSync(log, info('regrown', fakeStart));
+      }),
+    })).rejects.toMatchObject({ code: 'log_changed', message: regrow ? 'Daemon log rotated or truncated during observation.' : 'Candidate runtime log rotated or truncated during observation.' });
+  }
+});
+
+it('requires an unbroken, retained rotation chain to the current startup', async () => {
   const { home } = fixture();
-  const file = path.join(home, 'daemon.log');
+  const log = path.join(home, 'daemon.log');
+  const startedAt = '2026-10-24T01:00:00Z';
+  const live = () => { const stat = fs.statSync(log); return { path: log, dev: stat.dev, ino: stat.ino, size: stat.size }; };
   const stale = JSON.stringify({ message: 'server_started', time: '2020-01-01T00:00:00Z' }) + '\n';
-  const startup = JSON.stringify({ message: 'server_started', time: '2026-10-05T19:55:06Z' }) + '\n';
-  fs.writeFileSync(file, stale + startup + JSON.stringify({ message: 'healthy' }) + '\n');
-  const stat = fs.statSync(file);
-  const provenance = { path: file, dev: stat.dev, ino: stat.ino, size: stat.size };
-  expect(runtimeLogStartupOffset(provenance, { startedAt: '2026-10-05T19:55:06Z' })).toBe(Buffer.byteLength(stale));
-  expect(() => runtimeLogStartupOffset(provenance, { startedAt: '2026-10-06T00:00:00Z' })).toThrow('current process');
-  fs.truncateSync(file, 0);
-  expect(() => runtimeLogStartupOffset(provenance, { startedAt: '2026-10-05T19:55:06Z' })).toThrow('truncated');
+  const startup = JSON.stringify({ message: 'server_started', time: '2026-10-24T01:00:01Z' }) + '\n';
+  fs.writeFileSync(log, stale + startup + info('healthy', Date.parse(startedAt)));
+  await expect(resolveStderrLogCoverage(live(), startedAt)).resolves.toMatchObject({ segments: [], offset: Buffer.byteLength(stale) });
+  await expect(resolveStderrLogCoverage(live(), '2026-10-25T00:00:00Z')).rejects.toMatchObject({ code: 'log_startup_mismatch' });
+  await expect(resolveStderrLogCoverage(live(), startedAt, { limit: 10 })).rejects.toMatchObject({ code: 'log_coverage_limit' });
+  const truncated = live();
+  fs.truncateSync(log, 0);
+  await expect(resolveStderrLogCoverage(truncated, startedAt)).rejects.toMatchObject({ code: 'log_changed' });
+
+  fs.writeFileSync(log, startup);
+  rotate(log);
+  fs.appendFileSync(log, info('after_first', Date.parse(startedAt)));
+  rotate(log);
+  await expect(resolveStderrLogCoverage(live(), startedAt)).resolves.toMatchObject({ segments: [{ path: `${log}.2` }, { path: `${log}.1` }], offset: 0 });
+  const original = fs.readFileSync(`${log}.2`);
+  fs.writeFileSync(`${log}.2`, Buffer.from(original.toString('utf8').replace('01:00:01', '01:00:02')));
+  await expect(resolveStderrLogCoverage(live(), startedAt)).rejects.toMatchObject({ code: 'log_coverage_broken' });
+  fs.rmSync(`${log}.2`);
+  await expect(resolveStderrLogCoverage(live(), startedAt)).rejects.toMatchObject({ code: 'log_coverage_expired' });
+
+  // A rotation that predates rotation records leaves no verifiable link.
+  fs.writeFileSync(log, info('after_legacy_rotation', Date.parse(startedAt)));
+  await expect(resolveStderrLogCoverage(live(), startedAt)).rejects.toMatchObject({ code: 'log_startup_absent', message: 'Current daemon startup is absent from its actual log.' });
 });
 
 it('never requests a drain from failed, completed or unacknowledged journals', () => {
   const { journal } = fixture();
   for (const phase of ['failed', 'complete', 'acknowledged', 'armed']) expect(runtimeHandoffDrainIdentity({ ...journal, phase })).toBeNull();
-});
-
-it('refuses startup discovery outside bounded log coverage', () => {
-  const { home } = fixture();
-  const file = path.join(home, 'large.log');
-  fs.writeFileSync(file, JSON.stringify({ message: 'server_started', time: '2026-10-05T19:55:06Z' }) + '\n');
-  fs.appendFileSync(file, Buffer.alloc(16 * 1024 * 1024 + 1, 32));
-  const stat = fs.statSync(file);
-  expect(() => runtimeLogStartupOffset({ path: file, dev: stat.dev, ino: stat.ino, size: stat.size }, { startedAt: '2026-10-05T19:55:06Z' })).toThrow('coverage limit');
 });
 
 it('admits a drain only for the active armed helper and exact current process start', () => {
@@ -343,7 +422,7 @@ it('replays accepted recovery with the qualified controller and still rejects a 
     fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
   }
   fs.mkdirSync(path.join(home, 'src'));
-  fs.copyFileSync(path.join(process.cwd(), 'src/runtime-health-contract.ts'), path.join(home, 'src/runtime-health-contract.ts'));
+  for (const name of ['runtime-health-contract.ts', 'stderr-log-chain.ts']) fs.copyFileSync(path.join(process.cwd(), 'src', name), path.join(home, 'src', name));
   const legacyMarker = path.join(home, 'legacy-controller-used');
   const legacy = `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(legacyMarker)}, 'used'); console.log(JSON.stringify({ health: { ready: true } }));`;
   fs.writeFileSync(path.join(dir, 'controller.mjs'), legacy);
