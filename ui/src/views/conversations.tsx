@@ -140,6 +140,7 @@ import {
   useAppShell,
   useRegisterInitialRouteLoad,
   useRegisterAppRightSidebar,
+  useViewActive,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
@@ -160,6 +161,7 @@ import {
   windowRequest,
   type ConversationSidebarFilters,
 } from '../query/conversationKeys';
+import { markSidebarListsStale, startSidebarRefresh } from '../query/conversationSidebarRefresh';
 import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
@@ -3027,6 +3029,7 @@ export function ConversationsView({
 }: ConversationsViewProps): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const { active: chatViewActive } = useAppShell();
+  const viewActive = useViewActive();
   const [chatViewState, setChatViewState] = useChatViewState();
   const routeTarget = useMemo(() => initialConversationId
     ? { type: 'conversation' as const, id: initialConversationId }
@@ -3157,7 +3160,7 @@ export function ConversationsView({
     const offSpawn = client.on('conversation-spawn:updated', (payload) => {
       const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
       if (update?.spawn) reconcileCreationReceipt(update.spawn);
-      void queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
+      markSidebarListsStale(queryClient);
     });
     client.connect();
     return () => {
@@ -3326,12 +3329,17 @@ export function ConversationsView({
     },
     [registerInitialSidebarLoad, sidebarFilters],
   );
+  const sidebarLive = sidebarEnabled && viewActive;
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
-    enabled: sidebarEnabled,
+    enabled: sidebarLive,
     staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
   }, queryClient);
+  useEffect(
+    () => sidebarLive ? startSidebarRefresh(queryClient, sidebarFilters) : undefined,
+    [queryClient, sidebarFilters, sidebarLive],
+  );
   const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {
     if (event.query.queryKey[0] === 'chat' && event.query.queryKey[1] === 'sidebar') {
