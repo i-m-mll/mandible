@@ -7,8 +7,9 @@ import { tableExists } from "../db-introspection.js";
 import {
   resolveSessionAlias,
   sessionAliasIds,
+  freshSessionAliasResolver,
   type LivenessState,
-  type SessionAliasResolution,
+  type SessionAliasResolver,
 } from "../session-liveness.js";
 import { summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
@@ -354,7 +355,6 @@ function currentIssueBodyRevisionId(db: Db, issueId: string): string | null {
  * and meanings for existing readers; the resolved identities are added
  * alongside them.
  */
-type SessionAliasResolver = (db: Db, sessionId: string) => SessionAliasResolution | null;
 
 function sessionLiveness(
   db: Db,
@@ -1098,6 +1098,19 @@ export function registerIssueRoutes(
   },
 ): void {
   const sessionAliasResolver = deps?.sessionAliasResolver ?? resolveSessionAlias;
+  /**
+   * The resolver for a parent-role decision about `issueId`, whose Codex
+   * answers come from lock scans made for it: a stopped holder may be
+   * replaced, so a display read's older scan does not decide.
+   */
+  const parentRoleResolver = (req: RequestLike, issueId: string): Promise<SessionAliasResolver> =>
+    deps?.sessionAliasResolver
+      ? Promise.resolve(deps.sessionAliasResolver)
+      : freshSessionAliasResolver((resolve) => {
+        const db = getDb();
+        currentParentRoleHolder(db, issueId, resolve);
+        sessionAliasSet(db, resolve, req.ambient_identity?.provider_session_id);
+      });
 
   // GET /api/issues — list repo summaries with optional filtering
   server.get("/api/issues", (req, res) => {
@@ -1320,7 +1333,7 @@ export function registerIssueRoutes(
     });
   };
 
-  server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+  server.post("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
     const body = getBody(req) ?? {};
     const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
@@ -1329,6 +1342,7 @@ export function registerIssueRoutes(
     const override = body.override === true;
     const issueId = parentRoleIssue(req, res);
     if (!issueId) return;
+    const decisionResolver = await parentRoleResolver(req, issueId);
     if (!sessionId) {
       sendJson(res, 400, { error: "session_id is required" });
       return;
@@ -1338,20 +1352,20 @@ export function registerIssueRoutes(
     // a holder that every liveness check judged dead, so the next coordinator
     // took the same umbrella without an override while both were told the lease
     // had succeeded.
-    const resolution = sessionAliasResolver(db, sessionId);
+    const resolution = decisionResolver(db, sessionId);
     if (!resolution) {
       sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
     }
-    const holder = currentParentRoleHolder(db, issueId, sessionAliasResolver);
+    const holder = currentParentRoleHolder(db, issueId, decisionResolver);
     // Holder authority comes only from the caller's own session: a re-assume
     // under any alias, or the holder handing the role to a successor with
     // --session (issue 23a4edf). Naming the holder's session confers nothing,
     // since the checkpoint carries the caller's credential.
-    const callerAliases = sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id);
+    const callerAliases = sessionAliasSet(db, decisionResolver, req.ambient_identity?.provider_session_id);
     const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
     if (!decision.ok) {
-      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
+      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
       return;
     }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
@@ -1375,28 +1389,29 @@ export function registerIssueRoutes(
     sendJson(res, 200, {
       ok: true,
       checkpoint: checkpointResponse(checkpoint),
-      parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver),
+      parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
   }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session } } });
 
   // The holder steps down. Its authority is the caller's own session, never a
   // session named in the request, so releasing someone else's live holder
   // stays an operator override.
-  server.delete?.("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+  server.delete?.("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
     const body = getBody(req) ?? {};
     const override = body.override === true;
     const issueId = parentRoleIssue(req, res);
     if (!issueId) return;
+    const decisionResolver = await parentRoleResolver(req, issueId);
     const db = getDb();
-    const holder = currentParentRoleHolder(db, issueId, sessionAliasResolver);
+    const holder = currentParentRoleHolder(db, issueId, decisionResolver);
     if (!holder) {
-      sendJson(res, 200, { ok: true, released: false, checkpoint: null, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
+      sendJson(res, 200, { ok: true, released: false, checkpoint: null, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
       return;
     }
-    const callerAliases = sessionAliasSet(db, sessionAliasResolver, req.ambient_identity?.provider_session_id);
+    const callerAliases = sessionAliasSet(db, decisionResolver, req.ambient_identity?.provider_session_id);
     const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
     if (!decision.ok) {
-      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver) });
+      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
       return;
     }
     // A release carries no `session_id` and no authenticated credential, so it
@@ -1412,7 +1427,7 @@ export function registerIssueRoutes(
       ok: true,
       released: true,
       checkpoint: checkpointResponse(checkpoint),
-      parent_role: buildParentRoleStatus(db, issueId, sessionAliasResolver),
+      parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
   }, { operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 

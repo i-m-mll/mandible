@@ -25,7 +25,6 @@ import {
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import type { AuthQueue } from "../auth-queue.js";
-import { readCodexTaskLiveness } from "../codex-task-liveness.js";
 import type { ProviderTaskLivenessReader } from "../session-liveness.js";
 import type { WorkUnit } from "../contracts.js";
 import {
@@ -33,6 +32,7 @@ import {
   CustodyGenerationConflict,
   describeCustodyHolder,
   formatCustodyTransferCommand,
+  freshHolderReader,
   holderLabel,
   livenessLabel,
   sameCredentialSessionHolding,
@@ -257,11 +257,30 @@ export function registerWorkUnitRoutes(
   options: WorkUnitRouteOptions = {},
 ): void {
   const db = getDb();
-  const readCodexTask = options.readCodexTaskLiveness ?? readCodexTaskLiveness;
+  /**
+   * The Codex reader for this request's holder decisions, over lock scans made
+   * for it. Taken before the handler reads anything else, so the decision and
+   * any write that follows it run in one synchronous turn.
+   */
+  const holderReader = (unitIds: readonly string[]): Promise<ProviderTaskLivenessReader> => {
+    if (options.readCodexTaskLiveness) return Promise.resolve(options.readCodexTaskLiveness);
+    const units = unitIds.flatMap((id) => {
+      const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      return row ? [mapRow(row)] : [];
+    });
+    return freshHolderReader(db, units, sessionManager);
+  };
+  const matchedUnitIds = (issueId: unknown, repoRef: unknown, branch: unknown, includeAbandoned: boolean): string[] => {
+    if (typeof issueId !== "string" || !issueId || typeof repoRef !== "string" || !repoRef) return [];
+    const match = findExistingWorkUnit(db, issueId, normalizeProjectRepoId(db, repoRef),
+      typeof branch === "string" ? branch : null, includeAbandoned);
+    return match.status === "matched" && match.work_unit ? [match.work_unit.id] : [];
+  };
 
   // POST /api/work-units/claim — create a new work unit (state=open)
-  server.post("/api/work-units/claim", (req, res) => {
+  server.post("/api/work-units/claim", async (req, res) => {
     const body = readBody<ClaimInput>(req);
+    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch, false));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -464,8 +483,9 @@ export function registerWorkUnitRoutes(
     refs: { body: { parent_role_checkpoint_id: entityRefs.checkpoint, assigned_session_id: entityRefs.session } } });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
-  server.post("/api/work-units/activate", (req, res) => {
+  server.post("/api/work-units/activate", async (req, res) => {
     const body = readBody<ActivateInput>(req);
+    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch, true));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -719,7 +739,7 @@ export function registerWorkUnitRoutes(
 
   // Issue 72b00f8 — read-only custody answer for commit wrappers. Registered
   // before GET /api/work-units/:id so the literal path is not read as an id.
-  server.get("/api/work-units/custody-check", (req, res) => {
+  server.get("/api/work-units/custody-check", async (req, res) => {
     const identity = durableCredential(req);
     if (!identity) {
       sendJson(res, 401, { error: "The custody check requires an authenticated durable client credential.", code: "durable_credential_required" });
@@ -749,10 +769,13 @@ export function registerWorkUnitRoutes(
         return;
       }
     }
-    sendJson(res, 200, custodyCheck(db, rows[0] ? mapRow(rows[0]) : null, identity, req, sessionManager, readCodexTask));
+    const unit = rows[0] ? mapRow(rows[0]) : null;
+    const readCodexTask = await holderReader(unit ? [unit.id] : []);
+    sendJson(res, 200, custodyCheck(db, unit, identity, req, sessionManager, readCodexTask));
   }, { operation: { id: "get:/api/work-units/custody-check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/work-units/:id/custody/assume", async (req, res) => {
+    const readCodexTask = await holderReader([req.params.id]);
     const identity = durableCredential(req);
     if (!identity) {
       sendJson(res, 401, { error: "Work-unit custody requires an authenticated durable client credential." });

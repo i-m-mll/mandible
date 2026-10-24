@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -7,7 +7,11 @@ import { locateCodexRollout } from "./parsers/codex.js";
 
 const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LOCK_SUFFIX = ".lock";
-const CACHE_MS = 1_000;
+/** A scan this recent answers a decision without being repeated. */
+const FRESH_MS = 1_000;
+/** A display read answers from a scan this old while a newer one runs. */
+const DISPLAY_MAX_AGE_MS = 30_000;
+const LSOF_TIMEOUT_MS = 2_000;
 
 export type CodexTaskLiveness =
   | { status: "live"; pid: number }
@@ -18,9 +22,12 @@ type CodexTaskLockSnapshot =
   | { status: "current"; live: Map<string, number> }
   | { status: "unavailable"; reason: string };
 
-type CachedSnapshot = { expiresAt: number; snapshot: CodexTaskLockSnapshot };
+type CompletedScan = { completedAt: number; snapshot: CodexTaskLockSnapshot };
 
-const cache = new Map<string, CachedSnapshot>();
+const scans = new Map<string, CompletedScan>();
+const running = new Map<string, Promise<CompletedScan>>();
+/** Advanced by a cache clear, so a scan that started before it records nothing. */
+let generation = 0;
 /** The last reported failure per lock directory or rollout, so an outage logs once per change. */
 const reportedFailures = new Map<string, string>();
 
@@ -37,13 +44,6 @@ function reportUnavailable(key: string, reason: string): void {
 function reportRecovered(key: string): void {
   if (!reportedFailures.delete(key)) return;
   getDaemonLogger()("info", "codex_task_liveness_recovered", { target: key });
-}
-
-function lsofPath(): string | null {
-  for (const candidate of ["/usr/sbin/lsof", "/usr/bin/lsof"]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 /** Parse lsof's field form without trusting display-width-truncated columns. */
@@ -78,75 +78,129 @@ export function parseCodexTaskLockLsof(output: string, lockDir: string): Map<str
   return live;
 }
 
-function scanCodexTaskLocks(lockDir: string): CodexTaskLockSnapshot {
-  if (!fs.existsSync(lockDir)) {
-    return { status: "unavailable", reason: "Codex thread-writer lock directory is missing" };
+/** Interpret one lsof run. lsof exits 1 with no stderr when no process holds a descriptor in the directory: an authoritative empty snapshot. */
+function lockSnapshot(
+  lockDir: string,
+  error: { code?: unknown; message?: string } | null,
+  stdout: string,
+  stderr: string,
+): CodexTaskLockSnapshot {
+  if (error && !(error.code === 1 && !stderr.trim())) {
+    return { status: "unavailable", reason: stderr.trim() || error.message || String(error.code) };
   }
-  const executable = lsofPath();
-  if (!executable) return { status: "unavailable", reason: "lsof is unavailable" };
-
-  try {
-    const output = execFileSync(executable, ["-Fpcn", "+D", lockDir], {
-      encoding: "utf8",
-      timeout: 2_000,
-      maxBuffer: 4 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { status: "current", live: parseCodexTaskLockLsof(output, lockDir) };
-  } catch (error) {
-    const record = error as { status?: number; stdout?: string | Buffer; stderr?: string | Buffer };
-    const stdout = typeof record.stdout === "string"
-      ? record.stdout
-      : Buffer.isBuffer(record.stdout) ? record.stdout.toString("utf8") : "";
-    const stderr = typeof record.stderr === "string"
-      ? record.stderr
-      : Buffer.isBuffer(record.stderr) ? record.stderr.toString("utf8") : "";
-    // lsof exits 1 when the directory is readable but no process has an open
-    // descriptor in it. That is a complete, authoritative empty snapshot.
-    if (record.status === 1 && !stderr.trim()) {
-      return { status: "current", live: parseCodexTaskLockLsof(stdout, lockDir) };
-    }
-    return {
-      status: "unavailable",
-      reason: stderr.trim() || (error instanceof Error ? error.message : String(error)),
-    };
-  }
+  return { status: "current", live: parseCodexTaskLockLsof(stdout, lockDir) };
 }
 
-function currentSnapshot(lockDir: string): CodexTaskLockSnapshot {
-  const now = Date.now();
-  const cached = cache.get(lockDir);
-  if (cached && cached.expiresAt > now) return cached.snapshot;
-  const snapshot = scanCodexTaskLocks(lockDir);
-  cache.set(lockDir, { expiresAt: now + CACHE_MS, snapshot });
-  if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason);
-  else reportRecovered(lockDir);
-  return snapshot;
+/** Scan one lock directory off the event loop; a scan already running is joined. */
+function scanLockDir(lockDir: string): Promise<CompletedScan> {
+  const inFlight = running.get(lockDir);
+  if (inFlight) return inFlight;
+  const started = generation;
+  const scan = new Promise<CodexTaskLockSnapshot>((resolve) => {
+    if (!fs.existsSync(lockDir)) {
+      resolve({ status: "unavailable", reason: "Codex thread-writer lock directory is missing" });
+      return;
+    }
+    execFile("lsof", ["-Fpcn", "+D", lockDir], {
+      encoding: "utf8",
+      timeout: LSOF_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout, stderr) => resolve(lockSnapshot(lockDir, error, String(stdout ?? ""), String(stderr ?? ""))));
+  }).then((snapshot) => {
+    const completed = { completedAt: Date.now(), snapshot };
+    if (started !== generation) return completed;
+    scans.set(lockDir, completed);
+    running.delete(lockDir);
+    if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason);
+    else reportRecovered(lockDir);
+    return completed;
+  });
+  running.set(lockDir, scan);
+  return scan;
+}
+
+/** The scan to answer from for a lock directory, or `undefined` when there is none to use. */
+type SnapshotPicker = (lockDir: string) => CodexTaskLockSnapshot | undefined;
+
+const SCAN_PENDING: CodexTaskLiveness = {
+  status: "unavailable",
+  reason: "No Codex thread-writer lock scan has completed recently enough to answer",
+};
+
+function readerOver(pick: SnapshotPicker): (sourcePath: string, threadId: string) => CodexTaskLiveness {
+  return (sourcePath, threadId) => {
+    if (!CODEX_THREAD_ID.test(threadId)) return { status: "not_live" };
+    const location = locateCodexRollout(sourcePath);
+    if (!location) {
+      const reason = "ingested source is outside a Codex rollout root";
+      reportUnavailable(sourcePath, reason);
+      return { status: "unavailable", reason };
+    }
+    const snapshot = pick(path.join(location.codexRoot, "thread-writer-locks"));
+    if (!snapshot) return SCAN_PENDING;
+    if (snapshot.status === "unavailable") return snapshot;
+    const pid = snapshot.live.get(threadId);
+    return pid ? { status: "live", pid } : { status: "not_live" };
+  };
+}
+
+function scanCompletedSince(lockDir: string, since: number): CodexTaskLockSnapshot | undefined {
+  const scan = scans.get(lockDir);
+  return scan && scan.completedAt >= since ? scan.snapshot : undefined;
 }
 
 /**
- * Resolve task activity from Codex's own writer-lock ownership.
+ * Resolve task activity from Codex's own writer-lock ownership, for display.
  *
  * The ingested rollout supplies the exact provider identity and Codex root;
  * Mandible stores no second mutable task-status row. A leftover lock filename
  * is not enough: the Codex process must still hold the descriptor open.
+ *
+ * This never waits: it answers from the latest scan up to 30 s old and starts
+ * a new scan in the background when that one is over a second old, so a
+ * polled view is at most one poll behind. A decision that acts on `not_live`
+ * uses {@link withFreshCodexTaskLiveness} instead.
  */
 export function readCodexTaskLiveness(sourcePath: string, threadId: string): CodexTaskLiveness {
-  if (!CODEX_THREAD_ID.test(threadId)) return { status: "not_live" };
-  const location = locateCodexRollout(sourcePath);
-  if (!location) {
-    const reason = "ingested source is outside a Codex rollout root";
-    reportUnavailable(sourcePath, reason);
-    return { status: "unavailable", reason };
-  }
-  const lockDir = path.join(location.codexRoot, "thread-writer-locks");
-  const snapshot = currentSnapshot(lockDir);
-  if (snapshot.status === "unavailable") return snapshot;
-  const pid = snapshot.live.get(threadId);
-  return pid ? { status: "live", pid } : { status: "not_live" };
+  return readerOver((lockDir) => {
+    const now = Date.now();
+    const scan = scans.get(lockDir);
+    if (!scan || now - scan.completedAt > FRESH_MS) void scanLockDir(lockDir);
+    return scan && now - scan.completedAt <= DISPLAY_MAX_AGE_MS ? scan.snapshot : undefined;
+  })(sourcePath, threadId);
 }
 
+/**
+ * Run `judge` against Codex lock scans that completed within a second of this
+ * call or during it. `judge` is pure and may run more than once: a pass that
+ * asks about a lock directory without such a scan is followed by that scan,
+ * off the event loop, and another pass. The last pass's result is returned.
+ * A reader the judge returns keeps answering from those scans, and reads a
+ * directory without such a scan as unavailable.
+ */
+export async function withFreshCodexTaskLiveness<T>(
+  judge: (read: (sourcePath: string, threadId: string) => CodexTaskLiveness) => T,
+): Promise<T> {
+  const since = Date.now() - FRESH_MS;
+  const settled = new Map<string, CodexTaskLockSnapshot>();
+  for (;;) {
+    const needed = new Set<string>();
+    const result = judge(readerOver((lockDir) => {
+      const snapshot = settled.get(lockDir) ?? scanCompletedSince(lockDir, since);
+      if (!snapshot) needed.add(lockDir);
+      return snapshot;
+    }));
+    if (needed.size === 0) return result;
+    await Promise.all([...needed].map(async (lockDir) => {
+      settled.set(lockDir, (await scanLockDir(lockDir)).snapshot);
+    }));
+  }
+}
+
+/** Test seam: forget every scan, and every failure already reported. */
 export function clearCodexTaskLivenessCache(): void {
-  cache.clear();
+  generation += 1;
+  scans.clear();
+  running.clear();
   reportedFailures.clear();
 }

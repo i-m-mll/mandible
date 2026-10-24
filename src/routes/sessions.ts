@@ -2,6 +2,7 @@ import { getDb } from "../db.js";
 import { entityRefs, resolveId, resolveSessionRef } from "../entity-refs.js";
 import { navigateToSession } from "../navigate.js";
 import {
+  readPidStarts,
   SessionRegistry,
   syncPinnedPanesTsv,
   type ChildSessionInput,
@@ -143,13 +144,20 @@ export function registerSessionRoutes(
   registry: SessionRegistry = new SessionRegistry(getDb()),
   workScanner?: WorkScanner,
 ): void {
-  server.post("/api/sessions/register", (req, res) => {
+  server.post("/api/sessions/register", async (req, res) => {
     const payload = readBody<SessionInput>(req);
     if (!payload.id || !payload.app) {
       sendJson(res, 400, { error: "Missing id or app" });
       return;
     }
-    const session = registry.registerSession(payload);
+    // A pid without its start time is read here, off the event loop, so the
+    // registered process identity can tell a reused pid from the original.
+    let pidStart = payload.pid_start;
+    if (payload.pid && !pidStart) {
+      const observation = await readPidStarts([payload.pid]);
+      pidStart = observation.ok ? observation.starts.get(payload.pid) ?? null : null;
+    }
+    const session = registry.registerSession({ ...payload, pid_start: pidStart });
     // Issue 499c148 — the row now exists, so its bindings can be compared with
     // the authenticated client. The warning rides the registration response so
     // the connecting agent learns about a misconfigured token immediately

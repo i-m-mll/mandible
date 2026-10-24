@@ -85,10 +85,10 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
   }, { operation: { id: "post:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   // Register the literal gc route before the parameter route.
-  router.post("/api/v1/trash/gc", (req, res) => {
+  router.post("/api/v1/trash/gc", async (req, res) => {
     try {
       const body = bodyRecord(req);
-      sendJson(res, 200, gcTrashEntries(db, {
+      sendJson(res, 200, await gcTrashEntries(db, {
         now: typeof body.now === "number" ? body.now : undefined,
         limit: typeof body.limit === "number" ? body.limit : undefined,
         actor: typeof body.actor === "string" ? body.actor : undefined,
