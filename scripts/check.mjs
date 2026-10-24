@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { computeReachability } from './ui-reachability.mjs';
+import { stderrInheritanceSites } from './stderr-inheritance.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -97,9 +98,8 @@ const checks = {
   // nor the live log (docs/runtime-handoff.md). Children pipe stderr and the
   // daemon logs it, so the rotating thread is the file's only writer.
   'daemon children never inherit its stderr'() {
-    const signs = /['"]inherit['"]|stdio:[^\n]*process\.std(?:out|err)|stdio:\s*\[[^\]\n]*\b[12]\s*[,\]]|\bfork\(|\bBun\.spawn(?:Sync)?\(/;
-    return walk('src', (file) => /\.tsx?$/.test(file)).flatMap((file) => read(file).split('\n').flatMap((line, index) =>
-      signs.test(line) ? [`${file}:${index + 1}: a daemon child shares the daemon's stderr; pipe it and log its lines`] : []));
+    return walk('src', (file) => /\.tsx?$/.test(file)).flatMap((file) => stderrInheritanceSites(file, read(file))
+      .map(({ line, reason }) => `${file}:${line}: ${reason}; a daemon child must pipe its output and the daemon log it`));
   },
 
   // Chrome under a test HOME without --use-mock-keychain raises a modal
