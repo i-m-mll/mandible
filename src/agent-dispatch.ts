@@ -25,7 +25,7 @@
 // Authorization lives at the route boundary (src/routes/agent-dispatch.ts);
 // this module takes an already-resolved human actor id.
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -51,6 +51,7 @@ export const AGENT_DISPATCH_BIN_KEY = "agent_dispatch.claude_spawn_bin";
 
 /** Default executable name; resolved through PATH like any other command. */
 export const DEFAULT_CLAUDE_SPAWN_BIN = "claude-spawn";
+const SPAWN_TIMEOUT_MS = 60_000;
 
 /**
  * Fence markers around the untrusted payload. They are long and unusual on
@@ -139,13 +140,6 @@ export interface AgentDispatchSpawnResult {
   attach_command: string | null;
   error: string | null;
 }
-
-/** Injection seam: tests substitute a recording spawner for the real binary. */
-export type AgentDispatchSpawner = (input: {
-  cwd: string;
-  promptPath: string;
-  label: string;
-}) => AgentDispatchSpawnResult;
 
 // --- helpers ----------------------------------------------------------------
 
@@ -474,60 +468,41 @@ export function parseSpawnOutput(stdout: string): {
 export function spawnClaudeSession(
   db: Db,
   input: { cwd: string; promptPath: string; label: string },
-): AgentDispatchSpawnResult {
+): Promise<AgentDispatchSpawnResult> {
   const bin = resolveSpawnBin(db);
-  let result;
-  try {
-    result = spawnSync(
-      bin,
-      [
-        "create",
-        "--cwd", input.cwd,
-        "--surface", "none",
-        "--prompt-file", input.promptPath,
-        "--label", input.label,
-      ],
-      { encoding: "utf8", timeout: 60_000 },
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      handle: null,
-      session_id: null,
-      attach_command: null,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-  if (result.error) {
-    return {
-      ok: false,
-      handle: null,
-      session_id: null,
-      attach_command: null,
-      error: `${bin}: ${result.error.message}`,
-    };
-  }
-  if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || "").trim();
-    return {
-      ok: false,
-      handle: null,
-      session_id: null,
-      attach_command: null,
-      error: detail || `${bin} exited with status ${result.status ?? "unknown"}`,
-    };
-  }
-  const parsed = parseSpawnOutput(result.stdout ?? "");
-  if (!parsed.handle) {
-    return {
-      ok: false,
-      handle: null,
-      session_id: null,
-      attach_command: null,
-      error: `${bin} reported success but printed no session handle`,
-    };
-  }
-  return { ok: true, ...parsed, error: null };
+  const failed = (error: string): AgentDispatchSpawnResult =>
+    ({ ok: false, handle: null, session_id: null, attach_command: null, error });
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        bin,
+        [
+          "create",
+          "--cwd", input.cwd,
+          "--surface", "none",
+          "--prompt-file", input.promptPath,
+          "--label", input.label,
+        ],
+        { encoding: "utf8", timeout: SPAWN_TIMEOUT_MS },
+        (error, stdout, stderr) => {
+          if (error && typeof error.code !== "number") {
+            resolve(failed(`${bin}: ${error.killed ? `timed out after ${SPAWN_TIMEOUT_MS / 1000} s` : error.message}`));
+            return;
+          }
+          if (error) {
+            resolve(failed((stderr || stdout || "").trim() || `${bin} exited with status ${error.code}`));
+            return;
+          }
+          const parsed = parseSpawnOutput(stdout);
+          resolve(parsed.handle
+            ? { ok: true, ...parsed, error: null }
+            : failed(`${bin} reported success but printed no session handle`));
+        },
+      );
+    } catch (error) {
+      resolve(failed(error instanceof Error ? error.message : String(error)));
+    }
+  });
 }
 
 // --- event store ------------------------------------------------------------
@@ -571,8 +546,6 @@ export interface AgentDispatchInput {
   now?: number;
   expectedPromptSha256?: string;
   expectedIncidentTelemetrySha256?: string;
-  /** Test seam. Defaults to the real `claude-spawn` invocation. */
-  spawner?: AgentDispatchSpawner;
 }
 
 export interface AgentDispatchOutcome {
@@ -590,7 +563,7 @@ export interface AgentDispatchOutcome {
  * visible `dispatching` row instead of a session nobody can trace. It settles
  * exactly once; nothing later rewrites it.
  */
-export function dispatchAgent(db: Db, input: AgentDispatchInput): AgentDispatchOutcome {
+export async function dispatchAgent(db: Db, input: AgentDispatchInput): Promise<AgentDispatchOutcome> {
   const now = input.now ?? Date.now();
   const plan = previewAgentDispatch(db, {
     subject: input.subject,
@@ -657,13 +630,11 @@ export function dispatchAgent(db: Db, input: AgentDispatchInput): AgentDispatchO
   })();
 
   // Step 3 — materialize the prompt, then spawn.
-  const spawner: AgentDispatchSpawner = input.spawner
-    ?? ((spawnInput) => spawnClaudeSession(db, spawnInput));
   let result: AgentDispatchSpawnResult;
   try {
     fs.mkdirSync(promptDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(promptPath, plan.prompt, { mode: 0o600 });
-    result = spawner({ cwd: plan.cwd, promptPath, label: plan.label });
+    result = await spawnClaudeSession(db, { cwd: plan.cwd, promptPath, label: plan.label });
   } catch (error) {
     result = {
       ok: false,

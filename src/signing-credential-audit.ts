@@ -9,11 +9,11 @@
  *
  * This audit makes the misconfiguration visible at startup: it derives the
  * fingerprint of the configured `git user.signingkey` and reports whether any
- * active signing credential on the operator matches it. It is read-only and
- * never blocks startup.
+ * active signing credential on the operator matches it. It is read-only, runs
+ * its probes off the event loop, and never blocks startup.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,24 +68,27 @@ function gitProbeEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export function readConfiguredSigningKey(options: SigningCredentialAuditOptions = {}): string | null {
-  const cwd = options.cwd ?? os.homedir();
+/** Run one probe; its trimmed stdout, or null when it fails in any way. */
+function probe(
+  command: string,
+  args: string[],
+  options: { cwd: string; env?: NodeJS.ProcessEnv; input?: string },
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = execFile(command, args, {
+      cwd: options.cwd, env: options.env, encoding: "utf-8", timeout: 5000,
+    }, (error, stdout) => resolve(error ? null : stdout.trim()));
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(options.input ?? "");
+  });
+}
+
+/** Exit 1 simply means unset; any other failure is equally "nothing to audit". */
+export async function readConfiguredSigningKey(options: SigningCredentialAuditOptions = {}): Promise<string | null> {
   const args = options.global === false
     ? ["config", "--get", "user.signingkey"]
     : ["config", "--global", "--get", "user.signingkey"];
-  try {
-    const value = execFileSync("git", args, {
-      cwd,
-      encoding: "utf-8",
-      timeout: 5000,
-      env: gitProbeEnv(),
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return value || null;
-  } catch {
-    // Exit 1 simply means unset; anything else is equally "nothing to audit".
-    return null;
-  }
+  return (await probe("git", args, { cwd: options.cwd ?? os.homedir(), env: gitProbeEnv() })) || null;
 }
 
 export interface ResolvedSigningKey {
@@ -93,11 +96,13 @@ export interface ResolvedSigningKey {
   fingerprint: string;
 }
 
+export type SigningKeyResolution = { ok: true; value: ResolvedSigningKey } | { ok: false; reason: string };
+
 /** Parse one pasted OpenSSH public-key line and calculate its SHA256 fingerprint. */
-export function resolveOpenSshPublicKey(
+export async function resolveOpenSshPublicKey(
   input: string,
   options: SigningCredentialAuditOptions = {},
-): { ok: true; value: ResolvedSigningKey } | { ok: false; reason: string } {
+): Promise<SigningKeyResolution> {
   if (input.length > 16_384) {
     return { ok: false, reason: "public_key_input_too_large" };
   }
@@ -110,7 +115,7 @@ export function resolveOpenSshPublicKey(
     return { ok: false, reason: "signing_key_not_openssh_public_key" };
   }
   const material = `${fields[0]} ${fields[1]}`;
-  const fingerprint = fingerprintOf(material, options.cwd ?? os.homedir());
+  const fingerprint = await fingerprintOf(material, options.cwd ?? os.homedir());
   if (!fingerprint) {
     return { ok: false, reason: "signing_key_fingerprint_failed" };
   }
@@ -118,17 +123,17 @@ export function resolveOpenSshPublicKey(
 }
 
 /** Discover only public material for Settings; never open or derive from a private key. */
-export function discoverConfiguredPublicSigningKey(
+export async function discoverConfiguredPublicSigningKey(
   options: SigningCredentialAuditOptions = {},
-): { configured_key: string | null; value: ResolvedSigningKey | null; reason: string | null } {
-  const configuredKey = readConfiguredSigningKey(options);
+): Promise<{ configured_key: string | null; value: ResolvedSigningKey | null; reason: string | null }> {
+  const configuredKey = await readConfiguredSigningKey(options);
   if (!configuredKey) return { configured_key: null, value: null, reason: null };
 
   const inline = configuredKey.startsWith("key::")
     ? configuredKey.slice("key::".length)
     : configuredKey;
   if (isPublicKeyLine(inline)) {
-    const result = resolveOpenSshPublicKey(inline, options);
+    const result = await resolveOpenSshPublicKey(inline, options);
     return result.ok
       ? { configured_key: configuredKey, value: result.value, reason: null }
       : { configured_key: configuredKey, value: null, reason: result.reason };
@@ -142,7 +147,7 @@ export function discoverConfiguredPublicSigningKey(
   if (!publicMaterial || !isPublicKeyLine(publicMaterial)) {
     return { configured_key: configuredKey, value: null, reason: "public_key_not_available_without_private_key_access" };
   }
-  const result = resolveOpenSshPublicKey(publicMaterial, options);
+  const result = await resolveOpenSshPublicKey(publicMaterial, options);
   return result.ok
     ? { configured_key: configuredKey, value: result.value, reason: null }
     : { configured_key: configuredKey, value: null, reason: result.reason };
@@ -153,10 +158,10 @@ export function discoverConfiguredPublicSigningKey(
  * fingerprint. Accepts the three shapes git supports: a literal `key::` value,
  * an inline public key, or a path to a public or private key file.
  */
-export function resolveSigningKeyFingerprint(
+export async function resolveSigningKeyFingerprint(
   configuredKey: string,
   options: SigningCredentialAuditOptions = {},
-): { ok: true; value: ResolvedSigningKey } | { ok: false; reason: string } {
+): Promise<SigningKeyResolution> {
   const cwd = options.cwd ?? os.homedir();
   let keyLine: string | null = null;
 
@@ -177,7 +182,7 @@ export function resolveSigningKeyFingerprint(
     } else if (existsSync(`${keyPath}.pub`)) {
       keyLine = readFirstLine(`${keyPath}.pub`);
     } else {
-      keyLine = derivePublicKey(keyPath, cwd);
+      keyLine = await probe("ssh-keygen", ["-y", "-f", keyPath], { cwd });
     }
   }
 
@@ -189,19 +194,19 @@ export function resolveSigningKeyFingerprint(
   if (!material || !isPublicKeyLine(material)) {
     return { ok: false, reason: "signing_key_not_openssh_public_key" };
   }
-  const fingerprint = fingerprintOf(material, cwd);
+  const fingerprint = await fingerprintOf(material, cwd);
   if (!fingerprint) {
     return { ok: false, reason: "signing_key_fingerprint_failed" };
   }
   return { ok: true, value: { material, fingerprint } };
 }
 
-export function auditOperatorSigningCredential(
+export async function auditOperatorSigningCredential(
   db: Db,
   options: SigningCredentialAuditOptions = {},
-): SigningCredentialAudit {
+): Promise<SigningCredentialAudit> {
+  const configuredKey = await readConfiguredSigningKey(options);
   const operator = readOperator(db);
-  const configuredKey = readConfiguredSigningKey(options);
   if (!configuredKey) {
     return {
       status: "unconfigured",
@@ -222,7 +227,7 @@ export function auditOperatorSigningCredential(
       hint: "Run `mandible user setup` to create the local operator.",
     };
   }
-  const resolved = resolveSigningKeyFingerprint(configuredKey, options);
+  const resolved = await resolveSigningKeyFingerprint(configuredKey, options);
   if (!resolved.ok) {
     return {
       status: "unresolvable",
@@ -291,31 +296,8 @@ function readFirstLine(file: string): string | null {
   }
 }
 
-function derivePublicKey(keyPath: string, cwd: string): string | null {
-  try {
-    return execFileSync("ssh-keygen", ["-y", "-f", keyPath], {
-      cwd,
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
-function fingerprintOf(material: string, cwd: string): string | null {
-  try {
-    const output = execFileSync("ssh-keygen", ["-lf", "-", "-E", "sha256"], {
-      cwd,
-      input: `${material}\n`,
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
-    const fingerprint = output.split(/\s+/)[1] ?? null;
-    return fingerprint && fingerprint.startsWith("SHA256:") ? fingerprint : null;
-  } catch {
-    return null;
-  }
+async function fingerprintOf(material: string, cwd: string): Promise<string | null> {
+  const output = await probe("ssh-keygen", ["-lf", "-", "-E", "sha256"], { cwd, input: `${material}\n` });
+  const fingerprint = output?.split(/\s+/)[1] ?? null;
+  return fingerprint && fingerprint.startsWith("SHA256:") ? fingerprint : null;
 }
