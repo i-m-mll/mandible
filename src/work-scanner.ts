@@ -1,4 +1,4 @@
-import { DOMAIN_EVENTS } from "./contracts.js";
+import { DOMAIN_EVENTS, WORK_SCAN_SKIP_WINDOW_MS } from "./contracts.js";
 import { execFile } from "child_process";
 import { randomUUID } from "node:crypto";
 import fs from "fs";
@@ -198,7 +198,6 @@ export interface WorktreeInventory {
 }
 
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
-const DEFAULT_SCAN_SKIP_WINDOW_MS = 30_000;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -751,7 +750,7 @@ export class WorkScanner {
       ? normalizeRoots(options.repo_roots)
       : null;
     this.emit = options.on_event ?? ((event) => broadcast(event));
-    this.scanSkipWindowMs = Math.max(0, options.scan_skip_window_ms ?? DEFAULT_SCAN_SKIP_WINDOW_MS);
+    this.scanSkipWindowMs = Math.max(0, options.scan_skip_window_ms ?? WORK_SCAN_SKIP_WINDOW_MS);
   }
 
   getRepos(): RepoInfo[] {

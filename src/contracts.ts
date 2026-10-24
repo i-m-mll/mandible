@@ -116,6 +116,9 @@ export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_
   branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
 export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
 
+/** A repository scanned within this window is current; scans and the Work view treat it as fresh. */
+export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
+
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
   : E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
