@@ -838,6 +838,39 @@ export function closeOperationalIncident(
   })();
 }
 
+/**
+ * Undo the `triaging` a dispatch set, after its spawn failed, only while the
+ * incident is still exactly as that dispatch left it. If anything moved it
+ * on meanwhile (closure, resolution, another transition) the incident is
+ * left alone and its current projection returned.
+ */
+export function rollBackFailedAgentDispatch(
+  db: Db,
+  incidentId: string,
+  agentDispatchEventId: string,
+  reason: string | null,
+): OperationalIncidentProjection {
+  return db.transaction(() => {
+    const row = db.prepare(
+      "SELECT remediation_state, resolved_at, observation_state FROM operational_incidents WHERE id = ?",
+    ).get(incidentId) as Pick<IncidentRow, "remediation_state" | "resolved_at" | "observation_state"> | undefined;
+    const latest = db.prepare(
+      `SELECT agent_dispatch_event_id FROM operational_incident_workflow_events
+        WHERE incident_id = ? AND to_remediation_state IS NOT NULL
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(incidentId) as { agent_dispatch_event_id: string | null } | undefined;
+    const untouched = row?.resolved_at === null && row.observation_state === "active"
+      && row.remediation_state === "triaging" && latest?.agent_dispatch_event_id === agentDispatchEventId;
+    if (!untouched) return getOperationalIncident(db, incidentId);
+    return transitionOperationalIncidentRemediation(db, incidentId, "none", {
+      kind: "dispatch_failed",
+      authority: "server",
+      agentDispatchEventId,
+      reason,
+    });
+  })();
+}
+
 const SERVER_REMEDIATION_TRANSITIONS: Readonly<Record<string, readonly string[]>> = {
   triaging: ["fix_prepared"],
   fix_prepared: ["awaiting_auth"],

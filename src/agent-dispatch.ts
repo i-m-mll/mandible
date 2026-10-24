@@ -38,6 +38,7 @@ import { resolveProjectRef } from "./ledger/project-registry.js";
 import { effectiveWorkerStatus, listIssueBranches } from "./ledger/issue-work-state.js";
 import {
   getOperationalIncident,
+  rollBackFailedAgentDispatch,
   transitionOperationalIncidentRemediation,
 } from "./operational-incidents.js";
 import type { OperationalIncidentProjection } from "./contracts.js";
@@ -665,12 +666,7 @@ export async function dispatchAgent(db: Db, input: AgentDispatchInput): Promise<
   if (plan.subject_kind === "incident" && plan.incident_id) {
     incident = result.ok
       ? getOperationalIncident(db, plan.incident_id)
-      : transitionOperationalIncidentRemediation(db, plan.incident_id, "none", {
-        kind: "dispatch_failed",
-        authority: "server",
-        agentDispatchEventId: eventId,
-        reason: result.error,
-      });
+      : rollBackFailedAgentDispatch(db, plan.incident_id, eventId, result.error);
   }
 
   return { ok: result.ok, plan, event: readEvent(db, eventId), incident };

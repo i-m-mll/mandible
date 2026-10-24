@@ -7,8 +7,8 @@ import { locateCodexRollout } from "./parsers/codex.js";
 
 const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LOCK_SUFFIX = ".lock";
-/** A scan this recent answers a decision without being repeated. */
-const FRESH_MS = 1_000;
+/** A display read starts a new scan once the latest is this old. */
+const REVALIDATE_MS = 1_000;
 /** A display read answers from a scan this old while a newer one runs. */
 const DISPLAY_MAX_AGE_MS = 30_000;
 const LSOF_TIMEOUT_MS = 2_000;
@@ -22,10 +22,13 @@ type CodexTaskLockSnapshot =
   | { status: "current"; live: Map<string, number> }
   | { status: "unavailable"; reason: string };
 
-type CompletedScan = { completedAt: number; snapshot: CodexTaskLockSnapshot };
+/** `seq` orders scans by when they started, so a decision can require one that started after it began. */
+type CompletedScan = { seq: number; completedAt: number; snapshot: CodexTaskLockSnapshot };
+type RunningScan = { seq: number; done: Promise<CompletedScan> };
 
 const scans = new Map<string, CompletedScan>();
-const running = new Map<string, Promise<CompletedScan>>();
+const running = new Map<string, RunningScan>();
+let scansStarted = 0;
 /** Advanced by a cache clear, so a scan that started before it records nothing. */
 let generation = 0;
 /** The last reported failure per lock directory or rollout, so an outage logs once per change. */
@@ -91,12 +94,13 @@ function lockSnapshot(
   return { status: "current", live: parseCodexTaskLockLsof(stdout, lockDir) };
 }
 
-/** Scan one lock directory off the event loop; a scan already running is joined. */
-function scanLockDir(lockDir: string): Promise<CompletedScan> {
+/** Scan one lock directory off the event loop, joining a running scan only if it started after scan number `after`. */
+function scanLockDir(lockDir: string, after = 0): Promise<CompletedScan> {
   const inFlight = running.get(lockDir);
-  if (inFlight) return inFlight;
+  if (inFlight && inFlight.seq > after) return inFlight.done;
   const started = generation;
-  const scan = new Promise<CodexTaskLockSnapshot>((resolve) => {
+  const seq = ++scansStarted;
+  const done = new Promise<CodexTaskLockSnapshot>((resolve) => {
     if (!fs.existsSync(lockDir)) {
       resolve({ status: "unavailable", reason: "Codex thread-writer lock directory is missing" });
       return;
@@ -107,16 +111,17 @@ function scanLockDir(lockDir: string): Promise<CompletedScan> {
       maxBuffer: 4 * 1024 * 1024,
     }, (error, stdout, stderr) => resolve(lockSnapshot(lockDir, error, String(stdout ?? ""), String(stderr ?? ""))));
   }).then((snapshot) => {
-    const completed = { completedAt: Date.now(), snapshot };
+    const completed = { seq, completedAt: Date.now(), snapshot };
     if (started !== generation) return completed;
+    if (running.get(lockDir)?.seq === seq) running.delete(lockDir);
+    if ((scans.get(lockDir)?.seq ?? 0) > seq) return completed;
     scans.set(lockDir, completed);
-    running.delete(lockDir);
     if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason);
     else reportRecovered(lockDir);
     return completed;
   });
-  running.set(lockDir, scan);
-  return scan;
+  running.set(lockDir, { seq, done });
+  return done;
 }
 
 /** The scan to answer from for a lock directory, or `undefined` when there is none to use. */
@@ -144,11 +149,6 @@ function readerOver(pick: SnapshotPicker): (sourcePath: string, threadId: string
   };
 }
 
-function scanCompletedSince(lockDir: string, since: number): CodexTaskLockSnapshot | undefined {
-  const scan = scans.get(lockDir);
-  return scan && scan.completedAt >= since ? scan.snapshot : undefined;
-}
-
 /**
  * Resolve task activity from Codex's own writer-lock ownership, for display.
  *
@@ -165,34 +165,36 @@ export function readCodexTaskLiveness(sourcePath: string, threadId: string): Cod
   return readerOver((lockDir) => {
     const now = Date.now();
     const scan = scans.get(lockDir);
-    if (!scan || now - scan.completedAt > FRESH_MS) void scanLockDir(lockDir);
+    if (!scan || now - scan.completedAt > REVALIDATE_MS) void scanLockDir(lockDir);
     return scan && now - scan.completedAt <= DISPLAY_MAX_AGE_MS ? scan.snapshot : undefined;
   })(sourcePath, threadId);
 }
 
 /**
- * Run `judge` against Codex lock scans that completed within a second of this
- * call or during it. `judge` is pure and may run more than once: a pass that
- * asks about a lock directory without such a scan is followed by that scan,
- * off the event loop, and another pass. The last pass's result is returned.
- * A reader the judge returns keeps answering from those scans, and reads a
- * directory without such a scan as unavailable.
+ * Run `judge` against Codex lock scans that started after this call did, so
+ * no lock taken before the decision began can be missed. Concurrent decisions
+ * share such scans; none answers from an earlier one. `judge` is pure and may
+ * run more than once: a pass that asks about a lock directory without such a
+ * scan is followed by that scan, off the event loop, and another pass. The
+ * last pass's result is returned. A reader the judge returns keeps answering
+ * from those scans, and reads a directory without such a scan as unavailable.
  */
 export async function withFreshCodexTaskLiveness<T>(
   judge: (read: (sourcePath: string, threadId: string) => CodexTaskLiveness) => T,
 ): Promise<T> {
-  const since = Date.now() - FRESH_MS;
+  const after = scansStarted;
   const settled = new Map<string, CodexTaskLockSnapshot>();
   for (;;) {
     const needed = new Set<string>();
     const result = judge(readerOver((lockDir) => {
-      const snapshot = settled.get(lockDir) ?? scanCompletedSince(lockDir, since);
+      const latest = scans.get(lockDir);
+      const snapshot = settled.get(lockDir) ?? (latest && latest.seq > after ? latest.snapshot : undefined);
       if (!snapshot) needed.add(lockDir);
       return snapshot;
     }));
     if (needed.size === 0) return result;
     await Promise.all([...needed].map(async (lockDir) => {
-      settled.set(lockDir, (await scanLockDir(lockDir)).snapshot);
+      settled.set(lockDir, (await scanLockDir(lockDir, after)).snapshot);
     }));
   }
 }
