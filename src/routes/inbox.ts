@@ -5,7 +5,8 @@ import { resolveId } from "../entity-refs.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
-import { computeAuthRequestOutcome } from "../contracts.js";
+import { computeAuthRequestOutcome, DOMAIN_EVENTS } from "../contracts.js";
+import { broadcast } from "../sse.js";
 import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
 import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
@@ -160,88 +161,56 @@ interface TierRow {
   tier: AuthResultTier;
 }
 
+interface AuthResultScope {
+  sessionId: string;
+  repoRoot: string | null;
+  branch?: string | null;
+}
+
 /**
- * Bug: 4e32923 — fetch auth_results for the given session + repo with the
- * three-tier escalation model. Returns rows tagged with their tier so callers
- * can render or filter accordingly. Branch filter (if provided) restricts to
- * auth requests targeting that head branch — keeps the previous narrow-scope
- * behaviour available for branch-bound dashboards.
+ * Bug: 4e32923 — the three-tier escalation model as one SQL source shared by
+ * the inbox list and the badge count. `tier` is NULL when the current session
+ * has no claim on the row yet (it still belongs only to its owner / project).
+ *   tier 0: legacy unscoped rows (no target session), broadcast as before
+ *   tier 1: owner session sees its own undelivered result immediately
+ *   tier 2: any session in the same repo, after the project grace window
+ *   tier 3: any session anywhere, after the global grace window
  */
-function queryAuthResultsForSession(
-  db: ReturnType<typeof getDb>,
-  opts: {
-    sessionId: string;
-    repoRoot: string | null;
-    branch?: string | null;
-  }
-): TierRow[] {
+function authResultTierQuery(opts: AuthResultScope): { from: string; params: unknown[] } {
   const now = Date.now();
-  const projectGraceMs = getIntSetting("inbox.project_grace_days", 7) * 86_400_000;
-  const globalGraceMs = getIntSetting("inbox.global_grace_days", 30) * 86_400_000;
+  const projectCutoff = now - getIntSetting("inbox.project_grace_days", 7) * 86_400_000;
+  const globalCutoff = now - getIntSetting("inbox.global_grace_days", 30) * 86_400_000;
+  const params: unknown[] = [opts.sessionId, opts.repoRoot, projectCutoff, globalCutoff];
+  const branchFilter = opts.branch ? " AND head_branch = ?" : "";
+  if (opts.branch) params.push(opts.branch);
+  const from = `(SELECT *, CASE
+        WHEN target_session_id IS NULL THEN 0
+        WHEN target_session_id = ?1 THEN 1
+        WHEN ?2 IS NOT NULL AND target_repo_root = ?2 AND COALESCE(resolved_at, 0) <= ?3 THEN 2
+        WHEN COALESCE(resolved_at, 0) <= ?4 THEN 3
+      END AS tier
+      FROM auth_requests
+      WHERE status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL AND delivered_at IS NULL${branchFilter})
+    WHERE tier IS NOT NULL`;
+  return { from, params };
+}
 
-  // Pull unacknowledged + undelivered resolved auth requests; we filter into
-  // tiers in TypeScript because the per-tier SQL would be three separate
-  // statements (and we want a single read for tier-attribution sort stability).
-  const whereParts = [
-    `status IN ${RESOLVED_STATUSES}`,
-    "acknowledged_by IS NULL",
-    "delivered_at IS NULL"
-  ];
-  const params: unknown[] = [];
-  if (opts.branch) {
-    whereParts.push("head_branch = ?");
-    params.push(opts.branch);
-  }
-  const sql =
-    `SELECT ${COLUMNS_AUTH_RESULT} FROM auth_requests ` +
-    `WHERE ${whereParts.join(" AND ")} ORDER BY resolved_at DESC`;
-  const rows = db.prepare(sql).all(...params) as AuthResultRow[];
+/**
+ * Bug: 4e32923 — auth_results the given session + repo may claim, owner tier
+ * first and most recent first within a tier. A branch filter restricts to
+ * auth requests targeting that head branch for branch-bound dashboards.
+ */
+function queryAuthResultsForSession(db: ReturnType<typeof getDb>, opts: AuthResultScope): TierRow[] {
+  const { from, params } = authResultTierQuery(opts);
+  const rows = db.prepare(
+    `SELECT ${COLUMNS_AUTH_RESULT}, tier FROM ${from} ORDER BY tier ASC, COALESCE(resolved_at, 0) DESC`,
+  ).all(...params) as Array<AuthResultRow & { tier: AuthResultTier }>;
+  return rows.map(({ tier, ...row }) => ({ row, tier }));
+}
 
-  const out: TierRow[] = [];
-  for (const row of rows) {
-    const resolvedAt = row.resolved_at ?? 0;
-    const age = now - resolvedAt;
-
-    // Legacy / unscoped rows: keep broadcasting (tier 0). Matches the pre-4e32923
-    // behaviour for any auth_request that predates the CLI populating the
-    // target_session_id field, so that nothing silently disappears for users
-    // mid-migration.
-    if (row.target_session_id == null) {
-      out.push({ row, tier: 0 });
-      continue;
-    }
-
-    // Tier 1: owner session sees its own undelivered result immediately.
-    if (row.target_session_id === opts.sessionId) {
-      out.push({ row, tier: 1 });
-      continue;
-    }
-
-    // Tier 2: any session in the same repo, after project grace window.
-    if (
-      opts.repoRoot &&
-      row.target_repo_root === opts.repoRoot &&
-      age >= projectGraceMs
-    ) {
-      out.push({ row, tier: 2 });
-      continue;
-    }
-
-    // Tier 3: any session anywhere, after global grace window.
-    if (age >= globalGraceMs) {
-      out.push({ row, tier: 3 });
-      continue;
-    }
-    // Otherwise the request still belongs only to its owner / project and the
-    // current session has no claim on it — skip.
-  }
-
-  // Sort by tier ascending (owner first), then most recent first within tier.
-  out.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier - b.tier;
-    return (b.row.resolved_at ?? 0) - (a.row.resolved_at ?? 0);
-  });
-  return out;
+function countAuthResultsForSession(db: ReturnType<typeof getDb>, opts: AuthResultScope): number {
+  const { from, params } = authResultTierQuery(opts);
+  return Number((db.prepare(`SELECT COUNT(*) AS count FROM ${from}`).get(...params) as { count: number }).count);
 }
 
 /**
@@ -298,15 +267,11 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
      WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL
        AND status IN ('ended', 'dead')`,
   ).get() as { count: number };
-  const authResults = queryAuthResultsForSession(db, {
-    sessionId: "",
-    repoRoot: null,
-    branch: null,
-  });
+  const authResults = countAuthResultsForSession(db, { sessionId: "", repoRoot: null });
   const reminderOccurrences = db.prepare(
     "SELECT COUNT(*) AS count FROM managed_task_occurrences WHERE acknowledged_at IS NULL",
   ).get() as { count: number };
-  return Number(continuation.count) + authResults.length + Number(reminderOccurrences.count)
+  return Number(continuation.count) + authResults + Number(reminderOccurrences.count)
     + countOpenHookAlerts(db);
 }
 
@@ -801,6 +766,7 @@ export function registerInboxRoutes(
       sendJson(res, 404, { error: "auth request not found" });
       return;
     }
+    broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "delivered", id });
     sendJson(res, 204, null);
   }, { operation: { id: "post:/api/inbox/delivered/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
 
@@ -822,6 +788,7 @@ export function registerInboxRoutes(
           SET acknowledged_by = ?, acknowledged_at = ?
         WHERE acknowledged_at IS NULL`,
     ).run(ack.value, Date.now());
+    broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
     sendJson(res, 200, { ok: true });
   }, { operation: { id: "post:/api/inbox/ack-all", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "deny" });
 
@@ -864,6 +831,7 @@ export function registerInboxRoutes(
         sendJson(res, 404, { error: "continuation not found or already acknowledged" });
         return;
       }
+      broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "continuation", id: resolved.id });
       sendJson(res, 200, { ok: true });
     } else if (type === "auth_result") {
       // Bug: caa157e — resolve UUID prefix for auth request IDs
@@ -887,6 +855,7 @@ export function registerInboxRoutes(
         sendJson(res, 404, { error: "auth request not found or already acknowledged" });
         return;
       }
+      broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "auth_result", id: resolved.id });
       sendJson(res, 200, { ok: true });
     } else if (type === "hook_alert") {
       // Issue 27241e6 — acknowledging the alert dismisses the notice only. It
@@ -901,10 +870,12 @@ export function registerInboxRoutes(
         sendJson(res, 404, { error: "hook alert not found or already acknowledged" });
         return;
       }
+      broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "hook_alert", id });
       sendJson(res, 200, { ok: true });
     } else if (type === "managed_reminder_occurrence") {
       try {
         acknowledgeManagedReminderOccurrence(db, id, ack.value);
+        broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "managed_reminder_occurrence", id });
         sendJson(res, 200, { ok: true });
       } catch (error) {
         if (error instanceof ManagedReminderError) {

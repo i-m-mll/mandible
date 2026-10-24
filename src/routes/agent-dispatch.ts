@@ -33,7 +33,6 @@ import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
 import { OPERATIONAL_INCIDENT_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import {
-  countOperationalIncidents,
   OperationalIncidentError,
 } from "../operational-incidents.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -141,10 +140,7 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
         } : {}),
       });
       if (outcome.incident) {
-        broadcast(OPERATIONAL_INCIDENT_EVENTS.remediationChanged, {
-          incident_ids: [outcome.incident.id],
-          badge_count: countOperationalIncidents(db).active_unacknowledged,
-        });
+        broadcast(OPERATIONAL_INCIDENT_EVENTS.remediationChanged, { incident_ids: [outcome.incident.id] });
       }
       sendJson(res, 200, {
         ok: outcome.ok,

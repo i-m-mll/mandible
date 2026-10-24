@@ -97,6 +97,7 @@ import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
+import { attachDashboardBadgePublisher, readDashboardBadgeCounts } from "./dashboard-badges.js";
 import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
 import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -350,7 +351,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
   registerInboxRoutes(router, sessionManager, authQueue, workScanner);
-  registerDashboardRoutes(router, authQueue, db);
+  registerDashboardRoutes(router, db);
+  const detachDashboardBadgePublisher = attachDashboardBadgePublisher(sse, () => readDashboardBadgeCounts(db), logger);
   registerConsoleRoutes(router, sessionManager);
   registerConversationSpawnRoutes(router, db, conversationControl);
   registerHookRoutes(router);
@@ -734,6 +736,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       logger("warn", "conversation_control_close_failed", { error: String(error) });
     }
     wss.close();
+    detachDashboardBadgePublisher();
     sse.closeAll();
     await stopIngestionGracefully();
     stopTrashGcScheduler();

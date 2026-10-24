@@ -77,7 +77,9 @@ export const DOMAIN_EVENTS = Object.freeze({
   CONVERSATION_PROVIDER_EVENT: "conversation:provider-event",
   CONVERSATION_UPDATED: "conversation:updated",
   DAEMON_RELOADED: "daemon:reloaded",
+  DASHBOARD_BADGES: "dashboard:badges",
   HEARTBEAT: "heartbeat",
+  INBOX_ACKNOWLEDGED: "inbox:acknowledged",
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
@@ -116,6 +118,26 @@ export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_
   branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
 export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
 
+const BADGE_COUNT = z.number().int().nonnegative();
+export const DASHBOARD_BADGE_COUNTS = z.object({
+  auth: BADGE_COUNT,
+  inbox: BADGE_COUNT,
+  work: BADGE_COUNT,
+  /** Latest Briefing rounds with no frozen submission from any member. */
+  briefing: BADGE_COUNT,
+  /** Active, unresolved, unacknowledged operational incidents only. */
+  incidents: BADGE_COUNT,
+  /** Distinct deployment-invalidated task/execution-hash conditions still active. */
+  tasks: BADGE_COUNT,
+}).strict();
+export type DashboardBadgeCounts = z.infer<typeof DASHBOARD_BADGE_COUNTS>;
+
+export const INBOX_ACKNOWLEDGED_PAYLOAD = z.object({
+  kind: z.enum(["continuation", "auth_result", "hook_alert", "managed_reminder_occurrence", "delivered", "all"]),
+  id: z.string().min(1).nullable(),
+}).strict();
+export type InboxAcknowledged = z.infer<typeof INBOX_ACKNOWLEDGED_PAYLOAD>;
+
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
   : E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
@@ -123,6 +145,8 @@ export type EventPayload<E extends MandibleEventType> =
   : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
     ? { parent_id: string; child: import("./types.js").Session }
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
+  : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
+  : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
   : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
   : E extends BriefingEvent ? { briefing_id: string; round_id?: string | null; [key: string]: unknown }
@@ -2395,6 +2419,8 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
+  [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
+  [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
     ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),
   ...[DOMAIN_EVENTS.SESSION_CHILD_ADDED, DOMAIN_EVENTS.SESSION_CHILD_ENDED].map((event): [MandibleEventType, z.ZodType] =>

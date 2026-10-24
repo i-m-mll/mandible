@@ -83,7 +83,7 @@ describe("visible-first dashboard boot", () => {
       if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
       if (url === "/api/settings") return jsonResponse({});
-      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 2, work: 1 });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 2, work: 1, briefing: 0, incidents: 0, tasks: 0 });
       if (url === "/api/health") {
         return jsonResponse({
           status: "ok",
@@ -115,6 +115,57 @@ describe("visible-first dashboard boot", () => {
     await waitFor(() => expect(requests).toContain("/api/work/repos"));
   });
 
+  it("keeps a re-probed instance and takes badge changes only from the push", async () => {
+    vi.useFakeTimers();
+    const instance = {
+      role: "preview", instance_id: "preview-test", installation_id: "install-test",
+      public_origin: "https://preview-test.mandible.localhost:19421", backend_generation: "preview-1",
+      allowed_effects: ["ledger:read", "ledger:write", "maintenance:shared"], writable_roots: ["/tmp"],
+      db_path: "/tmp/mandible-preview.db", db_path_source: "iab-preview-copy",
+    };
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "/api/client-auth/whoami") return operatorSession();
+      if (url === "/api/issues") return jsonResponse({ repos: [] });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
+      if (url === "/api/health") {
+        return jsonResponse({ status: "ok", ready: true, startup_commit: { hash: "test" }, instance: structuredClone(instance) });
+      }
+      if (url === "/api/instance") return jsonResponse({ operations: [] });
+      if (url.startsWith("/api/user-settings/")) {
+        return jsonResponse({ version: 1, key: url.slice("/api/user-settings/".length), value: null, revision: 0 });
+      }
+      return jsonResponse({});
+    }));
+    const count = (predicate: (url: string) => boolean) => requests.filter(predicate).length;
+    const settingsReads = () => count((url) => url.startsWith("/api/user-settings/"));
+    const badgeReads = () => count((url) => url === "/api/dashboard/badges");
+
+    render(h(App, {}));
+    await waitUntilPasses(() => expect(MockEventSource.instances).toHaveLength(1));
+    const source = MockEventSource.instances[0];
+    source.onopen?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await waitUntilPasses(() => expect(screen.getByLabelText("Approvals").textContent).toContain("3"));
+    const settingsAfterMount = settingsReads();
+    expect(settingsAfterMount).toBeGreaterThan(0);
+
+    for (let i = 0; i < 3; i++) {
+      source.emit("message", { type: "auth:new", data: { request: { id: `a${i}`, status: "pending" } } });
+    }
+    await vi.advanceTimersByTimeAsync(16_000);
+
+    expect(count((url) => url === "/api/health")).toBeGreaterThanOrEqual(4);
+    expect(settingsReads()).toBe(settingsAfterMount);
+    expect(badgeReads()).toBe(1);
+
+    source.emit("message", { type: "dashboard:badges", data: { auth: 4, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 } });
+    await waitUntilPasses(() => expect(screen.getByLabelText("Approvals").textContent).toContain("4"));
+    expect(badgeReads()).toBe(1);
+  });
+
   it("suppresses fallback polling while dashboard SSE is fresh", async () => {
     vi.useFakeTimers();
     const requests: string[] = [];
@@ -123,7 +174,7 @@ describe("visible-first dashboard boot", () => {
       requests.push(url);
       if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
-      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, inbox: 0, work: 0 });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
       if (url === "/api/health") {
         return jsonResponse({ status: "ok", ready: true, startup_commit: { hash: "test" } });
       }

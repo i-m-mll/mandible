@@ -8,12 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addSpaceItem, briefingApiCacheFamiliesForEvent, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, invalidateApiGetCache } from '../ui/src/api';
 
 describe('Briefing SSE cache invalidation matrix', () => {
-  it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing, bundle, and badge caches', (topic) => {
+  it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing and bundle caches', (topic) => {
     expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
       '/api/briefing-bundles',
       '/api/briefing-groups',
-      '/api/dashboard/badges',
     ]);
   });
 });
