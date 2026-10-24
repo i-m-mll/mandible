@@ -422,6 +422,11 @@ export type AuthRequestAction = AuthRequestActionInput & {
   outcome_detail: string | null;
 };
 
+export type AuthPublicationBlocker = {
+  code: "runtime_handoff_lock";
+  message: string;
+};
+
 export type AuthRequest = {
   id: string;
   session_id: string | null;
@@ -436,6 +441,7 @@ export type AuthRequest = {
   commit_message_digest?: string | null;
   spec_content: string | null;
   repo?: string;
+  publication_blocker?: AuthPublicationBlocker | null;
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;

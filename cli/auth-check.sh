@@ -104,6 +104,10 @@ checked=$(printf '%s' "$response" | jq -r '.check.checked_requests // 0')
 case "$status" in
   clean)
     printf 'Auth check: clean (%s pending request(s) checked)\n' "$checked"
+    blocker=$(printf '%s' "$response" | jq -r '.check.publication_blocker.message // empty')
+    if [[ -n "$blocker" ]]; then
+      printf 'Publication blocked: %s\n' "$blocker"
+    fi
     exit 0
     ;;
   conflict)

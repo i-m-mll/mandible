@@ -29,7 +29,12 @@ Completion requires the pinned executable in loaded launchd arguments, the
 exact applied merge generation through the production front door, matching
 installed desktop provenance, and a full 31-second daemon health/log
 observation. Each observation sample must answer from the same process and
-definitions, ready at that generation, without event-loop or memory warnings. The candidate hook manager verifies this receipt and publication
+definitions, ready at that generation, without event-loop or memory warnings,
+and without a maximum event-loop delay of 250 ms or more. Diagnostic samples
+carry a sequence and exact interval. The observer waits until a completed
+sample covers the end of the 31-second window, within one fixed 62-second
+deadline; a stale sampler cannot pass by returning the same snapshot. The
+candidate hook manager verifies this receipt and publication
 proof before settling convergence or releasing deferred delivery actions.
 The log assessment fails on any `error` line from the current process and on
 any one event or route that exceeds 100 lines in a 10-second window. That rate
@@ -58,8 +63,13 @@ live**. It does not restore the old dependency graph or replay publication.
 
 `MANDIBLE_HOME/config/local-sessions/handoff-active.json` names the one handoff
 that owns the installation. While it is held, no other handoff is admitted, and
-the merge check, submission and every approval path for a runtime self-update
-refuse, naming the lock, its request, phase and error. A failed handoff keeps
+no protected merge may execute. Merge preflight and submission may prepare
+later pending requests and report the lock as their publication blocker, but
+candidate runtime launches stay deferred and every approval/execution path,
+including documentation-only merges, refuses. This keeps the protected branch
+at the exact generation needed to recover the failed publication. Releasing
+the lock schedules one missing current-candidate acceptance without repeating
+an unchanged failed result. A failed handoff keeps
 the lock until `mandible auth handoff recover <request>` (verification-only
 recovery, below) succeeds or the operator retires it with
 `mandible auth handoff retire --binding-digest <digest> --reason <text>`.
@@ -125,7 +135,24 @@ through a 31-second observation of the exact current daemon, installation,
 loaded launchd definitions, and actual stderr writer. Hook acceptance commits
 before the journal becomes complete; interrupted acknowledgment can be replayed.
 Concurrent observers cannot replace a receipt after its hook acceptance commits.
-The original failure and hook attempt history remain available.
+The original failure and hook attempt history remain available. Initial
+handoff acceptance remains strict from process startup through observation.
+Recovery still reads and hashes the complete current-process log, and lifetime
+hard failures such as crashes, error rows, restarts and event storms remain
+fatal. Timed lag, stall and memory-warning rows that precede a new recovery
+observation are retained as historical diagnostics; untimed events and events
+during the new interval fail. The recovery receipt records the exact interval,
+initial and final samples, full log offset/digest/byte count, and bounded
+historical diagnostics.
+Refused recovery observations are kept separately under the handoff's
+`recovery-attempts/` directory. Each immutable record includes the actor,
+failed phase, reason and bounded evidence; the newest ten are retained without
+rewriting the journal or an accepted recovery receipt.
+This exception is limited to lag, stall and memory diagnostics whose later
+samples prove the same process recovered. Generic lifetime error rows remain
+fatal even when they are old. Existing liveness or performance faults can
+therefore still refuse candidate acceptance or recovery; the handoff reports
+that refusal rather than treating readiness alone as convergence.
 
 The protected retry route accepts `mode: "verify-current"` and requires an
 active durable credential with project write access and exact delivery custody

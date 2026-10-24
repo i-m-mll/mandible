@@ -1,5 +1,6 @@
 import os from "node:os";
 import type { Logger } from "./types.js";
+import type { DiagnosticInterval } from "./runtime-health-contract.js";
 
 export const DEFAULT_MEMORY_WARNING_FRACTION = 0.1;
 const WARNING_CLEAR_RATIO = 0.9;
@@ -12,7 +13,7 @@ export interface ProcessMemoryValues {
   arrayBuffers: number;
 }
 
-export interface DaemonMemorySnapshot extends ProcessMemoryValues {
+export interface DaemonMemorySnapshot extends ProcessMemoryValues, DiagnosticInterval {
   uptime: number;
   totalMemory: number;
   rssFraction: number;
@@ -46,7 +47,9 @@ export class DaemonMemoryDiagnostics {
   private readonly warningClearFraction: number;
   private warning = false;
   private highWater: ProcessMemoryValues = emptyMemoryValues();
-  private last: DaemonMemorySnapshot = emptyMemorySnapshot();
+  private sequence = 0;
+  private intervalStartedAt: number;
+  private last: DaemonMemorySnapshot;
 
   constructor(options: DaemonMemoryDiagnosticsOptions) {
     this.logger = options.logger;
@@ -57,10 +60,11 @@ export class DaemonMemoryDiagnostics {
       uptime: options.sources?.uptime ?? process.uptime,
       totalMemory: options.sources?.totalMemory ?? os.totalmem,
     };
-    this.last = { ...this.last, warningThresholdFraction: this.warningFraction };
+    this.intervalStartedAt = Date.now();
+    this.last = { ...emptyMemorySnapshot(this.intervalStartedAt), warningThresholdFraction: this.warningFraction };
   }
 
-  sample(): DaemonMemorySnapshot {
+  sample(intervalEndedAt = Date.now()): DaemonMemorySnapshot {
     const usage = this.sources.memoryUsage();
     const totalMemory = Math.max(0, this.sources.totalMemory());
     const rssFraction = totalMemory > 0 ? usage.rss / totalMemory : 0;
@@ -69,6 +73,9 @@ export class DaemonMemoryDiagnostics {
     this.updateWarningState(usage.rss, totalMemory, rssFraction);
 
     this.last = {
+      sequence: ++this.sequence,
+      intervalStartedAt: this.intervalStartedAt,
+      intervalEndedAt,
       ...usage,
       uptime: this.sources.uptime(),
       totalMemory,
@@ -77,6 +84,7 @@ export class DaemonMemoryDiagnostics {
       warning: this.warning,
       highWater: { ...this.highWater },
     };
+    this.intervalStartedAt = intervalEndedAt;
     return { ...this.last };
   }
 
@@ -134,8 +142,11 @@ function emptyMemoryValues(): ProcessMemoryValues {
   return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
 }
 
-function emptyMemorySnapshot(): DaemonMemorySnapshot {
+function emptyMemorySnapshot(now: number): DaemonMemorySnapshot {
   return {
+    sequence: 0,
+    intervalStartedAt: now,
+    intervalEndedAt: now,
     ...emptyMemoryValues(),
     uptime: 0,
     totalMemory: 0,

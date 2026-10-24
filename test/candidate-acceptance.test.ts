@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
@@ -21,6 +21,57 @@ describe('production acceptance evidence', () => {
     }
     expect(assessLogs(JSON.stringify({ level: 'warn', message: 'optional_provider_unavailable' }))).toEqual([]);
   });
+});
+
+it('requires a fresh clean diagnostics interval covering acceptance', async () => {
+  let time = 100;
+  const health = (sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0) => ({
+    startup_epoch: 'epoch',
+    eventLoop: { sequence, intervalStartedAt, intervalEndedAt, warning: false, maxMs },
+    memory: { sequence, intervalStartedAt, intervalEndedAt, warning: false },
+  });
+  const initial = health(1, 80, 90);
+  const fresh = health(2, 90, 110);
+  let probes = 0;
+  await expect(observeAcceptanceHealth({
+    observationMs: 10,
+    deadlineMs: 20,
+    now: () => time,
+    wait: async () => { time += 10; },
+    probe: async () => ++probes === 1 ? initial : fresh,
+  })).resolves.toEqual(fresh);
+  await expect(observeAcceptanceHealth({ probe: async () => health(1, 80, 90, 250), now: () => 100 }))
+    .rejects.toMatchObject({ code: 'event_loop_stall' });
+
+  time = 100;
+  probes = 0;
+  await expect(observeAcceptanceHealth({
+    observationMs: 10, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 15; },
+    probe: async () => ++probes === 1 ? initial : health(3, 105, 115),
+  })).rejects.toMatchObject({ code: 'diagnostics_gap' });
+
+  time = 100;
+  probes = 0;
+  await expect(observeAcceptanceHealth({
+    observationMs: 10, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 25; },
+    probe: async () => ++probes === 1 ? initial : health(2, 90, 125),
+  })).rejects.toMatchObject({ code: 'observation_deadline' });
+});
+
+it('aborts an acceptance probe that never answers at the fixed deadline', async () => {
+  let aborted = false;
+  const started = Date.now();
+  await expect(observeAcceptanceHealth({
+    observationMs: 5,
+    deadlineMs: 20,
+    probe: async (_deadline, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true });
+    }),
+  })).rejects.toMatchObject({ code: 'observation_deadline' });
+  expect(aborted).toBe(true);
+  expect(Date.now() - started).toBeLessThan(100);
 });
 
 

@@ -533,8 +533,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // silently (e.g., due to an OS-level error that didn't emit an 'error'
   // event) while SSE streams keep the process alive.
   const healthCheckTimer = setInterval(() => {
-    memoryDiagnostics.sample();
-    eventLoopDiagnostics.sample();
+    const intervalEndedAt = Date.now();
+    memoryDiagnostics.sample(intervalEndedAt);
+    eventLoopDiagnostics.sample(intervalEndedAt);
     if (!server.listening) {
       logger("error", "self_health_check_failed", {
         message: "server.listening is false, exiting for supervisor restart"

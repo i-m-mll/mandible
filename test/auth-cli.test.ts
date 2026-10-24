@@ -49,6 +49,25 @@ describe("auth list", () => {
 });
 
 describe("auth check", () => {
+  it("keeps a publication-blocked candidate mergeable and names the blocker", async () => {
+    const stub = await daemon(({ method, url }) => method === "POST" && url === "/api/auth/check"
+      ? {
+        body: {
+          check: {
+            status: "clean", repo: "repo", base_branch: "main", head_branch: "feature/live", checked_requests: 0, conflicts: [],
+            publication_blocker: { code: "runtime_handoff_lock", message: "Runtime handoff lock abc is not acknowledged." },
+          },
+        },
+      }
+      : undefined);
+
+    const result = await runCli(["auth", "check", "--repo", "repo", "--branch", "feature/live"], { cwd: scratchDir("auth-check-blocked"), env: stub.env });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Auth check: clean");
+    expect(result.stdout).toContain("Publication blocked: Runtime handoff lock abc is not acknowledged.");
+  });
+
   it("renders a stale queue request as remediation, not a conflict (fbf2a58)", async () => {
     const stub = await daemon(({ method, url }) => method === "POST" && url === "/api/auth/check"
       ? {

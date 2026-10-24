@@ -1,5 +1,8 @@
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import type { Logger } from "./types.js";
+import { EVENT_LOOP_STALL_BUDGET_MS, type DiagnosticInterval } from "./runtime-health-contract.js";
+
+export { EVENT_LOOP_STALL_BUDGET_MS } from "./runtime-health-contract.js";
 
 const WARNING_THRESHOLD_MS = 100;
 const WARNING_CLEAR_MS = 50;
@@ -8,9 +11,7 @@ const WARNING_CLEAR_MS = 50;
  * longer than this is a visible stall for every client. A lone multi-second
  * stall barely moves a window's p95, so it is reported on its own (issue 63c9031).
  */
-export const EVENT_LOOP_STALL_BUDGET_MS = 250;
-
-export interface EventLoopLagSnapshot {
+export interface EventLoopLagSnapshot extends DiagnosticInterval {
   p50Ms: number;
   p95Ms: number;
   maxMs: number;
@@ -25,15 +26,19 @@ export class EventLoopLagDiagnostics {
   private readonly logger: Logger;
   private warning = false;
   private highWaterMs = 0;
-  private last: EventLoopLagSnapshot = emptySnapshot();
+  private sequence = 0;
+  private intervalStartedAt: number;
+  private last: EventLoopLagSnapshot;
 
-  constructor(logger: Logger, resolutionMs = 20) {
+  constructor(logger: Logger, resolutionMs = 20, now = Date.now()) {
     this.logger = logger;
     this.histogram = monitorEventLoopDelay({ resolution: resolutionMs });
     this.histogram.enable();
+    this.intervalStartedAt = now;
+    this.last = emptySnapshot(now);
   }
 
-  sample(): EventLoopLagSnapshot {
+  sample(intervalEndedAt = Date.now()): EventLoopLagSnapshot {
     const p50Ms = finiteMilliseconds(this.histogram.percentile(50));
     const p95Ms = finiteMilliseconds(this.histogram.percentile(95));
     const maxMs = finiteMilliseconds(this.histogram.max);
@@ -51,6 +56,9 @@ export class EventLoopLagDiagnostics {
     }
 
     this.last = {
+      sequence: ++this.sequence,
+      intervalStartedAt: this.intervalStartedAt,
+      intervalEndedAt,
       p50Ms,
       p95Ms,
       maxMs,
@@ -58,6 +66,7 @@ export class EventLoopLagDiagnostics {
       warning: this.warning,
       backgroundBackoffMs: backoffForLag(p95Ms),
     };
+    this.intervalStartedAt = intervalEndedAt;
     this.histogram.reset();
     return { ...this.last };
   }
@@ -82,6 +91,6 @@ function backoffForLag(p95Ms: number): number {
   return 0;
 }
 
-function emptySnapshot(): EventLoopLagSnapshot {
-  return { p50Ms: 0, p95Ms: 0, maxMs: 0, highWaterMs: 0, warning: false, backgroundBackoffMs: 0 };
+function emptySnapshot(now: number): EventLoopLagSnapshot {
+  return { sequence: 0, intervalStartedAt: now, intervalEndedAt: now, p50Ms: 0, p95Ms: 0, maxMs: 0, highWaterMs: 0, warning: false, backgroundBackoffMs: 0 };
 }
