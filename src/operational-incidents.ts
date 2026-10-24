@@ -551,18 +551,18 @@ export function raiseDaemonIncident(
 }
 
 /**
- * Resolve the daemon's own unresolved incident for a task once its condition
- * has cleared: the daemon reports a newer successful run of the same episode.
+ * Resolve an incident the daemon raised once its condition has cleared: the
+ * daemon reports a newer successful run of the same episode. Only that exact
+ * incident is resolved, and only while it is still open.
  */
 export function resolveDaemonIncident(
   db: Db,
-  input: { task: string; observedAt?: number },
+  input: { incidentId: string; task: string; observedAt?: number },
 ): { incident_id: string } | null {
   const open = db.prepare(
     `SELECT * FROM operational_incidents
-      WHERE executor = ? AND task = ? AND resolved_at IS NULL
-      ORDER BY first_seen DESC LIMIT 1`,
-  ).get(DAEMON_INCIDENT_EXECUTOR, input.task) as IncidentRow | undefined;
+      WHERE id = ? AND executor = ? AND task = ? AND resolved_at IS NULL`,
+  ).get(input.incidentId, DAEMON_INCIDENT_EXECUTOR, input.task) as IncidentRow | undefined;
   if (!open) return null;
   const raised = (JSON.parse(open.latest_telemetry_json) as { event: OperationalIncidentTelemetryEvent }).event;
   const observedAt = Math.max(input.observedAt ?? Date.now(), open.first_seen + 1);
