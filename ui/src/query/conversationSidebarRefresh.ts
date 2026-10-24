@@ -1,5 +1,5 @@
 import { hashKey, type Query, type QueryClient, type QueryKey } from '@tanstack/preact-query';
-import { createCoalescedRefresh } from '../lib/coalesced-refresh';
+import { createCoalescedRefresh, RefreshDeadlineError } from '../lib/coalesced-refresh';
 import { conversationKeys, normalizeSidebarFilters, type ConversationSidebarFilters } from './conversationKeys';
 
 const replayPending = new WeakSet<Query>();
@@ -37,7 +37,8 @@ export function markSidebarListsStale(
  * Refetches the stale sidebar lists for `filters` through one coalesced refresh
  * (`createCoalescedRefresh`): at most one refresh in flight, starts at least
  * `LIVE_REFRESH_MIN_INTERVAL_MS` apart. Lists marked stale before it started are refreshed
- * as soon as it starts.
+ * as soon as it starts. A refresh past the run deadline is cancelled and its lists fail with
+ * the `RefreshDeadlineError`, which the sidebar reports like any failed refresh.
  */
 export function startSidebarRefresh(
   client: QueryClient,
@@ -52,10 +53,29 @@ export function startSidebarRefresh(
   const due = (query: Query): boolean => (
     inScope(query) && query.state.isInvalidated && query.state.fetchStatus !== 'fetching'
   );
-  const refresh = createCoalescedRefresh(() => client.refetchQueries(
-    { queryKey: conversationKeys.sidebars(), type: 'all', predicate: due },
-    { cancelRefetch: false },
-  ));
+  const refresh = createCoalescedRefresh((signal) => {
+    const targets = cache.findAll({ queryKey: conversationKeys.sidebars() }).filter(due);
+    signal.addEventListener('abort', () => {
+      const error = signal.reason;
+      if (!(error instanceof RefreshDeadlineError)) return;
+      for (const query of targets) {
+        if (query.state.fetchStatus !== 'fetching') continue;
+        void query.cancel({ revert: true }).then(() => query.setState({
+          status: 'error',
+          error,
+          errorUpdatedAt: Date.now(),
+          errorUpdateCount: query.state.errorUpdateCount + 1,
+          fetchStatus: 'idle',
+          // Not stale: the next change marks it stale again; a failed refresh is not retried.
+          isInvalidated: false,
+        }));
+      }
+    }, { once: true });
+    return client.refetchQueries(
+      { queryKey: conversationKeys.sidebars(), type: 'all', predicate: (query) => targets.includes(query) },
+      { cancelRefetch: false },
+    );
+  });
   const unsubscribe = cache.subscribe((event) => {
     if (event.type === 'updated' && event.action.type === 'invalidate' && inScope(event.query)) refresh.request();
   });
