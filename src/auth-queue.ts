@@ -1,5 +1,5 @@
 import type { ProtectedRootDirtyAction } from "./auth-protected-root-dirty-action.js";
-import { assertAuthPublication, authPublicationSnapshot, bindAuthPublication } from "./auth-publication.js";
+import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { AUTH_REQUEST_TYPES } from "./contracts.js";
@@ -134,12 +134,8 @@ import {
 import { broadcast as defaultBroadcast } from "./sse.js";
 import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
-import {
-  appendAuthLifecycleEvent,
-  authRequestSnapshot,
-  authSnapshotDigest,
-  listAuthLifecycleEvents,
-} from "./auth-lifecycle.js";
+import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from "./auth-lifecycle.js";
+import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
   AuthDependencyProjection,
@@ -167,6 +163,17 @@ const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
 // 50–200 row list does not read or serialize megabytes of text per poll. The
 // full body is served by the detail route and fetched on selection. Keep this
 // list updated when a non-blob auth_requests column is added.
+/**
+ * Issue cc8fe29 — every return to `pending` clears the previous attempt's
+ * result together with its inbox delivery and acknowledgement watermarks, so
+ * the next result is delivered as new. Parameters: expires_at, updated_at.
+ */
+const RETURN_TO_PENDING_ASSIGNMENTS =
+  "status = 'pending', resolved_at = NULL, approved_at = NULL, approved_by_user_id = NULL, " +
+  "execution_evidence_id = NULL, approval_source = 'manual', approval_lease_id = NULL, " +
+  "exit_code = NULL, error = NULL, output = '', delivered_at = NULL, acknowledged_by = NULL, " +
+  "expires_at = ?, updated_at = ?";
+
 const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "id", "session_id", "command", "title", "cwd", "status",
   "created_at", "updated_at", "approved_at", "resolved_at", "skipped_at",
@@ -1247,10 +1254,7 @@ export class AuthQueue {
           // a later evidence-driven finalizer could mistake for a live approval
           // and use to run full finalization. A parked row must carry no approval
           // evidence until it is genuinely re-approved against the rebuilt code.
-          `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
-           exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-           approval_source = 'manual', approval_lease_id = NULL,
-           approved_by_user_id = NULL, execution_evidence_id = NULL
+          `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS}
            WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
         ).run(now + this.ttlMs, now, request.id);
         if (changed.changes === 1) {
@@ -1300,10 +1304,7 @@ export class AuthQueue {
       "UPDATE auth_requests SET status = ?, exit_code = ?, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
     );
     const requeue = this.db.prepare(
-      `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
-       exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-       approval_source = 'manual', approval_lease_id = NULL,
-       approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`
+      `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`
     );
     const completeRecovered = (request: AuthRequest, exitCode: number, error: string | null) => {
       this.db.transaction(() => {
@@ -3245,12 +3246,8 @@ export class AuthQueue {
       this.db.transaction(() => {
         this.writeResolvedRequest(
           request,
-          "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-            "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-            "approval_source = 'manual', approval_lease_id = NULL, " +
-            "exit_code = NULL, error = NULL, output = '', " +
-            "updated_at = ?, expires_at = ? WHERE id = ?",
-          [now, now + this.ttlMs]
+          `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
+          [now + this.ttlMs, now]
         );
         appendAuthLifecycleEvent(this.db, {
           requestId: request.id, eventType: "revised", priorStatus: request.status,
@@ -3291,12 +3288,8 @@ export class AuthQueue {
       this.db.transaction(() => {
         this.writeResolvedRequest(
           request,
-          "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-            "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-            "approval_source = 'manual', approval_lease_id = NULL, " +
-            "exit_code = NULL, error = NULL, output = '', " +
-            "updated_at = ?, expires_at = ? WHERE id = ?",
-          [now, now + this.ttlMs]
+          `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
+          [now + this.ttlMs, now]
         );
         appendAuthLifecycleEvent(this.db, {
           requestId: request.id, eventType: "revised", priorStatus: request.status,
@@ -5545,10 +5538,7 @@ export class AuthQueue {
             const now = this.now();
             this.db.transaction(() => {
               this.db.prepare(
-                `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
-                  exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-                  approval_source = 'manual', approval_lease_id = NULL,
-                  approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`,
+                `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
               ).run(now + this.ttlMs, now, request.id);
               appendAuthLifecycleEvent(this.db, {
                 requestId: request.id, eventType: "revised", priorStatus: refreshed.status,

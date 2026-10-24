@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
+import { registerInboxRoutes } from "../src/routes/inbox.js";
 import { setDb } from "../src/db.js";
 import { getOperator } from "../src/users/store.js";
 import type { AuthExecutionResult } from "../src/auth-executor.js";
@@ -104,5 +105,38 @@ describe("failed auth execution", () => {
     expect(executions).toHaveLength(2);
     expect(executions[0]).toContain(`failed (exit 1): ${REASON}`);
     expect(executions[1]).toMatch(/succeeded \(exit 0\)$/);
+  });
+
+  it("delivers the result of a retried execution again after the earlier result was delivered and acknowledged", async () => {
+    const outcomes = [result(1, SIGNING_FAILURE), result(1, SIGNING_FAILURE)];
+    const queue = createQueue({ executor: async () => outcomes.shift()! });
+    const db = (queue as unknown as { db: Parameters<typeof setDb>[0] }).db;
+    setDb(db);
+    cleanups.push(() => queue.dispose());
+    const router = authenticatedTestRouter(getOperator(db)!);
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerInboxRoutes(router as never, undefined, queue);
+    const undelivered = async () => {
+      const response = await router.invoke({ method: "GET", url: "/api/inbox/undelivered?target_session_id=owner-session" });
+      expect(response.status).toBe(200);
+      return (response.body as { undelivered: Array<{ id: string; status: string }> }).undelivered;
+    };
+
+    const request = await queue.submit({
+      ...AUTH_COMMAND_REVIEW, type: "commit", command: "git commit -S", title: "Signed commit", target_session_id: "owner-session",
+    });
+    await approveFixtureRequest(queue, request.id);
+    await waitForStatus(queue, request.id, "failed");
+    expect(await undelivered()).toEqual([expect.objectContaining({ id: request.id, status: "failed" })]);
+    expect((await router.invoke({ method: "POST", url: `/api/inbox/delivered/${request.id}`, body: {} })).status).toBe(204);
+    expect((await router.invoke({ method: "POST", url: `/api/inbox/auth_result/${request.id}/ack`, body: {} })).status).toBe(200);
+    expect(await undelivered()).toEqual([]);
+
+    expect((await router.invoke({ method: "POST", url: `/api/auth/request/${request.id}/retry`, body: {} })).body).toMatchObject({ status: "pending" });
+    expect(await queue.getRequest(request.id)).toMatchObject({ delivered_at: null, acknowledged_by: null });
+    await approveFixtureRequest(queue, request.id);
+    await waitForStatus(queue, request.id, "failed");
+
+    expect(await undelivered()).toEqual([expect.objectContaining({ id: request.id, status: "failed" })]);
   });
 });

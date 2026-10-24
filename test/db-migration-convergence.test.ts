@@ -41,7 +41,8 @@ import { MIGRATIONS } from "../src/db-migrations.js";
 import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
-import { appendAuthLifecycleEvent, authRequestSnapshot, listAuthExecutionAttempts, authSnapshotDigest, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
+import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1043,7 +1044,7 @@ describe("v204 session issue links", () => {
 });
 
 describe("v212 failed execution state", () => {
-  it("reclassifies a completed non-zero execution as failed with one revision that keeps its digest current", () => {
+  it("reclassifies a completed non-zero execution as failed with one revision whose digest matches the current row", () => {
     const db = migrateFixtureThrough(211);
     try {
       const signingFailure = "Confirm user presence for key ED25519-SK SHA256:abc\nCouldn't sign message: incorrect passphrase supplied to decrypt private key?\n" +
@@ -1055,6 +1056,8 @@ describe("v212 failed execution state", () => {
       for (const id of ["failed-request", "merged-request"]) {
         appendAuthLifecycleEvent(db, { requestId: id, eventType: "completed", priorStatus: "executing", nextStatus: "completed", occurredAt: 2 });
       }
+      // Delivery and acknowledgement change the row without a lifecycle revision.
+      db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1', updated_at = 6 WHERE id = 'failed-request'").run();
       const before = listAuthLifecycleEvents(db, "failed-request");
 
       migrate(db);

@@ -24,6 +24,7 @@ import {
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
+import { authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
@@ -2139,8 +2140,8 @@ export const MIGRATIONS: readonly Migration[] = [
   // lifecycle table is rebuilt to admit `failed` revisions, copying every
   // immutable revision verbatim. A request recorded as `completed` with a
   // non-zero exit becomes `failed` through one appended revision whose snapshot
-  // is the prior snapshot with only its status changed, so the request's
-  // lifecycle digest still matches its row.
+  // is the canonical serialization of the reclassified row, so the request's
+  // latest lifecycle digest matches its row.
   { version: 212, name: "auth_failed_execution_state", statements: [
     "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
     "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
@@ -2149,15 +2150,17 @@ export const MIGRATIONS: readonly Migration[] = [
     ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
     "INSERT INTO auth_request_lifecycle_events SELECT * FROM auth_request_lifecycle_events_v210",
     "DROP TABLE auth_request_lifecycle_events_v210",
+    `CREATE TEMP TABLE auth_failed_reclassification AS
+       SELECT id, exit_code FROM auth_requests
+       WHERE status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0`,
+    "UPDATE auth_requests SET status = 'failed' WHERE id IN (SELECT id FROM temp.auth_failed_reclassification)",
     `WITH reclassified AS (
-       SELECT ar.id, ar.exit_code, ar.custody_work_unit_id, wu.custody_generation,
-         json_set(latest.snapshot_json, '$.request.status', 'failed') AS snapshot_json,
-         latest.revision + 1 AS revision
-       FROM auth_requests ar
-       JOIN auth_request_lifecycle_events latest ON latest.auth_request_id = ar.id
-         AND latest.revision = (SELECT MAX(revision) FROM auth_request_lifecycle_events WHERE auth_request_id = ar.id)
+       SELECT r.id, r.exit_code, ar.custody_work_unit_id, wu.custody_generation,
+         mandible_auth_request_snapshot(r.id) AS snapshot_json,
+         (SELECT COALESCE(MAX(revision), 0) + 1 FROM auth_request_lifecycle_events WHERE auth_request_id = r.id) AS revision
+       FROM temp.auth_failed_reclassification r
+       JOIN auth_requests ar ON ar.id = r.id
        LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
-       WHERE ar.status = 'completed' AND ar.exit_code IS NOT NULL AND ar.exit_code != 0
      )
      INSERT INTO auth_request_lifecycle_events (
        id, auth_request_id, revision, event_type, prior_status, next_status,
@@ -2170,7 +2173,7 @@ export const MIGRATIONS: readonly Migration[] = [
        custody_work_unit_id, CASE WHEN custody_work_unit_id IS NULL THEN NULL ELSE custody_generation END,
        'legacy', CAST(unixepoch('subsec') * 1000 AS INTEGER)
      FROM reclassified`,
-    "UPDATE auth_requests SET status = 'failed' WHERE status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0",
+    "DROP TABLE temp.auth_failed_reclassification",
   ] },
 ];
 
@@ -2405,6 +2408,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
+  db.function("mandible_auth_request_snapshot", {}, (id: unknown) => authRequestSnapshot(db, String(id)));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(

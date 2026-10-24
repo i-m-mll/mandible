@@ -16,7 +16,8 @@ import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fix
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import { appendAuthLifecycleEvent, authSnapshotDigest } from "../src/auth-lifecycle.js";
+import { appendAuthLifecycleEvent } from "../src/auth-lifecycle.js";
+import { authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";

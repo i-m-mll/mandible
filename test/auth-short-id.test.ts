@@ -11,7 +11,8 @@ import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fix
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { appendAuthLifecycleEvent, authRequestSnapshot } from "../src/auth-lifecycle.js";
+import { appendAuthLifecycleEvent } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
