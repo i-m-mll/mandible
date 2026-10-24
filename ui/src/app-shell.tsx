@@ -130,7 +130,7 @@ function documentVisible(): boolean {
 /**
  * True while this view is active: its tab is the current route and the document is visible.
  * A view holds live data (polling, SSE-driven refetches, on-demand loads) only while active,
- * and reloads once each time it becomes active again (see `useRegisterInitialRouteLoad`).
+ * and reloads once each time it becomes active again (see `useRouteLoad`).
  */
 export function useViewActive(): boolean {
   const { active } = useAppShell();
@@ -145,8 +145,7 @@ export function useViewActive(): boolean {
 }
 
 /** Counts this view's activations (inactive to active); unchanged while it is active or inactive. */
-function useViewActivation(): number {
-  const active = useViewActive();
+function useViewActivation(active: boolean): number {
   const activations = useRef(0);
   const wasActive = useRef(active);
   if (active && !wasActive.current) activations.current += 1;
@@ -156,13 +155,11 @@ function useViewActivation(): number {
 
 /**
  * Register this mounted view's one bounded initial read with the app warmup barrier.
- * The returned callback changes identity exactly once per activation, so the effect that
- * performs the view's load (and lists this callback as a dependency) runs on mount and once
- * on each activation, and never when the view is hidden.
+ * For reads that are already gated on `useViewActive`, such as an enabled query's function;
+ * a view's own load effect uses `useRouteLoad`, which registers through this.
  */
 export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => void {
   const { active, registerInitialRouteLoad } = useAppShell();
-  const activation = useViewActivation();
   const activeRef = useRef(active);
   const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
   activeRef.current = active;
@@ -172,13 +169,33 @@ export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => vo
     if (!activeRef.current || registered.current) return;
     registered.current = true;
     registerInitialRouteLoadRef.current(promise);
-  }, [activation]);
+  }, []);
+}
+
+/**
+ * A view's load effect, run only while the view is active (`useViewActive`): when it becomes
+ * active (on mount, or later if mounted inactive), when `deps` change while it is active, and
+ * once on each later activation. It never runs while the view is inactive; a `deps` change
+ * then waits for activation. `register` hands the load's promise to the app warmup barrier.
+ */
+export function useRouteLoad(
+  load: (register: (promise: Promise<unknown>) => void) => void | (() => void),
+  deps: readonly unknown[],
+): void {
+  const active = useViewActive();
+  const activation = useViewActivation(active);
+  const register = useRegisterInitialRouteLoad();
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useLayoutEffect(() => (activeRef.current ? loadRef.current(register) : undefined), [activation, ...deps]);
 }
 
 /**
  * Live updates for an active view: runs `refresh` every `intervalMs` (when given) and on each
  * call of the returned signal, only while the view is active. Signals while inactive are
- * dropped, because activation reloads the view through `useRegisterInitialRouteLoad`.
+ * dropped, because activation reloads the view through `useRouteLoad`.
  */
 export function useLiveRefresh(refresh: () => void, intervalMs?: number): () => void {
   const active = useViewActive();

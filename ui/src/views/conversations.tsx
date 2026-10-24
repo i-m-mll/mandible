@@ -3063,7 +3063,8 @@ export function ConversationsView({
   const routeResolution = useQuery({
     queryKey: conversationKeys.routeTarget(routeTarget),
     queryFn: fetchRouteTarget,
-    enabled: routeIntentActive,
+    enabled: routeIntentActive && viewActive,
+    staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   }, queryClient);
   const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;

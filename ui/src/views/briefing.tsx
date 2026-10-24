@@ -14,7 +14,7 @@ import {
   type InvalidBriefingRow,
 } from '../api';
 
-import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
+import { useAppShell, useRouteLoad, useViewActive } from '../app-shell';
 import { briefingGroupRoute, briefingRoute, replaceRouteHash } from '../routing';
 import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
@@ -150,12 +150,12 @@ export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefin
 
 export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const viewActive = useViewActive();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const sidebarQuery = useQuery({
     queryKey: browserResourceKeys.briefingSidebar,
     queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
-    enabled: appShell.active,
+    enabled: viewActive,
     refetchOnWindowFocus: true,
   }, queryClient);
   const sidebar = sidebarQuery.data ?? { briefings: [], bundles: [], groups: [], invalidBriefings: [] };
@@ -167,15 +167,15 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   const sidebarLoaded = sidebarQuery.data !== undefined;
   const explicitBriefingQuery = useQuery({
     ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null),
-    enabled: appShell.active && Boolean(initialBriefingId),
+    enabled: viewActive && Boolean(initialBriefingId),
     refetchOnWindowFocus: true,
   }, queryClient);
-  useEffect(() => {
-    if (appShell.active) registerInitialRouteLoad(sidebarQuery.refetch());
-  }, [appShell.active, registerInitialRouteLoad]);
-  useEffect(() => {
-    if (appShell.active && initialBriefingId) registerInitialRouteLoad(explicitBriefingQuery.refetch());
-  }, [appShell.active, initialBriefingId, initialRoundId, registerInitialRouteLoad]);
+  useRouteLoad((register) => {
+    register(sidebarQuery.refetch({ cancelRefetch: false }));
+  }, []);
+  useRouteLoad((register) => {
+    if (initialBriefingId) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
+  }, [initialBriefingId, initialRoundId]);
 
   const hasExplicitTarget = Boolean(initialBriefingId || initialGroupId);
   const explicitError = explicitBriefingQuery.error;

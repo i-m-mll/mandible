@@ -6,7 +6,7 @@ import {
   AppOperationalNoticeOutlet,
   useAppShell,
   useRegisterAppRightSidebar,
-  useRegisterInitialRouteLoad,
+  useRouteLoad,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
@@ -850,7 +850,6 @@ function AddTimelineRowIcon(): JSX.Element {
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const { active } = useAppShell();
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -976,7 +975,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     setError(null);
   }, [timelineRequestKey]);
 
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     const generation = requestGeneration.current;
     const controller = new AbortController();
     const initialLoad = getProjectTimeline(timelineRequestRef.current, controller.signal)
@@ -1003,10 +1002,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       });
     registerInitialRouteLoad(initialLoad);
     return () => controller.abort();
-  }, [
-    registerInitialRouteLoad,
-    timelineRequestKey,
-  ]);
+  }, [timelineRequestKey]);
 
   const baseRows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
   const baseEvents = projection?.events ?? EMPTY_TIMELINE_EVENTS;

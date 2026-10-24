@@ -528,7 +528,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename Briefing' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename Briefing' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
     const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;

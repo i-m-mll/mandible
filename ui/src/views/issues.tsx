@@ -22,7 +22,7 @@ import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
-import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
+import { useAppShell, useRouteLoad } from '../app-shell';
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_RESOLUTIONS,
@@ -538,7 +538,6 @@ export function IssuesView({
   sidebarHidden = false,
 }: IssuesViewProps): JSX.Element {
   const appShell = useAppShell();
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const normalizedDefaultFilter = useMemo(
     () => normalizeIssueDefaultFilter(defaultFilter),
     [defaultFilter],
@@ -787,7 +786,7 @@ export function IssuesView({
   ]);
 
   // Fetch canonical ledger detail when selection changes.
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     if (!selectedIssueId) {
       detailRequestSeqRef.current += 1;
       setLedgerIssueDetail(null);
@@ -865,7 +864,7 @@ export function IssuesView({
     return () => {
       if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
-  }, [registerInitialRouteLoad, selectedRepoId, selectedIssueId]);
+  }, [selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     if (selectedIssueKeyRef.current !== `${repoId}:${issueId}`) detailRequestSeqRef.current += 1;

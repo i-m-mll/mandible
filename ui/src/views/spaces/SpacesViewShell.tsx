@@ -15,7 +15,7 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
 import {
@@ -32,7 +32,7 @@ import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import {
   AppOperationalNoticeOutlet,
   useAppShell,
-  useRegisterInitialRouteLoad,
+  useRouteLoad,
 } from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../../detail-cache';
@@ -199,7 +199,6 @@ export function SpacesViewShell({
   loadSpaceFactPacket,
 }: SpacesViewShellProps): JSX.Element {
   const appShell = useAppShell();
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [discardedSavedRef, setDiscardedSavedRef] = useState<string | null>(null);
   const explicitRef = explicitSpaceId?.trim() || null;
   const restoringSaved = Boolean(!explicitRef && savedSelection && savedSelection.spaceId !== discardedSavedRef);
@@ -233,7 +232,7 @@ export function SpacesViewShell({
   );
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
-  useLayoutEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     const generation = ++selectionGeneration.current;
     if (!spaceId) {
       setSelectedSpace(null);
@@ -298,7 +297,7 @@ export function SpacesViewShell({
     return () => {
       cancelled = true;
     };
-  }, [registerInitialRouteLoad, resolvedLoadSpaceFactPacket, spaceId, restoringSaved, appShell.active, onNavigate, retryToken]);
+  }, [resolvedLoadSpaceFactPacket, spaceId, restoringSaved, appShell.active, onNavigate, retryToken]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
     if (!spaceId || space.id !== spaceId || spaceLoadError) return;
