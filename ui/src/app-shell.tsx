@@ -129,8 +129,8 @@ function documentVisible(): boolean {
 
 /**
  * True while this view is active: its tab is the current route and the document is visible.
- * A view holds live data (polling, SSE-driven refetches, on-demand loads) only while active;
- * while inactive it records what went stale and refreshes once when this turns true again.
+ * A view holds live data (polling, SSE-driven refetches, on-demand loads) only while active,
+ * and reloads once each time it becomes active again (see `useRegisterInitialRouteLoad`).
  */
 export function useViewActive(): boolean {
   const { active } = useAppShell();
@@ -144,9 +144,25 @@ export function useViewActive(): boolean {
   return active && visible;
 }
 
-/** Register this mounted view's one bounded initial read with the app warmup barrier. */
+/** Counts this view's activations (inactive to active); unchanged while it is active or inactive. */
+function useViewActivation(): number {
+  const active = useViewActive();
+  const activations = useRef(0);
+  const wasActive = useRef(active);
+  if (active && !wasActive.current) activations.current += 1;
+  wasActive.current = active;
+  return activations.current;
+}
+
+/**
+ * Register this mounted view's one bounded initial read with the app warmup barrier.
+ * The returned callback changes identity exactly once per activation, so the effect that
+ * performs the view's load (and lists this callback as a dependency) runs on mount and once
+ * on each activation, and never when the view is hidden.
+ */
 export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => void {
   const { active, registerInitialRouteLoad } = useAppShell();
+  const activation = useViewActivation();
   const activeRef = useRef(active);
   const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
   activeRef.current = active;
@@ -156,7 +172,28 @@ export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => vo
     if (!activeRef.current || registered.current) return;
     registered.current = true;
     registerInitialRouteLoadRef.current(promise);
-  }, [active]);
+  }, [activation]);
+}
+
+/**
+ * Live updates for an active view: runs `refresh` every `intervalMs` (when given) and on each
+ * call of the returned signal, only while the view is active. Signals while inactive are
+ * dropped, because activation reloads the view through `useRegisterInitialRouteLoad`.
+ */
+export function useLiveRefresh(refresh: () => void, intervalMs?: number): () => void {
+  const active = useViewActive();
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => {
+    if (!active || intervalMs === undefined) return undefined;
+    const timer = window.setInterval(() => refreshRef.current(), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [active, intervalMs]);
+  return useCallback(() => {
+    if (activeRef.current) refreshRef.current();
+  }, []);
 }
 
 /** One structural target for the shared DetailPaneNotice portal. */

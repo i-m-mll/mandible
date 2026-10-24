@@ -28,6 +28,7 @@ import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedScrollPosition } from '../hooks/usePersistedScrollPosition';
 import { readPersistedViewState, writePersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { useLiveRefresh } from '../app-shell';
 import {
   fetchAuthHooks,
   cancelApprovalProof,
@@ -2291,13 +2292,7 @@ export function AuthQueueView({
 
   const hasActiveList = orderedActiveQueue.length + lingeringQueue.length > 0;
   const [, setTimeTick] = useState(0);
-  useEffect(() => {
-    if (!hasActiveList) {
-      return;
-    }
-    const interval = setInterval(() => setTimeTick((t) => t + 1), 30000);
-    return () => clearInterval(interval);
-  }, [hasActiveList]);
+  useLiveRefresh(() => setTimeTick((t) => t + 1), hasActiveList ? 30_000 : undefined);
 
   const [inFlight, setInFlight] = useState<Set<string>>(() => new Set());
   const inFlightRef = useRef<Set<string>>(new Set());

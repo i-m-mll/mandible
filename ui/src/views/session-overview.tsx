@@ -10,7 +10,7 @@ import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identitie
 import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveRefresh, useRegisterInitialRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   ApiError,
@@ -449,26 +449,20 @@ export function SessionOverviewView({
 
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
+  const refreshOverview = useLiveRefresh(() => {
+    if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
+    setRefreshToken((token) => token + 1);
+  }, 15_000);
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const refreshVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      if (selectedRef) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedRef)}/overview`);
-      setRefreshToken((token) => token + 1);
-    };
     const events = acquireSharedSse();
-    events.on("session:execution-updated", refreshVisible);
+    events.on("session:execution-updated", refreshOverview);
     events.connect();
-    const interval = window.setInterval(refreshVisible, 15_000);
-    window.addEventListener('focus', refreshVisible);
-    document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('focus', refreshOverview);
     return () => {
       events.close();
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshVisible);
-      document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('focus', refreshOverview);
     };
-  }, [embedded, selectedRef]);
+  }, [refreshOverview]);
 
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedRef(sessionId);
