@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
 import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
@@ -308,16 +307,39 @@ export function stopDaemonLogger(): void {
   singleton.shutdown();
 }
 
+const CHILD_STDERR_ROW_CHARS = 16 * 1024;
+
 /**
- * Log each line a child process writes to its piped stderr as a
- * `child_process_stderr` warning. Children never share the daemon's stderr:
- * rotation copies and then truncates that file, and only writes made on the
- * rotating thread are certain to land in either the rotated segment or the
- * live file.
+ * Log a child's piped stderr as `child_process_stderr` warnings, one row per
+ * chunk read from the pipe. A burst such as a stack trace becomes one row, so
+ * only a child that keeps writing approaches the storm rule. Rows hold whole
+ * lines: a partial last line waits for the next chunk or the end of the stream,
+ * unless it alone outgrows a row. A row longer than CHILD_STDERR_ROW_CHARS
+ * keeps its head and tail and records how many characters it omitted.
+ *
+ * Children never share the daemon's stderr: rotation copies and then
+ * truncates that file, and only writes made on the rotating thread are
+ * certain to land in either the rotated segment or the live file.
  */
 export function logChildStderr(stream: Readable, fields: Record<string, unknown>): void {
-  createInterface({ input: stream, crlfDelay: Infinity })
-    .on("line", (line) => singleton.log("warn", "child_process_stderr", { ...fields, line }));
+  let pending = "";
+  const emit = (text: string) => {
+    if (!text) return;
+    const half = CHILD_STDERR_ROW_CHARS / 2;
+    const kept = text.length <= CHILD_STDERR_ROW_CHARS
+      ? { text }
+      : { text: `${text.slice(0, half)}\n…\n${text.slice(-half)}`, omitted_chars: text.length - 2 * half };
+    singleton.log("warn", "child_process_stderr", { ...fields, line_count: text.split("\n").length, bytes: Buffer.byteLength(text), ...kept });
+  };
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk: string) => {
+    const text = pending + chunk;
+    const end = text.lastIndexOf("\n");
+    pending = text.slice(end + 1);
+    emit(text.slice(0, Math.max(end, 0)));
+    if (pending.length > CHILD_STDERR_ROW_CHARS) { emit(pending); pending = ""; }
+  });
+  stream.on("end", () => { emit(pending); pending = ""; });
 }
 
 /**

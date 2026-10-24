@@ -152,17 +152,24 @@ describe("daemon logger", () => {
     expect(JSON.parse(String(info.fields_json))).toMatchObject({ value: 42 });
   });
 
-  it("logs each line of a child's piped stderr with its attribution", async () => {
+  it("logs a child's piped stderr per pipe read, not per line, and caps a huge read", async () => {
     configureDaemonLogger(db);
-    const child = spawn("/bin/sh", ["-c", "printf 'first\\nsecond' >&2"], { stdio: ["ignore", "ignore", "pipe"] });
+    const burst = Array.from({ length: 300 }, (_, index) => `    at frame${index} (file.js:${index}:1)`).join("\n");
+    const huge = "x".repeat(40 * 1024);
+    const child = spawn("/bin/sh", ["-c", `printf '%s\\n' "$1" >&2; sleep 0.2; printf '%s' "$2" >&2`, "sh", `Error: boom\n${burst}`, huge], { stdio: ["ignore", "ignore", "pipe"] });
     logChildStderr(child.stderr, { subsystem: "claude", session_id: "session-1", pid: child.pid });
     await new Promise((resolve) => child.once("close", resolve));
     flushDaemonLogger();
-    const rows = db.prepare("SELECT level, event, session_id, fields_json FROM daemon_log ORDER BY ts, rowid").all() as Array<{ level: string; event: string; session_id: string; fields_json: string }>;
-    expect(rows.map((row) => ({ ...row, fields_json: JSON.parse(row.fields_json) }))).toEqual(["first", "second"].map((line) => ({
-      level: "warn", event: "child_process_stderr", session_id: "session-1",
-      fields_json: { subsystem: "claude", session_id: "session-1", pid: child.pid, line },
-    })));
+    const rows = (db.prepare("SELECT level, event, session_id, fields_json FROM daemon_log ORDER BY ts, rowid").all() as Array<{ level: string; event: string; session_id: string; fields_json: string }>)
+      .map((row) => ({ ...row, fields: JSON.parse(row.fields_json) }));
+    expect(rows.every((row) => row.level === "warn" && row.event === "child_process_stderr" && row.session_id === "session-1" && row.fields.pid === child.pid)).toBe(true);
+    const burstRows = rows.filter((row) => !String(row.fields.text).startsWith("x"));
+    const hugeRows = rows.filter((row) => String(row.fields.text).startsWith("x"));
+    // Pipe reads bound a row, so a burst is a handful of rows, never one per line.
+    expect(burstRows.length).toBeLessThanOrEqual(4);
+    expect(burstRows.map((row) => row.fields.text).join("\n")).toBe(`Error: boom\n${burst}`);
+    expect(hugeRows.reduce((total, row) => total + row.fields.bytes, 0)).toBe(huge.length);
+    expect(hugeRows.some((row) => row.fields.omitted_chars > 0 && String(row.fields.text).length <= 16 * 1024 + 3)).toBe(true);
   });
 
   // The daemon does not open this file: its spawner redirected stderr here and
