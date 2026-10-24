@@ -36,6 +36,24 @@ cp.fork("other.js");
   ]);
 });
 
+it("resolves fork through require, dynamic import and local aliases", () => {
+  expect(reasons(`const { fork } = require("child_process");
+fork("a.js");
+require("node:child_process").fork("b.js");
+const cp = require("child_process") as typeof import("child_process");
+const alias = cp;
+const spawnChild = alias["fork"];
+spawnChild("c.js");
+const { fork: start } = await import("node:child_process");
+start("d.js");
+(await import("child_process")).fork("e.js");
+import childProcess = require("child_process");
+childProcess.fork("f.js");
+const other = require("node:path");
+other.fork("g.js");
+`)).toEqual([2, 3, 7, 9, 10, 12].map((line) => `${line}: fork inherits stdio by default`));
+});
+
 it("accepts children whose output is piped, ignored or written to their own file", () => {
   expect(reasons(`import { spawn } from "node:child_process";
 const fd = 7;
