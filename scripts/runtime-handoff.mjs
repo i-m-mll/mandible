@@ -8,7 +8,8 @@ import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
+import { createRuntimeLogAssessor } from './runtime-log-assessment.mjs';
+import { readStderrLogCoverage, resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { runtimeEnvironment } from './runtime-environment.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
@@ -233,32 +234,6 @@ function exactActiveOwner(journal) {
   if (active.journal !== journalFile(journal.binding) || active.bindingDigest !== journal.bindingDigest) throw new Error('Active runtime handoff owner changed.');
 }
 
-export function runtimeLogStartupOffset(log, processIdentity) {
-  const fd = fs.openSync(log.path, 'r');
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.dev !== log.dev || stat.ino !== log.ino || stat.size < log.size) throw new Error('Daemon log rotated or truncated.');
-    const limit = 16 * 1024 * 1024;
-    const begin = Math.max(0, stat.size - limit);
-    const bytes = Buffer.alloc(stat.size - begin);
-    fs.readSync(fd, bytes, 0, bytes.length, begin);
-    const lines = bytes.toString('utf8').split('\n');
-    let relative = bytes.length;
-    for (let index = lines.length - 1; index >= (begin ? 1 : 0); index--) {
-      relative -= Buffer.byteLength(lines[index]) + (index === lines.length - 1 ? 0 : 1);
-      let row;
-      try { row = JSON.parse(lines[index]); } catch { continue; }
-      if ((row.message || row.event) !== 'server_started') continue;
-      const time = Date.parse(row.time);
-      const processTime = Date.parse(processIdentity.startedAt);
-      if (!Number.isFinite(time) || !Number.isFinite(processTime) || time < processTime - 1000 || time > processTime + 60000) throw new Error('Daemon log startup does not identify the current process.');
-      return begin + relative;
-    }
-    if (begin) throw new Error('Current daemon startup exceeds the 16 MiB observation coverage limit; preserve the log and arrange an explicitly authorized fresh runtime launch.');
-    throw new Error('Current daemon startup is absent from its actual log.');
-  } finally { fs.closeSync(fd); }
-}
-
 export function recheckRuntimeObservation(journal, receipt) {
   validateJournal(journal);
   exactActiveOwner(journal);
@@ -315,7 +290,7 @@ export async function observeRuntimeHandoff(journal, {
   const b = journal.binding;
   const probeRuntime = probe ?? (async (until, signal) => JSON.parse(await controller(journal, 'handoff-verify', currentVerifier, { until, signal })));
   let initialEvidence;
-  let offset;
+  let coverage;
   const resources = path.join(b.nativeApp, 'Contents/Resources');
   const marker = path.join(b.root, 'dist/build-revision.json');
   const installedMarker = path.join(resources, 'build-revision.json');
@@ -329,7 +304,7 @@ export async function observeRuntimeHandoff(journal, {
       if (path.resolve(value.health.instance.db_path) !== path.resolve(journal.database)) throw observationFailure('process_changed', 'Observed production database identity differs.', { expected: journal.database, actual: value.health.instance.db_path });
       if (!initialEvidence) {
         initialEvidence = value;
-        offset = runtimeLogStartupOffset(value.daemonLog, value.process);
+        coverage = await resolveStderrLogCoverage(value.daemonLog, value.process.startedAt);
         files = { ...files, ...Object.fromEntries([value.backend.file, value.gateway.file].map(file => [file, fileHash(file)])) };
       }
       return value;
@@ -341,15 +316,9 @@ export async function observeRuntimeHandoff(journal, {
     deadlineMs,
   });
   const evidence = observed.evidence;
-  const fd = fs.openSync(evidence.daemonLog.path, 'r');
-  let daemonLog;
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.dev !== evidence.daemonLog.dev || stat.ino !== evidence.daemonLog.ino || stat.size < evidence.daemonLog.size) throw observationFailure('log_changed', 'Daemon log coverage changed.', { observed: evidence.daemonLog, current: { dev: stat.dev, ino: stat.ino, size: stat.size } });
-    if (stat.size - offset > 16 * 1024 * 1024) throw new Error('Current-process log exceeds the 16 MiB observation coverage limit; preserve the log and arrange an explicitly authorized fresh runtime launch.');
-    const bytes = Buffer.alloc(stat.size - offset); fs.readSync(fd, bytes, 0, bytes.length, offset); daemonLog = bytes.toString('utf8');
-  } finally { fs.closeSync(fd); }
-  const assessment = assessRuntimeLogs(daemonLog, currentVerifier ? { historicalBefore: observed.observation.startedAt } : {});
+  const assessor = createRuntimeLogAssessor(currentVerifier ? { historicalBefore: observed.observation.startedAt } : {});
+  const daemonLog = await readStderrLogCoverage(coverage, evidence.daemonLog, assessor.add);
+  const assessment = assessor.finish();
   if (assessment.failures.length) throw observationFailure(assessment.diagnostics.hard_failure_count === 0 && assessment.diagnostics.current_health.length ? assessment.diagnostics.current_health[0].code : 'log_assessment_failed', `Convergence logs failed assessment: ${assessment.failures.join('; ')}`, {
     observation: observed.observation,
     failures: assessment.failures,
@@ -364,7 +333,7 @@ export async function observeRuntimeHandoff(journal, {
       healthSamples: observed.historicalHealth,
       logEvents: assessment.diagnostics.historical_health,
     },
-    logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: hash(daemonLog), daemonLogBytes: Buffer.byteLength(daemonLog), daemonLogOffset: offset };
+    logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: daemonLog.sha256, daemonLogBytes: daemonLog.bytes, daemonLogOffset: coverage.offset, daemonLogSegments: coverage.segments };
   recheckRuntimeObservation(journal, receipt);
   return receipt;
 }

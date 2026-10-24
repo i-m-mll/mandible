@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -14,6 +15,7 @@ import {
   rotateStderrLogSegments,
 } from "../src/daemon-log.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { STDERR_LOG_ROTATED } from "../src/stderr-log-chain.js";
 import { openOperationalLogStore } from "../src/operational-log-db.js";
 import { registerSystemRoutes } from "../src/routes/system.js";
 import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../src/server.js";
@@ -151,18 +153,26 @@ describe("daemon logger", () => {
   // The daemon does not open this file: its spawner redirected stderr here and
   // holds the only descriptor. Rotating by rename left that descriptor on the
   // moved inode, so the live path stayed empty until restart. Rotation truncates
-  // in place, shifts older segments down, and drops the oldest beyond the bound.
-  it("rotates the live stderr log under an open append-mode writer and keeps a bounded number of segments", () => {
+  // in place, shifts older segments down, drops the oldest beyond the bound, and
+  // starts each new live file with the record of the segment it just moved.
+  it("rotates the live stderr log under an open append-mode writer into a bounded, linked chain of segments", () => {
     const logPath = path.join(tempDir, "launchd-stderr.log");
     const fd = fs.openSync(logPath, "a");
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    const record = (file: string) => {
+      const row = JSON.parse(fs.readFileSync(file, "utf8").split("\n")[0]);
+      return { event: row.event, bytes: row.segment_bytes, sha256: row.segment_sha256 };
+    };
     try {
       for (const segment of ["first", "second", "third"]) {
         fs.writeSync(fd, `${segment}\n`);
         rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
       }
       fs.writeSync(fd, "live\n");
-      expect([logPath, `${logPath}.1`, `${logPath}.2`].map((file) => fs.readFileSync(file, "utf8")))
-        .toEqual(["live\n", "third\n", "second\n"]);
+      const [live, one, two] = [logPath, `${logPath}.1`, `${logPath}.2`].map((file) => fs.readFileSync(file, "utf8"));
+      expect([live, one, two].map((text) => text.split("\n").filter(Boolean).at(-1))).toEqual(["live", "third", "second"]);
+      expect(record(logPath)).toEqual({ event: STDERR_LOG_ROTATED, bytes: Buffer.byteLength(one), sha256: sha256(one) });
+      expect(record(`${logPath}.1`)).toEqual({ event: STDERR_LOG_ROTATED, bytes: Buffer.byteLength(two), sha256: sha256(two) });
       expect(fs.existsSync(`${logPath}.3`)).toBe(false);
     } finally {
       fs.closeSync(fd);
@@ -183,7 +193,7 @@ describe("preview log ownership", () => {
     vi.stubEnv("MANDIBLE_STDOUT_LOG_PATH", stdout); vi.stubEnv("MANDIBLE_STDERR_LOG_PATH", stderr);
     try {
       configureDaemonLogger(db);
-      expect(fs.statSync(stdout).size).toBe(0); expect(fs.statSync(stderr).size).toBe(0);
+      for (const file of [stdout, stderr]) expect(JSON.parse(fs.readFileSync(file, "utf8")).event).toBe(STDERR_LOG_ROTATED);
       expect(fs.readFileSync(`${stdout}.1`, "utf8")).toBe("preview stdout");
       expect(fs.readFileSync(production, "utf8")).toBe("production sentinel");
       fs.symlinkSync(production, `${stdout}.2`);

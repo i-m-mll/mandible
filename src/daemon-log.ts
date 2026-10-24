@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
 import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
+import { stderrLogRotationRecord } from "./stderr-log-chain.js";
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const DEFAULT_LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
@@ -345,39 +346,72 @@ export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void
     return;
   }
 
-  if (keepSegments > 0) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    // Shift the already-rotated segments down. Nothing holds these open, so a
-    // rename is both correct and free. The loop stops at .1 because the live
-    // file is handled separately below.
-    for (let index = keepSegments; index >= 2; index -= 1) {
-      const source = `${filePath}.${index - 1}`;
-      const target = `${filePath}.${index}`;
-      if (!fs.existsSync(source)) {
-        continue;
-      }
-      if (index === keepSegments) {
-        fs.rmSync(target, { force: true });
-      }
-      fs.renameSync(source, target);
-    }
-    fs.copyFileSync(filePath, `${filePath}.1`);
+  if (keepSegments === 0) {
+    fs.truncateSync(filePath, 0);
+    return;
   }
+  // Shift the already-rotated segments down. Nothing holds these open, so a
+  // rename is both correct and free. The loop stops at .1 because the live
+  // file is handled separately below.
+  for (let index = keepSegments; index >= 2; index -= 1) {
+    const source = `${filePath}.${index - 1}`;
+    const target = `${filePath}.${index}`;
+    if (!fs.existsSync(source)) {
+      continue;
+    }
+    if (index === keepSegments) {
+      fs.rmSync(target, { force: true });
+    }
+    fs.renameSync(source, target);
+  }
+  const segment = moveLiveBytesToSegment(filePath, `${filePath}.1`);
+  fs.appendFileSync(filePath, stderrLogRotationRecord(segment));
+}
 
-  // Copy-then-truncate rather than rename-or-unlink. This process does not own
-  // the file descriptor writing this file: the daemon logs to its own stderr,
-  // and whoever spawned it (launchd, the desktop launcher, the preview run
-  // script) redirected that stderr here and still holds the descriptor open.
-  // Renaming or unlinking the file leaves that descriptor pointing at the moved
-  // or unlinked inode, so every later line lands in a rotated segment — or in
-  // no reachable file at all — until the process restarts and its spawner
-  // reopens the path. Truncating in place keeps the inode, and every writer is
-  // opened O_APPEND, so the next write resumes at offset 0.
-  //
-  // Lines written between the copy and the truncate are lost. That window is
-  // one file copy wide and is the deliberate price of not invalidating a
-  // descriptor this process cannot reopen.
-  fs.truncateSync(filePath, 0);
+/**
+ * Copy the live file into the segment, then truncate it in place, and return
+ * the segment's byte count and digest for its rotation record.
+ *
+ * Truncate rather than rename-or-unlink. This process does not own the file
+ * descriptor writing this file: the daemon logs to its own stderr, and whoever
+ * spawned it (launchd, the desktop launcher, the preview run script)
+ * redirected that stderr here and still holds the descriptor open. Renaming or
+ * unlinking the file leaves that descriptor pointing at the moved or unlinked
+ * inode, so every later line lands in a rotated segment — or in no reachable
+ * file at all — until the process restarts and its spawner reopens the path.
+ * Truncating in place keeps the inode, and every writer is opened O_APPEND, so
+ * the next write resumes at offset 0.
+ *
+ * The copy repeats until the size stops changing, so the only bytes that can be
+ * lost are those another thread or process appends between the final size
+ * check and the truncate. This thread's own log lines cannot: its stderr file
+ * writes are synchronous, and rotation runs on the same thread.
+ */
+function moveLiveBytesToSegment(filePath: string, segmentPath: string): { bytes: number; sha256: string } {
+  const live = fs.openSync(filePath, "r+");
+  try {
+    const out = fs.openSync(segmentPath, "w", 0o644);
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let copied = 0;
+    try {
+      for (let size = fs.fstatSync(live).size; size > copied; size = fs.fstatSync(live).size) {
+        while (copied < size) {
+          const read = fs.readSync(live, buffer, 0, Math.min(buffer.length, size - copied), copied);
+          if (read === 0) break;
+          fs.writeSync(out, buffer, 0, read);
+          digest.update(buffer.subarray(0, read));
+          copied += read;
+        }
+      }
+      fs.ftruncateSync(live, 0);
+    } finally {
+      fs.closeSync(out);
+    }
+    return { bytes: copied, sha256: digest.digest("hex") };
+  } finally {
+    fs.closeSync(live);
+  }
 }
 
 /**

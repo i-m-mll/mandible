@@ -29,7 +29,14 @@ function peakWindow(summary) {
   return peak + summary.untimed;
 }
 
-export function assessRuntimeLogs(text, { historicalBefore = null } = {}) {
+export function assessRuntimeLogs(text, options) {
+  const assessor = createRuntimeLogAssessor(options);
+  for (const line of text.split('\n')) assessor.add(line);
+  return assessor.finish();
+}
+
+/** Incremental form of assessRuntimeLogs, for logs read in chunks. */
+export function createRuntimeLogAssessor({ historicalBefore = null } = {}) {
   const failures = [];
   const historicalHealth = [];
   const currentHealth = [];
@@ -39,11 +46,12 @@ export function assessRuntimeLogs(text, { historicalBefore = null } = {}) {
   const routes = new Map();
   let started = 0;
   let requests = 0;
-  for (const line of text.split('\n').filter(Boolean)) {
+  const add = line => {
+    if (!line) return;
     let row;
     try { row = JSON.parse(line); } catch {
       if (/panic|fatal|crash|foreign.key|database.*(?:closed|not open)|event.loop.*(?:stall|starv)/i.test(line)) { if (failures.length < 20) failures.push(line); }
-      continue;
+      return;
     }
     const event = row.message || row.event || '';
     if (event === 'server_started') started++;
@@ -81,28 +89,31 @@ export function assessRuntimeLogs(text, { historicalBefore = null } = {}) {
       }
     }
     if (row.level === 'error' || ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error'].includes(event) || /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line)) { hardFailureCount++; if (failures.length < 20) failures.push(line); }
-  }
-  if (started > 1) { hardFailureCount++; failures.push('Daemon restarted during acceptance'); }
-  const eventSummaries = [];
-  for (const [event, summary] of events) {
-    const peak = peakWindow(summary);
-    if (peak > STORM_LIMIT) { hardFailureCount++; failures.push(`Repeated event storm: ${event} (${peak} in ${STORM_WINDOW_MS}ms)`); }
-    const { times, ...counts } = summary;
-    eventSummaries.push({ ...counts, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
-  }
-  const httpRoutes = [];
-  for (const [key, route] of routes) {
-    const peak = peakWindow(route);
-    if (peak > STORM_LIMIT) { hardFailureCount++; failures.push(`Repeated request storm: ${key} (${peak} in ${STORM_WINDOW_MS}ms)`); }
-    const { times, ...summary } = route;
-    httpRoutes.push({ ...summary, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
-  }
-  httpRoutes.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || `${a.method} ${a.pathname}`.localeCompare(`${b.method} ${b.pathname}`));
-  eventSummaries.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || a.event.localeCompare(b.event));
-  return {
-    failures,
-    diagnostics: { hard_failure_count: hardFailureCount, current_health: currentHealth.slice(0, 20), historical_health: { retained: historicalHealth, omitted: Math.max(0, historicalHealthCount - historicalHealth.length) }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
   };
+  const finish = () => {
+    if (started > 1) { hardFailureCount++; failures.push('Daemon restarted during acceptance'); }
+    const eventSummaries = [];
+    for (const [event, summary] of events) {
+      const peak = peakWindow(summary);
+      if (peak > STORM_LIMIT) { hardFailureCount++; failures.push(`Repeated event storm: ${event} (${peak} in ${STORM_WINDOW_MS}ms)`); }
+      const { times, ...counts } = summary;
+      eventSummaries.push({ ...counts, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
+    }
+    const httpRoutes = [];
+    for (const [key, route] of routes) {
+      const peak = peakWindow(route);
+      if (peak > STORM_LIMIT) { hardFailureCount++; failures.push(`Repeated request storm: ${key} (${peak} in ${STORM_WINDOW_MS}ms)`); }
+      const { times, ...summary } = route;
+      httpRoutes.push({ ...summary, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
+    }
+    httpRoutes.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || `${a.method} ${a.pathname}`.localeCompare(`${b.method} ${b.pathname}`));
+    eventSummaries.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || a.event.localeCompare(b.event));
+    return {
+      failures,
+      diagnostics: { hard_failure_count: hardFailureCount, current_health: currentHealth.slice(0, 20), historical_health: { retained: historicalHealth, omitted: Math.max(0, historicalHealthCount - historicalHealth.length) }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
+    };
+  };
+  return { add, finish };
 }
 
 export function assessLogs(text, options) { return assessRuntimeLogs(text, options).failures; }
