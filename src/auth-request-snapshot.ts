@@ -48,7 +48,7 @@ export interface AuthSnapshotShape {
   readonly actions: readonly string[];
 }
 
-export const AUTH_SNAPSHOT_SHAPE_V211: AuthSnapshotShape = Object.freeze({
+export const AUTH_SNAPSHOT_SHAPE_V212: AuthSnapshotShape = Object.freeze({
   request: Object.freeze([
     "id", "session_id", "command", "title", "cwd", "diff_summary", "spec_content", "status", "created_at",
     "updated_at", "approved_at", "resolved_at", "skipped_at", "expires_at", "exit_code", "output", "error", "repo",
@@ -68,7 +68,7 @@ export const AUTH_SNAPSHOT_SHAPE_V211: AuthSnapshotShape = Object.freeze({
   ]),
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V211;
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V212;
 
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.

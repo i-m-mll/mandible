@@ -24,7 +24,7 @@ import {
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
-import { AUTH_SNAPSHOT_SHAPE_V211, authRequestSnapshot } from "./auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V212, authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
@@ -2156,7 +2156,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "UPDATE auth_requests SET status = 'failed' WHERE id IN (SELECT id FROM temp.auth_failed_reclassification)",
     `WITH reclassified AS (
        SELECT r.id, r.exit_code, ar.custody_work_unit_id, wu.custody_generation,
-         mandible_auth_request_snapshot_v211(r.id) AS snapshot_json,
+         mandible_auth_request_snapshot_v212(r.id) AS snapshot_json,
          (SELECT COALESCE(MAX(revision), 0) + 1 FROM auth_request_lifecycle_events WHERE auth_request_id = r.id) AS revision
        FROM temp.auth_failed_reclassification r
        JOIN auth_requests ar ON ar.id = r.id
@@ -2408,8 +2408,8 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
-  // v211 reclassifies rows at the v211 schema, so it hashes the v211 shape.
-  db.function("mandible_auth_request_snapshot_v211", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V211));
+  // v212 reclassifies rows at the v212 schema, so it hashes the v212 shape.
+  db.function("mandible_auth_request_snapshot_v212", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V212));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(
