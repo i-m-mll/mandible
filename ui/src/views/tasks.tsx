@@ -59,7 +59,7 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { useLiveRefresh, useRegisterInitialRouteLoad } from '../app-shell';
+import { useLiveRefresh, useRouteLoad } from '../app-shell';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
@@ -925,10 +925,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       if (mounted.current && !signal?.aborted && sequence === inventorySequence.current) setLoading(false);
     }
   }, []);
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
-  const registerInitialCommandsLoad = useRegisterInitialRouteLoad();
 
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     mounted.current = true;
     const controller = new AbortController();
     registerInitialRouteLoad(load(controller.signal));
@@ -936,7 +934,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       mounted.current = false;
       controller.abort();
     };
-  }, [load, registerInitialRouteLoad]);
+  }, [load]);
   const refreshInventory = useLiveRefresh(() => {
     invalidateApiGetCache('/api/tasks');
     void load();
@@ -983,7 +981,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const reloadCommandsRef = useRef<(() => void) | null>(null);
   useLiveRefresh(() => reloadCommandsRef.current?.(), TASKS_POLL_INTERVAL_MS);
   const commandsTargetRef = useRef<string | null>(null);
-  useEffect(() => {
+  useRouteLoad((registerInitialCommandsLoad) => {
     if (!selectedTargetKey || !selectedTargetExecutor || !selectedTargetTaskId) {
       commandsTargetRef.current = null;
       setCommands([]);
@@ -1030,7 +1028,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       controller.abort();
       reloadCommandsRef.current = null;
     };
-  }, [registerInitialCommandsLoad, selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
+  }, [selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
 
   const selectedCommands = useMemo(
     () => commands.filter((command) =>

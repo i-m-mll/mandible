@@ -10,7 +10,7 @@ import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identitie
 import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { AppOperationalNoticeOutlet, useLiveRefresh, useRegisterInitialRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveRefresh, useRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   ApiError,
@@ -262,11 +262,10 @@ function SessionPicker({
   onSelect: (sessionId: string) => void;
   onErrorChange: (error: string | null) => void;
 }): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     let cancelled = false;
     const initialLoad = getSessions<SessionRecord>()
       .then((rows) => {
@@ -287,7 +286,7 @@ function SessionPicker({
       cancelled = true;
       onErrorChange(null);
     };
-  }, [onErrorChange, registerInitialRouteLoad]);
+  }, [onErrorChange]);
 
   if (error) return <p className="text-muted">Sessions unavailable.</p>;
   if (sessions === null) return <p className="text-muted">Loading sessions…</p>;
@@ -397,7 +396,6 @@ export function SessionOverviewView({
   embedded = false,
   managedConversation,
 }: SessionOverviewViewProps): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const routeRef = initialSessionId ?? agentBinding;
   const [selection, setSelection] = useState({ routeRef, value: routeRef });
   const selectedRef = selection.routeRef === routeRef ? selection.value : routeRef;
@@ -413,7 +411,7 @@ export function SessionOverviewView({
     setSelection((current) => current.routeRef === routeRef ? current : { routeRef, value: routeRef });
   }, [routeRef]);
 
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     if (!selectedRef) {
       return;
     }
@@ -445,7 +443,7 @@ export function SessionOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedRef, embedded, initialSessionId, refreshToken, registerInitialRouteLoad]);
+  }, [selectedRef, embedded, initialSessionId, refreshToken]);
 
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.

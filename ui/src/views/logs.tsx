@@ -5,7 +5,7 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
-import { AppOperationalNoticeOutlet, useLiveRefresh, useRegisterInitialRouteLoad, useViewActive } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveRefresh, useRouteLoad, useViewActive } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -317,7 +317,6 @@ function facetLabel(facet: LogEntityFacetValue): string {
 }
 
 export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: LogsViewProps): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
@@ -411,7 +410,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   }, [filters, hasOlder, loadLogs, loadingOlder, olderCursor]);
 
   const loadedFiltersRef = useRef<LogFilters | null>(null);
-  useEffect(() => {
+  useRouteLoad((registerInitialRouteLoad) => {
     if (loadedFiltersRef.current === filters) {
       registerInitialRouteLoad(fetchLogs());
       return;
@@ -423,7 +422,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     setOlderCursor(null);
     setHasOlder(false);
     registerInitialRouteLoad(fetchLogs(true));
-  }, [filters, fetchLogs, registerInitialRouteLoad]);
+  }, [filters, fetchLogs]);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;

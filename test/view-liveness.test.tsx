@@ -2,13 +2,31 @@
 import { act, cleanup, render, screen } from './helpers/dom.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ComponentChildren } from 'preact';
-import { useEffect } from 'preact/hooks';
-import { AppShellProvider, useAppShell, useLiveRefresh, useRegisterInitialRouteLoad } from '../ui/src/app-shell';
+import { AppShellProvider, useAppShell, useLiveRefresh, useRouteLoad } from '../ui/src/app-shell';
 import { LogsView } from '../ui/src/views/logs';
 import type { LogsResponse } from '../ui/src/api';
 import type { SSEClient, SSEHandler, SSEPayload } from '../ui/src/sse-client';
 
 const TEN_MINUTES_MS = 10 * 60_000;
+
+function silentLogs() {
+  const handlers = new Set<SSEHandler>();
+  const client = {
+    connect: vi.fn(),
+    close: vi.fn(),
+    on: vi.fn((_type: string, handler: SSEHandler) => {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    }),
+  } as unknown as SSEClient;
+  const emit = () => { for (const handler of [...handlers]) handler({ type: 'conversation:updated' } as SSEPayload); };
+  const loadLogs = vi.fn(async (): Promise<LogsResponse> => ({
+    entries: [{ id: 'log-1', level: 'info', event: 'kept-entry', time: '2026-07-04T12:00:01.000Z' }],
+    limit: 100, offset: 0, log_file: '', exists: true,
+    source: 'daemon_log', older_cursor: null, has_older: false,
+  }));
+  return { client, emit, loadLogs };
+}
 
 function Shell({ active, children }: { active: boolean; children: ComponentChildren }): JSX.Element {
   const parent = useAppShell();
@@ -34,8 +52,7 @@ it('loads a view on mount and once per activation, never on hide, and polls only
   const poll = vi.fn();
   let signal = (): void => undefined;
   function Probe(): null {
-    const register = useRegisterInitialRouteLoad();
-    useEffect(() => { load(); register(Promise.resolve()); }, [register]);
+    useRouteLoad((register) => { load(); register(Promise.resolve()); }, []);
     signal = useLiveRefresh(poll, 15_000);
     return null;
   }
@@ -62,21 +79,7 @@ it('loads a view on mount and once per activation, never on hide, and polls only
 });
 
 it('Logs makes no requests while hidden, whatever the event stream does, and reloads once when shown without clearing', async () => {
-  const handlers = new Set<SSEHandler>();
-  const client = {
-    connect: vi.fn(),
-    close: vi.fn(),
-    on: vi.fn((_type: string, handler: SSEHandler) => {
-      handlers.add(handler);
-      return () => handlers.delete(handler);
-    }),
-  } as unknown as SSEClient;
-  const emit = () => { for (const handler of [...handlers]) handler({ type: 'conversation:updated' } as SSEPayload); };
-  const loadLogs = vi.fn(async (): Promise<LogsResponse> => ({
-    entries: [{ id: 'log-1', level: 'info', event: 'kept-entry', time: '2026-07-04T12:00:01.000Z' }],
-    limit: 100, offset: 0, log_file: '', exists: true,
-    source: 'daemon_log', older_cursor: null, has_older: false,
-  }));
+  const { client, emit, loadLogs } = silentLogs();
   const view = (active: boolean) => (
     <Shell active={active}>
       <LogsView loadLogs={loadLogs as typeof import('../ui/src/api').getLogs} createSse={() => client} />
@@ -100,4 +103,21 @@ it('Logs makes no requests while hidden, whatever the event stream does, and rel
   await act(() => vi.advanceTimersByTimeAsync(0));
   expect(loadLogs).toHaveBeenCalledTimes(2);
   expect(screen.getAllByText('kept-entry')[0]).toBe(row);
+});
+
+it('starts no load for a view mounted while the document is hidden, and loads once when shown', async () => {
+  setDocumentVisibility('hidden');
+  const { client, loadLogs } = silentLogs();
+  render(
+    <Shell active>
+      <LogsView loadLogs={loadLogs as typeof import('../ui/src/api').getLogs} createSse={() => client} />
+    </Shell>,
+  );
+  await act(() => vi.advanceTimersByTimeAsync(TEN_MINUTES_MS));
+  expect(loadLogs).not.toHaveBeenCalled();
+
+  act(() => setDocumentVisibility('visible'));
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(loadLogs).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByText('kept-entry').length).toBeGreaterThan(0);
 });

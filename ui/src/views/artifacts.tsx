@@ -74,7 +74,7 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { useRegisterInitialRouteLoad } from '../app-shell';
+import { useRouteLoad } from '../app-shell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -258,7 +258,6 @@ export function ArtifactsView({
   initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const routeSelection = artifactRouteSelection({
     artifactId: initialArtifactId,
     ref: initialRef,
@@ -299,8 +298,6 @@ export function ArtifactsView({
   const deepLinkActiveRef = useRef(routeSelection.hasDeepLink);
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
-  const seriesListReadRef = useRef<Promise<void>>(Promise.resolve());
-  const facetListReadRef = useRef<Promise<void>>(Promise.resolve());
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
     initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: routeSelection.versionNo } : null,
@@ -426,10 +423,10 @@ export function ArtifactsView({
     }
   }, [filters, sortDirection, sortField]);
 
-  useEffect(() => {
+  const initialFiltersApplied = !(initialRepo && filters.repo !== initialRepo) && !(initialRole && filters.role !== initialRole);
+  useRouteLoad((register) => {
     const read = loadSeries();
-    seriesListReadRef.current = read;
-    void read;
+    if (initialFiltersApplied) register(read);
   }, [loadSeries]);
 
   const loadFacetSeries = useCallback(async () => {
@@ -449,16 +446,10 @@ export function ArtifactsView({
     }
   }, [filters.q, filters.location]);
 
-  useEffect(() => {
+  useRouteLoad((register) => {
     const read = loadFacetSeries();
-    facetListReadRef.current = read;
-    void read;
+    if (initialFiltersApplied) register(read);
   }, [loadFacetSeries]);
-
-  useEffect(() => {
-    if ((initialRepo && filters.repo !== initialRepo) || (initialRole && filters.role !== initialRole)) return;
-    registerInitialRouteLoad(Promise.all([seriesListReadRef.current, facetListReadRef.current]));
-  }, [filters.repo, filters.role, initialRepo, initialRole, loadFacetSeries, loadSeries, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
