@@ -119,12 +119,12 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     }
   }, { operation: { id: "post:/api/agent-dispatch/preview", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
 
-  server.post("/api/agent-dispatch/dispatch", (req, res) => {
+  server.post("/api/agent-dispatch/dispatch", async (req, res) => {
     try {
       const actorUserId = requireHumanDispatcher(db, req);
       const body = bodyRecord(req);
       const subject = parseSubject(body.subject);
-      const outcome = dispatchAgent(db, {
+      const outcome = await dispatchAgent(db, {
         subject,
         instruction: body.instruction,
         actorUserId,

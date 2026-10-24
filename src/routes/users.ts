@@ -50,6 +50,7 @@ import { resolveProjectRef } from "../ledger/project-registry.js";
 import {
   discoverConfiguredPublicSigningKey,
   resolveOpenSshPublicKey,
+  type SigningKeyResolution,
 } from "../signing-credential-audit.js";
 import { entityRefs } from "../entity-refs.js";
 
@@ -103,7 +104,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     }
   }, { operation: { id: "get:/api/users/operator", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.get("/api/users/operator/signing-key", (req, res) => {
+  router.get("/api/users/operator/signing-key", async (req, res) => {
     try {
       const db = getDb();
       requireOperator(db, req);
@@ -113,7 +114,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
             credential.type === "ssh_key" || credential.type === "delegated_ssh_key")
           .map(({ id, type, fingerprint, label }) => ({ id, type, fingerprint, label }))
         : [];
-      const configured = discoverConfiguredPublicSigningKey();
+      const configured = await discoverConfiguredPublicSigningKey();
       const registered = Boolean(configured.value && credentials.some((credential) =>
         credential.fingerprint === configured.value!.fingerprint));
       sendJson(res, 200, {
@@ -143,7 +144,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     }
   }, { operation: { id: "get:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  router.post("/api/users/operator/signing-key", (req, res) => {
+  router.post("/api/users/operator/signing-key", async (req, res) => {
     try {
       const db = getDb();
       requireOperator(db, req);
@@ -151,13 +152,13 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       if (!operator) throw new UserRegistryError("not_found", "The local operator is not set up.");
       const body = bodyRecord(req);
       const source = optionalString(body, "source");
-      let resolved: ReturnType<typeof resolveOpenSshPublicKey>;
+      let resolved: SigningKeyResolution;
       if (source === "public_key") {
         const publicKey = optionalString(body, "public_key");
         if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
-        resolved = resolveOpenSshPublicKey(publicKey);
+        resolved = await resolveOpenSshPublicKey(publicKey);
       } else if (source === "configured") {
-        const configured = discoverConfiguredPublicSigningKey();
+        const configured = await discoverConfiguredPublicSigningKey();
         if (!configured.configured_key) {
           throw new UserRegistryError("invalid", "Global Git user.signingkey is not configured. Paste or upload an OpenSSH public key instead.");
         }

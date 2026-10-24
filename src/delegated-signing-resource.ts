@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -31,12 +31,13 @@ export interface SignerSocketIdentity {
   mode: number;
 }
 
+/** Proves signer identity. Every probe that runs a child process is asynchronous. */
 export interface DelegatedSignerInspector {
-  process(pid: number): SignerProcessIdentity | null;
+  process(pid: number): Promise<SignerProcessIdentity | null>;
   socket(socketPath: string): SignerSocketIdentity;
-  ownsSocket(process: SignerProcessIdentity, socket: SignerSocketIdentity): boolean;
-  keyFingerprint(socketPath: string): string;
-  challenge(socketPath: string, publicKeyPath: string, publicMaterial: string): void;
+  ownsSocket(process: SignerProcessIdentity, socket: SignerSocketIdentity): Promise<boolean>;
+  keyFingerprint(socketPath: string): Promise<string>;
+  challenge(socketPath: string, publicKeyPath: string, publicMaterial: string): Promise<void>;
 }
 
 interface RuntimeBindingRow {
@@ -98,6 +99,11 @@ export class DelegatedSigningResource {
   private readonly pid: number;
   private readonly inspector: DelegatedSignerInspector;
   private readonly leases = new Map<string, LiveLease>();
+  /** Drains past the point of no return, so a later drain of the same lease joins instead of reattaching it. */
+  private readonly finishing = new Map<string, Promise<void>>();
+  private daemonIdentity: SignerProcessIdentity | null = null;
+  /** Startup reattachment; a borrow waits for it so the two never race to attach one lease. */
+  private attaching: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly signer: AuthAutoApproveManager,
@@ -125,9 +131,9 @@ export class DelegatedSigningResource {
     const context = await this.signer.freshPresenceChallenge(ttlSeconds);
     let binding: RuntimeBindingRow | null = null;
     try {
-      binding = this.captureBinding(context);
+      binding = await this.captureBinding(context);
       this.insertBinding(binding);
-      this.validate(binding, true);
+      await this.validate(binding, true);
       this.installLiveLease(context, binding);
       return context;
     } catch (error) {
@@ -138,7 +144,13 @@ export class DelegatedSigningResource {
   }
 
   /** Reattach all eligible bindings during production daemon startup. */
-  attachAvailable(): { attached: number; refused: number } {
+  attachAvailable(): Promise<{ attached: number; refused: number }> {
+    const attaching = this.attachEligible();
+    this.attaching = attaching.catch(() => undefined);
+    return attaching;
+  }
+
+  private async attachEligible(): Promise<{ attached: number; refused: number }> {
     if (!this.allowRuntimeAuthority) return { attached: 0, refused: 0 };
     const rows = this.db.prepare(
       `SELECT binding.*,
@@ -159,7 +171,7 @@ export class DelegatedSigningResource {
     for (const row of rows) {
       try {
         if (row.eligible) {
-          this.attach(row);
+          await this.attach(row);
           attached += 1;
         } else {
           void this.drain(row.lease_id, "clearance_inactive").catch(() => undefined);
@@ -171,19 +183,23 @@ export class DelegatedSigningResource {
     return { attached, refused };
   }
 
-  borrow(leaseId: string): DelegatedSignerBorrow {
+  async borrow(leaseId: string): Promise<DelegatedSignerBorrow> {
     this.assertAuthorityAllowed();
+    await this.attaching;
     let live = this.leases.get(leaseId);
     if (!live) {
       const row = this.readBinding(leaseId);
       if (!row) throw new Error("Clearance signer has no reconnectable runtime binding.");
-      live = this.attach(row);
+      live = await this.attach(row);
     }
-    if (live.draining || live.binding.state !== "available") {
-      throw new Error("Clearance signer is draining or retired.");
-    }
-    this.assertCurrentOwner(live.binding);
-    this.validate(live.binding, true);
+    const assertBorrowable = () => {
+      if (live!.draining || live!.binding.state !== "available") {
+        throw new Error("Clearance signer is draining or retired.");
+      }
+    };
+    assertBorrowable();
+    await this.validate(live.binding, true);
+    assertBorrowable();
     live.borrows += 1;
     let settled = false;
     return {
@@ -205,6 +221,8 @@ export class DelegatedSigningResource {
   }
 
   async drain(leaseId: string, reason: string): Promise<void> {
+    const finishing = this.finishing.get(leaseId);
+    if (finishing) return finishing;
     let live = this.leases.get(leaseId);
     if (!live) {
       const binding = this.readBinding(leaseId);
@@ -213,7 +231,9 @@ export class DelegatedSigningResource {
       // not require a still-active credential/lease or signing challenge: those
       // are commonly the reason cleanup is running, and cannot authorize a
       // signature once the binding is marked draining.
-      this.claim(binding, true);
+      await this.claim(binding, true);
+      const joined = this.finishing.get(leaseId);
+      if (joined) return joined;
       live = this.installLiveLease(this.contextFromBinding(binding), binding);
     }
     if (!live.draining) {
@@ -248,12 +268,12 @@ export class DelegatedSigningResource {
     await Promise.all(leaseIds.map((leaseId) => this.drain(leaseId, reason)));
   }
 
-  private attach(binding: RuntimeBindingRow): LiveLease {
+  private async attach(binding: RuntimeBindingRow): Promise<LiveLease> {
     this.assertAuthorityAllowed();
-    this.claim(binding);
+    await this.claim(binding);
     const context = this.contextFromBinding(binding);
     try {
-      this.validate(binding, true);
+      await this.validate(binding, true);
     } catch (error) {
       this.retireBinding(binding, "lost", "revalidation_failed");
       throw error;
@@ -261,8 +281,16 @@ export class DelegatedSigningResource {
     return this.installLiveLease(context, binding);
   }
 
-  private claim(binding: RuntimeBindingRow, allowDraining = false): void {
-    const daemon = this.requireProcess(this.pid, "daemon");
+  /**
+   * Take exclusive ownership of a binding. The process evidence is gathered
+   * first, off the event loop; the transaction then applies it only if the
+   * owner it describes is still the recorded one.
+   */
+  private async claim(binding: RuntimeBindingRow, allowDraining = false): Promise<void> {
+    const daemon = await this.daemon();
+    const observed = this.readBinding(binding.lease_id);
+    const foreign = observed && observed.owner_runtime_epoch !== this.runtimeEpoch ? observed : null;
+    const owner = foreign ? await this.inspector.process(foreign.owner_pid) : null;
     const claim = this.db.transaction(() => {
       const current = this.readBinding(binding.lease_id);
       if (!current || (!allowDraining && current.state !== "available")
@@ -270,35 +298,37 @@ export class DelegatedSigningResource {
           || current.retired_at !== null) {
         throw new Error("Clearance signer binding is not available.");
       }
-      if (current.owner_runtime_epoch !== this.runtimeEpoch) {
-        const owner = this.inspector.process(current.owner_pid);
-        if (owner && owner.start === current.owner_process_start
-            && owner.uid === current.owner_uid && owner.executable === current.owner_executable) {
-          throw new Error("Clearance signer is owned by another live Mandible runtime.");
-        }
-        const updated = this.db.prepare(
-          `UPDATE delegated_signing_runtime_bindings
-              SET owner_runtime_epoch = ?, owner_pid = ?, owner_uid = ?, owner_process_start = ?, owner_executable = ?,
-                  attached_at = ?, last_validated_at = ?
-            WHERE lease_id = ? AND owner_runtime_epoch = ? AND owner_pid = ?
-              AND owner_process_start = ? AND state IN ('available','draining')`,
-        ).run(
-          this.runtimeEpoch, daemon.pid, daemon.uid, daemon.start, daemon.executable, this.now(), this.now(),
-          current.lease_id, current.owner_runtime_epoch, current.owner_pid, current.owner_process_start,
-        );
-        if (updated.changes !== 1) throw new Error("Concurrent clearance signer ownership claim was refused.");
+      if (current.owner_runtime_epoch === this.runtimeEpoch) return;
+      if (!foreign || current.owner_runtime_epoch !== foreign.owner_runtime_epoch
+          || current.owner_pid !== foreign.owner_pid || current.owner_process_start !== foreign.owner_process_start) {
+        throw new Error("Concurrent clearance signer ownership claim was refused.");
       }
+      if (owner && owner.start === current.owner_process_start
+          && owner.uid === current.owner_uid && owner.executable === current.owner_executable) {
+        throw new Error("Clearance signer is owned by another live Mandible runtime.");
+      }
+      const updated = this.db.prepare(
+        `UPDATE delegated_signing_runtime_bindings
+            SET owner_runtime_epoch = ?, owner_pid = ?, owner_uid = ?, owner_process_start = ?, owner_executable = ?,
+                attached_at = ?, last_validated_at = ?
+          WHERE lease_id = ? AND owner_runtime_epoch = ? AND owner_pid = ?
+            AND owner_process_start = ? AND state IN ('available','draining')`,
+      ).run(
+        this.runtimeEpoch, daemon.pid, daemon.uid, daemon.start, daemon.executable, this.now(), this.now(),
+        current.lease_id, current.owner_runtime_epoch, current.owner_pid, current.owner_process_start,
+      );
+      if (updated.changes !== 1) throw new Error("Concurrent clearance signer ownership claim was refused.");
     });
     claim.immediate();
     Object.assign(binding, this.readBinding(binding.lease_id));
   }
 
-  private captureBinding(context: AuthApprovalContext): RuntimeBindingRow {
+  private async captureBinding(context: AuthApprovalContext): Promise<RuntimeBindingRow> {
     if (!context.runtime) throw new Error("Fresh signer did not return process identity.");
-    const agent = this.requireProcess(Number(context.runtime.sshAgentPid), "ssh-agent");
-    const daemon = this.requireProcess(this.pid, "daemon");
+    const agent = await this.requireProcess(Number(context.runtime.sshAgentPid), "ssh-agent");
+    const daemon = await this.daemon();
     const socket = this.inspector.socket(context.runtime.sshAuthSock);
-    if (!this.inspector.ownsSocket(agent, socket)) throw new Error("ssh-agent does not own the recorded socket.");
+    if (!await this.inspector.ownsSocket(agent, socket)) throw new Error("ssh-agent does not own the recorded socket.");
     const lease = this.db.prepare(
       `SELECT credential.fingerprint
          FROM delegated_signing_leases lease
@@ -362,9 +392,10 @@ export class DelegatedSigningResource {
     return live;
   }
 
-  private validate(binding: RuntimeBindingRow, challenge: boolean): void {
-    this.assertCurrentOwner(binding);
-    const agent = this.requireProcess(binding.agent_pid, "ssh-agent");
+  /** Prove the live signer still matches its binding. Ownership and the lease are re-checked once the probes finish, since each probe yields. */
+  private async validate(binding: RuntimeBindingRow, challenge: boolean): Promise<void> {
+    await this.assertCurrentOwner(binding);
+    const agent = await this.requireProcess(binding.agent_pid, "ssh-agent");
     if (agent.uid !== binding.agent_uid || agent.start !== binding.agent_process_start
         || agent.executable !== binding.agent_executable || path.basename(agent.executable) !== "ssh-agent") {
       throw new Error("ssh-agent process identity changed.");
@@ -372,9 +403,22 @@ export class DelegatedSigningResource {
     const socket = this.inspector.socket(binding.socket_path);
     if (socket.dev !== binding.socket_dev || socket.ino !== binding.socket_ino
         || socket.uid !== binding.socket_uid || socket.mode !== binding.socket_mode
-        || !this.inspector.ownsSocket(agent, socket)) {
+        || !await this.inspector.ownsSocket(agent, socket)) {
       throw new Error("ssh-agent socket identity changed.");
     }
+    const credential = this.activeCredential(binding);
+    if (await this.inspector.keyFingerprint(binding.socket_path) !== binding.credential_fingerprint) {
+      throw new Error("ssh-agent does not contain exactly the expected key.");
+    }
+    if (challenge) await this.inspector.challenge(binding.socket_path, binding.public_key_path, credential.public_material);
+    await this.assertCurrentOwner(binding);
+    this.activeCredential(binding);
+    this.db.prepare(
+      "UPDATE delegated_signing_runtime_bindings SET last_validated_at = ? WHERE lease_id = ? AND owner_runtime_epoch = ?",
+    ).run(this.now(), binding.lease_id, this.runtimeEpoch);
+  }
+
+  private activeCredential(binding: RuntimeBindingRow): { public_material: string; fingerprint: string } {
     const credential = this.db.prepare(
       `SELECT credential.public_material, credential.fingerprint
          FROM delegated_signing_leases lease
@@ -386,22 +430,16 @@ export class DelegatedSigningResource {
     if (!credential || credential.fingerprint !== binding.credential_fingerprint) {
       throw new Error("Delegated signing lease or credential is no longer valid.");
     }
-    if (this.inspector.keyFingerprint(binding.socket_path) !== binding.credential_fingerprint) {
-      throw new Error("ssh-agent does not contain exactly the expected key.");
-    }
-    if (challenge) this.inspector.challenge(binding.socket_path, binding.public_key_path, credential.public_material);
-    this.db.prepare(
-      "UPDATE delegated_signing_runtime_bindings SET last_validated_at = ? WHERE lease_id = ? AND owner_runtime_epoch = ?",
-    ).run(this.now(), binding.lease_id, this.runtimeEpoch);
+    return credential;
   }
 
-  private assertCurrentOwner(binding: RuntimeBindingRow): void {
+  private async assertCurrentOwner(binding: RuntimeBindingRow): Promise<void> {
+    const daemon = await this.daemon();
     const current = this.readBinding(binding.lease_id);
     if (!current || current.owner_runtime_epoch !== this.runtimeEpoch || current.owner_pid !== this.pid
         || current.state !== "available" || current.retired_at !== null) {
       throw new Error("This Mandible runtime does not exclusively own the clearance signer.");
     }
-    const daemon = this.requireProcess(this.pid, "daemon");
     if (daemon.uid !== current.owner_uid || daemon.start !== current.owner_process_start
         || daemon.executable !== current.owner_executable) {
       throw new Error("Mandible runtime process identity changed.");
@@ -409,29 +447,38 @@ export class DelegatedSigningResource {
     Object.assign(binding, current);
   }
 
-  private async finishDrain(live: LiveLease): Promise<void> {
-    if (!this.leases.has(live.binding.lease_id)) return;
+  private finishDrain(live: LiveLease): Promise<void> {
+    const leaseId = live.binding.lease_id;
+    const finishing = this.finishing.get(leaseId);
+    if (finishing) return finishing;
+    if (this.leases.get(leaseId) !== live) return Promise.resolve();
+    this.leases.delete(leaseId);
     if (live.timer) clearTimeout(live.timer);
-    const canStop = this.provesExactAgent(live.binding);
+    const finished = this.retireAndStop(live).finally(() => this.finishing.delete(leaseId));
+    this.finishing.set(leaseId, finished);
+    return finished;
+  }
+
+  private async retireAndStop(live: LiveLease): Promise<void> {
+    const canStop = await this.provesExactAgent(live.binding);
     this.retireBinding(live.binding, "retired", live.binding.retired_reason ?? "drained");
-    this.leases.delete(live.binding.lease_id);
     // Re-prove after the durable retirement write, immediately before the
     // signal. This closes the ordinary PID-reuse window around cleanup; if the
     // process or socket changed during retirement, leave it untouched.
-    if (canStop && this.provesExactAgent(live.binding)) {
+    if (canStop && await this.provesExactAgent(live.binding)) {
       await this.signer.stopApprovalRuntime(live.context);
     }
   }
 
-  private provesExactAgent(binding: RuntimeBindingRow): boolean {
+  private async provesExactAgent(binding: RuntimeBindingRow): Promise<boolean> {
     try {
-      const agent = this.requireProcess(binding.agent_pid, "ssh-agent");
+      const agent = await this.requireProcess(binding.agent_pid, "ssh-agent");
       if (agent.uid !== binding.agent_uid || agent.start !== binding.agent_process_start
           || agent.executable !== binding.agent_executable) return false;
       const socket = this.inspector.socket(binding.socket_path);
       return socket.dev === binding.socket_dev && socket.ino === binding.socket_ino
         && socket.uid === binding.socket_uid && socket.mode === binding.socket_mode
-        && this.inspector.ownsSocket(agent, socket);
+        && await this.inspector.ownsSocket(agent, socket);
     } catch {
       return false;
     }
@@ -478,10 +525,16 @@ export class DelegatedSigningResource {
     ).get(leaseId) as RuntimeBindingRow | undefined) ?? null;
   }
 
-  private requireProcess(pid: number, label: string): SignerProcessIdentity {
-    const identity = this.inspector.process(pid);
+  private async requireProcess(pid: number, label: string): Promise<SignerProcessIdentity> {
+    const identity = await this.inspector.process(pid);
     if (!identity) throw new Error(`${label} process is not alive.`);
     return identity;
+  }
+
+  /** This runtime's own process identity, which cannot change while it runs. */
+  private async daemon(): Promise<SignerProcessIdentity> {
+    this.daemonIdentity ??= await this.requireProcess(this.pid, "daemon");
+    return this.daemonIdentity;
   }
 
   private assertAuthorityAllowed(): void {
@@ -491,8 +544,22 @@ export class DelegatedSigningResource {
   }
 }
 
+/** Run one probe off the event loop; its stdout, or a rejection naming the failure. */
+function run(
+  command: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv; input?: Buffer } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, { encoding: "utf8", timeout: 5_000, env: options.env },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(options.input);
+  });
+}
+
 const systemSignerInspector: DelegatedSignerInspector = {
-  process(pid) {
+  async process(pid) {
     try {
       globalThis.process.kill(pid, 0);
     } catch (error) {
@@ -500,9 +567,9 @@ const systemSignerInspector: DelegatedSignerInspector = {
       if (code === "ESRCH") return null;
       throw new Error(`Cannot prove process ${pid} liveness: ${String(error)}`);
     }
-    const uid = Number(execFileSync("ps", ["-o", "uid=", "-p", String(pid)], { encoding: "utf8" }).trim());
-    const start = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    const executable = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    const field = async (name: string) => (await run("ps", ["-o", `${name}=`, "-p", String(pid)])).trim();
+    const [uidText, start, executable] = await Promise.all([field("uid"), field("lstart"), field("comm")]);
+    const uid = Number(uidText);
     if (!Number.isInteger(uid) || !start || !executable) {
       throw new Error(`Cannot prove process ${pid} identity.`);
     }
@@ -524,26 +591,23 @@ const systemSignerInspector: DelegatedSignerInspector = {
       mode: Number(stat.mode & 0o777n),
     };
   },
-  ownsSocket(processIdentity, socket) {
+  async ownsSocket(processIdentity, socket) {
     try {
-      const output = execFileSync("lsof", ["-a", "-p", String(processIdentity.pid), "-U", "-Fn"], {
-        encoding: "utf8", timeout: 5_000,
-      });
+      const output = await run("lsof", ["-a", "-p", String(processIdentity.pid), "-U", "-Fn"]);
       return output.split(/\r?\n/).includes(`n${socket.path}`);
     } catch {
       return false;
     }
   },
-  keyFingerprint(socketPath) {
-    const output = execFileSync("ssh-add", ["-l", "-E", "sha256"], {
-      encoding: "utf8", timeout: 5_000, env: { ...process.env, SSH_AUTH_SOCK: socketPath },
-    }).trim().split(/\r?\n/).filter(Boolean);
+  async keyFingerprint(socketPath) {
+    const output = (await run("ssh-add", ["-l", "-E", "sha256"], { env: { ...process.env, SSH_AUTH_SOCK: socketPath } }))
+      .trim().split(/\r?\n/).filter(Boolean);
     if (output.length !== 1) throw new Error("ssh-agent must contain exactly one key.");
     const fingerprint = output[0].match(/SHA256:[A-Za-z0-9+/=]{40,50}/)?.[0];
     if (!fingerprint) throw new Error("ssh-agent key fingerprint is unreadable.");
     return fingerprint;
   },
-  challenge(socketPath, publicKeyPath, publicMaterial) {
+  async challenge(socketPath, publicKeyPath, publicMaterial) {
     if (fs.readFileSync(publicKeyPath, "utf8").trim() !== publicMaterial.trim()) {
       throw new Error("Delegated public-key file no longer matches the durable credential.");
     }
@@ -554,13 +618,13 @@ const systemSignerInspector: DelegatedSignerInspector = {
       const nonce = randomBytes(32);
       fs.writeFileSync(noncePath, nonce, { mode: 0o600 });
       fs.writeFileSync(allowedPath, `mandible-clearance ${publicMaterial.trim()}\n`, { mode: 0o600 });
-      execFileSync("ssh-keygen", ["-Y", "sign", "-f", publicKeyPath, "-n", "mandible-clearance", noncePath], {
-        stdio: "ignore", timeout: 5_000, env: { ...process.env, SSH_AUTH_SOCK: socketPath },
+      await run("ssh-keygen", ["-Y", "sign", "-f", publicKeyPath, "-n", "mandible-clearance", noncePath], {
+        env: { ...process.env, SSH_AUTH_SOCK: socketPath },
       });
-      execFileSync(
+      await run(
         "ssh-keygen",
         ["-Y", "verify", "-I", "mandible-clearance", "-f", allowedPath, "-n", "mandible-clearance", "-s", `${noncePath}.sig`],
-        { input: nonce, stdio: ["pipe", "ignore", "ignore"], timeout: 5_000 },
+        { input: nonce },
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

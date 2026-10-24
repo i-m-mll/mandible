@@ -249,7 +249,7 @@ export class AuthClearanceManager {
     }
     let borrow: DelegatedSignerBorrow;
     try {
-      borrow = this.signer.borrow(initialMatches[0].signing_lease_id);
+      borrow = await this.signer.borrow(initialMatches[0].signing_lease_id);
     } catch (error) {
       throw new AuthClearanceError(
         "runtime_invalidated",
