@@ -270,7 +270,78 @@ it("keeps retrying a recovery that cannot be finished, reporting it once per dis
   failure = "Converged file changed.";
   await sweep(); await sweep();
   expect(stuck).toHaveBeenCalledTimes(2);
+  // Alternating between failures already reported reports nothing new.
+  failure = "Recovery observation changed before acceptance (attempt 1).";
+  await sweep();
+  failure = "Converged file changed.";
+  await sweep();
+  expect(stuck).toHaveBeenCalledTimes(2);
   failure = null;
   await sweep();
   expect(journal.phase).toBe("acknowledged");
+});
+
+it("keeps a completed handoff whose journal is briefly missing unsettled until it can be acknowledged", async () => {
+  const { db, journal } = terminalHandoff("missing", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  let present = false;
+  const hooks = new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoffPhase: () => present ? journal.phase : undefined,
+    readRuntimeHandoff: () => present ? journal : null,
+    verifyRuntimeHandoffReceipt: async () => {},
+    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
+    retireFailedRuntimeHandoff: () => undefined,
+  } });
+  const stuck = vi.fn();
+  const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {}, stuck);
+
+  await sweep(); await sweep();
+  expect(stuck).toHaveBeenCalledTimes(1);
+  expect(stuck).toHaveBeenCalledWith("missing", expect.stringContaining("journal is unavailable"));
+  present = true;
+  await sweep();
+  expect(journal.phase).toBe("acknowledged");
+});
+
+function queueFor(db: ReturnType<typeof createMigratedDb>, hooks: AuthHookManager) {
+  const queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => { throw new Error("no command runs"); } });
+  cleanups.push(async () => { (await queue.dispose()); });
+  vi.spyOn(queue as unknown as { successfulMergeEvidenceFailure: () => string | null }, "successfulMergeEvidenceFailure").mockReturnValue(null);
+  return queue;
+}
+
+const incident = (db: ReturnType<typeof createMigratedDb>, task: string) =>
+  db.prepare("SELECT resolved_at FROM operational_incidents WHERE task = ?").get(task) as { resolved_at: number | null } | undefined;
+
+it("raises a daemon incident for a stuck handoff and resolves it once the handoff settles", async () => {
+  const { db, journal } = terminalHandoff("resolving", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  let probes = 0;
+  const queue = queueFor(db, new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoffPhase: () => journal.phase,
+    readRuntimeHandoff: () => journal,
+    verifyRuntimeHandoffReceipt: async () => { probes += 1; if (probes === 1) throw new Error("Runtime handoff handoff-verify failed"); },
+    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
+    retireFailedRuntimeHandoff: () => undefined,
+  } }));
+
+  await queue.resumeHookConvergence();
+  expect(incident(db, "runtime-handoff-reconcile/resolving")).toEqual({ resolved_at: null });
+  await queue.resumeHookConvergence();
+  await queue.resumeHookConvergence();
+  expect(incident(db, "runtime-handoff-reconcile/resolving")?.resolved_at).toEqual(expect.any(Number));
+});
+
+it("reports an idle convergence that fails after recording a rebuild failure", async () => {
+  const { db, journal } = terminalHandoff("unnotified", `MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}`, { phase: "failed", error: "first window stalled" });
+  db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = 'unnotified-run'").run();
+  const queue = queueFor(db, new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoffPhase: () => journal.phase,
+    readRuntimeHandoff: () => journal,
+    verifyRuntimeHandoffReceipt: async () => {},
+    acknowledgeRuntimeHandoff: async () => {},
+    retireFailedRuntimeHandoff: () => undefined,
+  } }));
+  vi.spyOn(queue as unknown as { settleConvergence: () => Promise<void> }, "settleConvergence").mockRejectedValue(new Error("convergence write failed"));
+
+  await (queue as unknown as { convergeWhileIdle: () => Promise<void> }).convergeWhileIdle();
+  expect(incident(db, "auth-idle-convergence")).toEqual({ resolved_at: null });
 });

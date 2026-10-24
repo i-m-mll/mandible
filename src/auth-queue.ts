@@ -133,7 +133,7 @@ import {
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
-import { raiseDaemonIncident } from "./operational-incidents.js";
+import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import {
   appendAuthLifecycleEvent,
@@ -752,7 +752,11 @@ export class AuthQueue {
         try { raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }); }
         catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
       },
-      (id) => { authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id }); },
+      (id) => {
+        authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
+        try { resolveDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}` }); }
+        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+      },
     );
     for (const id of ids) {
       const request = this.getRequestById(id);
@@ -1037,7 +1041,7 @@ export class AuthQueue {
               // Issue 27241e6 — same backstop for unfinished hook convergence.
           // Issue 7d83fe5 — then bring pending candidates current once no
           // runtime handoff lock is held.
-          void this.resumeHookConvergence().then(() => this.refreshPendingCandidates()).catch(() => undefined);
+          void this.convergeWhileIdle();
         }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
@@ -1048,6 +1052,19 @@ export class AuthQueue {
       }
     }, 30_000);
     this.expiryTimer.unref();
+  }
+
+  /** The idle tick's convergence; a failure is reported, never discarded. */
+  private async convergeWhileIdle(): Promise<void> {
+    try {
+      await this.resumeHookConvergence();
+      await this.refreshPendingCandidates();
+    } catch (error) {
+      if (this.disposed || !this.isDbOpen()) return;
+      authLog("error", "auth_idle_convergence_failed", { subsystem: "auth", error: errorMessage(error) ?? String(error) });
+      try { raiseDaemonIncident(this.db, { task: "auth-idle-convergence", exitClass: "runner" }); }
+      catch (incidentError) { authLog("error", "auth_idle_convergence_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
+    }
   }
 
   async dispose(): Promise<void> {

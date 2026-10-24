@@ -269,18 +269,19 @@ export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSu
 }
 
 /**
- * A handoff whose hook row is terminal and whose journal is acknowledged,
- * failed, or gone has nothing left for reconciliation to adopt, acknowledge,
- * or record. Reconciling it would only re-verify an old publication against
- * the current checkout, at several synchronous Git children per run, for
- * every self-update in the installation's history (issue 63c9031). The
- * exception is a failed journal whose verification-only recovery the row has
- * already accepted: a crash after that commit left the journal to complete.
+ * A handoff whose hook row is terminal and whose journal is acknowledged or
+ * failed has nothing left for reconciliation to adopt, acknowledge, or record.
+ * Reconciling it would only re-verify an old publication against the current
+ * checkout, at several synchronous Git children per run, for every
+ * self-update in the installation's history (issue 63c9031). The exception is
+ * a failed journal whose verification-only recovery the row has already
+ * accepted: a crash after that commit left the journal to complete. A missing
+ * journal is never settled; it may be unreadable only for now.
  */
 export function runtimeHandoffSettled(run: Pick<AuthHookRun, "state" | "output">, journalPhase: string | undefined): boolean {
-  if (run.state === "complete" && journalPhase === "failed") return !run.output.includes(RECOVERY_ACCEPTED_MARKER);
-  return (run.state === "complete" || run.state === "failed")
-    && (journalPhase === undefined || journalPhase === "acknowledged" || journalPhase === "failed");
+  if (run.state !== "complete" && run.state !== "failed") return false;
+  if (journalPhase === "failed") return !(run.state === "complete" && run.output.includes(RECOVERY_ACCEPTED_MARKER));
+  return journalPhase === "acknowledged";
 }
 
 const RECOVERY_ACCEPTED_MARKER = "MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:";
@@ -302,10 +303,10 @@ export class AuthHookManager {
   private readonly settledHandoffs = new Map<string, string>();
   /**
    * Requests whose reconciliation keeps failing on a terminal run, which cannot
-   * record the failure, valued by the reported failure class. Such a run is
+   * record the failure, valued by the failure classes reported. Such a run is
    * still retried on every sweep; only the report is deduplicated.
    */
-  private readonly reportedHandoffFailures = new Map<string, string>();
+  private readonly reportedHandoffFailures = new Map<string, Set<string>>();
 
   constructor(db?: Db, options: { handoffClient?: RuntimeHandoffClient } = {}) {
     this.db = db ?? getDb();
@@ -408,7 +409,7 @@ export class AuthHookManager {
         if (this.reportedHandoffFailures.delete(run.auth_request_id)) await onStuckCleared(run.auth_request_id);
       };
       if (!this.hasRuntimeHandoff(run)) {
-        if (runtimeHandoffSettled(run, undefined)) await settled();
+        if (run.state === "complete" || run.state === "failed") await settled();
         continue;
       }
       let handoffError: string | undefined;
@@ -464,9 +465,13 @@ export class AuthHookManager {
         );
         const message = handoffError ?? (error instanceof Error ? error.message : String(error));
         if (Number(refused.changes) > 0) await onFailed(run.auth_request_id, message);
-        else if (this.reportedHandoffFailures.get(run.auth_request_id) !== failureClass(message)) {
-          this.reportedHandoffFailures.set(run.auth_request_id, failureClass(message));
-          await onStuck(run.auth_request_id, message);
+        else {
+          const reported = this.reportedHandoffFailures.get(run.auth_request_id) ?? new Set<string>();
+          this.reportedHandoffFailures.set(run.auth_request_id, reported);
+          if (!reported.has(failureClass(message))) {
+            reported.add(failureClass(message));
+            await onStuck(run.auth_request_id, message);
+          }
         }
       }
     }
