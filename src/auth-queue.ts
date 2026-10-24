@@ -133,6 +133,7 @@ import {
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
+import { raiseDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from "./auth-lifecycle.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
@@ -750,6 +751,13 @@ export class AuthQueue {
         if (request?.repo !== "mandible") return;
         (await this.settleConvergence(request));
         this.failRebuild(request, handoffError);
+      },
+      (id, error) => {
+        // A completed rebuild whose handoff cannot be finished: nothing on its
+        // row can record this, and it is retried only once its run or journal changes.
+        authLog("error", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
+        try { raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }); }
+        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
       },
     );
     for (const id of ids) {

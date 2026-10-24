@@ -74,11 +74,13 @@ export function readRuntimeHandoff(home, requestId, executionId) {
   return journal && validateJournal(journal);
 }
 /**
- * The recorded phase without validation, which re-hashes the pinned runtime.
- * It only decides that a handoff needs no action; acting requires readRuntimeHandoff.
+ * The recorded phase and last save without validation, which re-hashes the
+ * pinned runtime. It only decides whether a handoff needs another look;
+ * acting requires readRuntimeHandoff.
  */
-export function readRuntimeHandoffPhase(home, requestId, executionId) {
-  return readJournalFile(home, requestId, executionId)?.phase;
+export function readRuntimeHandoffHead(home, requestId, executionId) {
+  const journal = readJournalFile(home, requestId, executionId);
+  return journal && { phase: journal.phase, updatedAt: journal.updatedAt };
 }
 function save(journal, changes) {
   Object.assign(journal, changes, { updatedAt: Date.now() });
