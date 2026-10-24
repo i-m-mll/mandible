@@ -442,7 +442,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   }, []);
 
   const viewActive = useViewActive();
-  useLiveRefresh(() => { void fetchLogs(); }, 30_000);
+  const refreshLogs = useLiveRefresh(() => fetchLogs(), 30_000);
   useEffect(() => {
     if (!viewActive) return undefined;
     let closed = false;
@@ -453,7 +453,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         if (closed) return;
         setLastSseAt(new Date());
         setSseError(null);
-        void fetchLogs();
+        refreshLogs();
       });
       client.connect();
       return () => {
@@ -468,7 +468,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         client?.close();
       };
     }
-  }, [createSse, fetchLogs, viewActive]);
+  }, [createSse, refreshLogs, viewActive]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

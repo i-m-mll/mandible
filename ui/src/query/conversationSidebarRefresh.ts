@@ -1,7 +1,6 @@
 import { hashKey, type Query, type QueryClient, type QueryKey } from '@tanstack/preact-query';
+import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { conversationKeys, normalizeSidebarFilters, type ConversationSidebarFilters } from './conversationKeys';
-
-export const SIDEBAR_REFRESH_MIN_INTERVAL_MS = 1_000;
 
 const replayPending = new WeakSet<Query>();
 
@@ -35,9 +34,10 @@ export function markSidebarListsStale(
 }
 
 /**
- * Refetches the stale sidebar lists for `filters`, starting at most one refresh per
- * `SIDEBAR_REFRESH_MIN_INTERVAL_MS` and never overlapping a fetch already in flight.
- * Lists marked stale before it started are refreshed as soon as it starts.
+ * Refetches the stale sidebar lists for `filters` through one coalesced refresh
+ * (`createCoalescedRefresh`): at most one refresh in flight, starts at least
+ * `LIVE_REFRESH_MIN_INTERVAL_MS` apart. Lists marked stale before it started are refreshed
+ * as soon as it starts.
  */
 export function startSidebarRefresh(
   client: QueryClient,
@@ -52,37 +52,17 @@ export function startSidebarRefresh(
   const due = (query: Query): boolean => (
     inScope(query) && query.state.isInvalidated && query.state.fetchStatus !== 'fetching'
   );
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let running = false;
-  let lastStartedAt = Number.NEGATIVE_INFINITY;
-  let stopped = false;
-
-  const schedule = (): void => {
-    if (stopped || running || timer !== null) return;
-    if (!cache.findAll({ queryKey: conversationKeys.sidebars() }).some(due)) return;
-    timer = setTimeout(run, Math.max(0, lastStartedAt + SIDEBAR_REFRESH_MIN_INTERVAL_MS - Date.now()));
-  };
-
-  const run = async (): Promise<void> => {
-    timer = null;
-    running = true;
-    lastStartedAt = Date.now();
-    await client.refetchQueries(
-      { queryKey: conversationKeys.sidebars(), type: 'all', predicate: due },
-      { cancelRefetch: false },
-    );
-    running = false;
-    schedule();
-  };
-
+  const refresh = createCoalescedRefresh(() => client.refetchQueries(
+    { queryKey: conversationKeys.sidebars(), type: 'all', predicate: due },
+    { cancelRefetch: false },
+  ));
   const unsubscribe = cache.subscribe((event) => {
-    if (event.type === 'updated' && event.action.type === 'invalidate' && inScope(event.query)) schedule();
+    if (event.type === 'updated' && event.action.type === 'invalidate' && inScope(event.query)) refresh.request();
   });
-  schedule();
+  if (cache.findAll({ queryKey: conversationKeys.sidebars() }).some(due)) refresh.request();
 
   return () => {
-    stopped = true;
     unsubscribe();
-    if (timer !== null) clearTimeout(timer);
+    refresh.stop();
   };
 }

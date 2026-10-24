@@ -937,7 +937,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   }, [load]);
   const refreshInventory = useLiveRefresh(() => {
     invalidateApiGetCache('/api/tasks');
-    void load();
+    return load();
   }, TASKS_POLL_INTERVAL_MS);
   useEffect(() => {
     window.addEventListener('managed-reminder:sse', refreshInventory);
@@ -978,7 +978,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const selectedTargetExecutor = selectedExecutorTask?.executor ?? null;
   const selectedTargetTaskId = selectedExecutorTask?.task.task_id ?? null;
 
-  const reloadCommandsRef = useRef<(() => void) | null>(null);
+  const reloadCommandsRef = useRef<(() => Promise<unknown>) | null>(null);
   useLiveRefresh(() => reloadCommandsRef.current?.(), TASKS_POLL_INTERVAL_MS);
   const commandsTargetRef = useRef<string | null>(null);
   useRouteLoad((registerInitialCommandsLoad) => {
@@ -1022,7 +1022,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     registerInitialCommandsLoad(loadCommands());
     reloadCommandsRef.current = () => {
       invalidateApiGetCache('/api/tasks/commands');
-      void loadCommands();
+      return loadCommands();
     };
     return () => {
       controller.abort();
@@ -1154,7 +1154,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const commandState = activeIntent?.command?.state;
   const intentPending = Boolean(commandId)
     && commandState !== 'applied' && commandState !== 'rejected' && commandState !== 'cancelled';
-  const reconcileIntentRef = useRef<(() => void) | null>(null);
+  const reconcileIntentRef = useRef<(() => Promise<unknown>) | null>(null);
   const refreshIntent = useLiveRefresh(
     () => reconcileIntentRef.current?.(),
     intentPending ? 2_000 : undefined,
@@ -1186,7 +1186,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       }>).detail;
       if (detail?.data?.command_id === commandId) refreshIntent();
     };
-    reconcileIntentRef.current = () => { void reconcile(); };
+    reconcileIntentRef.current = reconcile;
     window.addEventListener('task-command:sse', onSse);
     return () => {
       disposed = true;

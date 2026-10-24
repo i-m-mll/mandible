@@ -47,35 +47,95 @@ afterEach(() => {
   window.location.hash = '';
 });
 
-it('loads a view on mount and once per activation, never on hide, and polls only while active', async () => {
+it('loads a view while active, abandons the load on hide, and polls only while active', async () => {
   const load = vi.fn();
+  const abandon = vi.fn();
   const poll = vi.fn();
   let signal = (): void => undefined;
-  function Probe(): null {
-    useRouteLoad((register) => { load(); register(Promise.resolve()); }, []);
+  function Probe({ target }: { target: string }): null {
+    useRouteLoad((register) => {
+      load(target);
+      register(Promise.resolve());
+      return abandon;
+    }, [target]);
     signal = useLiveRefresh(poll, 15_000);
     return null;
   }
-  const view = (active: boolean) => <Shell active={active}><Probe /></Shell>;
+  const view = (active: boolean, target = 'a') => <Shell active={active}><Probe target={target} /></Shell>;
 
   const rendered = render(view(true));
   expect(load).toHaveBeenCalledTimes(1);
   await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(poll).toHaveBeenCalledTimes(2);
   act(() => signal());
+  await act(() => vi.advanceTimersByTimeAsync(1_000));
   expect(poll).toHaveBeenCalledTimes(3);
 
   rendered.rerender(view(false));
+  expect(abandon).toHaveBeenCalledTimes(1);
+  rendered.rerender(view(false, 'b'));
   act(() => signal());
   await act(() => vi.advanceTimersByTimeAsync(TEN_MINUTES_MS));
   expect(load).toHaveBeenCalledTimes(1);
   expect(poll).toHaveBeenCalledTimes(3);
 
-  rendered.rerender(view(true));
+  rendered.rerender(view(true, 'b'));
   expect(load).toHaveBeenCalledTimes(2);
+  expect(load).toHaveBeenLastCalledWith('b');
   act(() => setDocumentVisibility('hidden'));
+  expect(abandon).toHaveBeenCalledTimes(2);
   act(() => setDocumentVisibility('visible'));
   expect(load).toHaveBeenCalledTimes(3);
   expect(poll).toHaveBeenCalledTimes(3);
+});
+
+it('releases the warmup barrier when a hung route load is abandoned', async () => {
+  const entries: Promise<unknown>[] = [];
+  function Probe(): null {
+    useRouteLoad((register) => { register(new Promise(() => undefined)); }, []);
+    return null;
+  }
+  function BarrierShell({ active }: { active: boolean }): JSX.Element {
+    const parent = useAppShell();
+    return (
+      <AppShellProvider value={{ ...parent, active, registerInitialRouteLoad: (entry) => { entries.push(entry); } }}>
+        <Probe />
+      </AppShellProvider>
+    );
+  }
+  const rendered = render(<BarrierShell active />);
+  expect(entries).toHaveLength(1);
+  let settled = false;
+  void entries[0].then(() => { settled = true; });
+  await act(() => vi.advanceTimersByTimeAsync(TEN_MINUTES_MS));
+  expect(settled).toBe(false);
+
+  rendered.rerender(<BarrierShell active={false} />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(settled).toBe(true);
+});
+
+it('coalesces a burst of live signals into one in-flight refresh and one trailing refresh', async () => {
+  let finish = (): void => undefined;
+  const refresh = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  let signal = (): void => undefined;
+  function Probe(): null {
+    signal = useLiveRefresh(refresh);
+    return null;
+  }
+  render(<Shell active><Probe /></Shell>);
+
+  act(() => { for (let event = 0; event < 100; event += 1) signal(); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  expect(refresh).toHaveBeenCalledTimes(1);
+
+  await act(async () => { finish(); });
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(refresh).toHaveBeenCalledTimes(2);
+  await act(async () => { finish(); });
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  expect(refresh).toHaveBeenCalledTimes(2);
 });
 
 it('Logs makes no requests while hidden, whatever the event stream does, and reloads once when shown without clearing', async () => {
@@ -120,4 +180,23 @@ it('starts no load for a view mounted while the document is hidden, and loads on
   await act(() => vi.advanceTimersByTimeAsync(0));
   expect(loadLogs).toHaveBeenCalledTimes(1);
   expect(screen.getAllByText('kept-entry').length).toBeGreaterThan(0);
+});
+
+it('Logs reads at most once per second while shown, however many events arrive', async () => {
+  const { client, emit, loadLogs } = silentLogs();
+  render(
+    <Shell active>
+      <LogsView loadLogs={loadLogs as typeof import('../ui/src/api').getLogs} createSse={() => client} />
+    </Shell>,
+  );
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(loadLogs).toHaveBeenCalledTimes(1);
+
+  for (let repo = 0; repo < 100; repo += 1) {
+    emit();
+    await act(() => vi.advanceTimersByTimeAsync(10));
+  }
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(loadLogs.mock.calls.length).toBeLessThanOrEqual(3);
+  expect(loadLogs.mock.calls.length).toBeGreaterThan(1);
 });
