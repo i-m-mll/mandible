@@ -65,9 +65,20 @@ function validateJournal(journal) {
   if (fileHash(journal.binding.runtime.path) !== journal.binding.runtime.sha256) throw new Error('Pinned handoff runtime bytes changed.');
   return journal;
 }
-export function readRuntimeHandoff(home, requestId, executionId) {
+function readJournalFile(home, requestId, executionId) {
   const file = path.join(handoffDirectory(home, requestId, executionId), 'journal.json');
-  return fs.existsSync(file) ? validateJournal(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+}
+export function readRuntimeHandoff(home, requestId, executionId) {
+  const journal = readJournalFile(home, requestId, executionId);
+  return journal && validateJournal(journal);
+}
+/**
+ * The recorded phase without validation, which re-hashes the pinned runtime.
+ * It only decides that a handoff needs no action; acting requires readRuntimeHandoff.
+ */
+export function readRuntimeHandoffPhase(home, requestId, executionId) {
+  return readJournalFile(home, requestId, executionId)?.phase;
 }
 function save(journal, changes) {
   Object.assign(journal, changes, { updatedAt: Date.now() });
