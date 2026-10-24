@@ -5,7 +5,7 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
-import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveRefresh, useRegisterInitialRouteLoad, useViewActive } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -410,7 +410,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     }
   }, [filters, hasOlder, loadLogs, loadingOlder, olderCursor]);
 
+  const loadedFiltersRef = useRef<LogFilters | null>(null);
   useEffect(() => {
+    if (loadedFiltersRef.current === filters) {
+      registerInitialRouteLoad(fetchLogs());
+      return;
+    }
+    loadedFiltersRef.current = filters;
     updateHash(filters);
     hasLoadedRef.current = false;
     setEntries([]);
@@ -436,7 +442,10 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
+  const viewActive = useViewActive();
+  useLiveRefresh(() => { void fetchLogs(); }, 30_000);
   useEffect(() => {
+    if (!viewActive) return undefined;
     let closed = false;
     let client: SseHandle | null = null;
     try {
@@ -460,14 +469,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         client?.close();
       };
     }
-  }, [createSse, fetchLogs]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void fetchLogs();
-    }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [fetchLogs]);
+  }, [createSse, fetchLogs, viewActive]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

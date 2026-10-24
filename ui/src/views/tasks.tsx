@@ -59,7 +59,7 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { useRegisterInitialRouteLoad } from '../app-shell';
+import { useLiveRefresh, useRegisterInitialRouteLoad } from '../app-shell';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
@@ -932,19 +932,19 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     mounted.current = true;
     const controller = new AbortController();
     registerInitialRouteLoad(load(controller.signal));
-    const timer = setInterval(() => {
-      invalidateApiGetCache('/api/tasks');
-      void load();
-    }, TASKS_POLL_INTERVAL_MS);
-    const onManagedReminder = () => { void load(); };
-    window.addEventListener('managed-reminder:sse', onManagedReminder);
     return () => {
       mounted.current = false;
       controller.abort();
-      clearInterval(timer);
-      window.removeEventListener('managed-reminder:sse', onManagedReminder);
     };
   }, [load, registerInitialRouteLoad]);
+  const refreshInventory = useLiveRefresh(() => {
+    invalidateApiGetCache('/api/tasks');
+    void load();
+  }, TASKS_POLL_INTERVAL_MS);
+  useEffect(() => {
+    window.addEventListener('managed-reminder:sse', refreshInventory);
+    return () => window.removeEventListener('managed-reminder:sse', refreshInventory);
+  }, [refreshInventory]);
 
   const tasks = inventory?.tasks ?? [];
   const executors = inventory?.executors ?? [];
@@ -980,8 +980,12 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const selectedTargetExecutor = selectedExecutorTask?.executor ?? null;
   const selectedTargetTaskId = selectedExecutorTask?.task.task_id ?? null;
 
+  const reloadCommandsRef = useRef<(() => void) | null>(null);
+  useLiveRefresh(() => reloadCommandsRef.current?.(), TASKS_POLL_INTERVAL_MS);
+  const commandsTargetRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selectedTargetKey || !selectedTargetExecutor || !selectedTargetTaskId) {
+      commandsTargetRef.current = null;
       setCommands([]);
       setCommandAvailable(false);
       setCommandError(null);
@@ -1011,17 +1015,20 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         );
       }
     };
-    setCommands([]);
-    setCommandAvailable(false);
-    setCommandError(null);
+    if (commandsTargetRef.current !== targetKey) {
+      commandsTargetRef.current = targetKey;
+      setCommands([]);
+      setCommandAvailable(false);
+      setCommandError(null);
+    }
     registerInitialCommandsLoad(loadCommands());
-    const timer = setInterval(() => {
+    reloadCommandsRef.current = () => {
       invalidateApiGetCache('/api/tasks/commands');
       void loadCommands();
-    }, TASKS_POLL_INTERVAL_MS);
+    };
     return () => {
       controller.abort();
-      clearInterval(timer);
+      reloadCommandsRef.current = null;
     };
   }, [registerInitialCommandsLoad, selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
 
@@ -1145,10 +1152,17 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     }
   }, []);
 
+  const commandId = activeIntent?.command?.id;
+  const commandState = activeIntent?.command?.state;
+  const intentPending = Boolean(commandId)
+    && commandState !== 'applied' && commandState !== 'rejected' && commandState !== 'cancelled';
+  const reconcileIntentRef = useRef<(() => void) | null>(null);
+  const refreshIntent = useLiveRefresh(
+    () => reconcileIntentRef.current?.(),
+    intentPending ? 2_000 : undefined,
+  );
   useEffect(() => {
-    const commandId = activeIntent?.command?.id;
-    const state = activeIntent?.command?.state;
-    if (!commandId || state === 'applied' || state === 'rejected' || state === 'cancelled') return;
+    if (!commandId || !intentPending) return;
     let disposed = false;
     const reconcile = async () => {
       try {
@@ -1172,16 +1186,16 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       const detail = (event as CustomEvent<{
         data?: { command_id?: string };
       }>).detail;
-      if (detail?.data?.command_id === commandId) void reconcile();
+      if (detail?.data?.command_id === commandId) refreshIntent();
     };
+    reconcileIntentRef.current = () => { void reconcile(); };
     window.addEventListener('task-command:sse', onSse);
-    const timer = window.setInterval(() => { void reconcile(); }, 2_000);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      reconcileIntentRef.current = null;
       window.removeEventListener('task-command:sse', onSse);
     };
-  }, [activeIntent?.command?.id, activeIntent?.command?.state, load]);
+  }, [commandId, intentPending, load, refreshIntent]);
 
   // "No executor has ever posted" and "an executor posted an empty inventory"
   // are different facts and must not share a message.
