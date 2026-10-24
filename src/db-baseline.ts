@@ -25,7 +25,19 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 210;
+export const BASELINE_SCHEMA_VERSION = 211;
+
+// Issue effe9ef — the Chat sidebar scans every top-level conversation on each
+// request. The partial index covers every column that scan reads, so it never
+// touches full conversation rows; the alias index serves the per-row lookup of
+// a conversation's creation-shell alias. Shared by the fresh baseline and
+// migration v211.
+export const CONVERSATION_SIDEBAR_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_conv_sidebar
+    ON conversations(started_at, id, source, starred, block_count, project_path, cwd, source_path, title)
+    WHERE parent_conversation_id IS NULL`,
+  "CREATE INDEX idx_conversation_identity_aliases_canonical ON conversation_identity_aliases(canonical_id, alias_id)",
+];
 
 // Issue 23f8142 — the parent session a conversation's provider declares, which
 // lineage linking resolves into parent_conversation_id whichever row arrives
@@ -348,6 +360,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
     )`,
   ...CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_IDENTITY_SCHEMA_SQL,
+  ...CONVERSATION_SIDEBAR_INDEX_SQL,
   "CREATE TABLE daemon_log (\n        id              TEXT PRIMARY KEY,\n        ts              INTEGER NOT NULL,\n        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),\n        event           TEXT NOT NULL,\n        subsystem       TEXT NOT NULL DEFAULT 'daemon',\n        fields_json     TEXT NOT NULL DEFAULT '{}',\n        issue_id        TEXT,\n        auth_request_id TEXT,\n        artifact_id     TEXT,\n        session_id      TEXT,\n        repo_id         TEXT\n      )",
   "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
   "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",
