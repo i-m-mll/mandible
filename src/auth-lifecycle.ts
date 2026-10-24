@@ -1,6 +1,6 @@
-import { authPublicationSnapshot } from "./auth-publication.js";
+import { authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
   AuthLifecycleActor,
@@ -8,43 +8,6 @@ import type {
   AuthRequestLifecycleEventType,
   AuthRequestStatus,
 } from "./types.js";
-
-function parseJsonColumn(value: unknown): unknown {
-  if (typeof value !== "string") return value ?? null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-export function authRequestSnapshot(db: Db, requestId: string): string {
-  const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(requestId) as
-    | Record<string, unknown>
-    | undefined;
-  if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
-  // Columns added after receipts existed appear only when set, so receipts
-  // recorded before them keep verifying.
-  const omittedWhenNull = ["space_publication_id", "protected_root_dirty_action_json"];
-  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => !omittedWhenNull.includes(key) || value !== null).map(([key, value]) => [
-    key,
-    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"].includes(key)
-      ? parseJsonColumn(value)
-      : value ?? null,
-  ]));
-  const actions = db.prepare(
-    "SELECT * FROM auth_request_actions WHERE auth_request_id = ? ORDER BY ordinal, id",
-  ).all(requestId).map((action) => {
-    const record = action as Record<string, unknown>;
-    return { ...record, payload: parseJsonColumn(record.payload) };
-  });
-  const publication = authPublicationSnapshot(db, requestId);
-  return JSON.stringify({ request, actions, ...(publication ? { publication } : {}) });
-}
-
-export function authSnapshotDigest(snapshot: string): string {
-  return createHash("sha256").update(snapshot).digest("hex");
-}
 
 export function appendAuthLifecycleEvent(
   db: Db,

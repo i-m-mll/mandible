@@ -5,7 +5,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { beforeEach, afterEach, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { authRequestSnapshot } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
 import { createSpace } from "../src/ledger/spaces.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 import { addCredential } from "../src/users/store.js";

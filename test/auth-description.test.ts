@@ -9,7 +9,7 @@ import { addCredential } from "../src/users/store.js";
 import { setDb } from "../src/db.js";
 import * as operatorProof from "../src/auth-operator-proof.js";
 import { getOperator } from "../src/users/store.js";
-import { authRequestSnapshot } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
 
 describe("approval Description", () => {
   it("refuses missing or blank merge and ordinary descriptions before observations or writes", async () => {

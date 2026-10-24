@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import type { SseEvent } from "../src/types.js";
 import { addCredential, getOperator } from "../src/users/store.js";
 import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject, createMigratedDb, createNoopHookManager, createQueue, git, registerWorkRepo, signedMergeIntoMain, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";

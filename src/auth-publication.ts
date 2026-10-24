@@ -7,24 +7,9 @@ import { authGitEnv } from "./auth-context.js";
 import { resolveOperationalIssueRef } from "./ledger/operational-links.js";
 import { resolveArtifactIdentity } from "./provider-artifacts.js";
 import { artifactMaterializationTarget } from "./artifact-identity.js";
+import { authPublicationSnapshot, type PublicationRow } from "./auth-request-snapshot.js";
 
-interface PublicationRow {
-  id: string; space_id: string; source_revision: string; snapshot_ref: string; content: string;
-  repo_id: string; path: string; expected_destination_sha256: string | null; expected_destination_mode: string | null;
-  issue_id: string; message: string; branch: string; worktree: string; commit_sha: string; version_ref: string;
-  auth_request_id: string | null; state: string;
-}
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
-function exists(db: Db): boolean { return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='space_publications'").get(); }
-export function authPublicationSnapshot(db: Db, requestId: string) {
-  if (!exists(db)) return null;
-  const row = db.prepare("SELECT * FROM space_publications WHERE id = (SELECT space_publication_id FROM auth_requests WHERE id = ?)").get(requestId) as PublicationRow | undefined;
-  if (!row) return null;
-  return { id: row.id, space_id: row.space_id, source_revision: row.source_revision, snapshot_ref: row.snapshot_ref,
-    repo_id: row.repo_id, path: row.path, expected_destination_sha256: row.expected_destination_sha256,
-    expected_destination_mode: row.expected_destination_mode, issue_id: row.issue_id, message: row.message,
-    branch: row.branch, worktree: row.worktree, commit_sha: row.commit_sha, version_ref: row.version_ref };
-}
 function git(root: string, args: string[]): Buffer {
   return execFileSync("git", args, { cwd: root, env: authGitEnv(), timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
 }
