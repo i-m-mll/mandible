@@ -98,8 +98,8 @@ export function classifyHolderLiveness(
 
 /**
  * The Codex reader for holder decisions about `units`: every lock scan those
- * decisions read completes, off the event loop, within a second before the
- * reader is returned.
+ * decisions read started after this call and completed, off the event loop,
+ * before the reader is returned.
  */
 export function freshHolderReader(
   db: Db,

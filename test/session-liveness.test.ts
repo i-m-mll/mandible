@@ -23,6 +23,7 @@ import { classifyHolderLiveness } from "../src/work-unit-custody.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { mapWorkUnitRow } from "../src/work-unit-utils.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { useStubCommand } from "./helpers/event-loop-blocking.js";
 
 const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
@@ -114,6 +115,28 @@ describe("Codex Desktop task writer-lock authority", () => {
     ].join("\n"), lockDir);
 
     expect([...snapshot.entries()]).toEqual([[liveTask, 1712]]);
+  });
+
+  it("decides only from a lock scan that started after the decision did", async () => {
+    const thread = "01a072f2-0e05-7a91-abcd-df4dc6a64e63";
+    const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fresh-scan-"));
+    const lockDir = path.join(codexRoot, "thread-writer-locks");
+    fs.mkdirSync(lockDir);
+    const rollout = path.join(codexRoot, "sessions", "2026", "10", "24", `rollout-${thread}.jsonl`);
+    const resumed = path.join(codexRoot, "resumed");
+    useStubCommand("lsof", `[ -f ${JSON.stringify(resumed)} ] || exit 1\nprintf 'p4242\\nccodex\\nn%s\\n' ${JSON.stringify(path.join(lockDir, `${thread}.lock`))}`);
+    clearCodexTaskLivenessCache();
+    try {
+      const decide = () => withFreshCodexTaskLiveness((read) => read(rollout, thread).status);
+      expect(await decide()).toBe("not_live");
+      // The task resumes and takes its lock just after that empty scan.
+      fs.writeFileSync(resumed, "");
+      expect(await decide()).toBe("live");
+    } finally {
+      vi.unstubAllEnvs();
+      clearCodexTaskLivenessCache();
+      fs.rmSync(codexRoot, { recursive: true, force: true });
+    }
   });
 });
 
