@@ -32,22 +32,60 @@ function parseJsonColumn(value: unknown): unknown {
   }
 }
 
-export function authRequestSnapshot(db: Db, requestId: string): string {
-  const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(requestId) as
+/**
+ * The fields a snapshot serializes, in serialization order. A shape is frozen
+ * once a revision has hashed it: a migration that writes revisions names the
+ * shape of its own schema version, and the runtime names the current one.
+ *
+ * Adding a column to `auth_requests` or `auth_request_actions` changes nothing
+ * here until it is deliberately added to a new shape. Add it to
+ * `omittedWhenNull` so revisions recorded before it keep verifying, or have the
+ * migration append a canonical revision for every request. The schema test in
+ * test/auth-request-snapshot.test.ts fails until one of these is chosen.
+ */
+export interface AuthSnapshotShape {
+  readonly request: readonly string[];
+  readonly actions: readonly string[];
+}
+
+export const AUTH_SNAPSHOT_SHAPE_V211: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze([
+    "id", "session_id", "command", "title", "cwd", "diff_summary", "spec_content", "status", "created_at",
+    "updated_at", "approved_at", "resolved_at", "skipped_at", "expires_at", "exit_code", "output", "error", "repo",
+    "base_branch", "head_branch", "files_changed", "additions", "deletions", "execution_mode", "commit_message",
+    "last_executed_at", "acknowledged_by", "post_merge_handoff", "issue_ids", "depends_on_id", "issues", "type",
+    "target_session_id", "target_repo_root", "delivered_at", "conversation_id", "approval_source",
+    "approval_lease_id", "issue_references", "issue_closures", "merge_preflight_base_sha",
+    "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_finalized_at", "requested_by_user_id",
+    "approved_by_user_id", "execution_evidence_id", "merge_finalizer_state", "merge_candidate_tree_sha",
+    "merge_candidate_pin_sha", "merge_atomic_enabled", "commit_message_digest", "requester_evidence_method",
+    "requester_credential_id", "clearance_use_id", "supersedes_request_id", "superseded_by_request_id",
+    "custody_work_unit_id", "change_report_json", "space_publication_id", "protected_root_dirty_action_json",
+  ]),
+  actions: Object.freeze([
+    "id", "auth_request_id", "ordinal", "kind", "target_issue_ref", "payload", "state", "target_digest",
+    "staged_at", "updated_at", "applied_at", "outcome_detail", "replacement_action_id",
+  ]),
+});
+
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V211;
+
+// Columns added after receipts existed appear only when set, so receipts
+// recorded before them keep verifying.
+const OMITTED_WHEN_NULL = ["space_publication_id", "protected_root_dirty_action_json"];
+const JSON_REQUEST_COLUMNS = ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"];
+
+export function authRequestSnapshot(db: Db, requestId: string, shape: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE): string {
+  const row = db.prepare(`SELECT ${shape.request.join(", ")} FROM auth_requests WHERE id = ?`).get(requestId) as
     | Record<string, unknown>
     | undefined;
   if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
-  // Columns added after receipts existed appear only when set, so receipts
-  // recorded before them keep verifying.
-  const omittedWhenNull = ["space_publication_id", "protected_root_dirty_action_json"];
-  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => !omittedWhenNull.includes(key) || value !== null).map(([key, value]) => [
+  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => !OMITTED_WHEN_NULL.includes(key) || value !== null).map(([key, value]) => [
     key,
-    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"].includes(key)
-      ? parseJsonColumn(value)
-      : value ?? null,
+    JSON_REQUEST_COLUMNS.includes(key) ? parseJsonColumn(value) : value ?? null,
   ]));
   const actions = db.prepare(
-    "SELECT * FROM auth_request_actions WHERE auth_request_id = ? ORDER BY ordinal, id",
+    `SELECT ${shape.actions.join(", ")} FROM auth_request_actions WHERE auth_request_id = ? ORDER BY ordinal, id`,
   ).all(requestId).map((action) => {
     const record = action as Record<string, unknown>;
     return { ...record, payload: parseJsonColumn(record.payload) };
