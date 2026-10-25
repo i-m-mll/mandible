@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
-import { getDb } from "../db.js";
+import { getDb, type Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
@@ -274,6 +274,41 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
 }
 
 // Bug: f3dbb3e — mapWorkUnitRow and computeWorkUnitLiveness extracted to work-unit-utils.ts
+
+/** Longest event-loop turn a bulk acknowledgement aims to take. */
+const BULK_ACK_TURN_BUDGET_MS = 20;
+/** Rows per transaction; the commit, not the UPDATE, writes the pages. */
+const BULK_ACK_ROWS_PER_COMMIT = 8;
+
+/**
+ * Acknowledge every resolved, unacknowledged auth request, a budgeted slice
+ * per event-loop turn. Setting `acknowledged_by` rewrites the whole row,
+ * including its diff summary and output in overflow pages, so a backlog of a
+ * thousand requests commits tens of megabytes that no index can avoid. Each
+ * row is re-checked as it is written, so a request acknowledged or returned
+ * to pending while the pass waits is left alone.
+ */
+async function acknowledgeResolvedAuthRequests(db: Db, ackValue: string): Promise<void> {
+  const ids = (db.prepare(
+    `SELECT id FROM auth_requests WHERE status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+  ).all() as Array<{ id: string }>).map((row) => row.id);
+  const acknowledge = db.prepare(
+    `UPDATE auth_requests SET acknowledged_by = ?
+      WHERE id = ? AND status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+  );
+  const commit = db.transaction((batch: string[]) => {
+    for (const id of batch) acknowledge.run(ackValue, id);
+  });
+  let next = 0;
+  while (next < ids.length) {
+    const deadline = performance.now() + BULK_ACK_TURN_BUDGET_MS;
+    do {
+      commit(ids.slice(next, next + BULK_ACK_ROWS_PER_COMMIT));
+      next += BULK_ACK_ROWS_PER_COMMIT;
+    } while (next < ids.length && performance.now() < deadline);
+    if (next < ids.length) await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
@@ -769,7 +804,7 @@ export function registerInboxRoutes(
   }, { operation: { id: "post:/api/inbox/delivered/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
 
   // POST /api/inbox/ack-all — acknowledge all unacknowledged continuations and auth results
-  server.post("/api/inbox/ack-all", (req, res) => {
+  server.post("/api/inbox/ack-all", async (req, res) => {
     const ack = acknowledgementValue(db, req, null, "bulk");
     if (!ack.ok) {
       sendJson(res, 403, { error: ack.error });
@@ -778,9 +813,7 @@ export function registerInboxRoutes(
     db.prepare(
       "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
     ).run(ack.value);
-    db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
-    ).run(ack.value);
+    await acknowledgeResolvedAuthRequests(db, ack.value);
     db.prepare(
       `UPDATE managed_task_occurrences
           SET acknowledged_by = ?, acknowledged_at = ?

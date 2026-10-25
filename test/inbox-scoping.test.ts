@@ -6,7 +6,7 @@
  * acknowledgement attribution.
  */
 
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +23,7 @@ import { addBinding, addCredential, createUser, setupOperator } from "../src/use
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { createLedgerIssue, createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
+import { queryPlan, recordStatements } from "./helpers/statement-recorder.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -796,6 +797,68 @@ describe("inbox acknowledgement attribution", () => {
       expect(conflict.statusCode).toBe(403);
       expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("conflict-ack"))
         .toEqual({ acknowledged_by: null });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// Issue 401f88b — acknowledging rewrites each wide auth request row, so a
+// backlog is committed a budgeted slice per event-loop turn.
+describe("POST /api/inbox/ack-all", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("acknowledges a backlog across event-loop turns with the same result", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `resolved-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1 });
+      }
+      seedAuthRow(db, { id: "still-pending", target_session_id: null, target_repo_root: null, resolved_at: 100, status: "pending" });
+      seedAuthRow(db, { id: "acked-earlier", target_session_id: null, target_repo_root: null, resolved_at: 101 });
+      db.prepare("UPDATE auth_requests SET acknowledged_by = 'earlier' WHERE id = 'acked-earlier'").run();
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+
+      // Every clock read passes a slice's budget, so each commit ends a turn.
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      let finished = false;
+      let turnsWhileRunning = 0;
+      const countTurn = (): void => {
+        if (finished) return;
+        turnsWhileRunning += 1;
+        setImmediate(countTurn);
+      };
+      setImmediate(countTurn);
+      const { result: response, statements } = await recordStatements(db as never, async () => {
+        const result = await app.invoke("POST", "/api/inbox/ack-all");
+        finished = true;
+        return result;
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(turnsWhileRunning).toBeGreaterThanOrEqual(2);
+      expect(db.prepare(
+        "SELECT id, acknowledged_by FROM auth_requests WHERE id NOT LIKE 'resolved-%' ORDER BY id",
+      ).all()).toEqual([
+        { id: "acked-earlier", acknowledged_by: "earlier" },
+        { id: "still-pending", acknowledged_by: null },
+      ]);
+      expect(db.prepare(
+        "SELECT DISTINCT acknowledged_by FROM auth_requests WHERE id LIKE 'resolved-%'",
+      ).all()).toEqual([{ acknowledged_by: testRequesterUserId }]);
+      // Finding the backlog reads no auth request beyond the ones it names.
+      const authSteps = statements
+        .filter((statement) => /\bauth_requests\b/.test(statement.sql))
+        .flatMap((statement) => queryPlan(db as never, statement))
+        .filter((step) => /\bauth_requests\b/.test(step));
+      expect(authSteps.length).toBeGreaterThan(0);
+      expect(authSteps.filter((step) =>
+        !/USING INDEX (idx_auth_requests_unacknowledged \(status=\?\)|sqlite_autoindex_auth_requests_1 \(id=\?\))$/.test(step)))
+        .toEqual([]);
     } finally {
       db.close();
     }

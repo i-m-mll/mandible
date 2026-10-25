@@ -926,7 +926,11 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
          FROM work_units wu
          LEFT JOIN ledger_work_unit_issue_links l
            ON l.work_unit_id = wu.id AND l.issue_id = ?
-         WHERE wu.ledger_issue_id = ? OR l.issue_id = ?
+         WHERE wu.id IN (
+           SELECT id FROM work_units WHERE ledger_issue_id = ?
+           UNION
+           SELECT work_unit_id FROM ledger_work_unit_issue_links WHERE issue_id = ?
+         )
          ORDER BY wu.created_at DESC`,
       ).all(issueId, issueId, issueId) as Array<Record<string, unknown>>
     : db.prepare(
@@ -1123,7 +1127,7 @@ export function getLedgerIssueWorkMetadata(db: Db, issueId: string): LedgerIssue
   const canonical = db.prepare(
     `SELECT source_issue_id FROM ledger_issue_relationships
       WHERE target_issue_id = ?
-        AND relationship_type = 'blocks'
+        AND +relationship_type = 'blocks'
         AND deleted_at IS NULL`,
   ).all(issueId) as Array<{ source_issue_id: string }>;
   for (const row of canonical) {

@@ -25,7 +25,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 214;
+export const BASELINE_SCHEMA_VERSION = 215;
 
 // Issue 08b4426 — a blob is named by a prefix of its id or of its content
 // hash, and short refs for a page of blobs are found by prefix ranges over
@@ -54,6 +54,15 @@ export const PROJECT_ISSUE_READ_INDEX_SQL: readonly string[] = [
     ON ledger_events(json_extract(payload_json, '$.issue_id'), event_type)
     WHERE entity_type != 'issue'`,
 ];
+
+// Issue 401f88b — an auth request row carries its diff summary, output and
+// change report before `acknowledged_by`, often tens of kilobytes in overflow
+// pages. Finding the unacknowledged resolved requests from this index reads
+// none of them. Shared by the fresh baseline and migration v215.
+export const AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL =
+  `CREATE INDEX idx_auth_requests_unacknowledged
+    ON auth_requests(status)
+    WHERE acknowledged_by IS NULL`;
 
 // Issue effe9ef — the Chat sidebar scans every top-level conversation on each
 // request. The partial index covers every column that scan reads, so it never
@@ -526,6 +535,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_auth_requests_status_created\n  ON auth_requests(status, created_at)",
   "CREATE INDEX idx_auth_requests_target_repo\n        ON auth_requests(target_repo_root) WHERE target_repo_root IS NOT NULL",
   "CREATE INDEX idx_auth_requests_target_session\n        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL",
+  AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
   "CREATE INDEX idx_blocks_conv ON conversation_blocks(conversation_id)",
   "CREATE INDEX idx_blocks_dag_parent\n      ON conversation_blocks(conversation_id, dag_parent_uuid)\n      WHERE dag_parent_uuid IS NOT NULL",
   "CREATE INDEX idx_blocks_parent ON conversation_blocks(parent_id) WHERE parent_id IS NOT NULL",

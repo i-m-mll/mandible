@@ -45,21 +45,37 @@ function placeholders(values: string[], prefix: string): { sql: string; bindings
   return { sql: keys.join(", "), bindings };
 }
 
-function compareHeadEvents(a: IssueHeadEventRow, b: IssueHeadEventRow): number {
-  // SQLite BINARY orders UTF-8 bytes; UTF-16 and locale comparisons differ.
-  return a.occurred_at - b.occurred_at
-    || a.observed_at - b.observed_at
-    || Buffer.compare(Buffer.from(a.id, "utf8"), Buffer.from(b.id, "utf8"));
+/**
+ * A head event with the two derived forms every digest and sort needs, built
+ * once: an event is shared by its issue's own digest and by the subtree
+ * digest of every ancestor in the batch.
+ */
+interface HeadEvent {
+  row: IssueHeadEventRow;
+  json: string;
+  idBytes: Buffer;
 }
 
-function digestHeadEvents(events: IssueHeadEventRow[]): {
+function headEvent(row: IssueHeadEventRow): HeadEvent {
+  return { row, json: JSON.stringify(row), idBytes: Buffer.from(row.id, "utf8") };
+}
+
+function compareHeadEvents(a: HeadEvent, b: HeadEvent): number {
+  // SQLite BINARY orders UTF-8 bytes; UTF-16 and locale comparisons differ.
+  return a.row.occurred_at - b.row.occurred_at
+    || a.row.observed_at - b.row.observed_at
+    || Buffer.compare(a.idBytes, b.idBytes);
+}
+
+/** The SHA-256 of `JSON.stringify` of the event rows, from their cached JSON. */
+function digestHeadEvents(events: HeadEvent[]): {
   digest: string;
   last: IssueHeadEventRow | undefined;
 } {
   const digest = createHash("sha256")
-    .update(JSON.stringify(events))
+    .update(`[${events.map((event) => event.json).join(",")}]`)
     .digest("hex");
-  return { digest, last: events.at(-1) };
+  return { digest, last: events.at(-1)?.row };
 }
 
 export function batchLedgerIssueHeads(
@@ -83,21 +99,21 @@ export function batchLedgerIssueHeads(
     `WITH RECURSIVE subtree(root_id, issue_id) AS (
        SELECT id, id FROM ledger_issues WHERE id IN (${sql})
        UNION
-       SELECT s.root_id, edges.child_id
-         FROM (
-           SELECT source_issue_id AS parent_id, target_issue_id AS child_id
-             FROM ledger_relationship_edges
-            WHERE link_type = 'parent_child'
-              AND target_entity_type = 'issue'
-              AND deleted_at IS NULL
-              AND target_issue_id IS NOT NULL
-           UNION ALL
-           SELECT source_issue_id AS parent_id, target_issue_id AS child_id
-             FROM ledger_issue_relationships
-            WHERE relationship_type = 'parent_child'
-              AND deleted_at IS NULL
-         ) edges
-         JOIN subtree s ON edges.parent_id = s.issue_id
+       SELECT s.root_id, edge.target_issue_id
+         FROM subtree s
+         CROSS JOIN ledger_relationship_edges edge
+           ON edge.source_issue_id = s.issue_id
+          AND edge.deleted_at IS NULL
+        WHERE +edge.link_type = 'parent_child'
+          AND +edge.target_entity_type = 'issue'
+          AND edge.target_issue_id IS NOT NULL
+       UNION
+       SELECT s.root_id, rel.target_issue_id
+         FROM subtree s
+         CROSS JOIN ledger_issue_relationships rel
+           ON rel.source_issue_id = s.issue_id
+        WHERE +rel.relationship_type = 'parent_child'
+          AND rel.deleted_at IS NULL
      )
      SELECT root_id, issue_id FROM subtree`,
   ).all(bindings) as Array<{ root_id: string; issue_id: string }>;
@@ -123,7 +139,7 @@ export function batchLedgerIssueHeads(
     allBindings.excludeCheckpointId = options.excludeCheckpointId;
     eventFilters.push("(entity_type != 'issue_checkpoint' OR entity_id != @excludeCheckpointId)");
   }
-  const rowsByIssue = new Map<string, IssueHeadEventRow[]>();
+  const rowsByIssue = new Map<string, HeadEvent[]>();
   const seenByIssue = new Map<string, Set<string>>();
   for (const id of allIdList) {
     rowsByIssue.set(id, []);
@@ -140,7 +156,7 @@ export function batchLedgerIssueHeads(
       const eventId = String(row.id ?? "");
       if (seen.has(eventId)) continue;
       seen.add(eventId);
-      group.push({
+      group.push(headEvent({
         id: eventId,
         event_type: String(row.event_type ?? ""),
         entity_type: String(row.entity_type ?? ""),
@@ -148,7 +164,7 @@ export function batchLedgerIssueHeads(
         payload_json: String(row.payload_json ?? ""),
         occurred_at: Number(row.occurred_at ?? 0),
         observed_at: Number(row.observed_at ?? 0),
-      });
+      }));
     }
   };
 
@@ -159,34 +175,34 @@ export function batchLedgerIssueHeads(
       WHERE e.entity_type = 'issue' AND e.entity_id IN (${allSql})
      UNION ALL
      SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_comments c ON c.id = e.entity_id
-      WHERE e.entity_type = 'comment' AND c.deleted_at IS NULL AND c.issue_id IN (${allSql})
+       FROM ledger_comments c
+       CROSS JOIN ledger_events e ON e.entity_type = 'comment' AND e.entity_id = c.id
+      WHERE c.deleted_at IS NULL AND c.issue_id IN (${allSql})
      UNION ALL
      SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_issue_checkpoints c ON c.id = e.entity_id
-      WHERE e.entity_type = 'issue_checkpoint' AND c.issue_id IN (${allSql})
+       FROM ledger_issue_checkpoints c
+       CROSS JOIN ledger_events e ON e.entity_type = 'issue_checkpoint' AND e.entity_id = c.id
+      WHERE c.issue_id IN (${allSql})
      UNION ALL
      SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_issue_relationships r ON r.id = e.entity_id
-      WHERE e.entity_type = 'issue_relationship' AND r.source_issue_id IN (${allSql})
+       FROM ledger_issue_relationships r
+       CROSS JOIN ledger_events e ON e.entity_type = 'issue_relationship' AND e.entity_id = r.id
+      WHERE r.source_issue_id IN (${allSql})
      UNION ALL
      SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_issue_relationships r ON r.id = e.entity_id
-      WHERE e.entity_type = 'issue_relationship' AND r.target_issue_id IN (${allSql})
+       FROM ledger_issue_relationships r
+       CROSS JOIN ledger_events e ON e.entity_type = 'issue_relationship' AND e.entity_id = r.id
+      WHERE r.target_issue_id IN (${allSql})
      UNION ALL
      SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_relationship_edges r ON r.id = e.entity_id
-      WHERE e.entity_type = 'relationship_edge' AND r.source_issue_id IN (${allSql})
+       FROM ledger_relationship_edges r
+       CROSS JOIN ledger_events e ON e.entity_type = 'relationship_edge' AND e.entity_id = r.id
+      WHERE r.source_issue_id IN (${allSql})
      UNION ALL
      SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_relationship_edges r ON r.id = e.entity_id
-      WHERE e.entity_type = 'relationship_edge' AND r.target_issue_id IN (${allSql})
+       FROM ledger_relationship_edges r
+       CROSS JOIN ledger_events e ON e.entity_type = 'relationship_edge' AND e.entity_id = r.id
+      WHERE r.target_issue_id IN (${allSql})
      )
      SELECT * FROM head_events
       ${eventFilters.length ? `WHERE ${eventFilters.join(" AND ")}` : ""}`,
@@ -203,11 +219,11 @@ export function batchLedgerIssueHeads(
 
     const descendantIds = descendantsByRoot.get(issue.id) ?? [issue.id];
     const seen = new Set<string>();
-    const subtreeEvents: IssueHeadEventRow[] = [];
+    const subtreeEvents: HeadEvent[] = [];
     for (const descendantId of descendantIds) {
       for (const event of rowsByIssue.get(descendantId) ?? []) {
-        if (seen.has(event.id)) continue;
-        seen.add(event.id);
+        if (seen.has(event.row.id)) continue;
+        seen.add(event.row.id);
         subtreeEvents.push(event);
       }
     }
@@ -273,14 +289,19 @@ function workUnitHeadRows(db: Db, issueIds: string[], at: number | undefined): A
   return rows;
 }
 
+/** One issue's head from a batch, refusing an issue the batch did not find. */
+export function requireLedgerIssueHead(heads: Map<string, LedgerIssueHead>, issueId: string): LedgerIssueHead {
+  const head = heads.get(issueId);
+  if (!head) throw new Error(`Ledger issue not found: ${issueId}`);
+  return head;
+}
+
 export function getLedgerIssueHead(
   db: Db,
   issueId: string,
   options: LedgerIssueHeadOptions = {},
 ): LedgerIssueHead {
-  const head = batchLedgerIssueHeads(db, [issueId], options).get(issueId);
-  if (!head) throw new Error(`Ledger issue not found: ${issueId}`);
-  return head;
+  return requireLedgerIssueHead(batchLedgerIssueHeads(db, [issueId], options), issueId);
 }
 
 /**
