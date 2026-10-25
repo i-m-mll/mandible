@@ -847,6 +847,7 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   if (options.dbPath && canUseDefaultIngestionWorker()) {
     ingestionActor = new IngestionActor({
       dbPath: options.dbPath,
+      mainDb: getDb(),
       logger,
       publish: (event, data) => broadcast(event, data),
     });
