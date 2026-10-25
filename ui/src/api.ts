@@ -1272,7 +1272,7 @@ export async function getIssueRepos<T>(): Promise<T[]> {
  * Fetch every page of one Timeline projection and join them. Each request does
  * a bounded amount of daemon work; the view receives the whole projection at
  * once, so its rows and time axis never reflect a partial load. If the row tree
- * or ledger watermark changes between pages, the load starts over.
+ * changes between pages, the load starts over.
  */
 export async function getProjectTimeline(
   input: ProjectTimelineInput,
@@ -1283,13 +1283,13 @@ export async function getProjectTimeline(
     let rowOffset = 0;
     for (;;) {
       const page = await getProjectTimelinePage({ ...input, row_offset: rowOffset }, signal);
-      if (pages.length > 0 && (pages[0].page.ledger_watermark !== page.page.ledger_watermark || !sameTimelineRows(pages[0].rows, page.rows))) break;
+      if (pages.length > 0 && !sameTimelineRows(pages[0].rows, page.rows)) break;
       pages.push(page);
       if (page.page.next_row_offset === null) return mergeTimelinePages(pages);
       rowOffset = page.page.next_row_offset;
     }
   }
-  throw new Error('Timeline ledger kept changing while loading; reload to try again');
+  throw new Error('Timeline rows kept changing while loading; reload to try again');
 }
 
 const TIMELINE_LOAD_ATTEMPTS = 3;

@@ -38,6 +38,34 @@ afterEach(() => {
 
 describe('Chat project preference migration', () => {
 
+  it.each(['before', 'after'] as const)('ignores a GET begun during a save that finishes %s the PUT', async (order) => {
+    const original: api.ChatShownProjectsPreference = {
+      version: 1, key: 'chat_shown_projects',
+      value: [{ projectId: 'prj-original', checkoutId: 'checkout-original' }], revision: 1,
+    };
+    const next = [{ projectId: 'prj-next', checkoutId: 'checkout-next' }];
+    let finishRead!: (value: api.ChatShownProjectsPreference) => void;
+    let finishSave!: (value: api.ChatShownProjectsPreference) => void;
+    const read = vi.spyOn(api, 'getChatShownProjectsPreference')
+      .mockResolvedValueOnce(original)
+      .mockImplementation(() => new Promise((resolve) => { finishRead = resolve; }));
+    const save = vi.spyOn(api, 'updateChatShownProjectsPreference')
+      .mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    render(<Probe />);
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
+    screen.getByRole('button', { name: 'Change' }).click();
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    if (order === 'before') {
+      await act(async () => { finishRead(original); });
+      expect(JSON.parse(screen.getByRole('status').textContent!)).toEqual(next);
+    }
+    await act(async () => { finishSave({ ...original, value: next, revision: 2 }); });
+    if (order === 'after') await act(async () => { finishRead(original); });
+    expect(JSON.parse(screen.getByRole('status').textContent!)).toEqual(next);
+  });
+
   it('keeps the user selection when an older background GET finishes after a save', async () => {
     const original = { version: 1 as const, key: 'chat_shown_projects' as const, value: [{ projectId: 'old', checkoutId: null }], revision: 1 };
     let finish!: (value: api.ChatShownProjectsPreference) => void;

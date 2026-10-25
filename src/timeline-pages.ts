@@ -6,7 +6,7 @@
  */
 
 type OrderedEvent = { timestamp: number; row_id: string; ordinal: number; id: string };
-type OrderedLink = { created_at: number; id: string };
+type OrderedLink = { created_at: number; id: string; event_id: string };
 
 export type TimelineTimeAxisShape = { start: number | null; end: number | null; event_count: number };
 
@@ -18,7 +18,7 @@ type TimelinePageShape<Event extends OrderedEvent, Link extends OrderedLink> = {
   events: Event[];
   links: Link[];
   diagnostics: unknown;
-  page: { row_offset: number; next_row_offset: number | null; ledger_watermark: number };
+  page: { row_offset: number; next_row_offset: number | null };
 };
 
 export function compareTimelineEvents(a: OrderedEvent, b: OrderedEvent): number {
@@ -61,11 +61,14 @@ export function mergeTimelinePages<
   if (!last || last.page.next_row_offset !== null) {
     throw new Error("Timeline pages end before the last page");
   }
-  if (pages.some((page) => page.page.ledger_watermark !== last.page.ledger_watermark || !sameTimelineRows(page.rows, last.rows))) {
-    throw new Error("Timeline pages describe different ledger snapshots");
+  if (pages.some((page) => !sameTimelineRows(page.rows, last.rows))) {
+    throw new Error("Timeline pages describe different row trees");
   }
   const events = pages.flatMap((page) => page.events).sort(compareTimelineEvents);
-  const links = pages.flatMap((page) => page.links).sort(compareTimelineLinks);
+  const eventIds = new Set(events.map((event) => event.id));
+  const links = pages.flatMap((page) => page.links)
+    .filter((link) => eventIds.has(link.event_id))
+    .sort(compareTimelineLinks);
   const { page: _page, ...rest } = last;
   return {
     ...rest,
