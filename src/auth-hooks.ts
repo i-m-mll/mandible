@@ -273,6 +273,7 @@ export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSu
     attempts: run.attempts,
     max_attempts: run.max_attempts,
     exit_code: run.exit_code,
+    failure: run.state === "failed" ? run.output.trim().split("\n").at(-1)?.trim() || null : null,
     command_digest: run.command_digest,
     started_at: run.started_at,
     finished_at: run.finished_at,

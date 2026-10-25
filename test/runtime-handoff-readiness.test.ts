@@ -68,7 +68,7 @@ it("fails at once when the started candidate exits or is replaced", async () => 
   expect(Date.now() - started).toBeLessThan(5000);
 });
 
-it.each(["complete", "failed"] as const)("reports a pending handoff honestly, then appends its %s outcome for the operator", async (outcome) => {
+it.each(["complete", "failed"] as const)("reports a pending handoff as pending, then shows its %s convergence to the operator", async (outcome) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-pending-"));
   cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
   vi.stubEnv("MANDIBLE_HOME", home);
@@ -125,17 +125,14 @@ it.each(["complete", "failed"] as const)("reports a pending handoff honestly, th
     expect(failures()[0]!.data).toMatchObject({ request_id: "self-update", message: expect.stringContaining(journal.error.replace(/\.$/, "")) });
     expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
   }
+  // A completed request's output is part of its custody; settlement reports through convergence.
   const settled = (await queue.getRequest("self-update"))!;
-  expect(settled.output.match(/\[convergence\]/g)).toHaveLength(1);
-  expect(settled.output.trimEnd().split("\n").at(-1)).toContain(`[convergence] ${outcome}:`);
-  if (outcome === "failed") expect(settled.output).toContain(journal.error);
-  expect(events.filter(event => event.event === DOMAIN_EVENTS.AUTH_OUTPUT).map(event => (event.data as { text: string }).text).join("")).toBe(settled.output);
-
-  const stub = fileRpc(() => ({ status: 200, body: settled }));
+  expect(settled.output).toBe(pendingOutput);
+  const stub = fileRpc(() => ({ status: 200, body: { ...settled, convergence: queue.convergenceForRequest("self-update") } }));
   cleanups.push(() => stub.responder.stop());
   const shown = await runCli(["auth", "show", "self-update"], { env: stub.env });
   expect(shown.status, shown.stderr).toBe(0);
-  expect(shown.stdout.trimEnd().split("\n").at(-1)).toContain(`[convergence] ${outcome}:`);
+  expect(shown.stdout).toMatch(outcome === "complete" ? /^Convergence: complete \(.*the merge is live\)$/m : /^Convergence: failed \(builtin-mandible-rebuild: .*Health check exceeded its 900 ms deadline.*\)$/m);
 });
 
 it("validates only unsettled handoff journals and revisits a settled one only after its run changes", async () => {

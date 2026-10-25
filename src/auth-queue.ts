@@ -5776,20 +5776,6 @@ export class AuthQueue {
     }
     if (runs.length === 0) return convergence;
 
-    if (convergence.state === "complete" || convergence.state === "failed") {
-      const reasons = runs.filter(run => run.required && run.state === "failed").map(run => {
-        const reason = tailLines(run.output.trim(), 1)?.trim().replace(/\s+/g, " ") ||
-          (run.exit_code === null ? "timed out" : `exit ${run.exit_code}`);
-        return `${run.hook_label || run.hook_id}: ${reason}`;
-      });
-      const line = convergence.state === "complete"
-        ? `[convergence] complete: ${request.type === "merge" ? "The merge is live." : "Post-success hooks completed."}`
-        : `[convergence] failed: ${request.type === "merge" ? "The merge landed but is not live." : "Post-success hooks failed."} ${reasons.join("; ")}`;
-      const output = this.getRequestById(request.id)?.output ?? "";
-      const previous = output.split("\n").filter(line => line.startsWith("[convergence] ")).at(-1);
-      if (previous !== line) this.handleOutput({ request_id: request.id, stream: "stderr", text: `${output.endsWith("\n") || !output ? "" : "\n"}${line}\n`, timestamp: Date.now() });
-    }
-
     for (const run of runs) {
       if (run.state === "failed" && run.required) {
         // One alert per (request, hook). The unique key in auth_hook_alerts is
