@@ -1476,6 +1476,8 @@ export interface AuthConvergenceHookSummary {
   attempts: number;
   max_attempts: number;
   exit_code: number | null;
+  /** The last line a failed run wrote, which names why it failed; null unless the run failed. */
+  failure: string | null;
   command_digest: string;
   started_at: number | null;
   finished_at: number | null;
