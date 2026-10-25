@@ -163,11 +163,11 @@ describe("managed custody versions", () => {
 });
 
 describe("diff derivation", () => {
-  it("derives a text unified diff from two versions' full snapshot bytes", () => {
+  it("derives a text unified diff from two versions' full snapshot bytes", async () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "line1\nline2\nline3\n", media_type: "text/plain", logical_name: "doc" }, 1000);
     const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "line1\nline2-changed\nline3\n", media_type: "text/plain", logical_name: "doc" }, 2000);
 
-    const diff = diffArtifacts(db, r1.version.id, r2.version.id);
+    const diff = await diffArtifacts(db, r1.version.id, r2.version.id);
     expect(diff.diffable).toBe(true);
     expect(diff.identical).toBe(false);
     expect(diff.kind).toBe("text");
@@ -326,7 +326,7 @@ describe("mixed custody", () => {
 });
 
 describe("codex review fixes", () => {
-  it("HIGH-1: dirty tracked files become content-hash CAS snapshots, not commit-collapsed", () => {
+  it("HIGH-1: dirty tracked files become content-hash CAS snapshots, not commit-collapsed", async () => {
     const { root, filePath } = makeTrackedRepo("dirty-repo", "clean-v1\n");
     createLedgerCheckout("mandible", fs.realpathSync(root));
 
@@ -360,7 +360,7 @@ describe("codex review fixes", () => {
     expect(getArtifactContent(db, v3.version.artifact_id)?.preview?.text).toBe("dirty-B\n");
 
     // Diff between the two dirty versions shows the recorded bytes.
-    const diff = diffArtifacts(db, v2.version.id, v3.version.id);
+    const diff = await diffArtifacts(db, v2.version.id, v3.version.id);
     expect(diff.diffable).toBe(true);
     expect(diff.unified).toContain("-dirty-A");
     expect(diff.unified).toContain("+dirty-B");

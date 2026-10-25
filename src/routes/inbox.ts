@@ -2,7 +2,7 @@ import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
-import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
+import { listLedgerOpenIssues } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
 import { computeAuthRequestOutcome, DOMAIN_EVENTS } from "../contracts.js";
@@ -447,32 +447,7 @@ export function registerInboxRoutes(
     repo_name?: string;
   }> {
     if (!workScanner) return [];
-    const openIssues: Array<{
-      id: string;
-      title: string;
-      labels: string[];
-      repo_id?: string;
-      repo_name?: string;
-    }> = [];
-    for (const summary of listLedgerIssueSummaries(db, workScanner)) {
-      const matchesRepo = !repoFilter
-        || summary.repo_root === repoFilter
-        || summary.repo_name === repoFilter
-        || summary.repo_id === repoFilter
-        || summary.project_key === repoFilter;
-      if (!matchesRepo) continue;
-      for (const issue of summary.issues) {
-        if (issue.status !== "open") continue;
-        openIssues.push({
-          id: issue.id,
-          title: issue.title,
-          labels: issue.labels,
-          repo_id: summary.repo_id,
-          repo_name: summary.repo_name,
-        });
-      }
-    }
-    return openIssues;
+    return listLedgerOpenIssues(db, workScanner, repoFilter);
   }
 
   function reminderOccurrenceItems(projectRef?: string): Array<Record<string, unknown>> {

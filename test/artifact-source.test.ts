@@ -245,11 +245,11 @@ it('pins a symbolic commit once even when the checkout and ref advance before co
 });
 
 
-it('keeps Git authority after equal-byte managed ingestion and retains abandoned commits through GC',()=>{
+it('keeps Git authority after equal-byte managed ingestion and retains abandoned commits through GC',async()=>{
   const a=repo('retained','original');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
   const commit=first.version.commit_sha!;
-  expect(checkArtifactMaterialization(db,`artifact-blob:${first.version.content_hash}`)).toMatchObject({materializable:false,recoverability:null});
+  expect(await checkArtifactMaterialization(db,`artifact-blob:${first.version.content_hash}`)).toMatchObject({materializable:false,recoverability:null});
   expect(first.version.artifact_id).toBe(first.version.id);
   const managed=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'managed'});
   expect(db.prepare('SELECT custody_mode FROM artifact_version ORDER BY version_no').all()).toEqual([{custody_mode:'git'},{custody_mode:'managed'}]);
