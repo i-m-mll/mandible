@@ -43,38 +43,35 @@ function runtimeEvidence(health: ReturnType<typeof diagnostics>) {
   };
 }
 
-it('recovery retains an earlier stall and requires a fresh clean sample covering the window', async () => {
+it('records stalls and lag inside the window once per interval, and completes once fresh samples cover it', async () => {
   let time = 100;
-  const initial = runtimeEvidence(diagnostics(4, 0, 90, 678.8));
-  const fresh = runtimeEvidence(diagnostics(5, 90, 110));
+  const samples = [
+    runtimeEvidence(diagnostics(4, 0, 90, 678.8)),
+    runtimeEvidence(diagnostics(5, 90, 110, 3_700, true)),
+    runtimeEvidence(diagnostics(5, 90, 110, 3_700, true)),
+    runtimeEvidence(diagnostics(6, 110, 130)),
+  ];
   let probes = 0;
   const result = await observeRuntimeHealthWindow({
-    recovery: true,
-    observationMs: 10,
-    deadlineMs: 20,
+    observationMs: 20,
+    deadlineMs: 40,
     now: () => time,
     wait: async (milliseconds: number) => { time += milliseconds / 100; },
-    probe: async () => ++probes === 1 ? initial : fresh,
+    probe: async () => samples[Math.min(probes++, samples.length - 1)],
   });
-  expect(result.historicalHealth).toHaveLength(1);
-  expect(result.samples.last.eventLoop.sequence).toBe(5);
-  expect(result.observation).toMatchObject({ startedAt: 100, mustCover: 110 });
-});
-
-it('initial acceptance and current recovery reject maximum-delay stalls', async () => {
-  const staleStall = runtimeEvidence(diagnostics(4, 0, 90, 678.8));
-  await expect(observeRuntimeHealthWindow({ probe: async () => staleStall, now: () => 100 }))
-    .rejects.toMatchObject({ code: 'event_loop_stall' });
-  const currentStall = runtimeEvidence(diagnostics(5, 90, 100, 15_102.4));
-  await expect(observeRuntimeHealthWindow({ probe: async () => currentStall, recovery: true, now: () => 100 }))
-    .rejects.toMatchObject({ code: 'event_loop_stall' });
+  expect(result.performance).toEqual({ omitted: 0, findings: [
+    expect.objectContaining({ code: 'event_loop_stall', sample: expect.objectContaining({ sequence: 4, maxMs: 678.8 }) }),
+    expect.objectContaining({ code: 'event_loop_lag', sample: expect.objectContaining({ sequence: 5 }) }),
+    expect.objectContaining({ code: 'event_loop_stall', sample: expect.objectContaining({ sequence: 5, maxMs: 3_700 }) }),
+  ] });
+  expect(result.samples.last.eventLoop.sequence).toBe(6);
+  expect(result.observation).toMatchObject({ startedAt: 100, mustCover: 120 });
 });
 
 it('refuses stale diagnostics and changed process identity', async () => {
   let time = 100;
   const initial = runtimeEvidence(diagnostics(4, 80, 90));
   await expect(observeRuntimeHealthWindow({
-    recovery: true,
     observationMs: 10,
     deadlineMs: 20,
     now: () => time,
@@ -83,7 +80,6 @@ it('refuses stale diagnostics and changed process identity', async () => {
   })).rejects.toMatchObject({ code: 'stale_diagnostics' });
   time = 100;
   await expect(observeRuntimeHealthWindow({
-    recovery: true,
     observationMs: 10,
     deadlineMs: 20,
     now: () => time,
@@ -102,7 +98,7 @@ it('refuses mutated, future, and gapped diagnostic intervals', async () => {
     let time = 100;
     let probes = 0;
     await expect(observeRuntimeHealthWindow({
-      recovery: true, observationMs: 10, deadlineMs: 20, now: () => time,
+      observationMs: 10, deadlineMs: 20, now: () => time,
       wait: async () => { time += 10; },
       probe: async () => ++probes === 1 ? initial : next,
     })).rejects.toMatchObject({ code: expected });
@@ -123,15 +119,15 @@ it('aborts a handoff probe that never answers at the fixed deadline', async () =
   expect(Date.now() - started).toBeLessThan(100);
 });
 
-it('classifies only timed pre-observation health logs as historical', () => {
-  const oldLag = JSON.stringify({ time: '2026-10-23T22:31:15.548Z', level: 'warn', message: 'daemon_event_loop_lag', p95_ms: 199.4, max_ms: 3841.2 });
-  const oldError = JSON.stringify({ time: '2026-10-23T22:31:16.000Z', level: 'error', message: 'ingestion_worker_error' });
-  const currentStall = JSON.stringify({ time: '2026-10-23T22:32:01.000Z', level: 'warn', message: 'daemon_event_loop_stall', max_ms: 678.8 });
-  const cutoff = Date.parse('2026-10-23T22:32:00.000Z');
-  expect(assessRuntimeLogs(`${oldLag}\n`, { historicalBefore: cutoff })).toMatchObject({ failures: [], diagnostics: { historical_health: { retained: [{ event: 'daemon_event_loop_lag' }] } } });
-  expect(assessRuntimeLogs(`${oldError}\n`, { historicalBefore: cutoff }).failures).toHaveLength(1);
-  expect(assessRuntimeLogs(`${currentStall}\n`, { historicalBefore: cutoff }).failures).toHaveLength(1);
-  expect(assessRuntimeLogs(`${JSON.stringify({ level: 'warn', message: 'daemon_memory_warning' })}\n`, { historicalBefore: cutoff }).failures[0]).toContain('Untimed');
+it('records health log events without failing, while error rows stay fatal', () => {
+  const lag = JSON.stringify({ time: '2026-10-23T22:31:15.548Z', level: 'warn', message: 'daemon_event_loop_lag', p95_ms: 199.4, max_ms: 3841.2 });
+  const stall = JSON.stringify({ time: '2026-10-23T22:32:01.000Z', level: 'warn', message: 'daemon_event_loop_stall', max_ms: 3700 });
+  const memory = JSON.stringify({ level: 'warn', message: 'daemon_memory_warning' });
+  const error = JSON.stringify({ time: '2026-10-23T22:31:16.000Z', level: 'error', message: 'ingestion_worker_error' });
+  expect(assessRuntimeLogs([lag, stall, memory].join('\n'))).toMatchObject({ failures: [], diagnostics: { health_events: { omitted: 0, retained: [
+    { event: 'daemon_event_loop_lag', max_ms: 3841.2 }, { event: 'daemon_event_loop_stall', max_ms: 3700 }, { event: 'daemon_memory_warning', time: null },
+  ] } } });
+  expect(assessRuntimeLogs([stall, error].join('\n')).failures).toEqual([error]);
 });
 
 function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number) => string[]) {
@@ -169,27 +165,20 @@ const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'ser
 it('runs real recovery observation through complete log and journal evidence', async () => {
   const { home, binding, executable, fakeStart, log, failed, evidence } = recoveryFixture((processStartedAt, fakeStart) => [
     startupLine(processStartedAt),
-    JSON.stringify({ level: 'warn', message: 'daemon_event_loop_lag', time: new Date(fakeStart - 1000).toISOString(), p95_ms: 199.4, max_ms: 3841.2 }),
+    JSON.stringify({ level: 'warn', message: 'daemon_event_loop_stall', time: new Date(fakeStart - 1000).toISOString(), p95_ms: 199.4, max_ms: 3700 }),
   ]);
+  const legacyFailure = { phase: 'failed', error: failed.error, attempts: 1, updatedAt: fakeStart - 500 };
   let time = fakeStart;
   let probes = 0;
-  await expect(observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
-    observationMs: 10, deadlineMs: 20, now: () => time,
-    probe: async () => evidence(diagnostics(1, fakeStart - 10, fakeStart, 678.8)),
-  })).rejects.toMatchObject({ code: 'event_loop_stall' });
-  const legacyFailure = { phase: 'failed', error: failed.error, attempts: 1, updatedAt: fakeStart - 500 };
-  expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId)).toMatchObject([
-    { actor: { user_id: 'agent' }, failedPhase: 'failed', failure: legacyFailure, code: 'event_loop_stall' },
-  ]);
-  expect(readRuntimeHandoff(home, binding.requestId, binding.executionId)).toEqual(failed);
-
-  time = fakeStart;
-  probes = 0;
   const recovered = await observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
     observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
-    probe: async () => ++probes === 1 ? evidence(diagnostics(1, fakeStart - 30, fakeStart - 10, 678.8)) : evidence(diagnostics(2, fakeStart - 10, fakeStart + 10)),
+    probe: async () => ++probes === 1 ? evidence(diagnostics(1, fakeStart - 30, fakeStart - 10)) : evidence(diagnostics(2, fakeStart - 10, fakeStart + 10, 3_700)),
   });
-  expect(recovered.recovery).toMatchObject({ failure: legacyFailure, receipt: { daemonLogOffset: 0, historicalDiagnostics: { logEvents: { retained: [{ event: 'daemon_event_loop_lag' }] } } } });
+  expect(recovered.recovery).toMatchObject({ failure: legacyFailure, receipt: { daemonLogOffset: 0, performance: {
+    healthFindings: { findings: [{ code: 'event_loop_stall', sample: { sequence: 2, maxMs: 3_700 } }], omitted: 0 },
+    logEvents: { retained: [{ event: 'daemon_event_loop_stall', max_ms: 3700 }], omitted: 0 },
+  } } });
+  expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId)).toEqual([]);
   expect(readRuntimeHandoff(home, binding.requestId, binding.executionId)?.phase).toBe('failed');
 
   time = fakeStart; probes = 0;
@@ -210,13 +199,10 @@ it('runs real recovery observation through complete log and journal evidence', a
     probe: async () => ++probes === 1 ? evidence(diagnostics(1, fakeStart - 30, fakeStart - 10)) : evidence(diagnostics(2, fakeStart - 10, fakeStart + 10)),
   })).rejects.toMatchObject({ code: 'log_assessment_failed' });
   expect(readRuntimeHandoff(home, binding.requestId, binding.executionId)).toEqual(failed);
-  expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId).at(-1)).toMatchObject({ code: 'log_assessment_failed', evidence: { failures: [expect.stringContaining('ingestion_worker_error')] } });
-  time = fakeStart;
-  await expect(observeFailedRuntimeHandoff(readRuntimeHandoff(home, binding.requestId, binding.executionId)!, { user_id: 'agent' }, {
-    observationMs: 10, deadlineMs: 20, now: () => time,
-    probe: async () => evidence(diagnostics(3, fakeStart - 10, fakeStart, 678.8)),
-  })).rejects.toMatchObject({ code: 'event_loop_stall' });
-  expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId).at(-1)).toMatchObject({ code: 'event_loop_stall', evidence: { lastSample: { eventLoop: { maxMs: 678.8 } } } });
+  expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId)).toMatchObject([
+    { actor: { user_id: 'agent' }, failedPhase: 'failed', failure: legacyFailure, code: 'recovery_observation_failed' },
+    { code: 'log_assessment_failed', evidence: { failures: [expect.stringContaining('ingestion_worker_error')] } },
+  ]);
 });
 
 it('records a refused recovery without overwriting a concurrently accepted receipt', async () => {
@@ -237,11 +223,11 @@ it('records a refused recovery without overwriting a concurrently accepted recei
   fs.writeFileSync(active, JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: failed.bindingDigest }));
   const recovery = { failure, failureDigest: createHash('sha256').update(JSON.stringify(failure)).digest('hex'), digest: 'accepted-recovery' };
   const accepted = { ...failed, recovery };
-  const refusal = new RuntimeHealthObservationError('event_loop_stall', 'stall', { maxMs: 678.8 });
+  const refusal = new RuntimeHealthObservationError('diagnostics_gap', 'gap', { priorSequence: 4 });
   let persisted = false;
   Object.defineProperty(refusal, 'message', { configurable: true, get() {
     if (!persisted) { persisted = true; persistRuntimeRecoveryObservation(accepted); }
-    return 'stall';
+    return 'gap';
   } });
   await expect(observeFailedRuntimeHandoff(failed, { user_id: 'agent' }, {
     probe: async () => { throw refusal; },
@@ -249,7 +235,7 @@ it('records a refused recovery without overwriting a concurrently accepted recei
   expect(persisted).toBe(true);
   expect(readRuntimeHandoff(home, binding.requestId, binding.executionId)?.recovery).toEqual(recovery);
   expect(readRuntimeRecoveryAttempts(home, binding.requestId, binding.executionId)).toMatchObject([
-    { actor: { user_id: 'agent' }, failedPhase: 'failed', code: 'event_loop_stall' },
+    { actor: { user_id: 'agent' }, failedPhase: 'failed', code: 'diagnostics_gap' },
   ]);
 });
 it('refuses changed nested binding bytes and ambiguous owner paths', () => {
@@ -318,7 +304,7 @@ it('recovers a live generation whose startup has rotated out of the current log'
     daemonLogOffset: 0,
     daemonLogBytes: covered,
     daemonLogSegments: [{ path: `${log}.2` }, { path: `${log}.1` }],
-    historicalDiagnostics: { logEvents: { retained: [{ event: 'daemon_event_loop_lag' }] } },
+    performance: { logEvents: { retained: [{ event: 'daemon_event_loop_lag' }] } },
   });
 });
 

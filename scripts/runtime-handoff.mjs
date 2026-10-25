@@ -263,7 +263,6 @@ export function recheckRuntimeObservation(journal, receipt) {
 
 export async function observeRuntimeHealthWindow({
   probe,
-  recovery = false,
   now = Date.now,
   wait = sleep,
   observationMs = OBSERVATION_MS,
@@ -279,13 +278,12 @@ export async function observeRuntimeHealthWindow({
       if (value.daemonLog.dev !== initial.daemonLog.dev || value.daemonLog.ino !== initial.daemonLog.ino || (lastLogSize !== null && value.daemonLog.size < lastLogSize)) throw observationFailure('log_changed', 'Candidate runtime log rotated or truncated during observation.', { initial: initial.daemonLog, current: value.daemonLog });
       lastLogSize = value.daemonLog.size;
     },
-    recovery,
     now,
     wait,
     observationMs,
     deadlineMs,
   });
-  return { evidence: result.value, observation: result.observation, samples: result.samples, historicalHealth: result.historicalHealth };
+  return { evidence: result.value, observation: result.observation, samples: result.samples, performance: result.performance };
 }
 
 export async function observeRuntimeHandoff(journal, {
@@ -320,29 +318,27 @@ export async function observeRuntimeHandoff(journal, {
       }
       return value;
     },
-    recovery: currentVerifier,
     now,
     wait,
     observationMs,
     deadlineMs,
   });
   const evidence = observed.evidence;
-  const assessor = createRuntimeLogAssessor(currentVerifier ? { historicalBefore: observed.observation.startedAt } : {});
+  const assessor = createRuntimeLogAssessor();
   const daemonLog = await readStderrLogCoverage(coverage, evidence.daemonLog, assessor.add);
   const assessment = assessor.finish();
-  if (assessment.failures.length) throw observationFailure(assessment.diagnostics.hard_failure_count === 0 && assessment.diagnostics.current_health.length ? assessment.diagnostics.current_health[0].code : 'log_assessment_failed', `Convergence logs failed assessment: ${assessment.failures.join('; ')}`, {
+  if (assessment.failures.length) throw observationFailure('log_assessment_failed', `Convergence logs failed assessment: ${assessment.failures.join('; ')}`, {
     observation: observed.observation,
     failures: assessment.failures,
-    historicalHealth: assessment.diagnostics.historical_health,
     initialSample: observed.samples.initial,
     lastSample: observed.samples.last,
   });
   const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
   const receipt = { bindingDigest: journal.bindingDigest, evidence, files, completedAt: now(), observation: observed.observation,
     samples: observed.samples,
-    historicalDiagnostics: {
-      healthSamples: observed.historicalHealth,
-      logEvents: assessment.diagnostics.historical_health,
+    performance: {
+      healthFindings: observed.performance,
+      logEvents: assessment.diagnostics.health_events,
     },
     logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: daemonLog.sha256, daemonLogBytes: daemonLog.bytes, daemonLogOffset: coverage.offset, daemonLogSegments: coverage.segments };
   recheckRuntimeObservation(journal, receipt);
