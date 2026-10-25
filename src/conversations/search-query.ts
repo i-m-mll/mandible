@@ -17,4 +17,3 @@ export function blockTypeFromRole(value: string | undefined): string | null {
   if (value === "assistant") return "assistant_message";
   return null;
 }
-
