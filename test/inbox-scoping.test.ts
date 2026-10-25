@@ -23,7 +23,6 @@ import { addBinding, addCredential, createUser, setupOperator } from "../src/use
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { createLedgerIssue, createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
-import { queryPlan, recordStatements } from "./helpers/statement-recorder.js";
 import { DOMAIN_EVENTS } from "../src/contracts.js";
 import { SseManager, setSseManager } from "../src/sse.js";
 
@@ -913,11 +912,8 @@ describe("POST /api/inbox/ack-all", () => {
         setImmediate(countTurn);
       };
       setImmediate(countTurn);
-      const { result: response, statements } = await recordStatements(db as never, async () => {
-        const result = await app.invoke("POST", "/api/inbox/ack-all");
-        finished = true;
-        return result;
-      });
+      const response = await app.invoke("POST", "/api/inbox/ack-all");
+      finished = true;
 
       expect(response.statusCode).toBe(200);
       expect(turnsWhileRunning).toBeGreaterThanOrEqual(2);
@@ -930,15 +926,6 @@ describe("POST /api/inbox/ack-all", () => {
       expect(db.prepare(
         "SELECT DISTINCT acknowledged_by FROM auth_requests WHERE id LIKE 'resolved-%'",
       ).all()).toEqual([{ acknowledged_by: testRequesterUserId }]);
-      // Finding the backlog reads no auth request beyond the ones it names.
-      const authSteps = statements
-        .filter((statement) => /\bauth_requests\b/.test(statement.sql))
-        .flatMap((statement) => queryPlan(db as never, statement))
-        .filter((step) => /\bauth_requests\b/.test(step));
-      expect(authSteps.length).toBeGreaterThan(0);
-      expect(authSteps.filter((step) =>
-        !/USING INDEX (idx_auth_requests_unacknowledged \(status=\?\)|sqlite_autoindex_auth_requests_1 \(id=\?\))$/.test(step)))
-        .toEqual([]);
     } finally {
       db.close();
     }

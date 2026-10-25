@@ -510,13 +510,13 @@ describe('TimelineView', () => {
 
   it('restarts when ledger events change between pages even if row IDs stay identical', async () => {
     const pages = [1, 2, 2, 2].map((watermark, index) => new Response(JSON.stringify({
-      ...projection(),
+      ...projection({ events: index % 2 ? [] : index === 0 ? projection().events.map(event => ({ ...event, body: 'Obsolete body' })) : projection().events }),
       page: { row_offset: index % 2, next_row_offset: index % 2 === 0 ? 1 : null, ledger_watermark: watermark },
     }), { headers: { 'content-type': 'application/json' } }));
     const fetch = vi.fn(async () => pages.shift()!);
     vi.stubGlobal('fetch', fetch);
-    await getProjectTimeline({ project_id: 'mandible' });
-    expect(fetch).toHaveBeenCalledTimes(4);
+    const result = await getProjectTimeline({ project_id: 'mandible' });
+    expect(result.events).toEqual(projection().events);
   });
 
   it('renders a projection only once every page has loaded, and reloads when the rows change between pages', async () => {

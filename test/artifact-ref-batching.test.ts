@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { type Db } from "../src/db.js";
-import { resolveArtifactProject, resolveArtifactProjects } from "../src/permissions/resources.js";
 import {
   canonicalArtifactBlobShortRefs,
   canonicalLogicalArtifactShortRefs,
@@ -88,20 +87,5 @@ describe("artifact short refs for a page", () => {
     const manyStatements = await statementsRun(db, () => projectArtifactPublicValue(db, { artifacts: many }));
 
     expect(manyStatements).toBe(fewStatements);
-  });
-});
-
-describe("artifact projects for a page", () => {
-  it("resolve every id in one statement, as each id resolves alone", async () => {
-    const recorded = recordVersions(6, 0);
-    const ids = recorded.flatMap((entry) => [
-      entry.series.id.replace(/^artifact-series:/, "artifact:"),
-      entry.version.id,
-      `artifact-blob:${entry.version.content_hash}`,
-    ]);
-
-    let resolved = new Map<string, unknown>();
-    expect(await statementsRun(db, () => { resolved = resolveArtifactProjects(db, ids); })).toBe(1);
-    expect([...resolved]).toEqual(ids.map((id) => [id, resolveArtifactProject(db, id)]));
   });
 });

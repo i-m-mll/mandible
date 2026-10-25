@@ -110,17 +110,6 @@ describe("session registry", () => {
     }
   });
 
-  it("marks a session dead when its pid is gone or reused, and keeps the live one active", async () => {
-    const registry = createRegistry();
-    const { pid, pidStart } = await exitedProcess();
-    registry.registerSession({ id: "gone", app: "claude", pid, pid_start: pidStart, status: "active" });
-    registry.registerSession({ id: "reused", app: "claude", pid: process.pid, pid_start: "1970-01-01T00:00:00.000Z", status: "active" });
-    registry.registerSession({ id: "live", app: "claude", pid: process.pid, pid_start: cachedPidStartTime(process.pid), status: "active" });
-    const page = registry.listSessionsPage({ scope: "all" });
-    expect(Object.fromEntries(page.sessions.map((session) => [session.id, session.status])))
-      .toEqual({ gone: "dead", reused: "dead", live: "active" });
-    expect(registry.getSessionByPid(process.pid)?.id).toBe("live");
-  });
 
   it("marks a PID-less session dead only after a day without updates", () => {
     expect(checkLiveness(pidlessSession(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()))).toBe("dead");

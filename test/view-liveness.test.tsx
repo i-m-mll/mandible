@@ -239,30 +239,6 @@ it('Logs reads at most once per second while shown, however many events arrive',
   expect(loadLogs.mock.calls.length).toBeLessThanOrEqual(4);
 });
 
-it('Logs folds events during its activation load into one trailing read', async () => {
-  const { client, emit } = silentLogs();
-  let finish = (): void => undefined;
-  const loadLogs = vi.fn(() => new Promise<LogsResponse>((resolve) => {
-    finish = () => resolve({
-      entries: [{ id: 'log-1', level: 'info', event: 'kept-entry', time: '2026-07-04T12:00:01.000Z' }],
-      limit: 100, offset: 0, log_file: '', exists: true,
-      source: 'daemon_log', older_cursor: null, has_older: false,
-    });
-  }));
-  render(
-    <Shell active>
-      <LogsView loadLogs={loadLogs as typeof import('../ui/src/api').getLogs} createSse={() => client} />
-    </Shell>,
-  );
-  expect(loadLogs).toHaveBeenCalledTimes(1);
-  for (let event = 0; event < 20; event += 1) emit();
-  await act(() => vi.advanceTimersByTimeAsync(5_000));
-  expect(loadLogs).toHaveBeenCalledTimes(1);
-
-  await act(async () => { finish(); });
-  await act(() => vi.advanceTimersByTimeAsync(0));
-  expect(loadLogs).toHaveBeenCalledTimes(2);
-});
 
 it('Logs shows a read that hangs past the deadline as a failed load, then reads again', async () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);

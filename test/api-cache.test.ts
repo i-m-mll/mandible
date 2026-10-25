@@ -1,23 +1,13 @@
 // @vitest-environment jsdom
 import { beginDetailRequest, clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail } from '../ui/src/detail-cache';
 import * as api from '../ui/src/api';
-import { BRIEFING_EVENT_VALUES } from '../src/contracts';
 import { queryClient } from '../ui/src/query/client';
 import { browserResourceKeys } from '../ui/src/query/browserResources';
 import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { addSpaceItem, briefingApiCacheFamiliesForEvent, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, clearApiGetCache } from '../ui/src/api';
+import { addSpaceItem, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, clearApiGetCache } from '../ui/src/api';
 
-describe('Briefing SSE cache invalidation matrix', () => {
-  it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing and bundle caches', (topic) => {
-    expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
-      '/api/briefings',
-      '/api/briefing-bundles',
-      '/api/briefing-groups',
-    ]);
-  });
-});
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {

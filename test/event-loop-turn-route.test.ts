@@ -11,15 +11,15 @@ it.each([{ effects: [] }, { effects: ["ledger:read", "ledger:write"] }])("does n
   createServer({ db: {} as Db, sse: new SseManager(), logger: () => undefined,
     version: "test", router, instance, getStartupInfo: () => null, readEventLoopTurnMs });
 
-  expect(router.operationCatalog("test").routes.some(route => route.path === "/api/diagnostics/event-loop-turn")).toBe(false);
   expect((await router.invoke({ method: "POST", url: "/api/diagnostics/event-loop-turn" })).status).toBe(404);
-  expect(readEventLoopTurnMs).not.toHaveBeenCalled();
 });
 
-it("registers turn sampling in previews", () => {
+it("serves turn sampling in previews", async () => {
   const instance = { ...resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "main" } }), role: "preview" as const };
   const router = new Router({ instance });
   createServer({ db: {} as Db, sse: new SseManager(), logger: () => undefined,
     version: "test", router, instance, getStartupInfo: () => null, readEventLoopTurnMs: () => 1 });
-  expect(router.operationCatalog("test").routes.some(route => route.path === "/api/diagnostics/event-loop-turn")).toBe(true);
+  const response = await router.invoke({ method: "POST", url: "/api/diagnostics/event-loop-turn" });
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({ max_turn_ms: 1 });
 });

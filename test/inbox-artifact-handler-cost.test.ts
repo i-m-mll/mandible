@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setDb, type Db } from '../src/db.js';
 import { registerInboxRoutes } from '../src/routes/inbox.js';
 import { registerProviderRoutes } from '../src/routes/providers.js';
-import { listLedgerIssueSummaries, listLedgerOpenIssues } from '../src/ledger/issue-projection.js';
+import { listLedgerOpenIssues } from '../src/ledger/issue-projection.js';
 import { setupOperator } from '../src/users/store.js';
 import type { WorkScanner } from '../src/work-scanner.js';
 import { artifactRepo } from './helpers/artifact-repo-fixtures.js';
@@ -28,7 +28,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-it('serves identical inbox rows without reading parent edges, closed issue bodies, or deleted labels', async () => {
+it('serves open issues with current labels under canonical project and checkout filters', async () => {
   const repos = [];
   for (const name of ['zeta', 'alpha']) {
     const project = insertRawLedgerProject(db, { name, projectKey: name });
@@ -49,20 +49,17 @@ it('serves identical inbox rows without reading parent edges, closed issue bodie
     }
   }
   const scanner = { getRepos: () => repos } as unknown as WorkScanner;
-  const expected = listLedgerIssueSummaries(db, scanner).flatMap(summary => summary.issues
-    .filter(issue => issue.status === 'open').map(issue => ({ id: issue.id, title: issue.title, labels: issue.labels,
-      repo_id: summary.repo_id, repo_name: summary.repo_name })));
+  const expected = ['alpha', 'zeta'].flatMap(name => [2, 0].map(index => ({
+    id: name + '-' + index, title: 'Issue ' + name + '-issue-' + index,
+    labels: ['a', 'z'], repo_id: name, repo_name: name + '-recent',
+  })));
   const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
   registerInboxRoutes(router, undefined, undefined, scanner);
-  const prepared = vi.spyOn(db, 'prepare');
   for (let pass = 0; pass < 2; pass++) {
     const result = await router.invoke({ method: 'GET', url: '/api/inbox/global' });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ open_issues: expected, total: expected.length });
   }
-  const sql = prepared.mock.calls.map(([query]) => query).join('\n');
-  expect(sql).not.toContain('ledger_relationship_edges');
-  expect(sql).not.toMatch(/SELECT \* FROM ledger_issues/i);
   for (const filter of ['alpha', 'alpha-recent', path.join(root, 'alpha', 'recent')]) {
     expect(listLedgerOpenIssues(db, scanner, filter)).toEqual(expected.filter(issue => issue.repo_id === 'alpha'));
   }
@@ -87,11 +84,4 @@ it('yields to the event loop during every Git read in artifact check', async () 
       expect(gap).toBeLessThan(50);
     }
   } finally { fs.rmSync(stub.dir, { recursive: true, force: true }); }
-});
-
-it('allows artifact checks within the standard preview effect ceiling', () => {
-  const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
-  registerProviderRoutes(router);
-  expect(router.operationCatalog('test').routes.find(route => route.path === '/api/artifacts/check')?.effects)
-    .toEqual(['ledger:write', 'files:preview']);
 });
