@@ -15,6 +15,9 @@ import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, 
 import { readBuildRevision } from './build-revision.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
+import { inspectServiceDefinitions, serviceInstallationContext } from './service-definitions.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
 export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
@@ -204,6 +207,21 @@ async function main() {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
   const candidate = command('git', ['rev-parse', 'HEAD']);
   if (command('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
+  const targetInstallation = serviceInstallationContext({ home: process.env.MANDIBLE_HOME });
+  const inspectTarget = async () => {
+    const lock = readRuntimeHandoffLock(targetInstallation.home);
+    if (lock) return { code: 'runtime_handoff_lock', message: runtimeHandoffLockRefusal(lock) };
+    const inspection = await inspectServiceDefinitions(targetInstallation);
+    const currentLock = readRuntimeHandoffLock(targetInstallation.home);
+    if (currentLock) return { code: 'runtime_handoff_lock', message: runtimeHandoffLockRefusal(currentLock) };
+    return inspection.ok ? null : { code: 'service_definition', message: inspection.refusal.message, refusal: inspection.refusal };
+  };
+  const initialBlocker = await inspectTarget();
+  if (initialBlocker) {
+    process.stdout.write(`${JSON.stringify({ status: 'failed', candidate, publication_blocker: initialBlocker, error: initialBlocker.message })}\n`);
+    process.exitCode = 1;
+    return;
+  }
   const runtime = command('/bin/sh', [path.join(root, 'scripts', 'bun-runtime.sh')]);
   const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');
@@ -325,6 +343,11 @@ async function main() {
         return probe(signal);
       },
     });
+    const finalBlocker = await inspectTarget();
+    if (finalBlocker) {
+      result.checks.publication_blocker = finalBlocker;
+      throw new Error(finalBlocker.message);
+    }
     result.status = 'passed';
   } catch (error) { result.error = error.message; }
   finally {

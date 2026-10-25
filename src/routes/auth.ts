@@ -1,7 +1,7 @@
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
-import { AuthQueue, AuthQueueError } from "../auth-queue.js";
+import { AuthQueue, AuthQueueError, publicationBlockerFor } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
@@ -287,7 +287,7 @@ export function registerAuthRoutes(
         files_changed: request.files_changed,
         additions: request.additions,
         deletions: request.deletions,
-        publication_blocker: authQueue.publicationBlockerForRequest(request),
+        publication_blocker: await authQueue.publicationBlockerForRequest(request),
       });
     } catch (error) {
       handleQueueError(error, res);
@@ -333,7 +333,7 @@ export function registerAuthRoutes(
       convergence: authQueue.convergenceForRequest(request.id),
       // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
       candidate_acceptance: authQueue.candidateAcceptanceForRequest(request),
-      publication_blocker: authQueue.publicationBlockerForRequest(request),
+      publication_blocker: await authQueue.publicationBlockerForRequest(request),
       // Issue 117ba80 — protected-base commits that are neither Mandible merges nor operator-signed.
       base_audit: authQueue.baseAuditForRequest(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(db), request),
@@ -642,6 +642,7 @@ export function registerAuthRoutes(
       requests = requests.filter((r) => r.type === typeFilter);
     }
     const attributionResolver = new AttributionReadResolver(db);
+    const publicationBlockers = await authQueue.publicationBlockersForRequests(requests);
     const enriched = requests.map((r) => {
       return {
         ...r,
@@ -650,7 +651,7 @@ export function registerAuthRoutes(
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
-        publication_blocker: authQueue.publicationBlockerForRequest(r),
+        publication_blocker: publicationBlockers.get(r.id) ?? null,
         base_audit: authQueue.baseAuditForRequest(r.id),
         execution_attempts: listAuthExecutionAttempts(db, r.id),
         ...authAttributionReadFields(attributionResolver, r),
@@ -670,10 +671,12 @@ export function registerAuthRoutes(
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    const requests = await reader.run("auth_history", { limit, type: typeFilter });
+    const rows = await reader.run("auth_history", { limit, type: typeFilter });
+    const blocker = rows.some(row => row.selfUpdates) ? await authQueue.publicationObservation(rows.some(row => row.acceptance.applies)) : null;
     res.json({
-      requests: requests.map(({ request, acceptance }) => ({
+      requests: rows.map(({ request, selfUpdates, acceptance }) => ({
         ...request,
+        publication_blocker: publicationBlockerFor({ selfUpdates, changesBuildInputs: acceptance.applies }, blocker),
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(request, acceptance),
       })),
     });

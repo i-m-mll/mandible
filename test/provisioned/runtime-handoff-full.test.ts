@@ -104,7 +104,7 @@ case "$#" in 3) ;; 4) [ "$4" = -w ] || exit 2 ;; *) exit 2 ;; esac
 exec /usr/bin/security "$@" ${quote(privateKeychain)}
 `, { mode: 0o700 });
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
-  const env = { USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home,
+  const env = { USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_SERVICE_ACCOUNT_HOME: userHome,
     MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(ports.backend), MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: repo, depth: 0 }]),
     MANDIBLE_SECURITY_BIN: securityAdapter, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_ARCHIVE: archivePath, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
   const libraryInputs = Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]!]));
@@ -135,6 +135,9 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     fs.cpSync(sourceCa.storageRoot, ca.storageRoot, { recursive: true });
     const receipt = JSON.parse(fs.readFileSync(sourceCa.receipt, 'utf8'));
     fs.writeFileSync(ca.receipt, JSON.stringify({ ...receipt, storage_root: ca.storageRoot, fixture_source_digest: digest(fs.readFileSync(sourceCa.receipt)) }), { mode: 0o600 });
+    const serviceConfig = path.join(home, 'config/local-sessions/service-config.json');
+    fs.mkdirSync(path.dirname(serviceConfig), { recursive: true });
+    fs.writeFileSync(serviceConfig, JSON.stringify({ environment: { MANDIBLE_DB: ledger, MANDIBLE_SECURITY_BIN: securityAdapter, ...libraryInputs }, toolDirectories: [] }), { mode: 0o600 });
     command(runtime, ['scripts/local-runtime.mjs', 'install', '--root', repo], { cwd: repo, env });
     command(runtime, ['scripts/local-runtime.mjs', 'start'], { cwd: repo, env });
     await until(async () => { try { const r = await fetch(`http://127.0.0.1:${ports.backend}/api/health`); return (await r.json()).ready === true; } catch { return false; } }, 30000, 'Actual old daemon readiness');
@@ -207,7 +210,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       fs.writeFileSync(path.join(fixtureHooks, name), bytes, { mode: 0o700 }); return { name, sha256: digest(bytes) };
     });
     git(repo, ['config', 'core.hooksPath', fixtureHooks]);
-    const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
+    const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_SERVICE_ACCOUNT_HOME=${quote(userHome)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
     db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(hookCommand, '*', 'builtin-mandible-rebuild');
     const xattrPoison = path.join(path.dirname(poisonedShim), 'xattr');
     const xattrMarker = path.join(scratch, 'wrong-xattr-used');

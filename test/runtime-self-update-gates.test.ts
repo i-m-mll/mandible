@@ -19,6 +19,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
+import * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
@@ -90,6 +91,7 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
 }
 
 beforeEach(() => {
+  vi.spyOn(serviceDefinitions, "inspectServiceDefinitions").mockResolvedValue({ ok: true, observations: [] });
   repo = createAuthCheckRepo();
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
@@ -111,6 +113,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   (await queue.dispose());
   db.close();
@@ -131,7 +134,7 @@ describe("runtime handoff lock gate", () => {
     });
 
     const original = await submit();
-    expect(queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
+    expect(await queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
     expect(runs).toHaveLength(0);
 
     git(repo, ["checkout", "feature/self-update"]);
@@ -168,6 +171,90 @@ describe("runtime handoff lock gate", () => {
 });
 
 describe("candidate acceptance gate", () => {
+  it("blocks publication when definitions drift after acceptance, fails a fresh run before build, and clears after repair", async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+
+    const sibling = await submit("feature/other");
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+
+    const refusal: serviceDefinitions.ServiceDefinitionRefusal = {
+      service: "backend", label: "private-backend", category: "definition_mismatch",
+      fields: ["ProgramArguments", "EnvironmentVariables.PATH"], message: "Private backend definition differs from the loaded job.",
+      repairCommand: "bun scripts/local-runtime.mjs restart",
+    };
+    const inspector = vi.mocked(serviceDefinitions.inspectServiceDefinitions);
+    inspector.mockResolvedValue({ ok: false, refusal });
+    setDb(db);
+    const router = authenticatedTestRouter(getOperator(db)!);
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+    for (const url of [`/api/auth/request/${request.id}`, "/api/auth/queue", "/api/auth/history"]) {
+      inspector.mockClear();
+      if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'failed', resolved_at = 1").run();
+      const response = await router.invoke({ method: "GET", url });
+      if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'pending', resolved_at = NULL").run();
+      expect(response.status).toBe(200);
+      const body = response.body as { requests?: Array<{ publication_blocker: unknown }>; publication_blocker?: unknown };
+      const row = body.requests ? body.requests.find(row => row.publication_blocker) : body;
+      expect(row).toMatchObject({ publication_blocker: { code: "service_definition", refusal } });
+      expect(inspector).toHaveBeenCalledTimes(1);
+      if (body.requests) expect(body.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: request.id, publication_blocker: { code: "service_definition", message: refusal.message, refusal } }),
+        expect.objectContaining({ id: sibling.id, publication_blocker: { code: "service_definition", message: refusal.message, refusal } }),
+      ]));
+    }
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(refusal.message);
+    expect((await queue.getRequest(request.id))!.status).toBe("pending");
+
+    // Admit execution to a busy repository, then introduce drift before its turn.
+    inspector.mockResolvedValue({ ok: true, observations: [] });
+    db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
+    const execution = queue as unknown as {
+      reserveRepoAdmission(request: unknown, install: (key: string) => void): Promise<void>;
+      executionChains: Map<string, Promise<void>>;
+      executeInBackground(request: unknown): Promise<void>;
+      inFlight: Map<string, Promise<void>>;
+    };
+    let release!: () => void;
+    const busy = new Promise<void>(resolve => { release = resolve; });
+    const current = (await queue.getRequest(request.id))!;
+    await execution.reserveRepoAdmission(current, key => { execution.executionChains.set(key, busy); });
+    await execution.executeInBackground(current);
+    await waitUntilPasses(() => expect(execution.inFlight.has(request.id)).toBe(true));
+    inspector.mockResolvedValue({ ok: false, refusal });
+    release();
+    await waitUntilPasses(async () => expect((await queue.getRequest(request.id))!.status).toBe("pending"));
+    expect((await queue.getRequest(request.id))!.last_executed_at).toBeNull();
+
+    await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: refusal.message });
+    expect(runs).toHaveLength(2); // No checkout or build executor ran.
+
+    commitOnBranch(repo, "feature/docs-during-drift", { "docs/note.md": "documentation only\n" });
+    const docs = await submit("feature/docs-during-drift", { change_report: await reviewedChanges("feature/docs-during-drift") });
+    expect(await queue.publicationBlockerForRequest(docs)).toBeNull();
+    expect(await queue.runCandidateAcceptance(docs)).toBeNull();
+    expect(runs).toHaveLength(2);
+
+    inspector.mockResolvedValue({ ok: true, observations: [] });
+    expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toBeNull();
+    await queue.refreshPendingCandidates(true);
+    expect(runs).toHaveLength(2); // Repair/restart does not retry failed acceptance.
+    await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
+    await waitUntilPasses(() => expect(runs).toHaveLength(3));
+    // Drift arising during a run also prevents recording a pass.
+    inspector.mockResolvedValue({ ok: false, refusal });
+    runs[2]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "failed", reason: refusal.message });
+  });
+
   it("skips documentation-only changes on submission, startup, manual runs, summaries, and approval", async () => {
     commitOnBranch(repo, "feature/docs", { "README.md": "# Mandible\n", "docs/images/screenshot.png": "image" });
     const request = await submit("feature/docs", { change_report: await reviewedChanges("feature/docs") });

@@ -66,6 +66,72 @@ visibly. Helper crash recovery has six attempts and a 30-minute deadline.
 Failure preserves the journal and reports the failed phase as **merged, not
 live**. It does not restore the old dependency graph or replay publication.
 
+## Installation-owned services
+
+`start`, `restart`, `install`, and `configure-launch-mode` render service definitions
+from the registered checkout and installation configuration. The checkout's
+`scripts/bun-runtime.sh` selects and verifies Bun using the OS account runtime
+store. The invoking executable, `HOME`, `PATH`, and ambient runtime or archive
+overrides do not select the production executable or service environment.
+Read-only inspection never selects or installs a runtime or writes receipts.
+
+Both jobs use a deduplicated PATH ordered as the pinned Bun directory, checkout
+`bin`, native system tools, explicit installation tool directories, account-home
+`.local/bin`, `.dotfiles/bin`, `.cargo/bin` and `bin`, then Homebrew and
+`/usr/local` directories. Build and hook environments retain their separate PATH
+policy.
+
+`MANDIBLE_HOME/config/local-sessions/service-config.json` owns deliberate backend
+overrides and tool directories. For example:
+
+```json
+{
+  "environment": { "MANDIBLE_DB": "/absolute/path/mandible.db" },
+  "toolDirectories": ["/absolute/path/tools"]
+}
+```
+
+Allowed overrides are `MANDIBLE_DB`, `MANDIBLE_PID_FILE`,
+`MANDIBLE_STDERR_LOG_PATH`, `MANDIBLE_SQLITE_LIBRARY`,
+`MANDIBLE_SQLITE_LIBRARY_ARCHIVE`, `MANDIBLE_SECURITY_BIN`, and `NODE_OPTIONS`.
+Paths must be absolute and literal; tool directories cannot contain empty PATH
+components or shell expansions. Apply an explicit JSON file with
+`bun scripts/local-runtime.mjs configure-launch-mode --service-config /absolute/config.json`
+or pass `--service-config` to `install`. This replaces the configuration; omit
+it to preserve existing configuration. Initial migration imports only allowlisted
+overrides from the existing backend plist, excluding its program and PATH.
+The installed login mode is preserved unless `--launch-mode` explicitly changes it.
+
+One reconciler validates both services before changing them. Changed jobs are
+booted out and observed until both the definition and old process disappear,
+then replacement plists and runner files are published. Bootstrap is followed by
+comparison of loaded arguments, environment, working directory, logs, and
+KeepAlive against the installed definitions. Unchanged `start` does not restart
+the backend; unchanged `restart` uses `kickstart -k` and confirms a new startup
+epoch. A changed gateway definition is reloaded too. A bootstrap refusal leaves
+the replacement installed and unloaded and fails the command. An unload refusal
+preserves the old files and reports unresolved drift.
+
+`stop` does not rewrite definitions and preserves the gateway while previews use
+it. `reload-gateway` never republishes the backend. Lifecycle mutation refuses
+while a handoff owns the installation. Candidate installation within that handoff
+leaves the backend unloaded, and unloads any changed gateway before replacement;
+`handoff-start` starts them. Handoff admission inspects drift without repairing it.
+
+The shared typed inspector is `inspectServiceDefinitions(context)` in
+`scripts/service-definitions.mjs`. It asynchronously reads installed plists and
+launchd state and returns matching observations or a structured service refusal.
+Missing, malformed or duplicate definitions and unreadable launchd state refuse
+inspection. An unloaded owned job is a valid observation. It compares installed
+definitions to loaded jobs, independently of a candidate's runtime pin, allowing
+legitimate runtime upgrades. The controller-only synchronous entry point uses
+the same normalization.
+
+Private fixtures pass an explicit installation context. Controllers also accept
+`MANDIBLE_SERVICE_ACCOUNT_HOME` for a nondefault `MANDIBLE_HOME`, so fixture
+LaunchAgent directories remain private; the default production installation
+ignores that override. Fixture labels always include the installation hash.
+
 ## Handoff lock
 
 `MANDIBLE_HOME/config/local-sessions/handoff-active.json` names the one handoff
@@ -153,6 +219,12 @@ Refused recovery observations are kept separately under the handoff's
 `recovery-attempts/` directory. Each immutable record includes the actor,
 failed phase, reason and bounded evidence; the newest ten are retained without
 rewriting the journal or an accepted recovery receipt.
+
+A failed convergence hook can be executed again with
+`mandible auth retry-convergence <request> [--hook <id>]`. This retries the hook
+without publishing the merge again. Pending means admitted and still running;
+a failed or unconfirmed result is not completion. Inspect `mandible auth show
+<request>` before taking another action after a connection loss.
 
 The protected retry route accepts `mode: "verify-current"` and requires an
 active durable credential with project write access and exact delivery custody
