@@ -177,6 +177,7 @@ export interface ResponseLike {
   status(code: number): ResponseLike;
   header?(name: string, value: string | string[]): ResponseLike;
   json(payload: unknown): void;
+  jsonText?(payload: string): void;
   empty?(): void;
   html?(payload: string): void;
   text?(payload: string, contentType?: string): void;
@@ -303,12 +304,16 @@ class HttpResponse implements ResponseLike {
 
   json(payload: unknown): void {
     if (this._sent) return;
+    this.jsonText(JSON.stringify(payload));
+  }
+
+  jsonText(body: string): void {
+    if (this._sent) return;
     this._sent = true;
-    const body = JSON.stringify(payload);
     this.res.writeHead(this._statusCode, {
       ...this.headers,
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body)
+      "Content-Length": Buffer.byteLength(body),
     });
     this.res.end(body);
   }

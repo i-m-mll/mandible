@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -230,7 +231,7 @@ describe("Claude provider title ingestion", () => {
     });
 
     const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const sidebar = await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=10",

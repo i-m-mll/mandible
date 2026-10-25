@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -110,7 +111,7 @@ describe("conversation lineage", () => {
     expect(rowsOf(CHILD_B)[0].parent_conversation_id).not.toBeNull();
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     expect(rowsOf(ROOT)).toHaveLength(2);
     for (const { id } of rowsOf(ROOT)) {
       const detail = await router.invoke({ method: "GET", url: `/api/conversations/${id}` });
@@ -222,7 +223,7 @@ describe("conversation lineage", () => {
       expect(rowsOf(`child-${agentId}`)[0]).toMatchObject({ parent_conversation_id: parentId, is_sidechain: 1, agent_id: agentId });
     }
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const detail = await router.invoke({ method: "GET", url: `/api/conversations/${parentId}` });
     expect(detail.body).toMatchObject({ conversation: { id: parentId, children_count: 2 } });
     const list = await router.invoke({ method: "GET", url: "/api/conversations?exclude_subagents=true" });

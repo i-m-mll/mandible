@@ -1,3 +1,5 @@
+import { HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.js";
+import { workerLedgerReaderPool, inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -171,7 +173,7 @@ async function insertSourceBackedConversation(
 describe("conversation full-text API parity", () => {
   it("makes the list full_text path reach exact body search while title mode stays title-only", async () => {
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     const title = await router.invoke({ method: "GET", url: "/api/conversations?search=Needle" });
     expect(title.body).toMatchObject({ conversations: [{ id: "title-only" }], total: 1 });
@@ -200,6 +202,49 @@ describe("conversation full-text API parity", () => {
     }
   });
 
+  it("keeps cold search and sidebar source work off the daemon loop", async () => {
+    db.prepare("UPDATE conversation_blocks SET content = ? WHERE id = ?")
+      .run("x".repeat(32 * 1024 * 1024) + " Needle", "block-body");
+    const ledgerPath = path.join(tempDir, "ledger.db");
+    fs.writeFileSync(ledgerPath, db.serialize());
+    const reader = workerLedgerReaderPool(ledgerPath, { size: 2 });
+    const router = new Router();
+    registerConversationRoutes(router, reader);
+    let longestTurnMs = 0;
+    let ticks = 0;
+    let last = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      longestTurnMs = Math.max(longestTurnMs, now - last - 2);
+      last = now;
+      ticks += 1;
+    }, 2);
+    try {
+      const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle" });
+      expect(dedicated.status).toBe(200);
+      expect(dedicated.body).toMatchObject({
+        results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
+        total: 1,
+      });
+      const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
+      expect(sidebar.status).toBe(200);
+      expect(sidebar.body).toMatchObject({
+        groups: [{ conversations: [{ id: "body-only", search_target: { block: "block-body" } }] }],
+      });
+      const title = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
+      expect(title.status).toBe(200);
+      expect(title.body).toMatchObject({ results: [{ conversation: { id: "title-only" } }], total: 1 });
+      const invalid = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?lifecycle=invalid" });
+      expect(invalid.status).toBe(400);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(ticks).toBeGreaterThan(0);
+      expect(longestTurnMs).toBeLessThan(HANDLER_TURN_BUDGET_MS);
+    } finally {
+      clearInterval(timer);
+      await reader.close();
+    }
+  });
+
   it("returns source-verified dedicated-route matches with durable structural block ids", async () => {
     const sourcePath = path.join(
       tempDir,
@@ -212,7 +257,7 @@ describe("conversation full-text API parity", () => {
     const structural = { id: sparseConversationBlockId("source-route", 0) };
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const response = await router.invoke({
       method: "GET",
       url: "/api/conversations/search?q=Structural%20Needle",
@@ -252,7 +297,7 @@ describe("conversation full-text API parity", () => {
     `).run();
 
     const router = new Router({ clientAuth: authenticator });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const detail = await router.invoke({
       method: "GET",
       url: "/api/conversations/source-mask?source_backed=false",
@@ -291,7 +336,7 @@ describe("conversation full-text API parity", () => {
 
     fs.rmSync(sourcePath);
     const failingRouter = new Router({ clientAuth: authenticator });
-    registerConversationRoutes(failingRouter);
+    registerConversationRoutes(failingRouter, inlineLedgerReader());
     const failedDetail = await failingRouter.invoke({
       method: "GET",
       url: "/api/conversations/source-mask?source_backed=false",
