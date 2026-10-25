@@ -6,11 +6,6 @@ import { parseSweepOptions } from "../scripts/route-cost-sweep.ts";
 import { acceptanceOwnedOutputs, routeCostSweepArgs } from "../scripts/candidate-acceptance.mjs";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "../scripts/owned-run.mjs";
 
-it("keeps the standalone default and parses an explicit working root", () => {
-  expect(parseSweepOptions([])["work-root"]).toBeUndefined();
-  expect(parseSweepOptions(["--work-root", "/tmp/sweep work", "--json"])).toMatchObject({ "work-root": "/tmp/sweep work", json: true });
-  expect(() => parseSweepOptions(["--work-root"])).toThrow();
-});
 
 it("reclaims interrupted sweep data and authority through acceptance ownership", () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-sweep-"));

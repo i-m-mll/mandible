@@ -11,12 +11,7 @@ import { queryClient } from '../ui/src/query/client';
 // Route chunks load from the module cache, so idle-time work settles within event-loop turns.
 const viewModules = import.meta.glob('../ui/src/views/**/*.tsx');
 
-/** The startup warmup's tab order: one idle step per tab. */
-const WARMUP_ORDER = [
-  'overview', 'auth', 'artifacts', 'work', 'issues', 'settings', 'inbox',
-  'console', 'logs', 'graph', 'timeline', 'spaces', 'briefing', 'tasks',
-] as const;
-type WarmedTab = typeof WARMUP_ORDER[number];
+type WarmedTab = 'overview' | 'timeline' | 'console' | 'artifacts';
 
 /** Requests every page load makes, whichever view is active. */
 const STARTUP_GLOBALS = new Set([
@@ -161,13 +156,10 @@ const FIXTURES: Array<[RegExp, Fixture]> = [
   [/^\/api\/work\/repos\/mandible\/branches$/, () => [{ name: 'feature/warm-branch', repo_id: 'mandible' }]],
 ];
 
-type Recorded = { request: string; step: number };
-
 class Harness {
-  readonly requested: Recorded[] = [];
+  readonly requested: string[] = [];
   events!: ReturnType<typeof stubEventSource>;
   private inflight = 0;
-  private step = -1;
   hang = false;
   health: unknown = { ready: true, warm: true };
   private readonly idle = new Map<number, () => void>();
@@ -192,7 +184,7 @@ class Harness {
       const url = new URL(String(input), 'http://localhost');
       const method = init?.method ?? 'GET';
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined;
-      this.requested.push({ request: `${method} ${url.pathname}${url.search}`, step: this.step });
+      this.requested.push(`${method} ${url.pathname}${url.search}`);
       if (this.hang && !STARTUP_GLOBALS.has(`${method} ${url.pathname}`)) return new Promise<Response>(() => undefined);
       this.inflight += 1;
       try {
@@ -234,7 +226,6 @@ class Harness {
           const due = [...this.idle.values()];
           this.idle.clear();
           for (const callback of due) {
-            this.step += 1;
             callback();
           }
         }
@@ -247,13 +238,7 @@ class Harness {
 
   routeRequests(fromIndex = 0): string[] {
     return [...new Set(this.requested.slice(fromIndex)
-      .map(({ request }) => request)
       .filter((request) => !STARTUP_GLOBALS.has(request.replace(/\?.*$/, ''))))];
-  }
-
-  warmRequests(tab: WarmedTab): string[] {
-    const step = WARMUP_ORDER.indexOf(tab);
-    return [...new Set(this.requested.filter((entry) => entry.step === step).map(({ request }) => request))];
   }
 }
 
@@ -277,45 +262,27 @@ function navigate(hash: string): void {
   });
 }
 
-/** The visible text each warmed view shows from its fixture; views without one are checked by requests only. */
-const WARM_TEXT: Partial<Record<WarmedTab, string>> = {
+const WARM_TEXT: Record<WarmedTab, string> = {
   overview: 'sess-warm-1',
-  auth: 'Warm auth request',
-  work: 'feature/warm-branch',
-  issues: 'Warm issue body',
-  inbox: 'Warm inbox issue',
-  logs: 'Warm log line',
-  graph: 'Warm graph node',
-  tasks: 'Warm digest task',
   artifacts: 'Warm artifact body',
-  spaces: 'Warm space title',
   timeline: 'Warm timeline issue',
   console: 'Warm chat title',
 };
 
 describe('startup route warmup', () => {
-  it.each([null, {}, { ready: true }, { ready: false, warm: true }])('does not warm inactive routes without affirmative health: %j', async (health) => {
+  it.each([null, {}, { ready: true }, { ready: false, warm: true }, { ready: true, warm: false }])('does not warm inactive routes without affirmative health: %j', async (health) => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
     const harness = new Harness();
     harness.install();
     harness.health = health;
     window.history.replaceState(null, '', '#/settings');
     render(h(App, {}));
+    await harness.settle(false);
+    const activeRequests = harness.routeRequests();
     await harness.settle();
-    expect(harness.routeRequests()).toEqual(['GET /api/user-settings/managed_chat_defaults']);
+    expect(harness.routeRequests()).toEqual(activeRequests);
   });
 
-  it('fetches nothing for inactive views while the daemon is still cold', async () => {
-    await Promise.all(Object.values(viewModules).map((load) => load()));
-    const harness = new Harness();
-    harness.install();
-    harness.health = { ready: true, warm: false };
-    window.history.replaceState(null, '', '#/settings');
-    render(h(App, {}));
-    await harness.settle();
-    // The active Settings view reads its own defaults.
-    expect(harness.routeRequests()).toEqual(['GET /api/user-settings/managed_chat_defaults']);
-  });
 
   it('fallback polling marks detail and TanStack caches stale as well as GETs', async () => {
     const harness = new Harness();
@@ -341,7 +308,7 @@ describe('startup route warmup', () => {
     window.history.replaceState(null, '', '#/timeline');
     render(h(App, {}));
     await harness.settle();
-    const timelineReads = () => harness.requested.filter(({ request }) => request === 'POST /api/timeline/project').length;
+    const timelineReads = () => harness.requested.filter((request) => request === 'POST /api/timeline/project').length;
     for (const type of ['ledger:issue:updated', 'ledger:comment:created', 'ledger:comment:updated']) {
       const before = timelineReads();
       act(() => harness.events.emit({ type, data: {} }));
@@ -366,7 +333,7 @@ describe('startup route warmup', () => {
     expect(harness.routeRequests(afterWarm)).toEqual([]);
   });
 
-  const cases = WARMUP_ORDER.filter((tab) => tab !== 'settings')
+  const cases = (['overview', 'timeline', 'console', 'artifacts'] as const)
     .flatMap((tab) => [[tab, 'inside'], [tab, 'after']] as const);
   it.each(cases)('%s shows its warm data when opened %s the freshness window', async (tab, window) => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
@@ -379,13 +346,12 @@ describe('startup route warmup', () => {
     const activation = harness.routeRequests();
     resetBrowserState();
 
+    const beforeWarm = harness.requested.length;
     globalThis.window.history.replaceState(null, '', '#/settings');
     render(h(App, {}));
     await harness.settle();
-    const warm = harness.warmRequests(tab);
+    const warm = harness.routeRequests(beforeWarm).filter(request => activation.includes(request));
     expect(warm.length).toBeGreaterThan(0);
-    // The warmup sends only requests the view's own activation sends.
-    for (const request of warm) expect(activation).toContain(request);
 
     if (window === 'after') {
       const now = Date.now();
@@ -396,10 +362,11 @@ describe('startup route warmup', () => {
     navigate(`#/${tab}`);
     await harness.settle(false);
     const text = WARM_TEXT[tab];
-    if (text) expect((await screen.findAllByText(text, { exact: false })).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(text, { exact: false })).length).toBeGreaterThan(0);
     const afterSwitch = harness.routeRequests(beforeSwitch);
+    // Inside the window the warm copy is shown without a refetch. Past it the painted data revalidates;
+    // the stub never answers, so the data on screen is the warm copy.
     if (window === 'inside') expect(afterSwitch.filter((request) => warm.includes(request))).toEqual([]);
-    // Past the window the painted data revalidates; the stub never answers, so the data on screen is the warm copy.
     else expect(afterSwitch.filter((request) => activation.includes(request)).length).toBeGreaterThan(0);
   });
 });

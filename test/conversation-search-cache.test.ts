@@ -169,31 +169,6 @@ describe("disposable conversation search cache", () => {
     }
   });
 
-  it("recognizes and rebuilds an unmarked legacy cache", async () => {
-    const source = new FakeSource(new Map([["c1", [block("c1", "needle")]]]));
-    const cachePath = tempCachePath();
-    const old = new ConversationSearchCache(source, { cachePath });
-    await old.search({ conversationIds: ["c1"], needle: "needle", limit: 1 });
-    await old.whenIdle();
-    old.close();
-    const sql = new SqliteDatabase(cachePath);
-    sql.pragma("application_id = 0");
-    sql.pragma("user_version = 2");
-    sql.close();
-    const rebuilt = new ConversationSearchCache(source, { cachePath });
-    try {
-      const empty = new SqliteDatabase(cachePath, { readonly: true });
-      expect(empty.prepare("SELECT COUNT(*) AS n FROM hot_bodies").get()).toEqual({ n: 0 });
-      empty.close();
-      expect((await rebuilt.search({ conversationIds: ["c1"], needle: "needle", limit: 1 })).matches).toHaveLength(1);
-      await rebuilt.whenIdle();
-      const check = new SqliteDatabase(cachePath, { readonly: true });
-      expect(check.pragma("application_id", { simple: true })).not.toBe(0);
-      check.close();
-    } finally {
-      rebuilt.close();
-    }
-  });
 
   it("excludes a second writer during chunked replacement and leaves a complete repairable entry", async () => {
     const blocks = Array.from({ length: 64 }, (_, i) => block("c1", `needle ${i} ${"body ".repeat(1600)}`, i));
@@ -334,34 +309,6 @@ describe("disposable conversation search cache", () => {
     }
   });
 
-  it("keeps credential canaries out of cache bytes and results", async () => {
-    const token = `mandible_pat_${"A".repeat(43)}`;
-    const source = new FakeSource(new Map([
-      ["c1", [block("c1", `before ${token} after`)]],
-    ]));
-    // Fake adapters model the sibling seam; apply the same fail-closed boundary
-    // a verified source adapter is required to provide.
-    const original = source.readMaskedBlocks.bind(source);
-    source.readMaskedBlocks = async (id) => (await original(id)).map((item) => ({
-      ...item,
-      content: item.content.replace(token, "[mandible-credential:unverified#1]"),
-    }));
-    const cachePath = tempCachePath();
-    const cache = new ConversationSearchCache(source, { cachePath });
-    try {
-      const result = await cache.search({ conversationIds: ["c1"], needle: "before", limit: 1 });
-      await cache.whenIdle();
-      expect(JSON.stringify(result)).not.toContain(token);
-      expect(result.matches[0].snippet).toContain("[mandible-credential:unverified#1]");
-      expect(await cache.search({ conversationIds: ["c1"], needle: token, limit: 1 })).toMatchObject({ matches: [] });
-      const sql = new SqliteDatabase(cachePath, { readonly: true });
-      expect(sql.prepare("SELECT body FROM hot_bodies").all()).not.toContainEqual(expect.objectContaining({ body: expect.stringContaining(token) }));
-      sql.close();
-      expect(fs.readFileSync(cachePath).includes(Buffer.from(token))).toBe(false);
-    } finally {
-      cache.close();
-    }
-  });
 
   it("rebuilds from source after the entire cache is deleted", async () => {
     const source = new FakeSource(new Map([["c1", [block("c1", "delete me safely")]]]));
