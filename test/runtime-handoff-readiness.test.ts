@@ -20,6 +20,7 @@ import { AuthQueue } from "../src/auth-queue.js";
 import { DOMAIN_EVENTS } from "../src/contracts.js";
 import type { SseEvent } from "../src/types.js";
 import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
+import { fileRpc, runCli } from "./helpers/cli-process.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
@@ -67,7 +68,7 @@ it("fails at once when the started candidate exits or is replaced", async () => 
   expect(Date.now() - started).toBeLessThan(5000);
 });
 
-it("reports a pending handoff's rebuild as failed only once its journal fails", async () => {
+it.each(["complete", "failed"] as const)("reports a pending handoff honestly, then appends its %s outcome for the operator", async (outcome) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-handoff-pending-"));
   cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
   vi.stubEnv("MANDIBLE_HOME", home);
@@ -85,8 +86,8 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoff: () => journal,
     readRuntimeHandoffPhase: () => journal.phase,
-    verifyRuntimeHandoffReceipt: async () => { throw new Error("no receipt"); },
-    acknowledgeRuntimeHandoff: async () => { throw new Error("no receipt"); },
+    verifyRuntimeHandoffReceipt: async () => {},
+    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
   } });
   const events: SseEvent[] = [];
   const queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, broadcast: (event) => { events.push(event); },
@@ -94,7 +95,15 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   cleanups.push(async () => { (await queue.dispose()); db.close(); });
   // The fixture has no signed merge evidence; this lane is about convergence only.
   vi.spyOn(queue as unknown as { successfulMergeEvidenceFailure: () => string | null }, "successfulMergeEvidenceFailure").mockReturnValue(null);
+  vi.spyOn(queue as unknown as { adoptRuntimePublication: () => Promise<() => void> }, "adoptRuntimePublication").mockResolvedValue(() => {});
   const failures = () => events.filter((event) => event.event === DOMAIN_EVENTS.MANDIBLE_REBUILD_FAILED);
+
+  const pendingResult = { hook_id: "builtin-mandible-rebuild", label: "Build Mandible and install instructions after merge", exit_code: 75,
+    output: `MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}`, duration_ms: 790 };
+  vi.spyOn(hooks, "executeHooks").mockResolvedValue([pendingResult]);
+  vi.spyOn(hooks, "runPending").mockResolvedValue([pendingResult]);
+  vi.spyOn(hooks, "listRequestIdsWithRunnableHooks").mockReturnValue(["self-update"]);
+  await (queue as unknown as { runPostSuccessHooks: (request: unknown) => Promise<void> }).runPostSuccessHooks(await queue.getRequest("self-update"));
 
   await queue.resumeHookConvergence();
   expect(failures()).toHaveLength(0);
@@ -102,13 +111,31 @@ it("reports a pending handoff's rebuild as failed only once its journal fails", 
   expect(queue.isRebuilding).toBe(false);
   expect(hooks.getRun("self-update", "builtin-mandible-rebuild")).toMatchObject({ state: "pending", exit_code: 75 });
 
-  Object.assign(journal, { phase: "failed", error: "Candidate production front door is not ready at the exact merge generation: Health check exceeded its 900 ms deadline." });
+  const pendingOutput = (await queue.getRequest("self-update"))!.output;
+  expect(pendingOutput).toMatch(/\[hook: .*\] handoff pending:/);
+  expect(pendingOutput).toMatch(/\[hook: .*\] retry handoff pending:/);
+  expect(pendingOutput).not.toMatch(/failed/i);
+  vi.mocked(hooks.listRequestIdsWithRunnableHooks).mockReturnValue([]);
+
+  Object.assign(journal, { phase: outcome, receipt: {}, error: "Candidate production front door is not ready at the exact merge generation: Health check exceeded its 900 ms deadline." });
   await queue.resumeHookConvergence();
   await queue.resumeHookConvergence();
-  expect(failures()).toHaveLength(1);
-  // The operator sees the handoff's own error.
-  expect(failures()[0]!.data).toMatchObject({ request_id: "self-update", message: expect.stringContaining(journal.error.replace(/\.$/, "")) });
-  expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
+  expect(failures()).toHaveLength(outcome === "failed" ? 1 : 0);
+  if (outcome === "failed") {
+    expect(failures()[0]!.data).toMatchObject({ request_id: "self-update", message: expect.stringContaining(journal.error.replace(/\.$/, "")) });
+    expect(hooks.getRun("self-update", "builtin-mandible-rebuild")?.output.match(/recovery refused/g)).toHaveLength(1);
+  }
+  const settled = (await queue.getRequest("self-update"))!;
+  expect(settled.output.match(/\[convergence\]/g)).toHaveLength(1);
+  expect(settled.output.trimEnd().split("\n").at(-1)).toContain(`[convergence] ${outcome}:`);
+  if (outcome === "failed") expect(settled.output).toContain(journal.error);
+  expect(events.filter(event => event.event === DOMAIN_EVENTS.AUTH_OUTPUT).map(event => (event.data as { text: string }).text).join("")).toBe(settled.output);
+
+  const stub = fileRpc(() => ({ status: 200, body: settled }));
+  cleanups.push(() => stub.responder.stop());
+  const shown = await runCli(["auth", "show", "self-update"], { env: stub.env });
+  expect(shown.status, shown.stderr).toBe(0);
+  expect(shown.stdout.trimEnd().split("\n").at(-1)).toContain(`[convergence] ${outcome}:`);
 });
 
 it("validates only unsettled handoff journals and revisits a settled one only after its run changes", async () => {

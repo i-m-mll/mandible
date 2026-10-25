@@ -74,7 +74,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -5721,9 +5721,8 @@ export class AuthQueue {
           this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${hookLabel}] ${text}`, timestamp: Date.now() });
         }, { reusePlan: true });
         for (const result of hookResults) {
-          const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
           if (!this.executionIsCurrent(request.id, execution)) return;
-          this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${result.label}] ${status} (${result.duration_ms}ms)\n`, timestamp: Date.now() });
+          this.handleOutput({ request_id: request.id, stream: "stderr", text: formatHookExecutionResult(result), timestamp: Date.now() });
         }
       } catch (error) {
         authLog("warn", "auth_hook_execution_failed", { subsystem: "auth", auth_request_id: request.id, error: errorMessage(error) ?? String(error) });
@@ -5776,6 +5775,20 @@ export class AuthQueue {
       return convergence;
     }
     if (runs.length === 0) return convergence;
+
+    if (convergence.state === "complete" || convergence.state === "failed") {
+      const reasons = runs.filter(run => run.required && run.state === "failed").map(run => {
+        const reason = tailLines(run.output.trim(), 1)?.trim().replace(/\s+/g, " ") ||
+          (run.exit_code === null ? "timed out" : `exit ${run.exit_code}`);
+        return `${run.hook_label || run.hook_id}: ${reason}`;
+      });
+      const line = convergence.state === "complete"
+        ? `[convergence] complete: ${request.type === "merge" ? "The merge is live." : "Post-success hooks completed."}`
+        : `[convergence] failed: ${request.type === "merge" ? "The merge landed but is not live." : "Post-success hooks failed."} ${reasons.join("; ")}`;
+      const output = this.getRequestById(request.id)?.output ?? "";
+      const previous = output.split("\n").filter(line => line.startsWith("[convergence] ")).at(-1);
+      if (previous !== line) this.handleOutput({ request_id: request.id, stream: "stderr", text: `${output.endsWith("\n") || !output ? "" : "\n"}${line}\n`, timestamp: Date.now() });
+    }
 
     for (const run of runs) {
       if (run.state === "failed" && run.required) {
@@ -5908,11 +5921,10 @@ export class AuthQueue {
           });
         });
         for (const result of results) {
-          const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
           this.handleOutput({
             request_id: request.id,
             stream: "stderr",
-            text: `[hook: ${result.label}] retry ${status} (${result.duration_ms}ms)\n`,
+            text: formatHookExecutionResult(result, true),
             timestamp: Date.now(),
           });
         }
