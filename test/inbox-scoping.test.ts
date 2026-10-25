@@ -24,6 +24,8 @@ import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { createLedgerIssue, createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { queryPlan, recordStatements } from "./helpers/statement-recorder.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
+import { SseManager, setSseManager } from "../src/sse.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -808,6 +810,84 @@ describe("inbox acknowledgement attribution", () => {
 describe("POST /api/inbox/ack-all", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    setSseManager(null);
+  });
+
+  it("leaves a retried request's new resolution unacknowledged between batches", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `retry-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1, status: "failed" });
+      }
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+      const queue = new AuthQueue({ db });
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      const retryBetweenBatches = new Promise<string>((resolve, reject) => {
+        setImmediate(() => {
+          void (async () => {
+            const row = db.prepare(
+              "SELECT id FROM auth_requests WHERE acknowledged_by IS NULL LIMIT 1",
+            ).get() as { id: string };
+            const retried = await queue.retry(row.id);
+            expect(retried.status).toBe("pending");
+            expect(retried.resolved_at).toBeNull();
+            db.prepare("UPDATE auth_requests SET status = 'completed', resolved_at = 100 WHERE id = ?").run(row.id);
+            return row.id;
+          })().then(resolve, reject);
+        });
+      });
+
+      const [response, retriedId] = await Promise.all([
+        app.invoke("POST", "/api/inbox/ack-all"), retryBetweenBatches,
+      ]);
+
+      expect(response.statusCode).toBe(200);
+      expect(db.prepare("SELECT status, resolved_at, acknowledged_by FROM auth_requests WHERE id = ?").get(retriedId))
+        .toEqual({ status: "completed", resolved_at: 100, acknowledged_by: null });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by = ?").get(testRequesterUserId))
+        .toEqual({ count: 19 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("broadcasts committed acknowledgements before reporting a later batch write failure", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `failure-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1 });
+      }
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+      const sse = new SseManager();
+      setSseManager(sse);
+      const broadcast = vi.spyOn(sse, "broadcast");
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      const injectFailure = new Promise<void>((resolve) => {
+        setImmediate(() => {
+          db.exec(`CREATE TRIGGER fail_bulk_ack BEFORE UPDATE OF acknowledged_by ON auth_requests
+            BEGIN SELECT RAISE(ABORT, 'injected acknowledgement write failure'); END`);
+          resolve();
+        });
+      });
+
+      await expect(app.invoke("POST", "/api/inbox/ack-all"))
+        .rejects.toThrow("injected acknowledgement write failure");
+      await injectFailure;
+
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by = ?").get(testRequesterUserId))
+        .toEqual({ count: 8 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by IS NULL").get())
+        .toEqual({ count: 12 });
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        type: DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, data: { kind: "all", id: null },
+      }));
+    } finally {
+      db.close();
+    }
   });
 
   it("acknowledges a backlog across event-loop turns with the same result", async () => {
