@@ -248,6 +248,11 @@ export type ProjectTimelineProjection = {
   diagnostics: TimelineDiagnostics;
 };
 
+/** One response of `POST /api/timeline/project`; see `src/timeline-pages.ts`. */
+export type ProjectTimelinePage = ProjectTimelineProjection & {
+  page: { row_offset: number; next_row_offset: number | null };
+};
+
 export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   rootPolicy: 'coordination_and_explicit',
   explicitRootIssueIds: [],

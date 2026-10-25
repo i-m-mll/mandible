@@ -565,6 +565,8 @@ export interface ProjectTimelineInput {
   depth?: number;
   from?: number;
   to?: number;
+  /** Index into the ordered rows of the first row whose events this page carries. */
+  row_offset?: number;
 }
 
 export interface ProjectTimelineNormalizedInput {
@@ -739,6 +741,17 @@ export interface ProjectTimelineProjection {
   events: TimelineEvent[];
   links: TimelineLink[];
   diagnostics: TimelineDiagnostics;
+  page: TimelineProjectionPage;
+}
+
+/**
+ * Every page carries the whole row tree, inputs, and diagnostics; `events`,
+ * `links`, and `time_axis` cover only the rows from `row_offset` up to
+ * `next_row_offset`, which is null on the last page.
+ */
+export interface TimelineProjectionPage {
+  row_offset: number;
+  next_row_offset: number | null;
 }
 
 // --- Session-Issue linking types ---

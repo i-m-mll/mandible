@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb } from "../src/db.js";
-import { buildProjectTimelineProjection } from "../src/ledger/timeline-projection.js";
+import { buildProjectTimelineProjection, type TimelinePageBudget } from "../src/ledger/timeline-projection.js";
+import { mergeTimelinePages } from "../src/timeline-pages.js";
 import { registerTimelineRoutes } from "../src/routes/timeline.js";
-import type { ProjectTimelineProjection } from "../src/types.js";
+import type { ProjectTimelineInput, ProjectTimelineProjection } from "../src/types.js";
 import { createTimelineFixture, type TimelineFixture } from "./helpers/timeline-fixtures.js";
 
 let tempDir = "";
@@ -500,6 +501,58 @@ describe("project timeline projection", () => {
     ]));
   });
 
+  it("joins pages cut by event count or by elapsed time into the unpaged projection", () => {
+    const allKinds: ProjectTimelineInput["event_kinds"] = [
+      "auth_request", "backlink", "body", "comment", "commit", "issue_state", "label", "session", "state", "work_unit",
+    ];
+    const inputs: ProjectTimelineInput[] = [
+      { project_id: fixture.project.id },
+      {
+        project_id: fixture.project.id,
+        include_closed: true,
+        event_kinds: allKinds,
+        expanded_paths: [`row:root:${fixture.issues.rootA.id}:0`],
+        depth: 2,
+        root_specs: [{
+          id: "review-ever",
+          title: "Ever needed review",
+          scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+        }],
+      },
+      {
+        project_id: fixture.project.id,
+        root_policy: "explicit",
+        explicit_root_issue_ids: [fixture.issues.shared.id],
+        promoted_root_issue_ids: [fixture.issues.closed.id],
+        include_closed: true,
+        event_kinds: allKinds,
+      },
+    ];
+    const unbounded: TimelinePageBudget = { events: Infinity, ms: Infinity, now: () => 0 };
+    let clock = 0;
+    const budgets: TimelinePageBudget[] = [
+      { events: 0, ms: Infinity, now: () => 0 },
+      { events: Infinity, ms: 25, now: () => (clock += 10) },
+    ];
+    for (const input of inputs) {
+      const whole = buildProjectTimelineProjection(fixture.db, input, unbounded);
+      expect(whole.page).toEqual({ row_offset: 0, next_row_offset: null });
+      for (const budget of budgets) {
+        const pages: ProjectTimelineProjection[] = [];
+        let rowOffset: number | null = 0;
+        while (rowOffset !== null) {
+          const page = buildProjectTimelineProjection(fixture.db, { ...input, row_offset: rowOffset }, budget);
+          expect(page.page.row_offset).toBe(rowOffset);
+          pages.push(page);
+          rowOffset = page.page.next_row_offset;
+        }
+        expect(pages.length).toBeGreaterThan(1);
+        const { page: _page, ...unpaged } = whole;
+        expect(mergeTimelinePages(pages)).toEqual(unpaged);
+      }
+    }
+  });
+
   it("reads only the project's index ranges and the shown issues, never a ledger-wide range", () => {
     const statements = recordStatements(fixture.db);
     buildProjectTimelineProjection(fixture.db, { project_id: fixture.project.id });
@@ -521,7 +574,10 @@ describe("project timeline projection", () => {
       .flatMap(({ sql, args }) => (
       (fixture.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>)
         .map((step) => step.detail)
-        .filter((detail) => /\bSCAN (?!json_each\b)\w+/.test(detail) || /\(entity_type=\?\)/.test(detail))
+        .filter((detail) => /\bSCAN (?!json_each\b)\w+/.test(detail)
+          || /\(entity_type=\?\)/.test(detail)
+          // An issue's events of every type, when only the selected types are needed.
+          || /\bidx_ledger_events_entity\b/.test(detail))
         .map((detail) => `${detail} <- ${sql.replace(/\s+/g, " ").slice(0, 120)}`)
     ));
     expect(statements.length).toBeGreaterThan(0);

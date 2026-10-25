@@ -10,7 +10,8 @@ import { invalidatePersistedDetail, ROUTE_DATA_FRESH_MS } from './detail-cache';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
-import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
+import type { ProjectTimelineInput, ProjectTimelinePage, ProjectTimelineProjection } from './types/timeline';
+import { mergeTimelinePages, sameTimelineRows } from '../../src/timeline-pages';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
@@ -1258,10 +1259,36 @@ export async function getIssueRepos<T>(): Promise<T[]> {
   return normalizeList(payload);
 }
 
+/**
+ * Fetch every page of one Timeline projection and join them. Each request does
+ * a bounded amount of daemon work; the view receives the whole projection at
+ * once, so its rows and time axis never reflect a partial load. If the row tree
+ * changes between pages, the load starts over.
+ */
 export async function getProjectTimeline(
   input: ProjectTimelineInput,
   signal?: AbortSignal,
 ): Promise<ProjectTimelineProjection> {
+  for (let attempt = 0; attempt < TIMELINE_LOAD_ATTEMPTS; attempt += 1) {
+    const pages: ProjectTimelinePage[] = [];
+    let rowOffset = 0;
+    for (;;) {
+      const page = await getProjectTimelinePage({ ...input, row_offset: rowOffset }, signal);
+      if (pages.length > 0 && !sameTimelineRows(pages[0].rows, page.rows)) break;
+      pages.push(page);
+      if (page.page.next_row_offset === null) return mergeTimelinePages(pages);
+      rowOffset = page.page.next_row_offset;
+    }
+  }
+  throw new Error('Timeline rows kept changing while loading; reload to try again');
+}
+
+const TIMELINE_LOAD_ATTEMPTS = 3;
+
+async function getProjectTimelinePage(
+  input: ProjectTimelineInput & { row_offset: number },
+  signal?: AbortSignal,
+): Promise<ProjectTimelinePage> {
   const response = await browserSessionFetch('/api/timeline/project', {
     method: 'POST',
     headers: {
@@ -1281,7 +1308,7 @@ export async function getProjectTimeline(
     }
     throw new Error(message);
   }
-  return (await parseMaybeJson(response)) as ProjectTimelineProjection;
+  return (await parseMaybeJson(response)) as ProjectTimelinePage;
 }
 
 export async function getIssueDetail(
