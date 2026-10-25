@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { installMemoryLocalStorage, issueDetailProjection, makeArtifactFixture, makeArtifactSeries, stubEventSource, render, writablePreviewInstance } from './helpers/ui-workspace-fixture';
-import { act, cleanup, screen } from './helpers/dom.js';
+import { act, cleanup, screen, waitFor } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { App } from '../ui/src/app';
@@ -165,6 +165,7 @@ type Recorded = { request: string; step: number };
 
 class Harness {
   readonly requested: Recorded[] = [];
+  events!: ReturnType<typeof stubEventSource>;
   private inflight = 0;
   private step = -1;
   hang = false;
@@ -174,7 +175,7 @@ class Harness {
 
   install(): void {
     installMemoryLocalStorage();
-    stubEventSource();
+    this.events = stubEventSource();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
       instance: writablePreviewInstance,
     };
@@ -334,6 +335,21 @@ describe('startup route warmup', () => {
     expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(true);
   });
 
+  it('revalidates a visible Timeline after issue and comment SSE events', async () => {
+    const harness = new Harness();
+    harness.install();
+    window.history.replaceState(null, '', '#/timeline');
+    render(h(App, {}));
+    await harness.settle();
+    const timelineReads = () => harness.requested.filter(({ request }) => request === 'POST /api/timeline/project').length;
+    for (const type of ['ledger:issue:updated', 'ledger:comment:created', 'ledger:comment:updated']) {
+      const before = timelineReads();
+      act(() => harness.events.emit({ type, data: {} }));
+      await waitFor(() => expect(timelineReads()).toBeGreaterThan(before));
+      await harness.settle();
+    }
+  });
+
   it('warms each view once, then fetches nothing more for hidden views', async () => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
     const harness = new Harness();
@@ -343,9 +359,8 @@ describe('startup route warmup', () => {
     await harness.settle();
     expect(harness.routeRequests()).not.toEqual([]);
     const afterWarm = harness.requested.length;
-    const events = stubEventSource();
     for (const type of ['ledger:issue:updated', 'conversation:updated', 'auth:request:updated', 'space:updated', 'tasks.updated']) {
-      act(() => events.emit({ type, data: {} }));
+      act(() => harness.events.emit({ type, data: {} }));
     }
     await harness.settle();
     expect(harness.routeRequests(afterWarm)).toEqual([]);

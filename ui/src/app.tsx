@@ -753,6 +753,7 @@ function App(): JSX.Element {
   const leftShadowEnabled = false;
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
+  const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
   const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
   const [fallbackRightSidebarState, updateFallbackRightSidebarState] = useAppRightSidebarState(
     'app',
@@ -1415,6 +1416,17 @@ function App(): JSX.Element {
   useEffect(() => {
     if (!accessReady) return;
     const client = acquireSharedSse();
+    let timelineTokenTimer: number | null = null;
+    // Revalidate Timeline on ledger changes only while it is the active, visible
+    // tab; a hidden Timeline revalidates on activation from its stale cache.
+    const timelineRefreshHandler = (payload: SSEPayload) => {
+      if (!payload.type.startsWith('ledger:') || timelineTokenTimer !== null) return;
+      if (routeTabRef.current !== 'timeline' || document.visibilityState !== 'visible') return;
+      timelineTokenTimer = window.setTimeout(() => {
+        timelineTokenTimer = null;
+        setTimelineRefreshToken((n) => n + 1);
+      }, 300);
+    };
     // Coalesced graph-token bump while the graph tab is active and visible.
     let graphTokenTimer: number | null = null;
     const scheduleGraphBump = () => {
@@ -1652,6 +1664,7 @@ function App(): JSX.Element {
     };
 
     const unsubscribes = [
+      client.on('*', timelineRefreshHandler),
       client.on('session:registered', handler),
       client.on('session:updated', handler),
       client.on('session:ended', handler),
@@ -1734,6 +1747,7 @@ function App(): JSX.Element {
       if (!reconnected) return;
       // Events may have been missed while disconnected: no cached read is fresh any more.
       invalidateDashboardCaches();
+      setTimelineRefreshToken((n) => n + 1);
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
@@ -1752,6 +1766,7 @@ function App(): JSX.Element {
     client.connect();
 
     return () => {
+      if (timelineTokenTimer !== null) window.clearTimeout(timelineTokenTimer);
       if (graphTokenTimer !== null) window.clearTimeout(graphTokenTimer);
       if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
       if (authProjectionRefreshTimer !== null) window.clearTimeout(authProjectionRefreshTimer);
@@ -3079,6 +3094,7 @@ function App(): JSX.Element {
           return (
             <LazyTimelineView
               repos={state.workRepos}
+              refreshToken={timelineRefreshToken}
               params={tabRoute.params}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />

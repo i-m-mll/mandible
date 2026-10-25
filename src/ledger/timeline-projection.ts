@@ -161,11 +161,6 @@ export function buildProjectTimelineProjection(
   input: ProjectTimelineInput,
   budget: TimelinePageBudget = DEFAULT_PAGE_BUDGET,
 ): ProjectTimelineProjection {
-  return db.transaction(() => buildProjectTimelineSnapshot(db, input, budget))();
-}
-
-function buildProjectTimelineSnapshot(db: Db, input: ProjectTimelineInput, budget: TimelinePageBudget): ProjectTimelineProjection {
-  const ledgerWatermark = (db.prepare("SELECT COALESCE(MAX(rowid), 0) AS watermark FROM ledger_events").get() as { watermark: number }).watermark;
   const deadline = budget.now() + budget.ms;
   const project = resolveProject(db, input);
   const issueSet = loadProjectIssueSet(db, project.id);
@@ -356,7 +351,6 @@ function buildProjectTimelineSnapshot(db: Db, input: ProjectTimelineInput, budge
       predicateDiagnostics,
     }),
     page: {
-      ledger_watermark: ledgerWatermark,
       row_offset: rowOffset,
       next_row_offset: cursor < orderedRows.length ? cursor : null,
     },

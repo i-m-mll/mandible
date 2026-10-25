@@ -183,6 +183,8 @@ export function useChatProjectSelection(): [
   const desiredRef = useRef(legacyRef.current);
   const revisionRef = useRef(0);
   const editGenerationRef = useRef(0);
+  const pendingSavesRef = useRef(0);
+  const saveCompletionRef = useRef(0);
   const writeQueueRef = useRef(Promise.resolve());
   const activeRef = useRef(true);
 
@@ -191,7 +193,7 @@ export function useChatProjectSelection(): [
     let loading = false;
     let firstLoad = true;
     const showCached = (snapshot: ChatShownProjectsPreference) => {
-      if (!activeRef.current || (snapshot.revision === 0 && legacyRef.current!.length > 0)) return;
+      if (!activeRef.current || pendingSavesRef.current > 0 || (snapshot.revision === 0 && legacyRef.current!.length > 0)) return;
       desiredRef.current = snapshot.value;
       revisionRef.current = snapshot.revision;
       setShownProjects(snapshot.value);
@@ -201,11 +203,19 @@ export function useChatProjectSelection(): [
       if (loading) return;
       loading = true;
       const editGeneration = editGenerationRef.current;
+      const saveCompletion = saveCompletionRef.current;
+      const canApply = () => activeRef.current
+        && pendingSavesRef.current === 0
+        && saveCompletion === saveCompletionRef.current
+        && editGeneration === editGenerationRef.current;
       const warm = firstLoad;
       firstLoad = false;
       try {
-        const snapshot = await getChatShownProjectsPreference({ warm, onCached: warm ? showCached : undefined });
-        if (editGeneration !== editGenerationRef.current || snapshot.revision < revisionRef.current) return;
+        const snapshot = await getChatShownProjectsPreference({
+          warm,
+          onCached: warm ? (cached) => { if (canApply()) showCached(cached); } : undefined,
+        });
+        if (!canApply() || snapshot.revision < revisionRef.current) return;
         let resolved = snapshot;
         let importedLegacy = false;
         if (snapshot.revision === 0 && legacyRef.current!.length > 0) {
@@ -217,7 +227,7 @@ export function useChatProjectSelection(): [
             resolved = await getChatShownProjectsPreference();
           }
         }
-        if (!activeRef.current || editGeneration !== editGenerationRef.current || resolved.revision < revisionRef.current) return;
+        if (!canApply() || resolved.revision < revisionRef.current) return;
         desiredRef.current = resolved.value;
         revisionRef.current = resolved.revision;
         setShownProjects(resolved.value);
@@ -229,7 +239,7 @@ export function useChatProjectSelection(): [
             : null,
         });
       } catch (error) {
-        if (!activeRef.current || editGeneration !== editGenerationRef.current) return;
+        if (!canApply()) return;
         const authRequired = isApiErrorStatus(error, 401)
           || isApiErrorStatus(error, 403);
         setState({
@@ -267,6 +277,7 @@ export function useChatProjectSelection(): [
       ? (next as (current: ShownChatProject[]) => ShownChatProject[])(previous)
       : next;
     editGenerationRef.current += 1;
+    pendingSavesRef.current += 1;
     desiredRef.current = value;
     setShownProjects(value);
     writeQueueRef.current = writeQueueRef.current.then(async () => {
@@ -276,7 +287,10 @@ export function useChatProjectSelection(): [
         const saved = await updateChatShownProjectsPreference(intendedValue, expectedRevision);
         if (!activeRef.current) return;
         revisionRef.current = saved.revision;
-        if (desiredRef.current === intendedValue) setShownProjects(saved.value);
+        if (desiredRef.current === intendedValue) {
+          desiredRef.current = saved.value;
+          setShownProjects(saved.value);
+        }
         setState({ ready: true, notice: null });
       } catch (error) {
         if (!activeRef.current) return;
@@ -300,6 +314,9 @@ export function useChatProjectSelection(): [
           ready: false,
           notice: 'Project selection could not be saved; it will retry when Mandible reconnects.',
         });
+      } finally {
+        pendingSavesRef.current -= 1;
+        saveCompletionRef.current += 1;
       }
     });
   }, [state.ready]);
