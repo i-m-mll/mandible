@@ -27,9 +27,10 @@ or from the live ledger's cache state:
   (auth startup recovery, the startup work scan, ingestion) runs only on the
   main instance.
 - A preview's ledger copy was just written, so it is fully in the OS file
-  cache.
+  cache. The route-cost sweep's `--evict` mode reproduces cold ledger reads
+  on that copy.
 
-Measure those on production. `bun scripts/local-runtime.mjs restart` restarts
+Measure main-instance work on production. `bun scripts/local-runtime.mjs restart` restarts
 only the backend; the gateway and the app stay up and reconnect. To profile
 one production process:
 
@@ -237,6 +238,10 @@ Useful options:
 - `--only <regex>` narrows the run to matching paths.
 - `--fresh-each` starts a new daemon per route, so every route's first call is
   a process's first request.
+- `--evict` invalidates the snapshot database and existing WAL's OS file cache
+  before each first-call variant (macOS only). It reports cold-cache and warm
+  loop turns without confirmation trials or timing-based gate failures.
+  Setup, request and route-classification failures still fail the run.
 - `--cpu-prof` attributes each offender's window with
   `cpuprofile-windows.mjs`.
 - `--keep` retains the snapshot, logs and profile.
@@ -246,6 +251,47 @@ every five seconds for up to three minutes. It then measures even if load stays
 high; load alone never fails the gate. The report records initial load, load
 after the wait, final load, core count, and time spent waiting. `--ignore-load`
 skips this wait. Confirmation trials handle isolated scheduling spikes.
+
+### Reproduce cold ledger reads
+
+A freshly copied ledger is cached even in a fresh daemon. On macOS, evict its
+pages before measuring to reproduce a view reading data untouched for hours:
+
+```sh
+runtime_path="$(scripts/bun-runtime.sh)"
+export PATH="$(dirname "$runtime_path"):$PATH"
+"$runtime_path" run route-cost-sweep -- --evict --json > cold-route-cost.json
+```
+
+The helper `scripts/evict-file-cache.ts` uses libSystem through `bun:ffi` to
+map each file read-only, call `msync(MS_INVALIDATE)`, then unmap it. It requires
+no root access and does not change file contents. Eviction runs in the sweep
+process before the daemon's turn meter is reset, so its own cost is excluded.
+Each first-call variant evicts again; later passes do not. In this mode each
+read variant's warm passes immediately follow its cold call, before the next
+eviction can cool it again. Writes retain their prerequisite order. The JSON report
+adds `cold_cache_turn_ms` per route (`null` without `--evict`), and records
+`evict: true` and `timing_gate: false`. The text report prints the full cold
+table. First-call and warm fields remain available to existing report readers.
+
+For manual verification on an existing preview, use the same helper against
+its ledger and WAL, then immediately request the view while the stall probe
+runs in another terminal:
+
+```sh
+runtime_path="$(scripts/bun-runtime.sh)"
+DB=/absolute/path/to/preview/mandible.db
+"$runtime_path" scripts/evict-file-cache.ts "$DB"
+if [ -f "$DB-wal" ]; then "$runtime_path" scripts/evict-file-cache.ts "$DB-wal"; fi
+curl --unix-socket "$SOCK" http://localhost/api/issues
+```
+
+Use the preview's socket for `SOCK`. Against production, obtain the owner's
+agreement before evicting the live ledger: the next reads will pay the cold
+I/O cost. Run `scripts/daemon-stall-probe.mjs --sample --duration 180` during
+that verification, then open Issues, Auth and Graph. Compare request durations
+with coincident loop stalls; reader threads should keep cold I/O off the loop.
+Cache eviction cannot reproduce main-instance startup recovery or maintenance.
 
 ## Limits
 
