@@ -492,9 +492,12 @@ function listenForCleanup(options: {
         res.statusCode = answer.status;
         res.end(JSON.stringify(answer.body));
       } else if (req.method === "GET" && req.url?.startsWith("/api/work-units?")) {
-        res.end(JSON.stringify({ work_units: options.workUnits ?? [{ branch: "feature/sibling" }] }));
-      } else if (req.method === "POST" && req.url === "/api/work-units/release") {
-        res.end(JSON.stringify({ ok: true, released: 1, unchanged: false }));
+        const branch = new URL(req.url, "http://localhost").searchParams.get("branch");
+        const units = options.workUnits ?? [{ branch: "feature/sibling" }];
+        res.end(JSON.stringify({ work_units: units.filter((unit) => branch === null || unit.branch === branch) }));
+      } else if (req.method === "POST" && req.url?.startsWith("/api/work-units/")) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ error: "Only the work unit's custodian can change it." }));
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: "not found" }));
@@ -555,30 +558,36 @@ describe("auth merge reversible cleanup", () => {
     });
   });
 
-  it("releases the exact work unit of a merged worktree with its observed generation", async () => {
-    const branch = "feature/released";
+  it("removes merged lanes without touching their work units, which the merge finalizer owns", async () => {
+    const head = "feature/integration";
+    const lanes = [`${head}__lane-a`, `${head}__lane-b`];
     const { port, requests } = await listenForCleanup({
-      workUnits: [{ id: "wu-released", branch, state: "committed", custody_generation: 3, auth_request_id: null }],
+      workUnits: lanes.map((branch, index) => ({
+        id: `wu-${index}`, branch, state: "committed", custody_generation: 1, auth_request_id: null,
+      })),
     });
-    const worktree = createFeatureWorktree(branch);
-    commitFile(worktree, "released.txt", "released\n");
-    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
     fs.appendFileSync(path.join(tempDir, ".git", "info", "exclude"), ".issue\n", "utf8");
-    fs.writeFileSync(path.join(worktree, ".issue"), "cd64f1a\n", "utf8");
+    const headWorktree = createFeatureWorktree(head);
+    const laneWorktrees = lanes.map((lane, index) => {
+      const worktree = path.join(tempDir, "worktrees", lane.replace(/\//g, "__"));
+      git(["worktree", "add", "-b", lane, worktree, head]);
+      commitFile(worktree, `lane-${index}.txt`, `lane ${index}\n`);
+      fs.writeFileSync(path.join(worktree, ".issue"), `lane${index}\n`, "utf8");
+      git(["merge", "--no-ff", "--no-edit", lane], headWorktree);
+      return worktree;
+    });
+    git(["merge", "--no-ff", "--no-edit", head], tempDir);
 
     const result = await runCleanupHelperAsync(
-      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
+      `cleanup_merged_worktrees ${JSON.stringify(head)} 0 main`,
       tempDir,
       { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
-    expect(requests.some((request) => (
-      request.method === "GET" && request.url?.includes(`branch=${encodeURIComponent(branch)}`)
-    ))).toBe(true);
-    expect(requests.filter((request) => request.url === "/api/work-units/release").map((request) => request.body))
-      .toEqual([{ id: "wu-released", expected_generation: 3 }]);
-    expect(result.stderr).toContain("note: released work unit for feature/released");
-    expect(fs.existsSync(worktree)).toBe(false);
+    expect(laneWorktrees.every((worktree) => !fs.existsSync(worktree))).toBe(true);
+    expect(requests.filter((request) => request.method === "POST" && request.url?.startsWith("/api/work-units/")))
+      .toEqual([]);
+    expect(result.stderr).not.toMatch(/warning|work unit/i);
   });
 
   it("preserves sibling candidates when canonical project identity cannot be resolved", async () => {
