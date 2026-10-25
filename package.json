@@ -19,6 +19,7 @@
     "iab-preview": "bun --no-install scripts/iab-preview.mjs",
     "local-front-door": "bun --no-install scripts/local-front-door.mjs",
     "stall-probe": "bun --no-install scripts/daemon-stall-probe.mjs",
+    "route-cost-sweep": "bun --no-install scripts/route-cost-sweep.ts",
     "iab-preview-cleanup": "bun --no-install scripts/iab-preview.mjs cleanup",
     "demo:briefing": "bun --no-install scripts/demo-briefing.mjs",
     "preview-db-snapshot": "bun --no-install scripts/project-db-snapshot.mjs",

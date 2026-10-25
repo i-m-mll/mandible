@@ -1,4 +1,11 @@
 export const EVENT_LOOP_STALL_BUDGET_MS = 250;
+/**
+ * The most one request may block the event loop, judged per route by
+ * scripts/route-cost-sweep.ts on production data. It sits well under
+ * EVENT_LOOP_STALL_BUDGET_MS because concurrent requests and background
+ * work share the same loop.
+ */
+export const HANDLER_TURN_BUDGET_MS = 100;
 
 export interface DiagnosticInterval {
   sequence: number;

@@ -422,6 +422,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // relies on for lag detection. Issue: 0d81726.
     getMemoryDiagnostics: () => memoryDiagnostics.snapshot(),
     getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
+    readEventLoopTurnMs: () => eventLoopDiagnostics.readTurnMs(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
     localSocketPath: socketPath,

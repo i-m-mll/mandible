@@ -160,6 +160,49 @@ The probe only reads health, so it is safe against production.
      --outcome assessed --disposition discard --summary 'CPU profile for <issue>' --json
    ```
 
+## Route-cost sweep
+
+`bun run route-cost-sweep` (scripts/route-cost-sweep.ts) is the per-handler
+budget gate. Candidate acceptance runs it before the native build.
+
+- It snapshots the live ledger read-only with `VACUUM INTO` under
+  `~/.cache/mandible/route-cost-sweep/`, then starts a preview daemon of the
+  checkout on that copy. The preview gets copies of the conversation structure
+  and search caches.
+- The route list is `operations.routes` from `/api/instance`, which is the
+  router's operation catalog.
+- It runs every read route in two passes, then every database-only write route
+  in two passes. Pass 1 is each request's first call on a daemon that has
+  served no route yet; pass 2 is the warm call. Request parameters come from
+  the heaviest entities in the snapshot: the busiest project, issue and
+  umbrella, the most-versioned artifact, the largest conversation, and so on.
+- It measures loop-blocking time inside the daemon:
+  `POST /api/diagnostics/event-loop-turn` returns the largest drift of a 5 ms
+  timer since the previous call, and the sweep calls it between requests. The
+  timer is not a second `monitorEventLoopDelay`, because Bun backs every such
+  monitor with one shared histogram, and resetting it would reset the health
+  window. Each request is
+  charged until the loop is quiet again, so background work it starts counts.
+  Wall time does not count.
+- A route fails at or above `HANDLER_TURN_BUDGET_MS` unless `BUDGET_EXCEPTIONS`
+  names it and cites an issue that is open in the snapshot.
+- It also fails on a request that does not succeed, and on any non-GET route,
+  or GET route with path parameters, that has neither requests nor a skip
+  reason in `READS`/`WRITES`. Every skip says why, for example an effect a
+  preview cannot hold, credentials, or files outside the snapshot.
+
+Useful options:
+
+- `--only <regex>` narrows the run to matching paths.
+- `--fresh-each` starts a new daemon per route, so every route's first call is
+  a process's first request.
+- `--cpu-prof` attributes each offender's window with
+  `cpuprofile-windows.mjs`.
+- `--keep` retains the snapshot, logs and profile.
+
+The sweep refuses to measure when the 1-minute load average is at or above the
+core count.
+
 ## Limits
 
 - A preview runs the code under test on a projected copy of production's data
