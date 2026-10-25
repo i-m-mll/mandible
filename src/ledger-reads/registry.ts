@@ -37,9 +37,16 @@ export type LedgerReadKind = keyof typeof ledgerReads;
 export type LedgerReadParams<K extends LedgerReadKind> = Parameters<typeof ledgerReads[K]>[1];
 export type LedgerReadResult<K extends LedgerReadKind> = ReturnType<typeof ledgerReads[K]>;
 
+/**
+ * Each read sees one snapshot. A reader thread's statements otherwise interleave
+ * with commits on the main connection, so a read that checks access in a later
+ * statement than the one that fetched rows could judge them against newer state.
+ * Deferred never takes the write lock, so the inline reader is safe on the main
+ * connection too.
+ */
 export function runLedgerRead<K extends LedgerReadKind>(db: Db, kind: K, params: LedgerReadParams<K>): LedgerReadResult<K> {
   const read = ledgerReads[kind] as (db: Db, params: LedgerReadParams<K>) => LedgerReadResult<K>;
-  return read(db, params);
+  return db.transaction(() => read(db, params)).deferred();
 }
 
 export type LedgerReadRequest = {
