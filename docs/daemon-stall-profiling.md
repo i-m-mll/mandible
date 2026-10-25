@@ -190,10 +190,14 @@ The probe only reads health, so it is safe against production.
 `bun run route-cost-sweep` (scripts/route-cost-sweep.ts) is the per-handler
 budget gate. Candidate acceptance runs it before the native build.
 
-- It snapshots the live ledger read-only with `VACUUM INTO` under
+- It opens the live ledger read-only and takes a consistent snapshot with
+  `SqliteDatabase.backup()` (SQLite's online backup API) under
   `~/.cache/mandible/route-cost-sweep/`, then starts a preview daemon of the
-  checkout on that copy. The preview gets copies of the conversation structure
-  and search caches.
+  checkout on that copy. The backup preserves the source's page layout rather
+  than compacting it, so `--evict` cold reads reflect the live ledger's layout.
+  The saved database used to restore measurement trials and the search-cache
+  copy use the same backup API. The preview also gets a projected copy of the
+  conversation structure cache.
 - The route list is `operations.routes` from `/api/instance`, which is the
   router's operation catalog.
 - It runs every read route in two passes, then every database-only write route
