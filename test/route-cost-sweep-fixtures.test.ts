@@ -131,3 +131,74 @@ it("skips only routes depending on a missing fixture and preserves its root reas
     db.close();
   }
 });
+
+
+it("requires usable settings, destination routes, and enough distinct per-pass entities", () => {
+  const ledger = path.join(tempRoot(), "mandible.db");
+  const db = new SqliteDatabase(ledger);
+  const plan = (method: string, routePath: string, fixtures = readFixtures(ledger)) => planRoute({
+    method, path: routePath, operationId: "fixture-test", operationalMutationCategory: null, effects: [],
+  }, new Set(), fixtures);
+  try {
+    db.exec(`
+      CREATE TABLE settings (key TEXT, value TEXT);
+      INSERT INTO settings VALUES ('user.operator_id', 'operator');
+      INSERT INTO settings VALUES (' CLIENT_AUTH.secret ', 'secret');
+      INSERT INTO settings VALUES ('console_pinned_sessions', 'private');
+      CREATE TABLE auth_requests (id TEXT, delivered_at TEXT, acknowledged_by TEXT, status TEXT, updated_at INTEGER);
+      CREATE TABLE webhook_events (id TEXT, status TEXT);
+    `);
+    expect(plan("GET", "/api/settings/:key")).toEqual({ kind: "skip", reason: "no generic settings keys in the ledger" });
+    db.exec("INSERT INTO settings VALUES ('theme', 'x'), ('app_rail_order', 'xx'), ('managed_chat_defaults', 'xxx')");
+    const settings = plan("GET", "/api/settings/:key");
+    expect(settings.kind).toBe("exercise");
+    if (settings.kind === "exercise") expect(settings.requests.map((request) => request.url)).toEqual([
+      "/api/settings/managed_chat_defaults", "/api/settings/app_rail_order", "/api/settings/theme",
+    ]);
+
+    const fixtures = readFixtures(ledger);
+    fixtures.routeManifest = { schema: "mandible-briefing-destination-routes@3", routes: [] };
+    for (const routePath of ["/api/briefing-destination-routes/plan", "/api/briefing-destination-routes"]) {
+      expect(plan("POST", routePath, fixtures)).toEqual({ kind: "skip", reason: "no briefing destination routes in the ledger" });
+    }
+    fixtures.routeManifest.routes.push({
+      route_key: "report", logical_artifact_ref: "artifact", publication_mode: "published-report",
+      heading: "Report", composer_kind: "deterministic",
+      template: { version: 1, contribution_template: "{{body}}", slots: {} },
+      limits: { max_contributions: 10, max_document_bytes: 10000, max_directives: 0 },
+    });
+    for (const routePath of ["/api/briefing-destination-routes/plan", "/api/briefing-destination-routes"]) {
+      const result = plan("POST", routePath, fixtures);
+      expect(result.kind).toBe("exercise");
+      if (result.kind === "exercise") expect(result.requests[0].body).toBe(fixtures.routeManifest);
+    }
+
+    const perPass = [
+      ["/api/inbox/delivered/:id", "undelivered auth results for all passes"],
+      ["/api/inbox/:type/:id/ack", "unacknowledged auth results for all passes"],
+      ["/api/webhooks/:id/dismiss", "pending webhook events for all passes"],
+    ];
+    for (let count = 0; count <= 2; count++) {
+      for (const [routePath, label] of perPass) {
+        const result = plan("POST", routePath);
+        if (count < 2) {
+          expect(result).toEqual({ kind: "skip", reason: `no ${label} in the ledger` });
+        } else {
+          expect(result.kind).toBe("exercise");
+          if (result.kind === "exercise") {
+            const url = result.requests[0].url;
+            expect(typeof url).toBe("function");
+            if (typeof url === "function") {
+              expect(url(1)).toContain("entity-0");
+              expect(url(2)).toContain("entity-1");
+            }
+          }
+        }
+      }
+      db.prepare("INSERT INTO auth_requests VALUES (?, NULL, NULL, 'completed', ?)").run(`entity-${count}`, -count);
+      db.prepare("INSERT INTO webhook_events VALUES (?, 'pending')").run(`entity-${count}`);
+    }
+  } finally {
+    db.close();
+  }
+});
