@@ -39,4 +39,5 @@ printf '%s\n' "$response" | jq -r '
       ($a.unexpected[] | "    \(.sha[0:10]) \(.subject) (\(if .signer then "signed by \(.signer)" else "unsigned" end))"),
       ($a.missing_merges[] | "    \(.[0:10]) recorded Mandible merge no longer in the branch history"),
       (if $a.truncated then "    only the newest \($a.checked_commits) commits were checked" else empty end)
-    end)'
+    end),
+  (if (.output // "") != "" then "", "Output (last 15 lines):", (.output | split("\n") | map(select(. != "")) | .[-15:][] | "  \(.)") else empty end)'
