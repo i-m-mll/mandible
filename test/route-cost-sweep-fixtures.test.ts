@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import { observeStableSourceAliasExtent } from "../src/conversations/source-observer.ts";
-import { restoreSweepSnapshot, sourceIsIndexed } from "../scripts/route-cost-sweep.ts";
+import { planRoute, readFixtures, restoreSweepSnapshot, sourceIsIndexed } from "../scripts/route-cost-sweep.ts";
 
 const roots: string[] = [];
 function tempRoot(): string {
@@ -78,4 +78,56 @@ it("restores seeded databases before confirmations, including absent caches and 
   fs.rmSync(path.join(seed, "search-cache.db"));
   restoreSweepSnapshot(ledgerSeed, ledger, seed, conversations);
   expect(fs.existsSync(path.join(conversations, "search-cache.db"))).toBe(false);
+});
+
+
+it("skips only routes depending on a missing fixture and preserves its root reason", () => {
+  const ledger = path.join(tempRoot(), "mandible.db");
+  const db = new SqliteDatabase(ledger);
+  try {
+    db.exec(`
+      CREATE TABLE ledger_projects (id TEXT, project_key TEXT, display_name TEXT);
+      CREATE TABLE ledger_issues (id TEXT, short_id TEXT, project_id TEXT);
+      CREATE TABLE ledger_comments (issue_id TEXT);
+      CREATE TABLE ledger_project_checkouts (project_id TEXT, work_repo_id TEXT, root TEXT);
+      CREATE TABLE branches (branch TEXT, repo_root TEXT, is_worktree INTEGER, updated_at TEXT);
+      INSERT INTO ledger_projects VALUES ('project', 'project-key', 'Project');
+      INSERT INTO ledger_issues VALUES ('issue', 'short', 'project');
+      INSERT INTO ledger_comments VALUES ('issue');
+    `);
+    const plan = (method: string, routePath: string, fixtures = readFixtures(ledger)) => planRoute({
+      method, path: routePath, operationId: "fixture-test", operationalMutationCategory: null, effects: [],
+    }, new Set(), fixtures);
+    const dependent = [
+      ["GET", "/api/work/repos/:id/branches"],
+      ["GET", "/api/work/repos/:id/branch/:name"],
+      ["GET", "/api/issues/:repoId/:issueId/context"],
+      ["PUT", "/api/work/repos/:id"],
+    ];
+    const fixtures = readFixtures(ledger);
+    for (const [method, routePath] of dependent) {
+      expect(plan(method, routePath, fixtures)).toEqual({ kind: "skip", reason: "no checkout in the ledger" });
+    }
+    expect(plan("GET", "/api/ledger/issues/:issueId/body/revisions", fixtures)).toEqual({
+      kind: "exercise", requests: [{ label: "/api/ledger/issues/issue/body/revisions", url: "/api/ledger/issues/issue/body/revisions" }],
+    });
+    expect(plan("GET", "/api/projects/:ref", fixtures)).toEqual({
+      kind: "exercise", requests: [{ label: "/api/projects/project-key", url: "/api/projects/project-key" }],
+    });
+    expect(plan("GET", "/api/health", fixtures)).toEqual({
+      kind: "exercise", requests: [{ label: "/api/health", url: "/api/health" }],
+    });
+    expect(plan("GET", "/api/unclassified/:id", fixtures).kind).toBe("unclassified");
+
+    db.exec("DELETE FROM ledger_projects");
+    const emptyProject = readFixtures(ledger);
+    for (const [method, routePath] of [...dependent, ["GET", "/api/ledger/issues/:issueId/body/revisions"]]) {
+      expect(plan(method, routePath, emptyProject)).toEqual({ kind: "skip", reason: "no project in the ledger" });
+    }
+    expect(plan("GET", "/api/health", emptyProject).kind).toBe("exercise");
+    db.exec("DROP TABLE ledger_projects");
+    expect(() => plan("GET", "/api/projects/:ref")).toThrow();
+  } finally {
+    db.close();
+  }
 });
