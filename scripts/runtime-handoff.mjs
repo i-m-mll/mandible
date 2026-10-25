@@ -134,7 +134,7 @@ function plist(journal, helper) {
 }
 export async function armRuntimeHandoff(root) {
   if (process.platform !== 'darwin') throw new Error('Production runtime handoff requires macOS launchd.');
-  const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible'));
+  const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'));
   const requestId = process.env.MANDIBLE_AUTH_REQUEST_ID;
   const executionId = process.env.MANDIBLE_HOOK_EXECUTION_ID;
   const existing = readRuntimeHandoff(home, requestId, executionId);
@@ -153,7 +153,7 @@ export async function armRuntimeHandoff(root) {
   if (fs.existsSync(dir)) {
     const prior = JSON.parse(fs.readFileSync(path.join(dir, 'preparation.json'), 'utf8'));
     if (JSON.stringify(prior) !== JSON.stringify(preparation)) throw new Error('Existing preparation belongs to different handoff bytes.');
-    for (const name of fs.readdirSync(dir)) if (!['preparation.json', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs'].includes(name) || fs.lstatSync(path.join(dir, name)).isSymbolicLink()) throw new Error('Unknown handoff preparation material; preserving it.');
+    for (const name of fs.readdirSync(dir)) if (!['preparation.json', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].includes(name) || fs.lstatSync(path.join(dir, name)).isSymbolicLink()) throw new Error('Unknown handoff preparation material; preserving it.');
   } else {
     fs.mkdirSync(dir, { mode: 0o700 });
     atomic(path.join(dir, 'preparation.json'), preparation);
@@ -177,10 +177,10 @@ export async function armRuntimeHandoff(root) {
   }
   // Preserve CLI module boundaries: bundling several guarded CLI entrypoints
   // would make their import.meta.url guards all refer to the same entry file.
-  for (const [source, name] of [['local-runtime.mjs', 'controller.mjs'], ...['canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs'].map(name => [name, name])]) fs.copyFileSync(path.join(root, 'scripts', source), path.join(dir, name));
+  for (const [source, name] of [['local-runtime.mjs', 'controller.mjs'], ...['canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].map(name => [name, name])]) fs.copyFileSync(path.join(root, 'scripts', source), path.join(dir, name));
   // Initial publication validation is read-only and precedes every mutation.
   Object.assign(binding, await publication(journal));
-  binding.stagedFiles = Object.fromEntries(['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs'].map(name => [name, fileHash(path.join(dir, name))]));
+  binding.stagedFiles = Object.fromEntries(['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].map(name => [name, fileHash(path.join(dir, name))]));
   journal.bindingDigest = bindingDigest(binding);
   const helper = path.join(dir, 'helper.mjs');
   const service = path.join(homeDirectory(home), 'launch-agents', `${journal.helperLabel}.plist`);
