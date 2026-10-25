@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it } from 'vitest';
-import { assessServiceObservation, loadedServiceDefinition, matchingServiceDefinitions, serviceInstallationContext, serviceOwnershipReady,
+import { assessServiceObservation, loadedServiceDefinition, matchingServiceDefinitions, serviceInstallationContext, serviceOwnershipReady, runtimeHandoffReadiness,
   type ServiceDefinition, type InstalledServiceDefinition, type LoadedService } from '../scripts/service-definitions.mjs';
 
 const context = serviceInstallationContext({ home: '/private/fixture/mandible', accountHome: '/private/fixture/account' });
@@ -29,6 +29,18 @@ it('admits owned drift while retaining separate installed, loaded and desired fa
   const reconciled = assessServiceObservation(context, 'backend', [installed(backend)], job);
   if (!reconciled.ok) throw new Error(reconciled.refusal.message);
   expect(matchingServiceDefinitions({ ok: true, observations: [reconciled.observation] }).ok).toBe(true);
+});
+
+it('admits a missing gateway but requires a running backend before publication or capture', () => {
+  const gateway = assessServiceObservation(context, 'gateway', [], { loaded: false, pid: null });
+  if (!gateway.ok) throw new Error(gateway.refusal.message);
+  for (const backendJob of [job, { loaded: false, pid: null }, { ...job, pid: null }]) {
+    const result = assessServiceObservation(context, 'backend', [], backendJob);
+    if (!result.ok) throw new Error(result.refusal.message);
+    const readiness = runtimeHandoffReadiness({ ok: true, observations: [result.observation, gateway.observation] });
+    if (backendJob.loaded && backendJob.pid) expect(readiness.ok).toBe(true);
+    else expect(readiness).toMatchObject({ ok: false, refusal: { service: 'backend', message: 'The production backend is not running, so its update cannot start yet.' } });
+  }
 });
 
 it('admits owned duplicates and missing generated plists, but requires one installed file for convergence', () => {

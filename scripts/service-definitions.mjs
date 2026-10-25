@@ -106,8 +106,16 @@ export function assessServiceObservation(context, service, installed, job, { des
     desiredDifferences: desired && job.loaded ? differingServiceFields(desired, job) : [] } };
 }
 
-/** Explicit ownership-only admission predicate for publication and handoff capture. */
+/** Ownership-only admission predicate for service reconciliation. */
 export function serviceOwnershipReady(inspection) { return inspection.ok; }
+
+/** Admission for a handoff that must drain an exact running backend. */
+export function runtimeHandoffReadiness(inspection) {
+  if (!inspection.ok) return inspection;
+  const backend = inspection.observations.find(item => item.service === 'backend');
+  if (!backend?.job.loaded || !backend.job.pid) return refusal('backend', backend?.label ?? 'backend', 'missing_definition', [], 'The production backend is not running, so its update cannot start yet.');
+  return inspection;
+}
 
 /** Strict controller postcondition, distinct from ownership-only admission. */
 export function matchingServiceDefinitions(inspection) {

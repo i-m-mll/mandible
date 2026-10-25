@@ -171,6 +171,22 @@ describe("runtime handoff lock gate", () => {
 });
 
 describe("candidate acceptance gate", () => {
+  it("reports an absent backend before approval without invalidating candidate acceptance", async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    const context = serviceDefinitions.serviceInstallationContext({ home });
+    const absent = serviceDefinitions.assessServiceObservation(context, "backend", [], { loaded: false, pid: null });
+    if (!absent.ok) throw new Error(absent.refusal.message);
+    inspector.mockResolvedValue({ ok: true, observations: [absent.observation] });
+    const message = "The production backend is not running, so its update cannot start yet.";
+    expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toEqual({ code: "missing_definition", message });
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(message);
+    expect((await queue.getRequest(request.id))!.status).toBe("pending");
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+  });
+
   it("keeps acceptance valid and approves queued execution despite owned drift", async () => {
     const context = serviceDefinitions.serviceInstallationContext({ home });
     const record: serviceDefinitions.ServiceDefinition = {
@@ -256,7 +272,7 @@ describe("candidate acceptance gate", () => {
     await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(refusal.message);
     expect((await queue.getRequest(request.id))!.status).toBe("pending");
 
-    inspector.mockResolvedValue({ ok: true, observations: [] });
+    inspector.mockResolvedValue(await createServiceDefinitionInspector()());
     db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
     const execution = queue as unknown as {
       reserveRepoAdmission(request: unknown, install: (key: string) => void): Promise<void>;

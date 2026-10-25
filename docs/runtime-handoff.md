@@ -128,6 +128,9 @@ process identity; and optional desired definitions supplied by the controller.
 Owned differences and entirely absent services are successful observations.
 Differences remain observation data; they never block approval or acceptance.
 `serviceOwnershipReady` is the ownership-only admission predicate;
+`runtimeHandoffReadiness` also requires a running backend to drain before
+approval and capture. An absent gateway is captured without prior definition
+evidence and is installed and started during convergence.
 `matchingServiceDefinitions` is the strict lifecycle and handoff postcondition.
 The controller-only synchronous entry point uses the same classifier.
 
@@ -184,6 +187,10 @@ reported once as `rebuild_failure` in health and as `mandible:rebuild-failed`,
 with the message "The merge landed, but Mandible did not update: <reason>." A
 rebuild hook that exited 75 belongs to its handoff and is pending, never a
 failure, until that handoff's journal fails.
+
+A failed automatic recovery health window retries after five minutes even when
+the generation evidence is unchanged. Changed evidence permits an immediate
+retry. Only one observation runs at a time.
 
 ## Verification
 

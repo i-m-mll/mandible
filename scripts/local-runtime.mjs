@@ -14,7 +14,7 @@ import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs"
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
-import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition } from "./service-definitions.mjs";
+import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
@@ -227,13 +227,14 @@ function processStart(pid) {
 function handoffService(label, inspection) {
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   const observation = inspection.observations.find(item => item.label === label);
-  const definition = observation.loadedDefinition ?? observation.installed[0]?.record;
-  if (!definition) throw new Error(`No prior definition is available for ${label}.`);
-  return { installed: observation.installed, argv: definition.ProgramArguments, loaded: observation.job.loaded, definition };
+  const installed = observation.installed[0];
+  const definition = observation.loadedDefinition ?? installed?.record ?? null;
+  return { file: installed?.file ?? null, sha256: installed?.sha256 ?? null,
+    installed: observation.installed, argv: definition?.ProgramArguments ?? [], loaded: observation.job.loaded, definition };
 }
 
 export function captureRuntimeHandoff(root) {
-  const serviceInspection = inspectServiceDefinitionsSync(INSTALLATION);
+  const serviceInspection = runtimeHandoffReadiness(inspectServiceDefinitionsSync(INSTALLATION));
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
   const production = { root: backend.definition.EnvironmentVariables.MANDIBLE_PRODUCTION_ROOT };
