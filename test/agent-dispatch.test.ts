@@ -7,7 +7,7 @@ import { getDbPath } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { closeOperationalIncident, getOperationalIncident, raiseDaemonIncident } from "../src/operational-incidents.js";
 import { createLedgerIssue, createMigratedDbWithSeeds } from "./helpers/ledger-fixtures.js";
-import { longestEventLoopBlockMs, useStubCommand } from "./helpers/event-loop-blocking.js";
+import { longestEventLoopBlockMs, useStubCommand, SYNCHRONOUS_WAIT_MS, SLOW_COMMAND_SECONDS } from "./helpers/event-loop-blocking.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -19,7 +19,7 @@ describe("agent dispatch", () => {
       setGlobal: true, operator: { slug: "dispatcher", display_name: "Dispatcher" } });
     const project = addProject(db, { project_key: "dispatch", display_name: "Dispatch" });
     const issue = createLedgerIssue(db, { project_id: project.id, title: "Dispatch me" });
-    const stub = useStubCommand("claude-spawn", "sleep 0.3\nprintf 'spawn-handle\\nsession_id: spawned-session\\nattach: claude-spawn attach spawn-handle\\n'");
+    const stub = useStubCommand("claude-spawn", `sleep ${SLOW_COMMAND_SECONDS}\nprintf 'spawn-handle\\nsession_id: spawned-session\\nattach: claude-spawn attach spawn-handle\\n'`);
     vi.stubEnv("MANDIBLE_CLAUDE_SPAWN_BIN", path.join(stub.dir, "claude-spawn"));
     try {
       let outcome: Awaited<ReturnType<typeof dispatchAgent>> | undefined;
@@ -31,7 +31,7 @@ describe("agent dispatch", () => {
         });
       });
 
-      expect(blockedMs).toBeLessThan(50);
+      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       expect(outcome?.event).toMatchObject({
         status: "dispatched",
         session_handle: "spawn-handle",

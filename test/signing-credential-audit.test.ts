@@ -12,7 +12,7 @@ import {
 import type { Db } from "../src/db.js";
 import { addCredential, getOperator } from "../src/users/store.js";
 import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
-import { longestEventLoopBlockMs, useSlowCommand } from "./helpers/event-loop-blocking.js";
+import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
 
 // Issue 2205073 — an unregistered protected-merge signing key stays invisible
 // until the first sibling-merge drift refuses an approval. The startup audit
@@ -150,15 +150,15 @@ describe("auditOperatorSigningCredential", () => {
   it("probes Git and ssh-keygen off the event loop", async () => {
     const { repo, fingerprint } = createRepoWithSigningKey(true);
     const db = createDb();
-    useSlowCommand("git", 0.3);
-    useSlowCommand("ssh-keygen", 0.3);
+    useSlowCommand("git");
+    useSlowCommand("ssh-keygen");
     try {
       let audit: Awaited<ReturnType<typeof auditOperatorSigningCredential>> | undefined;
       const blockedMs = await longestEventLoopBlockMs(async () => {
         audit = await withIsolatedGitConfig(() => auditOperatorSigningCredential(db, { cwd: repo, global: false }));
       });
 
-      expect(blockedMs).toBeLessThan(50);
+      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       expect(audit).toMatchObject({ status: "missing_credential", fingerprint });
     } finally {
       vi.unstubAllEnvs();

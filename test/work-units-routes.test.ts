@@ -23,7 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { clearCodexTaskLivenessCache } from "../src/codex-task-liveness.js";
-import { longestEventLoopBlockMs, useStubCommand } from "./helpers/event-loop-blocking.js";
+import { longestEventLoopBlockMs, useStubCommand, SYNCHRONOUS_WAIT_MS, SLOW_COMMAND_SECONDS } from "./helpers/event-loop-blocking.js";
 
 let db: Db;
 let router: Router;
@@ -804,7 +804,7 @@ describe("work-unit custody takeover", () => {
       ambient_identity: { provider: "codex", provider_session_id: thread },
       body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover" } })).status).toBe(201);
     clearCodexTaskLivenessCache();
-    useStubCommand("lsof", `sleep 0.3\nprintf 'p4242\\nccodex\\nn%s\\n' ${JSON.stringify(path.join(lockDir, `${thread}.lock`))}`);
+    useStubCommand("lsof", `sleep ${SLOW_COMMAND_SECONDS}\nprintf 'p4242\\nccodex\\nn%s\\n' ${JSON.stringify(path.join(lockDir, `${thread}.lock`))}`);
 
     let body: unknown;
     const blockedMs = await longestEventLoopBlockMs(async () => {
@@ -812,7 +812,7 @@ describe("work-unit custody takeover", () => {
         url: `/api/work-units/custody-check?repo_id=${encodeURIComponent(projectKey)}&branch=feature/takeover` })).body;
     });
 
-    expect(blockedMs).toBeLessThan(50);
+    expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
     expect(body).toMatchObject({ outcome: "held", holder_liveness: { state: "live" } });
     fs.rmSync(codexRoot, { recursive: true, force: true });
   });
