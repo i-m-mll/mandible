@@ -274,7 +274,10 @@ async function unloadExactHandoffService(label, expectedArguments) {
   if (!previous.loaded) return;
   if (JSON.stringify(previous.argv) !== JSON.stringify(expectedArguments)) throw new Error(`Service ${label} changed before unloading; preserving it.`);
   const startedAt = processStart(previous.pid);
-  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
+  // bootout returns once launchd has stopped the job: a running daemon's graceful
+  // shutdown takes up to 5 s, and launchd kills a job still running after its
+  // default 20 s exit timeout.
+  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`], 25_000);
   if (result.status !== 0) throw new Error(`Could not unload exact service ${label} (launchctl exit ${result.status}): stdout=${JSON.stringify(result.stdout.trim())}; stderr=${JSON.stringify(result.stderr.trim())}`);
   const deadline = Date.now() + 5000;
   while (true) {

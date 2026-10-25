@@ -11,4 +11,3 @@ export function isProtectedIdentitySettingKey(key: string): boolean {
   const normalized = key.trim().toLowerCase();
   return PROTECTED_SETTING_KEYS.has(normalized) || normalized.startsWith("client_auth.");
 }
-

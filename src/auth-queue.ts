@@ -861,7 +861,11 @@ export class AuthQueue {
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running") return acceptance;
-    if (acceptance.state === "passed" && !await this.hookManager.publicationBlocker(true)) return acceptance;
+    if (acceptance.state === "passed") {
+      const definitionBlocker = await this.hookManager.publicationBlocker(true);
+      this.assertObservation(request.id, observed);
+      if (!definitionBlocker) return acceptance;
+    }
     const lock = this.runtimeHandoffLock();
     const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
     if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
