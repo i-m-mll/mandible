@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -209,7 +210,7 @@ describe("exact conversation freshness", () => {
     expect(ingests).toBe(1);
 
     const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const detail = await router.invoke({ method: "GET", url: "/api/conversations/concurrent-session?target=latest" });
     const blocks = await router.invoke({ method: "GET", url: "/api/conversations/concurrent-session/blocks" });
     const exported = await router.invoke({
@@ -408,7 +409,7 @@ describe("exact conversation freshness", () => {
     });
     try {
       const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
-      registerConversationRoutes(router);
+      registerConversationRoutes(router, inlineLedgerReader());
       const response = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
       expect(response.status).toBe(200);
       expect(JSON.stringify(response.body)).not.toContain("racing tail");
@@ -432,7 +433,7 @@ describe("exact conversation freshness", () => {
     });
     try {
       const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
-      registerConversationRoutes(router);
+      registerConversationRoutes(router, inlineLedgerReader());
       const pending = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
       expect(pending.status).toBe(503);
       expect(pending.body).toMatchObject({ error: "freshness_pending" });

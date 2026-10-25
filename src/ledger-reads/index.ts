@@ -1,6 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { getDb, type Db } from "../db.js";
-import { runLedgerRead, type LedgerReadKind, type LedgerReadParams, type LedgerReadResult, type LedgerReadResponse } from "./registry.js";
+import { isConversationRead, runLedgerRead, type LedgerReadKind, type LedgerReadParams, type LedgerReadResult, type LedgerReadResponse } from "./registry.js";
 
 export type { LedgerReadKind, LedgerReadParams, LedgerReadResult } from "./registry.js";
 
@@ -12,7 +12,9 @@ export interface LedgerReader {
 /** Tests explicitly choose the calling thread's injected, often in-memory database. */
 export function inlineLedgerReader(database: () => Db = getDb): LedgerReader {
   return {
-    async run(kind, params) { return runLedgerRead(database(), kind, params); },
+    async run<K extends LedgerReadKind>(kind: K, params: LedgerReadParams<K>): Promise<LedgerReadResult<K>> {
+      return await runLedgerRead(database(), kind, params);
+    },
     async close() {},
   };
 }
@@ -32,6 +34,9 @@ export function workerLedgerReaderPool(dbPath: string, { size }: { size: number 
   let closing = false;
   let nextId = 1;
   const slots: ReaderSlot[] = Array.from({ length: size }, () => ({ worker: null, pending: new Map() }));
+
+  const conversationSlot: ReaderSlot = { worker: null, pending: new Map() };
+  const allSlots = [...slots, conversationSlot];
 
   function rejectPending(slot: ReaderSlot, error: Error): void {
     for (const pending of slot.pending.values()) pending.reject(error);
@@ -67,7 +72,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: { size: number 
   return {
     run<K extends LedgerReadKind>(kind: K, params: LedgerReadParams<K>): Promise<LedgerReadResult<K>> {
       if (closing) return Promise.reject(new Error("ledger reader pool is closing"));
-      const slot = slots.reduce((best, candidate) => candidate.pending.size < best.pending.size ? candidate : best);
+      const slot = isConversationRead(kind) ? conversationSlot : slots.reduce((best, candidate) => candidate.pending.size < best.pending.size ? candidate : best);
       if (!slot.worker) spawn(slot);
       const id = nextId++;
       return new Promise((resolve, reject) => {
@@ -82,7 +87,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: { size: number 
     },
     async close() {
       closing = true;
-      await Promise.all(slots.map(async slot => {
+      await Promise.all(allSlots.map(async slot => {
         rejectPending(slot, new Error("ledger reader pool stopped"));
         if (slot.worker) await slot.worker.terminate();
       }));

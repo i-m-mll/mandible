@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -108,7 +109,7 @@ describe("conversations CLI", () => {
     setDb(db);
     const instance = MAIN_CLI_INSTANCE_RESPONSE.instance;
     const router = new Router({ instance });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const server = createServer({ db, router, instance, sse: new SseManager(), logger: () => undefined,
       version: 'cli-list-fixture', getStartupInfo: () => null });
     const port = await new Promise<number>((resolve, reject) => {

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -152,7 +153,7 @@ function row(sessionId: string): { id: string; parent_conversation_id: string | 
 
 async function gaps(): Promise<LineageGapReport> {
   const router = new Router();
-  registerConversationRoutes(router);
+  registerConversationRoutes(router, inlineLedgerReader());
   const response = await router.invoke({ method: "GET", url: "/api/conversations/lineage-gaps" });
   expect(response.status).toBe(200);
   return response.body as LineageGapReport;
