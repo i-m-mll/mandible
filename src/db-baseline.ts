@@ -25,13 +25,38 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 214;
+export const BASELINE_SCHEMA_VERSION = 215;
 
 // Issue 08b4426 — a blob is named by a prefix of its id or of its content
 // hash, and short refs for a page of blobs are found by prefix ranges over
 // both columns. Shared by the fresh baseline and migration v214.
 export const ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL =
   "CREATE INDEX idx_artifact_blob_content_hash ON artifact_blob(content_hash)";
+
+// Issue 14c8757 — the graph reads every issue's comment aggregates, the
+// activity and display fields of every linked auth request, the most recent
+// auth requests and work units, and the distinct repos and branches. Each index
+// answers one of those reads without reading comment bodies or auth request
+// rows, whose large columns spill onto overflow pages:
+// - every live issue's identity, title, and status, most recently updated
+//   first, without reading issue bodies;
+// - comment count, latest comment, and latest edit per issue (this extends,
+//   and in migration v215 replaces, the (issue_id, created_at) index);
+// - an auth request's activity times, title, and status by id;
+// - auth requests, with the fields a graph node shows, and work units, newest first;
+// - distinct auth request repos and branches.
+// Shared by the fresh baseline and migration v215.
+export const GRAPH_READ_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_ledger_issues_graph_summary
+    ON ledger_issues(updated_at, created_at, id, short_id, project_id, title, status)
+    WHERE deleted_at IS NULL`,
+  "CREATE INDEX idx_ledger_comments_issue_activity ON ledger_comments(issue_id, created_at, deleted_at, updated_at)",
+  "CREATE INDEX idx_auth_requests_activity ON auth_requests(id, updated_at, resolved_at, title, status)",
+  `CREATE INDEX idx_auth_requests_created
+    ON auth_requests(created_at, id, title, status, repo, head_branch, issue_references, issue_closures, issue_ids, issues)`,
+  "CREATE INDEX idx_auth_requests_repo_branch ON auth_requests(repo, head_branch)",
+  "CREATE INDEX idx_work_units_created ON work_units(created_at)",
+];
 
 // Issue 3a05327 — Timeline and Spaces seeding read every issue of a project,
 // the references among them, and the events and comments of the issues a view
@@ -574,7 +599,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_ledger_body_revisions_event\n        ON ledger_body_revisions(event_id)\n        WHERE event_id IS NOT NULL",
   "CREATE INDEX idx_ledger_body_revisions_issue\n        ON ledger_body_revisions(issue_id, occurred_at)",
   "CREATE INDEX idx_ledger_comments_author_user\n        ON ledger_comments(author_user_id) WHERE author_user_id IS NOT NULL",
-  "CREATE INDEX idx_ledger_comments_issue_created\n        ON ledger_comments(issue_id, created_at)",
+  ...GRAPH_READ_INDEX_SQL,
   "CREATE UNIQUE INDEX idx_ledger_comments_issue_ordinal\n        ON ledger_comments(issue_id, ordinal)\n        WHERE ordinal > 0",
   "CREATE INDEX idx_ledger_commit_issue_issue\n        ON ledger_commit_issue_links(issue_id)",
   "CREATE INDEX idx_ledger_events_actor_user\n        ON ledger_events(actor_user_id) WHERE actor_user_id IS NOT NULL",

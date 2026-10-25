@@ -12,6 +12,7 @@ import {
 } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { statementsRun } from "./helpers/statement-count.js";
 
 let db: Db;
 let tempDir = "";
@@ -32,28 +33,6 @@ function seedBlob(hash: string): void {
 
 function seedLogical(id: string): void {
   db.prepare("INSERT INTO artifact(id, identity_key, created_at, updated_at) VALUES (?, ?, 1, 1)").run(id, `key:${id}`);
-}
-
-/** Statements `fn` executes against `db`. */
-function statementsRun(fn: () => void): number {
-  let count = 0;
-  const prepare = db.prepare.bind(db);
-  db.prepare = ((sql: string) => new Proxy(prepare(sql), {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (typeof value !== "function") return value;
-      return (...args: unknown[]) => {
-        if (property === "all" || property === "get" || property === "run" || property === "iterate") count += 1;
-        return value.apply(target, args);
-      };
-    },
-  })) as typeof db.prepare;
-  try {
-    fn();
-  } finally {
-    db.prepare = prepare;
-  }
-  return count;
 }
 
 function recordVersions(count: number, offset: number) {
@@ -100,20 +79,20 @@ describe("artifact short refs for a page", () => {
     ]);
   });
 
-  it("cost the same number of statements for a dozen records as for a hundred", () => {
+  it("cost the same number of statements for a dozen records as for a hundred", async () => {
     const few = artifactRecords(recordVersions(3, 0));
     const many = artifactRecords(recordVersions(25, 100));
     projectArtifactPublicValue(db, few);
 
-    const fewStatements = statementsRun(() => projectArtifactPublicValue(db, { artifacts: few }));
-    const manyStatements = statementsRun(() => projectArtifactPublicValue(db, { artifacts: many }));
+    const fewStatements = await statementsRun(db, () => projectArtifactPublicValue(db, { artifacts: few }));
+    const manyStatements = await statementsRun(db, () => projectArtifactPublicValue(db, { artifacts: many }));
 
     expect(manyStatements).toBe(fewStatements);
   });
 });
 
 describe("artifact projects for a page", () => {
-  it("resolve every id in one statement, as each id resolves alone", () => {
+  it("resolve every id in one statement, as each id resolves alone", async () => {
     const recorded = recordVersions(6, 0);
     const ids = recorded.flatMap((entry) => [
       entry.series.id.replace(/^artifact-series:/, "artifact:"),
@@ -122,7 +101,7 @@ describe("artifact projects for a page", () => {
     ]);
 
     let resolved = new Map<string, unknown>();
-    expect(statementsRun(() => { resolved = resolveArtifactProjects(db, ids); })).toBe(1);
+    expect(await statementsRun(db, () => { resolved = resolveArtifactProjects(db, ids); })).toBe(1);
     expect([...resolved]).toEqual(ids.map((id) => [id, resolveArtifactProject(db, id)]));
   });
 });

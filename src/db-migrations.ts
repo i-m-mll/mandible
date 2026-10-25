@@ -22,6 +22,7 @@ import {
   CONVERSATION_SIDEBAR_INDEX_SQL,
   PROJECT_ISSUE_READ_INDEX_SQL,
   ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL,
+  GRAPH_READ_INDEX_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -2179,6 +2180,10 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 213, name: "project_issue_read_indexes", statements: [...PROJECT_ISSUE_READ_INDEX_SQL] },
   { version: 214, name: "artifact_blob_content_hash_index", statements: [ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL] },
+  { version: 215, name: "graph_read_indexes", statements: [
+    "DROP INDEX idx_ledger_comments_issue_created",
+    ...GRAPH_READ_INDEX_SQL,
+  ] },
 ];
 
 /**
