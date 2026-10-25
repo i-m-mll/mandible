@@ -33,7 +33,6 @@ import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
 import { OPERATIONAL_INCIDENT_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import {
-  countOperationalIncidents,
   OperationalIncidentError,
 } from "../operational-incidents.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -120,12 +119,12 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     }
   }, { operation: { id: "post:/api/agent-dispatch/preview", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
 
-  server.post("/api/agent-dispatch/dispatch", (req, res) => {
+  server.post("/api/agent-dispatch/dispatch", async (req, res) => {
     try {
       const actorUserId = requireHumanDispatcher(db, req);
       const body = bodyRecord(req);
       const subject = parseSubject(body.subject);
-      const outcome = dispatchAgent(db, {
+      const outcome = await dispatchAgent(db, {
         subject,
         instruction: body.instruction,
         actorUserId,
@@ -141,10 +140,7 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
         } : {}),
       });
       if (outcome.incident) {
-        broadcast(OPERATIONAL_INCIDENT_EVENTS.remediationChanged, {
-          incident_ids: [outcome.incident.id],
-          badge_count: countOperationalIncidents(db).active_unacknowledged,
-        });
+        broadcast(OPERATIONAL_INCIDENT_EVENTS.remediationChanged, { incident_ids: [outcome.incident.id] });
       }
       sendJson(res, 200, {
         ok: outcome.ok,

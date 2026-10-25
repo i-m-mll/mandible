@@ -128,7 +128,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       expect(g.runningAtStart.get(req2.id)).toEqual([]);
 
       g.release(req2.id);
-      await waitForStatus(queue, req2.id, "completed");
+      await waitForStatus(queue, req2.id, "failed");
       (await queue.dispose());
     } finally {
       db.close();

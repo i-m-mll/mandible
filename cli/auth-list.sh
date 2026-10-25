@@ -86,5 +86,6 @@ fi
 printf '%s\n' "Auth queue: ${count} active request(s)"
 printf '%s' "$filtered" | api_jq_human '
   .requests[]
-  | "[\(mandible_display_id)] \(.status) \(.repo // "-") \(.head_branch // "-") -> \(.base_branch // "-") - \(.title // "(untitled)")"
+  | "[\(mandible_display_id)] \(.status) \(.repo // "-") \(.head_branch // "-") -> \(.base_branch // "-") - \(.title // "(untitled)")",
+    (if .status == "failed" then "    failed: \(.failure_reason)" else empty end)
 '

@@ -5,7 +5,8 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
-import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useLiveLoad, useViewActive } from '../app-shell';
+import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -317,7 +318,6 @@ function facetLabel(facet: LogEntityFacetValue): string {
 }
 
 export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: LogsViewProps): JSX.Element {
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
@@ -342,14 +342,14 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const autoScrollRef = useRef(true);
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
-  const fetchLogs = useCallback(async (initial = false) => {
+  const fetchLogs = useCallback(async (initial: boolean, signal: AbortSignal) => {
     if (hasStartedLoadRef.current) invalidateApiGetCache('/api/system/logs');
     hasStartedLoadRef.current = true;
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     if (!hasLoadedRef.current || initial) setLoading(true);
     try {
-      const result = await loadLogs(filterParam(filters));
+      const result = await loadLogs(filterParam(filters), signal);
       if (requestSeq !== requestSeqRef.current) return;
       setEntries((current) => {
         if (initial || !hasLoadedRef.current) return result.entries.slice(-MAX_RENDERED_LOG_ROWS);
@@ -371,11 +371,11 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
       setLastFailedAt(null);
       hasLoadedRef.current = true;
     } catch (err) {
-      if (requestSeq !== requestSeqRef.current) return;
+      if (requestSeq !== requestSeqRef.current || refreshAbandoned(signal)) return;
       setError(err instanceof Error ? err.message : String(err));
       setLastFailedAt(new Date());
     } finally {
-      if (requestSeq === requestSeqRef.current) {
+      if (requestSeq === requestSeqRef.current && !refreshAbandoned(signal)) {
         setLoading(false);
       }
     }
@@ -410,14 +410,18 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     }
   }, [filters, hasOlder, loadLogs, loadingOlder, olderCursor]);
 
-  useEffect(() => {
+  // One live load: on activation and filter change, every 30 s, and on any event.
+  const loadedFiltersRef = useRef<LogFilters | null>(null);
+  const refreshLogs = useLiveLoad((signal) => {
+    if (loadedFiltersRef.current === filters) return fetchLogs(false, signal);
+    loadedFiltersRef.current = filters;
     updateHash(filters);
     hasLoadedRef.current = false;
     setEntries([]);
     setOlderCursor(null);
     setHasOlder(false);
-    registerInitialRouteLoad(fetchLogs(true));
-  }, [filters, fetchLogs, registerInitialRouteLoad]);
+    return fetchLogs(true, signal);
+  }, [filters], 30_000);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
@@ -436,7 +440,9 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
+  const viewActive = useViewActive();
   useEffect(() => {
+    if (!viewActive) return undefined;
     let closed = false;
     let client: SseHandle | null = null;
     try {
@@ -445,7 +451,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         if (closed) return;
         setLastSseAt(new Date());
         setSseError(null);
-        void fetchLogs();
+        refreshLogs();
       });
       client.connect();
       return () => {
@@ -460,14 +466,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         client?.close();
       };
     }
-  }, [createSse, fetchLogs]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void fetchLogs();
-    }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [fetchLogs]);
+  }, [createSse, refreshLogs, viewActive]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

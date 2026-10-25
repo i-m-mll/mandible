@@ -618,8 +618,8 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
 export async function seedHistoricalAuthCompletion(queue: AuthQueue, id: string, output = '', exitCode = 0, error: string | null = null): Promise<void> {
   const db = (queue as unknown as { db: Db }).db;
   const request = (await queue.getRequest(id))!;
-  db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = ?, error = ?, output = ?, resolved_at = ?, updated_at = ? WHERE id = ?")
-    .run(exitCode, error, output, request.created_at, request.created_at, id);
+  db.prepare("UPDATE auth_requests SET status = ?, exit_code = ?, error = ?, output = ?, resolved_at = ?, updated_at = ? WHERE id = ?")
+    .run(exitCode === 0 ? 'completed' : 'failed', exitCode, error, output, request.created_at, request.created_at, id);
 }
 
 /** A historical interrupted process, without invented signing evidence. */

@@ -53,7 +53,7 @@ describe('WorkOverviewView', () => {
   ): ReturnType<typeof vi.fn> {
     const mock = vi.fn(async (input: RequestInfo) => {
       const url = String(input);
-      if (url.endsWith('/audit')) {
+      if (url.includes('/audit')) {
         return new Response(JSON.stringify({
           repo: { id: 'r1', name: 'Repo One', root: '/repo/one', default_branch: 'main' },
           maintenance_issue_ref: null,
@@ -111,7 +111,7 @@ describe('WorkOverviewView', () => {
     const filter = screen.getByPlaceholderText('Filter branches...') as HTMLInputElement;
     fireEvent.input(filter, { target: { value: 'feature' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run audit' }));
-    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(2));
+    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).includes('/audit')).length).toBe(2));
     expect(filter.value).toBe('feature');
     expect(screen.getByRole('button', { name: /Branch audit/ }).getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'Review trash action' }));
@@ -120,9 +120,9 @@ describe('WorkOverviewView', () => {
     expect(filter.value).toBe('feature');
     expect(screen.getByRole('button', { name: /Branch audit/ }).getAttribute('aria-expanded')).toBe('true');
     await waitFor(() => expect(onRescan).toHaveBeenCalledTimes(1));
-    expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(2);
+    expect(mockFetch.mock.calls.filter(([input]) => String(input).includes('/audit')).length).toBe(2);
     act(() => resolveRescan());
-    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(3));
+    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).includes('/audit')).length).toBe(3));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Review trash action' })).toBeNull());
     const trashCall = mockFetch.mock.calls.find(([input]) => String(input) === '/api/v1/trash');
     expect(JSON.parse(String((trashCall?.[1] as RequestInit).body))).toMatchObject({ branch: 'feature/safe', reason: 'manual' });

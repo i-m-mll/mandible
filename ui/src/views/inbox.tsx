@@ -60,7 +60,7 @@ export interface InboxContinuation {
 export interface InboxAuthResult {
   id: string;
   title: string;
-  status: 'completed' | 'rejected' | 'withdrawn' | 'superseded' | 'expired' | 'dismissed' | 'needs_rebase';
+  status: 'completed' | 'failed' | 'rejected' | 'withdrawn' | 'superseded' | 'expired' | 'dismissed' | 'needs_rebase';
   exit_code: number | null;
   error: string | null;
   head_branch: string | null;
@@ -176,7 +176,7 @@ function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'managed_reminder_occurrence') return INBOX_TONES.reminder.fg;
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return INBOX_TONES.authCompleted.fg;
-  if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
+  if (ar.status === 'failed' || ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
   if (ar.status === 'dismissed' || ar.status === 'withdrawn' || ar.status === 'superseded') return INBOX_TONES.authNeutral.fg;
   return INBOX_TONES.authNeutral.fg;
 }
@@ -197,7 +197,7 @@ function itemTypeBadgeColor(item: UnifiedItem): string {
 
 function authResultTone(status: string): { fg: string; bg: string } {
   if (status === 'completed') return INBOX_TONES.authCompleted;
-  if (status === 'rejected' || status === 'expired' || status === 'needs_rebase') {
+  if (status === 'failed' || status === 'rejected' || status === 'expired' || status === 'needs_rebase') {
     return INBOX_TONES.authProblem;
   }
   return INBOX_TONES.authNeutral;

@@ -140,6 +140,7 @@ import {
   useAppShell,
   useRegisterInitialRouteLoad,
   useRegisterAppRightSidebar,
+  useViewActive,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
@@ -160,6 +161,7 @@ import {
   windowRequest,
   type ConversationSidebarFilters,
 } from '../query/conversationKeys';
+import { markSidebarListsStale, startSidebarRefresh } from '../query/conversationSidebarRefresh';
 import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
@@ -1448,10 +1450,13 @@ export function ConversationDetail({
     },
     [conversationId, readAndReconcileWindow, registerInitialRouteLoad, windowTarget],
   );
+  const transcriptLive = useViewActive();
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
+    enabled: transcriptLive,
   }, queryClient);
+  const windowRefreshing = windowQuery.isFetching;
   const aggregateQuery = useQuery<ConversationTranscriptData>({
     queryKey: conversationKeys.aggregate(conversationId),
     queryFn: () => Promise.reject(new Error('Conversation transcript aggregate has no direct transport.')),
@@ -1551,7 +1556,7 @@ export function ConversationDetail({
 
   const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer'): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading) return 'busy';
+    if (!aggregate || edgeLoading || !transcriptLive) return 'busy';
     const interval = direction === 'older' ? aggregate.loaded_intervals[0] : aggregate.loaded_intervals.at(-1);
     if (!interval) {
       const failure = conversationLoadFailure(
@@ -1594,7 +1599,7 @@ export function ConversationDetail({
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration, transcriptLive]);
 
   const loadTranscriptAround = useCallback(async (
     position: number,
@@ -1602,7 +1607,7 @@ export function ConversationDetail({
     signal?: AbortSignal,
   ): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate) return 'busy';
+    if (!aggregate || !transcriptLive || windowRefreshing) return 'busy';
     if (!Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) {
       const failure = conversationLoadFailure(new Error(`Chat cannot load history at position ${position}.`), true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
@@ -1629,7 +1634,7 @@ export function ConversationDetail({
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
       return failure ? 'failed' : 'busy';
     }
-  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration, transcriptLive, windowRefreshing]);
 
   const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
     const aggregate = aggregateQuery.data;
@@ -3027,6 +3032,7 @@ export function ConversationsView({
 }: ConversationsViewProps): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const { active: chatViewActive } = useAppShell();
+  const viewActive = useViewActive();
   const [chatViewState, setChatViewState] = useChatViewState();
   const routeTarget = useMemo(() => initialConversationId
     ? { type: 'conversation' as const, id: initialConversationId }
@@ -3057,7 +3063,8 @@ export function ConversationsView({
   const routeResolution = useQuery({
     queryKey: conversationKeys.routeTarget(routeTarget),
     queryFn: fetchRouteTarget,
-    enabled: routeIntentActive,
+    enabled: routeIntentActive && viewActive,
+    staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   }, queryClient);
   const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;
@@ -3157,7 +3164,7 @@ export function ConversationsView({
     const offSpawn = client.on('conversation-spawn:updated', (payload) => {
       const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
       if (update?.spawn) reconcileCreationReceipt(update.spawn);
-      void queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
+      markSidebarListsStale(queryClient);
     });
     client.connect();
     return () => {
@@ -3326,12 +3333,17 @@ export function ConversationsView({
     },
     [registerInitialSidebarLoad, sidebarFilters],
   );
+  const sidebarLive = sidebarEnabled && viewActive;
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
-    enabled: sidebarEnabled,
+    enabled: sidebarLive,
     staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
   }, queryClient);
+  useEffect(
+    () => sidebarLive ? startSidebarRefresh(queryClient, sidebarFilters) : undefined,
+    [queryClient, sidebarFilters, sidebarLive],
+  );
   const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {
     if (event.query.queryKey[0] === 'chat' && event.query.queryKey[1] === 'sidebar') {

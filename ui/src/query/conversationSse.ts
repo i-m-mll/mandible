@@ -6,7 +6,8 @@ import {
   type ConversationAppendPayload,
   type ConversationTranscriptData,
 } from './conversationData';
-import { conversationKeys } from './conversationKeys';
+import { conversationKeys, type ConversationSidebarFilters } from './conversationKeys';
+import { markSidebarListsStale } from './conversationSidebarRefresh';
 
 const MEMBERSHIP_FIELDS = new Set([
   'starred',
@@ -21,6 +22,17 @@ function queryConversationId(key: QueryKey): string | null {
   return key[0] === 'chat' && key[1] === 'conversation' && typeof key[2] === 'string' ? key[2] : null;
 }
 
+/**
+ * Whether an update to a conversation absent from a sidebar list could add it to that list.
+ * Appending to a conversation that already met the block threshold changes neither its
+ * started_at rank nor its eligibility, so an unsearched started_at list cannot gain it.
+ */
+function mayEnterList(filters: ConversationSidebarFilters | undefined, data: ConversationAppendPayload): boolean {
+  if (filters?.sort === 'block_count' || filters?.search) return true;
+  const appendedFrom = data.append?.from_position;
+  return typeof appendedFrom !== 'number' || appendedFrom < (filters?.min_blocks ?? 0);
+}
+
 export function applyConversationSse(
   client: QueryClient,
   type: 'conversation:new' | 'conversation:updated',
@@ -28,7 +40,7 @@ export function applyConversationSse(
 ): void {
   if (type === 'conversation:new' || !data.id) {
     void client.invalidateQueries({ queryKey: conversationKeys.routeTargets() });
-    void client.invalidateQueries({ queryKey: conversationKeys.sidebars() });
+    markSidebarListsStale(client);
     return;
   }
 
@@ -38,13 +50,13 @@ export function applyConversationSse(
 
   for (const [key, cached] of client.getQueriesData<ConversationSidebarResponse>({ queryKey: conversationKeys.sidebars() })) {
     if (!cached) continue;
+    const filters = key[3] as ConversationSidebarFilters | undefined;
     let affected = false;
     let uncertain = membershipChanged;
     const groups = cached.groups.map((group) => {
       const existing = group.conversations.find((conversation) => conversation.id === data.id);
       if (!existing) return group;
       affected = true;
-      const filters = key[3] as { sort?: string } | undefined;
       uncertain ||= filters?.sort === 'block_count'
         ? typeof data.block_count === 'number' && data.block_count !== existing.block_count
         : typeof data.started_at === 'string' && data.started_at !== existing.started_at;
@@ -53,12 +65,14 @@ export function applyConversationSse(
       return result.applied ? { ...group, conversations: result.conversations } : group;
     });
     if (affected && !uncertain) client.setQueryData(key, { ...cached, groups });
-    else if (affected || key[2] === 'initial') void client.refetchQueries({ queryKey: key, exact: true, type: 'all' });
+    else if (affected || (key[2] === 'initial' && (membershipChanged || mayEnterList(filters, data)))) {
+      markSidebarListsStale(client, key, true);
+    }
   }
 
   const appendBlocks = data.append?.blocks ?? [];
   if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
-    void client.refetchQueries({ queryKey: conversationKeys.windows(data.id), type: 'active' });
+    void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });
     return;
   }
 
@@ -117,7 +131,7 @@ export function applyConversationSse(
     }
     const next = applyConversationAppendPayload(flattened, data);
     if (!next) {
-      void client.refetchQueries({ queryKey: key, exact: true, type: 'all' });
+      void client.invalidateQueries({ queryKey: key, exact: true });
       continue;
     }
     const endPosition = next.blocks.at(-1)?.position ?? cached.window.end_position;

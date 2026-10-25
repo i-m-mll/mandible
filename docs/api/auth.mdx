@@ -6,7 +6,7 @@ The auth queue manages protected-branch merges and other authenticated actions. 
 
 Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `data-delete`.
 
-Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed`, `rejected`, `withdrawn`, `superseded`, `expired`, and legacy `dismissed`.
+Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed` (exit 0), `failed` (non-zero exit, with `failure_reason`), `rejected`, `withdrawn`, `superseded`, `expired`, and legacy `dismissed`.
 
 ## Endpoints
 

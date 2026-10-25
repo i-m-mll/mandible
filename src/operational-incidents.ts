@@ -546,11 +546,46 @@ export function raiseDaemonIncident(
     }],
   }, SYSTEM_USER_ID, observedAt);
   const incidentId = receipt.accepted[0]!.incident_id;
+  broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, { incident_ids: [incidentId] });
+  return { incident_id: incidentId, raised: true };
+}
+
+/**
+ * Resolve an incident the daemon raised once its condition has cleared: the
+ * daemon reports a newer successful run of the same episode. Only that exact
+ * incident is resolved, and only while it is still open.
+ */
+export function resolveDaemonIncident(
+  db: Db,
+  input: { incidentId: string; task: string; observedAt?: number },
+): { incident_id: string } | null {
+  const open = db.prepare(
+    `SELECT * FROM operational_incidents
+      WHERE id = ? AND executor = ? AND task = ? AND resolved_at IS NULL`,
+  ).get(input.incidentId, DAEMON_INCIDENT_EXECUTOR, input.task) as IncidentRow | undefined;
+  if (!open) return null;
+  const raised = (JSON.parse(open.latest_telemetry_json) as { event: OperationalIncidentTelemetryEvent }).event;
+  const observedAt = Math.max(input.observedAt ?? Date.now(), open.first_seen + 1);
+  ingestOperationalIncidentEnvelope(db, {
+    schema: OPERATIONAL_INCIDENT_SCHEMA,
+    executor: { name: DAEMON_INCIDENT_EXECUTOR, version: "1" },
+    generation: { inventory_schema: "executor-inventory@3", inventory_digest: sha256(input.task), observed_at: observedAt },
+    provenance: { basis: "scheduler_computed", verification: "unverified_by_mandible" },
+    events: [{
+      event_id: ulid(observedAt),
+      event_seq: 2,
+      episode: raised.episode,
+      observation: "recovered",
+      observed_at: observedAt,
+      facts: raised.facts,
+      recovery: { basis: "newer_successful_run", run_id: String(observedAt), run_status: "succeeded", finished_at: observedAt },
+    }],
+  }, SYSTEM_USER_ID, observedAt);
   broadcast(OPERATIONAL_INCIDENT_EVENTS.ingested, {
-    incident_ids: [incidentId],
+    incident_ids: [open.id],
     badge_count: countOperationalIncidents(db).active_unacknowledged,
   });
-  return { incident_id: incidentId, raised: true };
+  return { incident_id: open.id };
 }
 
 function project(row: IncidentRow): OperationalIncidentProjection {
@@ -835,6 +870,39 @@ export function closeOperationalIncident(
         WHERE id = ?`,
     ).run(now, actorUserId, now, now, actorUserId, now, incidentId);
     return getOperationalIncident(db, incidentId);
+  })();
+}
+
+/**
+ * Undo the `triaging` a dispatch set, after its spawn failed, only while the
+ * incident is still exactly as that dispatch left it. If anything moved it
+ * on meanwhile (closure, resolution, another transition) the incident is
+ * left alone and its current projection returned.
+ */
+export function rollBackFailedAgentDispatch(
+  db: Db,
+  incidentId: string,
+  agentDispatchEventId: string,
+  reason: string | null,
+): OperationalIncidentProjection {
+  return db.transaction(() => {
+    const row = db.prepare(
+      "SELECT remediation_state, resolved_at, observation_state FROM operational_incidents WHERE id = ?",
+    ).get(incidentId) as Pick<IncidentRow, "remediation_state" | "resolved_at" | "observation_state"> | undefined;
+    const latest = db.prepare(
+      `SELECT agent_dispatch_event_id FROM operational_incident_workflow_events
+        WHERE incident_id = ? AND to_remediation_state IS NOT NULL
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(incidentId) as { agent_dispatch_event_id: string | null } | undefined;
+    const untouched = row?.resolved_at === null && row.observation_state === "active"
+      && row.remediation_state === "triaging" && latest?.agent_dispatch_event_id === agentDispatchEventId;
+    if (!untouched) return getOperationalIncident(db, incidentId);
+    return transitionOperationalIncidentRemediation(db, incidentId, "none", {
+      kind: "dispatch_failed",
+      authority: "server",
+      agentDispatchEventId,
+      reason,
+    });
   })();
 }
 

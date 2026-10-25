@@ -1,5 +1,5 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
-import { DOMAIN_EVENTS, isBriefingEvent } from '../../src/contracts';
+import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
@@ -227,6 +227,21 @@ export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
     ...(candidate.source_db_path !== undefined ? { source_db_path: candidate.source_db_path } : {}),
     ...(candidate.source_db_path_source !== undefined ? { source_db_path_source: candidate.source_db_path_source } : {}),
   };
+}
+
+/** Structural equality, so a re-probed but unchanged instance keeps its identity. */
+export function sameInstanceInfo(a: InstanceInfo | null, b: InstanceInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keys = Object.keys(a) as Array<keyof InstanceInfo>;
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    return Array.isArray(left) && Array.isArray(right)
+      ? left.length === right.length && left.every((value, index) => value === right[index])
+      : left === right;
+  });
 }
 
 export type InstructionTargetMode = 'managed-block' | 'standalone';
@@ -579,8 +594,13 @@ function startCachedGet(
   return request;
 }
 
+/** Why a cached read stopped waiting: the signal's own reason, such as a refresh deadline. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The request was cancelled.', 'AbortError');
+}
+
 function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) return Promise.reject(new DOMException('The request was cancelled.', 'AbortError'));
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
   request.consumers += 1;
   let released = false;
   const release = () => {
@@ -599,7 +619,7 @@ function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSign
     const onAbort = () => {
       signal.removeEventListener('abort', onAbort);
       release();
-      reject(new DOMException('The request was cancelled.', 'AbortError'));
+      reject(abortReason(signal));
     };
     signal.addEventListener('abort', onAbort, { once: true });
     request.promise.then(
@@ -623,9 +643,7 @@ async function cachedApiGetJson<T>(
   path: string,
   options: CachedJsonOptions = {},
 ): Promise<T> {
-  if (options.signal?.aborted) {
-    throw new DOMException('The request was cancelled.', 'AbortError');
-  }
+  if (options.signal?.aborted) throw abortReason(options.signal);
   const resolvedOptions = {
     ttlMs: options.ttlMs ?? DEFAULT_GET_CACHE_TTL_MS,
     staleWhileRevalidateMs: options.staleWhileRevalidateMs ?? DEFAULT_GET_CACHE_STALE_MS,
@@ -682,7 +700,7 @@ export function invalidateApiGetCache(
 /** Exact cache families affected by a Briefing lifecycle event. */
 export function briefingApiCacheFamiliesForEvent(type: string): readonly string[] {
   if (isBriefingEvent(type)) {
-    return ['/api/briefings', '/api/briefing-bundles', '/api/briefing-groups', '/api/dashboard/badges'];
+    return ['/api/briefings', '/api/briefing-bundles', '/api/briefing-groups'];
   }
   return [];
 }
@@ -704,12 +722,6 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/graph');
     if (type === 'briefing:round-published') invalidateApiGetCache('/api/artifacts');
     return;
-  }
-  // Streamed auth output does not change any dashboard count, so the badge
-  // cache is left intact for that event; every other family below can move a
-  // count and refreshes the badges key.
-  if (type !== 'auth:output') {
-    invalidateApiGetCache('/api/dashboard/badges');
   }
   if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
@@ -863,10 +875,13 @@ export type SessionOverviewAmbiguous = {
   candidates: SessionSummary[];
 };
 
-export async function getSessionOverview(sessionRef: string): Promise<SessionOverview | SessionOverviewAmbiguous> {
+export async function getSessionOverview(
+  sessionRef: string,
+  signal?: AbortSignal,
+): Promise<SessionOverview | SessionOverviewAmbiguous> {
   return cachedApiGetJson<SessionOverview | SessionOverviewAmbiguous>(
     `/api/sessions/${encodeURIComponent(sessionRef)}/overview`,
-    WARMED_ROUTE_GET_OPTIONS,
+    { ...WARMED_ROUTE_GET_OPTIONS, signal },
   );
 }
 
@@ -913,34 +928,12 @@ export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   return normalizeList(payload);
 }
 
-export type DashboardBadgeCounts = {
-  auth: number;
-  inbox: number;
-  work: number;
-  /**
-   * Briefing pending-candidate count (umbrella 99b74d6, contract v1 §4). The
-   * server is the only authority for this number — no client-derived fallback
-   * exists in selectBadgeCounts — so it stays optional. Absent means "no count
-   * reported" (e.g. an older server), not "zero pending".
-   */
-  briefing?: number;
-  /**
-   * Operational incidents that are unresolved, still observed active, AND not
-   * yet acknowledged (issue 5308097, spec §8). This is a SEPARATE count from
-   * `briefing`: the two are never summed, and acknowledging an incident (or a
-   * briefing decision) may only move its own number. Optional for the same
-   * reason as `briefing` — absent means "not reported", not "zero".
-   */
-  incidents?: number;
-  /** Active deployment-invalidated task/execution-hash conditions. */
-  tasks?: number;
-};
+export type { DashboardBadgeCounts };
 
+/** Mount and SSE-reconnect resync only; the daemon pushes every change as `dashboard:badges`. */
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
-  // Served through the shared SWR cache so a burst of SSE events collapses to a
-  // single in-flight fetch. Count-changing events invalidate this key via
-  // invalidateDashboardApiCacheForEvent; the short TTL is burst protection only.
-  return cachedApiGetJson<DashboardBadgeCounts>('/api/dashboard/badges');
+  const response = await apiGet('/api/dashboard/badges');
+  return DASHBOARD_BADGE_COUNTS.parse(await response.json());
 }
 
 // Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
@@ -1170,8 +1163,10 @@ export async function getWorkCompare(
   return (await response.json()) as WorkCompareResult;
 }
 
-export async function getWorkRepoAudit(repoId: string): Promise<WorkRepoAudit> {
-  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/audit`);
+/** Read a repository's branch audit; `refresh` makes the daemon rescan instead of serving a fresh stored scan. */
+export async function getWorkRepoAudit(repoId: string, options: { refresh?: boolean } = {}): Promise<WorkRepoAudit> {
+  const query = options.refresh ? '?refresh=1' : '';
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/audit${query}`);
   return (await parseMaybeJson(response)) as WorkRepoAudit;
 }
 
@@ -2607,7 +2602,7 @@ export async function getLogs(params?: {
   limit?: number;
   offset?: number;
   before?: string;
-}): Promise<LogsResponse> {
+}, signal?: AbortSignal): Promise<LogsResponse> {
   const query = new URLSearchParams();
   if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
   if (params?.level) query.set('level', params.level);
@@ -2623,7 +2618,7 @@ export async function getLogs(params?: {
   const qs = query.toString();
   return cachedApiGetJson<LogsResponse>(
     `/api/system/logs${qs ? '?' + qs : ''}`,
-    WARMED_ROUTE_GET_OPTIONS,
+    { ...WARMED_ROUTE_GET_OPTIONS, signal },
   );
 }
 
@@ -4491,7 +4486,6 @@ export async function dispositionBriefingGroupProposal(
     throw new Error('The Briefing proposal disposition response is invalid.');
   }
   invalidateApiGetCache(BRIEFING_GROUPS_PATH);
-  invalidateApiGetCache('/api/dashboard/badges');
   void refreshBrowserResources(queryClient, browserResourceKeysForEvent('briefing:group-proposal-accepted'));
   return { group, disposition, changed: root.changed };
 }
@@ -4797,7 +4791,6 @@ export async function postBriefingSubmission(
     annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
   });
   invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
-  invalidateApiGetCache('/api/dashboard/badges');
   const root = briefingRecord(await parseMaybeJson(response));
   const result = {
     submission_id: briefingString(root.submission_id),

@@ -137,7 +137,8 @@ before the journal becomes complete; interrupted acknowledgment can be replayed.
 Concurrent observers cannot replace a receipt after its hook acceptance commits.
 The original failure and hook attempt history remain available. Initial
 handoff acceptance remains strict from process startup through observation.
-Recovery still reads and hashes the complete current-process log, and lifetime
+Recovery still reads and hashes the complete current-process log, following
+rotated segments as described below, and lifetime
 hard failures such as crashes, error rows, restarts and event storms remain
 fatal. Timed lag, stall and memory-warning rows that precede a new recovery
 observation are retained as historical diagnostics; untimed events and events
@@ -164,12 +165,47 @@ pass the full exact request ID and optionally `--operator-recovery`, with the
 durable credential on stdin. It opens the existing database without migrations,
 background sweeps, global request expiry, or merge-finalizer enqueue. Tokens
 must not appear in command arguments, environment, output, or retained evidence.
-
-Log discovery and complete current-process coverage each have a 16 MiB bound.
-Missing startup identity, changed process, rotated or truncated logs, or excess
-coverage fails visibly. Recovery preserves logs and does not restart a healthy
-daemon to satisfy that bound. A fresh launch requires separate authorization.
 Packaging uses the pinned runtime and canonical CLI, then native macOS tools,
 then Cargo and inherited tools; a Homebrew `xattr` cannot replace `/usr/bin/xattr`.
+
+### Log coverage across rotation
+
+The daemon rotates its own stderr log once it reaches
+`stderr_rotation_max_bytes` (16 MiB by default), keeping
+`stderr_rotation_keep_segments` (5) older segments. Rotation copies the live
+file into `<log>.1` until its size stops changing, truncates the live file in
+place (the inode stays the same), and appends a `stderr_log_rotated` record to
+the live file with that segment's byte count and sha256. Each file therefore
+names the exact bytes of the segment before it. A byte appended between the
+final size check and the truncate would be lost, so rotation's thread is the
+file's only writer. The daemon's stderr writes are synchronous and run on that
+thread, and Bun relays worker-thread output through it. Child processes pipe
+their stderr, and the daemon logs it as `child_process_stderr` warnings with
+the child's attribution, one row per pipe read of whole lines, capped at 16 Ki
+characters with the omitted count recorded. A stack trace or warning dump is
+therefore one or two rows; only a child that keeps writing approaches the storm
+rule. `bun run check` refuses daemon code that lets a child inherit the
+daemon's stderr. A rotated 16 MiB log takes about 15–50 ms of
+that thread.
+
+Observation locates the newest `server_started` line, walking back from the live
+file through `.1`, `.2` and so on, and checks each segment's size and digest
+against the record in the next newer file. That line must identify the current
+process. Coverage runs from that line through every newer segment to the live
+file's end, and the receipt records the startup offset, each segment's path,
+byte count and digest, and the digest of the covered bytes. Reading, hashing
+and assessment proceed in chunks that yield, so a recovery observation does not
+stall the daemon it is observing. One coverage walk reads at most 128 MiB.
+
+A live file that is truncated or shrinks during the window fails as a changed
+log. The final read also re-hashes the live file's prefix as first resolved and
+every covered segment, so a rotation the samples missed fails as well. Coverage
+also fails when the current startup line is missing, when it names another
+process, when a rotation record is missing or malformed, when a segment differs
+from its record, when the startup segment has already aged out of the retained
+segments, and when the walk exceeds its bound. A rotation that predates rotation
+records has no verifiable link. Recovery preserves logs and does not restart a
+healthy daemon to satisfy coverage. A fresh launch requires separate
+authorization.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>

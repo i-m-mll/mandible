@@ -514,6 +514,14 @@ export class ConversationControlStore {
       : { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: this.row(conversationId)?.generation ?? 0 } };
   }
 
+  /** Add the start time of a recorded controller process, while the record still names that pid. */
+  recordControllerProcessStart(conversationId: string, generation: number, pid: number, pidStart: string): void {
+    this.db.prepare(`UPDATE conversation_control_state
+      SET owner_detail_json = json_set(owner_detail_json, '$.controller_process.pid_start', ?)
+      WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
+        AND json_extract(owner_detail_json, '$.controller_process.pid') = ?`).run(pidStart, conversationId, generation, pid);
+  }
+
   release(conversationId: string, generation: number): Result<void, ConversationControlError> {
     return this.mutateOwned(conversationId, generation, "controller-released", (row, revision, now) => {
       if (["queued", "running", "waiting-user", "waiting-permission"].includes(row.turn_state)) {

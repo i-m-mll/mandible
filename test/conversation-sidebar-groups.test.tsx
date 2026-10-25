@@ -21,6 +21,8 @@ import { useChatProjectDisclosure } from '../ui/src/views/chat-project-disclosur
 import { reconcileShownProjects } from '../ui/src/views/conversation-view-state.js';
 import { queryClient } from '../ui/src/query/client.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
+import { AppShellProvider, useAppShell } from '../ui/src/app-shell.js';
+import type { ComponentChildren } from 'preact';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -553,4 +555,120 @@ it('starts folders folded, preserves independent choices on remount, and resets 
   window.sessionStorage.clear();
   view = renderHook(useChatProjectDisclosure);
   expect([...view.result.current[0]]).toEqual([]);
+});
+
+describe('Chat sidebar liveness follows the active view', () => {
+  function Shell({ active, children }: { active: boolean; children: ComponentChildren }): JSX.Element {
+    const parent = useAppShell();
+    return <AppShellProvider value={{ ...parent, active }}>{children}</AppShellProvider>;
+  }
+
+  function renderShell(active: boolean): (active: boolean) => void {
+    const view = (shown: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <Shell active={shown}>
+          <ConversationsView
+            consoleSessions={[]}
+            initialConversationId={null}
+            initialSessionId={null}
+            sidebarGroupLimit={5}
+            instance={null}
+            onSelectSession={() => undefined}
+            onNewConversation={vi.fn()}
+          />
+        </Shell>
+      </QueryClientProvider>
+    );
+    const rendered = render(view(active));
+    return (shown) => rendered.rerender(view(shown));
+  }
+
+  function mockSidebar(): { calls: () => number } {
+    const request = vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => ({
+      limit: 5,
+      groups: [
+        group({ key: 'pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo, pinnedOne] }),
+        group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [projectOne] }),
+      ],
+    }));
+    return { calls: () => request.mock.calls.length };
+  }
+
+  const unlisted = (index: number) => ({ id: `unlisted-${index}`, block_count: index + 1 });
+
+  it('makes no sidebar requests while hidden and refreshes exactly once on activation, keeping order and selection', async () => {
+    vi.useFakeTimers();
+    const sidebar = mockSidebar();
+    const setActive = renderShell(true);
+    await vi.advanceTimersByTimeAsync(350);
+    const pinnedRows = () => screen.getAllByRole('button', { name: /^Open conversation Pinned/ });
+    const order = pinnedRows().map((row) => row.getAttribute('aria-label'));
+    const selected = screen.getByRole('button', { name: 'Open conversation Project one' });
+    fireEvent.click(selected);
+    await vi.advanceTimersByTimeAsync(350);
+    expect(selected.getAttribute('aria-current')).toBe('true');
+    const before = sidebar.calls();
+
+    setActive(false);
+    for (let index = 0; index < 600; index += 1) {
+      applyConversationSse(queryClient, index % 100 === 0 ? 'conversation:new' : 'conversation:updated', unlisted(index));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(sidebar.calls()).toBe(before);
+
+    setActive(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sidebar.calls()).toBe(before + 1);
+    expect(pinnedRows().map((row) => row.getAttribute('aria-label'))).toEqual(order);
+    expect(screen.getByRole('button', { name: 'Open conversation Project one' })).toBe(selected);
+    expect(selected.getAttribute('aria-current')).toBe('true');
+  });
+
+  it('patches appends first and coalesces the remaining refetches to one per second while visible', async () => {
+    vi.useFakeTimers();
+    const sidebar = mockSidebar();
+    renderShell(true);
+    await vi.advanceTimersByTimeAsync(350);
+    const before = sidebar.calls();
+
+    for (let index = 0; index < 100; index += 1) {
+      applyConversationSse(queryClient, 'conversation:updated', {
+        id: `old-${index}`, block_count: 40, append: { from_position: 39, blocks: [] },
+      });
+      applyConversationSse(queryClient, 'conversation:updated', { id: pinnedOne.id, block_count: 3 + index });
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(sidebar.calls()).toBe(before);
+
+    for (let index = 0; index < 100; index += 1) {
+      applyConversationSse(queryClient, 'conversation:updated', unlisted(index));
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    const refetches = sidebar.calls() - before;
+    expect(refetches).toBeGreaterThan(0);
+    expect(refetches).toBeLessThanOrEqual(6);
+  });
+
+  it('refetches again when a change lands while its list is already fetching', async () => {
+    vi.useFakeTimers();
+    let release: (() => void) | null = null;
+    const sidebar = mockSidebar();
+    const respond = vi.mocked(api.getConversationSidebar).getMockImplementation()!;
+    renderShell(true);
+    await vi.advanceTimersByTimeAsync(350);
+    const before = sidebar.calls();
+    vi.mocked(api.getConversationSidebar).mockImplementationOnce(async (params) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return respond(params);
+    });
+
+    applyConversationSse(queryClient, 'conversation:updated', unlisted(0));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sidebar.calls()).toBe(before + 1);
+    applyConversationSse(queryClient, 'conversation:updated', unlisted(1));
+    release!();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sidebar.calls()).toBe(before + 2);
+  });
 });

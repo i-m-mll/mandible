@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { computeReachability } from './ui-reachability.mjs';
+import { stderrInheritanceSites } from './stderr-inheritance.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -89,6 +90,16 @@ const checks = {
       (read(file).match(/chokidar\.watch\(/g) ?? []).map(() => file),
     );
     return sites.length === 1 ? [] : [`chokidar.watch( appears ${sites.length} times (${sites.join(', ') || 'nowhere'}); expected once, in src/ingestion.ts`];
+  },
+
+  // The daemon rotates its stderr log by copying and truncating it. A child
+  // that inherits that stderr can append between the rotation's final size
+  // check and its truncate, and those bytes reach neither the rotated segment
+  // nor the live log (docs/runtime-handoff.md). Children pipe stderr and the
+  // daemon logs it, so the rotating thread is the file's only writer.
+  'daemon children never inherit its stderr'() {
+    return walk('src', (file) => /\.tsx?$/.test(file)).flatMap((file) => stderrInheritanceSites(file, read(file))
+      .map(({ line, reason }) => `${file}:${line}: ${reason}; a daemon child must pipe its output and the daemon log it`));
   },
 
   // Chrome under a test HOME without --use-mock-keychain raises a modal

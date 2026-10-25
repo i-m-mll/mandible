@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setDb } from "../src/db.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
-import { readDashboardBadgeCounts } from "../src/routes/dashboard.js";
+import { attachDashboardBadgePublisher, readDashboardBadgeCounts } from "../src/dashboard-badges.js";
+import { DOMAIN_EVENTS, type DashboardBadgeCounts, type MandibleEventType } from "../src/contracts.js";
 
 describe("dashboard badge aggregate", () => {
   const db = migratedMemoryDb();
@@ -26,6 +27,11 @@ describe("dashboard badge aggregate", () => {
        (id, command, title, status, created_at, updated_at, expires_at, resolved_at)
        VALUES (?, '', ?, 'completed', ?, ?, ?, ?)`,
     ).run("resolved", "Resolved", 1, 1, Date.now() + 60_000, Date.now());
+    const queued = db.prepare(
+      `INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at)
+       VALUES (?, '', ?, ?, 1, 1, ?)`,
+    );
+    for (const status of ["pending", "needs_rebase", "approved"]) queued.run(status, status, status, Date.now() + 60_000);
     db.prepare(
       `INSERT INTO work_repos (id, root, name, dir_exists, excluded)
        VALUES ('visible', '/visible', 'Visible', 1, 0), ('excluded', '/excluded', 'Excluded', 1, 1)`,
@@ -34,17 +40,10 @@ describe("dashboard badge aggregate", () => {
       `INSERT INTO branches (repo_root, branch, is_dirty)
        VALUES ('/visible', 'dirty', 1), ('/visible', 'clean', 0), ('/excluded', 'dirty', 1)`,
     ).run();
-    const authQueue = {
-      listActive: () => [
-        { status: "pending" },
-        { status: "needs_rebase" },
-        { status: "approved" },
-      ],
-    };
 
-    expect((await readDashboardBadgeCounts(authQueue as never, db))).toEqual({
+    expect(readDashboardBadgeCounts(db)).toEqual({
       auth: 2,
-      inbox: 2,
+      inbox: 3,
       work: 1,
       briefing: 0,
       incidents: 0,
@@ -73,9 +72,56 @@ describe("dashboard badge aggregate", () => {
       3, "operator_closure", 3, "00000000000000000000000000",
       3, "00000000000000000000000000");
 
-    expect((await readDashboardBadgeCounts({ listActive: () => [] } as never, db))).toMatchObject({
+    expect(readDashboardBadgeCounts(db)).toMatchObject({
       briefing: 0,
       incidents: 1,
     });
+  });
+});
+
+describe("dashboard badge publisher", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("computes once per burst for all clients and pushes only changed counts", () => {
+    vi.useFakeTimers();
+    const observers: Array<(type: MandibleEventType) => void> = [];
+    const pushed: unknown[] = [];
+    let clients = 2;
+    const sse = {
+      count: () => clients,
+      observe: (observer: (type: MandibleEventType) => void) => { observers.push(observer); return () => undefined; },
+      broadcast: (event: { data: unknown }) => { pushed.push(event.data); },
+    };
+    let counts: DashboardBadgeCounts = { auth: 1, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 };
+    const read = vi.fn(() => counts);
+    attachDashboardBadgePublisher(sse as never, read, () => undefined);
+    const emit = (type: MandibleEventType) => observers.forEach((observer) => observer(type));
+
+    emit(DOMAIN_EVENTS.CONVERSATION_UPDATED);
+    emit(DOMAIN_EVENTS.HEARTBEAT);
+    vi.advanceTimersByTime(1_000);
+    expect(read).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 20; i++) emit(DOMAIN_EVENTS.AUTH_NEW);
+    vi.advanceTimersByTime(499);
+    expect(read).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(pushed).toEqual([counts]);
+
+    emit(DOMAIN_EVENTS.SESSION_UPDATED);
+    vi.advanceTimersByTime(500);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(pushed).toHaveLength(1);
+
+    counts = { ...counts, auth: 0 };
+    emit(DOMAIN_EVENTS.AUTH_RESOLVED);
+    vi.advanceTimersByTime(500);
+    expect(pushed).toEqual([{ ...counts, auth: 1 }, counts]);
+
+    clients = 0;
+    emit(DOMAIN_EVENTS.AUTH_NEW);
+    vi.advanceTimersByTime(500);
+    expect(read).toHaveBeenCalledTimes(3);
   });
 });

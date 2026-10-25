@@ -10,7 +10,7 @@ import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Db } from "../db.js";
 import type { Logger, Session } from "../types.js";
-import { processLiveness, readPidStartTime } from "../registry.js";
+import { cachedPidStartTime, observedPidStartReader, processLiveness, readPidStarts } from "../registry.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
   getConversationStructureCache,
@@ -65,12 +65,14 @@ async function endControllerProcess({ pid, pid_start }: ControllerProcess, adapt
         : { kind: "adapter-failure", adapter_id: adapterId, code: "orphan-signal-failed", message: `${name} to pid ${pid}: ${String(error)}`, retryable: false };
     }
   };
-  const liveness = processLiveness(pid, pid_start);
+  const observation = await readPidStarts([pid]);
+  const readStart = observedPidStartReader(observation.ok ? observation.starts : new Map());
+  const liveness = processLiveness(pid, pid_start, readStart);
   if (liveness !== "alive") return { ok: true, value: liveness === "dead" ? "ended" : "unverified" };
   const terminated = signal("SIGTERM");
   if (terminated) return { ok: false, error: terminated };
-  for (let waited = 0; waited < 2_000 && processLiveness(pid, pid_start) === "alive"; waited += 50) await delay(50);
-  const killed = processLiveness(pid, pid_start) === "alive" ? signal("SIGKILL") : null;
+  for (let waited = 0; waited < 2_000 && processLiveness(pid, pid_start, readStart) === "alive"; waited += 50) await delay(50);
+  const killed = processLiveness(pid, pid_start, readStart) === "alive" ? signal("SIGKILL") : null;
   return killed ? { ok: false, error: killed } : { ok: true, value: "ended" };
 }
 
@@ -655,11 +657,26 @@ export class ConversationControlService {
     return delivered;
   }
 
-  /** The one path that records a controller's process, whether it was spawned at acquisition or later. */
+  /**
+   * The one path that records a controller's process, whether it was spawned
+   * at acquisition or later. A start time not yet known is read off the event
+   * loop and added to the same record once `ps` answers.
+   */
   private recordControllerProcess(conversationId: string, generation: number, pid: number | undefined): Result<void, ConversationControlError> {
-    return pid
-      ? this.store.recordControllerProcess(conversationId, generation, { pid, pid_start: readPidStartTime(pid) })
-      : { ok: true, value: undefined };
+    if (!pid) return { ok: true, value: undefined };
+    const pidStart = cachedPidStartTime(pid);
+    const recorded = this.store.recordControllerProcess(conversationId, generation, { pid, pid_start: pidStart });
+    if (recorded.ok && !pidStart) {
+      void readPidStarts([pid]).then((observation) => {
+        const start = observation.ok ? observation.starts.get(pid) : null;
+        if (start) this.store.recordControllerProcessStart(conversationId, generation, pid, start);
+      }).catch((error: unknown) => {
+        this.logger("warn", "conversation_controller_start_unrecorded", {
+          conversation_id: conversationId, pid, error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    return recorded;
   }
 
   private async acquireWithExecution(adapter: ConversationControllerAdapter, request: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>> {

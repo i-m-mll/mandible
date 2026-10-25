@@ -6,7 +6,13 @@ import type { LivenessState } from "./contracts.js";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import { getUserHome } from "./platform-paths.js";
-import { isLiveSessionStatus, sessionAliasLiveness, type SessionAliasResolution } from "./session-liveness.js";
+import {
+  isLiveSessionStatus,
+  sessionAliasLiveness,
+  type ProviderTaskLivenessReader,
+  type SessionAliasResolution,
+} from "./session-liveness.js";
+import { withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
 import SqliteDatabase from "./sqlite.js";
 import type { AuthRequest } from "./types.js";
 
@@ -129,9 +135,18 @@ export async function safeUnarchiveCodexThread(
   }
 }
 
+/** Archive candidates for a completed merge; a thread qualifies only on a Codex lock scan made for this listing. */
 export function listCompletedWorkerThreadArchiveCandidates(
   db: Db,
   request: AuthRequest,
+): Promise<WorkerThreadArchiveCandidate[]> {
+  return withFreshCodexTaskLiveness((read) => completedWorkerThreadArchiveCandidates(db, request, read));
+}
+
+function completedWorkerThreadArchiveCandidates(
+  db: Db,
+  request: AuthRequest,
+  read: ProviderTaskLivenessReader,
 ): WorkerThreadArchiveCandidate[] {
   if (!tableExists(db, "work_units")) {
     return [];
@@ -142,13 +157,13 @@ export function listCompletedWorkerThreadArchiveCandidates(
   const closureIssueIds = completedIssueIds(db, request);
 
   for (const row of candidateRowsFromRequestWorkUnits(db, request.id)) {
-    addCandidate(db, byProviderId, row, parentRoleSessionIds);
+    addCandidate(db, byProviderId, row, parentRoleSessionIds, read);
   }
 
   if (closureIssueIds.size > 0) {
     if (tableExists(db, "console_sessions") && tableExists(db, "ledger_session_issue_links")) {
       for (const row of candidateRowsFromIssueSessionLinks(db, closureIssueIds)) {
-        addCandidate(db, byProviderId, row, parentRoleSessionIds);
+        addCandidate(db, byProviderId, row, parentRoleSessionIds, read);
       }
     }
   }
@@ -161,13 +176,14 @@ function addCandidate(
   byProviderId: Map<string, WorkerThreadArchiveCandidate>,
   row: CandidateRow,
   parentRoleSessionIds: Set<string>,
+  read: ProviderTaskLivenessReader,
 ): void {
   const providerSessionId = stringOrNull(row.provider_session_id);
   const consoleSessionId = stringOrNull(row.console_session_id);
   if (!providerSessionId || !consoleSessionId) return;
   if (row.command !== "codex") return;
   if (isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)) return;
-  if (sessionAliasLiveness(db, providerSessionId) !== "stopped") return;
+  if (sessionAliasLiveness(db, providerSessionId, { readCodexTaskLiveness: read }) !== "stopped") return;
 
   const mandibleSessionId = stringOrNull(row.mandible_session_id);
   if (
@@ -350,7 +366,7 @@ function consoleSessionRowsForLink(
   ) as CandidateRow[];
 }
 
-export type WorkerThreadLiveness = (db: Db, threadId: string) => LivenessState;
+export type WorkerThreadLiveness = (db: Db, threadId: string) => LivenessState | Promise<LivenessState>;
 export type WorkerThreadAliasResolver = (db: Db, id: string) => SessionAliasResolution | null;
 
 export interface FinishedWorkerThreadArchivePass {
@@ -439,7 +455,7 @@ export async function archiveFinishedWorkerThreads(
 
   for (const [threadId, thread] of due) {
     if (parentRoleSessionIds.has(threadId) || busy.has(threadId)) continue;
-    const liveness = input.liveness(db, threadId);
+    const liveness = await input.liveness(db, threadId);
     if (liveness === "live") continue;
     if (liveness === "unknown") {
       pass.deferred.push(threadId);

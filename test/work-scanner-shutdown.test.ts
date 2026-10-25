@@ -21,6 +21,7 @@ it('cancels an in-flight repository probe and drains before the database closes'
   let closed = false;
   const db: SqliteDatabase = {
     exec() { if (closed) throw new Error('database closed'); },
+    transaction: (callback) => callback,
     prepare(sql) {
       if (closed) throw new Error('database closed');
       return { run: () => ({ changes: 0 }), get: () => undefined, all: () => sql.includes('FROM work_repos') ? [{ id: 'test', root, name: 'test', default_branch: 'main', dir_exists: 1, excluded: 0, user_modified: 0, last_scanned_at: null }] : [] };

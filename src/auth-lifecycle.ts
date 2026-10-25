@@ -1,5 +1,6 @@
-import { authPublicationSnapshot } from "./auth-publication.js";
-import { createHash, randomUUID } from "node:crypto";
+import { authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
+import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
+import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
   AuthLifecycleActor,
@@ -7,43 +8,6 @@ import type {
   AuthRequestLifecycleEventType,
   AuthRequestStatus,
 } from "./types.js";
-
-function parseJsonColumn(value: unknown): unknown {
-  if (typeof value !== "string") return value ?? null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-export function authRequestSnapshot(db: Db, requestId: string): string {
-  const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(requestId) as
-    | Record<string, unknown>
-    | undefined;
-  if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
-  // Columns added after receipts existed appear only when set, so receipts
-  // recorded before them keep verifying.
-  const omittedWhenNull = ["space_publication_id", "protected_root_dirty_action_json"];
-  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => !omittedWhenNull.includes(key) || value !== null).map(([key, value]) => [
-    key,
-    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"].includes(key)
-      ? parseJsonColumn(value)
-      : value ?? null,
-  ]));
-  const actions = db.prepare(
-    "SELECT * FROM auth_request_actions WHERE auth_request_id = ? ORDER BY ordinal, id",
-  ).all(requestId).map((action) => {
-    const record = action as Record<string, unknown>;
-    return { ...record, payload: parseJsonColumn(record.payload) };
-  });
-  const publication = authPublicationSnapshot(db, requestId);
-  return JSON.stringify({ request, actions, ...(publication ? { publication } : {}) });
-}
-
-export function authSnapshotDigest(snapshot: string): string {
-  return createHash("sha256").update(snapshot).digest("hex");
-}
 
 export function appendAuthLifecycleEvent(
   db: Db,
@@ -110,4 +74,34 @@ export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestL
   return db.prepare(
     "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision",
   ).all(requestId) as AuthRequestLifecycleEvent[];
+}
+
+/**
+ * Issue cc8fe29 — every execution a request has had, read from its lifecycle.
+ * A retry reuses the request row, so the row alone shows only the latest
+ * execution. Events recorded before the `failed` state existed carry
+ * `completed` with the non-zero exit in their snapshot; the snapshot decides.
+ */
+export function listAuthExecutionAttempts(db: Db, requestId: string): AuthExecutionAttempt[] {
+  const rows = db.prepare(`SELECT revision, occurred_at, event_type, reason,
+      json_extract(snapshot_json, '$.request.exit_code') AS exit_code,
+      json_extract(snapshot_json, '$.request.error') AS error,
+      CASE WHEN json_extract(snapshot_json, '$.request.error') IS NULL
+        THEN json_extract(snapshot_json, '$.request.output') END AS output
+    FROM auth_request_lifecycle_events
+    WHERE auth_request_id = ? AND event_type IN ('completed', 'failed')
+    ORDER BY revision`).all(requestId) as Array<{
+      revision: number; occurred_at: number; event_type: string; reason: string | null;
+      exit_code: number | null; error: string | null; output: string | null;
+    }>;
+  return rows.map((row) => {
+    const failed = row.event_type === "failed" || row.exit_code !== 0;
+    return {
+      revision: row.revision,
+      occurred_at: row.occurred_at,
+      result: failed ? "failed" : "succeeded",
+      exit_code: row.exit_code,
+      failure_reason: failed ? describeAuthExecutionFailure(row.error ?? row.output ?? row.reason, row.exit_code) : null,
+    };
+  });
 }

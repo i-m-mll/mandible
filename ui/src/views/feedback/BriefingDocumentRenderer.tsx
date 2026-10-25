@@ -21,7 +21,7 @@ import {
   type BriefingSubmissionOverlaySummary,
   type InstanceInfo,
 } from '../../api';
-import { useAppShell, useRegisterInitialRouteLoad } from '../../app-shell';
+import { useRouteLoad, useViewActive } from '../../app-shell';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
@@ -135,10 +135,7 @@ export function BriefingDocumentRenderer({
   onRoundChange,
   keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
-  const { active } = useAppShell();
-  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
-  const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
-  registerInitialRouteLoadRef.current = registerInitialRouteLoad;
+  const active = useViewActive();
   const [draft, setDraft] = useState<BriefingDraft>({});
   const [draftScope, setDraftScope] = useState<string | null>(null);
   const draftBaseline = useRef<{ scope: string | null; values: BriefingDraft } | null>(null);
@@ -218,9 +215,9 @@ export function BriefingDocumentRenderer({
     }
   }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
 
-  useEffect(() => {
-    if (active) registerInitialRouteLoadRef.current(projectionQuery.refetch());
-  }, [active, briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
+  useRouteLoad((register) => {
+    register(projectionQuery.refetch({ cancelRefetch: false }));
+  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
 
   useEffect(() => {
     const round = projectionQuery.data;

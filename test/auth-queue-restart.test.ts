@@ -255,9 +255,9 @@ describe("auth queue", () => {
       const events: SseEvent[] = [];
       const q2 = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
 
-      const recovered = await waitForStatus(q2, req.id, "completed");
-      // A non-merge execution cannot be repository-recovered → completed as failed.
-      expect(recovered?.status).toBe("completed");
+      const recovered = await waitForStatus(q2, req.id, "failed");
+      // A non-merge execution cannot be repository-recovered, so it failed.
+      expect(recovered?.status).toBe("failed");
       expect(recovered?.exit_code).toBe(1);
       // Marker is consumed (one-shot).
       const marker = db

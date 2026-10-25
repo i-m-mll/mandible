@@ -30,7 +30,7 @@ import {
   type LivenessState,
   type ProviderTaskLivenessReader,
 } from "./session-liveness.js";
-import { readCodexTaskLiveness } from "./codex-task-liveness.js";
+import { readCodexTaskLiveness, withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
 import type { SessionManager } from "./session-manager.js";
 import { PRODUCTION_EFFECTS } from "./security/effect-policy.js";
 import {
@@ -63,8 +63,8 @@ export interface HolderLiveness {
 export function classifyHolderLiveness(
   db: Db,
   unit: WorkUnit,
-  sessionManager?: SessionManager,
-  readCodexTask: ProviderTaskLivenessReader = readCodexTaskLiveness,
+  sessionManager: SessionManager | undefined,
+  readCodexTask: ProviderTaskLivenessReader,
 ): HolderLiveness {
   const resolver: WorkUnitSessionResolver = (database, id) =>
     resolveSessionAlias(database, id, { readCodexTaskLiveness: readCodexTask });
@@ -96,6 +96,22 @@ export function classifyHolderLiveness(
   return { state: "unknown", ...observed };
 }
 
+/**
+ * The Codex reader for holder decisions about `units`: every lock scan those
+ * decisions read started after this call and completed, off the event loop,
+ * before the reader is returned.
+ */
+export function freshHolderReader(
+  db: Db,
+  units: readonly WorkUnit[],
+  sessionManager: SessionManager | undefined,
+): Promise<ProviderTaskLivenessReader> {
+  return withFreshCodexTaskLiveness((read) => {
+    for (const unit of units) classifyHolderLiveness(db, unit, sessionManager, read);
+    return read;
+  });
+}
+
 function parseTime(value: string | null): number | null {
   const time = value ? Date.parse(value) : NaN;
   return Number.isFinite(time) ? time : null;
@@ -121,8 +137,8 @@ export function sameCredentialSessionHolding(
   db: Db,
   unit: WorkUnit,
   callerSessionId: string | null,
-  sessionManager?: SessionManager,
-  readCodexTask: ProviderTaskLivenessReader = readCodexTaskLiveness,
+  sessionManager: SessionManager | undefined,
+  readCodexTask: ProviderTaskLivenessReader,
 ): SessionHolding {
   const recorded = sessionIdentities(unit);
   if (recorded.length === 0) return { state: "clear", unverifiable: false, liveness: null };
@@ -409,7 +425,9 @@ export function applyApprovedCustodyTransfer(
       new_session: { provider: command.provider, provider_session_id: command.provider_session_id },
       operator_evidence_method: "credential_signature",
       auth_request_id: request.id,
-      prior_holder_liveness: classifyHolderLiveness(db, unit, sessionManager),
+      // Evidence for the record only: the operator's approval, not this
+      // reading, authorizes the transfer.
+      prior_holder_liveness: classifyHolderLiveness(db, unit, sessionManager, readCodexTaskLiveness),
       comment_attribution: request.approved_by_user_id
         ? { user_id: request.approved_by_user_id, evidence_method: "credential_signature", evidence_id: request.execution_evidence_id }
         : null,

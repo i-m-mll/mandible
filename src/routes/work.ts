@@ -206,9 +206,10 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     if (!enforceRepoAccess(req, res, repo, "read")) return;
-    let refreshedRepo;
+    const refresh = ["1", "true"].includes(queryString(req, "refresh") ?? "");
+    let scan;
     try {
-      refreshedRepo = await workScanner.refreshRepoAsync(repo.root);
+      scan = await workScanner.getRepoScan(repo.root, { refresh });
     } catch (error) {
       sendJson(res, 503, {
         error: "repository audit refresh failed",
@@ -217,9 +218,8 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       });
       return;
     }
-    const branches = workScanner.getBranches(refreshedRepo.root);
-    const inventory = await workScanner.getWorktreeInventory(refreshedRepo.root);
-    sendJson(res, 200, buildWorkAudit(refreshedRepo, branches, inventory));
+    const branches = workScanner.getBranches(scan.repo.root);
+    sendJson(res, 200, buildWorkAudit(scan.repo, branches, scan.inventory));
   }, { operation: { id: "get:/api/work/repos/:id/audit", effects: ["ledger:write","process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches/:branch/commits", async (req, res) => {

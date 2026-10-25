@@ -62,7 +62,7 @@ it('hides prior detail during mounted replacement, ignores late results and reta
   await screen.findByText('Session A');
   view.rerender(<SessionOverviewView initialSessionId="B" agentBinding="bound" />);
   expect(screen.queryByText('Session A')).toBeNull();
-  await waitFor(() => expect(getSessionOverview).toHaveBeenCalledWith('B'));
+  await waitFor(() => expect(getSessionOverview).toHaveBeenCalledWith('B', expect.any(AbortSignal)));
   view.rerender(<SessionOverviewView initialSessionId="C" agentBinding="bound" />);
   await screen.findByText('Session C');
   await act(async () => b.resolve(overview('B')));

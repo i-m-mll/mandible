@@ -8,7 +8,8 @@ import {
   type WorkerThreadLiveness,
 } from "./codex-thread-archive.js";
 import { observeRepoIdentities, checkoutRootsForRef } from "./repo-identity.js";
-import { resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
+import { freshSessionAliasResolver, resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
+import { withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
 import { listLocalBranches } from "./work-scanner.js";
@@ -44,15 +45,20 @@ function sample<T>(items: T[]): T[] {
 
 export interface WorkUnitReconcilerOptions {
   archiver: CodexThreadArchiver;
+  /** Replaces the shared rule, whose Codex answers come from lock scans made for each pass. */
   resolveSession?: WorkUnitSessionResolver;
   threadLiveness?: WorkerThreadLiveness;
   now?: () => number;
 }
 
+/** A thread's liveness from a Codex lock scan made for this question. */
+const freshThreadLiveness: WorkerThreadLiveness = (db, threadId) =>
+  withFreshCodexTaskLiveness((read) => sessionAliasLiveness(db, threadId, { readCodexTaskLiveness: read }));
+
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
-  private readonly resolveSession: WorkUnitSessionResolver;
+  private readonly resolveSession: WorkUnitSessionResolver | undefined;
   private readonly archiver: CodexThreadArchiver;
   private readonly threadLiveness: WorkerThreadLiveness;
   private readonly now: () => number;
@@ -62,9 +68,9 @@ export class WorkUnitReconciler {
 
   constructor(logger: Logger, options: WorkUnitReconcilerOptions) {
     this.logger = logger;
-    this.resolveSession = options.resolveSession ?? resolveSessionAlias;
+    this.resolveSession = options.resolveSession;
     this.archiver = options.archiver;
-    this.threadLiveness = options.threadLiveness ?? sessionAliasLiveness;
+    this.threadLiveness = options.threadLiveness ?? freshThreadLiveness;
     this.now = options.now ?? Date.now;
   }
 
@@ -95,7 +101,7 @@ export class WorkUnitReconciler {
 
   private async runPasses(): Promise<void> {
     try {
-      const holders = this.reconcileDeadHolders();
+      const holders = await this.reconcileDeadHolders();
       await this.archiveFinishedWorkerThreads();
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = await this.reconcileAutoCommit();
@@ -122,9 +128,9 @@ export class WorkUnitReconciler {
    * liveness check could not complete, is left in place and counted, since
    * nothing proves it stopped.
    */
-  private reconcileDeadHolders(): { cleared: number; unknown: number } {
+  private async reconcileDeadHolders(): Promise<{ cleared: number; unknown: number }> {
     const db = getDb();
-    const held = db
+    const heldRows = () => db
       .prepare(
         `SELECT id, assigned_session_id FROM work_units
          WHERE assigned_session_id IS NOT NULL
@@ -132,11 +138,15 @@ export class WorkUnitReconciler {
          ORDER BY id`
       )
       .all() as Array<{ id: string; assigned_session_id: string }>;
+    const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
+      for (const row of heldRows()) probe(db, row.assigned_session_id);
+    });
+    const held = heldRows();
 
     const dead: typeof held = [];
     let unknown = 0;
     for (const row of held) {
-      const liveness = this.resolveSession(db, row.assigned_session_id)?.liveness ?? "unknown";
+      const liveness = resolve(db, row.assigned_session_id)?.liveness ?? "unknown";
       if (liveness === "stopped") dead.push(row);
       else if (liveness === "unknown") unknown++;
     }
@@ -167,7 +177,7 @@ export class WorkUnitReconciler {
     const outcome = await archiveFinishedWorkerThreads(getDb(), {
       archiver: this.archiver,
       liveness: this.threadLiveness,
-      resolveAlias: this.resolveSession,
+      resolveAlias: this.resolveSession ?? resolveSessionAlias,
       now: this.now,
     });
     const newlyFailed = outcome.failed.filter(({ attempts }) => attempts === 1);
@@ -227,6 +237,15 @@ export class WorkUnitReconciler {
       if (result.status !== "fulfilled") throw new Error("Unsettled work-unit pipeline observation");
       return result.value;
     }));
+    const holderOf = (row: (typeof gone)[number]) => row.assigned_session_id
+      ?? row.worker_provider_session_id
+      ?? row.provider_session_id;
+    const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
+      for (const row of gone) {
+        const sessionId = holderOf(row);
+        if (sessionId) probe(db, sessionId);
+      }
+    });
 
     const abandonStmt = db.prepare(
       "UPDATE work_units SET state = 'abandoned' WHERE id = ? AND state = 'committed' AND auth_request_id IS NULL"
@@ -246,14 +265,12 @@ export class WorkUnitReconciler {
         if (workUnitDecisionState(db, row.id) !== starting.get(row.id)) continue;
         const pipeline = pipelines.get(row.id)!;
         if (!pipeline.isCurrent()) continue;
-        const sessionId = row.assigned_session_id
-          ?? row.worker_provider_session_id
-          ?? row.provider_session_id;
+        const sessionId = holderOf(row);
         // The same canonical provider-session authority used by parent-role
         // and work-unit reads gets first refusal over this destructive state
         // transition; once the task stops, ordinary branch/auth proof applies.
         // A task whose liveness cannot be established gets the same refusal.
-        const liveness = sessionId ? this.resolveSession(db, sessionId)?.liveness : undefined;
+        const liveness = sessionId ? resolve(db, sessionId)?.liveness : undefined;
         if (liveness === "live" || liveness === "unknown") continue;
         // A branch may be deleted by auth-merge before the successful result
         // reaches Stage 2. Keep it committed while a same-repo request is

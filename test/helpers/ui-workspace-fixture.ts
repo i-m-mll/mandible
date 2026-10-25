@@ -453,7 +453,7 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
       });
     }
     if (url === '/api/dashboard/badges') {
-      return new Response(JSON.stringify({ auth: 3, briefing: 2, inbox: 1 }), {
+      return new Response(JSON.stringify({ auth: 3, briefing: 2, inbox: 1, work: 0, incidents: 0, tasks: 0 }), {
         headers: { 'content-type': 'application/json' },
       });
     }

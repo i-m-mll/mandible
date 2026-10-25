@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AuthAutoApproveManager, AuthApprovalContext } from "../src/auth-auto-approve.js";
 import {
@@ -14,6 +14,7 @@ import {
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/ledger-fixtures.js";
+import { longestEventLoopBlockMs, useSlowCommand } from "./helpers/event-loop-blocking.js";
 
 function fixture() {
   const db = createMigratedDb({
@@ -49,17 +50,17 @@ function fixture() {
   let fingerprint = delegated.fingerprint;
   let challenges = 0;
   const inspector: DelegatedSignerInspector = {
-    process: (pid) => processes.get(pid) ?? null,
+    process: async (pid) => processes.get(pid) ?? null,
     socket: (socketPath) => {
       const socket = sockets.get(socketPath);
       if (!socket) throw new Error("socket unavailable");
       return socket;
     },
-    ownsSocket: (process, socket) =>
+    ownsSocket: async (process, socket) =>
       (process.pid === 300 && socket.path.includes("agent-a"))
       || (process.pid === 301 && socket.path.includes("agent-b")),
-    keyFingerprint: () => fingerprint,
-    challenge: () => { challenges += 1; },
+    keyFingerprint: async () => fingerprint,
+    challenge: async () => { challenges += 1; },
   };
   const signer = {
     getDelegatedSigningStatus: () => ({ configured: true }),
@@ -116,65 +117,103 @@ function fixture() {
   };
 }
 
+/** A real throwaway ssh-agent holding one key, issued as a fresh lease through the production inspector. */
+async function withRealAgent(body: (agent: {
+  db: ReturnType<typeof createMigratedDb>;
+  signer: AuthAutoApproveManager;
+  resource: DelegatedSigningResource;
+  context: AuthApprovalContext;
+  agentRunning: () => boolean;
+}) => Promise<void>): Promise<void> {
+  const dir = fs.mkdtempSync("/tmp/mandible-sign-");
+  fs.chmodSync(dir, 0o700);
+  const keyPath = path.join(dir, "id_ed25519");
+  execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
+  const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
+  const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
+    encoding: "utf8",
+  }).match(/SHA256:[A-Za-z0-9+/=]{40,50}/)![0];
+  const db = createMigratedDb({ operator: { slug: "real-agent-operator", display_name: "Real Agent" } });
+  const operator = getOperator(db)!;
+  const credential = addCredential(db, operator.id, {
+    type: "delegated_ssh_key", fingerprint, public_material: publicMaterial,
+  });
+  let agentPid: string | null = null;
+  const signer = {
+    getDelegatedSigningStatus: () => ({ configured: true }),
+    setupDelegatedSigning: async () => ({ configured: true }),
+    freshPresenceChallenge: async (ttlSeconds: number): Promise<AuthApprovalContext> => {
+      const output = execFileSync("ssh-agent", ["-a", path.join(dir, "agent.sock"), "-s"], { encoding: "utf8" });
+      agentPid = output.match(/SSH_AGENT_PID=([^;]+);/)![1];
+      const socketPath = output.match(/SSH_AUTH_SOCK=([^;]+);/)![1];
+      execFileSync("ssh-add", ["-t", String(ttlSeconds), keyPath], {
+        env: { ...process.env, SSH_AUTH_SOCK: socketPath }, stdio: "ignore",
+      });
+      addDelegatedSigningLease(db, {
+        id: "real-lease", credential_id: credential.id, owner_user_id: operator.id,
+        minted_at: Date.now(), expires_at: Date.now() + ttlSeconds * 1000, mint_method: "fresh_presence",
+      });
+      return {
+        source: "clearance", leaseId: "real-lease", approverUserId: operator.id,
+        env: { SSH_AUTH_SOCK: socketPath },
+        runtime: { sshAgentPid: agentPid, sshAuthSock: socketPath, publicKeyPath: `${keyPath}.pub` },
+      };
+    },
+    stopApprovalRuntime: async () => {
+      if (agentPid) execFileSync("kill", [agentPid]);
+      agentPid = null;
+    },
+    removeDelegatedSigning: async () => undefined,
+  } as unknown as AuthAutoApproveManager;
+  try {
+    const resource = new DelegatedSigningResource(signer, {
+      db, runtimeEpoch: "real-runtime", allowRuntimeAuthority: true,
+    });
+    const context = await resource.issueFresh(60);
+    await body({ db, signer, resource, context, agentRunning: () => agentPid !== null });
+  } finally {
+    if (agentPid) {
+      try { execFileSync("kill", [agentPid]); } catch { /* already stopped */ }
+    }
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe("delegated signer reconnect lifecycle", () => {
   it.runIf(process.platform === "darwin")("proves a real throwaway ssh-agent key with the production inspector", async () => {
-    const dir = fs.mkdtempSync("/tmp/mandible-sign-");
-    fs.chmodSync(dir, 0o700);
-    const keyPath = path.join(dir, "id_ed25519");
-    execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
-    const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
-    const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
-      encoding: "utf8",
-    }).match(/SHA256:[A-Za-z0-9+/=]{40,50}/)![0];
-    const db = createMigratedDb({ operator: { slug: "real-agent-operator", display_name: "Real Agent" } });
-    const operator = getOperator(db)!;
-    const credential = addCredential(db, operator.id, {
-      type: "delegated_ssh_key", fingerprint, public_material: publicMaterial,
-    });
-    let agentPid: string | null = null;
-    let socketPath: string | null = null;
-    const signer = {
-      getDelegatedSigningStatus: () => ({ configured: true }),
-      setupDelegatedSigning: async () => ({ configured: true }),
-      freshPresenceChallenge: async (ttlSeconds: number): Promise<AuthApprovalContext> => {
-        const output = execFileSync("ssh-agent", ["-a", path.join(dir, "agent.sock"), "-s"], { encoding: "utf8" });
-        agentPid = output.match(/SSH_AGENT_PID=([^;]+);/)![1];
-        socketPath = output.match(/SSH_AUTH_SOCK=([^;]+);/)![1];
-        execFileSync("ssh-add", ["-t", String(ttlSeconds), keyPath], {
-          env: { ...process.env, SSH_AUTH_SOCK: socketPath }, stdio: "ignore",
-        });
-        addDelegatedSigningLease(db, {
-          id: "real-lease", credential_id: credential.id, owner_user_id: operator.id,
-          minted_at: Date.now(), expires_at: Date.now() + ttlSeconds * 1000, mint_method: "fresh_presence",
-        });
-        return {
-          source: "clearance", leaseId: "real-lease", approverUserId: operator.id,
-          env: { SSH_AUTH_SOCK: socketPath! },
-          runtime: { sshAgentPid: agentPid!, sshAuthSock: socketPath!, publicKeyPath: `${keyPath}.pub` },
-        };
-      },
-      stopApprovalRuntime: async () => {
-        if (agentPid) execFileSync("kill", [agentPid]);
-        agentPid = null;
-      },
-      removeDelegatedSigning: async () => undefined,
-    } as unknown as AuthAutoApproveManager;
-    try {
-      const resource = new DelegatedSigningResource(signer, {
-        db, runtimeEpoch: "real-runtime", allowRuntimeAuthority: true,
-      });
-      const context = await resource.issueFresh(60);
-      const borrow = resource.borrow(context.leaseId);
+    await withRealAgent(async ({ resource, context, agentRunning }) => {
+      const borrow = await resource.borrow(context.leaseId);
       await borrow.settle();
       await resource.drain(context.leaseId, "smoke_complete");
-      expect(agentPid).toBeNull();
-    } finally {
-      if (agentPid) {
-        try { execFileSync("kill", [agentPid]); } catch { /* already stopped */ }
+      expect(agentRunning()).toBe(false);
+    });
+  });
+
+  it.runIf(process.platform === "darwin")("proves, borrows, claims and drains a real signer without blocking the event loop", async () => {
+    await withRealAgent(async ({ db, signer, resource, context, agentRunning }) => {
+      const exited = spawn("true");
+      await new Promise((resolve) => exited.once("exit", resolve));
+      for (const command of ["ps", "lsof", "ssh-add", "ssh-keygen"]) useSlowCommand(command, 0.3);
+      try {
+        const blockedMs = await longestEventLoopBlockMs(async () => {
+          const borrow = await resource.borrow(context.leaseId);
+          await borrow.settle();
+          // The owning runtime is gone; its successor claims the binding and drains it.
+          db.prepare("UPDATE delegated_signing_runtime_bindings SET owner_runtime_epoch = 'gone', owner_pid = ? WHERE lease_id = ?")
+            .run(exited.pid, context.leaseId);
+          const successor = new DelegatedSigningResource(signer, { db, runtimeEpoch: "successor", allowRuntimeAuthority: true });
+          await successor.drain(context.leaseId, "clearance_revoked");
+        });
+
+        expect(blockedMs).toBeLessThan(50);
+        expect(agentRunning()).toBe(false);
+        expect(db.prepare("SELECT owner_runtime_epoch, state FROM delegated_signing_runtime_bindings WHERE lease_id = ?")
+          .get(context.leaseId)).toEqual({ owner_runtime_epoch: "successor", state: "retired" });
+      } finally {
+        vi.unstubAllEnvs();
       }
-      db.close();
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("reattaches only after exact identity proof and rejects a concurrent live owner", async () => {
@@ -187,38 +226,38 @@ describe("delegated signer reconnect lifecycle", () => {
 
       f.processes.delete(100); // routine daemon exit; ssh-agent survives
       const second = f.resource("runtime-b", 200);
-      expect(second.attachAvailable()).toEqual({ attached: 1, refused: 0 });
-      const borrow = second.borrow(context.leaseId);
+      expect(await second.attachAvailable()).toEqual({ attached: 1, refused: 0 });
+      const borrow = await second.borrow(context.leaseId);
       expect(borrow.approval.env.SSH_AUTH_SOCK).toBe("/private/tmp/agent-a/socket");
       await borrow.settle();
       expect(f.challenges()).toBe(3); // startup attachment plus pre-borrow nonce
 
       const contender = f.resource("runtime-c", 201);
-      expect(contender.attachAvailable()).toEqual({ attached: 0, refused: 1 });
-      expect(() => contender.borrow(context.leaseId)).toThrow(/another live Mandible runtime/);
+      expect(await contender.attachAvailable()).toEqual({ attached: 0, refused: 1 });
+      await expect(contender.borrow(context.leaseId)).rejects.toThrow(/another live Mandible runtime/);
       expect(f.db.prepare(
         "SELECT owner_runtime_epoch, state FROM delegated_signing_runtime_bindings WHERE lease_id = ?",
       ).get(context.leaseId)).toEqual({ owner_runtime_epoch: "runtime-b", state: "available" });
 
       const inspectProcess = f.inspector.process;
-      f.inspector.process = (pid) => {
+      f.inspector.process = async (pid) => {
         if (pid === 200) throw new Error("process inspection unsupported");
         return inspectProcess(pid);
       };
-      expect(f.resource("runtime-d", 202).attachAvailable()).toEqual({ attached: 0, refused: 1 });
+      expect(await f.resource("runtime-d", 202).attachAvailable()).toEqual({ attached: 0, refused: 1 });
       expect(f.db.prepare(
         "SELECT owner_runtime_epoch, state FROM delegated_signing_runtime_bindings WHERE lease_id = ?",
       ).get(context.leaseId)).toEqual({ owner_runtime_epoch: "runtime-b", state: "available" });
       f.inspector.process = inspectProcess;
 
       f.setFingerprint(`SHA256:${"X".repeat(43)}`);
-      expect(() => second.borrow(context.leaseId)).toThrow(/expected key/);
+      await expect(second.borrow(context.leaseId)).rejects.toThrow(/expected key/);
       f.setFingerprint(`SHA256:${"R".repeat(43)}`);
       f.sockets.get("/private/tmp/agent-a/socket")!.ino = "replacement";
-      expect(() => second.borrow(context.leaseId)).toThrow(/socket identity changed/);
+      await expect(second.borrow(context.leaseId)).rejects.toThrow(/socket identity changed/);
       f.sockets.get("/private/tmp/agent-a/socket")!.ino = "10";
       f.processes.delete(300);
-      expect(() => second.borrow(context.leaseId)).toThrow(/ssh-agent process is not alive/);
+      await expect(second.borrow(context.leaseId)).rejects.toThrow(/ssh-agent process is not alive/);
     } finally {
       f.db.close();
     }
@@ -230,7 +269,7 @@ describe("delegated signer reconnect lifecycle", () => {
       const resource = f.resource("runtime-a", 100);
       const context = await resource.issueFresh(60);
       f.addClearance(context.leaseId);
-      const borrow = resource.borrow(context.leaseId);
+      const borrow = await resource.borrow(context.leaseId);
       const draining = resource.drain(context.leaseId, "clearance_exhausted");
       await Promise.resolve();
       expect(f.stopped).toEqual([]);
@@ -258,8 +297,8 @@ describe("delegated signer reconnect lifecycle", () => {
       expect(f.removed()).toBe(1);
 
       const preview = f.resource("preview", 201, false);
-      expect(preview.attachAvailable()).toEqual({ attached: 0, refused: 0 });
-      expect(() => preview.borrow(context.leaseId)).toThrow(/disabled outside/);
+      expect(await preview.attachAvailable()).toEqual({ attached: 0, refused: 0 });
+      await expect(preview.borrow(context.leaseId)).rejects.toThrow(/disabled outside/);
     } finally {
       f.db.close();
     }

@@ -19,6 +19,8 @@ import {
 } from "../src/trash-service.js";
 import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { waitUntil } from "./helpers/wait-until.js";
+import { longestEventLoopBlockMs, useSlowCommand } from "./helpers/event-loop-blocking.js";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, {
@@ -72,6 +74,7 @@ describe.sequential("trash custody", () => {
   afterEach(() => {
     stopTrashGcScheduler();
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -143,7 +146,7 @@ describe.sequential("trash custody", () => {
     expect([...fs.readFileSync(path.join(restoredPath, "untracked.bin"))]).toEqual([0, 1, 2, 255]);
   });
 
-  it("keeps unique ignored files outside the branch and restores them as ignored files", () => {
+  it("keeps unique ignored files outside the branch and restores them as ignored files", async () => {
     fs.writeFileSync(path.join(featureWorktree, ".gitignore"), ".env\nnode_modules/\nshared\nnotes/\n");
     git(featureWorktree, ["add", ".gitignore"]);
     git(featureWorktree, ["commit", "-m", "ignore rules"]);
@@ -189,7 +192,7 @@ describe.sequential("trash custody", () => {
     expect(git(restoredPath, ["status", "--porcelain", "--ignored"])).toBe("!! .env\n!! notes/");
     expect(git(restoredPath, ["rev-parse", "HEAD"])).toBe(created.entry.original_oid);
 
-    expect(gcTrashEntries(db, { now: created.entry.expires_at })).toMatchObject({ expired: 1 });
+    expect(await gcTrashEntries(db, { now: created.entry.expires_at })).toMatchObject({ expired: 1 });
     expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
   });
 
@@ -291,7 +294,7 @@ describe.sequential("trash custody", () => {
     expect(listed.body).toMatchObject({ entries: [{ branch: "feature/trash" }] });
   });
 
-  it("expires only an exact matching immutable ref and reports missing refs", () => {
+  it("expires only an exact matching immutable ref and reports missing refs", async () => {
     const created = createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
@@ -300,7 +303,7 @@ describe.sequential("trash custody", () => {
     }, 1_000);
     git(repoRoot, ["update-ref", "-d", created.entry.snapshot_ref, created.entry.snapshot_oid]);
 
-    const failed = gcTrashEntries(db, { now: 86_401_001 });
+    const failed = await gcTrashEntries(db, { now: 86_401_001 });
     expect(failed).toMatchObject({ expired: 0, failed: 1 });
     expect(failed.outcomes[0]).toMatchObject({ id: created.entry.id, status: "failed" });
   });
@@ -512,7 +515,7 @@ describe.sequential("trash custody", () => {
     expect(listTrashEntries(db)).toEqual([]);
   });
 
-  it("runs deferred GC automatically in the daemon scheduler", () => {
+  it("runs deferred GC automatically in the daemon scheduler", async () => {
     const created = createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
@@ -524,6 +527,7 @@ describe.sequential("trash custody", () => {
     startTrashGcScheduler(db, () => {}, { startupDelayMs: 1, intervalMs: 3_600_000 });
     vi.advanceTimersByTime(1);
 
+    await waitUntil(() => listTrashEntries(db)[0]?.state === "expired", "the scheduled GC pass");
     expect(listTrashEntries(db)[0]).toMatchObject({ id: created.entry.id, state: "expired" });
     expect(spawnSync("git", ["rev-parse", "--verify", created.entry.snapshot_ref], {
       cwd: repoRoot,
@@ -531,7 +535,25 @@ describe.sequential("trash custody", () => {
     }).status).not.toBe(0);
   });
 
-  it("durably replays gc_pending when final DB recording fails after ref deletion", () => {
+  it("expires a due entry without blocking the event loop on Git", async () => {
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "merged",
+      retention_days: 1,
+    }, 1_000);
+    useSlowCommand("git", 0.3);
+    let result: unknown;
+    const blockedMs = await longestEventLoopBlockMs(async () => {
+      result = await gcTrashEntries(db, { now: 86_401_001 });
+    });
+
+    expect(blockedMs).toBeLessThan(50);
+    expect(result).toMatchObject({ expired: 1, failed: 0 });
+    expect(listTrashEntries(db)[0]).toMatchObject({ id: created.entry.id, state: "expired" });
+  });
+
+  it("durably replays gc_pending when final DB recording fails after ref deletion", async () => {
     const created = createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
@@ -545,7 +567,7 @@ describe.sequential("trash custody", () => {
         SELECT RAISE(ABORT, 'finalize failed');
       END`);
 
-    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
+    expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
     expect(listTrashEntries(db)[0]).toMatchObject({ state: "gc_pending" });
     expect(spawnSync("git", ["rev-parse", "--verify", created.entry.snapshot_ref], {
       cwd: repoRoot,
@@ -553,14 +575,14 @@ describe.sequential("trash custody", () => {
     }).status).not.toBe(0);
     db.exec("DROP TRIGGER fail_trash_expire");
 
-    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 1, failed: 0 });
+    expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 1, failed: 0 });
     expect(listTrashEntries(db)[0]).toMatchObject({
       state: "expired",
       outcome: { replayed_pending: true },
     });
   });
 
-  it("preserves gc_pending when the exact snapshot ref cannot be inspected", () => {
+  it("preserves gc_pending when the exact snapshot ref cannot be inspected", async () => {
     const created = createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
@@ -572,7 +594,7 @@ describe.sequential("trash custody", () => {
     db.prepare("UPDATE trash_entries SET state = 'gc_pending', repo_root = ? WHERE id = ?")
       .run(nonRepoRoot, created.entry.id);
 
-    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
+    expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
     expect(listTrashEntries(db)[0]).toMatchObject({
       state: "gc_pending",
       expired_at: null,
@@ -592,6 +614,8 @@ describe.sequential("trash custody", () => {
 
     expect(scanner.getBranch(repoRoot, "feature/trash")).toMatchObject({
       default_branch: "trunk",
+      ahead_default: 0,
+      behind_default: 0,
       worktree_inventory_known: true,
       worktree_status_known: true,
       default_comparison_known: true,

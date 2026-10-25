@@ -9,6 +9,7 @@ vi.mock("../src/sse", () => ({
 }));
 
 import { WorkScanner } from "../src/work-scanner";
+import { DOMAIN_EVENTS, parseDomainEvent, type SseEvent } from "../src/contracts";
 import { registerWorkRoutes } from "../src/routes/work";
 import type { Db } from "../src/db";
 import { Router } from "../src/server";
@@ -310,45 +311,87 @@ describe.sequential("WorkScanner", () => {
     expect(feature?.diff_stat).toMatch(/feature\.txt/);
   });
 
-  it("computes ahead/behind counts", async () => {
-    const db = createMigratedDb();
-    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    await scanner.scanAllAsync();
-
-    const feature = scanner.getBranch(repoRoot, "feature");
-    expect(feature).not.toBeNull();
-    expect(feature?.ahead).toBeGreaterThan(0);
-    expect(feature?.behind).toBe(0);
-  });
-
-  it("yields between branch scans and deduplicates concurrent async scans", async () => {
+  it("deduplicates concurrent async scans", async () => {
     const db = createMigratedDb();
     const events: string[] = [];
-    const branchEventTurns: number[] = [];
-    let eventLoopTurns = 0;
-    const scanner = new WorkScanner({
-      db,
-      repo_roots: [repoRoot],
-      on_event: (event) => {
-        events.push(event.type);
-        if (event.type === "work:branch:updated") {
-          branchEventTurns.push(eventLoopTurns);
-          setImmediate(() => { eventLoopTurns += 1; });
-        }
-      },
-    });
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot], on_event: (event) => { events.push(event.type); } });
 
     const first = scanner.scanAllAsync();
     const second = scanner.scanAllAsync();
 
     expect(second).toBe(first);
     await first;
-    expect(branchEventTurns.length).toBeGreaterThan(1);
-    expect(branchEventTurns.slice(1).every(
-      (turn, index) => turn > branchEventTurns[index],
-    )).toBe(true);
     expect(events.filter((event) => event === "work:scan:started")).toHaveLength(1);
     expect(events.filter((event) => event === "work:scan:completed")).toHaveLength(1);
+  });
+
+  it("serves the stored scan inside the skip window and rescans when stale or asked", async () => {
+    const isolatedRepo = path.join(tempRoot, "stored-scan");
+    fs.mkdirSync(isolatedRepo);
+    run("git init -b main", isolatedRepo);
+    run('git -c commit.gpgsign=false commit --allow-empty -m "init"', isolatedRepo);
+    const db = createMigratedDb();
+    const branchNames = () => scanner.getBranches(isolatedRepo).map((branch) => branch.branch);
+    let scanner = new WorkScanner({ db, repo_roots: [isolatedRepo] });
+    try {
+      await scanner.scanAllAsync();
+      run("git branch later", isolatedRepo);
+      run(`git worktree add ${path.join(tempRoot, "stored-scan-wt")} later`, isolatedRepo);
+
+      const stored = await scanner.getRepoScan(isolatedRepo, { refresh: false });
+      expect(branchNames()).toEqual(["main"]);
+      expect(stored.inventory.worktrees.map((worktree) => worktree.branch)).toEqual(["main"]);
+
+      const first = scanner.refreshRepoAsync(isolatedRepo);
+      expect(scanner.refreshRepoAsync(isolatedRepo)).toBe(first);
+      await first;
+      const refreshed = await scanner.getRepoScan(isolatedRepo, { refresh: false });
+      expect(branchNames()).toEqual(["later", "main"]);
+      expect(refreshed.inventory.worktrees.map((worktree) => worktree.branch)).toEqual(["main", "later"]);
+
+      run("git branch -m later renamed", isolatedRepo);
+      await scanner.getRepoScan(isolatedRepo, { refresh: true });
+      expect(branchNames()).toEqual(["main", "renamed"]);
+
+      await scanner.stop();
+      const events: SseEvent[] = [];
+      scanner = new WorkScanner({ db, repo_roots: [isolatedRepo], scan_skip_window_ms: 0, on_event: (event) => { events.push(event); } });
+      run("git branch stale-window", isolatedRepo);
+      await scanner.getRepoScan(isolatedRepo, { refresh: false });
+      expect(branchNames()).toEqual(["main", "renamed", "stale-window"]);
+
+      events.length = 0;
+      run("git branch -D stale-window", isolatedRepo);
+      await scanner.getRepoScan(isolatedRepo, { refresh: true });
+      expect(branchNames()).toEqual(["main", "renamed"]);
+      const repoScans = events.filter((event) => event.type === DOMAIN_EVENTS.WORK_REPO_SCANNED);
+      expect(repoScans.map((event) => event.data)).toEqual([
+        { repo_id: expect.any(String), branches_updated: 0, branches_removed: 1 },
+      ]);
+      expect(parseDomainEvent({ type: repoScans[0]!.type, data: repoScans[0]!.data }).ok).toBe(true);
+    } finally {
+      await scanner.stop();
+    }
+  });
+
+  it("records upstream and default-branch divergence", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    await scanner.scanAllAsync();
+
+    expect(scanner.getBranch(repoRoot, "feature")).toMatchObject({
+      has_upstream: true,
+      upstream: "origin/feature",
+      ahead: 1,
+      behind: 0,
+      last_commit: { message: "ahead commit", author: "Test User" },
+    });
+    expect(scanner.getBranch(repoRoot, "no-upstream")).toMatchObject({
+      has_upstream: false,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    });
   });
 
 });

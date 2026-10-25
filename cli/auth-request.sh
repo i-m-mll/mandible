@@ -536,6 +536,12 @@ while IFS= read -r line; do
             printf 'ok' > "$tmp_sse_result"
             break
             ;;
+          failed)
+            reason=$(printf '%s' "$json" | jq -r '.data.failure_reason // "no reason recorded"' 2>/dev/null)
+            echo "Auth request $(api_short_id "$request_id"): failed (exit ${exit_code_val}) -- ${reason}"
+            printf 'fail' > "$tmp_sse_result"
+            break
+            ;;
           rejected|withdrawn|superseded|expired|dismissed)
             error=$(printf '%s' "$json" | jq -r '.data.error // "none"' 2>/dev/null)
             echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
@@ -573,6 +579,12 @@ if [[ -n "$final" ]]; then
       exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
       echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
       exit 0
+      ;;
+    failed)
+      exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
+      reason=$(printf '%s' "$final" | jq -r '.failure_reason // "no reason recorded"')
+      echo "Auth request $(api_short_id "$request_id"): failed (exit ${exit_code_val}) -- ${reason}"
+      exit 1
       ;;
     rejected|withdrawn|superseded|expired|dismissed)
       error=$(printf '%s' "$final" | jq -r '.error // "none"')

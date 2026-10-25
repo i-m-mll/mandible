@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 
 import type { Db } from "./db.js";
 import { protectedBranchNames } from "./protected-branches.js";
@@ -147,21 +147,46 @@ function ignoredCustodyRef(entryId: string): string {
   return `refs/mandible/trash-ignored/${entryId}`;
 }
 
+/** One finished Git run, from either the synchronous or the asynchronous runner. */
+type GitRun = { error?: Error; status: number | null; stdout: string; stderr: string };
+
+function gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...env };
+}
+
+/** Run Git without waiting on the event loop; the daemon's timers use this. */
+function runGitAsync(cwd: string, args: string[]): Promise<GitRun> {
+  return new Promise((resolve) => {
+    execFile("git", args, { cwd, encoding: "utf8", env: gitEnv(), maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const code = (error as { code?: unknown } | null)?.code;
+      resolve({
+        error: error && typeof code !== "number" ? error : undefined,
+        status: typeof code === "number" ? code : error ? null : 0,
+        stdout: String(stdout ?? ""),
+        stderr: String(stderr ?? ""),
+      });
+    });
+  });
+}
+
 function git(
   cwd: string,
   args: string[],
   options: { allowFailure?: boolean; env?: NodeJS.ProcessEnv; input?: string } = {},
 ): string {
-  const result = spawnSync("git", args, {
+  return gitOutput(spawnSync("git", args, {
     cwd,
     encoding: "utf8",
     input: options.input,
-    env: {
-      ...process.env,
-      GIT_OPTIONAL_LOCKS: "0",
-      ...options.env,
-    },
-  });
+    env: gitEnv(options.env),
+  }), args, options);
+}
+
+async function gitAsync(cwd: string, args: string[]): Promise<string> {
+  return gitOutput(await runGitAsync(cwd, args), args, {});
+}
+
+function gitOutput(result: GitRun, args: string[], options: { allowFailure?: boolean }): string {
   if (result.error) {
     throw new TrashServiceError(result.error.message, "git_unavailable", 500);
   }
@@ -619,13 +644,13 @@ function materializeIgnored(
   return { restored: missing.length, present: files.length - missing.length };
 }
 
-function deleteIgnoredRef(repoRoot: string, entryId: string): void {
+async function deleteIgnoredRef(repoRoot: string, entryId: string): Promise<void> {
   const ref = ignoredCustodyRef(entryId);
-  const probe = probeExactRef(repoRoot, ref);
+  const probe = await probeExactRefAsync(repoRoot, ref);
   if (probe.status === "unknown") {
     throw new TrashServiceError(`cannot inspect ignored-file custody ref: ${probe.error}`, "snapshot_probe_unknown", 409);
   }
-  if (probe.status === "present") git(repoRoot, ["update-ref", "-d", ref, probe.oid]);
+  if (probe.status === "present") await gitAsync(repoRoot, ["update-ref", "-d", ref, probe.oid]);
 }
 
 function linkedIssueRefs(db: Db, projectId: string, branch: string, explicit: string[]): string[] {
@@ -1087,14 +1112,19 @@ type ExactRefProbe =
   | { status: "absent" }
   | { status: "unknown"; error: string };
 
+function exactRefArgs(ref: string): string[] {
+  return ["for-each-ref", "--format=%(refname)%00%(objectname)", ref];
+}
+
 function probeExactRef(repoRoot: string, ref: string): ExactRefProbe {
-  const result = spawnSync("git", [
-    "for-each-ref", "--format=%(refname)%00%(objectname)", ref,
-  ], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
+  return exactRefProbe(spawnSync("git", exactRefArgs(ref), { cwd: repoRoot, encoding: "utf8", env: gitEnv() }), ref);
+}
+
+async function probeExactRefAsync(repoRoot: string, ref: string): Promise<ExactRefProbe> {
+  return exactRefProbe(await runGitAsync(repoRoot, exactRefArgs(ref)), ref);
+}
+
+function exactRefProbe(result: GitRun, ref: string): ExactRefProbe {
   if (result.error) return { status: "unknown", error: result.error.message };
   if (result.status !== 0) {
     return {
@@ -1113,10 +1143,29 @@ function probeExactRef(repoRoot: string, ref: string): ExactRefProbe {
     : { status: "unknown", error: "exact ref probe returned no object id" };
 }
 
+type TrashGcResult = { outcomes: TrashGcOutcome[]; expired: number; failed: number };
+
+let gcInFlight: Promise<TrashGcResult> | null = null;
+
+/**
+ * Expire due trash entries. Git runs off the event loop, so the hourly timer
+ * never blocks the daemon; a call while a pass runs joins that pass. An entry
+ * whose state changes while its Git reads run is left for the next pass.
+ */
 export function gcTrashEntries(
   db: Db,
   options: { now?: number; limit?: number; actor?: string } = {},
-): { outcomes: TrashGcOutcome[]; expired: number; failed: number } {
+): Promise<TrashGcResult> {
+  gcInFlight ??= expireDueTrashEntries(db, options).finally(() => {
+    gcInFlight = null;
+  });
+  return gcInFlight;
+}
+
+async function expireDueTrashEntries(
+  db: Db,
+  options: { now?: number; limit?: number; actor?: string },
+): Promise<TrashGcResult> {
   const now = options.now ?? Date.now();
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 1000);
   const rows = db.prepare(
@@ -1135,7 +1184,9 @@ export function gcTrashEntries(
       if (!fs.existsSync(entry.repo_root)) {
         throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
       }
-      const probe = probeExactRef(entry.repo_root, entry.snapshot_ref);
+      const probe = await probeExactRefAsync(entry.repo_root, entry.snapshot_ref);
+      const current = db.prepare("SELECT state FROM trash_entries WHERE id = ?").get(entry.id) as { state: string } | undefined;
+      if (current?.state !== entry.state) continue;
       if (probe.status === "unknown") {
         throw new TrashServiceError(
           `cannot inspect trash snapshot ref: ${probe.error}`,
@@ -1148,7 +1199,7 @@ export function gcTrashEntries(
       }
       if (probe.status === "absent") {
         if (entry.state === "gc_pending") {
-          deleteIgnoredRef(entry.repo_root, entry.id);
+          await deleteIgnoredRef(entry.repo_root, entry.id);
           db.prepare(
             `UPDATE trash_entries
                 SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
@@ -1169,13 +1220,13 @@ export function gcTrashEntries(
         ).run(entry.id);
         pendingRecorded = true;
       }
-      deleteIgnoredRef(entry.repo_root, entry.id);
-      git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
+      await deleteIgnoredRef(entry.repo_root, entry.id);
+      await gitAsync(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
       refDeleted = true;
       db.prepare(
         `UPDATE trash_entries
             SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
-          WHERE id = ?`,
+          WHERE id = ? AND state = 'gc_pending'`,
       ).run(now, JSON.stringify({ gc_actor: options.actor?.trim() || "mandible" }), entry.id);
       outcomes.push({ id: entry.id, status: "expired" });
     } catch (error) {
@@ -1208,9 +1259,9 @@ export function startTrashGcScheduler(
   options: { intervalMs?: number; startupDelayMs?: number } = {},
 ): void {
   stopTrashGcScheduler();
-  const run = () => {
+  const run = async () => {
     try {
-      const result = gcTrashEntries(db, { actor: "mandible-daemon" });
+      const result = await gcTrashEntries(db, { actor: "mandible-daemon" });
       if (result.outcomes.length > 0) {
         log(result.failed > 0 ? "warn" : "info", "trash_gc_completed", {
           subsystem: "trash",
@@ -1226,8 +1277,8 @@ export function startTrashGcScheduler(
       });
     }
   };
-  trashGcStartupTimer = setTimeout(run, options.startupDelayMs ?? 10_000);
-  trashGcTimer = setInterval(run, options.intervalMs ?? 60 * 60 * 1_000);
+  trashGcStartupTimer = setTimeout(() => void run(), options.startupDelayMs ?? 10_000);
+  trashGcTimer = setInterval(() => void run(), options.intervalMs ?? 60 * 60 * 1_000);
   trashGcStartupTimer.unref?.();
   trashGcTimer.unref?.();
 }

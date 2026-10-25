@@ -18,6 +18,7 @@
     "dev": "bun --no-install scripts/run-tsc.js --watch & bun --no-install ui/esbuild.config.js --watch",
     "iab-preview": "bun --no-install scripts/iab-preview.mjs",
     "local-front-door": "bun --no-install scripts/local-front-door.mjs",
+    "stall-probe": "bun --no-install scripts/daemon-stall-probe.mjs",
     "iab-preview-cleanup": "bun --no-install scripts/iab-preview.mjs cleanup",
     "demo:briefing": "bun --no-install scripts/demo-briefing.mjs",
     "preview-db-snapshot": "bun --no-install scripts/project-db-snapshot.mjs",

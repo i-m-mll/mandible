@@ -1,5 +1,6 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
-import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { createCoalescedRefresh, type CoalescedRefresh, type RefreshRun } from './lib/coalesced-refresh';
 import { IconTabList } from './components/shared/IconTabList';
 
 type AppRightSidebarCommon = {
@@ -123,19 +124,118 @@ export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
 }
 
-/** Register this mounted view's one bounded initial read with the app warmup barrier. */
-export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => void {
+function documentVisible(): boolean {
+  return typeof document === 'undefined' || document.visibilityState === 'visible';
+}
+
+/**
+ * True while this view is active: its tab is the current route and the document is visible.
+ * A view holds live data (polling, SSE-driven refetches, on-demand loads) only while active,
+ * and reloads each time it becomes active again (see `useRouteLoad`).
+ */
+export function useViewActive(): boolean {
+  const { active } = useAppShell();
+  const [visible, setVisible] = useState(documentVisible);
+  useEffect(() => {
+    const update = () => setVisible(documentVisible());
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+  return active && visible;
+}
+
+/**
+ * Register this mounted view's one bounded initial read with the app warmup barrier.
+ * For reads that are already gated on `useViewActive`, such as an enabled query's function;
+ * a view's own load effect uses `useRouteLoad`, which registers through this.
+ * The barrier entry settles with the read, or earlier when the view stops being the active
+ * route or unmounts, or when the returned release is called, so a read that was abandoned
+ * or hangs never holds the barrier.
+ */
+export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => () => void {
   const { active, registerInitialRouteLoad } = useAppShell();
   const activeRef = useRef(active);
   const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
   activeRef.current = active;
   registerInitialRouteLoadRef.current = registerInitialRouteLoad;
   const registered = useRef(false);
+  const release = useRef<() => void>(() => undefined);
+  useLayoutEffect(() => (active ? () => release.current() : undefined), [active]);
   return useCallback((promise: Promise<unknown>) => {
-    if (!activeRef.current || registered.current) return;
+    if (!activeRef.current || registered.current) return () => undefined;
     registered.current = true;
-    registerInitialRouteLoadRef.current(promise);
+    const entry = new Promise<void>((resolve) => {
+      release.current = resolve;
+      promise.then(() => resolve(), () => resolve());
+    });
+    registerInitialRouteLoadRef.current(entry);
+    return release.current;
+  }, []);
+}
+
+/**
+ * A view's load effect, run only while the view is active (`useViewActive`): when it becomes
+ * active (on mount, or later if mounted inactive) and when `deps` change while it is active.
+ * Becoming inactive runs the load's cleanup, so its requests are abandoned; a `deps` change
+ * while inactive waits for activation. `register` hands the load's promise to the app warmup
+ * barrier, which stops waiting for it when the cleanup runs.
+ */
+export function useRouteLoad(
+  load: (register: (promise: Promise<unknown>) => void) => void | (() => void),
+  deps: readonly unknown[],
+): void {
+  const active = useViewActive();
+  const register = useRegisterInitialRouteLoad();
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useLayoutEffect(() => {
+    if (!active) return undefined;
+    const releases: Array<() => void> = [];
+    const cleanup = loadRef.current((promise) => { releases.push(register(promise)); });
+    return () => {
+      cleanup?.();
+      for (const release of releases) release();
+    };
+  }, [active, ...deps]);
+}
+
+/**
+ * A live view's load, run through one coalesced refresh (`createCoalescedRefresh`) while the
+ * view is active (`useViewActive`). It loads at once when the view becomes active and when
+ * `deps` change while it is active, aborting a load in flight. Every `intervalMs` (when
+ * given) and on each call of the returned signal it requests a refresh: requests coalesce
+ * into at most one in flight and one pending, started at least `LIVE_REFRESH_MIN_INTERVAL_MS`
+ * apart, so a signal during a load becomes the trailing refresh. `load` receives the run's
+ * AbortSignal; it is aborted when the view becomes inactive, when the load is superseded, or
+ * past the run deadline, whose `RefreshDeadlineError` `load` shows as a failed load (see
+ * `refreshAbandoned`). Signals while inactive are dropped, because activation loads anyway.
+ * The first load is registered with the app warmup barrier.
+ */
+export function useLiveLoad(load: RefreshRun, deps: readonly unknown[], intervalMs?: number): () => void {
+  const active = useViewActive();
+  const register = useRegisterInitialRouteLoad();
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const scheduler = useRef<CoalescedRefresh | null>(null);
+  useLayoutEffect(() => {
+    if (!active) return undefined;
+    const current = createCoalescedRefresh((signal) => loadRef.current(signal));
+    scheduler.current = current;
+    return () => {
+      current.stop();
+      if (scheduler.current === current) scheduler.current = null;
+    };
   }, [active]);
+  useLayoutEffect(() => {
+    if (active && scheduler.current) register(scheduler.current.restart());
+  }, [active, ...deps]);
+  useEffect(() => {
+    if (!active || intervalMs === undefined) return undefined;
+    const timer = window.setInterval(() => scheduler.current?.request(), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [active, intervalMs]);
+  return useCallback(() => scheduler.current?.request(), []);
 }
 
 /** One structural target for the shared DetailPaneNotice portal. */

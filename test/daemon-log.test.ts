@@ -1,6 +1,8 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,8 +14,10 @@ import {
   flushDaemonLogger,
   pruneDaemonLogs,
   rotateStderrLogSegments,
+  logChildStderr,
 } from "../src/daemon-log.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { STDERR_LOG_ROTATED } from "../src/stderr-log-chain.js";
 import { openOperationalLogStore } from "../src/operational-log-db.js";
 import { registerSystemRoutes } from "../src/routes/system.js";
 import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../src/server.js";
@@ -148,21 +152,49 @@ describe("daemon logger", () => {
     expect(JSON.parse(String(info.fields_json))).toMatchObject({ value: 42 });
   });
 
+  it("logs a child's piped stderr per pipe read, not per line, and caps a huge read", async () => {
+    configureDaemonLogger(db);
+    const burst = Array.from({ length: 300 }, (_, index) => `    at frame${index} (file.js:${index}:1)`).join("\n");
+    const huge = "x".repeat(40 * 1024);
+    const child = spawn("/bin/sh", ["-c", `printf '%s\\n' "$1" >&2; sleep 0.2; printf '%s' "$2" >&2`, "sh", `Error: boom\n${burst}`, huge], { stdio: ["ignore", "ignore", "pipe"] });
+    logChildStderr(child.stderr, { subsystem: "claude", session_id: "session-1", pid: child.pid });
+    await new Promise((resolve) => child.once("close", resolve));
+    flushDaemonLogger();
+    const rows = (db.prepare("SELECT level, event, session_id, fields_json FROM daemon_log ORDER BY ts, rowid").all() as Array<{ level: string; event: string; session_id: string; fields_json: string }>)
+      .map((row) => ({ ...row, fields: JSON.parse(row.fields_json) }));
+    expect(rows.every((row) => row.level === "warn" && row.event === "child_process_stderr" && row.session_id === "session-1" && row.fields.pid === child.pid)).toBe(true);
+    const burstRows = rows.filter((row) => !String(row.fields.text).startsWith("x"));
+    const hugeRows = rows.filter((row) => String(row.fields.text).startsWith("x"));
+    // Pipe reads bound a row, so a burst is a handful of rows, never one per line.
+    expect(burstRows.length).toBeLessThanOrEqual(4);
+    expect(burstRows.map((row) => row.fields.text).join("\n")).toBe(`Error: boom\n${burst}`);
+    expect(hugeRows.reduce((total, row) => total + row.fields.bytes, 0)).toBe(huge.length);
+    expect(hugeRows.some((row) => row.fields.omitted_chars > 0 && String(row.fields.text).length <= 16 * 1024 + 3)).toBe(true);
+  });
+
   // The daemon does not open this file: its spawner redirected stderr here and
   // holds the only descriptor. Rotating by rename left that descriptor on the
   // moved inode, so the live path stayed empty until restart. Rotation truncates
-  // in place, shifts older segments down, and drops the oldest beyond the bound.
-  it("rotates the live stderr log under an open append-mode writer and keeps a bounded number of segments", () => {
+  // in place, shifts older segments down, drops the oldest beyond the bound, and
+  // starts each new live file with the record of the segment it just moved.
+  it("rotates the live stderr log under an open append-mode writer into a bounded, linked chain of segments", () => {
     const logPath = path.join(tempDir, "launchd-stderr.log");
     const fd = fs.openSync(logPath, "a");
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    const record = (file: string) => {
+      const row = JSON.parse(fs.readFileSync(file, "utf8").split("\n")[0]);
+      return { event: row.event, bytes: row.segment_bytes, sha256: row.segment_sha256 };
+    };
     try {
       for (const segment of ["first", "second", "third"]) {
         fs.writeSync(fd, `${segment}\n`);
         rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
       }
       fs.writeSync(fd, "live\n");
-      expect([logPath, `${logPath}.1`, `${logPath}.2`].map((file) => fs.readFileSync(file, "utf8")))
-        .toEqual(["live\n", "third\n", "second\n"]);
+      const [live, one, two] = [logPath, `${logPath}.1`, `${logPath}.2`].map((file) => fs.readFileSync(file, "utf8"));
+      expect([live, one, two].map((text) => text.split("\n").filter(Boolean).at(-1))).toEqual(["live", "third", "second"]);
+      expect(record(logPath)).toEqual({ event: STDERR_LOG_ROTATED, bytes: Buffer.byteLength(one), sha256: sha256(one) });
+      expect(record(`${logPath}.1`)).toEqual({ event: STDERR_LOG_ROTATED, bytes: Buffer.byteLength(two), sha256: sha256(two) });
       expect(fs.existsSync(`${logPath}.3`)).toBe(false);
     } finally {
       fs.closeSync(fd);
@@ -183,7 +215,7 @@ describe("preview log ownership", () => {
     vi.stubEnv("MANDIBLE_STDOUT_LOG_PATH", stdout); vi.stubEnv("MANDIBLE_STDERR_LOG_PATH", stderr);
     try {
       configureDaemonLogger(db);
-      expect(fs.statSync(stdout).size).toBe(0); expect(fs.statSync(stderr).size).toBe(0);
+      for (const file of [stdout, stderr]) expect(JSON.parse(fs.readFileSync(file, "utf8")).event).toBe(STDERR_LOG_ROTATED);
       expect(fs.readFileSync(`${stdout}.1`, "utf8")).toBe("preview stdout");
       expect(fs.readFileSync(production, "utf8")).toBe("production sentinel");
       fs.symlinkSync(production, `${stdout}.2`);

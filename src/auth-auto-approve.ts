@@ -1,6 +1,6 @@
 import { childOutput } from "./child-observation.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -555,13 +555,17 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 }
 
+/** Whether `command` is an executable file on PATH, found the way a shell would find it, without starting one. */
 function hasCommand(command: string): boolean {
-  try {
-    execFileSync("command", ["-v", command], { shell: "/bin/sh", stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  return (process.env.PATH ?? "").split(path.delimiter).some((directory) => {
+    if (!directory) return false;
+    try {
+      fs.accessSync(path.join(directory, command), fs.constants.X_OK);
+      return fs.statSync(path.join(directory, command)).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 async function execFileText(

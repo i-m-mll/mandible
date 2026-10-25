@@ -41,7 +41,8 @@ import { MIGRATIONS } from "../src/db-migrations.js";
 import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
-import { authSnapshotDigest } from "../src/auth-lifecycle.js";
+import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
+import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1035,6 +1036,48 @@ describe("v204 session issue links", () => {
         ].sort((a, b) => a.session_id.localeCompare(b.session_id) || a.issue_id.localeCompare(b.issue_id)));
       expect(db.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: "hook-1" }, { id: "wrap-1" }]);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('session_issues', 'session_projects')").all()).toEqual([]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("v212 failed execution state", () => {
+  it("reclassifies a completed non-zero execution as failed with one revision whose digest matches the current row", () => {
+    const db = migrateFixtureThrough(211);
+    try {
+      const signingFailure = "Confirm user presence for key ED25519-SK SHA256:abc\nCouldn't sign message: incorrect passphrase supplied to decrypt private key?\n" +
+        "\u001b[31mSigned commit creation failed; no ref or worktree was changed.\u001b[0m \u2502 \u00e9";
+      const insert = db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at, exit_code, output, error)
+        VALUES (?, 'mandible auth merge feature/x --into main', ?, 'completed', 1, 2, 3, ?, ?, ?)`);
+      insert.run("failed-request", "Failed merge", 1, signingFailure, signingFailure);
+      insert.run("merged-request", "Merged", 0, "merged", null);
+      for (const id of ["failed-request", "merged-request"]) {
+        appendAuthLifecycleEvent(db, { requestId: id, eventType: "completed", priorStatus: "executing", nextStatus: "completed", occurredAt: 2 });
+      }
+      // Delivery and acknowledgement change the row without a lifecycle revision.
+      db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1', updated_at = 6 WHERE id = 'failed-request'").run();
+      const before = listAuthLifecycleEvents(db, "failed-request");
+
+      migrate(db);
+
+      expect(db.prepare("SELECT id, status FROM auth_requests ORDER BY id").all())
+        .toEqual([{ id: "failed-request", status: "failed" }, { id: "merged-request", status: "completed" }]);
+      const events = listAuthLifecycleEvents(db, "failed-request");
+      expect(events.slice(0, 1)).toEqual(before);
+      expect(events[1]).toMatchObject({
+        revision: 2, event_type: "revised", prior_status: "completed", next_status: "failed", authority_path: "legacy",
+      });
+      expect(events[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "failed-request")));
+      expect(listAuthLifecycleEvents(db, "merged-request")).toHaveLength(1);
+      expect(listAuthExecutionAttempts(db, "failed-request")).toEqual([{
+        revision: 1, occurred_at: 2, result: "failed", exit_code: 1,
+        failure_reason: "signing failed: user presence not confirmed; no ref changed",
+      }]);
+      appendAuthLifecycleEvent(db, { requestId: "failed-request", eventType: "failed", priorStatus: "executing", nextStatus: "failed", occurredAt: 3 });
+      expect(() => db.prepare("UPDATE auth_request_lifecycle_events SET reason = 'x'").run()).toThrow("immutable");
+      expect(() => db.prepare("DELETE FROM auth_request_lifecycle_events").run()).toThrow("immutable");
       expect(db.pragma("foreign_key_check")).toEqual([]);
     } finally {
       db.close();

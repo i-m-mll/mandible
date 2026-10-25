@@ -13,6 +13,8 @@ import {
   reconcileConversationWindow,
 } from '../ui/src/query/conversationData';
 import { applyConversationSse } from '../ui/src/query/conversationSse';
+import { markSidebarListsStale, startSidebarRefresh } from '../ui/src/query/conversationSidebarRefresh';
+import { LIVE_REFRESH_DEADLINE_MS, RefreshDeadlineError } from '../ui/src/lib/coalesced-refresh';
 
 function conversation(id = 'conv-1', blockCount = 0): Conversation {
   return {
@@ -162,7 +164,9 @@ describe('Chat Query authority', () => {
       [block('b0', 0)],
       1,
     ));
-    await client.fetchQuery({ queryKey: initialKey, queryFn: refetch });
+    const shown = new QueryObserver(client, { queryKey: initialKey, queryFn: refetch, staleTime: Infinity });
+    const unsubscribe = shown.subscribe(() => undefined);
+    await waitUntilPasses(() => expect(client.getQueryData(initialKey)).toBeDefined());
     client.setQueryData(exactKey, window(
       { kind: 'block', requested_value: 'b1', position: 1, block_id: 'b1', turn_id: null },
       [block('b0', 0), block('b1', 1), block('b2', 2)],
@@ -182,5 +186,46 @@ describe('Chat Query authority', () => {
       append: { from_position: 3, blocks: [block('b3', 3)] },
     });
     await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
+    unsubscribe();
+  });
+});
+
+describe('Chat sidebar refresh deadline', () => {
+  it('fails a sidebar refetch that hangs past the deadline and refreshes again on the next change', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const client = new QueryClient();
+      const filters = {};
+      const key = conversationKeys.sidebarInitial(filters);
+      let hang = true;
+      const queryFn = vi.fn(({ signal }: { signal: AbortSignal }) => (hang
+        ? new Promise<string>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
+        : Promise.resolve('fresh')));
+      client.setQueryData(key, 'old');
+      const observer = new QueryObserver(client, { queryKey: key, queryFn, staleTime: Infinity });
+      const unsubscribe = observer.subscribe(() => undefined);
+      const stop = startSidebarRefresh(client, filters);
+
+      markSidebarListsStale(client);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(LIVE_REFRESH_DEADLINE_MS);
+      const state = client.getQueryCache().find({ queryKey: key, exact: true })!.state;
+      expect(state.error).toBeInstanceOf(RefreshDeadlineError);
+      expect(state.fetchStatus).toBe('idle');
+      expect(state.data).toBe('old');
+
+      hang = false;
+      markSidebarListsStale(client);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(queryFn).toHaveBeenCalledTimes(2);
+      expect(client.getQueryData(key)).toBe('fresh');
+      stop();
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 });

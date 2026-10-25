@@ -15,7 +15,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { archiveFinishedWorkerThreads, type CodexThreadArchiver } from "../src/codex-thread-archive.js";
-import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof } from "../src/codex-task-liveness.js";
+import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof, withFreshCodexTaskLiveness } from "../src/codex-task-liveness.js";
 import { setDb, type Db } from "../src/db.js";
 import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
 import SqliteDatabase from "../src/sqlite.ts";
@@ -23,6 +23,7 @@ import { classifyHolderLiveness } from "../src/work-unit-custody.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { mapWorkUnitRow } from "../src/work-unit-utils.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { useStubCommand } from "./helpers/event-loop-blocking.js";
 
 const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
@@ -115,6 +116,28 @@ describe("Codex Desktop task writer-lock authority", () => {
 
     expect([...snapshot.entries()]).toEqual([[liveTask, 1712]]);
   });
+
+  it("decides only from a lock scan that started after the decision did", async () => {
+    const thread = "01a072f2-0e05-7a91-abcd-df4dc6a64e63";
+    const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fresh-scan-"));
+    const lockDir = path.join(codexRoot, "thread-writer-locks");
+    fs.mkdirSync(lockDir);
+    const rollout = path.join(codexRoot, "sessions", "2026", "10", "24", `rollout-${thread}.jsonl`);
+    const resumed = path.join(codexRoot, "resumed");
+    useStubCommand("lsof", `[ -f ${JSON.stringify(resumed)} ] || exit 1\nprintf 'p4242\\nccodex\\nn%s\\n' ${JSON.stringify(path.join(lockDir, `${thread}.lock`))}`);
+    clearCodexTaskLivenessCache();
+    try {
+      const decide = () => withFreshCodexTaskLiveness((read) => read(rollout, thread).status);
+      expect(await decide()).toBe("not_live");
+      // The task resumes and takes its lock just after that empty scan.
+      fs.writeFileSync(resumed, "");
+      expect(await decide()).toBe("live");
+    } finally {
+      vi.unstubAllEnvs();
+      clearCodexTaskLivenessCache();
+      fs.rmSync(codexRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 /**
@@ -198,6 +221,11 @@ describe("a Codex lock check that cannot complete", () => {
     }
   });
 
+  const freshLiveness = () => withFreshCodexTaskLiveness((read) =>
+    sessionAliasLiveness(db, THREAD, { readCodexTaskLiveness: read }));
+  const freshHolderState = () => withFreshCodexTaskLiveness((read) =>
+    classifyHolderLiveness(db, heldUnit(), undefined, read).state);
+
   it("reads as unknown, so no consumer clears, archives, or takes over the holder", async () => {
     fs.writeFileSync(lockDir, "");
 
@@ -206,11 +234,11 @@ describe("a Codex lock check that cannot complete", () => {
       liveness: (database, id) => sessionAliasLiveness(database, id, { readCodexTaskLiveness: () => ({ status: "live" }) }),
       resolveAlias: resolveSessionAlias, now: () => 0 });
     expect(archived).toEqual([]);
-    expect(sessionAliasLiveness(db, THREAD)).toBe("unknown");
+    expect(await freshLiveness()).toBe("unknown");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: THREAD });
     expect(archived).toEqual([]);
-    expect(classifyHolderLiveness(db, heldUnit()).state).toBe("unknown");
+    expect(await freshHolderState()).toBe("unknown");
     expect(logged("codex_task_liveness_unavailable")).toEqual([
       expect.objectContaining({ level: "error", target: lockDir }),
     ]);
@@ -221,8 +249,10 @@ describe("a Codex lock check that cannot complete", () => {
     fs.mkdirSync(lockDir);
     clearCodexTaskLivenessCache();
 
+    expect(await freshLiveness()).toBe("stopped");
+    // A display read answers from that scan without waiting for another.
     expect(sessionAliasLiveness(db, THREAD)).toBe("stopped");
-    expect(classifyHolderLiveness(db, heldUnit()).state).toBe("stopped");
+    expect(await freshHolderState()).toBe("stopped");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: null });
     expect(archived).toEqual([THREAD]);

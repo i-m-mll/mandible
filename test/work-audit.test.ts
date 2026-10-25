@@ -217,34 +217,28 @@ describe("GET /api/work/repos/:id/audit", () => {
 
   it("returns the projection envelope for a known repository", async () => {
     const safe = makeBranch("safe");
-    let refreshed = false;
-    const scanAll = vi.fn().mockResolvedValue(undefined);
+    const getRepoScan = vi.fn().mockResolvedValue({ repo, inventory: { known: true, worktrees: [] } });
     const scanner = {
-      scanAll,
       getRepoById: vi.fn().mockReturnValue(repo),
       getRepos: vi.fn().mockReturnValue([repo]),
-      refreshRepoAsync: vi.fn().mockImplementation(async () => {
-        refreshed = true;
-        return repo;
-      }),
-      getBranches: vi.fn().mockImplementation(() => {
-        expect(refreshed).toBe(true);
-        return [safe];
-      }),
-      getWorktreeInventory: vi.fn().mockReturnValue({ known: true, worktrees: [] }),
+      getRepoScan,
+      getBranches: vi.fn().mockReturnValue([safe]),
     } as unknown as WorkScanner;
     const router = new Router();
     registerWorkRoutes(router, scanner);
 
     const response = await router.invoke({ method: "GET", url: "/api/work/repos/repo-1/audit" });
     expect(response.status).toBe(200);
-    expect(scanAll).not.toHaveBeenCalled();
+    expect(getRepoScan).toHaveBeenCalledWith(repo.root, { refresh: false });
     expect(response.body).toMatchObject({
       repo: { id: "repo-1", name: "Example", root: repo.root, default_branch: "trunk" },
       maintenance_issue_ref: null,
       worktree_inventory_known: true,
       entries: [{ branch: "safe", classification: "safe_candidate" }],
     });
+
+    await router.invoke({ method: "GET", url: "/api/work/repos/repo-1/audit?refresh=1" });
+    expect(getRepoScan).toHaveBeenLastCalledWith(repo.root, { refresh: true });
   });
 
   it("does not project stale actionable rows when targeted refresh fails", async () => {
@@ -252,11 +246,8 @@ describe("GET /api/work/repos/:id/audit", () => {
     const scanner = {
       getRepoById: vi.fn().mockReturnValue(repo),
       getRepos: vi.fn().mockReturnValue([repo]),
-      refreshRepoAsync: vi.fn().mockImplementation(async () => {
-        throw new Error("git status failed");
-      }),
+      getRepoScan: vi.fn().mockRejectedValue(new Error("git status failed")),
       getBranches,
-      getWorktreeInventory: vi.fn().mockReturnValue({ known: true, worktrees: [] }),
     } as unknown as WorkScanner;
     const router = new Router();
     registerWorkRoutes(router, scanner);

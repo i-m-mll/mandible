@@ -65,7 +65,9 @@ function valueForApplication(value: any): any {
 function rowForApplication(row: any): any {
   if (row === undefined) return undefined;
   if (Array.isArray(row)) return row.map(valueForApplication);
-  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, valueForApplication(value)]));
+  const converted: Record<string, any> = {};
+  for (const key in row) converted[key] = valueForApplication(row[key]);
+  return converted;
 }
 export class SqliteStatement<Params = unknown> {
   declare readonly parameterType?: Params;

@@ -11,6 +11,7 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
   SESSION_EXECUTION_SCHEMA_SQL,
@@ -18,10 +19,12 @@ import {
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   CONVERSATION_DECLARED_PARENT_SQL,
   CONVERSATION_OPENING_LINEAGE_SQL,
+  CONVERSATION_SIDEBAR_INDEX_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
+import { AUTH_SNAPSHOT_SHAPE_V212, authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
@@ -2132,6 +2135,46 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 209, name: "durable_chat_identity_aliases", statements: [CONVERSATION_IDENTITY_SCHEMA_SQL] },
   { version: 210, name: "provider_session_execution", statements: [SESSION_EXECUTION_SCHEMA_SQL] },
+  { version: 211, name: "conversation_sidebar_indexes", statements: [...CONVERSATION_SIDEBAR_INDEX_SQL] },
+  // Issue cc8fe29 — a failed execution is its own lifecycle state. The
+  // lifecycle table is rebuilt to admit `failed` revisions, copying every
+  // immutable revision verbatim. A request recorded as `completed` with a
+  // non-zero exit becomes `failed` through one appended revision whose snapshot
+  // is the canonical serialization of the reclassified row, so the request's
+  // latest lifecycle digest matches its row.
+  { version: 212, name: "auth_failed_execution_state", statements: [
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v210",
+    ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+    "INSERT INTO auth_request_lifecycle_events SELECT * FROM auth_request_lifecycle_events_v210",
+    "DROP TABLE auth_request_lifecycle_events_v210",
+    `CREATE TEMP TABLE auth_failed_reclassification AS
+       SELECT id, exit_code FROM auth_requests
+       WHERE status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0`,
+    "UPDATE auth_requests SET status = 'failed' WHERE id IN (SELECT id FROM temp.auth_failed_reclassification)",
+    `WITH reclassified AS (
+       SELECT r.id, r.exit_code, ar.custody_work_unit_id, wu.custody_generation,
+         mandible_auth_request_snapshot_v212(r.id) AS snapshot_json,
+         (SELECT COALESCE(MAX(revision), 0) + 1 FROM auth_request_lifecycle_events WHERE auth_request_id = r.id) AS revision
+       FROM temp.auth_failed_reclassification r
+       JOIN auth_requests ar ON ar.id = r.id
+       LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
+     )
+     INSERT INTO auth_request_lifecycle_events (
+       id, auth_request_id, revision, event_type, prior_status, next_status,
+       snapshot_json, snapshot_sha256, reason, custody_work_unit_id, custody_generation,
+       authority_path, occurred_at
+     )
+     SELECT lower(hex(randomblob(16))), id, revision, 'revised', 'completed', 'failed',
+       snapshot_json, mandible_sha256(snapshot_json),
+       'Reclassified as failed: the recorded execution exited ' || exit_code || ' and did not complete.',
+       custody_work_unit_id, CASE WHEN custody_work_unit_id IS NULL THEN NULL ELSE custody_generation END,
+       'legacy', CAST(unixepoch('subsec') * 1000 AS INTEGER)
+     FROM reclassified`,
+    "DROP TABLE temp.auth_failed_reclassification",
+  ] },
 ];
 
 /**
@@ -2365,6 +2408,8 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
+  // v212 reclassifies rows at the v212 schema, so it hashes the v212 shape.
+  db.function("mandible_auth_request_snapshot_v212", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V212));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(

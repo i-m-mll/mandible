@@ -97,6 +97,7 @@ import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
+import { attachDashboardBadgePublisher, readDashboardBadgeCounts } from "./dashboard-badges.js";
 import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
 import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -264,10 +265,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     delegatedSigningResource,
     startupEpoch,
   );
-  const reconnect = delegatedSigningResource.attachAvailable();
-  if (reconnect.attached > 0 || reconnect.refused > 0) {
-    logger(reconnect.refused > 0 ? "warn" : "info", "delegated_signer_reconnect", reconnect);
-  }
+  void delegatedSigningResource.attachAvailable().then((reconnect) => {
+    if (reconnect.attached > 0 || reconnect.refused > 0) {
+      logger(reconnect.refused > 0 ? "warn" : "info", "delegated_signer_reconnect", reconnect);
+    }
+  }, (error: unknown) => {
+    logger("warn", "delegated_signer_reconnect_failed", { error: String(error) });
+  });
   const authQueue = new AuthQueue({
     autoApprover: autoApproveManager,
     clearanceManager,
@@ -350,7 +354,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
   registerInboxRoutes(router, sessionManager, authQueue, workScanner);
-  registerDashboardRoutes(router, authQueue, db);
+  registerDashboardRoutes(router, db);
+  const detachDashboardBadgePublisher = attachDashboardBadgePublisher(sse, () => readDashboardBadgeCounts(db), logger);
   registerConsoleRoutes(router, sessionManager);
   registerConversationSpawnRoutes(router, db, conversationControl);
   registerHookRoutes(router);
@@ -524,7 +529,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     const errors = await conversationControl.reconcileAfterRestart();
     if (errors.length > 0) logger("warn", "conversation_control_reconciliation_errors", { errors });
     sessionRegistry.onLifecycle((session) => conversationControl.syncRegisteredOwnership(session));
-    sessionRegistry.reapDead();
+    await sessionRegistry.reapDead();
     conversationControl.syncRegisteredOwnership();
   }
 
@@ -619,9 +624,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue 2205073 — audit the protected-merge signing credential at startup.
   // An unregistered `git user.signingkey` is invisible until base-transition
   // provenance verification refuses an approval with no visible cause, so the
-  // misconfiguration is surfaced here instead. Read-only; never blocks startup.
-  try {
-    const signingAudit = auditOperatorSigningCredential(db);
+  // misconfiguration is surfaced here instead. Read-only; it runs in the
+  // background and never blocks startup.
+  void auditOperatorSigningCredential(db).then((signingAudit) => {
     if (signingAudit.status === "missing_credential") {
       logger("warn", "signing_credential_unregistered", {
         subsystem: "auth",
@@ -641,9 +646,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
         reason: signingAudit.reason,
       });
     }
-  } catch (error) {
+  }, (error: unknown) => {
     logger("warn", "signing_credential_audit_failed", { error: String(error) });
-  }
+  });
 
   // Issue 5886596 — keep the Git reference-transaction guard's projection
   // (protected refs per repository plus operator allowed signers) current.
@@ -709,7 +714,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
     const scannerDrain = workScanner.stop();
-    reaperTimer.stop();
+    const reaperDrain = reaperTimer.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -734,6 +739,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       logger("warn", "conversation_control_close_failed", { error: String(error) });
     }
     wss.close();
+    detachDashboardBadgePublisher();
     sse.closeAll();
     await stopIngestionGracefully();
     stopTrashGcScheduler();
@@ -756,6 +762,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await scannerDrain;
+    await reaperDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);

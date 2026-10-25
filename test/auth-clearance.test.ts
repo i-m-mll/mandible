@@ -241,7 +241,9 @@ describe("scoped protected-merge clearance", () => {
       }, f.operator.id);
       const executing = (await f.queue.approveWithClearance(request.id.slice(0, 8)));
       expect(executing).toMatchObject({ status: "executing", approval_source: "clearance" });
-      await waitUntil(async () => (await f.queue.getRequest(request.id))?.status === "completed", "the cleared merge to complete");
+      // The fixture executor publishes no signed merge, so evidence verification
+      // fails the execution; this covers the clearance path through execution.
+      await waitUntil(async () => (await f.queue.getRequest(request.id))?.status === "failed", "the cleared merge execution to finish");
       expect(f.executions).toHaveLength(1);
       expect(f.executions[0]).toMatchObject({ request_id: request.id });
       expect(f.executions[0].released_at_start).toBe(0);

@@ -61,40 +61,70 @@ function normalizedAbsolutePath(value: string | null): string | null {
   return path.normalize(trimmed);
 }
 
-function pathMatchesRoot(candidate: string, root: string): boolean {
-  return candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
-}
-
 function rootSpecificity(root: string): number {
   return root.split(path.sep).filter(Boolean).length;
 }
 
-function resolveCanonicalProject(
-  row: ConversationSidebarRow,
-  projects: ConversationSidebarProject[],
-): ConversationSidebarProject | null {
-  if (row.canonical_placement_explicit) {
-    return row.canonical_project_id
-      ? projects.find((project) => project.id === row.canonical_project_id) ?? null
-      : null;
+type CanonicalProjectResolver = (row: ConversationSidebarRow) => ConversationSidebarProject | null;
+
+/**
+ * A checkout root contains a stored path when it equals the path or is a
+ * prefix of it ending at a separator, so the roots that can contain a path are
+ * the path itself and, at each separator, the prefix with and without that
+ * separator.
+ */
+function* matchableRoots(candidate: string): Generator<string> {
+  yield candidate;
+  for (let index = candidate.indexOf(path.sep); index >= 0; index = candidate.indexOf(path.sep, index + 1)) {
+    yield candidate.slice(0, index + 1);
+    if (index > 0) yield candidate.slice(0, index);
   }
-  const storedPaths = [normalizedAbsolutePath(row.cwd), normalizedAbsolutePath(row.project_path)]
-    .filter((value): value is string => value !== null);
-  let specificity = -1;
-  const matches = new Map<string, ConversationSidebarProject>();
+}
+
+function createCanonicalProjectResolver(projects: ConversationSidebarProject[]): CanonicalProjectResolver {
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
+  const projectsByRoot = new Map<string, { depth: number; projects: ConversationSidebarProject[] }>();
   for (const project of projects) {
     for (const rawRoot of project.checkout_roots) {
       const root = normalizedAbsolutePath(rawRoot);
-      if (!root || !storedPaths.some((candidate) => pathMatchesRoot(candidate, root))) continue;
-      const rootDepth = rootSpecificity(root);
-      if (rootDepth > specificity) {
-        specificity = rootDepth;
-        matches.clear();
-      }
-      if (rootDepth === specificity) matches.set(project.id, project);
+      if (!root) continue;
+      const entry = projectsByRoot.get(root) ?? { depth: rootSpecificity(root), projects: [] };
+      entry.projects.push(project);
+      projectsByRoot.set(root, entry);
     }
   }
-  return matches.size === 1 ? matches.values().next().value ?? null : null;
+  const byStoredPaths = new Map<string, ConversationSidebarProject | null>();
+
+  function resolveStoredPaths(cwd: string | null, projectPath: string | null): ConversationSidebarProject | null {
+    let specificity = -1;
+    const matches = new Map<string, ConversationSidebarProject>();
+    for (const candidate of [normalizedAbsolutePath(cwd), normalizedAbsolutePath(projectPath)]) {
+      if (candidate === null) continue;
+      for (const root of matchableRoots(candidate)) {
+        const entry = projectsByRoot.get(root);
+        if (!entry || entry.depth < specificity) continue;
+        if (entry.depth > specificity) {
+          specificity = entry.depth;
+          matches.clear();
+        }
+        for (const project of entry.projects) matches.set(project.id, project);
+      }
+    }
+    return matches.size === 1 ? matches.values().next().value ?? null : null;
+  }
+
+  return (row) => {
+    if (row.canonical_placement_explicit) {
+      return row.canonical_project_id ? projectsById.get(row.canonical_project_id) ?? null : null;
+    }
+    const key = `${row.cwd ?? ""}\0${row.project_path ?? ""}`;
+    let resolved = byStoredPaths.get(key);
+    if (resolved === undefined) {
+      resolved = resolveStoredPaths(row.cwd, row.project_path);
+      byStoredPaths.set(key, resolved);
+    }
+    return resolved;
+  };
 }
 
 function sortValue(row: ConversationSidebarRow, sort: ConversationSidebarSort): string | number {
@@ -181,8 +211,9 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
     (options.requestedProjectIds ?? []).map((id) => [id, []]),
   );
 
+  const resolveCanonicalProject = createCanonicalProjectResolver(options.projects ?? []);
   for (const originalRow of options.rows) {
-    const project = resolveCanonicalProject(originalRow, options.projects ?? []);
+    const project = resolveCanonicalProject(originalRow);
     const row = {
       ...originalRow,
       canonical_project_id: project?.id ?? null,

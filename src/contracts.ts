@@ -77,7 +77,9 @@ export const DOMAIN_EVENTS = Object.freeze({
   CONVERSATION_PROVIDER_EVENT: "conversation:provider-event",
   CONVERSATION_UPDATED: "conversation:updated",
   DAEMON_RELOADED: "daemon:reloaded",
+  DASHBOARD_BADGES: "dashboard:badges",
   HEARTBEAT: "heartbeat",
+  INBOX_ACKNOWLEDGED: "inbox:acknowledged",
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
@@ -101,6 +103,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   WORK_BRANCH_UPDATED: "work:branch:updated",
   WORK_SCAN_COMPLETED: "work:scan:completed",
   WORK_SCAN_STARTED: "work:scan:started",
+  WORK_REPO_SCANNED: "work:repo:scanned",
   WORKFLOW_UPDATED: "workflow:updated",
 } as const);
 
@@ -115,6 +118,33 @@ export type MandibleEventType = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENT
 export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_updated: z.number(),
   branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
 export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
+/** One repository's stored scan was replaced, including a scan that only removed branches. */
+export const WORK_REPO_SCAN_PAYLOAD = z.object({ repo_id: z.string().min(1), branches_updated: z.number(),
+  branches_removed: z.number() });
+export type WorkRepoScan = z.infer<typeof WORK_REPO_SCAN_PAYLOAD>;
+
+/** A repository scanned within this window is current; scans and the Work view treat it as fresh. */
+export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
+
+const BADGE_COUNT = z.number().int().nonnegative();
+export const DASHBOARD_BADGE_COUNTS = z.object({
+  auth: BADGE_COUNT,
+  inbox: BADGE_COUNT,
+  work: BADGE_COUNT,
+  /** Latest Briefing rounds with no frozen submission from any member. */
+  briefing: BADGE_COUNT,
+  /** Active, unresolved, unacknowledged operational incidents only. */
+  incidents: BADGE_COUNT,
+  /** Distinct deployment-invalidated task/execution-hash conditions still active. */
+  tasks: BADGE_COUNT,
+}).strict();
+export type DashboardBadgeCounts = z.infer<typeof DASHBOARD_BADGE_COUNTS>;
+
+export const INBOX_ACKNOWLEDGED_PAYLOAD = z.object({
+  kind: z.enum(["continuation", "auth_result", "hook_alert", "managed_reminder_occurrence", "delivered", "all"]),
+  id: z.string().min(1).nullable(),
+}).strict();
+export type InboxAcknowledged = z.infer<typeof INBOX_ACKNOWLEDGED_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
@@ -123,6 +153,9 @@ export type EventPayload<E extends MandibleEventType> =
   : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
     ? { parent_id: string; child: import("./types.js").Session }
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
+  : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
+  : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
+  : E extends typeof DOMAIN_EVENTS.WORK_REPO_SCANNED ? WorkRepoScan
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
   : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
   : E extends BriefingEvent ? { briefing_id: string; round_id?: string | null; [key: string]: unknown }
@@ -191,6 +224,7 @@ export type AuthRequestStatus =
   | "superseded"
   | "expired"
   | "completed"
+  | "failed"
   | "dismissed";
 
 export type AuthRequestOutcome =
@@ -229,24 +263,12 @@ export function isAuthDependencyReady(
 }
 
 /**
- * Bug 93c57c4 — derive the terminal outcome from lifecycle status plus exit
- * code at read time. `status` is the lifecycle; `outcome` is the result.
- *
- * This lived as two byte-equivalent private copies, in `auth-queue.ts` (which
- * fills the `auth:resolved` SSE payload agents wait on) and `routes/inbox.ts`
- * (which fills the session inbox). Both ended in a silent `default: return
- * null`, and `null` means "still in lifecycle" — so a new terminal
- * `AuthRequestStatus` would have made a finished request report as in-flight
- * forever, through both surfaces, with no compile error in either. Verified:
- * adding a status variant produced zero `tsc` errors repo-wide.
- *
- * One definition, and the `default` now binds `status` to `never`, so the next
- * variant is a compile error here instead of a hang there.
+ * Bug 93c57c4 — the terminal outcome of a lifecycle status. `status` is the
+ * lifecycle; `outcome` is the result. The `default` binds `status` to `never`,
+ * so a new terminal status is a compile error here rather than a request that
+ * reports as in-flight forever.
  */
-export function computeAuthRequestOutcome(
-  status: AuthRequestStatus,
-  exitCode: number | null,
-): AuthRequestOutcome {
+export function computeAuthRequestOutcome(status: AuthRequestStatus): AuthRequestOutcome {
   switch (status) {
     case "rejected":
       return "rejected";
@@ -261,11 +283,12 @@ export function computeAuthRequestOutcome(
     case "needs_rebase":
       return "needs_rebase";
     case "completed":
-      return exitCode === 0 ? "succeeded" : "failed";
+      return "succeeded";
+    case "failed":
+      return "failed";
     case "pending":
     case "executing":
     case "approved":
-      // Genuinely still in lifecycle — the one honest `null`.
       return null;
     default: {
       const _never: never = status;
@@ -273,6 +296,48 @@ export function computeAuthRequestOutcome(
       return null;
     }
   }
+}
+
+/** Issue cc8fe29 — one execution of an auth request, read from its lifecycle revisions. */
+export interface AuthExecutionAttempt {
+  revision: number;
+  occurred_at: number;
+  result: "succeeded" | "failed";
+  exit_code: number | null;
+  failure_reason: string | null;
+}
+
+/** Issue cc8fe29 — an execution that exits non-zero failed; only exit 0 completes. */
+export function authExecutionStatus(exitCode: number): "completed" | "failed" {
+  return exitCode === 0 ? "completed" : "failed";
+}
+
+const ANSI_ESCAPE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const BOX_DRAWING_ONLY = /^[\s\u2500-\u257f]*$/;
+
+/**
+ * Issue cc8fe29 — one line saying why an execution failed, read from its
+ * recorded error text (or output when no error was recorded). Signing failures
+ * name the cause, and the ref outcome is stated only when the executor said so.
+ */
+export function describeAuthExecutionFailure(text: string | null, exitCode: number | null): string {
+  const plain = (text ?? "").replace(ANSI_ESCAPE, "");
+  const unchanged = /no ref or worktree was changed/i.test(plain) ? "; no ref changed" : "";
+  if (/signed commit creation failed|couldn't sign message|signing .* failed|failed to sign/i.test(plain)) {
+    const cause = /confirm user presence/i.test(plain)
+      ? "user presence not confirmed"
+      : /no such identity|no signing key|key not found|agent refused/i.test(plain)
+        ? "signing key unavailable"
+        : null;
+    return `signing failed${cause ? `: ${cause}` : ""}${unchanged}`;
+  }
+  const lines = plain.split("\n").map((line) => line.replace(/[\u2500-\u257f]/g, "").trim())
+    .filter((line) => line.length > 0 && !BOX_DRAWING_ONLY.test(line));
+  const last = lines.at(-1);
+  const exit = exitCode == null ? "execution failed" : `exited ${exitCode}`;
+  if (!last) return `${exit}; no output recorded`;
+  const summary = last.length > 200 ? `${last.slice(0, 199)}…` : last.replace(/[.;:,]+$/, "");
+  return /no ref or worktree was changed/i.test(last) ? `${exit}: ${summary}` : `${exit}: ${summary}${unchanged}`;
 }
 
 export type AuthExecutionMode = "daemon" | "remote";
@@ -2395,6 +2460,9 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
+  [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
+  [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
+  [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
     ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),
   ...[DOMAIN_EVENTS.SESSION_CHILD_ADDED, DOMAIN_EVENTS.SESSION_CHILD_ENDED].map((event): [MandibleEventType, z.ZodType] =>

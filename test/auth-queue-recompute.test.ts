@@ -480,7 +480,7 @@ describe("auth queue", () => {
         expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${request.id}`]))
           .toBe(request.merge_candidate_pin_sha);
         await approveFixtureRequest(queue, request.id);
-        await waitForStatus(queue, request.id, "completed");
+        await waitForStatus(queue, request.id, "failed");
         expect(calls).toHaveLength(1);
       } finally {
         (await queue.dispose());

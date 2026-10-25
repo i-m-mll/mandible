@@ -102,6 +102,42 @@ export function acceptanceHealth(origin, rootCert, signal) {
   });
 }
 
+// A process that has not bound its port yet refuses the connection.
+function readinessPending(error) {
+  return error.cause?.code === 'ECONNREFUSED' || ['ECONNREFUSED', 'ConnectionRefused'].includes(error.code);
+}
+
+/** Resolve once something accepts TCP connections on the loopback port. */
+export function loopbackListening(port) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1');
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', reject);
+  });
+}
+
+/**
+ * Probe until `isReady` accepts an answer. A refused connection means the
+ * target has not bound yet and is waited for; any other probe failure ends the
+ * wait at once. Expiry names the last observation.
+ */
+export async function awaitReadiness(probe, isReady, { timeout, description, interval = 100 }) {
+  const end = Date.now() + timeout;
+  let last = 'no probe completed';
+  while (Date.now() < end) {
+    try {
+      const value = await probe();
+      if (isReady(value)) return value;
+      last = 'answered, not ready';
+    } catch (error) {
+      if (!readinessPending(error)) throw error;
+      last = error.message;
+    }
+    await delay(interval);
+  }
+  throw new Error(`${description} did not complete within ${timeout}ms; last observation: ${last}`);
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -200,8 +236,13 @@ async function main() {
     const env = { ...Object.fromEntries(Object.entries(buildEnv).filter(([key]) => !key.startsWith('MANDIBLE_'))), HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
     Object.assign(env, { XDG_CACHE_HOME: resourceEnv.XDG_CACHE_HOME, XDG_DATA_HOME: resourceEnv.XDG_DATA_HOME, MANDIBLE_RUNTIME_STORE: resourceEnv.MANDIBLE_RUNTIME_STORE });
     daemon = launch(runtime, [path.join(root, 'dist', 'index.js')], env, 'daemon');
+    // The gateway answers 502, and logs an error, for any request that reaches
+    // it before its upstream is listening, so it starts only after the bind.
+    await awaitReadiness(() => {
+      if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
+      return loopbackListening(port);
+    }, () => true, { timeout: 30000, description: 'Candidate daemon port binding' });
     gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
-    let health;
     const probe = async (signal) => {
       if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
       if (gateway.exitCode !== null || gateway.signalCode !== null) throw new Error('Owned HTTPS gateway exited before acceptance completed.');
@@ -209,10 +250,7 @@ async function main() {
       if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) throw new Error('Wrong or stale instance answered acceptance health.');
       return value;
     };
-    await until(async () => {
-      try { health = await probe(); } catch (error) { if (error.cause?.code === 'ECONNREFUSED' || ['ECONNREFUSED', 'ConnectionRefused'].includes(error.code)) return false; throw error; }
-      return health.ready === true && health.startup_commit?.hash === candidate;
-    }, 30000, 'Exact production daemon readiness');
+    const health = await awaitReadiness(probe, value => value.ready === true && value.startup_commit?.hash === candidate, { timeout: 30000, description: 'Exact production daemon readiness' });
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
     if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
     await new Promise((resolve, reject) => {

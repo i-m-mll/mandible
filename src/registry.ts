@@ -1,5 +1,5 @@
 import { DOMAIN_EVENTS } from "./contracts.js";
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,24 +14,29 @@ import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.
 // Bug: 568eca7 — pinned-panes.tsv location for reaper backward compat
 const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pinned-panes.tsv");
 
-
-
-let psSupported: boolean | null = null;
 const CURRENT_PROCESS_PID_START = normalizePidStart(
   new Date(Date.now() - process.uptime() * 1000).toISOString(),
 );
 
-// Batched liveness (issue 21502ff): a short-lived cache of pid → start time so a
-// sessions-list request runs at most one `ps` spawn for all active pids instead
-// of one per session. The reaper independently rechecks liveness every 60 s, so
-// a modest TTL here is safe; `isPidAlive` (process.kill(pid, 0)) is still checked
-// per session in real time, so a stale cache cannot resurrect a truly dead pid.
+/** Start time of each pid asked about; `null` when `ps` did not report it. */
+export type PidStarts = ReadonlyMap<number, string | null>;
+/** The start time to compare against a session's recorded `pid_start`, or `null` when none is known. */
+export type PidStartReader = (pid: number) => string | null;
+export type PidStartObservation = { ok: true; starts: PidStarts } | { ok: false; error: string };
+
+// Batched liveness (issues 21502ff, f97e662, af65fdd): every start-time read is
+// one asynchronous `ps -p <pids> -o pid=,lstart=` for all pids, shared by a
+// short cache. Request paths never spawn: they read the cache, and a miss
+// queues the pid for one batched background read. `isPidAlive`
+// (process.kill(pid, 0)) is still checked per session in real time, so a stale
+// cache cannot resurrect a truly dead pid.
 interface PidStartCacheEntry {
   value: string | null;
   at: number;
 }
 const pidStartCache = new Map<number, PidStartCacheEntry>();
 const PID_START_CACHE_TTL_MS = 30_000;
+const PS_TIMEOUT_MS = 10_000;
 
 function getCachedPidStart(pid: number): string | null | undefined {
   const entry = pidStartCache.get(pid);
@@ -49,41 +54,71 @@ function setCachedPidStart(pid: number, value: string | null): void {
   pidStartCache.set(pid, { value, at: Date.now() });
 }
 
-/** Reuse observed process evidence without issuing per-PID subprocesses. */
-export function cachePidStartTimes(evidence: ReadonlyMap<number, string>): void {
-  for (const [pid, start] of evidence) {
-    if (Number.isInteger(pid) && pid > 0) setCachedPidStart(pid, normalizePidStart(start));
-  }
+function psTargets(pids: readonly number[]): number[] {
+  return Array.from(new Set(pids)).filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+}
+
+function psArgs(pids: readonly number[]): string[] {
+  return ["-p", pids.join(","), "-o", "pid=,lstart="];
 }
 
 /**
- * Warm the pid-start cache for many pids using a single `ps` invocation.
- * Pids not reported by `ps` are treated as gone and cached as null. Best-effort:
- * on failure the cache is left untouched and callers fall back to per-pid reads.
+ * Interpret one `ps` run. `ps` exits 1 with no output when none of the pids
+ * exist, which is an answer (all gone), not a failure.
  */
-export function primePidStartTimes(pids: number[]): void {
-  if (!canUsePs()) {
-    return;
+function pidStartObservation(
+  pids: readonly number[],
+  error: { code?: unknown; status?: unknown; message?: string } | null,
+  stdout: string,
+  stderr: string,
+): PidStartObservation {
+  const exitCode = error ? (typeof error.code === "number" ? error.code : error.status) : 0;
+  if (error && !(exitCode === 1 && !stdout.trim() && !stderr.trim())) {
+    return { ok: false, error: stderr.trim() || error.message || String(exitCode) };
   }
-  const unique = Array.from(new Set(pids)).filter(
-    (pid) =>
-      Number.isInteger(pid) &&
-      pid > 0 &&
-      pid !== process.pid &&
-      getCachedPidStart(pid) === undefined,
-  );
-  if (unique.length === 0) {
-    return;
-  }
+  let records: ReturnType<typeof parsePsPidStart>;
   try {
-    const records = parsePsPidStart(execSync(`ps -p ${unique.join(",")} -o pid=,lstart=`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }));
-    for (const pid of unique) setCachedPidStart(pid, records.get(pid)?.pid_start ?? null);
-  } catch {
-    // Best-effort: leave the cache untouched; per-session reads still work.
+    records = parsePsPidStart(stdout);
+  } catch (parseError) {
+    return { ok: false, error: parseError instanceof Error ? parseError.message : String(parseError) };
   }
+  const starts = new Map(pids.map((pid) => [pid, records.get(pid)?.pid_start ?? null] as const));
+  for (const [pid, start] of starts) setCachedPidStart(pid, start);
+  return { ok: true, starts };
+}
+
+/** Read the start times of many pids with one `ps`, off the event loop. */
+export function readPidStarts(pids: readonly number[]): Promise<PidStartObservation> {
+  const targets = psTargets(pids);
+  if (targets.length === 0) return Promise.resolve({ ok: true, starts: new Map() });
+  return new Promise((resolve) => {
+    execFile("ps", psArgs(targets), { encoding: "utf8", timeout: PS_TIMEOUT_MS }, (error, stdout, stderr) => {
+      resolve(pidStartObservation(targets, error, String(stdout ?? ""), String(stderr ?? "")));
+    });
+  });
+}
+
+const pidStartsQueued = new Set<number>();
+const pidStartsReading = new Set<number>();
+
+/** Queue `pid` for the next batched background read, unless one already covers it. */
+function queuePidStartRead(pid: number): void {
+  if (pidStartsQueued.has(pid) || pidStartsReading.has(pid)) return;
+  pidStartsQueued.add(pid);
+  if (pidStartsQueued.size > 1) return;
+  setImmediate(() => {
+    const batch = [...pidStartsQueued];
+    pidStartsQueued.clear();
+    for (const queued of batch) pidStartsReading.add(queued);
+    void readPidStarts(batch).finally(() => {
+      for (const read of batch) pidStartsReading.delete(read);
+    });
+  });
+}
+
+/** A reader over one observation: the daemon's own pid, then what `ps` reported; nothing else spawns. */
+export function observedPidStartReader(starts: PidStarts): PidStartReader {
+  return (pid) => (pid === process.pid ? CURRENT_PROCESS_PID_START : starts.get(pid) ?? null);
 }
 
 /** Parse `ps -o pid=,lstart=[,…]` rows in any locale's day/month order; what follows the start time is `rest`. */
@@ -328,7 +363,12 @@ export function normalizePidStart(value: string | null | undefined): string | nu
   return parsed.toISOString();
 }
 
-export function readPidStartTime(pid: number): string | null {
+/**
+ * The start time already known for `pid`, without waiting: the daemon's own,
+ * else a cached `ps` answer. A miss reads as unknown and queues one batched
+ * background read, so the next request (or the reaper) can compare.
+ */
+export function cachedPidStartTime(pid: number): string | null {
   if (pid === process.pid) {
     return CURRENT_PROCESS_PID_START;
   }
@@ -336,42 +376,8 @@ export function readPidStartTime(pid: number): string | null {
   if (cached !== undefined) {
     return cached;
   }
-  if (!canUsePs()) {
-    return null;
-  }
-  try {
-    const output = execSync(`ps -p ${pid} -o lstart=`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    if (output) {
-      const value = normalizePidStart(output);
-      setCachedPidStart(pid, value);
-      return value;
-    }
-    const fallback = execSync(`ps -o lstart= -p ${pid}`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    const value = normalizePidStart(fallback);
-    setCachedPidStart(pid, value);
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-function canUsePs(): boolean {
-  if (psSupported !== null) {
-    return psSupported;
-  }
-  try {
-    execSync("ps -p 1 -o lstart=", { stdio: "ignore" });
-    psSupported = true;
-  } catch {
-    psSupported = false;
-  }
-  return psSupported;
+  queuePidStartRead(pid);
+  return null;
 }
 
 function isPidAlive(pid: number): boolean {
@@ -384,15 +390,19 @@ function isPidAlive(pid: number): boolean {
 }
 
 /** Whether `pid` still names the process that started at `pidStart`; "unverified" when no start time can be compared. */
-export function processLiveness(pid: number, pidStart: string | null): "alive" | "dead" | "unverified" {
+export function processLiveness(
+  pid: number,
+  pidStart: string | null,
+  readStart: PidStartReader = cachedPidStartTime,
+): "alive" | "dead" | "unverified" {
   if (!isPidAlive(pid)) return "dead";
   const expected = normalizePidStart(pidStart);
-  const current = expected ? readPidStartTime(pid) : null;
+  const current = expected ? readStart(pid) : null;
   if (!expected || !current) return "unverified";
   return expected === current ? "alive" : "dead";
 }
 
-export function checkLiveness(session: Session): "alive" | "dead" {
+export function checkLiveness(session: Session, readStart: PidStartReader = cachedPidStartTime): "alive" | "dead" {
   if (session.status !== "active") {
     return "dead";
   }
@@ -413,7 +423,7 @@ export function checkLiveness(session: Session): "alive" | "dead" {
     const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
     return ageMs > STALE_THRESHOLD_MS ? "dead" : "alive";
   }
-  return processLiveness(session.pid, session.pid_start) === "dead" ? "dead" : "alive";
+  return processLiveness(session.pid, session.pid_start, readStart) === "dead" ? "dead" : "alive";
 }
 
 function normalizeText(value: string | null | undefined): string | null {
@@ -630,9 +640,23 @@ export class SessionRegistry {
     return () => this.lifecycleListeners.delete(listener);
   }
 
-  /** End every active session whose process is gone; the ended sessions are announced and returned. */
-  reapDead(): Session[] {
-    return this.listSessions({ status: "active" }).filter((session) => session.status !== "active");
+  /**
+   * End every active session whose process is gone; the ended sessions are
+   * announced and returned. Start times come from one asynchronous `ps`; the
+   * rows are read after it answers and judged in one synchronous turn. When
+   * `ps` cannot answer, no session is ended for want of a start time.
+   */
+  async reapDead(): Promise<Session[]> {
+    const pids = (this.db
+      .prepare("SELECT DISTINCT pid FROM sessions WHERE status = 'active' AND pid IS NOT NULL AND pid_start IS NOT NULL")
+      .all() as Array<{ pid: number }>).map((row) => row.pid);
+    const observation = await readPidStarts(pids);
+    if (!observation.ok) this.logger("warn", "session_pid_starts_unavailable", { error: observation.error });
+    const rows = this.db
+      .prepare("SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC")
+      .all() as SessionRow[];
+    return this.mapWithLiveness(rows, observedPidStartReader(observation.ok ? observation.starts : new Map()))
+      .filter((session) => session.status !== "active");
   }
 
   private announce(session: Session): void {
@@ -641,7 +665,7 @@ export class SessionRegistry {
 
   registerSession(input: SessionInput): Session {
     const now = new Date().toISOString();
-    const pidStart = normalizePidStart(input.pid_start) ?? (input.pid ? readPidStartTime(input.pid) : null);
+    const pidStart = normalizePidStart(input.pid_start);
     const status = input.status ?? "active";
     const existingRow = this.db
       .prepare("SELECT * FROM sessions WHERE id = ?")
@@ -925,20 +949,11 @@ export class SessionRegistry {
     return { clauses, params };
   }
 
-  // Map rows to sessions with liveness derived from a single batched `ps` spawn
-  // for all active pids, rather than one spawn per session (issue 21502ff).
-  private mapWithLiveness(rows: SessionRow[]): Session[] {
-    // One attribution resolver per batch (main's user-attribution read path),
-    // consistent with the single batched liveness spawn (issue 21502ff).
+  /** Map rows to sessions with liveness judged by `readStart`, by default the cached start times. */
+  private mapWithLiveness(rows: SessionRow[], readStart?: PidStartReader): Session[] {
     const attributionResolver = new AttributionReadResolver(this.db);
     const sessions = rows.map((row) => toSession(row, attributionResolver));
-    const pids = sessions
-      .filter((s) => s.status === "active" && s.pid && s.pid_start)
-      .map((s) => s.pid as number);
-    if (pids.length > 1) {
-      primePidStartTimes(pids);
-    }
-    return sessions.map((session) => this.ensureLiveness(session));
+    return sessions.map((session) => this.ensureLiveness(session, readStart));
   }
 
   listSessions(options: SessionListOptions = {}): Session[] {
@@ -1250,11 +1265,11 @@ export class SessionRegistry {
     }
   }
 
-  private ensureLiveness(session: Session): Session {
+  private ensureLiveness(session: Session, readStart: PidStartReader = cachedPidStartTime): Session {
     if (session.status !== "active") {
       return session;
     }
-    const status = checkLiveness(session);
+    const status = checkLiveness(session, readStart);
     if (status === "alive") {
       return session;
     }
