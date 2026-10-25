@@ -6,9 +6,10 @@ import {
   AppOperationalNoticeOutlet,
   useAppShell,
   useRegisterAppRightSidebar,
-  useRouteLoad,
+  useLiveLoad,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
+import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { PreviewIcon } from '../components/icons/TabIcons';
@@ -65,7 +66,7 @@ import {
   rowSpecFromChips,
 } from './filters/issue-predicate-filter';
 import { IssuePredicateFilter } from './filters/IssuePredicateFilter';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { beginDetailRequest, detailRequestKey, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
@@ -102,6 +103,7 @@ const FILTER_ROW_URL_PARAM = 'rows';
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
+  refreshToken?: number;
   params?: Record<string, string | undefined>;
   sidebarHidden?: boolean;
 };
@@ -487,6 +489,7 @@ function buildProjectTimelineRequest(
 }
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const repos = await getWorkRepos<WorkRepo>();
   const urlState = parseUrlState(params);
   const projectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -500,7 +503,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   const requestKey = detailRequestKey('timeline', request);
   if (readPersistedDetail<ProjectTimelineProjection>('timeline', requestKey)) return;
   const projection = await getProjectTimeline(request);
-  writePersistedDetail('timeline', requestKey, projection);
+  writePersistedDetail('timeline', requestKey, projection, undefined, detailStarted);
 }
 
 function projectedFilterRowId(row: TimelineFilterRowSpec, rows: readonly TimelineFilterRowSpec[]): string {
@@ -849,7 +852,7 @@ function AddTimelineRowIcon(): JSX.Element {
   );
 }
 
-export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+export function TimelineView({ repos, params = {}, sidebarHidden = false, refreshToken = 0 }: TimelineViewProps): JSX.Element {
   const { active } = useAppShell();
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -975,24 +978,30 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     setError(null);
   }, [timelineRequestKey]);
 
-  useRouteLoad((registerInitialRouteLoad) => {
+  const refreshTimeline = useLiveLoad((signal) => {
+    if (isPersistedDetailFresh('timeline', timelineRequestKey) && lastProjectionRef.current) {
+      setError(null);
+      setStatus('ready');
+      return undefined;
+    }
     const generation = requestGeneration.current;
-    const controller = new AbortController();
-    const initialLoad = getProjectTimeline(timelineRequestRef.current, controller.signal)
+    const detailStarted = beginDetailRequest();
+    return getProjectTimeline(timelineRequestRef.current, signal)
       .then((next) => {
         if (
-          controller.signal.aborted
+          signal.aborted
           || requestGeneration.current !== generation
           || activeProjectionRequestKeyRef.current !== timelineRequestKey
         ) return;
-        writePersistedDetail('timeline', timelineRequestKey, next);
+        writePersistedDetail('timeline', timelineRequestKey, next, undefined, detailStarted);
         lastProjectionRef.current = next;
         setProjection(next);
+        setError(null);
         setStatus('ready');
       })
       .catch((err) => {
         if (
-          controller.signal.aborted
+          refreshAbandoned(signal)
           || requestGeneration.current !== generation
           || activeProjectionRequestKeyRef.current !== timelineRequestKey
         ) return;
@@ -1000,9 +1009,13 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         setProjection(lastProjectionRef.current);
         setStatus('error');
       });
-    registerInitialRouteLoad(initialLoad);
-    return () => controller.abort();
   }, [timelineRequestKey]);
+  const lastRefreshTokenRef = useRef(refreshToken);
+  useEffect(() => {
+    if (lastRefreshTokenRef.current === refreshToken) return;
+    lastRefreshTokenRef.current = refreshToken;
+    refreshTimeline();
+  }, [refreshToken, refreshTimeline]);
 
   const baseRows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
   const baseEvents = projection?.events ?? EMPTY_TIMELINE_EVENTS;

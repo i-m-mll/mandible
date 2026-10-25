@@ -38,9 +38,10 @@ export function capGraphNodesForDisplay(
   edges: GraphEdge[],
   limit: number,
 ): { nodes: GraphNode[]; truncated: boolean } {
-  const sortedByRecency = [...nodes].sort((a, b) => {
-    return nodeCreatedMs(b) - nodeCreatedMs(a) || a.label.localeCompare(b.label);
-  });
+  const createdMs = new Map(nodes.map((node) => [node, nodeCreatedMs(node)]));
+  const byRecency = (a: GraphNode, b: GraphNode) =>
+    createdMs.get(b)! - createdMs.get(a)! || a.label.localeCompare(b.label);
+  const sortedByRecency = [...nodes].sort(byRecency);
   if (sortedByRecency.length <= limit) {
     return { nodes: sortedByRecency, truncated: false };
   }
@@ -62,7 +63,7 @@ export function capGraphNodesForDisplay(
     const connectedDelta = Number(bEdges > 0) - Number(aEdges > 0);
     if (connectedDelta !== 0) return connectedDelta;
     if (bEdges !== aEdges) return bEdges - aEdges;
-    return nodeCreatedMs(b) - nodeCreatedMs(a) || a.label.localeCompare(b.label);
+    return byRecency(a, b);
   });
 
   return { nodes: ranked.slice(0, limit), truncated: true };
@@ -244,11 +245,10 @@ export function selectGraphForDisplay(
     filteredNodeIds.has(edge.source) && filteredNodeIds.has(edge.target)
   );
   const eligibleEdges = endpointEligibleEdges.filter((edge) => edgeMatchesSpec(edge, spec));
+  const incidentNodeIds = new Set(eligibleEdges.flatMap((edge) => [edge.source, edge.target]));
   const nodesForCap = spec.include_isolates
     ? filteredNodes
-    : filteredNodes.filter((node) => eligibleEdges.some((edge) =>
-        edge.source === node.id || edge.target === node.id
-      ));
+    : filteredNodes.filter((node) => incidentNodeIds.has(node.id));
   const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(
     nodesForCap,
     eligibleEdges,

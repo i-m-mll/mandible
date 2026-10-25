@@ -16,29 +16,30 @@ import type {
   TimelineRowOccurrenceKind,
   TimelineRowSpecRef,
   TimelineSourceEntityRef,
-  TimelineTimeAxis,
 } from "../types.js";
 import type {
+  LedgerIssue,
   LedgerIssueKind,
   LedgerIssueRelationshipSource,
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerPriority,
-  LedgerRelationshipEdge,
   LedgerRelationshipType,
 } from "./types.js";
 import {
-  buildParentChildrenByIssueId,
   containsResidualPredicate,
   evaluatePredicate,
   intervalOverlapsWindow,
   labelList,
   predicateDiagnostic,
   resolveIssueId,
+  type IssueReference,
   type IssueRow,
   type LabelHistoryIndex,
   type PredicateEvalContext,
 } from "./issue-predicate.js";
+import { appendTo, compareLabelIntervals, loadProjectIssueSet } from "./issue-predicate-context.js";
+import { compareTimelineEvents, compareTimelineLinks, timelineTimeAxis } from "../timeline-pages.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import { parseJsonObject } from "../row-coerce.js";
 type ProjectRow = {
@@ -48,6 +49,14 @@ type ProjectRow = {
   repo_name: string | null;
   repo_root: string | null;
 };
+type TimelineBacklinkSource = {
+  source: LedgerIssueRelationshipSource;
+  timestamp: number;
+};
+type IssueBodyRow = Pick<
+  LedgerIssue,
+  "id" | "body" | "source" | "author_actor_type" | "author_display" | "author_user_id" | "evidence_method" | "evidence_id"
+>;
 type CommentRow = {
   id: string;
   issue_id: string;
@@ -77,17 +86,6 @@ type StateEventRow = {
   evidence_method: string | null;
   evidence_id: string | null;
 };
-type LabelRow = {
-  issue_id: string;
-  label: string;
-  created_at: number;
-  deleted_at: number | null;
-};
-type TimelineEventIndexes = {
-  commentsByIssue: Map<string, CommentRow[]>;
-  stateEventsByIssue: Map<string, StateEventRow[]>;
-  stateEventTypes: string[];
-};
 type InternalRowSpec = TimelineNormalizedRowSpec & {
   anchorIssue: IssueRow | null;
   legacyKind: TimelineRowOccurrenceKind | null;
@@ -98,6 +96,24 @@ type InternalRowSpec = TimelineNormalizedRowSpec & {
 };
 
 const DEFAULT_DEPTH = 1;
+/**
+ * How much one response may carry. A page holds the events of whole rows; it
+ * stops taking rows once it holds `events` events or `ms` milliseconds have
+ * passed since the request began, and always holds at least one row. The time
+ * bound keeps a cold page cache from stretching a page past the event-loop
+ * budget; the event bound keeps a warm page's response small. Clients request
+ * the following pages from `page.next_row_offset`, and joining every page
+ * gives the same projection wherever the pages were cut.
+ */
+export type TimelinePageBudget = { events: number; ms: number; now: () => number };
+
+const DEFAULT_PAGE_BUDGET: TimelinePageBudget = { events: 3_000, ms: 40, now: () => performance.now() };
+/**
+ * Rows whose events one query batch loads, which bounds how far one load
+ * overshoots the time budget. Past the deadline a page loads only its one
+ * required row.
+ */
+const TIMELINE_PAGE_LOAD_ROWS = 16;
 const MAX_DEPTH = 8;
 const DEFAULT_STATUSES: LedgerIssueStatus[] = ["open"];
 const DEFAULT_EVENT_KINDS: TimelineEventKind[] = [
@@ -132,25 +148,37 @@ const STATE_EVENT_TYPES_BY_KIND: Record<TimelineEventKind, string[]> = {
   state: ["issue.updated", "issue.closed", "issue.reopened"],
   work_unit: ["work_unit.issue_linked"],
 };
+/**
+ * Events of these types are recorded on another entity and name their issue in
+ * `payload.issue_id`; every other Timeline event type is recorded on the issue.
+ */
+const LINKED_EVENT_TYPES: ReadonlySet<string> = new Set(
+  (["auth_request", "commit", "session", "work_unit"] as const).flatMap((kind) => STATE_EVENT_TYPES_BY_KIND[kind]),
+);
 
 export function buildProjectTimelineProjection(
   db: Db,
   input: ProjectTimelineInput,
+  budget: TimelinePageBudget = DEFAULT_PAGE_BUDGET,
 ): ProjectTimelineProjection {
+  const deadline = budget.now() + budget.ms;
   const project = resolveProject(db, input);
-  const issues = loadIssues(db, project.id);
-  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const issueSet = loadProjectIssueSet(db, project.id);
+  const { issues, issueById, references, labelHistory } = issueSet;
   const issueRefs = new Map(issues.map((issue) => [issue.id, issueRef(issue)]));
   const normalized = normalizeInput(input, project.id, issueById);
-  const eventIndexes = loadTimelineEventIndexes(db, project.id, issues, normalized);
+  const eventSource = new TimelineEventSource(db, normalized, issueById);
   const attributionResolver = new AttributionReadResolver(db);
-  const relationshipSources = loadRelationshipSources(db, project.id);
-  const labelHistory = loadLabelHistory(db, project.id, issues);
-  const relationshipSourcesByEventSource = groupRelationshipSources(relationshipSources);
-  const referenceCounts = countActiveTargets(relationshipSources);
+  const referenceCounts = countActiveTargets(references);
+  const predicateContext: Omit<PredicateEvalContext, "residualCoveredIssueIds"> = {
+    allIssues: issues,
+    issueById,
+    references,
+    parentChildren: issueSet.parentChildren,
+    labelHistory,
+    window: { from: normalized.from, to: normalized.to },
+  };
   const rows: TimelineRowOccurrence[] = [];
-  const events: TimelineEvent[] = [];
-  const links: TimelineLink[] = [];
   const cycles: TimelineDiagnostic[] = [];
   const depthLimits: TimelineDiagnostic[] = [];
   const filteredTargets: TimelineDiagnostic[] = [];
@@ -164,19 +192,13 @@ export function buildProjectTimelineProjection(
   const rootOccurrencesByIssue = new Map<string, number>();
   const eventToLinks = new Map<string, TimelineLink[]>();
   const rowById = new Map<string, TimelineRowOccurrence>();
+  const linksByRowId = new Map<string, TimelineLink[]>();
 
-  const parentChildrenByIssueId = buildParentChildrenByIssueId(
-    issues,
-    loadParentChildEdges(db, project.id),
-  );
   const rootSpecs = buildRootSpecs({
     rawInput: input,
     normalized,
     issues,
     issueById,
-    relationshipSources,
-    parentChildrenByIssueId,
-    labelHistory,
     diagnostics: predicateDiagnostics,
   });
   normalized.root_specs = rootSpecs
@@ -203,19 +225,9 @@ export function buildProjectTimelineProjection(
       return;
     }
     const memberIds = evaluateRootScope(spec, {
-      allIssues: issues,
-      issueById,
-      relationshipSources,
-      parentChildrenByIssueId,
-      labelHistory,
-      window: { from: normalized.from, to: normalized.to },
+      ...predicateContext,
       residualCoveredIssueIds: residualCoveredIssueIds(rootSpecs, spec, {
-        allIssues: issues,
-        issueById,
-        relationshipSources,
-        parentChildrenByIssueId,
-        labelHistory,
-        window: { from: normalized.from, to: normalized.to },
+        ...predicateContext,
         residualCoveredIssueIds: new Set<string>(),
         labelMembershipModeOverride: "now",
       }, predicateDiagnostics),
@@ -262,19 +274,102 @@ export function buildProjectTimelineProjection(
       });
   });
 
+  const eventsByRowId = new Map<string, TimelineEvent[]>();
+  const rowMayExpand = rowMayHoldExpansion(normalized);
+
   for (let cursor = 0; cursor < rows.length; cursor += 1) {
     const row = rows[cursor];
+    if (!rowMayExpand(row)) continue;
+    if (row.issue && !eventSource.has(row.issue.id)) {
+      eventSource.load(rows.slice(cursor).filter(rowMayExpand).flatMap(issueIdOfRow));
+    }
+    materializeRow(row);
+  }
+
+  for (const eventId of normalized.expanded_event_ids) {
+    if (!eventToLinks.has(eventId) && !expandedEventHits.has(eventId)) {
+      missingExpansions.push({
+        kind: "missing_expansion_event",
+        message: "Requested expanded event was not found in the visible projection.",
+        event_id: eventId,
+      });
+    }
+  }
+
+  const orderedRows = orderRowsPreorder(rows, childRowIdsByParent);
+
+  for (const row of orderedRows) {
+    if (row.issue) visibleIssueIds.add(row.issue.id);
+    if (row.issue && (row.kind === "root" || row.kind === "promoted_root" || row.kind === "explicit_root")) {
+      rootOccurrencesByIssue.set(row.issue.id, (rootOccurrencesByIssue.get(row.issue.id) ?? 0) + 1);
+    }
+    const rowLinks = linksByRowId.get(row.id) ?? [];
+    row.expanded = rowLinks.some((link) => link.expanded_row_id !== null)
+      || (childRowIdsByParent.get(row.id)?.length ?? 0) > 0;
+    rowById.set(row.id, row);
+  }
+
+  const rowOffset = pageRowOffset(input.row_offset, orderedRows.length);
+  const events: TimelineEvent[] = [];
+  const links: TimelineLink[] = [];
+  let cursor = rowOffset;
+  while (
+    cursor < orderedRows.length
+    && (cursor === rowOffset || (events.length < budget.events && budget.now() < deadline))
+  ) {
+    const row = orderedRows[cursor];
+    if (row.issue && !eventSource.has(row.issue.id)) {
+      const batch = budget.now() < deadline ? TIMELINE_PAGE_LOAD_ROWS : 1;
+      eventSource.load(orderedRows.slice(cursor, cursor + batch).flatMap(issueIdOfRow));
+    }
+    events.push(...materializeRow(row), ...buildBacklinkEvents(row, eventSource, issueRefs, normalized));
+    links.push(...linksByRowId.get(row.id) ?? []);
+    cursor += 1;
+  }
+
+  events.sort(compareTimelineEvents);
+  links.sort(compareTimelineLinks);
+
+  return {
+    project,
+    inputs: normalized,
+    time_axis: timelineTimeAxis(events),
+    rows: orderedRows,
+    events,
+    links,
+    diagnostics: buildDiagnostics({
+      issues,
+      rows: orderedRows,
+      visibleIssueIds,
+      references,
+      referenceCounts,
+      rootOccurrencesByIssue,
+      cycles,
+      depthLimits,
+      filteredTargets,
+      missingExpansions,
+      predicateDiagnostics,
+    }),
+    page: {
+      row_offset: rowOffset,
+      next_row_offset: cursor < orderedRows.length ? cursor : null,
+    },
+  };
+
+  function materializeRow(row: TimelineRowOccurrence): TimelineEvent[] {
+    const built = eventsByRowId.get(row.id);
+    if (built) return built;
     const rowEvents = buildEventsForRow(
       row,
       issueById,
       issueRefs,
       normalized,
-      eventIndexes,
+      eventSource,
       attributionResolver,
     );
     for (const event of rowEvents) {
       const eventSourceKey = sourceKey(event.source_entity.type, event.source_entity.id);
-      const sourceRows = relationshipSourcesByEventSource.get(eventSourceKey) ?? [];
+      const sourceRows = eventSource.relationshipSources(eventSourceKey);
       const eventLinks: TimelineLink[] = [];
       for (const source of sourceRows) {
         const target = issueById.get(source.target_issue_id);
@@ -299,7 +394,7 @@ export function buildProjectTimelineProjection(
           created_at: source.created_at,
         };
         eventLinks.push(link);
-        links.push(link);
+        appendTo(linksByRowId, row.id, link);
 
         const expandByEvent = expandedEvents.has(event.id);
         const expandByPath = expandedPaths.has(row.id) || expandedPaths.has(`${row.id}>${event.id}`);
@@ -366,68 +461,10 @@ export function buildProjectTimelineProjection(
       }
       event.link_ids = eventLinks.map((link) => link.id);
       eventToLinks.set(event.id, eventLinks);
-      events.push(event);
     }
+    eventsByRowId.set(row.id, rowEvents);
+    return rowEvents;
   }
-
-  for (const eventId of normalized.expanded_event_ids) {
-    if (!eventToLinks.has(eventId) && !expandedEventHits.has(eventId)) {
-      missingExpansions.push({
-        kind: "missing_expansion_event",
-        message: "Requested expanded event was not found in the visible projection.",
-        event_id: eventId,
-      });
-    }
-  }
-
-  const orderedRows = orderRowsPreorder(rows, childRowIdsByParent);
-
-  for (const row of orderedRows) {
-    if (row.issue) visibleIssueIds.add(row.issue.id);
-    if (row.issue && (row.kind === "root" || row.kind === "promoted_root" || row.kind === "explicit_root")) {
-      rootOccurrencesByIssue.set(row.issue.id, (rootOccurrencesByIssue.get(row.issue.id) ?? 0) + 1);
-    }
-    const rowLinks = links.filter((link) => link.source_row_id === row.id);
-    row.expanded = rowLinks.some((link) => link.expanded_row_id !== null)
-      || (childRowIdsByParent.get(row.id)?.length ?? 0) > 0;
-    rowById.set(row.id, row);
-  }
-
-  if (normalized.event_kinds.includes("backlink")) {
-    events.push(...buildBacklinkEvents({
-      db,
-      relationshipSources,
-      orderedRows,
-      issueById,
-      issueRefs,
-      normalized,
-    }));
-  }
-
-  events.sort(compareTimelineEvents);
-  links.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
-
-  return {
-    project,
-    inputs: normalized,
-    time_axis: timeAxis(events),
-    rows: orderedRows,
-    events,
-    links,
-    diagnostics: buildDiagnostics({
-      issues,
-      rows: orderedRows,
-      visibleIssueIds,
-      relationshipSources,
-      referenceCounts,
-      rootOccurrencesByIssue,
-      cycles,
-      depthLimits,
-      filteredTargets,
-      missingExpansions,
-      predicateDiagnostics,
-    }),
-  };
 
   function addIssueRow(
     issue: IssueRow,
@@ -480,6 +517,34 @@ export function buildProjectTimelineProjection(
     rows.push(row);
     return row;
   }
+}
+
+function issueIdOfRow(row: TimelineRowOccurrence): string[] {
+  return row.issue ? [row.issue.id] : [];
+}
+
+/**
+ * Whether a row may hold an expanded event. Event ids begin with
+ * `event:<row id>:`, so a prefix match over-approximates and never misses one;
+ * the projection materializes these rows on every page so the row tree is the
+ * same whichever page is asked for.
+ */
+function rowMayHoldExpansion(input: ProjectTimelineNormalizedInput): (row: TimelineRowOccurrence) => boolean {
+  const paths = new Set(input.expanded_paths);
+  const pathPrefixes = input.expanded_paths.filter((path) => path.includes(">"));
+  return (row) => {
+    if (!row.issue) return false;
+    if (paths.has(row.id)) return true;
+    const pathPrefix = `${row.id}>`;
+    const eventPrefix = `event:${row.id}:`;
+    return pathPrefixes.some((path) => path.startsWith(pathPrefix))
+      || input.expanded_event_ids.some((eventId) => eventId.startsWith(eventPrefix));
+  };
+}
+
+function pageRowOffset(value: number | undefined, rowCount: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(rowCount, Math.floor(value)));
 }
 
 function orderRowsPreorder(
@@ -553,273 +618,189 @@ function resolveProject(db: Db, input: ProjectTimelineInput): ProjectRow {
   return row;
 }
 
-function loadIssues(db: Db, projectId: string): IssueRow[] {
-  return db.prepare(
-    `SELECT i.*,
-            COALESCE(group_concat(l.label, char(31)), '') AS labels
-       FROM ledger_issues i
-       LEFT JOIN ledger_labels l ON l.issue_id = i.id AND l.deleted_at IS NULL
-      WHERE i.project_id = ?
-      GROUP BY i.id
-      ORDER BY i.created_at ASC, i.short_id ASC, i.id ASC`,
-  ).all(projectId) as IssueRow[];
-}
+/**
+ * What a row's events are built from — the issue body, comments, state events,
+ * and the references those texts make — read by issue id only once a row shows
+ * the issue.
+ */
+class TimelineEventSource {
+  readonly stateEventTypes: string[];
+  private readonly issueEventTypes: string[];
+  private readonly linkedEventTypes: string[];
+  private readonly includeBody: boolean;
+  private readonly includeComments: boolean;
+  private readonly loaded = new Set<string>();
+  private readonly bodyByIssue = new Map<string, IssueBodyRow>();
+  private readonly commentsByIssue = new Map<string, CommentRow[]>();
+  private readonly stateEventsByIssue = new Map<string, StateEventRow[]>();
+  private readonly referencesBySourceEntity = new Map<string, LedgerIssueRelationshipSource[]>();
+  private readonly includeBacklinks: boolean;
+  private readonly backlinksByTarget = new Map<string, TimelineBacklinkSource[]>();
 
-function loadRelationshipSources(db: Db, projectId: string): LedgerIssueRelationshipSource[] {
-  return db.prepare(
-    `SELECT s.*
-       FROM ledger_issue_relationship_sources s
-       JOIN ledger_issues source ON source.id = s.source_issue_id
-      WHERE source.project_id = ?
-        AND s.relationship_type = 'references'
-        AND s.deleted_at IS NULL
-      ORDER BY s.created_at ASC, s.id ASC`,
-  ).all(projectId) as LedgerIssueRelationshipSource[];
-}
-
-function loadParentChildEdges(db: Db, projectId: string): LedgerRelationshipEdge[] {
-  return db.prepare(
-    `SELECT *
-       FROM ledger_relationship_edges
-      WHERE target_project_id = ?
-        AND source_entity_type = 'issue'
-        AND target_entity_type = 'issue'
-        AND link_type = 'parent_child'
-        AND deleted_at IS NULL
-      ORDER BY created_at ASC, id ASC`,
-  ).all(projectId) as LedgerRelationshipEdge[];
-}
-
-function loadLabelHistory(db: Db, projectId: string, issues: IssueRow[]): LabelHistoryIndex {
-  const labelRows = db.prepare(
-    `SELECT l.issue_id, l.label, l.created_at, l.deleted_at
-       FROM ledger_labels l
-       JOIN ledger_issues i ON i.id = l.issue_id
-      WHERE i.project_id = ?
-      ORDER BY l.issue_id ASC, l.label ASC, l.created_at ASC`,
-  ).all(projectId) as LabelRow[];
-  const labelEvents = db.prepare(
-    `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json, e.occurred_at, e.observed_at
-       FROM ledger_events e
-       JOIN ledger_issues i ON i.id = e.entity_id
-      WHERE i.project_id = ?
-        AND e.entity_type = 'issue'
-        AND e.event_type = 'label.updated'
-      ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
-  ).all(projectId) as StateEventRow[];
-  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
-  const eventsByIssueLabel = new Map<string, StateEventRow[]>();
-  for (const event of labelEvents) {
-    const payload = parseJsonObject(event.payload_json);
-    const label = typeof payload.label === "string" ? payload.label.trim() : "";
-    if (!label || !issueById.has(event.entity_id)) continue;
-    const key = issueLabelKey(event.entity_id, label);
-    const events = eventsByIssueLabel.get(key) ?? [];
-    events.push(event);
-    eventsByIssueLabel.set(key, events);
+  constructor(
+    private readonly db: Db,
+    input: ProjectTimelineNormalizedInput,
+    private readonly issueById: Map<string, IssueRow>,
+  ) {
+    this.includeBacklinks = eventKindEnabled(input, "backlink");
+    this.includeBody = eventKindEnabled(input, "body");
+    this.includeComments = eventKindEnabled(input, "comment");
+    this.stateEventTypes = selectedStateEventTypes(input);
+    this.issueEventTypes = this.stateEventTypes.filter((type) => !LINKED_EVENT_TYPES.has(type));
+    this.linkedEventTypes = this.stateEventTypes.filter((type) => LINKED_EVENT_TYPES.has(type));
   }
 
-  const keys = new Set<string>([
-    ...labelRows.map((row) => issueLabelKey(row.issue_id, row.label)),
-    ...eventsByIssueLabel.keys(),
-  ]);
-  const intervalsByLabel = new Map<string, TimelineLabelMembershipInterval[]>();
-  const rowByKey = new Map(labelRows.map((row) => [issueLabelKey(row.issue_id, row.label), row]));
-
-  for (const key of keys) {
-    const row = rowByKey.get(key);
-    const events = eventsByIssueLabel.get(key) ?? [];
-    const [issueId, label] = splitIssueLabelKey(key);
-    const issue = issueById.get(issueId);
-    if (!issue) continue;
-    const intervals = intervalsForIssueLabel({ issue, label, row, events });
-    const labelIntervals = intervalsByLabel.get(label) ?? [];
-    labelIntervals.push(...intervals);
-    intervalsByLabel.set(label, labelIntervals);
+  has(issueId: string): boolean {
+    return this.loaded.has(issueId);
   }
 
-  for (const intervals of intervalsByLabel.values()) intervals.sort(compareLabelIntervals);
-  return { intervalsByLabel };
-}
-
-function loadTimelineEventIndexes(
-  db: Db,
-  projectId: string,
-  issues: IssueRow[],
-  input: ProjectTimelineNormalizedInput,
-): TimelineEventIndexes {
-  const commentsByIssue = eventKindEnabled(input, "comment")
-    ? loadCommentsByIssue(db, projectId)
-    : new Map<string, CommentRow[]>();
-  const stateEventTypes = selectedStateEventTypes(input);
-  const stateEventsByIssue = stateEventTypes.length > 0
-    ? loadStateEventsByIssue(db, projectId, issues, stateEventTypes)
-    : new Map<string, StateEventRow[]>();
-  return { commentsByIssue, stateEventsByIssue, stateEventTypes };
-}
-
-function loadCommentsByIssue(db: Db, projectId: string): Map<string, CommentRow[]> {
-  const rows = db.prepare(
-    `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at,
-            c.source, c.author_actor_type, c.author_display, c.author_user_id,
-            c.evidence_method, c.evidence_id
-       FROM ledger_comments c
-       JOIN ledger_issues i ON i.id = c.issue_id
-      WHERE i.project_id = ?
-        AND c.deleted_at IS NULL
-      ORDER BY c.issue_id ASC, c.ordinal ASC, c.created_at ASC`,
-  ).all(projectId) as CommentRow[];
-  const byIssue = new Map<string, CommentRow[]>();
-  for (const row of rows) {
-    const comments = byIssue.get(row.issue_id) ?? [];
-    comments.push(row);
-    byIssue.set(row.issue_id, comments);
+  body(issueId: string): IssueBodyRow | undefined {
+    return this.bodyByIssue.get(issueId);
   }
-  return byIssue;
-}
 
-function loadStateEventsByIssue(
-  db: Db,
-  projectId: string,
-  issues: IssueRow[],
-  stateEventTypes: string[],
-): Map<string, StateEventRow[]> {
-  const byIssue = new Map<string, StateEventRow[]>();
-  const projectIssueIds = new Set(issues.map((issue) => issue.id));
-  const placeholders = stateEventTypes.map(() => "?").join(", ");
-  const issueEvents = db.prepare(
-    `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json,
-            e.occurred_at, e.observed_at, e.actor_type, e.actor_user_id,
-            e.evidence_method, e.evidence_id
-       FROM ledger_events e
-       JOIN ledger_issues i ON i.id = e.entity_id
-      WHERE i.project_id = ?
-        AND e.entity_type = 'issue'
-        AND e.event_type IN (${placeholders})
-      ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
-  ).all(projectId, ...stateEventTypes) as StateEventRow[];
-  const operationalEvents = db.prepare(
-    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at,
-            actor_type, actor_user_id, evidence_method, evidence_id
-       FROM ledger_events
-      WHERE entity_type != 'issue'
-        AND event_type IN (${placeholders})
-      ORDER BY occurred_at ASC, observed_at ASC, id ASC`,
-  ).all(...stateEventTypes) as StateEventRow[];
-
-  for (const event of issueEvents) {
-    addStateEvent(byIssue, event.entity_id, event);
+  comments(issueId: string): CommentRow[] {
+    return this.commentsByIssue.get(issueId) ?? [];
   }
-  for (const event of operationalEvents) {
-    const issueId = issueIdFromStateEventPayload(event);
-    if (!issueId || !projectIssueIds.has(issueId)) continue;
-    addStateEvent(byIssue, issueId, event);
+
+  stateEvents(issueId: string): StateEventRow[] {
+    return this.stateEventsByIssue.get(issueId) ?? [];
   }
-  for (const events of byIssue.values()) events.sort(compareStateEvents);
-  return byIssue;
-}
 
-function addStateEvent(
-  byIssue: Map<string, StateEventRow[]>,
-  issueId: string,
-  event: StateEventRow,
-): void {
-  const events = byIssue.get(issueId) ?? [];
-  events.push(event);
-  byIssue.set(issueId, events);
-}
+  relationshipSources(sourceEntityKey: string): LedgerIssueRelationshipSource[] {
+    return this.referencesBySourceEntity.get(sourceEntityKey) ?? [];
+  }
 
-function issueIdFromStateEventPayload(event: StateEventRow): string | null {
-  const issueId = parseJsonObject(event.payload_json).issue_id;
-  return typeof issueId === "string" && issueId ? issueId : null;
-}
+  backlinks(targetIssueId: string): TimelineBacklinkSource[] {
+    return this.backlinksByTarget.get(targetIssueId) ?? [];
+  }
 
-function intervalsForIssueLabel(input: {
-  issue: IssueRow;
-  label: string;
-  row?: LabelRow;
-  events: StateEventRow[];
-}): TimelineLabelMembershipInterval[] {
-  const intervals: TimelineLabelMembershipInterval[] = [];
-  let openStart: number | null = null;
-  let openDegraded = false;
-  let sawAdd = false;
-  let sawRemove = false;
-
-  for (const event of input.events) {
-    const payload = parseJsonObject(event.payload_json);
-    if (payload.present === true) {
-      sawAdd = true;
-      if (openStart === null) {
-        openStart = event.occurred_at;
-        openDegraded = false;
-      }
-      continue;
+  load(issueIds: Iterable<string>): void {
+    const pending = Array.from(new Set(issueIds)).filter((id) => !this.loaded.has(id));
+    if (pending.length === 0) return;
+    for (const id of pending) this.loaded.add(id);
+    const ids = JSON.stringify(pending);
+    if (this.includeBody) {
+      this.loadBodies(ids);
+      this.loadReferences("issue_body", ids);
     }
-    if (payload.present === false) {
-      sawRemove = true;
-      if (openStart === null) {
-        intervals.push({
-          issue_id: input.issue.id,
-          label: input.label,
-          start: input.row?.created_at ?? input.issue.created_at,
-          end: event.occurred_at,
-          degraded: true,
-        });
-      } else {
-        intervals.push({
-          issue_id: input.issue.id,
-          label: input.label,
-          start: openStart,
-          end: event.occurred_at,
-          degraded: openDegraded,
-        });
-      }
-      openStart = null;
-      openDegraded = false;
+    if (this.includeComments) {
+      const commentIds = this.loadComments(ids);
+      this.loadReferences("comment", JSON.stringify(commentIds));
+    }
+    if (this.stateEventTypes.length > 0) this.loadStateEvents(ids);
+    if (this.includeBacklinks) this.loadBacklinks(ids);
+  }
+
+  private loadBacklinks(targetIds: string): void {
+    const sources = this.db.prepare(
+      `SELECT *
+         FROM ledger_issue_relationship_sources
+        WHERE target_issue_id IN (SELECT value FROM json_each(?))
+          AND relationship_type = 'references'
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC`,
+    ).all(targetIds) as LedgerIssueRelationshipSource[];
+    const commentIds = sources
+      .filter((source) => source.source_entity_type === "comment")
+      .map((source) => source.source_entity_id);
+    const comments = new Map((this.db.prepare(
+      `SELECT id, issue_id, created_at
+         FROM ledger_comments
+        WHERE id IN (SELECT value FROM json_each(?))
+          AND deleted_at IS NULL`,
+    ).all(JSON.stringify(commentIds)) as Array<Pick<CommentRow, "id" | "issue_id" | "created_at">>)
+      .map((comment) => [comment.id, comment]));
+    for (const source of sources) {
+      appendTo(this.backlinksByTarget, source.target_issue_id, {
+        source,
+        timestamp: this.backlinkTimestamp(source, comments),
+      });
     }
   }
 
-  if (openStart !== null) {
-    intervals.push({
-      issue_id: input.issue.id,
-      label: input.label,
-      start: openStart,
-      end: null,
-      degraded: openDegraded,
-    });
-  }
-  if (input.row && input.row.deleted_at === null && !sawAdd) {
-    intervals.push({
-      issue_id: input.issue.id,
-      label: input.label,
-      start: input.row.created_at,
-      end: null,
-      degraded: input.events.length > 0,
-    });
-  }
-  if (input.row && input.row.deleted_at !== null && input.events.length === 0) {
-    intervals.push({
-      issue_id: input.issue.id,
-      label: input.label,
-      start: input.row.created_at,
-      end: input.row.deleted_at,
-      degraded: true,
-    });
-  }
-  if (input.row && input.row.deleted_at !== null && sawAdd && !sawRemove) {
-    intervals.push({
-      issue_id: input.issue.id,
-      label: input.label,
-      start: input.row.created_at,
-      end: input.row.deleted_at,
-      degraded: true,
-    });
+  private backlinkTimestamp(
+    source: LedgerIssueRelationshipSource,
+    comments: Map<string, Pick<CommentRow, "id" | "issue_id" | "created_at">>,
+  ): number {
+    const sourceIssue = this.issueById.get(source.source_issue_id);
+    if (source.source_entity_type === "issue_body" && sourceIssue) return sourceIssue.created_at;
+    if (source.source_entity_type === "comment") {
+      const comment = comments.get(source.source_entity_id);
+      if (comment && comment.issue_id === source.source_issue_id) return comment.created_at;
+    }
+    return source.created_at;
   }
 
-  return intervals
-    .filter((interval) => interval.end === null || interval.start <= interval.end)
-    .sort(compareLabelIntervals);
+  private loadBodies(ids: string): void {
+    const rows = this.db.prepare(
+      `SELECT id, body, source, author_actor_type, author_display, author_user_id,
+              evidence_method, evidence_id
+         FROM ledger_issues
+        WHERE id IN (SELECT value FROM json_each(?))`,
+    ).all(ids) as IssueBodyRow[];
+    for (const row of rows) this.bodyByIssue.set(row.id, row);
+  }
+
+  private loadReferences(sourceEntityType: LedgerIssueRelationshipSource["source_entity_type"], ids: string): void {
+    const rows = this.db.prepare(
+      `SELECT *
+         FROM ledger_issue_relationship_sources
+        WHERE source_entity_type = ?
+          AND source_entity_id IN (SELECT value FROM json_each(?))
+          AND relationship_type = 'references'
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC`,
+    ).all(sourceEntityType, ids) as LedgerIssueRelationshipSource[];
+    for (const row of rows) {
+      appendTo(this.referencesBySourceEntity, sourceKey(row.source_entity_type, row.source_entity_id), row);
+    }
+  }
+
+  private loadComments(ids: string): string[] {
+    const rows = this.db.prepare(
+      `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at,
+              c.source, c.author_actor_type, c.author_display, c.author_user_id,
+              c.evidence_method, c.evidence_id
+         FROM ledger_comments c
+        WHERE c.issue_id IN (SELECT value FROM json_each(?))
+          AND c.deleted_at IS NULL
+        ORDER BY c.issue_id ASC, c.ordinal ASC, c.created_at ASC`,
+    ).all(ids) as CommentRow[];
+    for (const row of rows) appendTo(this.commentsByIssue, row.issue_id, row);
+    return rows.map((row) => row.id);
+  }
+
+  private loadStateEvents(ids: string): void {
+    const issueEvents = this.issueEventTypes.length === 0 ? [] : this.db.prepare(
+      `SELECT id, entity_type, entity_id, event_type, source, payload_json,
+              occurred_at, observed_at, actor_type, actor_user_id,
+              evidence_method, evidence_id
+         FROM ledger_events INDEXED BY idx_ledger_events_issue_type
+        WHERE entity_type = 'issue'
+          AND entity_id IN (SELECT value FROM json_each(?))
+          AND event_type IN (${placeholders(this.issueEventTypes)})`,
+    ).all(ids, ...this.issueEventTypes) as StateEventRow[];
+    const linkedEvents = this.linkedEventTypes.length === 0 ? [] : this.db.prepare(
+      `SELECT id, entity_type, entity_id, event_type, source, payload_json,
+              occurred_at, observed_at, actor_type, actor_user_id,
+              evidence_method, evidence_id,
+              json_extract(payload_json, '$.issue_id') AS linked_issue_id
+         FROM ledger_events
+        WHERE entity_type != 'issue'
+          AND json_extract(payload_json, '$.issue_id') IN (SELECT value FROM json_each(?))
+          AND event_type IN (${placeholders(this.linkedEventTypes)})`,
+    ).all(ids, ...this.linkedEventTypes) as Array<StateEventRow & { linked_issue_id: string }>;
+    const touched = new Set<string>();
+    for (const event of issueEvents) {
+      appendTo(this.stateEventsByIssue, event.entity_id, event);
+      touched.add(event.entity_id);
+    }
+    for (const { linked_issue_id: issueId, ...event } of linkedEvents) {
+      appendTo(this.stateEventsByIssue, issueId, event);
+      touched.add(issueId);
+    }
+    for (const issueId of touched) this.stateEventsByIssue.get(issueId)?.sort(compareStateEvents);
+  }
 }
 
 function labelIntervalsForPredicate(
@@ -832,7 +813,7 @@ function labelIntervalsForPredicate(
   if (labels.size === 0 || issueIds.size === 0) return [];
   const intervals: TimelineLabelMembershipInterval[] = [];
   for (const label of labels) {
-    for (const interval of labelHistory.intervalsByLabel.get(label) ?? []) {
+    for (const interval of labelHistory.intervalsForLabel(label)) {
       if (!issueIds.has(interval.issue_id) || !intervalOverlapsWindow(interval, window)) continue;
       intervals.push(interval);
     }
@@ -856,19 +837,6 @@ function labelsInPredicate(predicate: TimelineIssuePredicate | null): Set<string
   return labels;
 }
 
-function groupRelationshipSources(
-  sources: LedgerIssueRelationshipSource[],
-): Map<string, LedgerIssueRelationshipSource[]> {
-  const groups = new Map<string, LedgerIssueRelationshipSource[]>();
-  for (const source of sources) {
-    const key = sourceKey(source.source_entity_type, source.source_entity_id);
-    const group = groups.get(key) ?? [];
-    group.push(source);
-    groups.set(key, group);
-  }
-  return groups;
-}
-
 function selectRootIssues(
   issues: IssueRow[],
   input: ProjectTimelineNormalizedInput,
@@ -888,9 +856,6 @@ function buildRootSpecs(input: {
   normalized: ProjectTimelineNormalizedInput;
   issues: IssueRow[];
   issueById: Map<string, IssueRow>;
-  relationshipSources: LedgerIssueRelationshipSource[];
-  parentChildrenByIssueId: Map<string, string[]>;
-  labelHistory: LabelHistoryIndex;
   diagnostics: TimelineDiagnostic[];
 }): InternalRowSpec[] {
   const explicitSpecs = input.rawInput.root_specs ?? input.rawInput.root_row_specs;
@@ -1032,7 +997,7 @@ function buildEventsForRow(
   issueById: Map<string, IssueRow>,
   issueRefs: Map<string, TimelineIssueRef>,
   input: ProjectTimelineNormalizedInput,
-  indexes: TimelineEventIndexes,
+  eventSource: TimelineEventSource,
   attributionResolver: AttributionReadResolver,
 ): TimelineEvent[] {
   if (!row.issue) return [];
@@ -1040,6 +1005,8 @@ function buildEventsForRow(
   if (!issue) return [];
   const result: TimelineEvent[] = [];
   if (eventKindEnabled(input, "body")) {
+    const body = eventSource.body(issue.id);
+    if (!body) throw new Error(`Timeline issue ${issue.id} has no body row`);
     addIfInWindow(result, {
       id: `event:${row.id}:body`,
       row_id: row.id,
@@ -1048,16 +1015,16 @@ function buildEventsForRow(
       kind: "body",
       timestamp: issue.created_at,
       ordinal: 0,
-      ...headlineForText(issue.title, issue.body),
+      ...headlineForText(issue.title, body.body),
       author: timelineAuthor(attributionResolver, {
-        legacy_display: issue.author_display,
-        actor_type: issue.author_actor_type,
-        user_id: issue.author_user_id,
-        evidence_method: issue.evidence_method,
-        evidence_id: issue.evidence_id,
-        source: issue.source,
+        legacy_display: body.author_display,
+        actor_type: body.author_actor_type,
+        user_id: body.author_user_id,
+        evidence_method: body.evidence_method,
+        evidence_id: body.evidence_id,
+        source: body.source,
       }),
-      body: issue.body,
+      body: body.body,
       state: null,
       backlink: null,
       link_ids: [],
@@ -1065,7 +1032,7 @@ function buildEventsForRow(
   }
 
   const comments = eventKindEnabled(input, "comment")
-    ? indexes.commentsByIssue.get(issue.id) ?? []
+    ? eventSource.comments(issue.id)
     : [];
   if (eventKindEnabled(input, "comment")) {
     for (const comment of comments) {
@@ -1094,9 +1061,9 @@ function buildEventsForRow(
     }
   }
 
-  const stateEventTypes = indexes.stateEventTypes;
+  const stateEventTypes = eventSource.stateEventTypes;
   if (stateEventTypes.length === 0) return result.sort(compareTimelineEvents);
-  const stateEvents = indexes.stateEventsByIssue.get(issue.id) ?? [];
+  const stateEvents = eventSource.stateEvents(issue.id);
   let stateOrdinal = comments.length + 1;
   const hasAuthCompletion = stateEvents.some((event) => (
     event.event_type === "auth_request.completed"
@@ -1163,6 +1130,10 @@ function eventKindEnabled(input: ProjectTimelineNormalizedInput, kind: TimelineE
   return input.event_kinds.includes(kind);
 }
 
+function placeholders(values: readonly unknown[]): string {
+  return values.map(() => "?").join(", ");
+}
+
 function selectedStateEventTypes(input: ProjectTimelineNormalizedInput): string[] {
   const eventTypes = new Set<string>();
   for (const kind of input.event_kinds) {
@@ -1171,62 +1142,47 @@ function selectedStateEventTypes(input: ProjectTimelineNormalizedInput): string[
   return Array.from(eventTypes).sort();
 }
 
-function buildBacklinkEvents(input: {
-  db: Db;
-  relationshipSources: LedgerIssueRelationshipSource[];
-  orderedRows: TimelineRowOccurrence[];
-  issueById: Map<string, IssueRow>;
-  issueRefs: Map<string, TimelineIssueRef>;
-  normalized: ProjectTimelineNormalizedInput;
-}): TimelineEvent[] {
+function buildBacklinkEvents(
+  row: TimelineRowOccurrence,
+  eventSource: TimelineEventSource,
+  issueRefs: Map<string, TimelineIssueRef>,
+  normalized: ProjectTimelineNormalizedInput,
+): TimelineEvent[] {
   const backlinkEvents: TimelineEvent[] = [];
-  const targetRows = new Map<string, TimelineRowOccurrence[]>();
-  for (const row of input.orderedRows) {
-    if (!row.issue) continue;
-    const rows = targetRows.get(row.issue.id) ?? [];
-    rows.push(row);
-    targetRows.set(row.issue.id, rows);
-  }
-
-  for (const source of input.relationshipSources) {
-    const rows = targetRows.get(source.target_issue_id) ?? [];
-    if (rows.length === 0) continue;
-    const sourceIssue = input.issueRefs.get(source.source_issue_id);
-    const targetIssue = input.issueRefs.get(source.target_issue_id);
+  if (!row.issue) return backlinkEvents;
+  for (const { source, timestamp } of eventSource.backlinks(row.issue.id)) {
+    const sourceIssue = issueRefs.get(source.source_issue_id);
+    const targetIssue = issueRefs.get(source.target_issue_id);
     const sourceEntity = sourceEntityForRelationshipSource(source);
     if (!sourceIssue || !targetIssue || !sourceEntity) continue;
-    const sourceTimestamp = sourceTimestampForRelationshipSource(source, input.db, input.issueById);
-    for (const row of rows) {
-      addIfInWindow(backlinkEvents, {
-        id: `event:${row.id}:backlink:${source.id}`,
-        row_id: row.id,
-        issue: targetIssue,
+    addIfInWindow(backlinkEvents, {
+      id: `event:${row.id}:backlink:${source.id}`,
+      row_id: row.id,
+      issue: targetIssue,
+      source_entity: sourceEntity,
+      kind: "backlink",
+      timestamp,
+      ordinal: Number.MAX_SAFE_INTEGER,
+      display_headline: `Referenced by ${sourceIssue.display_id}`,
+      headline_source: "backlink",
+      body: source.raw_ref,
+      state: null,
+      backlink: {
+        relationship_source_id: source.id,
+        relationship_id: source.relationship_id,
+        relationship_type: source.relationship_type,
+        source_issue: sourceIssue,
+        target_issue: targetIssue,
         source_entity: sourceEntity,
-        kind: "backlink",
-        timestamp: sourceTimestamp,
-        ordinal: Number.MAX_SAFE_INTEGER,
-        display_headline: `Referenced by ${sourceIssue.display_id}`,
-        headline_source: "backlink",
-        body: source.raw_ref,
-        state: null,
-        backlink: {
-          relationship_source_id: source.id,
-          relationship_id: source.relationship_id,
-          relationship_type: source.relationship_type,
-          source_issue: sourceIssue,
-          target_issue: targetIssue,
-          source_entity: sourceEntity,
-          ref_kind: source.ref_kind,
-          raw_ref: source.raw_ref,
-          normalized_ref: source.normalized_ref,
-          derived: true,
-        },
-        link_ids: [],
-      }, input.normalized);
-    }
+        ref_kind: source.ref_kind,
+        raw_ref: source.raw_ref,
+        normalized_ref: source.normalized_ref,
+        derived: true,
+      },
+      link_ids: [],
+    }, normalized);
   }
-
-  return backlinkEvents.sort(compareTimelineEvents);
+  return backlinkEvents;
 }
 
 function sourceEntityForRelationshipSource(
@@ -1239,24 +1195,6 @@ function sourceEntityForRelationshipSource(
     return { type: "comment", id: source.source_entity_id, issue_id: source.source_issue_id };
   }
   return null;
-}
-
-function sourceTimestampForRelationshipSource(
-  source: LedgerIssueRelationshipSource,
-  db: Db,
-  issueById: Map<string, IssueRow>,
-): number {
-  const sourceIssue = issueById.get(source.source_issue_id);
-  if (source.source_entity_type === "issue_body" && sourceIssue) return sourceIssue.created_at;
-  if (source.source_entity_type === "comment") {
-    const comment = db.prepare(
-      `SELECT created_at
-         FROM ledger_comments
-        WHERE id = ? AND issue_id = ? AND deleted_at IS NULL`,
-    ).get(source.source_entity_id, source.source_issue_id) as Pick<CommentRow, "created_at"> | undefined;
-    if (comment) return comment.created_at;
-  }
-  return source.created_at;
 }
 
 function addIfInWindow(events: TimelineEvent[], event: TimelineEvent, input: ProjectTimelineNormalizedInput): void {
@@ -1360,7 +1298,7 @@ function buildDiagnostics(input: {
   issues: IssueRow[];
   rows: TimelineRowOccurrence[];
   visibleIssueIds: Set<string>;
-  relationshipSources: LedgerIssueRelationshipSource[];
+  references: readonly IssueReference[];
   referenceCounts: Map<string, number>;
   rootOccurrencesByIssue: Map<string, number>;
   cycles: TimelineDiagnostic[];
@@ -1370,8 +1308,8 @@ function buildDiagnostics(input: {
   predicateDiagnostics: TimelineDiagnostic[];
 }): TimelineDiagnostics {
   const liveIssues = input.issues.filter((issue) => issue.deleted_at === null);
-  const referencedTargets = new Set(input.relationshipSources.map((source) => source.target_issue_id));
-  const referencingSources = new Set(input.relationshipSources.map((source) => source.source_issue_id));
+  const referencedTargets = new Set(input.references.map((source) => source.target_issue_id));
+  const referencingSources = new Set(input.references.map((source) => source.source_issue_id));
   const unreferencedOpen = liveIssues
     .filter((issue) => issue.status === "open" && !input.visibleIssueIds.has(issue.id) && !referencedTargets.has(issue.id))
     .map((issue) => issue.id)
@@ -1388,7 +1326,7 @@ function buildDiagnostics(input: {
     reachable_from_roots_count: input.visibleIssueIds.size,
     unreferenced_open_issue_ids: unreferencedOpen,
     loner_open_issue_ids: loners,
-    derived_reference_count: input.relationshipSources.length,
+    derived_reference_count: input.references.length,
     repeated_reference_target_issue_ids: Array.from(input.referenceCounts.entries())
       .filter(([, count]) => count > 1)
       .map(([id]) => id)
@@ -1410,7 +1348,7 @@ function buildDiagnostics(input: {
   };
 }
 
-function countActiveTargets(sources: LedgerIssueRelationshipSource[]): Map<string, number> {
+function countActiveTargets(sources: readonly IssueReference[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const source of sources) {
     counts.set(source.target_issue_id, (counts.get(source.target_issue_id) ?? 0) + 1);
@@ -1496,28 +1434,6 @@ function uniqueSpecId(base: string, specs: InternalRowSpec[]): string {
   }
 }
 
-function issueLabelKey(issueId: string, label: string): string {
-  return `${issueId}\x1f${label}`;
-}
-
-function splitIssueLabelKey(key: string): [string, string] {
-  const separator = key.indexOf("\x1f");
-  if (separator === -1) return [key, ""];
-  return [key.slice(0, separator), key.slice(separator + 1)];
-}
-
-function compareLabelIntervals(
-  a: TimelineLabelMembershipInterval,
-  b: TimelineLabelMembershipInterval,
-): number {
-  if (a.start !== b.start) return a.start - b.start;
-  const aEnd = a.end ?? Number.POSITIVE_INFINITY;
-  const bEnd = b.end ?? Number.POSITIVE_INFINITY;
-  if (aEnd !== bEnd) return aEnd - bEnd;
-  if (a.issue_id !== b.issue_id) return a.issue_id.localeCompare(b.issue_id);
-  return a.label.localeCompare(b.label);
-}
-
 function compareIssues(a: IssueRow, b: IssueRow): number {
   if (a.created_at !== b.created_at) return a.created_at - b.created_at;
   if (a.short_id !== b.short_id) return a.short_id.localeCompare(b.short_id);
@@ -1544,23 +1460,6 @@ function numberOrNull(value: number | undefined): number | null {
 
 function sourceKey(type: string, id: string): string {
   return `${type}:${id}`;
-}
-
-function timeAxis(events: TimelineEvent[]): TimelineTimeAxis {
-  if (events.length === 0) return { start: null, end: null, event_count: 0 };
-  const timestamps = events.map((event) => event.timestamp);
-  return {
-    start: Math.min(...timestamps),
-    end: Math.max(...timestamps),
-    event_count: events.length,
-  };
-}
-
-function compareTimelineEvents(a: TimelineEvent, b: TimelineEvent): number {
-  if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
-  if (a.row_id !== b.row_id) return a.row_id.localeCompare(b.row_id);
-  if (a.ordinal !== b.ordinal) return a.ordinal - b.ordinal;
-  return a.id.localeCompare(b.id);
 }
 
 function compareStateEvents(a: StateEventRow, b: StateEventRow): number {

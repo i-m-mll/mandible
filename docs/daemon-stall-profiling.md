@@ -1,8 +1,9 @@
 # Daemon stall profiling
 
 The daemon runs on one event loop, so any synchronous turn delays every
-client. Self-update handoffs fail when a diagnostic window's `eventLoop.maxMs`
-reaches 250 ms (`EVENT_LOOP_STALL_BUDGET_MS`, `src/runtime-health-contract.ts`).
+client. Candidate acceptance fails, and a self-update handoff records a
+performance finding, when a diagnostic window's `eventLoop.maxMs` reaches
+250 ms (`EVENT_LOOP_STALL_BUDGET_MS`, `src/runtime-health-contract.ts`).
 The daemon's own `daemon_event_loop_stall` log reports only each window's maximum.
 These tools say when each stall happens and which JS functions caused it.
 
@@ -159,6 +160,69 @@ The probe only reads health, so it is safe against production.
    bun scripts/iab-preview.mjs finalize --root "$ROOT" --revision "$(jq -r .ownership.revision "$ROOT/metadata.json")" \
      --outcome assessed --disposition discard --summary 'CPU profile for <issue>' --json
    ```
+
+## Route-cost sweep
+
+`bun run route-cost-sweep` (scripts/route-cost-sweep.ts) is the per-handler
+budget gate. Candidate acceptance runs it before the native build.
+
+- It snapshots the live ledger read-only with `VACUUM INTO` under
+  `~/.cache/mandible/route-cost-sweep/`, then starts a preview daemon of the
+  checkout on that copy. The preview gets copies of the conversation structure
+  and search caches.
+- The route list is `operations.routes` from `/api/instance`, which is the
+  router's operation catalog.
+- It runs every read route in two passes, then every database-only write route
+  in two passes. Pass 1 is each request's first call on a daemon that has
+  served no route yet; pass 2 is the warm call. Request parameters come from
+  the heaviest entities in the snapshot: the busiest project, issue and
+  umbrella, the most-versioned artifact, the largest conversation, and so on.
+- It measures loop-blocking time inside the daemon:
+  `POST /api/diagnostics/event-loop-turn` returns the largest drift of a 5 ms
+  timer since the previous call, and the sweep calls it between requests. The
+  timer is not a second `monitorEventLoopDelay`, because Bun backs every such
+  monitor with one shared histogram, and resetting it would reset the health
+  window. Each request is
+  charged until the loop is quiet again, so background work it starts counts.
+  Wall time does not count.
+- A route reaching `HANDLER_TURN_BUDGET_MS` in the main pass is remeasured in
+  three confirmation trials, each on its own fresh daemon. A route fails only
+  if the same call kind (first or warm) reaches the budget in the main pass
+  and all three confirmation trials, unless `BUDGET_EXCEPTIONS` names it and
+  cites an issue that is open in the snapshot. Within a trial, each call kind
+  uses the maximum across request variants and, for warm calls, later passes.
+  The reported first-call and warm turns are the minima of these trial maxima.
+- Every confirmation restores the single saved database from before measurement.
+  Write confirmations start a fresh daemon and replay every exercised earlier
+  write in `WRITES` order, unmeasured, with the main session's requests and pass
+  numbers, then measure the target's passes. This restores prerequisites and the
+  state of entities consumed by per-pass acknowledgements or dismissals. A failed
+  replay aborts the sweep as an invalid confirmation trial. There are no per-route
+  database copies: only the working copy and the pre-measurement copy.
+- JSON report `mandible-route-cost-sweep@2` retains every request with its trial
+  number (0 is the main pass), per-trial first/warm maxima, the confirmation
+  rule, and load observations. Candidate acceptance retains the per-trial maxima
+  for remeasured routes, including spikes discarded by confirmation.
+- It also fails on any request that does not succeed (including confirmations),
+  invalid or obsolete budget exceptions, and on any non-GET route,
+  or GET route with path parameters, that has neither requests nor a skip
+  reason in `READS`/`WRITES`. Every skip says why, for example an effect a
+  preview cannot hold, credentials, or files outside the snapshot.
+
+Useful options:
+
+- `--only <regex>` narrows the run to matching paths.
+- `--fresh-each` starts a new daemon per route, so every route's first call is
+  a process's first request.
+- `--cpu-prof` attributes each offender's window with
+  `cpuprofile-windows.mjs`.
+- `--keep` retains the snapshot, logs and profile.
+
+When the 1-minute load average is at or above the core count, the sweep polls
+every five seconds for up to three minutes. It then measures even if load stays
+high; load alone never fails the gate. The report records initial load, load
+after the wait, final load, core count, and time spent waiting. `--ignore-load`
+skips this wait. Confirmation trials handle isolated scheduling spikes.
 
 ## Limits
 

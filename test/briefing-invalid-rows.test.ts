@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { getBriefingSidebarSnapshot, invalidateApiGetCache } from '../ui/src/api';
+import { getBriefingSidebarSnapshot, clearApiGetCache } from '../ui/src/api';
 import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 // Issue 2212987: one row the view cannot show must not hide every other
@@ -17,12 +17,12 @@ const roundless = { id: 'briefing:legacy', title: 'arxiv-scan', latest_round_id:
 beforeEach(async () => {
   __resetBrowserSessionForTests();
   await ensureClientAccess(async () => jsonResponse({ authenticated: true, session: { csrf_token: 'test' } }));
-  invalidateApiGetCache();
+  clearApiGetCache();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  invalidateApiGetCache();
+  clearApiGetCache();
 });
 
 it('keeps valid Briefings and reports a roundless row once across the list and bundle layouts', async () => {

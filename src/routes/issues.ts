@@ -53,6 +53,8 @@ import {
 import {
   getLedgerIssueHead,
   batchLedgerIssueHeads,
+  requireLedgerIssueHead,
+  type LedgerIssueHead,
 } from "../ledger/issue-heads.js";
 import {
   evaluateMarkdownBodyPolicy,
@@ -64,7 +66,6 @@ import {
   suggestProjectRefs,
 } from "../ledger/project-registry.js";
 import {
-  findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
   listLedgerIssueSummaries,
   resolveLedgerIssueIdForRoute,
@@ -546,16 +547,14 @@ function resolveIssueRefs(db: Db, refs: string[]): {
   return { ids, unresolved };
 }
 
-function issueDisplayRef(db: Db, issueId: string): string {
-  try {
-    return getLedgerIssueHead(db, issueId).short_id;
-  } catch {
-    return issueId;
-  }
-}
-
 function issueDisplayRefs(db: Db, issueIds: string[]): string[] {
-  return issueIds.map((issueId) => issueDisplayRef(db, issueId));
+  if (issueIds.length === 0) return [];
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT id, short_id FROM ledger_issues WHERE id IN (${sql}) AND deleted_at IS NULL`,
+  ).all(bindings) as Array<{ id: string; short_id: string }>;
+  const refs = new Map(rows.map((row) => [row.id, row.short_id || row.id.slice(0, 7)]));
+  return issueIds.map((issueId) => refs.get(issueId) ?? issueId);
 }
 
 function listUmbrellaStructuredChildEdgeIds(db: Db, umbrellaId: string): string[] {
@@ -577,7 +576,7 @@ function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
         `SELECT target_issue_id
            FROM ledger_issue_relationships
           WHERE source_issue_id = ?
-            AND relationship_type = 'parent_child'
+            AND +relationship_type = 'parent_child'
             AND deleted_at IS NULL
           ORDER BY created_at, id`,
       ).all(umbrellaId) as Array<{ target_issue_id: string }>)
@@ -600,9 +599,10 @@ function refreshDelegationManifest(
   // classification for the umbrella (never a silently reconstructed baseline),
   // including the previously ambiguous zero-child case where an empty payload
   // is indistinguishable from a pre-upgrade one.
+  const heads = batchLedgerIssueHeads(db, [umbrellaId, ...childIds]);
   const payload: Array<Record<string, unknown>> = [
-    { ...getLedgerIssueHead(db, umbrellaId), self: true },
-    ...childIds.map((childId) => ({ ...getLedgerIssueHead(db, childId) })),
+    { ...requireLedgerIssueHead(heads, umbrellaId), self: true },
+    ...childIds.map((childId) => ({ ...requireLedgerIssueHead(heads, childId) })),
   ];
   const checkpoint = new LedgerStore(db).addIssueCheckpoint(umbrellaId, {
     kind: "delegation-manifest",
@@ -628,11 +628,11 @@ function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): 
   const rows = db.prepare(
     `SELECT id, type, title, status, repo, base_branch, head_branch, created_at, updated_at, resolved_at
      FROM auth_requests
+     WHERE status IN ('pending', 'approved', 'executing', 'failed', 'expired', 'needs_rebase')
      ORDER BY created_at DESC`,
   ).all() as Array<Record<string, unknown>>;
-  const activeStatuses = new Set(["pending", "approved", "executing", "failed", "expired", "needs_rebase"]);
   const active = rows
-    .filter((row) => repoAliases.has(String(row.repo ?? "")) && activeStatuses.has(String(row.status ?? "")))
+    .filter((row) => repoAliases.has(String(row.repo ?? "")))
     .map((row) => ({
       id: String(row.id ?? ""),
       type: String(row.type ?? "merge"),
@@ -785,15 +785,15 @@ function directChildCountsByIssue(db: Db, issueIds: string[]): Map<string, numbe
   const rows = db.prepare(
     `SELECT source_issue_id, target_issue_id
        FROM ledger_relationship_edges
-      WHERE link_type = 'parent_child'
-        AND target_entity_type = 'issue'
+      WHERE +link_type = 'parent_child'
+        AND +target_entity_type = 'issue'
         AND deleted_at IS NULL
         AND target_issue_id IS NOT NULL
         AND source_issue_id IN (${sql})
      UNION
      SELECT source_issue_id, target_issue_id
        FROM ledger_issue_relationships
-      WHERE relationship_type = 'parent_child'
+      WHERE +relationship_type = 'parent_child'
         AND deleted_at IS NULL
         AND source_issue_id IN (${sql})`,
   ).all(bindings) as Array<{ source_issue_id: string; target_issue_id: string }>;
@@ -805,7 +805,11 @@ function directChildCountsByIssue(db: Db, issueIds: string[]): Map<string, numbe
   return counts;
 }
 
-function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<string, unknown>> {
+function buildUmbrellaChildSummaries(
+  db: Db,
+  childIds: string[],
+  heads: Map<string, LedgerIssueHead>,
+): Array<Record<string, unknown>> {
   if (childIds.length === 0) return [];
   const { sql, bindings } = placeholders(childIds, "issue");
   const rows = db.prepare(
@@ -822,7 +826,6 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   }>;
   const byId = new Map(rows.map((row) => [row.id, row]));
   const labels = labelsByIssue(db, childIds);
-  const heads = batchLedgerIssueHeads(db, childIds);
   const branches = batchIssueBranches(db, childIds);
   const authRequests = authRequestsByIssue(db, childIds);
   const latestComments = latestCommentsByIssue(db, childIds);
@@ -843,7 +846,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
       labels: childLabels,
       kind: row.kind,
       child_count: childCounts.get(childId) ?? 0,
-      head: heads.get(childId) ?? getLedgerIssueHead(db, childId),
+      head: requireLedgerIssueHead(heads, childId),
       issue_branches: issueBranches,
       branches: issueBranches,
       auth_requests: authRequests.get(childId) ?? [],
@@ -857,6 +860,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
 export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean } = {}): Record<string, unknown> {
   const umbrella = buildLedgerIssueDetailProjection(db, issueId);
   const childIds = listUmbrellaChildEdgeIds(db, umbrella.id);
+  const heads = batchLedgerIssueHeads(db, [umbrella.id, ...childIds]);
   const deepChildCounts = options.deep ? directChildCountsByIssue(db, childIds) : new Map<string, number>();
   const children = options.deep ? childIds.map((childId) => {
     const child = buildLedgerIssueDetailProjection(db, childId);
@@ -869,7 +873,7 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       labels: child.labels,
       kind: child.kind,
       child_count: deepChildCounts.get(childId) ?? 0,
-      head: getLedgerIssueHead(db, child.id),
+      head: requireLedgerIssueHead(heads, child.id),
       issue_branches: child.issue_branches,
       branches: child.issue_branches,
       auth_requests: child.auth_requests,
@@ -896,7 +900,7 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       sessions: child.sessions,
       associated_artifacts: child.associated_artifacts,
     };
-  }) : buildUmbrellaChildSummaries(db, childIds);
+  }) : buildUmbrellaChildSummaries(db, childIds, heads);
   return {
     umbrella: {
       id: umbrella.id,
@@ -907,7 +911,7 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       labels: umbrella.labels,
       body: umbrella.body,
       current_revision_id: currentIssueBodyRevisionId(db, umbrella.id),
-      head: getLedgerIssueHead(db, umbrella.id),
+      head: requireLedgerIssueHead(heads, umbrella.id),
       parent_role: buildParentRoleStatus(db, umbrella.id),
     },
     delegation_manifest: latestCheckpoint(umbrella, "delegation-manifest"),
@@ -2264,31 +2268,6 @@ export function registerIssueRoutes(
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { operation: { id: "post:/api/ledger/issues/:issueId/labels", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
-
-  // GET /api/issues/find/:issueId — search ledger-backed issues by ID prefix.
-  // Registered before /:repoId/:issueId to avoid the literal "find" being treated as repoId.
-  server.get("/api/issues/find/:issueId", (req, res) => {
-    const issueId = getParam(req, "issueId");
-    if (!issueId) {
-      sendJson(res, 400, { error: "missing issueId" });
-      return;
-    }
-    const db = getDb();
-    try {
-      const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
-      if (result.ok) {
-        const ledgerIssueId = resolveContextLedgerIssueId(db, result.detail.id, result.detail.repo_id);
-        if (ledgerIssueId
-          && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
-        sendJson(res, 200, result.detail);
-        return;
-      }
-      sendJson(res, result.status, { error: result.error });
-    } catch (error) {
-      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
-  }, { operation: { id: "get:/api/issues/find/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
   // Bug: c934e60 — issue lifecycle tracking

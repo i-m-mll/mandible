@@ -12,7 +12,7 @@ import {
   resolvedArtifactRecord,
 } from "../provider-artifacts.js";
 import type { ArtifactRecord } from "../types.js";
-import { computeWorkUnitLiveness, mapWorkUnitRow } from "../work-unit-utils.js";
+import { mapWorkUnitRow, workUnitLiveness } from "../work-unit-utils.js";
 import { summarizeSessionKey } from "../session-summary.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
@@ -926,7 +926,11 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
          FROM work_units wu
          LEFT JOIN ledger_work_unit_issue_links l
            ON l.work_unit_id = wu.id AND l.issue_id = ?
-         WHERE wu.ledger_issue_id = ? OR l.issue_id = ?
+         WHERE wu.id IN (
+           SELECT id FROM work_units WHERE ledger_issue_id = ?
+           UNION
+           SELECT work_unit_id FROM ledger_work_unit_issue_links WHERE issue_id = ?
+         )
          ORDER BY wu.created_at DESC`,
       ).all(issueId, issueId, issueId) as Array<Record<string, unknown>>
     : db.prepare(
@@ -938,6 +942,7 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
          ORDER BY wu.created_at DESC`,
       ).all(issueId) as Array<Record<string, unknown>>;
 
+  const liveness = workUnitLiveness(db, rows.map(mapWorkUnitRow));
   const seen = new Set<string>();
   const result: LedgerIssueDetailWorkUnit[] = [];
   for (const row of rows) {
@@ -951,7 +956,7 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
       link_created_at: numberOrNull(row.link_created_at),
       last_seen_at: numberOrNull(row.last_seen_at),
       metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
-      liveness: computeWorkUnitLiveness(db, workUnit),
+      liveness: liveness(workUnit),
     });
   }
   return result;
@@ -1123,7 +1128,7 @@ export function getLedgerIssueWorkMetadata(db: Db, issueId: string): LedgerIssue
   const canonical = db.prepare(
     `SELECT source_issue_id FROM ledger_issue_relationships
       WHERE target_issue_id = ?
-        AND relationship_type = 'blocks'
+        AND +relationship_type = 'blocks'
         AND deleted_at IS NULL`,
   ).all(issueId) as Array<{ source_issue_id: string }>;
   for (const row of canonical) {

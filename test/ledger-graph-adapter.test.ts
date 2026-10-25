@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
+import { registerGraphRoutes } from "../src/routes/graph.js";
+import { Router } from "../src/server.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueProjection,
@@ -13,6 +15,7 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { GraphNode } from "../src/types.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { statementsRun } from "./helpers/statement-count.js";
 
 let tempDir = "";
 let db: Db;
@@ -138,8 +141,9 @@ describe("ledger graph projection", () => {
 
     expect(projection).not.toBeNull();
     expect(projection?.nodes.map((node) => node.type)).toEqual(["issue", "issue"]);
-    const parentNode = findNode(projection?.nodes ?? [], "Umbrella parent");
-    const childNode = findNode(projection?.nodes ?? [], "Child issue");
+    const nodes = projection?.detail(projection.nodes) ?? [];
+    const parentNode = findNode(nodes, "Umbrella parent");
+    const childNode = findNode(nodes, "Child issue");
     expect(projection?.edges).toEqual([
       expect.objectContaining({
         source: parentNode.id,
@@ -193,7 +197,7 @@ describe("ledger graph projection", () => {
     });
 
     expect(byKey?.nodes).toHaveLength(1);
-    expect(byKey?.nodes[0]).toMatchObject({
+    expect(byKey?.detail(byKey.nodes)[0]).toMatchObject({
       id: expectedNodeId,
       repo_id: "feedbax",
       detail: expect.objectContaining({ project_id: checkout.project.id }),
@@ -233,4 +237,55 @@ describe("ledger graph projection", () => {
     expect(projection?.edges).toEqual([]);
   });
 
+});
+
+describe("graph route", () => {
+  function graphRouter(): Router {
+    setDb(db);
+    const router = new Router();
+    registerGraphRoutes(router);
+    return router;
+  }
+
+  function addLinkedIssues(store: LedgerStore, projectId: string, root: string, from: number, count: number): void {
+    for (let index = from; index < from + count; index += 1) {
+      const issue = createIssue(store, projectId, `lnk${String(index).padStart(4, "0")}`, `Linked ${index}`);
+      store.addComment(issue.id, { ...SYSTEM_ACTOR, body: `note ${index}`, author_display: "Codex", actor_type: "agent", source: "session" });
+      insertSession(`sess_${index}`, "dead");
+      linkSessionToLedgerIssue(db, { session_id: `sess_${index}`, issue_ref: issue.id, repo_ref: root });
+    }
+  }
+
+  it("reads details only for the issues it displays", async () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const router = graphRouter();
+    const url = "/api/graph?mode=issue&limit=2";
+    addLinkedIssues(store, checkout.project.id, checkout.checkout.root, 0, 4);
+    await router.invoke({ method: "GET", url });
+    const few = await statementsRun(db, () => router.invoke({ method: "GET", url }));
+
+    addLinkedIssues(store, checkout.project.id, checkout.checkout.root, 4, 16);
+    const many = await statementsRun(db, () => router.invoke({ method: "GET", url }));
+
+    expect(many).toBe(few);
+  });
+
+  it("links an auth request to every displayed issue its reference is a prefix of, in issue order", async () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const shortIds = ["abd3333", "abc2222", "abc1111"];
+    shortIds.forEach((shortId, index) => {
+      const issue = createIssue(store, checkout.project.id, `pre${index}000`, `Prefixed ${shortId}`);
+      db.prepare("UPDATE ledger_issues SET short_id = ?, updated_at = ? WHERE id = ?").run(shortId, 10_000 - index, issue.id);
+    });
+    insertAuthRequest("auth_prefix", checkout.checkout.root);
+    db.prepare("UPDATE auth_requests SET issue_references = ? WHERE id = ?").run(JSON.stringify(["abc"]), "auth_prefix");
+
+    const response = await graphRouter().invoke({ method: "GET", url: "/api/graph?mode=activity" });
+    const edges = (response.body as { edges: Array<{ source: string; target: string; type: string }> }).edges
+      .filter((edge) => edge.source === "auth_request:auth_prefix" && edge.type === "auth_issue");
+
+    expect(edges.map((edge) => edge.target.split(":")[2])).toEqual(["abc2222", "abc1111"]);
+  });
 });

@@ -40,6 +40,7 @@ import {
   type TaskExecutorFreshness,
   type TaskExecutorSummary,
   type TaskGuardFacts,
+  type TaskCommandList,
   type TaskInventory,
   type TaskInventoryItem,
   type ExecutorTaskInventoryItem,
@@ -910,10 +911,14 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   // disable request merely because the first response was lost.
   const pendingRequestKeys = useRef(new Map<string, string>());
 
-  const load = useCallback(async (signal?: AbortSignal): Promise<TaskInventory | null> => {
+  const load = useCallback(async (signal?: AbortSignal, initial = false): Promise<TaskInventory | null> => {
     const sequence = ++inventorySequence.current;
+    const showCached = (cached: TaskInventory) => {
+      setInventory(cached);
+      setLoading(false);
+    };
     try {
-      const next = await getTaskInventory(signal);
+      const next = await getTaskInventory({ signal, onCached: initial ? showCached : undefined });
       if (!mounted.current || signal?.aborted || sequence !== inventorySequence.current) return null;
       setInventory(next);
       setError(null);
@@ -933,9 +938,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   }, []);
   const inventoryLoadedRef = useRef(false);
   const refreshInventory = useLiveLoad((signal) => {
-    if (inventoryLoadedRef.current) invalidateApiGetCache('/api/tasks');
+    const initial = !inventoryLoadedRef.current;
+    if (!initial) invalidateApiGetCache('/api/tasks');
     inventoryLoadedRef.current = true;
-    return load(signal);
+    return load(signal, initial);
   }, [], TASKS_POLL_INTERVAL_MS);
   useEffect(() => {
     window.addEventListener('managed-reminder:sse', refreshInventory);
@@ -987,7 +993,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       return;
     }
     const targetKey = selectedTargetKey;
-    if (commandsTargetRef.current !== targetKey) {
+    const initial = commandsTargetRef.current !== targetKey;
+    if (initial) {
       commandsTargetRef.current = targetKey;
       setCommands([]);
       setCommandAvailable(false);
@@ -995,11 +1002,15 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     } else {
       invalidateApiGetCache('/api/tasks/commands');
     }
+    const showCached = (cached: TaskCommandList) => {
+      setCommands(cached.commands);
+      setCommandAvailable(true);
+    };
     try {
       const commandList = await getTaskCommands({
         executor: selectedTargetExecutor,
         taskId: selectedTargetTaskId,
-      }, signal);
+      }, { signal, onCached: initial ? showCached : undefined });
       if (!mounted.current || signal.aborted) return;
       setCommands(commandList.commands);
       const pendingKey = pendingRequestKeys.current.get(targetKey);

@@ -14,6 +14,25 @@ import { resolveProjectRef } from "./project-registry.js";
 
 const IN_CLAUSE_CHUNK = 900;
 
+/** Inbox rows need open issue identities and labels, without bodies or parent edges. */
+export function listLedgerOpenIssues(
+  db: Db,
+  workScanner: Pick<WorkScanner, "getRepos">,
+  repoFilter?: string,
+): Array<{ id: string; title: string; labels: string[]; repo_id: string; repo_name: string }> {
+  const checkouts = representativeCheckouts(listCheckouts(db, workScanner.getRepos()))
+    .filter(checkout => !repoFilter || [checkout.repo_root, checkout.repo_name, checkout.repo_id, checkout.project_key].includes(repoFilter))
+    .sort((a, b) => a.repo_name.localeCompare(b.repo_name));
+  const query = db.prepare(`SELECT id, short_id, title FROM ledger_issues
+    WHERE project_id = ? AND status = 'open' AND deleted_at IS NULL ORDER BY updated_at DESC`);
+  const groups = checkouts.map(checkout => ({ checkout, issues: query.all(checkout.project_id) as Array<Pick<LedgerIssue, "id" | "short_id" | "title">> }));
+  const labels = batchLabelsByIssue(db, groups.flatMap(group => group.issues.map(issue => issue.id)));
+  return groups.flatMap(({ checkout, issues }) => issues.map(issue => ({
+    id: issue.short_id || issue.id.slice(0, 7), title: issue.title, labels: labels.get(issue.id) ?? [],
+    repo_id: checkout.repo_id, repo_name: checkout.repo_name,
+  })));
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -163,27 +182,6 @@ function parentProjection(parents: GitBugIssueParentRelationship[]): Pick<GitBug
     parent_ids: parents.map((parent) => parent.parent_id),
     parent_relationships: parents,
   };
-}
-
-export function findLedgerIssueAcrossRepos(
-  db: Db,
-  workScanner: Pick<WorkScanner, "getRepos">,
-  issueRef: string,
-): { ok: true; detail: GitBugIssueDetail } | { ok: false; status: 404 | 409; error: string } {
-  const checkouts = listCheckouts(db, workScanner.getRepos());
-  const store = new LedgerStore(db);
-  const matches: GitBugIssueDetail[] = [];
-  for (const checkout of checkouts) {
-    const resolved = store.resolveIssueRef(issueRef, { project_id: checkout.project_id });
-    if (resolved.ok) {
-      matches.push(ledgerIssueToRouteDetail(db, checkout, store.getIssueDetail(resolved.id)));
-    } else if (resolved.error === "ambiguous") {
-      return { ok: false, status: 409, error: "ambiguous issue reference" };
-    }
-  }
-  if (matches.length === 1) return { ok: true, detail: matches[0] };
-  if (matches.length > 1) return { ok: false, status: 409, error: "ambiguous issue reference" };
-  return { ok: false, status: 404, error: "issue not found in ledger" };
 }
 
 export function getLedgerIssueDetailForRoute(

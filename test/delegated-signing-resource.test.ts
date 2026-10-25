@@ -14,7 +14,7 @@ import {
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/ledger-fixtures.js";
-import { longestEventLoopBlockMs, useSlowCommand } from "./helpers/event-loop-blocking.js";
+import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
 
 function fixture() {
   const db = createMigratedDb({
@@ -194,7 +194,7 @@ describe("delegated signer reconnect lifecycle", () => {
     await withRealAgent(async ({ db, signer, resource, context, agentRunning }) => {
       const exited = spawn("true");
       await new Promise((resolve) => exited.once("exit", resolve));
-      for (const command of ["ps", "lsof", "ssh-add", "ssh-keygen"]) useSlowCommand(command, 0.3);
+      for (const command of ["ps", "lsof", "ssh-add", "ssh-keygen"]) useSlowCommand(command);
       try {
         const blockedMs = await longestEventLoopBlockMs(async () => {
           const borrow = await resource.borrow(context.leaseId);
@@ -206,7 +206,7 @@ describe("delegated signer reconnect lifecycle", () => {
           await successor.drain(context.leaseId, "clearance_revoked");
         });
 
-        expect(blockedMs).toBeLessThan(50);
+        expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
         expect(agentRunning()).toBe(false);
         expect(db.prepare("SELECT owner_runtime_epoch, state FROM delegated_signing_runtime_bindings WHERE lease_id = ?")
           .get(context.leaseId)).toEqual({ owner_runtime_epoch: "successor", state: "retired" });

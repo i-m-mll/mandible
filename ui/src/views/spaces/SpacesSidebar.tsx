@@ -205,7 +205,8 @@ function loadCachedGroups(): SpaceGroup[] {
   }
 }
 
-function persistGroups(groups: SpaceGroup[]): void {
+/** The browser-local copy the sidebar paints from before its grouped read answers. */
+export function persistGroups(groups: SpaceGroup[]): void {
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(GROUPS_CACHE_KEY, JSON.stringify(groups));

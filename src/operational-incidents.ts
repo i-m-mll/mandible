@@ -515,20 +515,31 @@ export function ingestOperationalIncidentEnvelope(
 
 export const DAEMON_INCIDENT_EXECUTOR = "mandible-daemon";
 
+/** The unresolved incident the daemon holds for a task, if any. */
+export function openDaemonIncident(db: Db, task: string): string | null {
+  const open = db.prepare(
+    `SELECT id FROM operational_incidents
+      WHERE executor = ? AND task = ? AND resolved_at IS NULL
+      ORDER BY first_seen DESC LIMIT 1`,
+  ).get(DAEMON_INCIDENT_EXECUTOR, task) as { id: string } | undefined;
+  return open?.id ?? null;
+}
+
 /**
  * Raise a fault the daemon detected in itself. One unresolved incident stands
  * for each task, so a repeating failure raises it once until it is resolved.
  */
 export function raiseDaemonIncident(
   db: Db,
-  input: { task: string; exitClass: (typeof EXIT_CLASSES)[number]; observedAt?: number },
+  input: {
+    task: string;
+    exitClass: (typeof EXIT_CLASSES)[number];
+    observedAt?: number;
+    measurements?: Record<string, number>;
+  },
 ): { incident_id: string; raised: boolean } {
-  const open = db.prepare(
-    `SELECT id FROM operational_incidents
-      WHERE executor = ? AND task = ? AND resolved_at IS NULL
-      ORDER BY first_seen DESC LIMIT 1`,
-  ).get(DAEMON_INCIDENT_EXECUTOR, input.task) as { id: string } | undefined;
-  if (open) return { incident_id: open.id, raised: false };
+  const open = openDaemonIncident(db, input.task);
+  if (open) return { incident_id: open, raised: false };
   const observedAt = input.observedAt ?? Date.now();
   const receipt = ingestOperationalIncidentEnvelope(db, {
     schema: OPERATIONAL_INCIDENT_SCHEMA,
@@ -541,7 +552,13 @@ export function raiseDaemonIncident(
       episode: { task: input.task, condition: "failed_permanent", first_seen: observedAt },
       observation: "active",
       observed_at: observedAt,
-      facts: { run_id: String(observedAt), run_status: "failed_permanent", exit_class: input.exitClass, finished_at: observedAt },
+      facts: {
+        run_id: String(observedAt),
+        run_status: "failed_permanent",
+        exit_class: input.exitClass,
+        finished_at: observedAt,
+        ...(input.measurements ? { measurements: input.measurements } : {}),
+      },
       recovery: null,
     }],
   }, SYSTEM_USER_ID, observedAt);

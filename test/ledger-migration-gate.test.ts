@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import {
-  findLedgerIssueAcrossRepos,
   listLedgerIssueSummaries,
 } from "../src/ledger/issue-projection.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -203,18 +202,6 @@ describe("ledger issue projection", () => {
       issues: [{ id: issue.short_id }],
     }]);
     expect(byLegacy.body).toEqual([]);
-  });
-
-  it("reports global alias ambiguity instead of choosing the first match", () => {
-    const first = repo("repo-1", "one");
-    const second = repo("repo-2", "two");
-    createLedgerIssue({ repo: first, alias: "dupe", title: "First" });
-    createLedgerIssue({ repo: second, alias: "dupe", title: "Second" });
-
-    expect(findLedgerIssueAcrossRepos(db, fakeWorkScanner([first, second]), "dupe")).toMatchObject({
-      ok: false,
-      status: 409,
-    });
   });
 });
 

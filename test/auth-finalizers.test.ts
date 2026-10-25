@@ -515,6 +515,74 @@ describe("work-unit resolution on merge", () => {
     }
   });
 
+  it("resolves every unit of an integration merge whose cleanup already deleted the lanes", async () => {
+    const now = 20_000;
+    const repo = createAuthCheckRepo();
+    const rp = fs.realpathSync(repo);
+    const repoId = path.basename(repo);
+    const db = createMigratedDb();
+    try {
+      const project = createLedgerProject(db, repo);
+      const closedIssue = createLedgerIssue(db, project.project.id, "lane1", "Closed lane");
+      registerWorkRepo(db, repo);
+      const head = "integration/lanes";
+      const lanes = { closed: `${head}__closed`, reference: `${head}__reference` };
+      const tips: Record<string, string> = {};
+      for (const [name, branch] of Object.entries(lanes)) {
+        commitOnBranch(repo, branch, { [`${name}.txt`]: `${name}\n` });
+        tips[name] = git(repo, ["rev-parse", branch]);
+      }
+      git(repo, ["checkout", "-b", head, "main"]);
+      for (const branch of Object.values(lanes)) git(repo, ["merge", "--no-ff", branch, "-m", `merge ${branch}`]);
+      const mergeHead = git(repo, ["rev-parse", head]);
+      git(repo, ["checkout", "main"]);
+      for (const branch of Object.values(lanes)) git(repo, ["branch", "-D", branch]);
+      // Only the scanner's snapshot remembers the reference lane; the closed lane left no trace.
+      db.prepare("INSERT INTO branches (repo_root, branch, last_commit_hash) VALUES (?, ?, ?)")
+        .run(rp, lanes.reference, tips.reference);
+      const insertUnit = db.prepare(
+        `INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'committed', ?)`,
+      );
+      insertUnit.run("wu-head", "head1", null, repoId, head, "integration", now);
+      insertUnit.run("wu-closed", "lane1", closedIssue.id, repoId, lanes.closed, "partition", now);
+      insertUnit.run("wu-reference", "lane2", null, repoId, lanes.reference, "partition", now);
+
+      const queue = new AuthQueue({
+        executor: async (options) => publishFixtureExecution(queue, options),
+        db,
+        now: () => now,
+      });
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
+        type: "merge",
+        command: `mandible auth merge ${head} --into main`,
+        title: "Merge lanes",
+        repo: repoId,
+        cwd: rp,
+        target_repo_root: rp,
+        base_branch: "main",
+        head_branch: head,
+        merge_head_sha: mergeHead,
+        issue_closures: [closedIssue.id],
+        execution_mode: "daemon",
+      }));
+      await awaitFixtureResolution(queue, request.id, async () => {
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
+      });
+      await queue.drainFinalizers();
+
+      expect(db.prepare("SELECT id, state, auth_request_id FROM work_units ORDER BY id").all()).toEqual([
+        { id: "wu-closed", state: "resolved", auth_request_id: request.id },
+        { id: "wu-head", state: "resolved", auth_request_id: request.id },
+        { id: "wu-reference", state: "resolved", auth_request_id: null },
+      ]);
+      (await queue.dispose());
+    } finally {
+      db.close();
+    }
+  });
+
   it("skips the retirement sweep when the ancestry batch build fails, then retires once it succeeds", async () => {
     const now = 10_000;
     const repo = createAuthCheckRepo();

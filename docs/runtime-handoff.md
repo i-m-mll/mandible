@@ -29,13 +29,20 @@ Completion requires the pinned executable in loaded launchd arguments, the
 exact applied merge generation through the production front door, matching
 installed desktop provenance, and a full 31-second daemon health/log
 observation. Each observation sample must answer from the same process and
-definitions, ready at that generation, without event-loop or memory warnings,
-and without a maximum event-loop delay of 250 ms or more. Diagnostic samples
-carry a sequence and exact interval. The observer waits until a completed
-sample covers the end of the 31-second window, within one fixed 62-second
-deadline; a stale sampler cannot pass by returning the same snapshot. The
-candidate hook manager verifies this receipt and publication
-proof before settling convergence or releasing deferred delivery actions.
+definitions, ready at that generation, with valid diagnostics. Diagnostic
+samples carry a sequence and exact interval, and consecutive samples must be
+contiguous. The observer waits until a completed sample covers the end of the
+31-second window, within one fixed 62-second deadline; a stale sampler cannot
+pass by returning the same snapshot. The candidate hook manager verifies this
+receipt and publication proof before settling convergence or releasing
+deferred delivery actions.
+The handoff judges convergence, not performance. Once `handoff-start` has run
+nothing rolls back, and the observation window covers the desktop relaunch and
+a cold-cache startup warmup, the slowest seconds of a generation's life.
+Event-loop lag warnings, maximum event-loop delays of 250 ms or more, and
+memory warnings, in samples and in the log, are recorded in the receipt's
+`performance` (bounded) and never fail the handoff. Candidate acceptance, which
+runs before the merge on an empty fixture database, fails on any of them.
 The log assessment fails on any `error` line from the current process and on
 any one event or route that exceeds 100 lines in a 10-second window. That rate
 rule detects runaway loops. Scheduled work that goes through a backlog, such as
@@ -135,25 +142,17 @@ through a 31-second observation of the exact current daemon, installation,
 loaded launchd definitions, and actual stderr writer. Hook acceptance commits
 before the journal becomes complete; interrupted acknowledgment can be replayed.
 Concurrent observers cannot replace a receipt after its hook acceptance commits.
-The original failure and hook attempt history remain available. Initial
-handoff acceptance remains strict from process startup through observation.
-Recovery still reads and hashes the complete current-process log, following
-rotated segments as described below, and lifetime
-hard failures such as crashes, error rows, restarts and event storms remain
-fatal. Timed lag, stall and memory-warning rows that precede a new recovery
-observation are retained as historical diagnostics; untimed events and events
-during the new interval fail. The recovery receipt records the exact interval,
-initial and final samples, full log offset/digest/byte count, and bounded
-historical diagnostics.
+The original failure and hook attempt history remain available. Recovery
+applies the same convergence rule as the handoff: it reads and hashes the
+complete current-process log, following rotated segments as described below,
+and lifetime hard failures such as crashes, error rows, restarts and event
+storms remain fatal even when they are old. The recovery receipt records the
+exact interval, initial and final samples, full log offset/digest/byte count,
+and bounded performance findings.
 Refused recovery observations are kept separately under the handoff's
 `recovery-attempts/` directory. Each immutable record includes the actor,
 failed phase, reason and bounded evidence; the newest ten are retained without
 rewriting the journal or an accepted recovery receipt.
-This exception is limited to lag, stall and memory diagnostics whose later
-samples prove the same process recovered. Generic lifetime error rows remain
-fatal even when they are old. Existing liveness or performance faults can
-therefore still refuse candidate acceptance or recovery; the handoff reports
-that refusal rather than treating readiness alone as convergence.
 
 The protected retry route accepts `mode: "verify-current"` and requires an
 active durable credential with project write access and exact delivery custody

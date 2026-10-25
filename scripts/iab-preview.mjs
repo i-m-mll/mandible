@@ -1425,7 +1425,7 @@ function canonicalFuturePath(candidatePath) {
   return path.join(canonicalPath(probe), ...suffix);
 }
 
-function bunRuntime(worktree) {
+export function bunRuntime(worktree) {
   return run(path.join(worktree, "scripts", "bun-runtime.sh"), [], { cwd: worktree }).stdout.trim();
 }
 
@@ -1715,7 +1715,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
   };
 }
 
-function previewInstanceEnv(details) {
+export function previewInstanceEnv(details) {
   const installationId = readInstallationId();
   const instanceId = `preview-${createHash("sha256").update(path.dirname(details.dbCopy)).digest("hex").slice(0, 16)}`;
   return {
@@ -1969,7 +1969,7 @@ export function sanitizePreviewDatabase(databasePath) {
  * inherited from the invoking shell can only point the preview back at a shared
  * resource, which is the failure this whole path exists to prevent.
  */
-function sanitizedLauncherEnv() {
+export function sanitizedLauncherEnv() {
   return Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("MANDIBLE_")),
   );

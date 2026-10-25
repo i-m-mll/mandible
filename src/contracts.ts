@@ -42,6 +42,7 @@ export type LegacyListEnvelope<T> = Partial<Record<ListEnvelopeKey, T[]>> &
 export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 
 export const DOMAIN_EVENTS = Object.freeze({
+  ARTIFACT_CHANGED: "artifact:changed",
   AUTH_AUTO_APPROVE: "auth:auto-approve",
   AUTH_COMPLETED: "auth:completed",
   AUTH_CONVERGENCE: "auth:convergence",
@@ -673,6 +674,15 @@ export type WorkUnitLiveness = {
 export type WorkUnitWithLiveness = WorkUnit & {
   liveness: WorkUnitLiveness;
 };
+
+/**
+ * A work unit as the work-unit routes return it. Liveness answers whether an
+ * agent is working the unit, so it is derived only while the unit is open or
+ * committed; a resolved or abandoned unit has no work in progress to report.
+ */
+export type WorkUnitView =
+  | (WorkUnitWithLiveness & { state: "open" | "committed" })
+  | (WorkUnit & { state: "resolved" | "abandoned" });
 
 export type {
   AcceptedConversationSubmission,
@@ -2035,6 +2045,8 @@ export type OperationalIncidentFacts = {
   run_status: string;
   exit_class: string;
   finished_at: number;
+  /** Numbers the daemon measured for a fault it raised in itself; executors never send them. */
+  measurements?: Record<string, number>;
 };
 
 export type OperationalIncidentRecovery = {

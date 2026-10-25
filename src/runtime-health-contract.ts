@@ -1,4 +1,11 @@
 export const EVENT_LOOP_STALL_BUDGET_MS = 250;
+/**
+ * The most one request may block the event loop, judged per route by
+ * scripts/route-cost-sweep.ts on production data. It sits well under
+ * EVENT_LOOP_STALL_BUDGET_MS because concurrent requests and background
+ * work share the same loop.
+ */
+export const HANDLER_TURN_BUDGET_MS = 100;
 
 export interface DiagnosticInterval {
   sequence: number;
@@ -11,17 +18,24 @@ export interface RuntimeHealthSnapshot {
   memory?: DiagnosticInterval & { warning: boolean };
 }
 
-export type RuntimeHealthFailureCode =
-  | "invalid_diagnostics"
-  | "event_loop_lag"
-  | "event_loop_stall"
-  | "memory_warning";
+export type RuntimePerformanceCode = "event_loop_lag" | "event_loop_stall" | "memory_warning";
 
-export interface RuntimeHealthFailure {
-  code: RuntimeHealthFailureCode;
+export interface RuntimeHealthFinding<Code extends string> {
+  code: Code;
   message: string;
   sample: unknown;
 }
+
+export type RuntimeHealthDefect = RuntimeHealthFinding<"invalid_diagnostics">;
+export type RuntimePerformanceFinding = RuntimeHealthFinding<RuntimePerformanceCode>;
+
+/** Performance findings across an observation, one per code and diagnostic sequence. */
+export interface RuntimePerformanceRecord {
+  findings: RuntimePerformanceFinding[];
+  omitted: number;
+}
+
+const MAX_RETAINED_PERFORMANCE_FINDINGS = 20;
 
 export class RuntimeHealthObservationError extends Error {
   constructor(
@@ -38,7 +52,6 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   probe: (deadline: number, signal: AbortSignal) => Promise<T>;
   healthOf: (value: T) => RuntimeHealthSnapshot;
   validate?: (value: T, initial: T) => void;
-  recovery?: boolean;
   now?: () => number;
   wait?: (milliseconds: number) => Promise<void>;
   observationMs?: number;
@@ -48,7 +61,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   value: T;
   observation: { startedAt: number; mustCover: number; completedAt: number; deadline: number };
   samples: { initial: RuntimeHealthSnapshot; last: RuntimeHealthSnapshot };
-  historicalHealth: RuntimeHealthFailure[];
+  performance: RuntimePerformanceRecord;
 }> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
@@ -66,8 +79,8 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   const initial = value;
   const firstHealth = options.healthOf(value);
   const trackers = { eventLoop: intervalTracker(), memory: intervalTracker() };
-  const historicalHealth: RuntimeHealthFailure[] = [];
-  const historicalKeys = new Set<string>();
+  const performance: RuntimePerformanceRecord = { findings: [], omitted: 0 };
+  const performanceKeys = new Set<string>();
 
   for (;;) {
     try { options.validate?.(value, initial); }
@@ -77,21 +90,20 @@ export async function observeRuntimeHealthCoverage<T>(options: {
     }
     const health = options.healthOf(value);
     for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, startedAt, now());
-    const currentFailures: RuntimeHealthFailure[] = [];
-    for (const failure of assessRuntimeHealth(health)) {
-      if (options.recovery && failure.code === "event_loop_stall"
-        && validInterval(failure.sample)
-        && failure.sample.intervalEndedAt < startedAt) {
-        const key = `${failure.code}:${failure.sample.sequence}`;
-        if (!historicalKeys.has(key)) { historicalKeys.add(key); historicalHealth.push(failure); }
-      } else currentFailures.push(failure);
-    }
-    if (currentFailures.length) throw new RuntimeHealthObservationError(currentFailures[0]!.code, currentFailures[0]!.message, {
-      startedAt, mustCover, deadline, failures: currentFailures, initialSample: firstHealth, lastSample: health,
+    const assessment = assessRuntimeHealth(health);
+    if (assessment.defects.length) throw new RuntimeHealthObservationError("invalid_diagnostics", assessment.defects[0]!.message, {
+      startedAt, mustCover, deadline, defects: assessment.defects, initialSample: firstHealth, lastSample: health,
     });
+    for (const finding of assessment.performance) {
+      const key = `${finding.code}:${(finding.sample as DiagnosticInterval).sequence}`;
+      if (performanceKeys.has(key)) continue;
+      performanceKeys.add(key);
+      if (performance.findings.length < MAX_RETAINED_PERFORMANCE_FINDINGS) performance.findings.push(finding);
+      else performance.omitted++;
+    }
     if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     if (now() >= mustCover && trackers.eventLoop.coveredUntil >= mustCover && trackers.memory.coveredUntil >= mustCover) {
-      return { value, observation: { startedAt, mustCover, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, historicalHealth: historicalHealth.slice(0, 20) };
+      return { value, observation: { startedAt, mustCover, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, performance };
     }
     if (now() >= deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     await wait(options.pollMs ?? 1_000);
@@ -129,26 +141,28 @@ async function probeByDeadline<T>(
   }
 }
 
-export function assessRuntimeHealth(health: RuntimeHealthSnapshot): RuntimeHealthFailure[] {
-  const failures: RuntimeHealthFailure[] = [];
+/** Classifies one sample: defects make the diagnostics unusable; performance findings describe a usable sample. */
+export function assessRuntimeHealth(health: RuntimeHealthSnapshot): { defects: RuntimeHealthDefect[]; performance: RuntimePerformanceFinding[] } {
+  const defects: RuntimeHealthDefect[] = [];
+  const performance: RuntimePerformanceFinding[] = [];
   if (!validInterval(health.eventLoop)
     || typeof health.eventLoop?.warning !== "boolean"
     || !finiteNonnegative(health.eventLoop?.maxMs)) {
-    failures.push({ code: "invalid_diagnostics", message: "Event-loop diagnostics are missing or invalid.", sample: health.eventLoop });
+    defects.push({ code: "invalid_diagnostics", message: "Event-loop diagnostics are missing or invalid.", sample: health.eventLoop });
   } else {
-    if (health.eventLoop.warning) failures.push({ code: "event_loop_lag", message: "Event-loop lag warning is active.", sample: health.eventLoop });
-    if (health.eventLoop.maxMs >= EVENT_LOOP_STALL_BUDGET_MS) failures.push({
+    if (health.eventLoop.warning) performance.push({ code: "event_loop_lag", message: "Event-loop lag warning is active.", sample: health.eventLoop });
+    if (health.eventLoop.maxMs >= EVENT_LOOP_STALL_BUDGET_MS) performance.push({
       code: "event_loop_stall",
       message: `Event-loop delay ${health.eventLoop.maxMs} ms meets or exceeds the ${EVENT_LOOP_STALL_BUDGET_MS} ms budget.`,
       sample: health.eventLoop,
     });
   }
   if (!validInterval(health.memory) || typeof health.memory?.warning !== "boolean") {
-    failures.push({ code: "invalid_diagnostics", message: "Memory diagnostics are missing or invalid.", sample: health.memory });
+    defects.push({ code: "invalid_diagnostics", message: "Memory diagnostics are missing or invalid.", sample: health.memory });
   } else if (health.memory.warning) {
-    failures.push({ code: "memory_warning", message: "Memory warning is active.", sample: health.memory });
+    performance.push({ code: "memory_warning", message: "Memory warning is active.", sample: health.memory });
   }
-  return failures;
+  return { defects, performance };
 }
 
 export function diagnosticsCover(health: RuntimeHealthSnapshot, instant: number): boolean {

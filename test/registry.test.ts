@@ -15,7 +15,7 @@ import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
 import { ReaperTimer } from "../src/session-reaper.js";
 import type { Session } from "../src/types.js";
-import { longestEventLoopBlockMs, useSlowCommand, useStubCommand } from "./helpers/event-loop-blocking.js";
+import { longestEventLoopBlockMs, useSlowCommand, useStubCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -110,17 +110,6 @@ describe("session registry", () => {
     }
   });
 
-  it("marks a session dead when its pid is gone or reused, and keeps the live one active", async () => {
-    const registry = createRegistry();
-    const { pid, pidStart } = await exitedProcess();
-    registry.registerSession({ id: "gone", app: "claude", pid, pid_start: pidStart, status: "active" });
-    registry.registerSession({ id: "reused", app: "claude", pid: process.pid, pid_start: "1970-01-01T00:00:00.000Z", status: "active" });
-    registry.registerSession({ id: "live", app: "claude", pid: process.pid, pid_start: cachedPidStartTime(process.pid), status: "active" });
-    const page = registry.listSessionsPage({ scope: "all" });
-    expect(Object.fromEntries(page.sessions.map((session) => [session.id, session.status])))
-      .toEqual({ gone: "dead", reused: "dead", live: "active" });
-    expect(registry.getSessionByPid(process.pid)?.id).toBe("live");
-  });
 
   it("marks a PID-less session dead only after a day without updates", () => {
     expect(checkLiveness(pidlessSession(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()))).toBe("dead");
@@ -196,7 +185,7 @@ describe("session reaper", () => {
       reusePid(db, "reused");
       await gone.stop();
 
-      useSlowCommand("ps", 0.3);
+      useSlowCommand("ps");
       const started = performance.now();
       let tickMs = 0;
       const blockedMs = await longestEventLoopBlockMs(async () => {
@@ -205,7 +194,7 @@ describe("session reaper", () => {
       });
 
       expect(tickMs).toBeGreaterThanOrEqual(300);
-      expect(blockedMs).toBeLessThan(50);
+      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       const status = (id: string) => (db.prepare("SELECT status FROM sessions WHERE id = ?").get(id) as { status: string }).status;
       expect({ live: status("live"), reused: status("reused"), gone: status("gone") })
         .toEqual({ live: "active", reused: "dead", gone: "dead" });
@@ -244,7 +233,7 @@ describe("session reads on request paths", () => {
     const live = await unseenProcess();
     const reused = await unseenProcess();
     try {
-      useSlowCommand("ps", 0.3);
+      useSlowCommand("ps");
       let first: { sessions: Session[] } = { sessions: [] };
       const blockedMs = await longestEventLoopBlockMs(async () => {
         registry.registerSession({ id: "live", app: "claude", pid: live.pid, pid_start: live.pidStart, status: "active" });
@@ -252,7 +241,7 @@ describe("session reads on request paths", () => {
         first = registry.listSessionsPage({ scope: "all" });
       });
 
-      expect(blockedMs).toBeLessThan(50);
+      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       // Until `ps` answers, a start time is unknown and the session stays as it was.
       expect(statuses(first)).toEqual({ live: "active", reused: "active" });
       await waitUntil(() => statuses(registry.listSessionsPage({ scope: "all" })).reused === "dead", "the reused pid to be found");
@@ -271,7 +260,7 @@ describe("session reads on request paths", () => {
     registerSessionRoutes(router, registry);
     const hooked = await unseenProcess();
     try {
-      useSlowCommand("ps", 0.3);
+      useSlowCommand("ps");
       let status = 0;
       const blockedMs = await longestEventLoopBlockMs(async () => {
         status = (await router.invoke({
@@ -282,7 +271,7 @@ describe("session reads on request paths", () => {
       });
 
       expect(status).toBe(200);
-      expect(blockedMs).toBeLessThan(50);
+      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       expect(registry.getSession("hooked")).toMatchObject({ pid_start: hooked.pidStart, status: "active" });
     } finally {
       await hooked.stop();

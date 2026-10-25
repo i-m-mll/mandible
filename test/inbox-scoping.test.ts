@@ -6,7 +6,7 @@
  * acknowledgement attribution.
  */
 
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +23,8 @@ import { addBinding, addCredential, createUser, setupOperator } from "../src/use
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { createLedgerIssue, createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
+import { SseManager, setSseManager } from "../src/sse.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -796,6 +798,134 @@ describe("inbox acknowledgement attribution", () => {
       expect(conflict.statusCode).toBe(403);
       expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("conflict-ack"))
         .toEqual({ acknowledged_by: null });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// Issue 401f88b — acknowledging rewrites each wide auth request row, so a
+// backlog is committed a budgeted slice per event-loop turn.
+describe("POST /api/inbox/ack-all", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setSseManager(null);
+  });
+
+  it("leaves a retried request's new resolution unacknowledged between batches", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `retry-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1, status: "failed" });
+      }
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+      const queue = new AuthQueue({ db });
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      const retryBetweenBatches = new Promise<string>((resolve, reject) => {
+        setImmediate(() => {
+          void (async () => {
+            const row = db.prepare(
+              "SELECT id FROM auth_requests WHERE acknowledged_by IS NULL LIMIT 1",
+            ).get() as { id: string };
+            const retried = await queue.retry(row.id);
+            expect(retried.status).toBe("pending");
+            expect(retried.resolved_at).toBeNull();
+            db.prepare("UPDATE auth_requests SET status = 'completed', resolved_at = 100 WHERE id = ?").run(row.id);
+            return row.id;
+          })().then(resolve, reject);
+        });
+      });
+
+      const [response, retriedId] = await Promise.all([
+        app.invoke("POST", "/api/inbox/ack-all"), retryBetweenBatches,
+      ]);
+
+      expect(response.statusCode).toBe(200);
+      expect(db.prepare("SELECT status, resolved_at, acknowledged_by FROM auth_requests WHERE id = ?").get(retriedId))
+        .toEqual({ status: "completed", resolved_at: 100, acknowledged_by: null });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by = ?").get(testRequesterUserId))
+        .toEqual({ count: 19 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("broadcasts committed acknowledgements before reporting a later batch write failure", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `failure-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1 });
+      }
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+      const sse = new SseManager();
+      setSseManager(sse);
+      const broadcast = vi.spyOn(sse, "broadcast");
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      const injectFailure = new Promise<void>((resolve) => {
+        setImmediate(() => {
+          db.exec(`CREATE TRIGGER fail_bulk_ack BEFORE UPDATE OF acknowledged_by ON auth_requests
+            BEGIN SELECT RAISE(ABORT, 'injected acknowledgement write failure'); END`);
+          resolve();
+        });
+      });
+
+      await expect(app.invoke("POST", "/api/inbox/ack-all"))
+        .rejects.toThrow("injected acknowledgement write failure");
+      await injectFailure;
+
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by = ?").get(testRequesterUserId))
+        .toEqual({ count: 8 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests WHERE acknowledged_by IS NULL").get())
+        .toEqual({ count: 12 });
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        type: DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, data: { kind: "all", id: null },
+      }));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("acknowledges a backlog across event-loop turns with the same result", async () => {
+    const db = setupInMemoryDb();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        seedAuthRow(db, { id: `resolved-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1 });
+      }
+      seedAuthRow(db, { id: "still-pending", target_session_id: null, target_repo_root: null, resolved_at: 100, status: "pending" });
+      seedAuthRow(db, { id: "acked-earlier", target_session_id: null, target_repo_root: null, resolved_at: 101 });
+      db.prepare("UPDATE auth_requests SET acknowledged_by = 'earlier' WHERE id = 'acked-earlier'").run();
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never);
+
+      // Every clock read passes a slice's budget, so each commit ends a turn.
+      let clock = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
+      let finished = false;
+      let turnsWhileRunning = 0;
+      const countTurn = (): void => {
+        if (finished) return;
+        turnsWhileRunning += 1;
+        setImmediate(countTurn);
+      };
+      setImmediate(countTurn);
+      const response = await app.invoke("POST", "/api/inbox/ack-all");
+      finished = true;
+
+      expect(response.statusCode).toBe(200);
+      expect(turnsWhileRunning).toBeGreaterThanOrEqual(2);
+      expect(db.prepare(
+        "SELECT id, acknowledged_by FROM auth_requests WHERE id NOT LIKE 'resolved-%' ORDER BY id",
+      ).all()).toEqual([
+        { id: "acked-earlier", acknowledged_by: "earlier" },
+        { id: "still-pending", acknowledged_by: null },
+      ]);
+      expect(db.prepare(
+        "SELECT DISTINCT acknowledged_by FROM auth_requests WHERE id LIKE 'resolved-%'",
+      ).all()).toEqual([{ acknowledged_by: testRequesterUserId }]);
     } finally {
       db.close();
     }

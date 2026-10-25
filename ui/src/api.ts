@@ -1,15 +1,17 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
-import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
+import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
+import { invalidatePersistedDetail, ROUTE_DATA_FRESH_MS } from './detail-cache';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
-import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
+import type { ProjectTimelineInput, ProjectTimelinePage, ProjectTimelineProjection } from './types/timeline';
+import { mergeTimelinePages, sameTimelineRows } from '../../src/timeline-pages';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
@@ -517,10 +519,26 @@ async function parseMaybeJson(response: Response): Promise<unknown> {
   return response.text();
 }
 
-type CachedJsonOptions = {
+/**
+ * A view's read of a cached GET. A fresh value answers without a request. Otherwise `onCached`
+ * receives the retained value of the same path, however old or invalidated, synchronously
+ * before the network answers, and the read revalidates, joining a read already in flight.
+ */
+export type CachedRead<T> = {
+  signal?: AbortSignal;
+  onCached?: (value: T) => void;
+};
+
+/**
+ * A read of state that changes without a server event, such as a host preference. Only
+ * `warm: true` reads (the startup warmup and a view's first load) may take a cached value;
+ * every other read goes to the network, which keeps refreshes on focus authoritative.
+ */
+export type WarmableRead<T> = CachedRead<T> & { warm?: boolean };
+
+type CachedJsonOptions<T> = CachedRead<T> & {
   ttlMs?: number;
   staleWhileRevalidateMs?: number;
-  signal?: AbortSignal;
 };
 
 type CachedJsonEntry = {
@@ -539,8 +557,10 @@ type InflightGetRequest = {
 
 const DEFAULT_GET_CACHE_TTL_MS = 1_000;
 const DEFAULT_GET_CACHE_STALE_MS = 4_000;
+// Route data the startup warmup reads: an activation inside the window renders the warm value
+// without a request, and the server events that change it invalidate it sooner.
 const WARMED_ROUTE_GET_OPTIONS = {
-  ttlMs: 60_000,
+  ttlMs: ROUTE_DATA_FRESH_MS,
   staleWhileRevalidateMs: 0,
 };
 const getJsonCache = new Map<string, CachedJsonEntry>();
@@ -558,14 +578,13 @@ async function fetchJsonForCache(
 ): Promise<unknown> {
   const response = await apiGet(path, { signal });
   const value = await parseMaybeJson(response);
-  if (shouldCache()) {
-    const now = Date.now();
-    getJsonCache.set(cacheKeyForGet(path), {
-      value,
-      freshUntil: now + options.ttlMs,
-      staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
-    });
-  }
+  if (!shouldCache()) return cachedApiGetJson(path, { ...options, signal, onCached: () => undefined });
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(path), {
+    value,
+    freshUntil: now + options.ttlMs,
+    staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
+  });
   return value;
 }
 
@@ -641,7 +660,7 @@ function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSign
 
 async function cachedApiGetJson<T>(
   path: string,
-  options: CachedJsonOptions = {},
+  options: CachedJsonOptions<T> = {},
 ): Promise<T> {
   if (options.signal?.aborted) throw abortReason(options.signal);
   const resolvedOptions = {
@@ -654,6 +673,10 @@ async function cachedApiGetJson<T>(
   if (cached && now < cached.freshUntil) return cached.value as T;
 
   const inflight = inflightGetJson.get(key);
+  if (options.onCached) {
+    if (cached) options.onCached(cached.value as T);
+    return waitForGetWithSignal<T>(inflight ?? startCachedGet(key, path, resolvedOptions), options.signal);
+  }
   if (cached && now < cached.staleUntil) {
     if (!inflight) {
       const refresh = startCachedGet(key, path, resolvedOptions);
@@ -665,36 +688,59 @@ async function cachedApiGetJson<T>(
   return waitForGetWithSignal<T>(request, options.signal);
 }
 
+/**
+ * Make matching GETs (all, without a matcher) read from the network again. Their last values
+ * are retained only for `CachedRead.onCached`, which paints them while a view revalidates.
+ */
 export function invalidateApiGetCache(
-  matcher?: string | RegExp | ((key: string) => boolean),
+  matcher: string | RegExp | ((key: string) => boolean) = () => true,
 ): void {
-  if (!matcher) {
-    getJsonCache.clear();
-    for (const request of inflightGetJson.values()) request.invalidated = true;
-    inflightGetJson.clear();
-    return;
-  }
-  for (const key of Array.from(getJsonCache.keys())) {
-    const matches =
-      typeof matcher === 'string'
-        ? key.includes(matcher)
-        : matcher instanceof RegExp
-          ? matcher.test(key)
-          : matcher(key);
-    if (matches) getJsonCache.delete(key);
+  const matches = (key: string) => (
+    typeof matcher === 'string'
+      ? key.includes(matcher)
+      : matcher instanceof RegExp
+        ? matcher.test(key)
+        : matcher(key)
+  );
+  for (const [key, entry] of getJsonCache) {
+    if (matches(key)) getJsonCache.set(key, { value: entry.value, freshUntil: 0, staleUntil: 0 });
   }
   for (const [key, request] of Array.from(inflightGetJson.entries())) {
-    const matches =
-      typeof matcher === 'string'
-        ? key.includes(matcher)
-        : matcher instanceof RegExp
-          ? matcher.test(key)
-          : matcher(key);
-    if (matches) {
+    if (matches(key)) {
       request.invalidated = true;
       inflightGetJson.delete(key);
     }
   }
+}
+
+async function readWarmable<T>(path: string, read: WarmableRead<T>): Promise<T> {
+  if (!read.warm) invalidateApiGetCache((key) => key === cacheKeyForGet(path));
+  return cachedApiGetJson<T>(path, { ...WARMED_ROUTE_GET_OPTIONS, signal: read.signal, onCached: read.onCached });
+}
+
+/** Record a write's response as the current value of the GET that reads the same state. */
+function rememberApiGet(path: string, value: unknown): void {
+  invalidateApiGetCache((key) => key === cacheKeyForGet(path));
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(path), {
+    value,
+    freshUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs,
+    staleUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs + WARMED_ROUTE_GET_OPTIONS.staleWhileRevalidateMs,
+  });
+}
+
+/** Drop every cached GET, retained values included. */
+export function clearApiGetCache(): void {
+  getJsonCache.clear();
+  for (const request of inflightGetJson.values()) request.invalidated = true;
+  inflightGetJson.clear();
+}
+
+/** A gap in the event stream makes every server-derived cache stale. */
+export function invalidateDashboardCaches(): void {
+  invalidateApiGetCache();
+  invalidatePersistedDetail();
+  void queryClient.invalidateQueries({ refetchType: 'none' });
 }
 
 /** Exact cache families affected by a Briefing lifecycle event. */
@@ -713,56 +759,82 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
   return families.length > 0;
 }
 
+/** Graph and Timeline project every entity family, so any change to one invalidates both. */
+function invalidateCrossEntityProjections(): void {
+  invalidateApiGetCache('/api/graph');
+  invalidatePersistedDetail('graph');
+  invalidatePersistedDetail('timeline');
+}
+
+function invalidateArtifactReads(): void {
+  invalidateApiGetCache('/api/artifacts');
+  invalidatePersistedDetail('artifact-versions');
+  invalidatePersistedDetail('artifact-record');
+  invalidatePersistedDetail('artifact-content');
+  invalidatePersistedDetail('artifact-backrefs');
+}
+
 export function invalidateDashboardApiCacheForEvent(type: string): void {
   if (type === DOMAIN_EVENTS.HEARTBEAT) return;
   // Logs are an all-event projection. Its view refetches on each event, so
   // discard a warmed snapshot before the visible consumer asks again.
   invalidateApiGetCache('/api/system/logs');
   if (invalidateBriefingApiCacheForEvent(type)) {
-    invalidateApiGetCache('/api/graph');
-    if (type === 'briefing:round-published') invalidateApiGetCache('/api/artifacts');
+    invalidateCrossEntityProjections();
+    if (type === 'briefing:round-published') invalidateArtifactReads();
     return;
   }
-  if (type.startsWith('conversation:')) {
+  if (type === DOMAIN_EVENTS.INBOX_ACKNOWLEDGED) {
+    invalidateApiGetCache('/api/inbox');
+  } else if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
-    invalidateApiGetCache('/api/graph');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
-    invalidateApiGetCache('/api/graph');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     invalidateApiGetCache('/api/inbox');
-    if (type !== 'auth:output') invalidateApiGetCache('/api/graph');
+    if (type !== 'auth:output') invalidateCrossEntityProjections();
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
-    invalidateApiGetCache('/api/graph');
+    invalidateApiGetCache('/api/inbox');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('ledger:')) {
     // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
     // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
-    invalidateApiGetCache('/api/graph');
+    invalidateApiGetCache('/api/inbox');
+    invalidatePersistedDetail('issue-detail');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
-    invalidateApiGetCache('/api/graph');
+    invalidatePersistedDetail('spaces');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('artifact:')) {
-    invalidateApiGetCache('/api/artifacts');
-    invalidateApiGetCache('/api/graph');
+    invalidateArtifactReads();
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('managed-reminders.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/inbox');
-    invalidateApiGetCache('/api/graph');
+    invalidateCrossEntityProjections();
   } else if (type.startsWith('tasks.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/tasks/commands');
-    invalidateApiGetCache('/api/graph');
+    invalidateCrossEntityProjections();
   }
 }
 
-export async function getSessions<T>(query?: string): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`, WARMED_ROUTE_GET_OPTIONS);
+export async function getSessions<T>(query?: string, read: CachedRead<T[]> = {}): Promise<T[]> {
+  const { onCached } = read;
+  const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal: read.signal,
+    onCached: onCached && ((cached) => onCached(normalizeList(cached))),
+  });
   return normalizeList(payload);
 }
 
@@ -877,11 +949,11 @@ export type SessionOverviewAmbiguous = {
 
 export async function getSessionOverview(
   sessionRef: string,
-  signal?: AbortSignal,
+  read: CachedRead<SessionOverview | SessionOverviewAmbiguous> = {},
 ): Promise<SessionOverview | SessionOverviewAmbiguous> {
   return cachedApiGetJson<SessionOverview | SessionOverviewAmbiguous>(
     `/api/sessions/${encodeURIComponent(sessionRef)}/overview`,
-    { ...WARMED_ROUTE_GET_OPTIONS, signal },
+    { ...WARMED_ROUTE_GET_OPTIONS, ...read },
   );
 }
 
@@ -918,13 +990,13 @@ export async function patchSession(sessionId: string, body: Record<string, unkno
 }
 
 export async function getAuthQueue<T>(): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue');
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
 export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   const query = limit != null ? `?limit=${limit}` : '';
-  const payload = await cachedApiGetJson<ApiList<T>>(`/api/auth/history${query}`);
+  const payload = await cachedApiGetJson<ApiList<T>>(`/api/auth/history${query}`, WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
@@ -1131,13 +1203,14 @@ export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>('/api/work/repos');
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/work/repos', WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
 export async function getRepoBranches<T>(repoId: string): Promise<T[]> {
   const payload = await cachedApiGetJson<ApiList<T>>(
     `/api/work/repos/${encodeURIComponent(repoId)}/branches`,
+    WARMED_ROUTE_GET_OPTIONS,
   );
   return normalizeList(payload);
 }
@@ -1195,10 +1268,36 @@ export async function getIssueRepos<T>(): Promise<T[]> {
   return normalizeList(payload);
 }
 
+/**
+ * Fetch every page of one Timeline projection and join them. Each request does
+ * a bounded amount of daemon work; the view receives the whole projection at
+ * once, so its rows and time axis never reflect a partial load. If the row tree
+ * changes between pages, the load starts over.
+ */
 export async function getProjectTimeline(
   input: ProjectTimelineInput,
   signal?: AbortSignal,
 ): Promise<ProjectTimelineProjection> {
+  for (let attempt = 0; attempt < TIMELINE_LOAD_ATTEMPTS; attempt += 1) {
+    const pages: ProjectTimelinePage[] = [];
+    let rowOffset = 0;
+    for (;;) {
+      const page = await getProjectTimelinePage({ ...input, row_offset: rowOffset }, signal);
+      if (pages.length > 0 && !sameTimelineRows(pages[0].rows, page.rows)) break;
+      pages.push(page);
+      if (page.page.next_row_offset === null) return mergeTimelinePages(pages);
+      rowOffset = page.page.next_row_offset;
+    }
+  }
+  throw new Error('Timeline rows kept changing while loading; reload to try again');
+}
+
+const TIMELINE_LOAD_ATTEMPTS = 3;
+
+async function getProjectTimelinePage(
+  input: ProjectTimelineInput & { row_offset: number },
+  signal?: AbortSignal,
+): Promise<ProjectTimelinePage> {
   const response = await browserSessionFetch('/api/timeline/project', {
     method: 'POST',
     headers: {
@@ -1218,7 +1317,7 @@ export async function getProjectTimeline(
     }
     throw new Error(message);
   }
-  return (await parseMaybeJson(response)) as ProjectTimelineProjection;
+  return (await parseMaybeJson(response)) as ProjectTimelinePage;
 }
 
 export async function getIssueDetail(
@@ -1256,6 +1355,7 @@ export async function scanIssueRepo(repoId: string): Promise<void> {
 
 export async function triggerWorkScan(): Promise<void> {
   await apiPost('/api/work/scan');
+  invalidateApiGetCache('/api/work/');
 }
 
 export async function openPath(targetPath: string): Promise<void> {
@@ -1284,7 +1384,7 @@ export async function getPushStatus(): Promise<unknown> {
 // ── Inbox API ──
 
 export async function getInboxGlobal(): Promise<InboxData> {
-  return cachedApiGetJson<InboxData>('/api/inbox/global');
+  return cachedApiGetJson<InboxData>('/api/inbox/global', WARMED_ROUTE_GET_OPTIONS);
 }
 
 export async function acknowledgeInboxItem(
@@ -1292,10 +1392,12 @@ export async function acknowledgeInboxItem(
   id: string,
 ): Promise<void> {
   await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
+  invalidateApiGetCache('/api/inbox');
 }
 
 export async function ackAllInbox(): Promise<void> {
   await apiPost('/api/inbox/ack-all');
+  invalidateApiGetCache('/api/inbox');
 }
 
 export async function getSessionIssues(sessionId: string): Promise<unknown[]> {
@@ -1677,20 +1779,29 @@ function parseChatShownProjectsPreference(payload: unknown): ChatShownProjectsPr
   return record as ChatShownProjectsPreference;
 }
 
-export async function getChatShownProjectsPreference(): Promise<ChatShownProjectsPreference> {
-  const response = await apiGet('/api/host-preferences/chat-shown-projects');
-  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+const CHAT_SHOWN_PROJECTS_PATH = '/api/host-preferences/chat-shown-projects';
+
+export async function getChatShownProjectsPreference(
+  read: WarmableRead<ChatShownProjectsPreference> = {},
+): Promise<ChatShownProjectsPreference> {
+  const { onCached } = read;
+  return parseChatShownProjectsPreference(await readWarmable<unknown>(CHAT_SHOWN_PROJECTS_PATH, {
+    ...read,
+    onCached: onCached && ((cached) => onCached(parseChatShownProjectsPreference(cached))),
+  }));
 }
 
 export async function updateChatShownProjectsPreference(
   value: ChatShownProjectPreferenceValue[],
   expectedRevision: number,
 ): Promise<ChatShownProjectsPreference> {
-  const response = await apiPut('/api/host-preferences/chat-shown-projects', {
+  const response = await apiPut(CHAT_SHOWN_PROJECTS_PATH, {
     value,
     expected_revision: expectedRevision,
   });
-  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+  const saved = parseChatShownProjectsPreference(await parseMaybeJson(response));
+  rememberApiGet(CHAT_SHOWN_PROJECTS_PATH, saved);
+  return saved;
 }
 
 export type { SidebarOrderPreferenceValue, SidebarOrderPreference } from '../../src/contracts';
@@ -1718,20 +1829,29 @@ function parseSidebarOrderPreference(payload: unknown): SidebarOrderPreference {
   return record as SidebarOrderPreference;
 }
 
-export async function getSidebarOrderPreference(): Promise<SidebarOrderPreference> {
-  const response = await apiGet('/api/host-preferences/sidebar-order');
-  return parseSidebarOrderPreference(await parseMaybeJson(response));
+const SIDEBAR_ORDER_PATH = '/api/host-preferences/sidebar-order';
+
+export async function getSidebarOrderPreference(
+  read: WarmableRead<SidebarOrderPreference> = {},
+): Promise<SidebarOrderPreference> {
+  const { onCached } = read;
+  return parseSidebarOrderPreference(await readWarmable<unknown>(SIDEBAR_ORDER_PATH, {
+    ...read,
+    onCached: onCached && ((cached) => onCached(parseSidebarOrderPreference(cached))),
+  }));
 }
 
 export async function updateSidebarOrderPreference(
   value: SidebarOrderPreferenceValue,
   expectedRevision: number,
 ): Promise<SidebarOrderPreference> {
-  const response = await apiPut('/api/host-preferences/sidebar-order', {
+  const response = await apiPut(SIDEBAR_ORDER_PATH, {
     value,
     expected_revision: expectedRevision,
   });
-  return parseSidebarOrderPreference(await parseMaybeJson(response));
+  const saved = parseSidebarOrderPreference(await parseMaybeJson(response));
+  rememberApiGet(SIDEBAR_ORDER_PATH, saved);
+  return saved;
 }
 
 export type AppThemePreference = {
@@ -1830,7 +1950,7 @@ export async function updateInstructionDeliverySettings(
 // ── Console API ──
 
 export async function getConsoleSessions<T>(): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>('/api/console/sessions');
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/console/sessions', WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
@@ -2507,44 +2627,6 @@ export type WorkUnit = ContractWorkUnit;
 
 export type WorkUnitWithLiveness = ContractWorkUnitWithLiveness;
 
-export type WorkUnitFilters = {
-  state?: WorkUnitState;
-  repo_id?: string;
-  branch?: string;
-  issue_id?: string;
-};
-
-export type WorkUnitPatch = {
-  state?: WorkUnitState;
-  assigned_session_id?: string | null;
-  continuation?: string | null;
-  continuation_by?: string | null;
-  continuation_at?: number | null;
-  auth_request_id?: string | null;
-};
-
-export async function getWorkUnits(
-  filters?: WorkUnitFilters,
-): Promise<WorkUnitWithLiveness[]> {
-  const query = filters ? buildQuery(filters as Record<string, string | undefined>) : '';
-  const response = await apiGet(`/api/work-units${query}`);
-  const payload = (await parseMaybeJson(response)) as { work_units?: WorkUnitWithLiveness[] };
-  return payload.work_units ?? [];
-}
-
-export async function getWorkUnit(id: string): Promise<WorkUnitWithLiveness> {
-  const response = await apiGet(`/api/work-units/${encodeURIComponent(id)}`);
-  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
-}
-
-export async function updateWorkUnit(
-  id: string,
-  patch: WorkUnitPatch,
-): Promise<WorkUnitWithLiveness> {
-  const response = await apiPatch(`/api/work-units/${encodeURIComponent(id)}`, patch);
-  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
-}
-
 // ── Logs API — Bug: af91bdd ──
 
 export type LogFacetValue = {
@@ -2602,7 +2684,7 @@ export async function getLogs(params?: {
   limit?: number;
   offset?: number;
   before?: string;
-}, signal?: AbortSignal): Promise<LogsResponse> {
+}, read: CachedRead<LogsResponse> = {}): Promise<LogsResponse> {
   const query = new URLSearchParams();
   if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
   if (params?.level) query.set('level', params.level);
@@ -2616,10 +2698,7 @@ export async function getLogs(params?: {
   if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.before) query.set('before', params.before);
   const qs = query.toString();
-  return cachedApiGetJson<LogsResponse>(
-    `/api/system/logs${qs ? '?' + qs : ''}`,
-    { ...WARMED_ROUTE_GET_OPTIONS, signal },
-  );
+  return cachedApiGetJson<LogsResponse>(`/api/system/logs${qs ? '?' + qs : ''}`, { ...WARMED_ROUTE_GET_OPTIONS, ...read });
 }
 
 export type DesktopDaemonLaunchMode = 'on_demand' | 'manual';
@@ -2842,10 +2921,7 @@ export async function getGraph(
   if (params.nodeTypes?.length) query.set('node_type', params.nodeTypes.join(','));
   if (params.edgeTypes?.length) query.set('edge_type', params.edgeTypes.join(','));
   const qs = query.toString();
-  return cachedApiGetJson<GraphPayload>(
-    `/api/graph${qs ? '?' + qs : ''}`,
-    WARMED_ROUTE_GET_OPTIONS,
-  );
+  return cachedApiGetJson<GraphPayload>(`/api/graph${qs ? '?' + qs : ''}`, WARMED_ROUTE_GET_OPTIONS);
 }
 
 // ── Artifact API ──
@@ -3029,12 +3105,16 @@ export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<Ar
   return payload.artifacts ?? [];
 }
 
-export async function getArtifactSeriesList(params: ArtifactQueryParams = {}): Promise<ArtifactSeriesSummary[]> {
-  const query = buildQuery(params);
-  const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(
-    `/api/artifacts/series${query}`,
-    WARMED_ROUTE_GET_OPTIONS,
-  );
+export async function getArtifactSeriesList(
+  params: ArtifactQueryParams = {},
+  read: CachedRead<ArtifactSeriesSummary[]> = {},
+): Promise<ArtifactSeriesSummary[]> {
+  const { onCached } = read;
+  const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(`/api/artifacts/series${buildQuery(params)}`, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal: read.signal,
+    onCached: onCached && ((cached) => onCached(cached.series ?? [])),
+  });
   return payload.series ?? [];
 }
 
@@ -3112,6 +3192,14 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
 
 export async function openArtifactExternally(id: string): Promise<void> {
   await apiPost(`/api/artifacts/${encodeURIComponent(id)}/open-externally`, {});
+}
+
+/** Record an artifact reference and expire every view of its knowledge links. */
+export async function createArtifactKnowledgeBackref(id: string, input: Record<string, unknown>): Promise<KnowledgeBackrefRecord> {
+  const response = await apiPost(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, input);
+  invalidateArtifactReads();
+  const payload = await parseMaybeJson(response) as { backref: KnowledgeBackrefRecord };
+  return payload.backref;
 }
 
 export async function getArtifactKnowledgeBackrefs(id: string, options: { signal?: AbortSignal } = {}): Promise<KnowledgeBackrefRecord[]> {
@@ -3263,31 +3351,33 @@ function invalidateSpaceCaches(spaceId?: string): void {
  * `display_name` (or fall back to `project_key`) as the option label.
  */
 export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
-  const payload = await cachedApiGetJson<{
-    projects?: Array<{ id: string; project_key: string; display_name?: string | null }>;
-  }>('/api/projects');
-  return (payload.projects ?? []).map((p) => ({
-    id: p.id,
-    project_key: p.project_key,
-    display_name: p.display_name ?? null,
-  }));
+  return listCanonicalProjects();
 }
 
 /** Canonical registry identity and checkouts for Chat project headings and scoped actions. */
-export async function listCanonicalProjects(): Promise<CanonicalProject[]> {
-  const payload = await cachedApiGetJson<{
-    projects?: Array<{
-      id: string;
-      project_key: string;
-      display_name?: string | null;
-      checkouts?: CanonicalProjectCheckout[];
-    }>;
-  }>('/api/projects');
+type ProjectsPayload = {
+  projects?: Array<{
+    id: string;
+    project_key: string;
+    display_name?: string | null;
+    checkouts?: CanonicalProjectCheckout[];
+  }>;
+};
+
+function canonicalProjects(payload: ProjectsPayload): CanonicalProject[] {
   return (payload.projects ?? []).map((project) => ({
     id: project.id,
     project_key: project.project_key,
     display_name: project.display_name ?? null,
     checkouts: project.checkouts ?? [],
+  }));
+}
+
+export async function listCanonicalProjects(read: WarmableRead<CanonicalProject[]> = {}): Promise<CanonicalProject[]> {
+  const { onCached } = read;
+  return canonicalProjects(await readWarmable<ProjectsPayload>('/api/projects', {
+    ...read,
+    onCached: onCached && ((cached) => onCached(canonicalProjects(cached))),
   }));
 }
 
@@ -4725,6 +4815,12 @@ export async function getBriefingReviewedMarkdown(
   };
 }
 
+/** This page wrote to the briefing: its cached reads are stale, though nothing refetches until a view asks. */
+function markBriefingReadsStale(briefingId: string): void {
+  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
+  void queryClient.invalidateQueries({ queryKey: browserResourceKeys.briefingProjections(briefingId), refetchType: 'none' });
+}
+
 export async function postBriefingAnswers(
   briefingId: string,
   roundId: string,
@@ -4738,6 +4834,7 @@ export async function postBriefingAnswers(
       ...(answer.operation === 'set' ? { value: answer.value } : {}),
     })),
   });
+  markBriefingReadsStale(briefingId);
   const root = briefingRecord(await parseMaybeJson(response));
   return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
 }
@@ -4763,7 +4860,7 @@ export async function postBriefingAnnotations(
       }),
   });
   const root = briefingRecord(await parseMaybeJson(response));
-  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
+  markBriefingReadsStale(briefingId);
   return { annotation_event_ids: briefingStringArray(root.annotation_event_ids) };
 }
 
@@ -4790,7 +4887,7 @@ export async function postBriefingSubmission(
     })),
     annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
   });
-  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
+  markBriefingReadsStale(briefingId);
   const root = briefingRecord(await parseMaybeJson(response));
   const result = {
     submission_id: briefingString(root.submission_id),
@@ -5384,10 +5481,12 @@ export function normalizeTaskInventory(payload: unknown): TaskInventory {
 }
 
 /** The whole Tasks read surface. Read-only: the UI never posts an inventory. */
-export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInventory> {
+export async function getTaskInventory(read: CachedRead<TaskInventory> = {}): Promise<TaskInventory> {
+  const { onCached } = read;
   const payload = await cachedApiGetJson<unknown>('/api/tasks', {
     ...WARMED_ROUTE_GET_OPTIONS,
-    signal,
+    signal: read.signal,
+    onCached: onCached && ((cached) => onCached(normalizeTaskInventory(cached))),
   });
   return normalizeTaskInventory(payload);
 }
@@ -5448,15 +5547,17 @@ export function normalizeTaskCommands(payload: unknown): TaskCommandList {
 
 export async function getTaskCommands(
   filter: { executor?: string; taskId?: string } = {},
-  signal?: AbortSignal,
+  read: CachedRead<TaskCommandList> = {},
 ): Promise<TaskCommandList> {
   const query = new URLSearchParams();
   if (filter.executor) query.set('executor', filter.executor);
   if (filter.taskId) query.set('task_id', filter.taskId);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const { onCached } = read;
   const payload = await cachedApiGetJson<unknown>(`/api/tasks/commands${suffix}`, {
     ...WARMED_ROUTE_GET_OPTIONS,
-    signal,
+    signal: read.signal,
+    onCached: onCached && ((cached) => onCached(normalizeTaskCommands(cached))),
   });
   return normalizeTaskCommands(payload);
 }

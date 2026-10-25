@@ -2,6 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  beginDetailRequest,
+  invalidatePersistedDetail,
+  isPersistedDetailFresh,
   DETAIL_CACHE_LIMITS,
   clearPersistedDetailCache,
   detailRequestKey,
@@ -35,6 +38,26 @@ describe('persisted detail cache', () => {
     vi.useRealTimers();
   });
 
+  it('rejects a warmer that finishes after invalidation or a newer fetch', () => {
+    const old = beginDetailRequest();
+    invalidatePersistedDetail('timeline');
+    expect(writePersistedDetail('timeline', 'key', { version: 1 }, undefined, old)).toBe(false);
+    expect(isPersistedDetailFresh('timeline', 'key')).toBe(false);
+    const warmer = beginDetailRequest();
+    const fetch = beginDetailRequest();
+    writePersistedDetail('timeline', 'key', { version: 3 }, undefined, fetch);
+    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, warmer)).toBe(false);
+    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 3 });
+  });
+
+  it('accepts the newer request when it finishes after an earlier request', () => {
+    const first = beginDetailRequest();
+    const second = beginDetailRequest();
+    writePersistedDetail('timeline', 'key', { version: 1 }, undefined, first);
+    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, second)).toBe(true);
+    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 2 });
+  });
+
   it('builds stable request keys without conflating different selections', () => {
     expect(detailRequestKey('issue', { repo: 'mandible', id: 'abc' })).toBe(
       detailRequestKey('issue', { id: 'abc', repo: 'mandible' }),
@@ -58,11 +81,16 @@ describe('persisted detail cache', () => {
     expect(window.localStorage.getItem('mandible:detail-cache:v2')).toBeNull();
   });
 
-  it('rejects oversized or unserializable payloads without breaking live data', () => {
-    expect(writePersistedDetail('conversation', 'huge', 'x'.repeat(DETAIL_CACHE_LIMITS.maxEntryBytes + 1))).toBe(false);
+  it('keeps oversized payloads for this page only and rejects unserializable ones', async () => {
+    const huge = 'x'.repeat(DETAIL_CACHE_LIMITS.maxEntryBytes + 1);
+    expect(writePersistedDetail('conversation', 'huge', huge)).toBe(false);
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     expect(writePersistedDetail('conversation', 'circular', circular)).toBe(false);
-    expect(readPersistedDetail('conversation', 'huge')).toBeNull();
+    expect(readPersistedDetail('conversation', 'circular')).toBeNull();
+    expect(readPersistedDetail('conversation', 'huge')).toBe(huge);
+    vi.resetModules();
+    const reloaded = await import('../ui/src/detail-cache');
+    expect(reloaded.readPersistedDetail('conversation', 'huge')).toBeNull();
   });
 });

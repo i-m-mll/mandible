@@ -348,9 +348,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     if (!hasLoadedRef.current || initial) setLoading(true);
-    try {
-      const result = await loadLogs(filterParam(filters), signal);
-      if (requestSeq !== requestSeqRef.current) return;
+    const show = (result: LogsResponse) => {
       setEntries((current) => {
         if (initial || !hasLoadedRef.current) return result.entries.slice(-MAX_RENDERED_LOG_ROWS);
         const merged = mergeLogEntries(current, result.entries);
@@ -366,10 +364,15 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
       setFacets(result.facets || null);
       setSource(result.source || null);
       setLogFileExists(result.exists ?? true);
+      hasLoadedRef.current = true;
+    };
+    try {
+      const result = await loadLogs(filterParam(filters), { signal, onCached: initial ? show : undefined });
+      if (requestSeq !== requestSeqRef.current) return;
+      show(result);
       setError(null);
       setLastLoadedAt(new Date());
       setLastFailedAt(null);
-      hasLoadedRef.current = true;
     } catch (err) {
       if (requestSeq !== requestSeqRef.current || refreshAbandoned(signal)) return;
       setError(err instanceof Error ? err.message : String(err));

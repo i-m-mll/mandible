@@ -13,9 +13,14 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
-import { observeRuntimeHealthCoverage } from '../src/runtime-health-contract.ts';
+import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sweepWorkDirectory = 'route-cost-work';
+export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
+export function routeCostSweepArgs(run) {
+  return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory)];
+}
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -25,8 +30,28 @@ function command(binary, args, options = {}) {
   return result.stdout?.trim();
 }
 
-export { assessLogs } from './runtime-log-assessment.mjs';
 import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
+
+/** The acceptance record of a route-cost sweep report; null when the sweep printed none. */
+export function routeCostCheck(text) {
+  if (!text.trim()) return null;
+  const report = JSON.parse(text);
+  const route = entry => `${entry.method} ${entry.path}`;
+  return {
+    schema: report.schema,
+    judging_rule: report.judging_rule,
+    confirmation_trials: report.confirmation_trials,
+    load: report.load,
+    threshold_ms: report.threshold_ms,
+    counts: report.counts,
+    offenders: report.offenders.map(entry => ({ route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
+    excepted: report.excepted.map(entry => ({ route: route(entry), issue: entry.issue, first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
+    exception_problems: report.exception_problems,
+    remeasured: report.measured.filter(entry => entry.trials.length > 1).map(entry => ({ route: route(entry), trials: entry.trials })),
+    unclassified: report.unclassified.map(route),
+    failed_requests: report.failed_requests.map(entry => `${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
+  };
+}
 
 export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
@@ -38,6 +63,12 @@ export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storag
   const ports = [Number(url.port), backendPort, adminPort];
   if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 3 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
   return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+}
+
+/** Acceptance's log verdict: runtime log failures plus every health event, since a stall on the fixture is the code's. */
+export function assessAcceptanceLogs(text) {
+  const { failures, diagnostics } = assessRuntimeLogs(text);
+  return { failures: [...failures, ...diagnostics.health_events.retained.map(entry => `Runtime health event: ${JSON.stringify(entry)}`)], diagnostics };
 }
 
 export async function observeAcceptanceHealth({
@@ -59,6 +90,9 @@ export async function observeAcceptanceHealth({
     observationMs,
     deadlineMs,
   });
+  // Acceptance runs on an empty fixture database, so any performance finding is the code's.
+  const [finding] = result.performance.findings;
+  if (finding) throw new RuntimeHealthObservationError(finding.code, finding.message, { observation: result.observation, performance: result.performance });
   return result.value;
 }
 
@@ -181,7 +215,7 @@ async function main() {
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' })) });
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: acceptanceOwnedOutputs });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
@@ -202,6 +236,15 @@ async function main() {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
     await runSupervisedCommand(runtime, ['run', 'build'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 180000 });
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
+    // Every route handler must stay within HANDLER_TURN_BUDGET_MS on a snapshot
+    // of the live ledger. It runs before the native build so a slow handler
+    // fails the candidate early.
+    const routeCostFile = path.join(run, 'route-cost.json');
+    const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
+    const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
+    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
+    result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
+    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').slice(-5).join(' | ')}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
@@ -292,7 +335,7 @@ async function main() {
     const logs = ['daemon', 'desktop', 'gateway'].map(name => {
       const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     }).join('\n');
-    const assessment = assessRuntimeLogs(logs);
+    const assessment = assessAcceptanceLogs(logs);
     result.checks.log_failures = assessment.failures;
     result.checks.log_diagnostics = assessment.diagnostics;
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);

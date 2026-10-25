@@ -3,7 +3,7 @@
 // and rejected writes; reads from a previously selected document are ignored;
 // deleting an embedded item waits for an explicit decision.
 
-import { invalidateApiGetCache } from '../ui/src/api';
+import { clearApiGetCache } from '../ui/src/api';
 import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
@@ -259,7 +259,7 @@ function json(payload: unknown, status = 200): Response {
 }
 
 beforeEach(async () => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   stubLocalStorage();
   bindSpacesOperationCatalog(mainInstance);
   const notices = document.createElement('div');
@@ -299,7 +299,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   cleanup();
   document.getElementById('editor-notices')?.remove();
   queryClient.clear();

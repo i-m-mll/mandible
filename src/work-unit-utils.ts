@@ -7,12 +7,13 @@ import { getChannelRegistry } from "./channel-registry.js";
 import type { SessionManager } from "./session-manager.js";
 import {
   resolveSessionAlias,
+  sessionAliasResolverFor,
   type SessionAliasResolution,
 } from "./session-liveness.js";
 import type { WorkUnit } from "./types.js";
 
-import type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
-export type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
+import type { WorkUnitLiveness, WorkUnitView } from "./contracts.js";
+export type { WorkUnitLiveness, WorkUnitView, WorkUnitWithLiveness } from "./contracts.js";
 
 export type WorkUnitSessionResolver = (db: Db, id: string) => SessionAliasResolution | null;
 
@@ -50,12 +51,73 @@ export function normalizeWorkUnitSessionId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** The session identities a work unit names, strongest claim first. */
+export function workUnitSessionIds(workUnit: WorkUnit): string[] {
+  return Array.from(new Set([
+    workUnit.assigned_session_id,
+    workUnit.worker_provider_session_id,
+    workUnit.provider_session_id,
+  ].filter((value): value is string => Boolean(value))));
+}
+
+interface BranchSession { id: string; status: string; last_active: string | null }
+
+/** The rows the liveness rule reads for a set of work units, loaded together. */
+interface WorkUnitLivenessSources {
+  resolveSession: WorkUnitSessionResolver;
+  /** The most recently updated active or idle session on the branch. */
+  branchSession(branch: string): BranchSession | undefined;
+  /** A running console session driving the session, for one found by branch. */
+  runningConsole(sessionId: string): string | undefined;
+}
+
+function workUnitLivenessSources(
+  db: Db,
+  workUnits: readonly WorkUnit[],
+  resolveSession: WorkUnitSessionResolver,
+): WorkUnitLivenessSources {
+  const branches = [...new Set(workUnits
+    .filter((workUnit) => workUnitSessionIds(workUnit).length === 0 && workUnit.branch)
+    .map((workUnit) => workUnit.branch!))];
+  const byBranch = new Map<string, BranchSession>();
+  const consoles = new Map<string, string>();
+  if (branches.length > 0) {
+    const rows = db.prepare(
+      `SELECT id, status, last_active, branch FROM sessions
+       WHERE branch IN (SELECT value FROM json_each(?)) AND status IN ('active', 'idle')
+       ORDER BY updated_at DESC`,
+    ).all(JSON.stringify(branches)) as Array<BranchSession & { branch: string }>;
+    for (const { branch, ...row } of rows) if (!byBranch.has(branch)) byBranch.set(branch, row);
+  }
+  if (byBranch.size > 0) {
+    const rows = db.prepare(
+      `SELECT id, mandible_session_id FROM console_sessions
+       WHERE mandible_session_id IN (SELECT value FROM json_each(?)) AND status = 'running'`,
+    ).all(JSON.stringify([...byBranch.values()].map((row) => row.id))) as Array<{ id: string; mandible_session_id: string }>;
+    for (const row of rows) if (!consoles.has(row.mandible_session_id)) consoles.set(row.mandible_session_id, row.id);
+  }
+  return {
+    resolveSession,
+    branchSession: (branch) => byBranch.get(branch),
+    runningConsole: (sessionId) => consoles.get(sessionId),
+  };
+}
+
 /** One identity-first liveness rule shared by work-unit routes and issue detail. */
 export function computeWorkUnitLiveness(
   db: Db,
   workUnit: WorkUnit,
   sessionManager?: SessionManager,
   sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
+): WorkUnitLiveness {
+  return livenessFromSources(db, workUnit, workUnitLivenessSources(db, [workUnit], sessionResolver), sessionManager);
+}
+
+function livenessFromSources(
+  db: Db,
+  workUnit: WorkUnit,
+  sources: WorkUnitLivenessSources,
+  sessionManager?: SessionManager,
 ): WorkUnitLiveness {
   const noLiveness: WorkUnitLiveness = {
     state: "stopped",
@@ -65,16 +127,12 @@ export function computeWorkUnitLiveness(
     last_activity: null,
   };
 
-  const identityCandidates = Array.from(new Set([
-    workUnit.assigned_session_id,
-    workUnit.worker_provider_session_id,
-    workUnit.provider_session_id,
-  ].filter((value): value is string => Boolean(value))));
+  const identityCandidates = workUnitSessionIds(workUnit);
   // Unknown outranks stopped: one identity whose check failed means the unit's
   // agent may still be working, whatever its other identities say.
   let notLive: { id: string; resolution: SessionAliasResolution } | null = null;
   for (const id of identityCandidates) {
-    const resolution = sessionResolver(db, id);
+    const resolution = sources.resolveSession(db, id);
     if (!resolution) continue;
     if (workUnit.provider && resolution.provider && resolution.provider !== workUnit.provider) continue;
     if (resolution.liveness !== "live") {
@@ -112,14 +170,7 @@ export function computeWorkUnitLiveness(
     return noLiveness;
   }
 
-  // Find the most recent active/idle session on this branch
-  const sessionRow = db
-    .prepare(
-      `SELECT id, status, last_active FROM sessions
-       WHERE branch = ? AND status IN ('active', 'idle')
-       ORDER BY updated_at DESC LIMIT 1`
-    )
-    .get(workUnit.branch) as { id: string; status: string; last_active: string | null } | undefined;
+  const sessionRow = sources.branchSession(workUnit.branch);
 
   if (!sessionRow) {
     // Bug: 0b454df — check channel-connected sessions as a liveness source.
@@ -158,16 +209,10 @@ export function computeWorkUnitLiveness(
 
   // Check SDK processing state via console_sessions
   let isProcessing = false;
-  const consoleRow = db
-    .prepare(
-      `SELECT id FROM console_sessions
-       WHERE mandible_session_id = ? AND status = 'running'
-       LIMIT 1`
-    )
-    .get(sessionRow.id) as { id: string } | undefined;
+  const consoleId = sources.runningConsole(sessionRow.id);
 
-  if (consoleRow) {
-    const backend = sessionManager?.get(consoleRow.id);
+  if (consoleId) {
+    const backend = sessionManager?.get(consoleId);
     if (backend && "isProcessing" in backend && typeof backend.isProcessing === "boolean") {
       isProcessing = backend.isProcessing;
     }
@@ -185,15 +230,29 @@ export function computeWorkUnitLiveness(
 }
 
 /**
- * Liveness overlay for a work unit, derived at query time and never stored
- * (bug 8a281b3).
+ * {@link computeWorkUnitLiveness} for a set of work units, reading the rows
+ * they all need in a fixed number of queries, however many units there are.
  */
-export function enrichWithLiveness(
-  workUnit: WorkUnit,
+export function workUnitLiveness(
+  db: Db,
+  workUnits: readonly WorkUnit[],
+  sessionManager?: SessionManager,
+): (workUnit: WorkUnit) => WorkUnitLiveness {
+  const sources = workUnitLivenessSources(db, workUnits, sessionAliasResolverFor(db, workUnits.flatMap(workUnitSessionIds)));
+  return (workUnit) => livenessFromSources(db, workUnit, sources, sessionManager);
+}
+
+/**
+ * Work units as the work-unit routes return them, with the liveness overlay on
+ * those still in progress, derived at query time and never stored (bug 8a281b3).
+ */
+export function workUnitViews(
+  workUnits: readonly WorkUnit[],
   sessionManager: SessionManager,
-): WorkUnitWithLiveness {
-  return {
-    ...workUnit,
-    liveness: computeWorkUnitLiveness(getDb(), workUnit, sessionManager),
-  };
+): WorkUnitView[] {
+  const inProgress = workUnits.filter((workUnit) => workUnit.state === "open" || workUnit.state === "committed");
+  const liveness = workUnitLiveness(getDb(), inProgress, sessionManager);
+  return workUnits.map((workUnit): WorkUnitView => workUnit.state === "open" || workUnit.state === "committed"
+    ? { ...workUnit, state: workUnit.state, liveness: liveness(workUnit) }
+    : { ...workUnit, state: workUnit.state });
 }

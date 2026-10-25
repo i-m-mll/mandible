@@ -58,21 +58,26 @@ export function mapSessionExecutionHook(payload: unknown):
   } };
 }
 
+interface ExecutionRow {
+  provider: SessionExecutionProvider; provider_session_id: string; source: SessionExecutionObservation["source"];
+  controller_instance_id: string | null; controller_generation: number | null; state_json: string;
+  native_event: string; native_turn_id: string | null; observed_at: number;
+}
+
+function observationFromRow(row: ExecutionRow): SessionExecutionObservation {
+  return { provider: row.provider, provider_session_id: row.provider_session_id, source: row.source,
+    controller_instance_id: row.controller_instance_id, controller_generation: row.controller_generation,
+    state: SESSION_EXECUTION_STATE_SCHEMA.parse(JSON.parse(row.state_json)), event: row.native_event,
+    turn_id: row.native_turn_id, observed_at: row.observed_at };
+}
+
 export class SessionExecutionStore {
   constructor(private readonly db: Db) {}
 
   read(provider: SessionExecutionProvider, sessionId: string): SessionExecutionObservation | null {
     if (!tableExists(this.db, "provider_session_execution")) return null;
-    const row = this.db.prepare("SELECT * FROM provider_session_execution WHERE provider = ? AND provider_session_id = ?").get(provider, sessionId) as {
-      provider: SessionExecutionProvider; provider_session_id: string; source: SessionExecutionObservation["source"];
-      controller_instance_id: string | null; controller_generation: number | null; state_json: string;
-      native_event: string; native_turn_id: string | null; observed_at: number;
-    } | undefined;
-    if (!row) return null;
-    return { provider: row.provider, provider_session_id: row.provider_session_id, source: row.source,
-      controller_instance_id: row.controller_instance_id, controller_generation: row.controller_generation,
-      state: SESSION_EXECUTION_STATE_SCHEMA.parse(JSON.parse(row.state_json)), event: row.native_event,
-      turn_id: row.native_turn_id, observed_at: row.observed_at };
+    const row = this.db.prepare("SELECT * FROM provider_session_execution WHERE provider = ? AND provider_session_id = ?").get(provider, sessionId) as ExecutionRow | undefined;
+    return row ? observationFromRow(row) : null;
   }
 
   apply(input: ExecutionTransition): ExecutionWriteResult {
@@ -237,7 +242,22 @@ function applyOutboxEntry(store: SessionExecutionStore, bytes: string): OutboxAp
   return applied.ok ? { ok: true } : { ok: false, failure: "invalid_entry", error: applied.error };
 }
 
-export function readSessionExecution(db: Db, provider: string | null, sessionId: string | null): SessionExecutionObservation | null {
-  const normalized = provider === "claude_code" ? "claude" : provider;
-  return sessionId && (normalized === "claude" || normalized === "codex") ? new SessionExecutionStore(db).read(normalized, sessionId) : null;
+export type SessionExecutionReader = (provider: string | null, sessionId: string | null) => SessionExecutionObservation | null;
+
+/** The latest execution observation for each of a known set of provider sessions, read in one query. */
+export function sessionExecutionReader(db: Db, sessionIds: Iterable<string>): SessionExecutionReader {
+  const ids = new Set(sessionIds);
+  const rows = new Map<string, ExecutionRow>();
+  if (ids.size > 0 && tableExists(db, "provider_session_execution")) {
+    for (const row of db.prepare("SELECT * FROM provider_session_execution WHERE provider_session_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...ids])) as ExecutionRow[]) rows.set(`${row.provider}\0${row.provider_session_id}`, row);
+  }
+  return (provider, sessionId) => {
+    const normalized = provider === "claude_code" ? "claude" : provider;
+    if (!sessionId || (normalized !== "claude" && normalized !== "codex")) return null;
+    const row = rows.get(`${normalized}\0${sessionId}`);
+    if (row) return observationFromRow(row);
+    if (!ids.has(sessionId)) throw new Error(`Session execution was not loaded for ${sessionId}`);
+    return null;
+  };
 }

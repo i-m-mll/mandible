@@ -3,10 +3,18 @@ const identifier = (char: string | undefined): boolean => char !== undefined && 
 const digit = (char: string | undefined): boolean => char !== undefined && char >= "0" && char <= "9";
 const alphabeticParameter = (name: string | undefined): boolean => name !== undefined && name[0] !== "?";
 
+function append(index: Map<string, Slot[]>, key: string, slot: Slot): void {
+  const slots = index.get(key);
+  if (slots) slots.push(slot);
+  else index.set(key, [slot]);
+}
+
 /** Parameter tokens follow SQLite tokenize.c; SQL execution remains native. */
 export class SqliteBindings {
   private readonly slots = new Map<number, Slot>();
   private highest = 0;
+  private readonly byAlias = new Map<string, Slot[]>();
+  private readonly byBareAlias = new Map<string, Slot[]>();
   constructor(sql: string) {
     const names = new Map<string, number>();
     for (let i = 0; i < sql.length;) {
@@ -57,6 +65,14 @@ export class SqliteBindings {
       if (name) { slot.name ??= name; slot.aliases.add(name); }
       this.slots.set(index, slot);
     }
+    for (const slot of this.slots.values()) {
+      const bare = new Set<string>();
+      for (const alias of slot.aliases) {
+        append(this.byAlias, alias, slot);
+        bare.add(alias.slice(1));
+      }
+      for (const alias of bare) append(this.byBareAlias, alias, slot);
+    }
   }
   resolve(args: any[]): any[] {
     const flattened = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
@@ -70,9 +86,8 @@ export class SqliteBindings {
     const assigned = new Map<number, unknown>();
     if (record) {
       for (const key of Object.getOwnPropertyNames(record)) {
-        const exact = [...this.slots.values()].filter(slot => slot.aliases.has(key));
-        const candidates = exact.length ? exact : [...this.slots.values()].filter(slot => [...slot.aliases].some(name => name.slice(1) === key));
-        if (candidates.length === 0) continue;
+        const candidates = this.byAlias.get(key) ?? this.byBareAlias.get(key);
+        if (!candidates) continue;
         if (candidates.length !== 1) throw new Error(`Ambiguous SQLite parameter: ${key}`);
         const slot = candidates[0];
         if (assigned.has(slot.index)) throw new Error(`SQLite parameter supplied twice: ${key}`);

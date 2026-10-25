@@ -9,6 +9,7 @@ import {
   resolveIssueId,
   type IssueRow,
   type LabelHistoryIndex,
+  type ParentChildIndex,
   type PredicateEvalContext,
 } from "../src/ledger/issue-predicate.js";
 import type { LedgerIssueRelationshipSource } from "../src/ledger/types.js";
@@ -80,16 +81,24 @@ interface ContextOverrides {
   labelMembershipModeOverride?: PredicateEvalContext["labelMembershipModeOverride"];
 }
 
+function parentChildren(childrenByIssueId: Map<string, string[]>): ParentChildIndex {
+  return { childrenOf: (issueId) => childrenByIssueId.get(issueId) ?? [] };
+}
+
+function labelHistory(intervals: Record<string, TimelineLabelMembershipInterval[]>): LabelHistoryIndex {
+  return { intervalsForLabel: (label) => intervals[label] ?? [] };
+}
+
 function makeContext(overrides: ContextOverrides = {}): PredicateEvalContext {
   const issues = overrides.issues ?? [];
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
   return {
     allIssues: issues,
     issueById,
-    relationshipSources: overrides.relationshipSources ?? [],
-    parentChildrenByIssueId: buildParentChildrenByIssueId(issues, overrides.parentEdges),
+    references: overrides.relationshipSources ?? [],
+    parentChildren: parentChildren(buildParentChildrenByIssueId(issues, overrides.parentEdges)),
     residualCoveredIssueIds: overrides.residualCoveredIssueIds ?? new Set<string>(),
-    labelHistory: overrides.labelHistory ?? { intervalsByLabel: new Map() },
+    labelHistory: overrides.labelHistory ?? { intervalsForLabel: () => [] },
     window: overrides.window ?? { from: null, to: null },
     labelMembershipModeOverride: overrides.labelMembershipModeOverride,
   };
@@ -179,14 +188,12 @@ describe("evaluatePredicate", () => {
     const context = makeContext({
       issues,
       window: { from: 100, to: 200 },
-      labelHistory: {
-        intervalsByLabel: new Map([
-          ["needs-review", [
-            { issue_id: "a", label: "needs-review", start: 150, end: 160, degraded: false },
-            { issue_id: "b", label: "needs-review", start: 300, end: null, degraded: false },
-          ]],
-        ]),
-      },
+      labelHistory: labelHistory({
+        "needs-review": [
+          { issue_id: "a", label: "needs-review", start: 150, end: 160, degraded: false },
+          { issue_id: "b", label: "needs-review", start: 300, end: null, degraded: false },
+        ],
+      }),
     });
     expect(evalIds({ type: "label", name: "needs-review", membership: "ever_in_window" }, context).ids)
       .toEqual(["a"]);
@@ -197,11 +204,9 @@ describe("evaluatePredicate", () => {
     const context = makeContext({
       issues,
       labelMembershipModeOverride: "now",
-      labelHistory: {
-        intervalsByLabel: new Map([
-          ["needs-review", [{ issue_id: "z", label: "needs-review", start: 0, end: null, degraded: false }]],
-        ]),
-      },
+      labelHistory: labelHistory({
+        "needs-review": [{ issue_id: "z", label: "needs-review", start: 0, end: null, degraded: false }],
+      }),
     });
     // override forces "now", so history ("z") is ignored and current labels ("a") win
     expect(evalIds({ type: "label", name: "needs-review", membership: "ever_in_window" }, context).ids)

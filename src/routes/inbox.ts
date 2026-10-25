@@ -1,8 +1,8 @@
 import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
-import { getDb } from "../db.js";
+import { getDb, type Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
-import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
+import { listLedgerOpenIssues } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
 import { computeAuthRequestOutcome, DOMAIN_EVENTS } from "../contracts.js";
@@ -12,7 +12,7 @@ import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
-  computeWorkUnitLiveness,
+  workUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
@@ -273,7 +273,42 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
     + countOpenHookAlerts(db);
 }
 
-// Bug: f3dbb3e — mapWorkUnitRow and computeWorkUnitLiveness extracted to work-unit-utils.ts
+// Bug: f3dbb3e — mapWorkUnitRow and work-unit liveness live in work-unit-utils.ts
+
+/** Longest event-loop turn a bulk acknowledgement aims to take. */
+const BULK_ACK_TURN_BUDGET_MS = 20;
+/** Rows per transaction; the commit, not the UPDATE, writes the pages. */
+const BULK_ACK_ROWS_PER_COMMIT = 8;
+
+/**
+ * Acknowledge every resolved, unacknowledged auth request, a budgeted slice
+ * per event-loop turn. Setting `acknowledged_by` rewrites the whole row,
+ * including its diff summary and output in overflow pages, so a backlog of a
+ * thousand requests commits tens of megabytes that no index can avoid. Each
+ * row's resolution is re-checked as it is written, so a request acknowledged
+ * or retried while the pass waits is left alone.
+ */
+async function acknowledgeResolvedAuthRequests(db: Db, ackValue: string): Promise<void> {
+  const resolutions = db.prepare(
+    `SELECT id, resolved_at FROM auth_requests WHERE status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+  ).all() as Array<{ id: string; resolved_at: number | null }>;
+  const acknowledge = db.prepare(
+    `UPDATE auth_requests SET acknowledged_by = ?
+      WHERE id = ? AND resolved_at IS ? AND status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+  );
+  const commit = db.transaction((batch: typeof resolutions) => {
+    for (const row of batch) acknowledge.run(ackValue, row.id, row.resolved_at);
+  });
+  let next = 0;
+  while (next < resolutions.length) {
+    const deadline = performance.now() + BULK_ACK_TURN_BUDGET_MS;
+    do {
+      commit(resolutions.slice(next, next + BULK_ACK_ROWS_PER_COMMIT));
+      next += BULK_ACK_ROWS_PER_COMMIT;
+    } while (next < resolutions.length && performance.now() < deadline);
+    if (next < resolutions.length) await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
@@ -368,11 +403,10 @@ export function registerInboxRoutes(
       .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    return rows
-      .map(mapWorkUnitRow)
-      .map((wu) => {
-        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
-      })
+    const workUnits = rows.map(mapWorkUnitRow);
+    const liveness = workUnitLiveness(db, workUnits, sessionManager);
+    return workUnits
+      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
       // Show work units that need attention: their agent has stopped. One whose
       // liveness is unknown may still be worked on, so it is not offered.
       .filter((wu) => wu.liveness.state === "stopped");
@@ -395,11 +429,10 @@ export function registerInboxRoutes(
       .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    return rows
-      .map(mapWorkUnitRow)
-      .map((wu) => {
-        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
-      })
+    const workUnits = rows.map(mapWorkUnitRow);
+    const liveness = workUnitLiveness(db, workUnits, sessionManager);
+    return workUnits
+      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
       // Only show continuations whose agent has stopped
       .filter((wu) => wu.liveness.state === "stopped");
   }
@@ -412,32 +445,7 @@ export function registerInboxRoutes(
     repo_name?: string;
   }> {
     if (!workScanner) return [];
-    const openIssues: Array<{
-      id: string;
-      title: string;
-      labels: string[];
-      repo_id?: string;
-      repo_name?: string;
-    }> = [];
-    for (const summary of listLedgerIssueSummaries(db, workScanner)) {
-      const matchesRepo = !repoFilter
-        || summary.repo_root === repoFilter
-        || summary.repo_name === repoFilter
-        || summary.repo_id === repoFilter
-        || summary.project_key === repoFilter;
-      if (!matchesRepo) continue;
-      for (const issue of summary.issues) {
-        if (issue.status !== "open") continue;
-        openIssues.push({
-          id: issue.id,
-          title: issue.title,
-          labels: issue.labels,
-          repo_id: summary.repo_id,
-          repo_name: summary.repo_name,
-        });
-      }
-    }
-    return openIssues;
+    return listLedgerOpenIssues(db, workScanner, repoFilter);
   }
 
   function reminderOccurrenceItems(projectRef?: string): Array<Record<string, unknown>> {
@@ -769,24 +777,25 @@ export function registerInboxRoutes(
   }, { operation: { id: "post:/api/inbox/delivered/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
 
   // POST /api/inbox/ack-all — acknowledge all unacknowledged continuations and auth results
-  server.post("/api/inbox/ack-all", (req, res) => {
+  server.post("/api/inbox/ack-all", async (req, res) => {
     const ack = acknowledgementValue(db, req, null, "bulk");
     if (!ack.ok) {
       sendJson(res, 403, { error: ack.error });
       return;
     }
-    db.prepare(
-      "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
-    ).run(ack.value);
-    db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
-    ).run(ack.value);
-    db.prepare(
-      `UPDATE managed_task_occurrences
-          SET acknowledged_by = ?, acknowledged_at = ?
-        WHERE acknowledged_at IS NULL`,
-    ).run(ack.value, Date.now());
-    broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
+    try {
+      db.prepare(
+        "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
+      ).run(ack.value);
+      await acknowledgeResolvedAuthRequests(db, ack.value);
+      db.prepare(
+        `UPDATE managed_task_occurrences
+            SET acknowledged_by = ?, acknowledged_at = ?
+          WHERE acknowledged_at IS NULL`,
+      ).run(ack.value, Date.now());
+    } finally {
+      broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
+    }
     sendJson(res, 200, { ok: true });
   }, { operation: { id: "post:/api/inbox/ack-all", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "deny" });
 

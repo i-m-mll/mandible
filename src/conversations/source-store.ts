@@ -16,6 +16,7 @@ import type {
 } from "./source-types.js";
 import {
   ConversationSourceChangedError,
+  numericSourceExtent,
   sameSourceFilesystemIdentity,
   sourceFilesystemIdentity,
   type SourceFilesystemIdentity,
@@ -275,7 +276,7 @@ async function snapshotJsonl(
     return {
       contentHash: snapshotHash,
       size,
-      mtimeMs: Number(after.mtimeNs) / 1_000_000,
+      mtimeMs: numericSourceExtent(after).fileMtimeMs,
       records,
       filesystemIdentity: afterIdentity,
       mode: Number(after.mode),
@@ -343,6 +344,25 @@ export class ConversationSourceStore {
     };
   }
 
+  /** The source `resolveConversation` would pick, for many conversations in one statement. */
+  latestSources(conversationIds: readonly string[]): Map<string, { sourceId: string; currentVersionId: string | null }> {
+    const latest = new Map<string, { sourceId: string; currentVersionId: string | null }>();
+    if (conversationIds.length === 0) return latest;
+    const rows = this.db.prepare(`
+      SELECT s.conversation_id, s.id, s.current_version_id
+        FROM json_each(?) ids
+        JOIN conversation_sources s ON s.conversation_id = ids.value
+       ORDER BY s.conversation_id, s.updated_at DESC, s.id
+    `).all(JSON.stringify([...new Set(conversationIds)])) as Array<{
+      conversation_id: string; id: string; current_version_id: string | null;
+    }>;
+    for (const row of rows) {
+      if (latest.has(row.conversation_id)) continue;
+      latest.set(row.conversation_id, { sourceId: row.id, currentVersionId: row.current_version_id });
+    }
+    return latest;
+  }
+
   resolveVersion(versionId: string): ConversationSourceVersion | null {
     const row = this.db.prepare(`
       SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,
@@ -388,6 +408,22 @@ export class ConversationSourceStore {
       aliasKind: row.alias_kind as ConversationSourceAlias["aliasKind"],
       availability: row.availability as ConversationSourceAlias["availability"],
     }));
+  }
+
+  /** Paths of each source's aliases marked available, keyed by source id. */
+  availableAliasPaths(sourceIds: readonly string[]): Map<string, string[]> {
+    const paths = new Map<string, string[]>();
+    if (sourceIds.length === 0) return paths;
+    const rows = this.db.prepare(`
+      SELECT source_id, path FROM conversation_source_aliases
+       WHERE availability = 'available' AND source_id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify([...new Set(sourceIds)])) as Array<{ source_id: string; path: string }>;
+    for (const row of rows) {
+      const forSource = paths.get(row.source_id);
+      if (forSource) forSource.push(row.path);
+      else paths.set(row.source_id, [row.path]);
+    }
+    return paths;
   }
 
   resolveLegacyBlockId(alias: string): string | null {

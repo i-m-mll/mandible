@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.
 import { useCallback } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { clearPersistedDetailCache, detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache, detailRequestKey, invalidatePersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { useKeyedAsyncDetail } from '../ui/src/hooks/useKeyedAsyncDetail';
 
 function installMemoryLocalStorage(): void {
@@ -99,6 +99,7 @@ describe('useKeyedAsyncDetail', () => {
   it('paints same-key persisted data while revalidating and retains it on refresh', async () => {
     const requestKey = detailRequestKey('issue', { id: 'cached' });
     writePersistedDetail('issue-detail', requestKey, { id: 'cached', title: 'stale' });
+    invalidatePersistedDetail('issue-detail');
     const first = deferred<{ id: string; title: string }>();
     const requests = new Map([['cached', first]]);
     render(<DetailHarness id="cached" requests={requests} />);

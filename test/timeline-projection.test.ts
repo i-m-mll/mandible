@@ -1,11 +1,14 @@
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb } from "../src/db.js";
-import { buildProjectTimelineProjection } from "../src/ledger/timeline-projection.js";
+import { buildProjectTimelineProjection, type TimelinePageBudget } from "../src/ledger/timeline-projection.js";
+import { mergeTimelinePages } from "../src/timeline-pages.js";
 import { registerTimelineRoutes } from "../src/routes/timeline.js";
-import type { ProjectTimelineProjection } from "../src/types.js";
+import type { ProjectTimelineInput, ProjectTimelineProjection } from "../src/types.js";
 import { createTimelineFixture, type TimelineFixture } from "./helpers/timeline-fixtures.js";
 
 let tempDir = "";
@@ -22,6 +25,23 @@ afterEach(() => {
 });
 
 describe("project timeline projection", () => {
+
+  it("joins pages across ledger edits and discards links to absent events", () => {
+    const input = { project_id: fixture.project.id };
+    const budget = { events: 0, ms: Infinity, now: () => 0 };
+    const first = buildProjectTimelineProjection(fixture.db, input, budget);
+    new LedgerStore(fixture.db).addComment(fixture.issues.rootA.id, {
+      attribution: systemAction(), body: `New reference [issue:${fixture.issues.rootB.short_id}]`,
+    });
+    const last = buildProjectTimelineProjection(fixture.db, { ...input, row_offset: first.page.next_row_offset! });
+    expect(first.rows.map((row) => row.id)).toEqual(last.rows.map((row) => row.id));
+    expect(last.links.length).toBeGreaterThan(0);
+    last.links.push({ ...last.links[0], id: "orphan-link", event_id: "absent-event" });
+    const joined = mergeTimelinePages([first, last]);
+    expect(joined.events).toHaveLength(first.events.length + last.events.length);
+    expect(joined.links.map((link) => link.id)).not.toContain("orphan-link");
+    expect(joined.links.length).toBe(first.links.length + last.links.length - 1);
+  });
 
   it("projects coordination roots on one global time axis without per-row domains", () => {
     const projection = buildProjectTimelineProjection(fixture.db, {
@@ -499,7 +519,61 @@ describe("project timeline projection", () => {
       }),
     ]));
   });
+
+  it("joins pages cut by event count or by elapsed time into the unpaged projection", () => {
+    const allKinds: ProjectTimelineInput["event_kinds"] = [
+      "auth_request", "backlink", "body", "comment", "commit", "issue_state", "label", "session", "state", "work_unit",
+    ];
+    const inputs: ProjectTimelineInput[] = [
+      { project_id: fixture.project.id },
+      {
+        project_id: fixture.project.id,
+        include_closed: true,
+        event_kinds: allKinds,
+        expanded_paths: [`row:root:${fixture.issues.rootA.id}:0`],
+        depth: 2,
+        root_specs: [{
+          id: "review-ever",
+          title: "Ever needed review",
+          scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+        }],
+      },
+      {
+        project_id: fixture.project.id,
+        root_policy: "explicit",
+        explicit_root_issue_ids: [fixture.issues.shared.id],
+        promoted_root_issue_ids: [fixture.issues.closed.id],
+        include_closed: true,
+        event_kinds: allKinds,
+      },
+    ];
+    const unbounded: TimelinePageBudget = { events: Infinity, ms: Infinity, now: () => 0 };
+    let clock = 0;
+    const budgets: TimelinePageBudget[] = [
+      { events: 0, ms: Infinity, now: () => 0 },
+      { events: Infinity, ms: 25, now: () => (clock += 10) },
+    ];
+    for (const input of inputs) {
+      const whole = buildProjectTimelineProjection(fixture.db, input, unbounded);
+      expect(whole.page).toEqual({ row_offset: 0, next_row_offset: null });
+      for (const budget of budgets) {
+        const pages: ProjectTimelineProjection[] = [];
+        let rowOffset: number | null = 0;
+        while (rowOffset !== null) {
+          const page = buildProjectTimelineProjection(fixture.db, { ...input, row_offset: rowOffset }, budget);
+          expect(page.page.row_offset).toBe(rowOffset);
+          pages.push(page);
+          rowOffset = page.page.next_row_offset;
+        }
+        expect(pages.length).toBeGreaterThan(1);
+        const { page: _page, ...unpaged } = whole;
+        expect(mergeTimelinePages(pages)).toEqual(unpaged);
+      }
+    }
+  });
+
 });
+
 
 function eventBySource(
   projection: ProjectTimelineProjection,

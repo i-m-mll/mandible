@@ -1,3 +1,5 @@
+import { broadcast } from "../sse.js";
+import { DOMAIN_EVENTS } from "../contracts.js";
 import {
   artifactMaterializationTarget
 } from "../artifact-identity.js";
@@ -60,7 +62,7 @@ import type { ArtifactVersionSourceKind } from "../types.js";
 import { isInlineManagedArtifactByteRequest } from "../security/operation-policy.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
-import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
+import { resolveArtifactProject, resolveArtifactProjects, resolveIssueProject } from "../permissions/resources.js";
 import {
   PermissionError,
   requireProjectAccess,
@@ -123,6 +125,34 @@ function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef:
     }
     throw error;
   }
+}
+
+/**
+ * The entries of a list the caller may read: an entry is kept when its
+ * artifact has no project, or one project the caller can read. An entry
+ * without an artifact is kept.
+ */
+function readableArtifactEntries<T>(req: RequestLike, entries: T[], artifactId: (entry: T) => string | null): T[] {
+  const db = getDb();
+  const projects = resolveArtifactProjects(db, entries.flatMap((entry) => artifactId(entry) ?? []));
+  const readable = new Map<string, boolean>();
+  return entries.filter((entry) => {
+    const id = artifactId(entry);
+    if (id === null) return true;
+    const project = projects.get(id)!;
+    if (!project.ok) return project.reason === "unassociated";
+    let allowed = readable.get(project.project_id);
+    if (allowed === undefined) {
+      try {
+        requireProjectAccess(db, req, project.project_id, "read");
+        allowed = true;
+      } catch {
+        allowed = false;
+      }
+      readable.set(project.project_id, allowed);
+    }
+    return allowed;
+  });
 }
 
 function enforceArtifactAccess(
@@ -530,17 +560,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
-    }).filter((artifact) => {
-      const project = resolveArtifactProject(getDb(), artifact.id);
-      if (!project.ok) return project.reason === "unassociated";
-      try {
-        requireProjectAccess(getDb(), req, project.project_id, "read");
-        return true;
-      } catch {
-        return false;
-      }
     });
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
+    const readable = readableArtifactEntries(req, artifacts, (artifact) => artifact.id);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
   }, { operation: { id: "get:/api/artifacts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/resolve", (req, res) => {
@@ -567,17 +589,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sourceKind: queryString(req, "source_kind"),
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
-    }).filter((artifact) => {
-      const project = resolveArtifactProject(getDb(), artifact.id);
-      if (!project.ok) return project.reason === "unassociated";
-      try {
-        requireProjectAccess(getDb(), req, project.project_id, "read");
-        return true;
-      } catch {
-        return false;
-      }
     });
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
+    const readable = readableArtifactEntries(req, artifacts, (artifact) => artifact.id);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
   }, { operation: { id: "get:/api/artifacts/logical", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/blobs", (req, res) => {
@@ -647,18 +661,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       linkedEntityId: linked.id,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
-    }).filter((entry) => {
-      if (!entry.latest_artifact) return true;
-      const project = resolveArtifactProject(getDb(), entry.latest_artifact.id);
-      if (!project.ok) return project.reason === "unassociated";
-      try {
-        requireProjectAccess(getDb(), req, project.project_id, "read");
-        return true;
-      } catch {
-        return false;
-      }
     });
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { series }));
+    const readable = readableArtifactEntries(req, series, (entry) => entry.latest_artifact?.id ?? null);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { series: readable }));
   }, { operation: { id: "get:/api/artifacts/series", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/artifacts/link", (req, res) => {
@@ -694,7 +699,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { operation: { id: "post:/api/artifacts/link", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
-  app.post("/api/artifacts/check", (req, res) => {
+  app.post("/api/artifacts/check", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const refs = bodyStringArray(body.refs)
@@ -707,13 +712,13 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       for (const ref of refs) {
         if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
       }
-      const checks = refs.map((ref) => {
+      const checks = [];
+      for (const ref of refs) {
         const resolution = resolveArtifactIdentity(getDb(), ref, "strict-read");
         const target = artifactMaterializationTarget(resolution);
-        const check = target.ok ? checkArtifactMaterialization(getDb(), target.value, { ref })
-          : checkArtifactMaterialization(getDb(), ref, { ref });
-        return { ref, resolution: projectArtifactResolution(getDb(), resolution), check };
-      });
+        const check = await checkArtifactMaterialization(getDb(), target.ok ? target.value : ref, { ref });
+        checks.push({ ref, resolution: projectArtifactResolution(getDb(), resolution), check });
+      }
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { checks }));
     } catch (error) {
       handleError(res, error);
@@ -757,7 +762,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   // Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
   // bytes. Accepts any resolvable refs (hash, version, or series selectors).
-  app.get("/api/artifacts/diff", (req, res) => {
+  app.get("/api/artifacts/diff", async (req, res) => {
     try {
       const refA = queryString(req, "a") ?? queryString(req, "from");
       const refB = queryString(req, "b") ?? queryString(req, "to");
@@ -767,7 +772,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       }
       if (!enforceArtifactRefAccess(req, res, refA, "read")) return;
       if (!enforceArtifactRefAccess(req, res, refB, "read")) return;
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: diffArtifacts(getDb(), refA, refB) }));
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: await diffArtifacts(getDb(), refA, refB) }));
     } catch (error) {
       handleError(res, error);
     }
@@ -1000,6 +1005,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/knowledge-backrefs", (req, res) => {
     try {
       const backref = createKnowledgeBackref(getDb(), bodyRecord(req));
+      if (backref.source_type === "artifact") broadcast(DOMAIN_EVENTS.ARTIFACT_CHANGED, { artifact_id: backref.source_id });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);
@@ -1029,10 +1035,10 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     sendJson(res, 200, result);
   }), { operation: { id: "post:/api/artifacts/:id/open-externally", effects: ["process:external"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "deny" });
 
-  app.get("/api/artifacts/:id/check", (req, res) => {
+  app.get("/api/artifacts/:id/check", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
     if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
-    const check = artifact ? checkArtifactMaterialization(getDb(), artifact.id) : null;
+    const check = artifact ? await checkArtifactMaterialization(getDb(), artifact.id) : null;
     if (!check) {
       sendJson(res, 404, { error: "artifact not found" });
       return;
@@ -1063,6 +1069,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         source_type: "artifact",
         source_id: artifact?.id ?? req.params.id,
       });
+      if (backref.source_type === "artifact") broadcast(DOMAIN_EVENTS.ARTIFACT_CHANGED, { artifact_id: backref.source_id });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);

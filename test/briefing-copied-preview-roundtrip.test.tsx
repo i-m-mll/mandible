@@ -22,7 +22,7 @@ import { createUser } from '../src/users/store';
 
 import { AppShellProvider } from '../ui/src/app-shell';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
-import { invalidateApiGetCache } from '../ui/src/api';
+import { clearApiGetCache } from '../ui/src/api';
 
 import { BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 
@@ -32,7 +32,7 @@ let noticeHost: HTMLElement;
 beforeEach(async () => {
   queryClient.clear();
   installStorage();
-  invalidateApiGetCache();
+  clearApiGetCache();
   __resetBrowserSessionForTests();
   await ensureClientAccess(async () => operatorSessionResponse());
   noticeHost = document.createElement('div');
@@ -181,7 +181,7 @@ describe('copied-preview Briefing publication boundary', () => {
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
 
       view.unmount();
-      invalidateApiGetCache();
+      clearApiGetCache();
       const reloadedView = render(shell());
       fireEvent.click(await screen.findByTitle('Comment · 1'));
       expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
