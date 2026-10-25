@@ -31,7 +31,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, expect, vi } from "vitest";
-import type { inspectServiceDefinitions } from "../../scripts/service-definitions.mjs";
+import { assessServiceObservation, serviceInstallationContext, type inspectServiceDefinitions } from "../../scripts/service-definitions.mjs";
 
 import { AuthHookManager } from "../../src/auth-hooks.js";
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -489,7 +489,15 @@ export function advanceMainViaAuthorizedMerge(
 
 /** Model an installed service state without inspecting the host's launchd jobs. */
 export function createServiceDefinitionInspector() {
-  return vi.fn<typeof inspectServiceDefinitions>().mockResolvedValue({ ok: true, observations: [] });
+  const context = serviceInstallationContext();
+  const record = { Label: context.backendLabel, ProgramArguments: ['/runtime/bun', `${context.runtimeDir}/production-runner.mjs`, 'run'],
+    EnvironmentVariables: { MANDIBLE_HOME: context.home }, WorkingDirectory: context.runtimeDir,
+    StandardOutPath: '/logs/backend.out', StandardErrorPath: '/logs/backend.err', KeepAlive: true };
+  const backend = assessServiceObservation(context, 'backend', [], { loaded: true, pid: 42, argv: record.ProgramArguments,
+    environment: record.EnvironmentVariables, workingDirectory: record.WorkingDirectory,
+    stdoutPath: record.StandardOutPath, stderrPath: record.StandardErrorPath, keepAlive: true });
+  if (!backend.ok) throw new Error(backend.refusal.message);
+  return vi.fn<typeof inspectServiceDefinitions>().mockResolvedValue({ ok: true, observations: [backend.observation] });
 }
 
 export function createInstalledServiceHookManager(db: Db, options: ConstructorParameters<typeof AuthHookManager>[1] = {}): AuthHookManager {

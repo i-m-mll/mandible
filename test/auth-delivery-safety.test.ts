@@ -409,6 +409,25 @@ describe('runtime convergence recovery', () => {
     expect(f.journal.phase).toBe('acknowledged');
   });
 
+  it('retries an unchanged generation after a failed health window and bounded backoff', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      f.observation.mockRejectedValueOnce(new Error('transient health window failure'));
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledOnce();
+      clock.mockReturnValue(now + 30_000);
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledOnce();
+      clock.mockReturnValue(now + 5 * 60_000);
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledTimes(2);
+      expect(f.journal.phase).toBe('acknowledged');
+    } finally { clock.mockRestore(); }
+  });
+
   it('never observes a historical failed handoff while another execution owns the lock', async () => {
     const f = await recoveryFixture();
     const { owner, evidence } = automaticRecovery(f);

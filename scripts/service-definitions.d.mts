@@ -36,6 +36,8 @@ export function assessServiceObservation(context: ServiceInstallationContext, se
   options?: { desired?: ServiceDefinition }): { ok: true; observation: ServiceObservation } | { ok: false; refusal: ServiceOwnershipRefusal };
 /** Admission is ownership-only: drift, owned duplicates, and absent services are ready. */
 export function serviceOwnershipReady(inspection: ServiceDefinitionInspection): inspection is { ok: true; observations: ServiceObservation[] };
+/** Handoff admission also requires a running backend to drain; the gateway may be absent. */
+export function runtimeHandoffReadiness(inspection: ServiceOwnershipInspection): ServiceOwnershipInspection | { ok: false; refusal: ServiceDefinitionRefusal & { category: 'missing_definition' } };
 /** Controller postcondition: one installed managed definition, equal to launchd whenever loaded. */
 export function matchingServiceDefinitions(inspection: ServiceDefinitionInspection): ServiceDefinitionInspection;
 /** Read-only ownership observation; neither selects the candidate runtime nor requires convergence. */

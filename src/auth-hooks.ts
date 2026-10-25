@@ -31,7 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 import { readRuntimeHandoffLock, runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
-import { inspectServiceDefinitions, serviceInstallationContext, serviceOwnershipReady } from "../scripts/service-definitions.mjs";
+import { inspectServiceDefinitions, serviceInstallationContext, runtimeHandoffReadiness } from "../scripts/service-definitions.mjs";
 import type { AuthPublicationBlocker } from "./contracts.js";
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 
@@ -325,7 +325,7 @@ export class AuthHookManager {
    */
   private readonly reportedHandoffFailures = new Map<string, Set<string>>();
   private reconciliationInFlight = false;
-  private readonly recoveryEvidence = new Map<string, string>();
+  private readonly recoveryEvidence = new Map<string, { key: string; retryAt: number }>();
 
   constructor(db?: Db, options: { handoffClient?: RuntimeHandoffClient; serviceDefinitionInspector?: typeof inspectServiceDefinitions } = {}) {
     this.db = db ?? getDb();
@@ -368,7 +368,8 @@ export class AuthHookManager {
     // A handoff admitted while inspection was in flight still takes priority.
     const currentLock = this.runtimeHandoffLock();
     if (currentLock) return { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(currentLock) };
-    return serviceOwnershipReady(inspection) ? null : { code: inspection.refusal.category, message: inspection.refusal.message };
+    const readiness = runtimeHandoffReadiness(inspection);
+    return readiness.ok ? null : { code: readiness.refusal.category, message: readiness.refusal.message };
   }
 
   async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {
@@ -479,15 +480,21 @@ export class AuthHookManager {
             }
             const publication = this.db.prepare("SELECT updated_at FROM auth_requests WHERE id = ?").get(run.auth_request_id) as { updated_at: number } | undefined;
             const key = `${journal.bindingDigest}:${journal.error ?? ""}:${runVersion(run)}:${publication?.updated_at}:${evidence}`;
-            if (this.recoveryEvidence.get(run.id) === key) continue;
-            this.recoveryEvidence.set(run.id, key);
+            const previous = this.recoveryEvidence.get(run.id);
+            if (previous?.key === key && Date.now() < previous.retryAt) continue;
             const guard = () => {
               const owner = this.runtimeHandoffLock();
               if (owner?.bindingDigest !== journal!.bindingDigest || owner.requestId !== run.auth_request_id || owner.executionId !== run.id || owner.journalPath !== activeLock.journalPath) throw new Error("Active runtime handoff owner changed during recovery.");
             };
-            await this.verifyCurrentRuntimeHandoffOnce({ id: run.auth_request_id }, {
-              kind: "daemon_reconciliation", pid: process.pid,
-            }, guard);
+            try {
+              await this.verifyCurrentRuntimeHandoffOnce({ id: run.auth_request_id }, {
+                kind: "daemon_reconciliation", pid: process.pid,
+              }, guard);
+            } catch (error) {
+              this.recoveryEvidence.set(run.id, { key, retryAt: Date.now() + 5 * 60_000 });
+              throw error;
+            }
+            this.recoveryEvidence.delete(run.id);
             accepted.push(run.auth_request_id);
             await settled();
             continue;

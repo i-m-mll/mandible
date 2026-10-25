@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import { serviceInstallationContext, type ServiceDefinition } from '../scripts/service-definitions.mjs';
 import { PRODUCTION_ORIGIN } from '../scripts/canonical-origin.mjs';
@@ -9,7 +10,7 @@ import { PRODUCTION_ORIGIN } from '../scripts/canonical-origin.mjs';
 let scratch: string;
 afterEach(() => { vi.doUnmock('node:child_process'); vi.doUnmock('../scripts/build-revision.mjs'); vi.unstubAllEnvs(); vi.resetModules(); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
-async function fixture() {
+async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-definition-handoff-')));
   const home = path.join(scratch, 'installation');
   const context = serviceInstallationContext({ home, accountHome: path.join(scratch, 'account') });
@@ -33,6 +34,8 @@ async function fixture() {
   for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify({ ...record,
     StandardErrorPath: path.join(scratch, 'disk-stderr.log'), EnvironmentVariables: { ...record.EnvironmentVariables, MANDIBLE_LAUNCH_MODE: 'on_demand', PATH: '/disk/tools', NODE_OPTIONS: '--max-old-space-size=900' } }));
   const jobs = new Map([backend, gateway].map(record => [record.Label, { record, pid: record === backend ? 41 : 51 }]));
+  if (absentGateway) { jobs.delete(gateway.Label); fs.unlinkSync(files.get(gateway.Label)!); }
+  if (stoppedBackend) jobs.delete(backend.Label);
   let oldAlive = true;
   const bootouts: string[] = [];
   const spawnSync = vi.fn((binary: string, args: string[]) => {
@@ -78,6 +81,12 @@ it('captures loaded provenance, publishes bound migration before unload, and rel
   const { controller, binding, backend, gateway, files, drain, bootouts } = fixtureState;
   expect(binding.priorBackend.definition).toEqual(backend);
   expect(binding.priorGateway.definition).toEqual(gateway);
+  for (const prior of [binding.priorBackend, binding.priorGateway]) {
+    expect(prior.file).toBe(files.get(prior.definition.Label));
+    expect(prior.sha256).toBe(createHash('sha256').update(fs.readFileSync(prior.file)).digest('hex'));
+    expect(prior.installed[0]).toMatchObject({ file: prior.file, sha256: prior.sha256 });
+    expect(JSON.parse(fs.readFileSync(prior.file, 'utf8'))).not.toEqual(prior.definition);
+  }
   expect(binding.priorBackend.launchMode).toBe('manual');
   expect(binding.daemonLog).toBe(backend.StandardErrorPath);
   drain();
@@ -88,6 +97,21 @@ it('captures loaded provenance, publishes bound migration before unload, and rel
   await controller.startHandoffDefinitions(binding);
   expect(bootouts).toEqual([backend.Label, gateway.Label]);
   expect(fixtureState.jobs.get(gateway.Label)?.record).toEqual(JSON.parse(fs.readFileSync(files.get(gateway.Label)!, 'utf8')));
+});
+
+it('captures an absent gateway and starts its newly published definition after drain', async () => {
+  const { controller, binding, gateway, files, drain, jobs, bootouts } = await fixture({ absentGateway: true });
+  expect(binding.priorGateway).toMatchObject({ file: null, sha256: null, installed: [], argv: [], loaded: false, definition: null });
+  drain();
+  await controller.removeHandoffDefinitions(binding);
+  fs.writeFileSync(files.get(gateway.Label)!, JSON.stringify(gateway));
+  await controller.startHandoffDefinitions(binding);
+  expect(jobs.get(gateway.Label)?.record).toEqual(gateway);
+  expect(bootouts).toEqual([binding.backendLabel]);
+});
+
+it('refuses capture of a stopped backend with the readiness message', async () => {
+  await expect(fixture({ stoppedBackend: true })).rejects.toThrow('The production backend is not running, so its update cannot start yet.');
 });
 
 it('preserves a replacement loaded after capture before publishing migration or unloading', async () => {
