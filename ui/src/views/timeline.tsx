@@ -65,7 +65,7 @@ import {
   rowSpecFromChips,
 } from './filters/issue-predicate-filter';
 import { IssuePredicateFilter } from './filters/IssuePredicateFilter';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { detailRequestKey, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
@@ -976,6 +976,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   }, [timelineRequestKey]);
 
   useRouteLoad((registerInitialRouteLoad) => {
+    if (isPersistedDetailFresh('timeline', timelineRequestKey) && lastProjectionRef.current) {
+      setStatus('ready');
+      return undefined;
+    }
     const generation = requestGeneration.current;
     const controller = new AbortController();
     const initialLoad = getProjectTimeline(timelineRequestRef.current, controller.signal)

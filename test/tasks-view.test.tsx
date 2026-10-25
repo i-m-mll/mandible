@@ -26,7 +26,7 @@ import { createUser } from '../src/users/store.js';
 import { createManagedReminder } from '../src/managed-reminders.js';
 import { parseManagedReminderCreateRequest } from '../src/managed-reminder-parser.js';
 import { resolveProjectForCheckout } from '../src/ledger/projects.js';
-import { invalidateApiGetCache, normalizeTaskInventory } from '../ui/src/api';
+import { invalidateApiGetCache, clearApiGetCache, normalizeTaskInventory } from '../ui/src/api';
 import { TasksView } from '../ui/src/views/tasks';
 
 const HOUR = 60 * 60 * 1000;
@@ -208,7 +208,7 @@ function stubInventory(payload: TaskInventoryResponse | (() => TaskInventoryResp
 }
 
 beforeEach(async () => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   await establishTestClientAccess();
   bindTestInstanceCatalog(MAIN_CLI_INSTANCE_RESPONSE.instance);
   db = migratedMemoryDb();

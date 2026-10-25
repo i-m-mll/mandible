@@ -166,6 +166,7 @@ import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
 import type { SidebarReorderBinding } from '../components/shared/sidebar-order';
+import { ROUTE_DATA_FRESH_MS } from '../detail-cache';
 
 // ── Toast notification ──
 
@@ -446,7 +447,8 @@ type ConversationWarmupContext = {
   sidebarGroupLimit?: number;
 };
 
-const WARMED_CHAT_QUERY_STALE_TIME_MS = 1_000;
+// Warmed Chat queries stay for the page, so a later first visit still paints them.
+const WARMED_QUERY_GC_TIME_MS = Number.POSITIVE_INFINITY;
 
 async function warmSelectedConversationWindow(
   params: Record<string, string>,
@@ -462,6 +464,7 @@ async function warmSelectedConversationWindow(
       queryKey: conversationKeys.bySession(sessionId),
       queryFn: ({ signal }) => getConversations({ session_id: sessionId, limit: 1, signal }),
       staleTime: 0,
+      gcTime: WARMED_QUERY_GC_TIME_MS,
     });
     conversationId = resolved.conversations[0]?.id ?? '';
   }
@@ -475,7 +478,8 @@ async function warmSelectedConversationWindow(
       queryKey: conversationKeys.window(conversationId, target),
       queryFn: ({ signal }) => readConversationWindowWhenReady(
         conversationId, windowRequest(target, signal)),
-      staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+      staleTime: ROUTE_DATA_FRESH_MS,
+      gcTime: WARMED_QUERY_GC_TIME_MS,
     }),
     readConversationStructureWhenReady(conversationId),
   ]);
@@ -494,11 +498,11 @@ export async function warmInitialData(
   context: ConversationWarmupContext = {},
 ): Promise<void> {
   const [projectSnapshot, shownPreference, sidebarOrder] = await Promise.all([
-    listCanonicalProjects()
+    listCanonicalProjects({ warm: true })
       .then((projects) => ({ projects, loaded: true }))
       .catch(() => ({ projects: [] as CanonicalProject[], loaded: false })),
-    getChatShownProjectsPreference(),
-    getSidebarOrderPreference().catch(() => null),
+    getChatShownProjectsPreference({ warm: true }),
+    getSidebarOrderPreference({ warm: true }).catch(() => null),
   ]);
   const { projects, loaded: projectsLoaded } = projectSnapshot;
   const storedViewState = readPersistedViewState(
@@ -543,7 +547,8 @@ export async function warmInitialData(
     appQueryClient.fetchQuery({
       queryKey: conversationKeys.sidebarInitial(filters),
       queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
-      staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+      staleTime: ROUTE_DATA_FRESH_MS,
+      gcTime: WARMED_QUERY_GC_TIME_MS,
     }),
     warmSelectedConversationWindow(params, storedViewState.lastSelection),
   ]);
@@ -1455,6 +1460,7 @@ export function ConversationDetail({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
     enabled: transcriptLive,
+    staleTime: ROUTE_DATA_FRESH_MS,
   }, queryClient);
   const windowRefreshing = windowQuery.isFetching;
   const aggregateQuery = useQuery<ConversationTranscriptData>({
@@ -3182,15 +3188,20 @@ export function ConversationsView({
   useEffect(() => {
     let active = true;
     let loadingProjects = false;
+    let firstLoad = true;
+    const showProjects = (projects: CanonicalProject[]) => {
+      if (!active) return;
+      setCanonicalProjects(projects);
+      setCanonicalProjectsLoaded(true);
+      setCanonicalProjectsReady(true);
+    };
     const loadProjects = async () => {
       if (loadingProjects) return;
       loadingProjects = true;
+      const warm = firstLoad;
+      firstLoad = false;
       try {
-        const projects = await listCanonicalProjects();
-        if (!active) return;
-        setCanonicalProjects(projects);
-        setCanonicalProjectsLoaded(true);
-        setCanonicalProjectsReady(true);
+        showProjects(await listCanonicalProjects({ warm, onCached: warm ? showProjects : undefined }));
       } catch {
         if (!active) return;
         // Keep the last good registry snapshot visible while authentication or
@@ -3338,7 +3349,7 @@ export function ConversationsView({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
     enabled: sidebarLive,
-    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+    staleTime: ROUTE_DATA_FRESH_MS,
   }, queryClient);
   useEffect(
     () => sidebarLive ? startSidebarRefresh(queryClient, sidebarFilters) : undefined,

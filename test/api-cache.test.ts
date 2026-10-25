@@ -5,7 +5,7 @@ import { browserResourceKeys } from '../ui/src/query/browserResources';
 import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { addSpaceItem, briefingApiCacheFamiliesForEvent, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, invalidateApiGetCache } from '../ui/src/api';
+import { addSpaceItem, briefingApiCacheFamiliesForEvent, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, clearApiGetCache } from '../ui/src/api';
 
 describe('Briefing SSE cache invalidation matrix', () => {
   it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing and bundle caches', (topic) => {
@@ -29,12 +29,12 @@ describe('dashboard API GET cache', () => {
     queryClient.clear();
     __resetBrowserSessionForTests();
     await ensureClientAccess(async () => jsonResponse({ authenticated: true, session: { csrf_token: 'test' } }));
-    invalidateApiGetCache();
+    clearApiGetCache();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    invalidateApiGetCache();
+    clearApiGetCache();
   });
 
   it('deduplicates concurrent same-URL GETs across API helpers', async () => {

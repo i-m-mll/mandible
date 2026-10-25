@@ -16,7 +16,7 @@ import {
   invalidateBriefingApiCacheForEvent,
   getBriefingBundles,
   getBriefings,
-  invalidateApiGetCache,
+  clearApiGetCache,
   normalizeBriefingProjection,
   type InstanceInfo,
 } from '../ui/src/api';
@@ -139,7 +139,7 @@ let noticeHost: HTMLElement;
 beforeEach(async () => {
   queryClient.clear();
   installStorage();
-  invalidateApiGetCache();
+  clearApiGetCache();
   __resetBrowserSessionForTests();
   await ensureClientAccess(async () => operatorSessionResponse());
   noticeHost = document.createElement('div');

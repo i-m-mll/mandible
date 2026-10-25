@@ -7,7 +7,7 @@ import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 import { h } from "preact";
 
 import { App } from "../ui/src/app";
-import { invalidateApiGetCache } from "../ui/src/api";
+import { clearApiGetCache } from "../ui/src/api";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -69,7 +69,7 @@ describe("visible-first dashboard boot", () => {
 
   afterEach(() => {
     __resetBrowserSessionForTests();
-    invalidateApiGetCache();
+    clearApiGetCache();
     cleanup();
     vi.useRealTimers();
     vi.unstubAllGlobals();

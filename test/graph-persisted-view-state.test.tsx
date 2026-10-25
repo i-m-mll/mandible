@@ -8,7 +8,7 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
-import { invalidateApiGetCache } from '../ui/src/api';
+import { invalidateApiGetCache, clearApiGetCache } from '../ui/src/api';
 import { GraphView } from '../ui/src/views/graph';
 
 vi.mock('@xyflow/react', () => ({
@@ -86,7 +86,7 @@ function renderGraph(refreshToken = 0, initialFocus?: string) {
 
 beforeEach(async () => {
   installMemoryLocalStorage();
-  invalidateApiGetCache();
+  clearApiGetCache();
   await establishTestClientAccess();
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(graphResponse())));
 });

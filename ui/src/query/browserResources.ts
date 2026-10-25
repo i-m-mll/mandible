@@ -5,6 +5,7 @@ import { isSpaceEvent, SPACE_EVENTS } from '../../../src/spaces/events';
 export const browserResourceKeys = {
   briefings: ['briefing'] as const,
   briefingSidebar: ['briefing', 'sidebar'] as const,
+  briefingProjections: (briefingId: string) => ['briefing', 'projection', briefingId] as const,
   briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }) =>
     ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null] as const,
   spaceItems: (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'items'] as const,

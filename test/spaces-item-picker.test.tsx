@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { invalidateApiGetCache } from '../ui/src/api';
+import { clearApiGetCache } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // SpaceItemPicker tests (umbrella de56ffa, child e670176).
@@ -53,10 +53,10 @@ vi.mock('@xyflow/react', async () => {
 });
 
 beforeEach(async () => {
-  invalidateApiGetCache(); queryClient.clear(); await establishTestClientAccess(); });
+  clearApiGetCache(); queryClient.clear(); await establishTestClientAccess(); });
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();

@@ -2,7 +2,7 @@ import { normalizeOrderedPinIds } from '../components/shared/orderedPins';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
-import type { CanonicalProject, CanonicalProjectCheckout } from '../api';
+import type { CanonicalProject, CanonicalProjectCheckout, ChatShownProjectsPreference } from '../api';
 import {
   ApiError,
   getChatShownProjectsPreference,
@@ -188,11 +188,21 @@ export function useChatProjectSelection(): [
   useEffect(() => {
     activeRef.current = true;
     let loading = false;
+    let firstLoad = true;
+    const showCached = (snapshot: ChatShownProjectsPreference) => {
+      if (!activeRef.current || (snapshot.revision === 0 && legacyRef.current!.length > 0)) return;
+      desiredRef.current = snapshot.value;
+      revisionRef.current = snapshot.revision;
+      setShownProjects(snapshot.value);
+      setState({ ready: true, notice: null });
+    };
     const load = async () => {
       if (loading) return;
       loading = true;
+      const warm = firstLoad;
+      firstLoad = false;
       try {
-        const snapshot = await getChatShownProjectsPreference();
+        const snapshot = await getChatShownProjectsPreference({ warm, onCached: warm ? showCached : undefined });
         let resolved = snapshot;
         let importedLegacy = false;
         if (snapshot.revision === 0 && legacyRef.current!.length > 0) {

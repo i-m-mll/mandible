@@ -257,7 +257,6 @@ export function SpacesViewShell({
           : null
     ));
     setSpaceLoadError(null);
-    if (restoringSaved) invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
     const initialLoad = resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
         if (!cancelled && generation === selectionGeneration.current) {

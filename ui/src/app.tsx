@@ -74,6 +74,7 @@ import {
   type DaemonHealthSnapshot,
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
+import { invalidatePersistedDetail } from './detail-cache';
 import {
   hashWithViewSidebarHidden,
   hashWithViewSidebarVisible,
@@ -211,6 +212,7 @@ type RouteInitialDataContext = {
   settings: Record<string, string>;
   instanceInfo: InstanceInfo | null;
   sidebarGroupLimit: number;
+  agentBinding: string | null;
 };
 type RouteInitialDataWarmer = (
   params: Record<string, string>,
@@ -722,7 +724,8 @@ function App(): JSX.Element {
   // down/restarting) that detects a not-ready daemon via the mount probe / poll,
   // even though it never saw the mandible:rebuilding SSE event.
   const [daemonStarting, setDaemonStarting] = useState(false);
-  const [daemonWarm, setDaemonWarm] = useState(true);
+  // Unknown until the first health probe answers.
+  const [daemonWarm, setDaemonWarm] = useState<boolean | null>(null);
   const [epochStalled, setEpochStalled] = useState(false);
   // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
   // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
@@ -783,16 +786,19 @@ function App(): JSX.Element {
     settings: state.settings,
     instanceInfo,
     sidebarGroupLimit: normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit']),
+    agentBinding: agentPageBinding,
   });
   routeInitialDataContextRef.current = {
     settings: state.settings,
     instanceInfo,
     sidebarGroupLimit: normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit']),
+    agentBinding: agentPageBinding,
   };
   const routeWarmupSettingsLoadRef = useRef<Promise<void>>(Promise.resolve());
   const activeRouteDataLoadRef = useRef<Promise<void>>(Promise.resolve());
   const activeRouteInitialLoadsRef = useRef(new Set<Promise<unknown>>());
-  const startupRouteWarmupStartedRef = useRef(false);
+  // The startup warmup is one pass per page load; an interrupted pass resumes at this tab.
+  const startupRouteWarmupNextIndexRef = useRef(0);
   const loadVisibleRouteDataRef = useRef<(
     tab: Route['tab'],
     options?: RouteDataLoadOptions,
@@ -1173,6 +1179,8 @@ function App(): JSX.Element {
           await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
           return;
         case 'settings':
+          // Startup already reads settings for the whole app.
+          if (options.background) return;
           dispatch({ type: 'setSettingsLoadError', error: null });
           await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
           return;
@@ -1335,14 +1343,14 @@ function App(): JSX.Element {
     if (accessReady) void loadDashboardBadges();
   }, [accessReady, loadDashboardBadges]);
 
+  // Warm once the daemon has finished its startup work, so the warmup never meets its cold caches.
+  const routeWarmupAllowed = accessReady && !rebuilding && !daemonStarting && daemonWarm === true;
   useEffect(() => {
-    if (!accessReady || startupRouteWarmupStartedRef.current) return undefined;
-    startupRouteWarmupStartedRef.current = true;
+    if (!routeWarmupAllowed) return undefined;
     let active = true;
-    let completed = false;
     let cancelScheduled: () => void = () => undefined;
     const tabs = RENDERABLE_TABS.filter((tab) => Boolean(ROUTE_CHUNK_LOADERS[tab]));
-    let nextIndex = 0;
+    if (startupRouteWarmupNextIndexRef.current >= tabs.length) return undefined;
 
     const scheduleNext = () => {
       cancelScheduled = scheduleRouteWarmup(() => {
@@ -1360,11 +1368,9 @@ function App(): JSX.Element {
           }
           if (!active) return;
 
-          const tab = tabs[nextIndex++];
-          if (!tab) {
-            completed = true;
-            return;
-          }
+          const tab = tabs[startupRouteWarmupNextIndexRef.current];
+          if (!tab) return;
+          startupRouteWarmupNextIndexRef.current += 1;
           if (tab !== routeTabRef.current) {
             const tabRoute = routeForTab(tab, routeRef.current, tabRouteSnapshotsRef.current);
             try {
@@ -1401,9 +1407,8 @@ function App(): JSX.Element {
     return () => {
       active = false;
       cancelScheduled();
-      if (!completed) startupRouteWarmupStartedRef.current = false;
     };
-  }, [accessReady]);
+  }, [routeWarmupAllowed]);
 
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
@@ -1727,7 +1732,10 @@ function App(): JSX.Element {
       sseStateRef.current = state;
       setSseWireError(error ?? null);
       if (!reconnected) return;
+      // Events may have been missed while disconnected: no cached read is fresh any more.
       invalidateApiGetCache();
+      invalidatePersistedDetail();
+      void queryClient.invalidateQueries({ refetchType: 'none' });
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
@@ -1786,7 +1794,8 @@ function App(): JSX.Element {
       if (shouldSkipFallbackPoll(sseStateRef.current, lastDashboardSseAtRef.current, Date.now(), SSE_FRESH_FOR)) {
         return;
       }
-      if (route.tab === 'issues') invalidateApiGetCache('/api/issues');
+      // Without a live stream no event invalidates cached reads, so the poll reads the network.
+      invalidateApiGetCache();
       void loadVisibleRouteData(route.tab);
       void refreshRailOrder();
     }, POLL_INTERVAL);
@@ -2139,6 +2148,7 @@ function App(): JSX.Element {
 
   const handleInboxRefresh = () => {
     dispatch({ type: 'setInboxLoading', loading: true });
+    invalidateApiGetCache('/api/inbox');
     getInboxGlobal()
       .then((data) => dispatch({ type: 'setInboxData', data }))
       .catch((error: unknown) => dispatch({
@@ -2741,7 +2751,7 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      {!daemonWarm && (
+      {daemonWarm === false && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…
         </div>

@@ -20,7 +20,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
-import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
+import { detailRequestKey, isPersistedDetailFresh, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell, useRouteLoad } from '../app-shell';
 import {
@@ -809,6 +809,7 @@ export function IssuesView({
     setDetailLoading(!hasCachedDetail);
     setDetailLoadFailed(false);
     setDetailError(null);
+    if (repoId && hasCachedDetail && isPersistedDetailFresh('issue-detail', persistedKey)) return undefined;
     const initialDetail = hasCachedDetail
       ? null
       : repoId

@@ -2,7 +2,7 @@
 // @vitest-environment-options {"url":"https://app.mandible.localhost:19420/"}
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitUntilPasses } from './helpers/wait-until.js';
-import { getWorkCompare, invalidateApiGetCache, patchSession, updateConversation } from '../ui/src/api';
+import { getWorkCompare, clearApiGetCache, patchSession, updateConversation } from '../ui/src/api';
 import {
   __resetBrowserSessionForTests, browserSessionFetch, ensureClientAccess, getClientAccessState, retryClientAccess,
 } from '../ui/src/client-auth-token';
@@ -10,7 +10,7 @@ beforeEach(async () => {
  __resetBrowserSessionForTests();
  await ensureClientAccess(async () => new Response(JSON.stringify({ authenticated: true, session: { family_id: 'test-family', audience: 'production', csrf_token: 'test-csrf', effect_ceiling: ['ledger:read', 'ledger:write'] } }), { status: 200, headers: { 'content-type': 'application/json' } }));
 });
-afterEach(() => { __resetBrowserSessionForTests(); invalidateApiGetCache(); vi.unstubAllGlobals(); });
+afterEach(() => { __resetBrowserSessionForTests(); clearApiGetCache(); vi.unstubAllGlobals(); });
 
 describe('API contract helpers', () => {
   it('loads Projects compare payloads with raw unified diff text', async () => {
