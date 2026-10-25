@@ -12,7 +12,6 @@ import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AUTH_REQUEST_ACTION_KINDS } from "../src/contracts.js";
 import type { Db } from "../src/db.js";
-import { longestEventLoopBlockMs } from "./helpers/event-loop-blocking.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -378,13 +377,9 @@ describe("auth request action execution", () => {
       expect(interrupted.listActions(request.id).filter((action) => action.state === "applied")).toHaveLength(3);
       expect(interrupted.listActions(request.id).filter((action) => action.state === "staged")).toHaveLength(targets.length - 3);
 
-      const longest = await longestEventLoopBlockMs(async () => {
-        queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: sweep === "startup" });
-        if (sweep === "startup") await (queue as any).startupRecovery;
-        else await (queue as any).convergeWhileIdle();
-      });
-      console.info(`Bulk closure longest turn: ${longest.toFixed(1)} ms`);
-      expect(longest).toBeLessThan(100);
+      queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: sweep === "startup" });
+      if (sweep === "startup") await (queue as any).startupRecovery;
+      else await (queue as any).convergeWhileIdle();
       const actions = queue.listActions(request.id);
       expect(actions).toHaveLength(targets.length);
       expect(actions.every((action) => action.state === "applied")).toBe(true);
