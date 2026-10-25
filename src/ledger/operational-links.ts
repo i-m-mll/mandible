@@ -391,7 +391,7 @@ function* authRequestLedgerCompletion(
     db.transaction(() => {
       const issue = store.getIssue(issueId);
       if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) return;
-      store.recordEvent({
+      recordAuthQueueIssueEventOnce(db, {
         entity_type: "auth_request",
         entity_id: input.auth_request_id,
         event_type: "auth_request.completed",
@@ -897,12 +897,29 @@ function maybeRecordLinkEvent(
   actor?: LedgerActorInput,
 ): void {
   if (recordEvent === false) return;
-  new LedgerStore(db).recordEvent({
+  const event = {
     ...input,
     actor_type: actor?.actor_type ?? "system",
     actor_id: actor?.actor_id ?? null,
     attribution: actor?.attribution ?? systemAction(),
-  });
+  };
+  if (input.source === "auth_queue") recordAuthQueueIssueEventOnce(db, event);
+  else new LedgerStore(db).recordEvent(event);
+}
+
+function recordAuthQueueIssueEventOnce(
+  db: Db,
+  input: Parameters<LedgerStore["recordEvent"]>[0] & { payload: Record<string, unknown> },
+): void {
+  db.transaction(() => {
+    const recorded = db.prepare(
+      `SELECT 1 FROM ledger_events
+       WHERE entity_type != 'issue' AND entity_type = ? AND entity_id = ? AND event_type = ?
+         AND json_extract(payload_json, '$.issue_id') = ?
+         AND json_extract(payload_json, '$.link_type') IS ? LIMIT 1`,
+    ).get(input.entity_type, input.entity_id, input.event_type, input.payload.issue_id, input.payload.link_type ?? null);
+    if (!recorded) new LedgerStore(db).recordEvent(input);
+  }).immediate();
 }
 
 export function candidateProjectIds(db: Db, repoRef?: string | null): string[] {

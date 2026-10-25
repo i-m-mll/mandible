@@ -5881,6 +5881,7 @@ export class AuthQueue {
       try {
         await this.reconcileRuntimeHandoffs();
         await this.runConvergenceSweep(limit);
+        await this.resumeDeferredLedgerActions();
       } finally {
         this.convergenceSweepInFlight = false;
       }
@@ -5888,6 +5889,26 @@ export class AuthQueue {
   }
 
   private convergenceSweepInFlight = false;
+
+  /** Interrupted releases come only from an earlier process, so one pass per process finds them all. */
+  private deferredLedgerActionsResumed = false;
+
+  private async resumeDeferredLedgerActions(): Promise<void> {
+    if (this.deferredLedgerActionsResumed || this.disposed || !this.isDbOpen() || !this.tableExists("auth_request_actions")) return;
+    this.deferredLedgerActionsResumed = true;
+    // The state/request index reads only unfinished actions, regardless of
+    // whether their hooks and background finalizers have already completed.
+    const rows = this.db.prepare(
+      "SELECT DISTINCT auth_request_id FROM auth_request_actions WHERE state = 'staged'",
+    ).all() as Array<{ auth_request_id: string }>;
+    for (const { auth_request_id } of rows) {
+      if (this.disposed || !this.isDbOpen()) return;
+      const request = this.getRequestById(auth_request_id);
+      if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0
+        || this.convergenceWithholdsClosures(request.id)) continue;
+      await this.releaseWithheldClosures(request);
+    }
+  }
 
   private async runConvergenceSweep(limit: number): Promise<void> {
     let ids: string[] = [];
