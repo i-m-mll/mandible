@@ -4,7 +4,9 @@
 // rule needs no exemptions.
 const STORM_WINDOW_MS = 10_000;
 const STORM_LIMIT = 100;
-const TRANSIENT_HEALTH_EVENTS = new Set([
+// Performance signals: recorded in diagnostics.health_events, never failures.
+// Each caller decides whether they are fatal.
+const HEALTH_EVENTS = new Set([
   'daemon_event_loop_lag',
   'daemon_event_loop_stall',
   'daemon_memory_warning',
@@ -29,28 +31,32 @@ function peakWindow(summary) {
   return peak + summary.untimed;
 }
 
-export function assessRuntimeLogs(text, options) {
-  const assessor = createRuntimeLogAssessor(options);
+export function assessRuntimeLogs(text) {
+  const assessor = createRuntimeLogAssessor();
   for (const line of text.split('\n')) assessor.add(line);
   return assessor.finish();
 }
 
 /** Incremental form of assessRuntimeLogs, for logs read in chunks. */
-export function createRuntimeLogAssessor({ historicalBefore = null } = {}) {
+export function createRuntimeLogAssessor() {
   const failures = [];
-  const historicalHealth = [];
-  const currentHealth = [];
-  let historicalHealthCount = 0;
+  const healthEvents = [];
+  let healthEventCount = 0;
   let hardFailureCount = 0;
   const events = new Map();
   const routes = new Map();
   let started = 0;
   let requests = 0;
+  const recordHealth = entry => {
+    healthEventCount++;
+    if (healthEvents.length < MAX_RETAINED_HEALTH_EVENTS) healthEvents.push(entry);
+  };
   const add = line => {
     if (!line) return;
     let row;
     try { row = JSON.parse(line); } catch {
-      if (/panic|fatal|crash|foreign.key|database.*(?:closed|not open)|event.loop.*(?:stall|starv)/i.test(line)) { if (failures.length < 20) failures.push(line); }
+      if (/panic|fatal|crash|foreign.key|database.*(?:closed|not open)/i.test(line)) { if (failures.length < 20) failures.push(line); }
+      else if (/event.loop.*(?:stall|starv)/i.test(line)) recordHealth({ line: line.slice(0, 500) });
       return;
     }
     const event = row.message || row.event || '';
@@ -69,24 +75,15 @@ export function createRuntimeLogAssessor({ historicalBefore = null } = {}) {
       summary.count++;
       recordTime(summary, row);
     }
-    const transientHealth = TRANSIENT_HEALTH_EVENTS.has(event);
-    if (transientHealth) {
+    if (HEALTH_EVENTS.has(event)) {
       const occurredAt = Date.parse(row.time);
-      if (historicalBefore !== null && Number.isFinite(occurredAt) && occurredAt < historicalBefore) {
-        historicalHealthCount++;
-        if (historicalHealth.length < MAX_RETAINED_HEALTH_EVENTS) historicalHealth.push({
-          event,
-          time: new Date(occurredAt).toISOString(),
-          ...(Number.isFinite(row.p95_ms) ? { p95_ms: row.p95_ms } : {}),
-          ...(Number.isFinite(row.max_ms) ? { max_ms: row.max_ms } : {}),
-          ...(Number.isFinite(row.rss_fraction) ? { rss_fraction: row.rss_fraction } : {}),
-        });
-      } else if (failures.length < 20) {
-        currentHealth.push({ code: event === 'daemon_event_loop_lag' ? 'event_loop_lag' : event === 'daemon_event_loop_stall' ? 'event_loop_stall' : 'memory_warning', event, time: Number.isFinite(occurredAt) ? new Date(occurredAt).toISOString() : null });
-        failures.push(!Number.isFinite(occurredAt) && historicalBefore !== null
-          ? `Untimed transient health event cannot be classified as historical: ${line}`
-          : line);
-      }
+      recordHealth({
+        event,
+        time: Number.isFinite(occurredAt) ? new Date(occurredAt).toISOString() : null,
+        ...(Number.isFinite(row.p95_ms) ? { p95_ms: row.p95_ms } : {}),
+        ...(Number.isFinite(row.max_ms) ? { max_ms: row.max_ms } : {}),
+        ...(Number.isFinite(row.rss_fraction) ? { rss_fraction: row.rss_fraction } : {}),
+      });
     }
     if (row.level === 'error' || ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error'].includes(event) || /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line)) { hardFailureCount++; if (failures.length < 20) failures.push(line); }
   };
@@ -110,10 +107,8 @@ export function createRuntimeLogAssessor({ historicalBefore = null } = {}) {
     eventSummaries.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || a.event.localeCompare(b.event));
     return {
       failures,
-      diagnostics: { hard_failure_count: hardFailureCount, current_health: currentHealth.slice(0, 20), historical_health: { retained: historicalHealth, omitted: Math.max(0, historicalHealthCount - historicalHealth.length) }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
+      diagnostics: { hard_failure_count: hardFailureCount, health_events: { retained: healthEvents, omitted: healthEventCount - healthEvents.length }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
     };
   };
   return { add, finish };
 }
-
-export function assessLogs(text, options) { return assessRuntimeLogs(text, options).failures; }

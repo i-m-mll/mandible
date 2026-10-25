@@ -6,21 +6,23 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
   it('rejects closed-database shutdown errors and event storms', () => {
     const stopped = JSON.stringify({ level: 'info', message: 'server_stopped' });
     const closedDb = JSON.stringify({ level: 'error', message: 'work_scanner_repo_scan_failed', error: 'The database connection is not open' });
-    expect(assessLogs(`${stopped}\n${closedDb}`)).toEqual([closedDb]);
-    expect(assessLogs(Array(101).fill(JSON.stringify({ level: 'info', message: 'work:scan:completed' })).join('\n'))).toContain('Repeated event storm: work:scan:completed (101 in 10000ms)');
-    expect(assessLogs(`${stopped}\n${JSON.stringify({ level: 'info', message: 'daemon_ready' })}`)).toEqual([]);
+    expect(assessAcceptanceLogs(`${stopped}\n${closedDb}`).failures).toEqual([closedDb]);
+    expect(assessAcceptanceLogs(Array(101).fill(JSON.stringify({ level: 'info', message: 'work:scan:completed' })).join('\n')).failures).toContain('Repeated event storm: work:scan:completed (101 in 10000ms)');
+    expect(assessAcceptanceLogs(`${stopped}\n${JSON.stringify({ level: 'info', message: 'daemon_ready' })}`).failures).toEqual([]);
     for (const event of ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error']) {
       const warning = JSON.stringify({ level: 'warn', message: event, error: 'SQLite already loaded' });
-      expect(assessLogs(warning)).toEqual([warning]);
+      expect(assessAcceptanceLogs(warning).failures).toEqual([warning]);
     }
-    expect(assessLogs(JSON.stringify({ level: 'warn', message: 'optional_provider_unavailable' }))).toEqual([]);
+    expect(assessAcceptanceLogs(JSON.stringify({ level: 'warn', message: 'optional_provider_unavailable' })).failures).toEqual([]);
+    expect(assessAcceptanceLogs(JSON.stringify({ level: 'warn', message: 'daemon_event_loop_stall', max_ms: 3700 })).failures)
+      .toEqual([expect.stringContaining('daemon_event_loop_stall')]);
   });
 });
 
@@ -41,8 +43,13 @@ it('requires a fresh clean diagnostics interval covering acceptance', async () =
     wait: async () => { time += 10; },
     probe: async () => ++probes === 1 ? initial : fresh,
   })).resolves.toEqual(fresh);
-  await expect(observeAcceptanceHealth({ probe: async () => health(1, 80, 90, 250), now: () => 100 }))
-    .rejects.toMatchObject({ code: 'event_loop_stall' });
+  time = 100;
+  probes = 0;
+  await expect(observeAcceptanceHealth({
+    observationMs: 10, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 10; },
+    probe: async () => ++probes === 1 ? initial : health(2, 90, 110, 250),
+  })).rejects.toMatchObject({ code: 'event_loop_stall' });
 
   time = 100;
   probes = 0;
@@ -191,11 +198,11 @@ it('assesses periodic events by rate while retaining complete lifetime error evi
   const start = Date.parse('2026-10-05T05:00:00Z');
   const event = (offset: number) => JSON.stringify({ level: 'info', message: 'operational_log_copy_forward', time: new Date(start + offset).toISOString() });
   const cadence = Array.from({ length: 148 }, (_, i) => event(i * 30_000));
-  expect(assessLogs(cadence.join('\n'))).toEqual([]);
-  expect(assessLogs(Array.from({ length: 101 }, (_, i) => event(i * 50)).join('\n'))).toEqual(['Repeated event storm: operational_log_copy_forward (101 in 10000ms)']);
+  expect(assessAcceptanceLogs(cadence.join('\n')).failures).toEqual([]);
+  expect(assessAcceptanceLogs(Array.from({ length: 101 }, (_, i) => event(i * 50)).join('\n')).failures).toEqual(['Repeated event storm: operational_log_copy_forward (101 in 10000ms)']);
   const untimed = JSON.stringify({ level: 'info', message: 'operational_log_copy_forward' });
-  expect(assessLogs([event(0), ...Array(100).fill(untimed)].join('\n'))).toEqual(['Repeated event storm: operational_log_copy_forward (101 in 10000ms)']);
+  expect(assessAcceptanceLogs([event(0), ...Array(100).fill(untimed)].join('\n')).failures).toEqual(['Repeated event storm: operational_log_copy_forward (101 in 10000ms)']);
   const error = JSON.stringify({ level: 'error', message: 'database_closed', time: new Date(start).toISOString() });
-  expect(assessLogs([error, ...cadence].join('\n'))).toEqual([error]);
-  expect(assessLogs([JSON.stringify({ message: 'server_started' }), ...cadence, JSON.stringify({ message: 'server_started' })].join('\n'))).toEqual(['Daemon restarted during acceptance']);
+  expect(assessAcceptanceLogs([error, ...cadence].join('\n')).failures).toEqual([error]);
+  expect(assessAcceptanceLogs([JSON.stringify({ message: 'server_started' }), ...cadence, JSON.stringify({ message: 'server_started' })].join('\n')).failures).toEqual(['Daemon restarted during acceptance']);
 });

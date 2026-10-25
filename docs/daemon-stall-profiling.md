@@ -1,8 +1,9 @@
 # Daemon stall profiling
 
 The daemon runs on one event loop, so any synchronous turn delays every
-client. Self-update handoffs fail when a diagnostic window's `eventLoop.maxMs`
-reaches 250 ms (`EVENT_LOOP_STALL_BUDGET_MS`, `src/runtime-health-contract.ts`).
+client. Candidate acceptance fails, and a self-update handoff records a
+performance finding, when a diagnostic window's `eventLoop.maxMs` reaches
+250 ms (`EVENT_LOOP_STALL_BUDGET_MS`, `src/runtime-health-contract.ts`).
 The daemon's own `daemon_event_loop_stall` log reports only each window's maximum.
 These tools say when each stall happens and which JS functions caused it.
 

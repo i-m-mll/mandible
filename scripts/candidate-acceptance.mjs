@@ -13,7 +13,7 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
-import { observeRuntimeHealthCoverage } from '../src/runtime-health-contract.ts';
+import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -25,7 +25,6 @@ function command(binary, args, options = {}) {
   return result.stdout?.trim();
 }
 
-export { assessLogs } from './runtime-log-assessment.mjs';
 import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
 
 export function createAcceptanceHome(home) {
@@ -38,6 +37,12 @@ export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storag
   const ports = [Number(url.port), backendPort, adminPort];
   if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 3 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
   return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+}
+
+/** Acceptance's log verdict: runtime log failures plus every health event, since a stall on the fixture is the code's. */
+export function assessAcceptanceLogs(text) {
+  const { failures, diagnostics } = assessRuntimeLogs(text);
+  return { failures: [...failures, ...diagnostics.health_events.retained.map(entry => `Runtime health event: ${JSON.stringify(entry)}`)], diagnostics };
 }
 
 export async function observeAcceptanceHealth({
@@ -59,6 +64,9 @@ export async function observeAcceptanceHealth({
     observationMs,
     deadlineMs,
   });
+  // Acceptance runs on an empty fixture database, so any performance finding is the code's.
+  const [finding] = result.performance.findings;
+  if (finding) throw new RuntimeHealthObservationError(finding.code, finding.message, { observation: result.observation, performance: result.performance });
   return result.value;
 }
 
@@ -292,7 +300,7 @@ async function main() {
     const logs = ['daemon', 'desktop', 'gateway'].map(name => {
       const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     }).join('\n');
-    const assessment = assessRuntimeLogs(logs);
+    const assessment = assessAcceptanceLogs(logs);
     result.checks.log_failures = assessment.failures;
     result.checks.log_diagnostics = assessment.diagnostics;
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
