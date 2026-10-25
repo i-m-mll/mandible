@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 import type { Db } from "./db.js";
 import { protectedBranchNames } from "./protected-branches.js";
-import { resolveProjectRef, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
+import { resolveProjectRefAsync, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 import { parseJsonObject } from "./row-coerce.js";
 import {
@@ -147,59 +147,65 @@ function ignoredCustodyRef(entryId: string): string {
   return `refs/mandible/trash-ignored/${entryId}`;
 }
 
-/** One finished Git run, from either the synchronous or the asynchronous runner. */
-type GitRun = { error?: Error; status: number | null; stdout: string; stderr: string };
+/** One finished Git run. */
+type GitRun = { error?: Error; status: number | null; stdout: Buffer; stderr: string };
 
 function gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...env };
 }
 
-/** Run Git without waiting on the event loop; the daemon's timers use this. */
-function runGitAsync(cwd: string, args: string[]): Promise<GitRun> {
+/** Run Git off the event loop. Every trash operation runs in the daemon, so none may wait on Git synchronously. */
+function runGit(cwd: string, args: string[], options: { env?: NodeJS.ProcessEnv; input?: string } = {}): Promise<GitRun> {
   return new Promise((resolve) => {
-    execFile("git", args, { cwd, encoding: "utf8", env: gitEnv(), maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile("git", args, {
+      cwd, encoding: "buffer", env: gitEnv(options.env), maxBuffer: 1024 * 1024 * 1024,
+    }, (error, stdout, stderr) => {
       const code = (error as { code?: unknown } | null)?.code;
       resolve({
         error: error && typeof code !== "number" ? error : undefined,
         status: typeof code === "number" ? code : error ? null : 0,
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
+        stdout,
+        stderr: stderr.toString("utf8"),
       });
     });
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(options.input ?? "");
   });
 }
 
-function git(
+async function git(
   cwd: string,
   args: string[],
   options: { allowFailure?: boolean; env?: NodeJS.ProcessEnv; input?: string } = {},
-): string {
-  return gitOutput(spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    input: options.input,
-    env: gitEnv(options.env),
-  }), args, options);
-}
-
-async function gitAsync(cwd: string, args: string[]): Promise<string> {
-  return gitOutput(await runGitAsync(cwd, args), args, {});
-}
-
-function gitOutput(result: GitRun, args: string[], options: { allowFailure?: boolean }): string {
+): Promise<string> {
+  const result = await runGit(cwd, args, options);
   if (result.error) {
     throw new TrashServiceError(result.error.message, "git_unavailable", 500);
   }
+  const stdout = result.stdout.toString("utf8");
   if (result.status !== 0) {
     if (options.allowFailure) return "";
-    const message = (result.stderr || result.stdout || `git exited ${result.status}`).trim();
+    const message = (result.stderr || stdout || `git exited ${result.status}`).trim();
     throw new TrashServiceError(message, "git_failed", 409, { args });
   }
-  return result.stdout.trim();
+  return stdout.trim();
 }
 
-function parseWorktrees(repoRoot: string): GitWorktree[] {
-  const raw = git(repoRoot, ["worktree", "list", "--porcelain", "-z"]);
+let trashMutations: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run trash mutations one at a time. Each checks state, then runs Git, then
+ * records the result; serializing them keeps that sequence atomic with
+ * respect to every other create, restore and GC pass.
+ */
+function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const result = trashMutations.then(operation);
+  trashMutations = result.catch(() => undefined);
+  return result;
+}
+
+async function parseWorktrees(repoRoot: string): Promise<GitWorktree[]> {
+  const raw = await git(repoRoot, ["worktree", "list", "--porcelain", "-z"]);
   const records = raw.split("\0\0").filter(Boolean);
   return records.map((record) => {
     let worktreePath = "";
@@ -251,17 +257,17 @@ function validateNewWorktreePath(repoRoot: string, requested: string): string {
   return requestedPath;
 }
 
-function validateBranch(repoRoot: string, branch: string): string {
+async function validateBranch(repoRoot: string, branch: string): Promise<string> {
   const value = branch.trim();
   if (!value || value.startsWith("refs/") || value === "HEAD") {
     throw new TrashServiceError("branch must be a normal local branch name", "invalid_branch");
   }
-  git(repoRoot, ["check-ref-format", "--branch", value]);
+  await git(repoRoot, ["check-ref-format", "--branch", value]);
   return value;
 }
 
-function resolveProject(db: Db, ref: string): RegistryProject {
-  const result = resolveProjectRef(db, ref);
+async function resolveProject(db: Db, ref: string): Promise<RegistryProject> {
+  const result = await resolveProjectRefAsync(db, ref);
   if ((!result.ok && result.reason === "ambiguous")) {
     throw new TrashServiceError(`ambiguous project ref: ${ref}`, "ambiguous_project", 409, {
       candidates: result.candidates ?? [],
@@ -281,18 +287,18 @@ function resolveProject(db: Db, ref: string): RegistryProject {
   return result.project;
 }
 
-function branchOid(repoRoot: string, branch: string): string | null {
+async function branchOid(repoRoot: string, branch: string): Promise<string | null> {
   const ref = `refs/heads/${branch}`;
-  return git(repoRoot, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
+  return await git(repoRoot, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
     allowFailure: true,
   }) || null;
 }
 
-function chooseCheckout(
+async function chooseCheckout(
   project: RegistryProject,
   branch: string,
   checkoutRoot?: string,
-): RegistryCheckout {
+): Promise<RegistryCheckout> {
   if (checkoutRoot) {
     const normalized = path.resolve(checkoutRoot);
     const checkout = project.checkouts.find((candidate) => path.resolve(candidate.root) === normalized);
@@ -303,15 +309,16 @@ function chooseCheckout(
         409,
       );
     }
-    if (!fs.existsSync(checkout.root) || !branchOid(checkout.root, branch)) {
+    if (!fs.existsSync(checkout.root) || !await branchOid(checkout.root, branch)) {
       throw new TrashServiceError("branch is not present in the selected checkout", "branch_not_found", 404);
     }
     return checkout;
   }
 
-  const candidates = project.checkouts.filter(
-    (checkout) => fs.existsSync(checkout.root) && branchOid(checkout.root, branch) !== null,
-  );
+  const present = await Promise.all(project.checkouts.map(
+    async (checkout) => fs.existsSync(checkout.root) && await branchOid(checkout.root, branch) !== null,
+  ));
+  const candidates = project.checkouts.filter((_checkout, index) => present[index]);
   if (candidates.length === 0) {
     throw new TrashServiceError("branch not found in a registered project checkout", "branch_not_found", 404);
   }
@@ -326,8 +333,8 @@ function chooseCheckout(
   return candidates[0];
 }
 
-function indexGitlinks(cwd: string, env?: NodeJS.ProcessEnv): Map<string, string> {
-  const output = git(cwd, ["ls-files", "--stage", "-z"], { env });
+async function indexGitlinks(cwd: string, env?: NodeJS.ProcessEnv): Promise<Map<string, string>> {
+  const output = await git(cwd, ["ls-files", "--stage", "-z"], { env });
   const gitlinks = new Map<string, string>();
   for (const record of output.split("\0")) {
     const match = record.match(/^160000 ([0-9a-f]+) [0-3]\t([\s\S]+)$/);
@@ -336,8 +343,8 @@ function indexGitlinks(cwd: string, env?: NodeJS.ProcessEnv): Map<string, string
   return gitlinks;
 }
 
-function commitGitlinks(cwd: string, commitOid: string): Map<string, string> {
-  const output = git(cwd, ["ls-tree", "-r", "-z", commitOid]);
+async function commitGitlinks(cwd: string, commitOid: string): Promise<Map<string, string>> {
+  const output = await git(cwd, ["ls-tree", "-r", "-z", commitOid]);
   const gitlinks = new Map<string, string>();
   for (const record of output.split("\0")) {
     const match = record.match(/^160000 commit ([0-9a-f]+)\t([\s\S]+)$/);
@@ -346,19 +353,11 @@ function commitGitlinks(cwd: string, commitOid: string): Map<string, string> {
   return gitlinks;
 }
 
-function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Map<string, string>): void {
+async function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Map<string, string>): Promise<void> {
   for (const relativePath of gitlinks.keys()) {
     const nestedPath = path.join(worktreePath, relativePath);
     if (!fs.existsSync(path.join(nestedPath, ".git"))) continue;
-    const result = spawnSync(
-      "git",
-      ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
-      {
-        cwd: nestedPath,
-        encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      },
-    );
+    const result = await runGit(nestedPath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]);
     if (result.status !== 0) {
       throw new TrashServiceError(
         `cannot inspect nested repository before trashing: ${relativePath}`,
@@ -367,7 +366,7 @@ function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Map<string, 
         { path: relativePath },
       );
     }
-    if (result.stdout.trim()) {
+    if (result.stdout.toString("utf8").trim()) {
       throw new TrashServiceError(
         `dirty submodule cannot be snapshotted losslessly: ${relativePath}`,
         "dirty_submodule",
@@ -378,26 +377,26 @@ function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Map<string, 
   }
 }
 
-function captureWorktreeTree(
+async function captureWorktreeTree(
   worktreePath: string,
   originalOid: string,
   entryId: string,
-): { dirty: boolean; tree: string } {
-  const status = git(worktreePath, [
+): Promise<{ dirty: boolean; tree: string }> {
+  const status = await git(worktreePath, [
     "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
   ]);
   if (!status) {
-    return { dirty: false, tree: git(worktreePath, ["rev-parse", `${originalOid}^{tree}`]) };
+    return { dirty: false, tree: await git(worktreePath, ["rev-parse", `${originalOid}^{tree}`]) };
   }
 
   const indexPath = path.join(os.tmpdir(), `mandible-trash-index-${entryId}`);
   const env = { GIT_INDEX_FILE: indexPath };
   try {
-    const originalGitlinks = commitGitlinks(worktreePath, originalOid);
-    assertTrackedGitlinksClean(worktreePath, originalGitlinks);
-    git(worktreePath, ["read-tree", originalOid], { env });
-    git(worktreePath, ["add", "-A", "--", "."], { env });
-    const capturedGitlinks = indexGitlinks(worktreePath, env);
+    const originalGitlinks = await commitGitlinks(worktreePath, originalOid);
+    await assertTrackedGitlinksClean(worktreePath, originalGitlinks);
+    await git(worktreePath, ["read-tree", originalOid], { env });
+    await git(worktreePath, ["add", "-A", "--", "."], { env });
+    const capturedGitlinks = await indexGitlinks(worktreePath, env);
     const embedded = [...capturedGitlinks.keys()].filter((candidate) => !originalGitlinks.has(candidate));
     if (embedded.length > 0) {
       throw new TrashServiceError(
@@ -421,7 +420,7 @@ function captureWorktreeTree(
         { gitlinks: advanced },
       );
     }
-    const tree = git(worktreePath, ["write-tree"], { env });
+    const tree = await git(worktreePath, ["write-tree"], { env });
     return { dirty: true, tree };
   } finally {
     fs.rmSync(indexPath, { force: true });
@@ -453,7 +452,7 @@ const NO_WORKTREE_IGNORED: IgnoredCustody = {
  * Refuses the whole removal when the unique ignored bytes exceed the limit or
  * cannot be stored in Git, so the worktree stays untouched.
  */
-function planIgnored(repoRoot: string, worktreePath: string): IgnoredPlan {
+async function planIgnored(repoRoot: string, worktreePath: string): Promise<IgnoredPlan> {
   const policyResult = readIgnoredPolicy(repoRoot);
   if (!policyResult.ok) {
     throw new TrashServiceError(
@@ -464,7 +463,7 @@ function planIgnored(repoRoot: string, worktreePath: string): IgnoredPlan {
     );
   }
   const { policy } = policyResult;
-  const status = git(worktreePath, [
+  const status = await git(worktreePath, [
     "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal",
     "--ignore-submodules=none",
   ]);
@@ -510,11 +509,11 @@ function planIgnored(repoRoot: string, worktreePath: string): IgnoredPlan {
   };
 }
 
-function captureIgnored(worktreePath: string, kept: readonly IgnoredFile[], entryId: string): string | null {
+async function captureIgnored(worktreePath: string, kept: readonly IgnoredFile[], entryId: string): Promise<string | null> {
   if (kept.length === 0) return null;
-  const oids = git(worktreePath, ["hash-object", "-w", "--no-filters", "--stdin-paths"], {
+  const oids = (await git(worktreePath, ["hash-object", "-w", "--no-filters", "--stdin-paths"], {
     input: `${kept.map((file) => file.path).join("\n")}\n`,
-  }).split("\n");
+  })).split("\n");
   if (oids.length !== kept.length) {
     throw new TrashServiceError("git hash-object returned an unexpected object count", "git_failed", 500);
   }
@@ -522,9 +521,9 @@ function captureIgnored(worktreePath: string, kept: readonly IgnoredFile[], entr
   const env = { GIT_INDEX_FILE: indexPath };
   try {
     const records = kept.map((file, index) => `${file.executable ? "100755" : "100644"} ${oids[index]}\t${file.path}\0`);
-    git(worktreePath, ["update-index", "--add", "-z", "--index-info"], { env, input: records.join("") });
-    const tree = git(worktreePath, ["write-tree"], { env });
-    return git(worktreePath, ["commit-tree", tree], {
+    await git(worktreePath, ["update-index", "--add", "-z", "--index-info"], { env, input: records.join("") });
+    const tree = await git(worktreePath, ["write-tree"], { env });
+    return await git(worktreePath, ["commit-tree", tree], {
       env: TRASH_IDENTITY,
       input: "Mandible trash ignored files\n",
     });
@@ -560,17 +559,12 @@ function recordedIgnoredCustody(entry: TrashEntry): RecordedIgnoredCustody | nul
   return typeof ref === "string" && typeof oid === "string" ? { ref, oid } : null;
 }
 
-function readBlobs(repoRoot: string, oids: readonly string[]): Buffer[] {
+async function readBlobs(repoRoot: string, oids: readonly string[]): Promise<Buffer[]> {
   if (oids.length === 0) return [];
-  const result = spawnSync("git", ["cat-file", "--batch"], {
-    cwd: repoRoot,
-    input: `${oids.join("\n")}\n`,
-    maxBuffer: 1024 * 1024 * 1024,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
+  const result = await runGit(repoRoot, ["cat-file", "--batch"], { input: `${oids.join("\n")}\n` });
   if (result.error || result.status !== 0) {
     throw new TrashServiceError(
-      `cannot read ignored-file custody: ${result.error?.message ?? result.stderr.toString().trim()}`,
+      `cannot read ignored-file custody: ${result.error?.message ?? result.stderr.trim()}`,
       "ignored_custody_unreadable",
       409,
     );
@@ -596,12 +590,12 @@ function readBlobs(repoRoot: string, oids: readonly string[]): Buffer[] {
  * byte, without touching its index. A path that already exists is left alone
  * and counted, so a partially removed worktree can be refilled.
  */
-function materializeIgnored(
+async function materializeIgnored(
   repoRoot: string,
   custody: RecordedIgnoredCustody,
   worktreePath: string,
-): { restored: number; present: number } {
-  const probe = probeExactRef(repoRoot, custody.ref);
+): Promise<{ restored: number; present: number }> {
+  const probe = await probeExactRef(repoRoot, custody.ref);
   if (probe.status !== "present" || probe.oid !== custody.oid) {
     throw new TrashServiceError(
       "ignored-file custody ref is missing or no longer matches its record",
@@ -611,7 +605,7 @@ function materializeIgnored(
     );
   }
   const realWorktree = fs.realpathSync(worktreePath);
-  const files = git(repoRoot, ["ls-tree", "-r", "-z", custody.oid]).split("\0").filter(Boolean)
+  const files = (await git(repoRoot, ["ls-tree", "-r", "-z", custody.oid])).split("\0").filter(Boolean)
     .map((record) => {
       const match = record.match(/^(\d+) blob ([0-9a-f]+)\t([\s\S]+)$/);
       if (!match) {
@@ -627,7 +621,7 @@ function materializeIgnored(
       return true;
     }
   });
-  const blobs = readBlobs(repoRoot, missing.map((file) => file.oid));
+  const blobs = await readBlobs(repoRoot, missing.map((file) => file.oid));
   missing.forEach((file, index) => {
     const target = path.join(realWorktree, file.path);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -646,11 +640,11 @@ function materializeIgnored(
 
 async function deleteIgnoredRef(repoRoot: string, entryId: string): Promise<void> {
   const ref = ignoredCustodyRef(entryId);
-  const probe = await probeExactRefAsync(repoRoot, ref);
+  const probe = await probeExactRef(repoRoot, ref);
   if (probe.status === "unknown") {
     throw new TrashServiceError(`cannot inspect ignored-file custody ref: ${probe.error}`, "snapshot_probe_unknown", 409);
   }
-  if (probe.status === "present") await gitAsync(repoRoot, ["update-ref", "-d", ref, probe.oid]);
+  if (probe.status === "present") await git(repoRoot, ["update-ref", "-d", ref, probe.oid]);
 }
 
 function linkedIssueRefs(db: Db, projectId: string, branch: string, explicit: string[]): string[] {
@@ -686,15 +680,15 @@ function getEntry(db: Db, id: string): TrashEntry {
   return mapRow(row);
 }
 
-export function listTrashEntries(
+export async function listTrashEntries(
   db: Db,
   filters: { project?: string; state?: TrashState } = {},
-): TrashEntry[] {
+): Promise<TrashEntry[]> {
   const where: string[] = [];
   const values: unknown[] = [];
   if (filters.project) {
     where.push("t.project_id = ?");
-    values.push(resolveProject(db, filters.project).id);
+    values.push((await resolveProject(db, filters.project)).id);
   }
   if (filters.state) {
     where.push("t.state = ?");
@@ -716,12 +710,8 @@ export type TrashRemoval =
   | { result: "trashed"; entry: TrashEntry; outcome: TrashCreateOutcome }
   | { result: "removed"; entry: null; outcome: TrashCreateOutcome };
 
-function isAncestor(repoRoot: string, ancestor: string, descendant: string): boolean {
-  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
+async function isAncestor(repoRoot: string, ancestor: string, descendant: string): Promise<boolean> {
+  const result = await runGit(repoRoot, ["merge-base", "--is-ancestor", ancestor, descendant]);
   if (result.status === 0) return true;
   if (result.status === 1) return false;
   throw new TrashServiceError(
@@ -736,12 +726,12 @@ function isAncestor(repoRoot: string, ancestor: string, descendant: string): boo
  * or a synthetic merge reproduces the target's exact tree. `git cherry` is not
  * enough because it ignores merge-resolution tree changes.
  */
-function proveMergedInto(repoRoot: string, branchTip: string, target: string): MergeEvidence {
-  const targetOid = branchOid(repoRoot, target);
+async function proveMergedInto(repoRoot: string, branchTip: string, target: string): Promise<MergeEvidence> {
+  const targetOid = await branchOid(repoRoot, target);
   if (!targetOid) throw new TrashServiceError(`merge target not found: ${target}`, "target_not_found", 404);
-  if (isAncestor(repoRoot, branchTip, targetOid)) return "merged";
-  const targetTree = git(repoRoot, ["rev-parse", "--verify", `${targetOid}^{tree}`]);
-  const mergeTree = git(repoRoot, ["merge-tree", "--write-tree", targetOid, branchTip], { allowFailure: true })
+  if (await isAncestor(repoRoot, branchTip, targetOid)) return "merged";
+  const targetTree = await git(repoRoot, ["rev-parse", "--verify", `${targetOid}^{tree}`]);
+  const mergeTree = (await git(repoRoot, ["merge-tree", "--write-tree", targetOid, branchTip], { allowFailure: true }))
     .split("\n")[0];
   if (mergeTree === targetTree) return "tree-equivalent";
   throw new TrashServiceError(
@@ -752,18 +742,18 @@ function proveMergedInto(repoRoot: string, branchTip: string, target: string): M
   );
 }
 
-function removeLocalBranch(
+async function removeLocalBranch(
   repoRoot: string,
   worktree: GitWorktree | null,
   branch: string,
   originalOid: string,
   outcome: TrashCreateOutcome,
-): void {
+): Promise<void> {
   if (worktree) {
-    git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
+    await git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
     outcome.worktree_removed = true;
   }
-  git(repoRoot, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
+  await git(repoRoot, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
   outcome.branch_removed = true;
 }
 
@@ -771,7 +761,11 @@ export function trashBranch(
   db: Db,
   input: TrashCreateInput,
   now = Date.now(),
-): TrashRemoval {
+): Promise<TrashRemoval> {
+  return serialized(() => trashBranchNow(db, input, now));
+}
+
+async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Promise<TrashRemoval> {
   if (!input.project?.trim()) throw new TrashServiceError("project is required", "missing_project");
   if (!input.branch?.trim()) throw new TrashServiceError("branch is required", "missing_branch");
   if (!["superseded", "merged", "abandoned", "manual"].includes(input.reason)) {
@@ -782,20 +776,20 @@ export function trashBranch(
     throw new TrashServiceError("retention_days must be an integer between 1 and 3650", "invalid_retention");
   }
 
-  const project = resolveProject(db, input.project);
-  const checkout = chooseCheckout(project, input.branch.trim(), input.checkout_root);
-  const branch = validateBranch(checkout.root, input.branch);
+  const project = await resolveProject(db, input.project);
+  const checkout = await chooseCheckout(project, input.branch.trim(), input.checkout_root);
+  const branch = await validateBranch(checkout.root, input.branch);
   if (protectedBranchNames(db, checkout.default_branch).has(branch)) {
     throw new TrashServiceError(`refusing to trash protected/default branch: ${branch}`, "protected_branch", 409);
   }
-  const originalOid = branchOid(checkout.root, branch);
+  const originalOid = await branchOid(checkout.root, branch);
   if (!originalOid) throw new TrashServiceError(`branch not found: ${branch}`, "branch_not_found", 404);
   const mergedInto = input.merged_into?.trim() || null;
   if (mergedInto === branch) {
     throw new TrashServiceError("merged_into must name a different branch", "invalid_merge_target");
   }
-  const evidence = mergedInto ? proveMergedInto(checkout.root, originalOid, mergedInto) : null;
-  const worktree = parseWorktrees(checkout.root).find((entry) => entry.branch === branch) ?? null;
+  const evidence = mergedInto ? await proveMergedInto(checkout.root, originalOid, mergedInto) : null;
+  const worktree = (await parseWorktrees(checkout.root)).find((entry) => entry.branch === branch) ?? null;
   if (worktree && path.resolve(worktree.path) === path.resolve(checkout.root)) {
     throw new TrashServiceError("refusing to remove the registered root worktree", "current_worktree", 409);
   }
@@ -827,8 +821,8 @@ export function trashBranch(
   }
 
   const id = randomUUID();
-  const ignoredPlan = worktree ? planIgnored(checkout.root, worktree.path) : null;
-  const captured = worktree ? captureWorktreeTree(worktree.path, originalOid, id) : null;
+  const ignoredPlan = worktree ? await planIgnored(checkout.root, worktree.path) : null;
+  const captured = worktree ? await captureWorktreeTree(worktree.path, originalOid, id) : null;
   const outcome: TrashCreateOutcome = {
     worktree_removed: false,
     branch_removed: false,
@@ -839,7 +833,7 @@ export function trashBranch(
 
   if (evidence && !captured?.dirty && (ignoredPlan?.kept.length ?? 0) === 0) {
     try {
-      removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
+      await removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
     } catch (error) {
       throw new TrashServiceError("local removal failed", "remove_failed", 409, {
         error: error instanceof Error ? error.message : String(error),
@@ -851,26 +845,26 @@ export function trashBranch(
 
   const snapshotRef = `refs/mandible/trash/${id}`;
   const snapshotOid = worktree && captured?.dirty
-    ? git(worktree.path, ["commit-tree", captured.tree, "-p", originalOid], {
+    ? await git(worktree.path, ["commit-tree", captured.tree, "-p", originalOid], {
       env: TRASH_IDENTITY,
       input: `Mandible trash snapshot for ${branch}\n`,
     })
     : originalOid;
-  const ignoredOid = worktree && ignoredPlan ? captureIgnored(worktree.path, ignoredPlan.kept, id) : null;
+  const ignoredOid = worktree && ignoredPlan ? await captureIgnored(worktree.path, ignoredPlan.kept, id) : null;
   const ignoredRef = ignoredOid ? ignoredCustodyRef(id) : null;
   if (ignoredPlan) outcome.ignored = ignoredCustody(ignoredPlan, ignoredRef, ignoredOid);
-  git(checkout.root, ["update-ref", snapshotRef, snapshotOid, "0".repeat(40)]);
-  const releaseRefs = () => {
-    git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
+  await git(checkout.root, ["update-ref", snapshotRef, snapshotOid, "0".repeat(40)]);
+  const releaseRefs = async () => {
+    await git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
     if (ignoredRef && ignoredOid) {
-      git(checkout.root, ["update-ref", "-d", ignoredRef, ignoredOid], { allowFailure: true });
+      await git(checkout.root, ["update-ref", "-d", ignoredRef, ignoredOid], { allowFailure: true });
     }
   };
   if (ignoredRef && ignoredOid) {
     try {
-      git(checkout.root, ["update-ref", ignoredRef, ignoredOid, "0".repeat(40)]);
+      await git(checkout.root, ["update-ref", ignoredRef, ignoredOid, "0".repeat(40)]);
     } catch (error) {
-      releaseRefs();
+      await releaseRefs();
       throw error;
     }
   }
@@ -907,12 +901,12 @@ export function trashBranch(
       outcome_json: JSON.stringify(outcome),
     });
   } catch (error) {
-    releaseRefs();
+    await releaseRefs();
     throw error;
   }
 
   try {
-    removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
+    await removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
     db.prepare("UPDATE trash_entries SET outcome_json = ? WHERE id = ?")
       .run(JSON.stringify(outcome), id);
   } catch (error) {
@@ -941,12 +935,23 @@ export function trashBranch(
   return { result: "trashed", entry: getEntry(db, id), outcome };
 }
 
+export type TrashRestoreResult = { entry: TrashEntry; branch: string; worktree_path: string | null };
+
 export function restoreTrashEntry(
   db: Db,
   id: string,
   input: TrashRestoreInput = {},
   now = Date.now(),
-): { entry: TrashEntry; branch: string; worktree_path: string | null } {
+): Promise<TrashRestoreResult> {
+  return serialized(() => restoreTrashEntryNow(db, id, input, now));
+}
+
+async function restoreTrashEntryNow(
+  db: Db,
+  id: string,
+  input: TrashRestoreInput,
+  now: number,
+): Promise<TrashRestoreResult> {
   const entry = getEntry(db, id);
   if (!(["active", "remove_failed", "restore_failed"] as TrashState[]).includes(entry.state)) {
     throw new TrashServiceError(`trash entry cannot be restored from state ${entry.state}`, "invalid_state", 409);
@@ -963,7 +968,7 @@ export function restoreTrashEntry(
   if (!fs.existsSync(entry.repo_root)) {
     throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
   }
-  const liveSnapshot = git(entry.repo_root, ["rev-parse", "--verify", `${entry.snapshot_ref}^{commit}`], {
+  const liveSnapshot = await git(entry.repo_root, ["rev-parse", "--verify", `${entry.snapshot_ref}^{commit}`], {
     allowFailure: true,
   });
   if (!liveSnapshot) {
@@ -972,8 +977,8 @@ export function restoreTrashEntry(
   if (liveSnapshot !== entry.snapshot_oid) {
     throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
   }
-  const liveBranchOid = branchOid(entry.repo_root, entry.branch);
-  const existingWorktree = parseWorktrees(entry.repo_root)
+  const liveBranchOid = await branchOid(entry.repo_root, entry.branch);
+  const existingWorktree = (await parseWorktrees(entry.repo_root))
     .find((candidate) => candidate.branch === entry.branch) ?? null;
   const ignoredCustodyOf = recordedIgnoredCustody(entry);
   const requestedValue = input.worktree_path?.trim() || "";
@@ -996,12 +1001,12 @@ export function restoreTrashEntry(
         { branch_oid: liveBranchOid },
       );
     }
-    const captured = captureWorktreeTree(
+    const captured = await captureWorktreeTree(
       existingWorktree.path,
       liveBranchOid ?? entry.original_oid,
       `${entry.id}-restore-check`,
     );
-    const snapshotTree = git(entry.repo_root, ["rev-parse", `${entry.snapshot_oid}^{tree}`]);
+    const snapshotTree = await git(entry.repo_root, ["rev-parse", `${entry.snapshot_oid}^{tree}`]);
     if (captured.tree !== snapshotTree) {
       throw new TrashServiceError(
         "remove_failed worktree no longer matches its immutable snapshot",
@@ -1011,7 +1016,7 @@ export function restoreTrashEntry(
       );
     }
     const refilled = ignoredCustodyOf
-      ? materializeIgnored(entry.repo_root, ignoredCustodyOf, existingWorktree.path)
+      ? await materializeIgnored(entry.repo_root, ignoredCustodyOf, existingWorktree.path)
       : { restored: 0, present: 0 };
     db.prepare(
       `UPDATE trash_entries
@@ -1049,19 +1054,19 @@ export function restoreTrashEntry(
   let branchRepointed = false;
   try {
     if (!liveBranchOid) {
-      git(entry.repo_root, ["update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, "0".repeat(40)]);
+      await git(entry.repo_root, ["update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, "0".repeat(40)]);
       branchCreated = true;
     } else if (liveBranchOid === entry.original_oid && liveBranchOid !== entry.snapshot_oid) {
-      git(entry.repo_root, [
+      await git(entry.repo_root, [
         "update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, entry.original_oid,
       ]);
       branchRepointed = true;
     }
     let materialized = { restored: 0, present: 0 };
     if (validatedRequestedPath) {
-      git(entry.repo_root, ["worktree", "add", validatedRequestedPath, entry.branch]);
+      await git(entry.repo_root, ["worktree", "add", validatedRequestedPath, entry.branch]);
       if (ignoredCustodyOf) {
-        materialized = materializeIgnored(entry.repo_root, ignoredCustodyOf, validatedRequestedPath);
+        materialized = await materializeIgnored(entry.repo_root, ignoredCustodyOf, validatedRequestedPath);
       }
     }
     db.prepare(
@@ -1079,17 +1084,17 @@ export function restoreTrashEntry(
     }), id);
   } catch (error) {
     if (validatedRequestedPath) {
-      git(entry.repo_root, ["worktree", "remove", "--force", validatedRequestedPath], {
+      await git(entry.repo_root, ["worktree", "remove", "--force", validatedRequestedPath], {
         allowFailure: true,
       });
     }
     if (branchCreated) {
-      git(entry.repo_root, ["update-ref", "-d", `refs/heads/${entry.branch}`, entry.snapshot_oid], {
+      await git(entry.repo_root, ["update-ref", "-d", `refs/heads/${entry.branch}`, entry.snapshot_oid], {
         allowFailure: true,
       });
     }
     if (branchRepointed) {
-      git(entry.repo_root, [
+      await git(entry.repo_root, [
         "update-ref", `refs/heads/${entry.branch}`, entry.original_oid, entry.snapshot_oid,
       ], { allowFailure: true });
     }
@@ -1112,27 +1117,17 @@ type ExactRefProbe =
   | { status: "absent" }
   | { status: "unknown"; error: string };
 
-function exactRefArgs(ref: string): string[] {
-  return ["for-each-ref", "--format=%(refname)%00%(objectname)", ref];
-}
-
-function probeExactRef(repoRoot: string, ref: string): ExactRefProbe {
-  return exactRefProbe(spawnSync("git", exactRefArgs(ref), { cwd: repoRoot, encoding: "utf8", env: gitEnv() }), ref);
-}
-
-async function probeExactRefAsync(repoRoot: string, ref: string): Promise<ExactRefProbe> {
-  return exactRefProbe(await runGitAsync(repoRoot, exactRefArgs(ref)), ref);
-}
-
-function exactRefProbe(result: GitRun, ref: string): ExactRefProbe {
+async function probeExactRef(repoRoot: string, ref: string): Promise<ExactRefProbe> {
+  const result = await runGit(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", ref]);
   if (result.error) return { status: "unknown", error: result.error.message };
+  const stdout = result.stdout.toString("utf8");
   if (result.status !== 0) {
     return {
       status: "unknown",
-      error: (result.stderr || result.stdout || `git for-each-ref exited ${result.status}`).trim(),
+      error: (result.stderr || stdout || `git for-each-ref exited ${result.status}`).trim(),
     };
   }
-  const exact = result.stdout.split("\n").map((line) => line.trim()).find((line) => {
+  const exact = stdout.split("\n").map((line) => line.trim()).find((line) => {
     const separator = line.indexOf("\0");
     return separator >= 0 && line.slice(0, separator) === ref;
   });
@@ -1156,7 +1151,7 @@ export function gcTrashEntries(
   db: Db,
   options: { now?: number; limit?: number; actor?: string } = {},
 ): Promise<TrashGcResult> {
-  gcInFlight ??= expireDueTrashEntries(db, options).finally(() => {
+  gcInFlight ??= serialized(() => expireDueTrashEntries(db, options)).finally(() => {
     gcInFlight = null;
   });
   return gcInFlight;
@@ -1184,7 +1179,7 @@ async function expireDueTrashEntries(
       if (!fs.existsSync(entry.repo_root)) {
         throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
       }
-      const probe = await probeExactRefAsync(entry.repo_root, entry.snapshot_ref);
+      const probe = await probeExactRef(entry.repo_root, entry.snapshot_ref);
       const current = db.prepare("SELECT state FROM trash_entries WHERE id = ?").get(entry.id) as { state: string } | undefined;
       if (current?.state !== entry.state) continue;
       if (probe.status === "unknown") {
@@ -1221,7 +1216,7 @@ async function expireDueTrashEntries(
         pendingRecorded = true;
       }
       await deleteIgnoredRef(entry.repo_root, entry.id);
-      await gitAsync(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
+      await git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
       refDeleted = true;
       db.prepare(
         `UPDATE trash_entries

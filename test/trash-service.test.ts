@@ -32,8 +32,8 @@ function git(cwd: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function createTrashEntry(db: Db, input: TrashCreateInput, now?: number) {
-  const removal = trashBranch(db, input, now);
+async function createTrashEntry(db: Db, input: TrashCreateInput, now?: number) {
+  const removal = await trashBranch(db, input, now);
   if (removal.result !== "trashed") throw new Error(`expected trash custody, got ${removal.result}`);
   return removal;
 }
@@ -79,12 +79,12 @@ describe.sequential("trash custody", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("snapshots tracked and untracked bytes, removes local refs, and restores them", () => {
+  it("snapshots tracked and untracked bytes, removes local refs, and restores them", async () => {
     const expectedWorktreePath = fs.realpathSync(featureWorktree);
     fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty tracked\n");
     fs.writeFileSync(path.join(featureWorktree, "untracked.bin"), Buffer.from([0, 1, 2, 255]));
 
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "superseded",
@@ -137,7 +137,7 @@ describe.sequential("trash custody", () => {
     expect([...restoredBytes]).toEqual([0, 1, 2, 255]);
 
     const restoredPath = path.join(repoRoot, "worktrees", "feature-restored");
-    const restored = restoreTrashEntry(db, created.entry.id, {
+    const restored = await restoreTrashEntry(db, created.entry.id, {
       worktree_path: restoredPath,
       actor: "test-worker",
     }, 2_000);
@@ -162,7 +162,7 @@ describe.sequential("trash custody", () => {
     fs.writeFileSync(path.join(featureWorktree, "notes", "deep", "build", "out.o"), "rebuildable");
     fs.writeFileSync(path.join(featureWorktree, "notes", "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
 
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -182,7 +182,7 @@ describe.sequential("trash custody", () => {
       .toEqual([".gitignore", "tracked.txt"]);
 
     const restoredPath = path.join(repoRoot, "worktrees", "feature-restored");
-    restoreTrashEntry(db, created.entry.id, { worktree_path: restoredPath }, 2_000);
+    await restoreTrashEntry(db, created.entry.id, { worktree_path: restoredPath }, 2_000);
     expect(fs.readFileSync(path.join(restoredPath, ".env"), "utf8")).toBe("SECRET=1\n");
     expect(fs.readFileSync(path.join(restoredPath, "notes", "deep", "n.txt"), "utf8")).toBe("proof");
     expect(fs.statSync(path.join(restoredPath, "notes", "run.sh")).mode & 0o111).not.toBe(0);
@@ -196,7 +196,7 @@ describe.sequential("trash custody", () => {
     expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
   });
 
-  it("refuses removal when unique ignored bytes exceed the repo-configured limit", () => {
+  it("refuses removal when unique ignored bytes exceed the repo-configured limit", async () => {
     fs.writeFileSync(path.join(repoRoot, ".mandible.toml"), [
       "[trash.ignored]",
       "max_preserved_bytes = 10",
@@ -210,7 +210,7 @@ describe.sequential("trash custody", () => {
 
     let refusal: unknown;
     try {
-      createTrashEntry(db, { project: "trash-test", branch: "feature/trash", reason: "merged" }, 1_000);
+      await createTrashEntry(db, { project: "trash-test", branch: "feature/trash", reason: "merged" }, 1_000);
     } catch (error) {
       refusal = error;
     }
@@ -231,10 +231,10 @@ describe.sequential("trash custody", () => {
     expect(fs.readFileSync(path.join(featureWorktree, "data.bin")).length).toBe(11);
     expect(git(repoRoot, ["rev-parse", "--verify", "refs/heads/feature/trash"])).not.toBe("");
     expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
-  it("removes a proven-merged worktree holding only rebuildable ignored files without custody", () => {
+  it("removes a proven-merged worktree holding only rebuildable ignored files without custody", async () => {
     fs.appendFileSync(path.join(repoRoot, ".git", "info", "exclude"), "node_modules/\nshared\n");
     fs.mkdirSync(path.join(featureWorktree, "node_modules", "pkg"), { recursive: true });
     fs.writeFileSync(path.join(featureWorktree, "node_modules", "pkg", "index.js"), "x");
@@ -242,7 +242,7 @@ describe.sequential("trash custody", () => {
     fs.mkdirSync(sharedTarget);
     fs.symlinkSync(sharedTarget, path.join(featureWorktree, "shared"));
 
-    const removal = trashBranch(db, {
+    const removal = await trashBranch(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -264,7 +264,7 @@ describe.sequential("trash custody", () => {
     expect(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature/trash"], { cwd: repoRoot }).status)
       .not.toBe(0);
     expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
   it("exposes the thin versioned route and list envelope", async () => {
@@ -295,7 +295,7 @@ describe.sequential("trash custody", () => {
   });
 
   it("expires only an exact matching immutable ref and reports missing refs", async () => {
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -308,31 +308,31 @@ describe.sequential("trash custody", () => {
     expect(failed.outcomes[0]).toMatchObject({ id: created.entry.id, status: "failed" });
   });
 
-  it("fails closed on protected branches, path-derived project ids, and restore collisions", () => {
-    expect(() => createTrashEntry(db, {
+  it("fails closed on protected branches, path-derived project ids, and restore collisions", async () => {
+    await expect(createTrashEntry(db, {
       project: "trash-test",
       branch: "main",
       reason: "manual",
-    })).toThrow(/protected\/default branch/);
-    expect(() => createTrashEntry(db, {
+    })).rejects.toThrow(/protected\/default branch/);
+    await expect(createTrashEntry(db, {
       project: "path-derived-local-id",
       branch: "feature/trash",
       reason: "manual",
-    })).toThrow(/path-derived work_repo_id/);
+    })).rejects.toThrow(/path-derived work_repo_id/);
 
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
     });
     git(repoRoot, ["branch", "feature/trash", "main"]);
-    expect(() => restoreTrashEntry(db, created.entry.id)).toThrow(/branch already exists/);
+    await expect(restoreTrashEntry(db, created.entry.id)).rejects.toThrow(/branch already exists/);
     expect(git(repoRoot, ["show-ref", "--verify", created.entry.snapshot_ref])).toContain(
       created.entry.snapshot_oid,
     );
   });
 
-  it("fails closed when a dirty submodule or embedded repository cannot be captured losslessly", () => {
+  it("fails closed when a dirty submodule or embedded repository cannot be captured losslessly", async () => {
     const submoduleRepo = path.join(tempDir, "submodule-source");
     fs.mkdirSync(submoduleRepo);
     git(submoduleRepo, ["init", "-b", "main"]);
@@ -347,16 +347,16 @@ describe.sequential("trash custody", () => {
     git(featureWorktree, ["commit", "-am", "add submodule"]);
     fs.writeFileSync(path.join(featureWorktree, "module", "nested.txt"), "dirty nested\n");
 
-    expect(() => createTrashEntry(db, {
+    await expect(createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
-    })).toThrow(/dirty submodule/);
+    })).rejects.toThrow(/dirty submodule/);
     expect(fs.existsSync(featureWorktree)).toBe(true);
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
-  it("rejects a clean tracked submodule advanced to an uncustodied local commit", () => {
+  it("rejects a clean tracked submodule advanced to an uncustodied local commit", async () => {
     const submoduleRepo = path.join(tempDir, "advanced-submodule-source");
     fs.mkdirSync(submoduleRepo);
     git(submoduleRepo, ["init", "-b", "main"]);
@@ -378,16 +378,16 @@ describe.sequential("trash custody", () => {
     git(modulePath, ["commit", "-m", "uncustodied local commit"]);
     expect(git(modulePath, ["status", "--porcelain"])).toBe("");
 
-    expect(() => createTrashEntry(db, {
+    await expect(createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
-    })).toThrow(/advanced tracked gitlinks/);
+    })).rejects.toThrow(/advanced tracked gitlinks/);
     expect(fs.existsSync(featureWorktree)).toBe(true);
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
-  it("rejects an untracked embedded repository before removing the worktree", () => {
+  it("rejects an untracked embedded repository before removing the worktree", async () => {
     const embedded = path.join(featureWorktree, "embedded");
     fs.mkdirSync(embedded);
     git(embedded, ["init", "-b", "main"]);
@@ -397,18 +397,18 @@ describe.sequential("trash custody", () => {
     git(embedded, ["add", "nested.txt"]);
     git(embedded, ["commit", "-m", "embedded base"]);
 
-    expect(() => createTrashEntry(db, {
+    await expect(createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
-    })).toThrow(/embedded repositories/);
+    })).rejects.toThrow(/embedded repositories/);
     expect(fs.existsSync(featureWorktree)).toBe(true);
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
-  it("restores a remove_failed entry from live Git facts without overwriting a moved branch", () => {
+  it("restores a remove_failed entry from live Git facts without overwriting a moved branch", async () => {
     fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "custodied\n");
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
@@ -416,7 +416,7 @@ describe.sequential("trash custody", () => {
     db.prepare("UPDATE trash_entries SET state = 'remove_failed' WHERE id = ?").run(created.entry.id);
     git(repoRoot, ["update-ref", "refs/heads/feature/trash", created.entry.original_oid]);
 
-    const restored = restoreTrashEntry(db, created.entry.id);
+    const restored = await restoreTrashEntry(db, created.entry.id);
     expect(restored.entry).toMatchObject({ state: "restored" });
     expect(git(repoRoot, ["rev-parse", "refs/heads/feature/trash"])).toBe(created.entry.snapshot_oid);
 
@@ -424,7 +424,7 @@ describe.sequential("trash custody", () => {
     git(repoRoot, ["branch", secondBranch, "main"]);
     const secondWorktree = path.join(repoRoot, "worktrees", "feature-moved");
     git(repoRoot, ["worktree", "add", secondWorktree, secondBranch]);
-    const second = createTrashEntry(db, {
+    const second = await createTrashEntry(db, {
       project: "trash-test",
       branch: secondBranch,
       reason: "manual",
@@ -435,10 +435,10 @@ describe.sequential("trash custody", () => {
     git(repoRoot, ["add", "moved.txt"]);
     git(repoRoot, ["commit", "-m", "move branch authority"]);
     git(repoRoot, ["update-ref", `refs/heads/${secondBranch}`, "HEAD"]);
-    expect(() => restoreTrashEntry(db, second.entry.id)).toThrow(/moved after custody/);
+    await expect(restoreTrashEntry(db, second.entry.id)).rejects.toThrow(/moved after custody/);
   });
 
-  it("reports exact removal finality even when outcome persistence also fails", () => {
+  it("reports exact removal finality even when outcome persistence also fails", async () => {
     db.exec(`CREATE TRIGGER fail_all_trash_updates
       BEFORE UPDATE ON trash_entries
       BEGIN
@@ -447,7 +447,7 @@ describe.sequential("trash custody", () => {
 
     let failure: unknown;
     try {
-      createTrashEntry(db, {
+      await createTrashEntry(db, {
         project: "trash-test",
         branch: "feature/trash",
         reason: "manual",
@@ -473,8 +473,8 @@ describe.sequential("trash custody", () => {
     }).status).not.toBe(0);
   });
 
-  it("rejects restore paths whose existing parent escapes through a symlink", () => {
-    const created = createTrashEntry(db, {
+  it("rejects restore paths whose existing parent escapes through a symlink", async () => {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "manual",
@@ -483,13 +483,13 @@ describe.sequential("trash custody", () => {
     fs.mkdirSync(outside);
     const link = path.join(repoRoot, "outside-link");
     fs.symlinkSync(outside, link, "dir");
-    expect(() => restoreTrashEntry(db, created.entry.id, {
+    await expect(restoreTrashEntry(db, created.entry.id, {
       worktree_path: path.join(link, "restored"),
-    })).toThrow(/resolving symlinks/);
+    })).rejects.toThrow(/resolving symlinks/);
     expect(fs.existsSync(path.join(outside, "restored"))).toBe(false);
   });
 
-  it("preserves Mandible docs and Codex app-managed worktrees at the public service boundary", () => {
+  it("preserves Mandible docs and Codex app-managed worktrees at the public service boundary", async () => {
     const managed = [
       {
         branch: "feature/docs-managed",
@@ -504,19 +504,19 @@ describe.sequential("trash custody", () => {
       git(repoRoot, ["branch", candidate.branch, "main"]);
       fs.mkdirSync(path.dirname(candidate.worktree), { recursive: true });
       git(repoRoot, ["worktree", "add", candidate.worktree, candidate.branch]);
-      expect(() => createTrashEntry(db, {
+      await expect(createTrashEntry(db, {
         project: "trash-test",
         branch: candidate.branch,
         reason: "manual",
-      })).toThrow(/app-managed worktree/);
+      })).rejects.toThrow(/app-managed worktree/);
       expect(fs.existsSync(candidate.worktree)).toBe(true);
       expect(git(repoRoot, ["rev-parse", "--verify", `refs/heads/${candidate.branch}`])).not.toBe("");
     }
-    expect(listTrashEntries(db)).toEqual([]);
+    expect((await listTrashEntries(db))).toEqual([]);
   });
 
   it("runs deferred GC automatically in the daemon scheduler", async () => {
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -527,16 +527,36 @@ describe.sequential("trash custody", () => {
     startTrashGcScheduler(db, () => {}, { startupDelayMs: 1, intervalMs: 3_600_000 });
     vi.advanceTimersByTime(1);
 
-    await waitUntil(() => listTrashEntries(db)[0]?.state === "expired", "the scheduled GC pass");
-    expect(listTrashEntries(db)[0]).toMatchObject({ id: created.entry.id, state: "expired" });
+    await waitUntil(async () => (await listTrashEntries(db))[0]?.state === "expired", "the scheduled GC pass");
+    expect((await listTrashEntries(db))[0]).toMatchObject({ id: created.entry.id, state: "expired" });
     expect(spawnSync("git", ["rev-parse", "--verify", created.entry.snapshot_ref], {
       cwd: repoRoot,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     }).status).not.toBe(0);
   });
 
+  it("trashes and restores a dirty worktree with ignored custody without blocking the event loop on Git", async () => {
+    fs.writeFileSync(path.join(featureWorktree, ".gitignore"), ".env\n");
+    fs.writeFileSync(path.join(featureWorktree, ".env"), "SECRET=1\n");
+    fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty tracked\n");
+    const restoredPath = path.join(repoRoot, "worktrees", "feature-restored");
+    useSlowCommand("git", 0.06);
+    let created: Awaited<ReturnType<typeof createTrashEntry>> | undefined;
+    const blockedMs = await longestEventLoopBlockMs(async () => {
+      created = await createTrashEntry(db, {
+        project: "trash-test", branch: "feature/trash", reason: "merged", merged_into: "main",
+      }, 1_000);
+      await restoreTrashEntry(db, created.entry.id, { worktree_path: restoredPath }, 2_000);
+    });
+
+    expect(blockedMs).toBeLessThan(50);
+    expect(created?.outcome).toMatchObject({ merge_evidence: "merged", ignored: { kept: 1 } });
+    expect(fs.readFileSync(path.join(restoredPath, "tracked.txt"), "utf8")).toBe("dirty tracked\n");
+    expect(fs.readFileSync(path.join(restoredPath, ".env"), "utf8")).toBe("SECRET=1\n");
+  });
+
   it("expires a due entry without blocking the event loop on Git", async () => {
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -550,11 +570,11 @@ describe.sequential("trash custody", () => {
 
     expect(blockedMs).toBeLessThan(50);
     expect(result).toMatchObject({ expired: 1, failed: 0 });
-    expect(listTrashEntries(db)[0]).toMatchObject({ id: created.entry.id, state: "expired" });
+    expect((await listTrashEntries(db))[0]).toMatchObject({ id: created.entry.id, state: "expired" });
   });
 
   it("durably replays gc_pending when final DB recording fails after ref deletion", async () => {
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -568,7 +588,7 @@ describe.sequential("trash custody", () => {
       END`);
 
     expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
-    expect(listTrashEntries(db)[0]).toMatchObject({ state: "gc_pending" });
+    expect((await listTrashEntries(db))[0]).toMatchObject({ state: "gc_pending" });
     expect(spawnSync("git", ["rev-parse", "--verify", created.entry.snapshot_ref], {
       cwd: repoRoot,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
@@ -576,14 +596,14 @@ describe.sequential("trash custody", () => {
     db.exec("DROP TRIGGER fail_trash_expire");
 
     expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 1, failed: 0 });
-    expect(listTrashEntries(db)[0]).toMatchObject({
+    expect((await listTrashEntries(db))[0]).toMatchObject({
       state: "expired",
       outcome: { replayed_pending: true },
     });
   });
 
   it("preserves gc_pending when the exact snapshot ref cannot be inspected", async () => {
-    const created = createTrashEntry(db, {
+    const created = await createTrashEntry(db, {
       project: "trash-test",
       branch: "feature/trash",
       reason: "merged",
@@ -595,7 +615,7 @@ describe.sequential("trash custody", () => {
       .run(nonRepoRoot, created.entry.id);
 
     expect(await gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
-    expect(listTrashEntries(db)[0]).toMatchObject({
+    expect((await listTrashEntries(db))[0]).toMatchObject({
       state: "gc_pending",
       expired_at: null,
       last_error: expect.stringContaining("cannot inspect trash snapshot ref"),
@@ -639,7 +659,7 @@ describe("scanner reaping safety", () => {
     default_comparison_known: true,
   };
 
-  it("requires clean+merged, app-managed, canonical, non-current, non-protected facts", () => {
+  it("requires clean+merged, app-managed, canonical, non-current, non-protected facts", async () => {
     expect(deriveReapingSafety(base, { projectIds: ["prj-one"] })).toMatchObject({
       candidate: true,
       clean: true,
@@ -665,7 +685,7 @@ describe("scanner reaping safety", () => {
     });
   });
 
-  it("blocks candidates whenever a destructive Git fact is unknown", () => {
+  it("blocks candidates whenever a destructive Git fact is unknown", async () => {
     expect(deriveReapingSafety({
       ...base,
       worktree_inventory_known: false,

@@ -53,7 +53,7 @@ function restoreInput(req: RequestLike): TrashRestoreInput {
 }
 
 export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): void {
-  router.get("/api/v1/trash", (req, res) => {
+  router.get("/api/v1/trash", async (req, res) => {
     try {
       const project = queryString(req, "project");
       const rawState = queryString(req, "state");
@@ -65,7 +65,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
         return;
       }
       sendJson(res, 200, {
-        entries: listTrashEntries(db, {
+        entries: await listTrashEntries(db, {
           project,
           state: rawState ? rawState as TrashState : undefined,
         }),
@@ -75,9 +75,9 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     }
   }, { operation: { id: "get:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.post("/api/v1/trash", (req, res) => {
+  router.post("/api/v1/trash", async (req, res) => {
     try {
-      const removal = trashBranch(db, createInput(req));
+      const removal = await trashBranch(db, createInput(req));
       sendJson(res, removal.result === "trashed" ? 201 : 200, removal);
     } catch (error) {
       handleError(res, error, true);
@@ -98,9 +98,9 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     }
   }, { operation: { id: "post:/api/v1/trash/gc", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
-  router.post("/api/v1/trash/:id/restore", (req, res) => {
+  router.post("/api/v1/trash/:id/restore", async (req, res) => {
     try {
-      sendJson(res, 200, restoreTrashEntry(db, req.params.id, restoreInput(req)));
+      sendJson(res, 200, await restoreTrashEntry(db, req.params.id, restoreInput(req)));
     } catch (error) {
       handleError(res, error);
     }
