@@ -35,7 +35,7 @@ import {
   useRouteLoad,
 } from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
-import { detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../../detail-cache';
+import { beginDetailRequest, detailRequestKey, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
 import { discardSpacesLastView, type SpacesLastView } from './last-view';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
@@ -257,6 +257,7 @@ export function SpacesViewShell({
           : null
     ));
     setSpaceLoadError(null);
+    const detailStarted = beginDetailRequest();
     const initialLoad = resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
         if (!cancelled && generation === selectionGeneration.current) {
@@ -268,6 +269,8 @@ export function SpacesViewShell({
             'spaces',
             detailRequestKey('spaces', { spaceId: packet.space.id }),
             packet,
+            undefined,
+            detailStarted,
           );
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);

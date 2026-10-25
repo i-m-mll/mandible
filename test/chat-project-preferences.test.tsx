@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from './helpers/dom.js';
+import { act, cleanup, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitUntilPasses } from './helpers/wait-until.js';
 
@@ -37,6 +37,22 @@ afterEach(() => {
 });
 
 describe('Chat project preference migration', () => {
+
+  it('keeps the user selection when an older background GET finishes after a save', async () => {
+    const original = { version: 1 as const, key: 'chat_shown_projects' as const, value: [{ projectId: 'old', checkoutId: null }], revision: 1 };
+    let finish!: (value: api.ChatShownProjectsPreference) => void;
+    vi.spyOn(api, 'getChatShownProjectsPreference').mockImplementation(({ onCached } = {}) => {
+      onCached?.(original);
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const save = vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value) => ({ ...original, value, revision: 2 }));
+    render(<Probe />);
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
+    screen.getByRole('button', { name: 'Change' }).click();
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    await act(async () => { finish(original); });
+    expect(JSON.parse(screen.getByRole('status').textContent!)).toEqual([{ projectId: 'prj-next', checkoutId: 'checkout-next' }]);
+  });
 
   it('makes concurrent revision conflicts visible and reloads the winning value', async () => {
     const original = [{ projectId: 'prj-original', checkoutId: 'checkout-original' }];

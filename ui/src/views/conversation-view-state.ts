@@ -182,6 +182,7 @@ export function useChatProjectSelection(): [
   const [state, setState] = useState<ChatProjectSelectionState>({ ready: false, notice: null });
   const desiredRef = useRef(legacyRef.current);
   const revisionRef = useRef(0);
+  const editGenerationRef = useRef(0);
   const writeQueueRef = useRef(Promise.resolve());
   const activeRef = useRef(true);
 
@@ -199,10 +200,12 @@ export function useChatProjectSelection(): [
     const load = async () => {
       if (loading) return;
       loading = true;
+      const editGeneration = editGenerationRef.current;
       const warm = firstLoad;
       firstLoad = false;
       try {
         const snapshot = await getChatShownProjectsPreference({ warm, onCached: warm ? showCached : undefined });
+        if (editGeneration !== editGenerationRef.current || snapshot.revision < revisionRef.current) return;
         let resolved = snapshot;
         let importedLegacy = false;
         if (snapshot.revision === 0 && legacyRef.current!.length > 0) {
@@ -214,7 +217,7 @@ export function useChatProjectSelection(): [
             resolved = await getChatShownProjectsPreference();
           }
         }
-        if (!activeRef.current) return;
+        if (!activeRef.current || editGeneration !== editGenerationRef.current || resolved.revision < revisionRef.current) return;
         desiredRef.current = resolved.value;
         revisionRef.current = resolved.revision;
         setShownProjects(resolved.value);
@@ -226,7 +229,7 @@ export function useChatProjectSelection(): [
             : null,
         });
       } catch (error) {
-        if (!activeRef.current) return;
+        if (!activeRef.current || editGeneration !== editGenerationRef.current) return;
         const authRequired = isApiErrorStatus(error, 401)
           || isApiErrorStatus(error, 403);
         setState({
@@ -263,6 +266,7 @@ export function useChatProjectSelection(): [
     const value = typeof next === 'function'
       ? (next as (current: ShownChatProject[]) => ShownChatProject[])(previous)
       : next;
+    editGenerationRef.current += 1;
     desiredRef.current = value;
     setShownProjects(value);
     writeQueueRef.current = writeQueueRef.current.then(async () => {

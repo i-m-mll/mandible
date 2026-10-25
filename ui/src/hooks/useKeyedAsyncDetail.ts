@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { isPersistedDetailFresh, readPersistedDetail, writePersistedDetail, type LiveDetailNamespace } from '../detail-cache';
+import { beginDetailRequest, isDetailRequestCurrent, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail, type LiveDetailNamespace } from '../detail-cache';
 
 type DetailState<T> = {
   key: string | null;
@@ -83,6 +83,7 @@ export function useKeyedAsyncDetail<T>({
       };
     });
     const controller = new AbortController();
+    const requestStarted = beginDetailRequest();
     load(controller.signal)
       .then((data) => {
         if (controller.signal.aborted || generationRef.current !== generation) return;
@@ -90,7 +91,16 @@ export function useKeyedAsyncDetail<T>({
           setState((current) => ({ ...current, loading: false, revalidating: false }));
           return;
         }
-        writePersistedDetail(namespace, requestKey, data);
+        if (!isDetailRequestCurrent(namespace, requestKey, requestStarted)) {
+          const current = readPersistedDetail<T>(namespace, requestKey);
+          if (current && (!accept || accept(current)) && isPersistedDetailFresh(namespace, requestKey)) {
+            setState({ key: requestKey, data: current, loading: false, revalidating: false, error: null, failure: null, stale: false });
+          } else {
+            setNonce((current) => current + 1);
+          }
+          return;
+        }
+        writePersistedDetail(namespace, requestKey, data, undefined, requestStarted);
         setState({ key: requestKey, data, loading: false, revalidating: false, error: null, failure: null, stale: false });
       })
       .catch((error: unknown) => {

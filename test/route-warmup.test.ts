@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { App } from '../ui/src/app';
 import { bindOperationCatalog, clearApiGetCache, type InstanceInfo } from '../ui/src/api';
-import { clearPersistedDetailCache, ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail, ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
 import { queryClient } from '../ui/src/query/client';
 
 // Route chunks load from the module cache, so idle-time work settles within event-loop turns.
@@ -168,7 +168,7 @@ class Harness {
   private inflight = 0;
   private step = -1;
   hang = false;
-  health: unknown = [];
+  health: unknown = { ready: true, warm: true };
   private readonly idle = new Map<number, () => void>();
   private nextIdleHandle = 1;
 
@@ -293,6 +293,17 @@ const WARM_TEXT: Partial<Record<WarmedTab, string>> = {
 };
 
 describe('startup route warmup', () => {
+  it.each([null, {}, { ready: true }, { ready: false, warm: true }])('does not warm inactive routes without affirmative health: %j', async (health) => {
+    await Promise.all(Object.values(viewModules).map((load) => load()));
+    const harness = new Harness();
+    harness.install();
+    harness.health = health;
+    window.history.replaceState(null, '', '#/settings');
+    render(h(App, {}));
+    await harness.settle();
+    expect(harness.routeRequests()).toEqual(['GET /api/user-settings/managed_chat_defaults']);
+  });
+
   it('fetches nothing for inactive views while the daemon is still cold', async () => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
     const harness = new Harness();
@@ -303,6 +314,24 @@ describe('startup route warmup', () => {
     await harness.settle();
     // The active Settings view reads its own defaults.
     expect(harness.routeRequests()).toEqual(['GET /api/user-settings/managed_chat_defaults']);
+  });
+
+  it('fallback polling marks detail and TanStack caches stale as well as GETs', async () => {
+    const harness = new Harness();
+    harness.install();
+    const intervals = vi.spyOn(window, 'setInterval');
+    window.history.replaceState(null, '', '#/settings');
+    render(h(App, {}));
+    await harness.settle();
+    writePersistedDetail('timeline', 'poll-test', { rows: [] });
+    queryClient.setQueryData(['poll-test'], { rows: [] });
+    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(true);
+    const poll = intervals.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+    expect(typeof poll).toBe('function');
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 46_000);
+    await act(async () => { (poll as () => void)(); });
+    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(false);
+    expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(true);
   });
 
   it('warms each view once, then fetches nothing more for hidden views', async () => {

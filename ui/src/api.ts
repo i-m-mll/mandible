@@ -578,14 +578,13 @@ async function fetchJsonForCache(
 ): Promise<unknown> {
   const response = await apiGet(path, { signal });
   const value = await parseMaybeJson(response);
-  if (shouldCache()) {
-    const now = Date.now();
-    getJsonCache.set(cacheKeyForGet(path), {
-      value,
-      freshUntil: now + options.ttlMs,
-      staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
-    });
-  }
+  if (!shouldCache()) return cachedApiGetJson(path, { ...options, signal, onCached: () => undefined });
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(path), {
+    value,
+    freshUntil: now + options.ttlMs,
+    staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
+  });
   return value;
 }
 
@@ -721,6 +720,7 @@ async function readWarmable<T>(path: string, read: WarmableRead<T>): Promise<T> 
 
 /** Record a write's response as the current value of the GET that reads the same state. */
 function rememberApiGet(path: string, value: unknown): void {
+  invalidateApiGetCache((key) => key === cacheKeyForGet(path));
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(path), {
     value,
@@ -734,6 +734,13 @@ export function clearApiGetCache(): void {
   getJsonCache.clear();
   for (const request of inflightGetJson.values()) request.invalidated = true;
   inflightGetJson.clear();
+}
+
+/** A gap in the event stream makes every server-derived cache stale. */
+export function invalidateDashboardCaches(): void {
+  invalidateApiGetCache();
+  invalidatePersistedDetail();
+  void queryClient.invalidateQueries({ refetchType: 'none' });
 }
 
 /** Exact cache families affected by a Briefing lifecycle event. */
@@ -777,7 +784,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     if (type === 'briefing:round-published') invalidateArtifactReads();
     return;
   }
-  if (type.startsWith('conversation:')) {
+  if (type === DOMAIN_EVENTS.INBOX_ACKNOWLEDGED) {
+    invalidateApiGetCache('/api/inbox');
+  } else if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
     invalidateCrossEntityProjections();
   } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
@@ -1263,7 +1272,7 @@ export async function getIssueRepos<T>(): Promise<T[]> {
  * Fetch every page of one Timeline projection and join them. Each request does
  * a bounded amount of daemon work; the view receives the whole projection at
  * once, so its rows and time axis never reflect a partial load. If the row tree
- * changes between pages, the load starts over.
+ * or ledger watermark changes between pages, the load starts over.
  */
 export async function getProjectTimeline(
   input: ProjectTimelineInput,
@@ -1274,13 +1283,13 @@ export async function getProjectTimeline(
     let rowOffset = 0;
     for (;;) {
       const page = await getProjectTimelinePage({ ...input, row_offset: rowOffset }, signal);
-      if (pages.length > 0 && !sameTimelineRows(pages[0].rows, page.rows)) break;
+      if (pages.length > 0 && (pages[0].page.ledger_watermark !== page.page.ledger_watermark || !sameTimelineRows(pages[0].rows, page.rows))) break;
       pages.push(page);
       if (page.page.next_row_offset === null) return mergeTimelinePages(pages);
       rowOffset = page.page.next_row_offset;
     }
   }
-  throw new Error('Timeline rows kept changing while loading; reload to try again');
+  throw new Error('Timeline ledger kept changing while loading; reload to try again');
 }
 
 const TIMELINE_LOAD_ATTEMPTS = 3;
@@ -1383,10 +1392,12 @@ export async function acknowledgeInboxItem(
   id: string,
 ): Promise<void> {
   await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
+  invalidateApiGetCache('/api/inbox');
 }
 
 export async function ackAllInbox(): Promise<void> {
   await apiPost('/api/inbox/ack-all');
+  invalidateApiGetCache('/api/inbox');
 }
 
 export async function getSessionIssues(sessionId: string): Promise<unknown[]> {
@@ -3181,6 +3192,14 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
 
 export async function openArtifactExternally(id: string): Promise<void> {
   await apiPost(`/api/artifacts/${encodeURIComponent(id)}/open-externally`, {});
+}
+
+/** Record an artifact reference and expire every view of its knowledge links. */
+export async function createArtifactKnowledgeBackref(id: string, input: Record<string, unknown>): Promise<KnowledgeBackrefRecord> {
+  const response = await apiPost(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, input);
+  invalidateArtifactReads();
+  const payload = await parseMaybeJson(response) as { backref: KnowledgeBackrefRecord };
+  return payload.backref;
 }
 
 export async function getArtifactKnowledgeBackrefs(id: string, options: { signal?: AbortSignal } = {}): Promise<KnowledgeBackrefRecord[]> {

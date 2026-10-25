@@ -33,7 +33,7 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar, useRouteLoad } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { beginDetailRequest, detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
@@ -1003,11 +1003,12 @@ export function GraphView({
     let active = true;
     setLoading(true);
     setError(null);
+    const detailStarted = beginDetailRequest();
     const initialRead = getGraph(graphRequest)
       .then((result) => {
         const data = result as GraphPayload;
         if (!active) return;
-        writePersistedDetail('graph', graphRequestKey, data);
+        writePersistedDetail('graph', graphRequestKey, data, undefined, detailStarted);
         setPayloadState({ requestKey: graphRequestKey, value: data });
         if (routeFocus) {
           if (data.nodes.some((node) => node.id === routeFocus) && lastFocusedNodeOpenedRef.current !== routeFocus) {
@@ -1346,10 +1347,11 @@ export function GraphView({
 
 /** Warm the Graph list and only its explicit or default selected issue detail. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const request = graphRequestForSpec(initialGraphSpec(params.mode));
   const requestKey = detailRequestKey('graph', request);
   const data = await getGraph(request) as GraphPayload;
-  writePersistedDetail('graph', requestKey, data);
+  writePersistedDetail('graph', requestKey, data, undefined, detailStarted);
 
   const selectedNode = (params.focus
     ? data.nodes.find((node) => node.id === params.focus)
@@ -1360,8 +1362,9 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     : null;
   if (!issueId) return;
 
+  const issueStarted = beginDetailRequest();
   const detail = await getLedgerIssueDetail(issueId);
-  writePersistedDetail('issue-detail', detailRequestKey('issue', { issueId }), detail);
+  writePersistedDetail('issue-detail', detailRequestKey('issue', { issueId }), detail, undefined, issueStarted);
 }
 
 export default GraphView;

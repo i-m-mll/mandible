@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { beginDetailRequest, clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail } from '../ui/src/detail-cache';
+import * as api from '../ui/src/api';
 import { BRIEFING_EVENT_VALUES } from '../src/contracts';
 import { queryClient } from '../ui/src/query/client';
 import { browserResourceKeys } from '../ui/src/query/browserResources';
@@ -35,6 +37,56 @@ describe('dashboard API GET cache', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     clearApiGetCache();
+  });
+
+  it('does not cache a preference GET that started before a successful PUT', async () => {
+    const initial = { version: 1, key: 'chat_shown_projects', value: [], revision: 1 };
+    let finish!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((_url, init) => init?.method === 'PUT'
+      ? Promise.resolve(jsonResponse({ ...initial, revision: 2 }))
+      : new Promise<Response>((resolve) => { finish = resolve; })));
+    const old = api.getChatShownProjectsPreference();
+    await api.updateChatShownProjectsPreference([], 1);
+    finish(jsonResponse(initial));
+    await old;
+    expect((await api.getChatShownProjectsPreference({ warm: true })).revision).toBe(2);
+  });
+
+  it.each(['one', 'all', 'event'])('expires inbox data after acknowledgement: %s', async (mode) => {
+    let acknowledged = false;
+    const fetch = vi.fn(async (_url, init) => jsonResponse(init?.method === 'POST'
+      ? (acknowledged = true, {}) : { total: acknowledged ? 0 : 1 }));
+    vi.stubGlobal('fetch', fetch);
+    expect((await api.getInboxGlobal()).total).toBe(1);
+    if (mode === 'one') await api.acknowledgeInboxItem('continuation', 'one');
+    else if (mode === 'all') await api.ackAllInbox();
+    else { acknowledged = true; api.invalidateDashboardApiCacheForEvent('inbox:acknowledged'); }
+    expect((await api.getInboxGlobal()).total).toBe(0);
+  });
+
+  it('resync invalidates GET, detail, and TanStack data without dropping retained values', async () => {
+    clearPersistedDetailCache();
+    writePersistedDetail('timeline', 'one', { rows: [] });
+    queryClient.setQueryData(['gap'], { value: 1 });
+    const fetch = vi.fn(async () => jsonResponse({ total: 1 }));
+    vi.stubGlobal('fetch', fetch);
+    await api.getInboxGlobal();
+    api.invalidateDashboardCaches();
+    expect(isPersistedDetailFresh('timeline', 'one')).toBe(false);
+    expect(queryClient.getQueryState(['gap'])?.isInvalidated).toBe(true);
+    await api.getInboxGlobal();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('expires knowledge backrefs locally after a write and on an artifact event', async () => {
+    clearPersistedDetailCache();
+    writePersistedDetail('artifact-backrefs', 'one', []);
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ backref: { id: 'new' } })));
+    await api.createArtifactKnowledgeBackref('artifact', { ref_type: 'claim', external_ref: 'one' });
+    expect(isPersistedDetailFresh('artifact-backrefs', 'one')).toBe(false);
+    writePersistedDetail('artifact-backrefs', 'one', [], undefined, beginDetailRequest());
+    api.invalidateDashboardApiCacheForEvent('artifact:changed');
+    expect(isPersistedDetailFresh('artifact-backrefs', 'one')).toBe(false);
   });
 
   it('deduplicates concurrent same-URL GETs across API helpers', async () => {
