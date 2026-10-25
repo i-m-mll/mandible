@@ -361,6 +361,111 @@ describe('runtime convergence recovery', () => {
     return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };
   }
 
+  function automaticRecovery(f: Awaited<ReturnType<typeof recoveryFixture>>) {
+    const owner = { file: '/private/active.json', journalPath: '/private/journal.json',
+      bindingDigest: f.journal.bindingDigest, requestId: f.request.id, executionId: f.run.id,
+      phase: 'failed', error: 'retained failure' };
+    vi.spyOn(f.hooks, 'runtimeHandoffLock').mockImplementation(() => f.journal.phase === 'acknowledged' ? null : { ...owner, phase: f.journal.phase });
+    const evidence = vi.fn(async () => 'healthy-generation-1');
+    Object.assign((f.hooks as any).handoffClient, { runtimeRecoveryEvidenceKey: evidence });
+    return { owner, evidence };
+  }
+
+  it('automatically verifies the exact healthy failed owner and wakes deferred acceptance without another hook attempt', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const refresh = vi.spyOn(queue, 'refreshPendingCandidates').mockResolvedValue();
+    const head = git(repo, ['rev-parse', 'main']);
+    const attempts = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.journal.recovery?.actor).toMatchObject({ kind: 'daemon_reconciliation', pid: process.pid });
+    expect(f.journal.recovery?.actor).not.toHaveProperty('user_id');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: attempts.attempts, attempt_history: attempts.attempt_history });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.ack).toHaveBeenCalledOnce();
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(git(repo, ['rev-parse', 'main'])).toBe(head);
+  });
+
+  it('bounds automatic observation and retries only changed healthy evidence', async () => {
+    const f = await recoveryFixture();
+    const { evidence } = automaticRecovery(f);
+    let rejectObservation!: (error: Error) => void;
+    f.observation.mockImplementationOnce(() => new Promise((_, reject) => { rejectObservation = reject; }));
+    const first = f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    await waitUntil(() => f.observation.mock.calls.length === 1, 'automatic recovery observation');
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(evidence).toHaveBeenCalledOnce();
+    rejectObservation(new Error('retained unhealthy window'));
+    await first;
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.journal.phase).toBe('failed');
+    evidence.mockResolvedValue('healthy-generation-2');
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.observation).toHaveBeenCalledTimes(2);
+    expect(f.journal.phase).toBe('acknowledged');
+  });
+
+  it('never observes a historical failed handoff while another execution owns the lock', async () => {
+    const f = await recoveryFixture();
+    const { owner, evidence } = automaticRecovery(f);
+    owner.executionId = 'another-execution';
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(evidence).not.toHaveBeenCalled();
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(f.journal.phase).toBe('failed');
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('preserves a changed owner during automatic observation', async () => {
+    const f = await recoveryFixture();
+    const { owner } = automaticRecovery(f);
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockImplementationOnce(async (journal, actor) => {
+      const result = await observe(journal, actor);
+      owner.bindingDigest = 'c'.repeat(64);
+      return result;
+    });
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('failed');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('failed');
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a changed publication generation during automatic observation', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockImplementationOnce(async (journal, actor) => {
+      const result = await observe(journal, actor);
+      git(repo, ['commit', '--allow-empty', '-m', 'different generation']);
+      return result;
+    });
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.journal.phase).toBe('failed');
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('resumes interrupted automatic acknowledgment without another observation, merge or build', async () => {
+    const f = await recoveryFixture(true);
+    automaticRecovery(f);
+    const head = git(repo, ['rev-parse', 'main']);
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('complete');
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.ack).toHaveBeenCalledTimes(2);
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: f.run.attempts });
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(git(repo, ['rev-parse', 'main'])).toBe(head);
+  });
+
   it('accepts the hook before exposing completion, preserves terminal history and replays interrupted acknowledgment once', async () => {
     const f = await recoveryFixture(true);
     const before = (await queue.getRequest(f.request.id))!;

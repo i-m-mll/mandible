@@ -345,6 +345,26 @@ export async function observeRuntimeHandoff(journal, {
   return receipt;
 }
 
+/** A bounded current-generation probe gates the expensive recovery health window. */
+export async function runtimeRecoveryEvidenceKey(journal) {
+  exactActiveOwner(journal);
+  let evidence;
+  try {
+    evidence = JSON.parse(await controller(journal, 'handoff-verify', true, { until: Date.now() + 5000 }));
+  } catch {
+    // An unhealthy generation retains its failure and lock. Probe again on the
+    // next reconciliation; only changed healthy evidence opens a health window.
+    return null;
+  }
+  const resources = path.join(journal.binding.nativeApp, 'Contents/Resources');
+  const files = [path.join(journal.binding.root, 'dist/build-revision.json'),
+    path.join(resources, 'build-revision.json'), path.join(journal.binding.root, 'dist/index.js'),
+    path.join(journal.binding.nativeApp, 'Contents/MacOS/mandible-app'), evidence.backend.file, evidence.gateway.file];
+  return hash(JSON.stringify({ process: evidence.process, backend: evidence.backend, gateway: evidence.gateway,
+    daemonLog: { path: evidence.daemonLog.path, dev: evidence.daemonLog.dev, ino: evidence.daemonLog.ino },
+    files: files.map(file => [file, fileHash(file)]) }));
+}
+
 export async function observeFailedRuntimeHandoff(journal, actor, observationOptions = {}) {
   if (journal.phase !== 'failed') throw new Error('Verification-only recovery requires a retained failed handoff.');
   const failure = retainedFailure(journal);

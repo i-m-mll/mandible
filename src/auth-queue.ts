@@ -742,6 +742,7 @@ export class AuthQueue {
         await this.afterConvergenceHook(request);
       }
     }
+    if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
   }
 
   /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
