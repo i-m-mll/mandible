@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import {
-  findLedgerIssueAcrossRepos,
   listLedgerIssueSummaries,
 } from "../src/ledger/issue-projection.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -19,6 +18,7 @@ import {
   migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
+import { queryPlan, recordStatements } from "./helpers/statement-recorder.js";
 
 let tempDir = "";
 let db: Db;
@@ -203,18 +203,6 @@ describe("ledger issue projection", () => {
       issues: [{ id: issue.short_id }],
     }]);
     expect(byLegacy.body).toEqual([]);
-  });
-
-  it("reports global alias ambiguity instead of choosing the first match", () => {
-    const first = repo("repo-1", "one");
-    const second = repo("repo-2", "two");
-    createLedgerIssue({ repo: first, alias: "dupe", title: "First" });
-    createLedgerIssue({ repo: second, alias: "dupe", title: "Second" });
-
-    expect(findLedgerIssueAcrossRepos(db, fakeWorkScanner([first, second]), "dupe")).toMatchObject({
-      ok: false,
-      status: 409,
-    });
   });
 });
 
@@ -831,4 +819,86 @@ describe("ledger issue routes", () => {
     expect(new LedgerStore(db).getIssueDetail(issue.id).comments).toHaveLength(0);
   });
 
+});
+
+describe("umbrella write cost", () => {
+  // Issue 401f88b — the ledger has no sqlite_stat1, so these plans are the
+  // ones production gets. A step that searches a ledger table by a type column
+  // alone, or scans it, reads the whole table on every call.
+  const LEDGER_TABLES = "ledger_events|ledger_comments|ledger_issue_checkpoints|ledger_relationship_edges|ledger_issue_relationships|work_units";
+  const WHOLE_TABLE_STEP = new RegExp(
+    `^(SCAN (${LEDGER_TABLES})\\b|SEARCH (${LEDGER_TABLES})( AS \\w+)? USING (COVERING )?INDEX \\w+ \\((entity_type|target_entity_type|relationship_type|link_type)=\\?\\)$)`,
+  );
+
+  function seedUmbrella(childCount: number) {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbcost",
+      title: "Cost umbrella",
+      labels: ["umbrella"],
+    });
+    const children = Array.from({ length: childCount }, (_, index) => {
+      const child = store.createIssue({
+        ...SYSTEM_ACTOR,
+        project_id: umbrella.project_id,
+        title: `Cost child ${index}`,
+        body: "Child body",
+        kind: "feature",
+      });
+      store.addComment(child.id, { ...SYSTEM_ACTOR, body: `Comment ${index}` });
+      store.addIssueCheckpoint(child.id, {
+        ...SYSTEM_ACTOR,
+        kind: "closeout",
+        payload: { worker_status: "done" },
+        actor_type: "agent",
+      });
+      return child;
+    });
+    store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: children.slice(1).map((child) => ({ entity_type: "issue", entity_id: child.id })),
+      link_type: "parent_child",
+      provenance: "manual",
+    });
+    store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
+      source_issue_id: umbrella.id,
+      target_issue_id: children[0].id,
+      relationship_type: "parent_child",
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    return { server, umbrella, children };
+  }
+
+  const HEAD_EVENTS = /WITH head_events AS/;
+
+  for (const [route, body] of [
+    ["/api/ledger/issues/:issueId/umbrella-manifest-refresh", undefined],
+    ["/api/ledger/issues/:issueId/umbrella-adopt", "children"],
+  ] as const) {
+    it(`${route.split("/").at(-1)} reads every head in two batches, whatever the child count`, async () => {
+      for (const childCount of [2, 6]) {
+        db.close();
+        db = migratedMemoryDb();
+        setDb(db);
+        testOperator = setupOperator(db, { display_name: "Route test operator" });
+        const { server, children } = seedUmbrella(childCount);
+        const { result: response, statements } = await recordStatements(db, () => server.invoke("POST", route, {
+          params: { issueId: "umbcost" },
+          body: body ? { child_refs: children.map((child) => child.short_id) } : undefined,
+        }));
+        expect(response.statusCode).toBe(200);
+        // One batch for the manifest, one for the status after its checkpoint.
+        expect(statements.filter((statement) => HEAD_EVENTS.test(statement.sql))).toHaveLength(2);
+        const wholeTableSteps = statements.flatMap((statement) =>
+          queryPlan(db, statement)
+            .filter((step) => WHOLE_TABLE_STEP.test(step))
+            .map((step) => `${step} <- ${statement.sql.replace(/\s+/g, " ").slice(0, 80)}`));
+        expect(wholeTableSteps).toEqual([]);
+      }
+    });
+  }
 });

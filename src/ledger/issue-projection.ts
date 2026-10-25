@@ -165,27 +165,6 @@ function parentProjection(parents: GitBugIssueParentRelationship[]): Pick<GitBug
   };
 }
 
-export function findLedgerIssueAcrossRepos(
-  db: Db,
-  workScanner: Pick<WorkScanner, "getRepos">,
-  issueRef: string,
-): { ok: true; detail: GitBugIssueDetail } | { ok: false; status: 404 | 409; error: string } {
-  const checkouts = listCheckouts(db, workScanner.getRepos());
-  const store = new LedgerStore(db);
-  const matches: GitBugIssueDetail[] = [];
-  for (const checkout of checkouts) {
-    const resolved = store.resolveIssueRef(issueRef, { project_id: checkout.project_id });
-    if (resolved.ok) {
-      matches.push(ledgerIssueToRouteDetail(db, checkout, store.getIssueDetail(resolved.id)));
-    } else if (resolved.error === "ambiguous") {
-      return { ok: false, status: 409, error: "ambiguous issue reference" };
-    }
-  }
-  if (matches.length === 1) return { ok: true, detail: matches[0] };
-  if (matches.length > 1) return { ok: false, status: 409, error: "ambiguous issue reference" };
-  return { ok: false, status: 404, error: "issue not found in ledger" };
-}
-
 export function getLedgerIssueDetailForRoute(
   db: Db,
   workScanner: Pick<WorkScanner, "getRepos" | "getRepoById">,

@@ -21,6 +21,7 @@ import {
   CONVERSATION_OPENING_LINEAGE_SQL,
   CONVERSATION_SIDEBAR_INDEX_SQL,
   PROJECT_ISSUE_READ_INDEX_SQL,
+  AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
   createFreshSchemaBaseline,
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
@@ -2177,6 +2178,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE temp.auth_failed_reclassification",
   ] },
   { version: 213, name: "project_issue_read_indexes", statements: [...PROJECT_ISSUE_READ_INDEX_SQL] },
+  { version: 214, name: "auth_request_unacknowledged_index", statements: [AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL] },
 ];
 
 /**
