@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import SqliteDatabase, { SqliteError } from "../src/sqlite.ts";
+import SqliteDatabase, { SqliteError, STATEMENT_CACHE_CAPACITY } from "../src/sqlite.ts";
 import { openReadOnlyLedger, runReadOnlyQuery } from "../src/db-read.ts";
 
 function temporaryDatabase(run: (filename: string) => void | Promise<void>) {
@@ -66,6 +66,53 @@ describe("Bun SQLite boundary", () => {
       expect(db.prepare("SELECT value FROM writes_test").all()).toEqual([{ value: null }]);
     } finally { db.close(); }
   });
+
+  it("compiles repeated SQL once per connection, within a bounded cache", () => {
+    const db = new SqliteDatabase();
+    try {
+      db.exec("CREATE TABLE item(id INTEGER PRIMARY KEY, label TEXT UNIQUE); INSERT INTO item(label) VALUES('a'),('b'),('c')");
+      let compiles = 0;
+      db.setAuthorizer(action => { if (action === 21) compiles++; return 0; });
+      const sql = "SELECT label FROM item WHERE id = ?";
+      expect(Array.from({ length: 50 }, (_, i) => db.prepare(sql).get(i % 3 + 1).label)).toEqual(Array.from({ length: 50 }, (_, i) => "abc"[i % 3]));
+      expect(compiles).toBe(1);
+      for (let i = 0; i < STATEMENT_CACHE_CAPACITY; i++) db.prepare(`SELECT ${i}`).get();
+      compiles = 0;
+      db.prepare(`SELECT ${STATEMENT_CACHE_CAPACITY - 1}`).get();
+      expect(compiles).toBe(0);
+      db.prepare(sql).get(1);
+      expect(compiles).toBe(1);
+    } finally { db.close(); }
+  });
+
+  it("never lets one caller's use of a shared statement disturb another's", async () => temporaryDatabase(filename => {
+    const db = new SqliteDatabase(filename);
+    const writer = new SqliteDatabase(filename);
+    try {
+      db.exec("PRAGMA journal_mode=WAL; CREATE TABLE item(id INTEGER PRIMARY KEY, label TEXT UNIQUE); INSERT INTO item(label) VALUES('a'),('b'),('c')");
+      const sql = "SELECT id, label FROM item ORDER BY id";
+      const shared = db.prepare(sql);
+      const seen: Array<[number, number, string]> = [];
+      for (const row of shared.iterate()) {
+        seen.push([row.id, db.prepare(sql).all().length, shared.get().label]);
+        for (const inner of db.prepare(sql).iterate()) if (inner.id === row.id) seen.push([inner.id, 0, inner.label]);
+      }
+      expect(seen).toEqual([[1, 3, "a"], [1, 0, "a"], [2, 3, "a"], [2, 0, "b"], [3, 3, "a"], [3, 0, "c"]]);
+      expect(db.prepare(sql).arrays().get()).toEqual([1, "a"]);
+      expect(db.prepare(sql).get()).toEqual({ id: 1, label: "a" });
+      const insert = db.prepare("INSERT INTO item(label) VALUES(?)");
+      expect(() => db.prepare("INSERT INTO item(label) VALUES(?)").run("a")).toThrow(SqliteError);
+      expect(insert.run("d").changes).toBe(1);
+      const count = "SELECT count(*) AS n FROM item";
+      expect(db.prepare(count).get()).toEqual({ n: 4 });
+      writer.prepare("INSERT INTO item(label) VALUES('e')").run();
+      expect(writer.pragma("wal_checkpoint(TRUNCATE)")).toEqual([{ busy: 0, log: 0, checkpointed: 0 }]);
+      expect(db.prepare(count).get()).toEqual({ n: 5 });
+      db.setAuthorizer(action => action === 20 ? 1 : 0);
+      expect(() => db.prepare(count).get()).toThrow(/not authorized/);
+      db.setAuthorizer(null);
+    } finally { writer.close(); db.close(); }
+  }));
 
   it("keeps synchronous nested rollback and immediate locking semantics", async () => temporaryDatabase(filename => {
     const db = new SqliteDatabase(filename, { timeout: 1 });
