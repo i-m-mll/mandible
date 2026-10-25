@@ -2035,6 +2035,8 @@ export type OperationalIncidentFacts = {
   run_status: string;
   exit_class: string;
   finished_at: number;
+  /** Numbers the daemon measured for a fault it raised in itself; executors never send them. */
+  measurements?: Record<string, number>;
 };
 
 export type OperationalIncidentRecovery = {
