@@ -108,6 +108,7 @@ import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
+import { EventLoopStallIncident } from "./event-loop-stall-incident.js";
 import { auditOperatorSigningCredential } from "./signing-credential-audit.js";
 import {
   RestartAvailabilityStore,
@@ -537,10 +538,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // connections. This catches the zombie state where the listen socket died
   // silently (e.g., due to an OS-level error that didn't emit an 'error'
   // event) while SSE streams keep the process alive.
+  const eventLoopStallIncident = operationalMutationsAllowed ? new EventLoopStallIncident(db, logger) : null;
   const healthCheckTimer = setInterval(() => {
     const intervalEndedAt = Date.now();
     memoryDiagnostics.sample(intervalEndedAt);
-    eventLoopDiagnostics.sample(intervalEndedAt);
+    eventLoopStallIncident?.observe(eventLoopDiagnostics.sample(intervalEndedAt));
     if (!server.listening) {
       logger("error", "self_health_check_failed", {
         message: "server.listening is false, exiting for supervisor restart"
