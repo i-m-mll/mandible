@@ -499,7 +499,52 @@ describe("project timeline projection", () => {
       }),
     ]));
   });
+
+  it("reads only the project's index ranges and the shown issues, never a ledger-wide range", () => {
+    const statements = recordStatements(fixture.db);
+    buildProjectTimelineProjection(fixture.db, { project_id: fixture.project.id });
+    buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      include_closed: true,
+      event_kinds: ["auth_request", "backlink", "body", "comment", "commit", "issue_state", "label", "session", "state", "work_unit"],
+      expanded_paths: [`row:root:${fixture.issues.rootA.id}:0`],
+      depth: 2,
+      root_specs: [{
+        id: "review-ever",
+        title: "Ever needed review",
+        scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+      }],
+    });
+
+    const ledgerWideSteps = statements
+      .filter(({ sql }) => !/FROM ledger_projects\b/.test(sql))
+      .flatMap(({ sql, args }) => (
+      (fixture.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>)
+        .map((step) => step.detail)
+        .filter((detail) => /\bSCAN (?!json_each\b)\w+/.test(detail) || /\(entity_type=\?\)/.test(detail))
+        .map((detail) => `${detail} <- ${sql.replace(/\s+/g, " ").slice(0, 120)}`)
+    ));
+    expect(statements.length).toBeGreaterThan(0);
+    expect(ledgerWideSteps).toEqual([]);
+  });
 });
+
+function recordStatements(db: TimelineFixture["db"]): Array<{ sql: string; args: unknown[] }> {
+  const recorded: Array<{ sql: string; args: unknown[] }> = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((sql: string) => {
+    const statement = prepare(sql);
+    for (const method of ["all", "get"] as const) {
+      const run = statement[method].bind(statement);
+      statement[method] = ((...args: unknown[]) => {
+        recorded.push({ sql, args });
+        return run(...args);
+      }) as typeof statement[typeof method];
+    }
+    return statement;
+  }) as typeof db.prepare;
+  return recorded;
+}
 
 function eventBySource(
   projection: ProjectTimelineProjection,
