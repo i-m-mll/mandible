@@ -729,12 +729,7 @@ export function registerWorkUnitRoutes(
       .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    const workUnits = rows.map(mapRow);
-    const enriched = workUnits.map((wu) =>
-      enrichWithLiveness(wu, sessionManager)
-    );
-
-    sendJson(res, 200, { work_units: enriched });
+    sendJson(res, 200, { work_units: enrichWithLiveness(rows.map(mapRow), sessionManager) });
   }, { operation: { id: "get:/api/work-units", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Issue 72b00f8 — read-only custody answer for commit wrappers. Registered
@@ -998,7 +993,7 @@ export function registerWorkUnitRoutes(
     }
 
     const workUnit = mapRow(row);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
+    sendJson(res, 200, enrichWithLiveness([workUnit], sessionManager)[0]);
   }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
     refs: { params: { id: entityRefs.workUnit } } });
 
@@ -1095,7 +1090,7 @@ export function registerWorkUnitRoutes(
       .get(id) as Record<string, unknown>;
 
     const workUnit = mapRow(updatedRow);
-    sendJson(res, 200, enrichWithLiveness(workUnit, sessionManager));
+    sendJson(res, 200, enrichWithLiveness([workUnit], sessionManager)[0]);
   }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { params: { id: entityRefs.workUnit }, body: { auth_request_id: entityRefs.authRequest, assigned_session_id: entityRefs.session } } });
 }

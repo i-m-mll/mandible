@@ -20,34 +20,53 @@ export type ProviderSessionIngestion =
   | { status: "ambiguous"; provider_session_id: string; sources: string[] }
   | { status: "unsupported"; provider_session_id: string; source: string };
 
+interface IngestionRow {
+  alias: string;
+  source: string;
+  source_path: string;
+  cwd: string | null;
+  branch: string | null;
+  updated_at: string | null;
+  ended_at: string | null;
+  source_mtime: number | null;
+}
+
 /**
- * Resolve one exact provider task from Mandible's normalized transcript index.
- * The id is a session's own provider id, or the agent id of an in-session
- * child (a Claude subagent), whose transcript carries its parent's session id.
+ * Resolve exact provider tasks from Mandible's normalized transcript index, in
+ * at most two queries. Each id is a session's own provider id, or the agent id
+ * of an in-session child (a Claude subagent), whose transcript carries its
+ * parent's session id.
  */
-export function resolveProviderSessionIngestion(
+export function resolveProviderSessionIngestions(
   db: Db,
-  providerSessionId: string,
-): ProviderSessionIngestion {
-  const id = providerSessionId.trim();
-  const select = (where: string) => db.prepare(`
-    SELECT source, source_path, cwd, branch, updated_at, ended_at, source_mtime
+  providerSessionIds: Iterable<string>,
+): Map<string, ProviderSessionIngestion> {
+  const ids = [...new Set(providerSessionIds)];
+  const select = (alias: string, where: string, keys: string[]) => db.prepare(`
+    SELECT ${alias} AS alias, source, source_path, cwd, branch, updated_at, ended_at, source_mtime
       FROM conversations
-     WHERE ${where}
+     WHERE ${alias} IN (SELECT value FROM json_each(?))${where}
      ORDER BY updated_at DESC, id ASC
-  `).all(id) as Array<{
-    source: string;
-    source_path: string;
-    cwd: string | null;
-    branch: string | null;
-    updated_at: string | null;
-    ended_at: string | null;
-    source_mtime: number | null;
-  }>;
-  let rows = select("session_id = ?");
-  if (rows.length === 0 && columnExists(db, "conversations", "parent_session_id")) {
-    rows = select("agent_id = ? AND parent_session_id = session_id");
+  `).all(JSON.stringify(keys)) as IngestionRow[];
+  const rowsById = groupRows(select("session_id", "", ids));
+  const children = ids.filter((id) => !rowsById.has(id));
+  if (children.length > 0 && columnExists(db, "conversations", "parent_session_id")) {
+    for (const [id, rows] of groupRows(select("agent_id", " AND parent_session_id = session_id", children))) rowsById.set(id, rows);
   }
+  return new Map(ids.map((id) => [id, ingestionFromRows(id, rowsById.get(id) ?? [])]));
+}
+
+function groupRows(rows: IngestionRow[]): Map<string, IngestionRow[]> {
+  const groups = new Map<string, IngestionRow[]>();
+  for (const row of rows) {
+    const group = groups.get(row.alias);
+    if (group) group.push(row);
+    else groups.set(row.alias, [row]);
+  }
+  return groups;
+}
+
+function ingestionFromRows(id: string, rows: IngestionRow[]): ProviderSessionIngestion {
   if (rows.length === 0) return { status: "not_yet_ingested", provider_session_id: id };
 
   const sources = [...new Set(rows.map((row) => row.source))].sort();

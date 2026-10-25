@@ -1,4 +1,4 @@
-import { readSessionExecution } from "./session-execution.js";
+import { sessionExecutionReader } from "./session-execution.js";
 import type { SessionExecutionObservation } from "./contracts.js";
 /**
  * One canonical answer to two questions that used to be answered three
@@ -33,7 +33,7 @@ import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
 import { readCodexTaskLiveness, withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
 import {
-  resolveProviderSessionIngestion,
+  resolveProviderSessionIngestions,
   type ProviderSessionIngestion,
 } from "./provider-session-ingestion.js";
 
@@ -130,33 +130,24 @@ export function resolveSessionAlias(
 ): SessionAliasResolution | null {
   const id = suppliedId.trim();
   if (!id) return null;
+  return new SessionAliasIndex(db, [id], options).resolve(id);
+}
 
-  const directSession = lookupSession(db, id) ?? lookupSessionByConversationId(db, id);
-  const consoleRow = pickConsoleRow(db, consoleRowsForAlias(db, id));
-  const providerIngestion = providerSessionIngestion(db, id);
-  if (!directSession && !consoleRow && !providerIngestion) return null;
-
-  // A console row that names a Mandible session carries the richer identity:
-  // status and last activity live on `sessions`, not on `console_sessions`.
-  const linkedSession = directSession
-    ?? (consoleRow?.mandible_session_id ? lookupSession(db, consoleRow.mandible_session_id) : null);
-
-  const provider = linkedSession?.app?.trim() || consoleRow?.command?.trim() || providerIngestion?.provider || null;
-  const providerId = consoleRow?.provider_session_id?.trim() || linkedSession?.conversation_id?.trim() || providerIngestion?.provider_session_id || null;
-  return {
-    execution: readSessionExecution(db, provider, providerId),
-    supplied_id: id,
-    mandible_session_id: linkedSession?.id ?? null,
-    console_session_id: consoleRow?.id ?? null,
-    provider_session_id: providerId,
-    provider,
-    mandible_status: linkedSession?.status ?? null,
-    console_status: consoleRow?.status ?? null,
-    last_activity: linkedSession?.last_active
-      ?? linkedSession?.updated_at
-      ?? providerIngestion?.last_activity
-      ?? null,
-    liveness: sessionAliasLiveness(db, id, options),
+/**
+ * {@link resolveSessionAlias} for every alias in `suppliedIds`, reading the
+ * rows they reach in a fixed number of queries rather than a dozen per alias.
+ * The returned resolver answers only for those aliases.
+ */
+export function sessionAliasResolverFor(
+  db: Db,
+  suppliedIds: Iterable<string>,
+  options: SessionLivenessOptions = {},
+): SessionAliasResolver {
+  const ids = [...suppliedIds].map((id) => id.trim()).filter(Boolean);
+  const index = new SessionAliasIndex(db, ids, options);
+  return (_db, id) => {
+    const trimmed = id.trim();
+    return trimmed ? index.resolve(trimmed) : null;
   };
 }
 
@@ -203,59 +194,7 @@ export function sessionAliasLiveness(
   suppliedId: string,
   options: SessionLivenessOptions = {},
 ): LivenessState {
-  let answer: LivenessState = "stopped";
-  for (const evidence of aliasLivenessEvidence(db, suppliedId, options)) {
-    if (evidence === "live") return "live";
-    if (evidence === "unknown") answer = "unknown";
-  }
-  return answer;
-}
-
-/**
- * Liveness evidence from each row the alias reaches, lazily, so a live row
- * short-circuits the remaining lookups. `null` is a row that says nothing.
- */
-function* aliasLivenessEvidence(
-  db: Db,
-  suppliedId: string,
-  options: SessionLivenessOptions,
-): Generator<LivenessState | null> {
-  for (const row of sessionRowsForAlias(db, suppliedId)) {
-    yield statusLiveness(row.status);
-  }
-  if (tableExists(db, "console_sessions")) {
-    const rows = tableExists(db, "sessions")
-      ? db.prepare(
-        `SELECT cs.status AS console_status, s.id AS mandible_session_id
-         FROM console_sessions cs
-         LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
-         WHERE cs.id = ?
-            OR cs.mandible_session_id = ?
-            OR cs.provider_session_id = ?`,
-      ).all(
-        suppliedId,
-        suppliedId,
-        suppliedId,
-        suppliedId,
-      ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>
-      : db.prepare(
-        `SELECT cs.status AS console_status, NULL AS mandible_session_id
-         FROM console_sessions cs
-         WHERE cs.id = ?
-            OR cs.mandible_session_id = ?
-            OR cs.provider_session_id = ?`,
-      ).all(
-        suppliedId,
-        suppliedId,
-        suppliedId,
-      ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>;
-    for (const row of rows) {
-      yield statusLiveness(row.console_status);
-      if (!row.mandible_session_id) continue;
-      yield isMandibleSessionLive(db, row.mandible_session_id) ? "live" : "stopped";
-    }
-  }
-  yield codexTaskLiveness(db, suppliedId, options);
+  return new SessionAliasIndex(db, [suppliedId], options).liveness(suppliedId);
 }
 
 function statusLiveness(status: unknown): LivenessState {
@@ -263,122 +202,196 @@ function statusLiveness(status: unknown): LivenessState {
 }
 
 /**
- * Whether a `sessions.id` — and only that form — is live.
- *
- * Deliberately reads nothing but `status`. The archive path reaches this
- * function on databases whose `sessions` table is a subset — legacy installs
- * and the archive tests both build one with `id` and `status` alone — so naming
- * any other column here turns a liveness check into a thrown SqliteError.
+ * Every row the alias rules read for a set of aliases, loaded up front by
+ * set-based queries. `SELECT *` on `sessions` because its display columns
+ * (`app`, `last_active`, `updated_at`) are optional, and a missing one must
+ * read as "unknown", never as an error.
  */
-export function isMandibleSessionLive(db: Db, sessionId: string): boolean {
-  if (!tableExists(db, "sessions")) return false;
-  const row = db.prepare(
-    "SELECT status FROM sessions WHERE id = ?",
-  ).get(sessionId) as { status?: string | null } | undefined;
-  return isLiveSessionStatus(row?.status);
-}
+class SessionAliasIndex {
+  private readonly ids: Set<string>;
+  private readonly hasSessions: boolean;
+  private readonly hasConversationId: boolean;
+  private readonly hasConsole: boolean;
+  private readonly sessionsById = new Map<string, SessionRow>();
+  private readonly sessionsByConversation = new Map<string, SessionRow[]>();
+  private readonly consoleByAlias = new Map<string, ConsoleRow[]>();
+  private readonly ingestions: Map<string, ProviderSessionIngestion> | Error | null;
+  private resolutions: Map<string, SessionAliasResolution | null> | null = null;
 
-/**
- * `SELECT *` for the same reason: the display columns (`app`, `last_active`,
- * `updated_at`) are optional, and a missing one must read as "unknown", never
- * as an error.
- */
-function lookupSession(db: Db, sessionId: string): SessionRow | null {
-  if (!tableExists(db, "sessions")) return null;
-  const row = db.prepare("SELECT * FROM sessions WHERE id = ?")
-    .get(sessionId) as SessionRow | undefined;
-  return row ?? null;
-}
+  constructor(private readonly db: Db, suppliedIds: Iterable<string>, private readonly options: SessionLivenessOptions) {
+    this.ids = new Set(suppliedIds);
+    const ids = JSON.stringify([...this.ids]);
+    this.hasSessions = tableExists(db, "sessions");
+    this.hasConversationId = this.hasSessions && columnExists(db, "sessions", "conversation_id");
+    this.hasConsole = tableExists(db, "console_sessions");
 
-function lookupSessionByConversationId(db: Db, providerSessionId: string): SessionRow | null {
-  if (!tableExists(db, "sessions") || !columnExists(db, "sessions", "conversation_id")) return null;
-  const row = db.prepare(
-    `SELECT * FROM sessions
-     WHERE conversation_id = ?
-     ORDER BY updated_at DESC, id ASC
-     LIMIT 1`,
-  ).get(providerSessionId) as SessionRow | undefined;
-  return row ?? null;
-}
+    const consoleRows = new Map<string, ConsoleRow>();
+    if (this.hasConsole) {
+      for (const column of ["id", "mandible_session_id", "provider_session_id"]) {
+        for (const row of db.prepare(`SELECT * FROM console_sessions WHERE ${column} IN (SELECT value FROM json_each(?))`).all(ids) as ConsoleRow[]) {
+          consoleRows.set(row.id, row);
+        }
+      }
+      for (const row of consoleRows.values()) {
+        for (const alias of new Set([row.id, row.mandible_session_id, row.provider_session_id])) {
+          if (typeof alias !== "string" || !this.ids.has(alias)) continue;
+          const rows = this.consoleByAlias.get(alias);
+          if (rows) rows.push(row);
+          else this.consoleByAlias.set(alias, [row]);
+        }
+      }
+    }
 
-function sessionRowsForAlias(db: Db, suppliedId: string): SessionRow[] {
-  if (!tableExists(db, "sessions")) return [];
-  if (!columnExists(db, "sessions", "conversation_id")) {
-    const row = lookupSession(db, suppliedId);
-    return row ? [row] : [];
+    if (this.hasSessions) {
+      const sessionIds = new Set(this.ids);
+      for (const row of consoleRows.values()) if (row.mandible_session_id) sessionIds.add(row.mandible_session_id);
+      for (const row of db.prepare("SELECT * FROM sessions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...sessionIds])) as SessionRow[]) {
+        this.sessionsById.set(row.id, row);
+      }
+      if (this.hasConversationId) {
+        for (const row of db.prepare(
+          `SELECT * FROM sessions
+           WHERE conversation_id IN (SELECT value FROM json_each(?))
+           ORDER BY updated_at DESC, id ASC`,
+        ).all(ids) as SessionRow[]) {
+          const rows = this.sessionsByConversation.get(row.conversation_id!);
+          if (rows) rows.push(row);
+          else this.sessionsByConversation.set(row.conversation_id!, [row]);
+        }
+      }
+    }
+
+    if (!tableExists(db, "conversations")) this.ingestions = null;
+    else {
+      try {
+        this.ingestions = resolveProviderSessionIngestions(db, [...this.ids].map((id) => id.trim()));
+      } catch (error) {
+        this.ingestions = error instanceof Error ? error : new Error(String(error));
+      }
+    }
   }
-  return db.prepare(
-    "SELECT * FROM sessions WHERE id = ? OR conversation_id = ? ORDER BY updated_at DESC, id ASC",
-  ).all(suppliedId, suppliedId) as SessionRow[];
-}
 
-function providerSessionIngestion(db: Db, providerSessionId: string):
-  Extract<ProviderSessionIngestion, { status: "ingested" }> | null {
-  if (!tableExists(db, "conversations")) return null;
-  try {
-    const ingestion = resolveProviderSessionIngestion(db, providerSessionId);
-    return ingestion.status === "ingested" ? ingestion : null;
-  } catch {
-    return null;
+  resolve(id: string): SessionAliasResolution | null {
+    this.resolutions ??= this.resolveAll();
+    if (!this.resolutions.has(id)) throw new Error(`Session alias was not indexed: ${id}`);
+    return this.resolutions.get(id)!;
   }
-}
 
-/**
- * The Codex writer-lock answer for a provider thread id: `null` when the id is
- * not an indexed Codex thread, `unknown` when the lookup or the scan could not
- * complete.
- */
-function codexTaskLiveness(
-  db: Db,
-  providerSessionId: string,
-  options: SessionLivenessOptions,
-): LivenessState | null {
-  if (!tableExists(db, "conversations")) return null;
-  let ingestion: ProviderSessionIngestion;
-  try {
-    ingestion = resolveProviderSessionIngestion(db, providerSessionId);
-  } catch (error) {
-    getDaemonLogger()("error", "session_liveness_lookup_failed", {
-      provider_session_id: providerSessionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return "unknown";
+  /** The strongest liveness evidence any row reachable from the alias gives. */
+  liveness(id: string): LivenessState {
+    let answer: LivenessState = "stopped";
+    for (const evidence of this.livenessEvidence(id)) {
+      if (evidence === "live") return "live";
+      if (evidence === "unknown") answer = "unknown";
+    }
+    return answer;
   }
-  if (ingestion.status !== "ingested" || ingestion.provider !== "codex") return null;
-  const read = options.readCodexTaskLiveness ?? readCodexTaskLiveness;
-  const scan = read(ingestion.source_path, ingestion.provider_session_id).status;
-  return scan === "live" ? "live" : scan === "not_live" ? "stopped" : "unknown";
-}
 
-function consoleRowsForAlias(db: Db, suppliedId: string): ConsoleRow[] {
-  if (!tableExists(db, "console_sessions")) return [];
-  return db.prepare(
-    `SELECT * FROM console_sessions
-     WHERE id = ?
-        OR mandible_session_id = ?
-        OR provider_session_id = ?`,
-  ).all(suppliedId, suppliedId, suppliedId) as ConsoleRow[];
-}
+  private resolveAll(): Map<string, SessionAliasResolution | null> {
+    const resolutions = new Map([...this.ids].map((id) => [id, this.resolveIdentity(id)]));
+    const execution = sessionExecutionReader(this.db, [...resolutions.values()].flatMap((resolution) =>
+      resolution?.provider_session_id ? [resolution.provider_session_id] : []));
+    for (const resolution of resolutions.values()) {
+      if (resolution) resolution.execution = execution(resolution.provider, resolution.provider_session_id);
+    }
+    return resolutions;
+  }
 
-/**
- * Choose the one console row whose identity best represents the alias: a live
- * row first, then the most recently updated, then by id so the answer is
- * deterministic when timestamps tie.
- */
-function pickConsoleRow(db: Db, rows: ConsoleRow[]): ConsoleRow | null {
-  if (rows.length === 0) return null;
-  // Liveness is computed once per row rather than inside the comparator: it
-  // costs a query, and a comparator runs O(n log n) times.
-  const ranked = rows.map((row) => ({ row, live: consoleRowIsLive(db, row) }));
-  ranked.sort((a, b) =>
-    Number(b.live) - Number(a.live)
-    || Number(b.row.updated_at ?? 0) - Number(a.row.updated_at ?? 0)
-    || String(a.row.id).localeCompare(String(b.row.id))
-  );
-  return ranked[0]?.row ?? null;
-}
+  private resolveIdentity(id: string): SessionAliasResolution | null {
+    const directSession = this.session(id) ?? this.sessionsByConversation.get(id)?.[0] ?? null;
+    const consoleRow = this.pickConsoleRow(this.consoleByAlias.get(id) ?? []);
+    const ingestion = this.ingestion(id);
+    const providerIngestion = ingestion instanceof Error || ingestion?.status !== "ingested" ? null : ingestion;
+    if (!directSession && !consoleRow && !providerIngestion) return null;
 
-function consoleRowIsLive(db: Db, row: ConsoleRow): boolean {
-  if (isLiveSessionStatus(row.status)) return true;
-  return row.mandible_session_id ? isMandibleSessionLive(db, row.mandible_session_id) : false;
+    // A console row that names a Mandible session carries the richer identity:
+    // status and last activity live on `sessions`, not on `console_sessions`.
+    const linkedSession = directSession
+      ?? (consoleRow?.mandible_session_id ? this.session(consoleRow.mandible_session_id) : null);
+
+    const provider = linkedSession?.app?.trim() || consoleRow?.command?.trim() || providerIngestion?.provider || null;
+    const providerId = consoleRow?.provider_session_id?.trim() || linkedSession?.conversation_id?.trim() || providerIngestion?.provider_session_id || null;
+    return {
+      execution: null,
+      supplied_id: id,
+      mandible_session_id: linkedSession?.id ?? null,
+      console_session_id: consoleRow?.id ?? null,
+      provider_session_id: providerId,
+      provider,
+      mandible_status: linkedSession?.status ?? null,
+      console_status: consoleRow?.status ?? null,
+      last_activity: linkedSession?.last_active
+        ?? linkedSession?.updated_at
+        ?? providerIngestion?.last_activity
+        ?? null,
+      liveness: this.liveness(id),
+    };
+  }
+
+  private session(id: string): SessionRow | null {
+    return this.sessionsById.get(id) ?? null;
+  }
+
+  private ingestion(id: string): ProviderSessionIngestion | Error | null {
+    return this.ingestions instanceof Map ? this.ingestions.get(id.trim()) ?? null : this.ingestions;
+  }
+
+  /**
+   * Liveness evidence from each row the alias reaches, lazily, so a live row
+   * short-circuits the Codex lock read. `null` is a row that says nothing.
+   */
+  private *livenessEvidence(id: string): Generator<LivenessState | null> {
+    const direct = this.session(id);
+    if (direct) yield statusLiveness(direct.status);
+    for (const row of this.sessionsByConversation.get(id) ?? []) {
+      if (row.id !== id) yield statusLiveness(row.status);
+    }
+    for (const row of this.consoleByAlias.get(id) ?? []) {
+      yield statusLiveness(row.status);
+      const linked = this.hasSessions ? this.session(row.mandible_session_id ?? id) : null;
+      if (linked) yield statusLiveness(linked.status);
+    }
+    yield this.codexTaskLiveness(id);
+  }
+
+  /**
+   * The Codex writer-lock answer for a provider thread id: `null` when the id
+   * is not an indexed Codex thread, `unknown` when the lookup or the scan could
+   * not complete.
+   */
+  private codexTaskLiveness(id: string): LivenessState | null {
+    const ingestion = this.ingestion(id);
+    if (ingestion instanceof Error) {
+      getDaemonLogger()("error", "session_liveness_lookup_failed", {
+        provider_session_id: id,
+        error: ingestion.message,
+      });
+      return "unknown";
+    }
+    if (ingestion?.status !== "ingested" || ingestion.provider !== "codex") return null;
+    const read = this.options.readCodexTaskLiveness ?? readCodexTaskLiveness;
+    const scan = read(ingestion.source_path, ingestion.provider_session_id).status;
+    return scan === "live" ? "live" : scan === "not_live" ? "stopped" : "unknown";
+  }
+
+  /**
+   * Choose the one console row whose identity best represents the alias: a
+   * live row first, then the most recently updated, then by id so the answer
+   * is deterministic when timestamps tie.
+   */
+  private pickConsoleRow(rows: ConsoleRow[]): ConsoleRow | null {
+    if (rows.length === 0) return null;
+    const ranked = rows.map((row) => ({ row, live: this.consoleRowIsLive(row) }));
+    ranked.sort((a, b) =>
+      Number(b.live) - Number(a.live)
+      || Number(b.row.updated_at ?? 0) - Number(a.row.updated_at ?? 0)
+      || String(a.row.id).localeCompare(String(b.row.id))
+    );
+    return ranked[0]?.row ?? null;
+  }
+
+  private consoleRowIsLive(row: ConsoleRow): boolean {
+    if (isLiveSessionStatus(row.status)) return true;
+    return row.mandible_session_id ? isLiveSessionStatus(this.session(row.mandible_session_id)?.status) : false;
+  }
 }

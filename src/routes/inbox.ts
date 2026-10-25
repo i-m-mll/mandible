@@ -12,7 +12,7 @@ import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
-  computeWorkUnitLiveness,
+  workUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
@@ -273,7 +273,7 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
     + countOpenHookAlerts(db);
 }
 
-// Bug: f3dbb3e — mapWorkUnitRow and computeWorkUnitLiveness extracted to work-unit-utils.ts
+// Bug: f3dbb3e — mapWorkUnitRow and work-unit liveness live in work-unit-utils.ts
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
@@ -368,11 +368,10 @@ export function registerInboxRoutes(
       .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    return rows
-      .map(mapWorkUnitRow)
-      .map((wu) => {
-        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
-      })
+    const workUnits = rows.map(mapWorkUnitRow);
+    const liveness = workUnitLiveness(db, workUnits, sessionManager);
+    return workUnits
+      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
       // Show work units that need attention: their agent has stopped. One whose
       // liveness is unknown may still be worked on, so it is not offered.
       .filter((wu) => wu.liveness.state === "stopped");
@@ -395,11 +394,10 @@ export function registerInboxRoutes(
       .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    return rows
-      .map(mapWorkUnitRow)
-      .map((wu) => {
-        return { ...wu, liveness: computeWorkUnitLiveness(db, wu, sessionManager) };
-      })
+    const workUnits = rows.map(mapWorkUnitRow);
+    const liveness = workUnitLiveness(db, workUnits, sessionManager);
+    return workUnits
+      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
       // Only show continuations whose agent has stopped
       .filter((wu) => wu.liveness.state === "stopped");
   }
