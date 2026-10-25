@@ -101,7 +101,7 @@ class ProjectParentChildren implements ParentChildIndex {
 }
 
 class ProjectLabelHistory implements LabelHistoryIndex {
-  private intervalsByLabel: Map<string, TimelineLabelMembershipInterval[]> | null = null;
+  private readonly intervalsByLabel = new Map<string, TimelineLabelMembershipInterval[]>();
 
   constructor(
     private readonly db: Db,
@@ -110,8 +110,12 @@ class ProjectLabelHistory implements LabelHistoryIndex {
   ) {}
 
   intervalsForLabel(label: string): readonly TimelineLabelMembershipInterval[] {
-    this.intervalsByLabel ??= loadLabelIntervals(this.db, this.projectId, this.issueById);
-    return this.intervalsByLabel.get(label) ?? [];
+    let intervals = this.intervalsByLabel.get(label);
+    if (!intervals) {
+      intervals = loadLabelIntervals(this.db, this.projectId, this.issueById, label);
+      this.intervalsByLabel.set(label, intervals);
+    }
+    return intervals;
   }
 }
 
@@ -119,53 +123,46 @@ function loadLabelIntervals(
   db: Db,
   projectId: string,
   issueById: Map<string, IssueRow>,
-): Map<string, TimelineLabelMembershipInterval[]> {
-  const labelRows = db.prepare(
+  label: string,
+): TimelineLabelMembershipInterval[] {
+  const rowByIssue = new Map((db.prepare(
     `SELECT l.issue_id, l.label, l.created_at, l.deleted_at
        FROM ledger_labels l
-      WHERE l.issue_id IN (SELECT id FROM ledger_issues WHERE project_id = ?)
-      ORDER BY l.issue_id ASC, l.label ASC, l.created_at ASC`,
-  ).all(projectId) as LabelRow[];
+      WHERE l.label = ?
+        AND l.issue_id IN (SELECT id FROM ledger_issues WHERE project_id = ?)`,
+  ).all(label, projectId) as LabelRow[]).map((row) => [row.issue_id, row]));
   const labelEvents = db.prepare(
     `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
       WHERE e.entity_type = 'issue'
-        AND e.entity_id IN (SELECT id FROM ledger_issues WHERE project_id = ?)
         AND e.event_type = 'label.updated'
+        AND json_extract(e.payload_json, '$.label') = ?
+        AND e.entity_id IN (SELECT id FROM ledger_issues WHERE project_id = ?)
       ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
-  ).all(projectId) as LabelEventRow[];
-  const eventsByIssueLabel = new Map<string, LabelEventRow[]>();
+  ).all(label, projectId) as LabelEventRow[];
+  const eventsByIssue = new Map<string, LabelEventRow[]>();
   for (const event of labelEvents) {
-    const payload = parseJsonObject(event.payload_json);
-    const label = typeof payload.label === "string" ? payload.label.trim() : "";
-    if (!label || !issueById.has(event.entity_id)) continue;
-    const key = issueLabelKey(event.entity_id, label);
-    const events = eventsByIssueLabel.get(key) ?? [];
-    events.push(event);
-    eventsByIssueLabel.set(key, events);
+    if (issueById.has(event.entity_id)) appendTo(eventsByIssue, event.entity_id, event);
   }
 
-  const keys = new Set<string>([
-    ...labelRows.map((row) => issueLabelKey(row.issue_id, row.label)),
-    ...eventsByIssueLabel.keys(),
-  ]);
-  const intervalsByLabel = new Map<string, TimelineLabelMembershipInterval[]>();
-  const rowByKey = new Map(labelRows.map((row) => [issueLabelKey(row.issue_id, row.label), row]));
-
-  for (const key of keys) {
-    const row = rowByKey.get(key);
-    const events = eventsByIssueLabel.get(key) ?? [];
-    const [issueId, label] = splitIssueLabelKey(key);
+  const intervals: TimelineLabelMembershipInterval[] = [];
+  for (const issueId of new Set([...rowByIssue.keys(), ...eventsByIssue.keys()])) {
     const issue = issueById.get(issueId);
     if (!issue) continue;
-    const intervals = intervalsForIssueLabel({ issue, label, row, events });
-    const labelIntervals = intervalsByLabel.get(label) ?? [];
-    labelIntervals.push(...intervals);
-    intervalsByLabel.set(label, labelIntervals);
+    intervals.push(...intervalsForIssueLabel({
+      issue,
+      label,
+      row: rowByIssue.get(issueId),
+      events: eventsByIssue.get(issueId) ?? [],
+    }));
   }
+  return intervals.sort(compareLabelIntervals);
+}
 
-  for (const intervals of intervalsByLabel.values()) intervals.sort(compareLabelIntervals);
-  return intervalsByLabel;
+export function appendTo<Key, Value>(map: Map<Key, Value[]>, key: Key, value: Value): void {
+  const values = map.get(key);
+  if (values) values.push(value);
+  else map.set(key, [value]);
 }
 
 type LabelRow = {
@@ -261,16 +258,6 @@ function intervalsForIssueLabel(input: {
   return intervals
     .filter((interval) => interval.end === null || interval.start <= interval.end)
     .sort(compareLabelIntervals);
-}
-
-function issueLabelKey(issueId: string, label: string): string {
-  return `${issueId}\x1f${label}`;
-}
-
-function splitIssueLabelKey(key: string): [string, string] {
-  const separator = key.indexOf("\x1f");
-  if (separator === -1) return [key, ""];
-  return [key.slice(0, separator), key.slice(separator + 1)];
 }
 
 export function compareLabelIntervals(

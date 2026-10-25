@@ -25,7 +25,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 216;
+export const BASELINE_SCHEMA_VERSION = 217;
 
 // Issue 08b4426 — a blob is named by a prefix of its id or of its content
 // hash, and short refs for a page of blobs are found by prefix ranges over
@@ -88,6 +88,18 @@ export const AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_unacknowledged
     ON auth_requests(status)
     WHERE acknowledged_by IS NULL`;
+
+// Issue 55e70a6 — Timeline reads an issue's events of the selected types, and
+// a label filter reads the membership history of one label, without touching
+// an issue's other events. The ledger writes trimmed labels only.
+export const ISSUE_EVENT_READ_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_ledger_events_issue_type
+    ON ledger_events(entity_id, event_type)
+    WHERE entity_type = 'issue'`,
+  `CREATE INDEX idx_ledger_events_issue_label
+    ON ledger_events(json_extract(payload_json, '$.label'), entity_id, occurred_at, observed_at)
+    WHERE entity_type = 'issue' AND event_type = 'label.updated'`,
+];
 
 // Issue effe9ef — the Chat sidebar scans every top-level conversation on each
 // request. The partial index covers every column that scan reads, so it never
@@ -616,6 +628,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_ledger_events_entity\n        ON ledger_events(entity_type, entity_id, occurred_at)",
   "CREATE INDEX idx_ledger_events_occurred\n        ON ledger_events(occurred_at DESC)",
   ...PROJECT_ISSUE_READ_INDEX_SQL,
+  ...ISSUE_EVENT_READ_INDEX_SQL,
   "CREATE INDEX idx_ledger_change_log_event\n        ON ledger_change_log(event_id)",
   "CREATE INDEX idx_ledger_issue_aliases_alias\n        ON ledger_issue_aliases(alias)",
   "CREATE INDEX idx_ledger_issue_aliases_issue\n        ON ledger_issue_aliases(issue_id)",

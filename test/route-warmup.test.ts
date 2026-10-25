@@ -76,6 +76,7 @@ const WARM_TIMELINE = {
     repeated_reference_target_issue_ids: [], multi_root_issue_ids: [], cycles: [], depth_limits: [],
     filtered_targets: [], missing_expansions: [],
   },
+  page: { row_offset: 0, next_row_offset: null },
 };
 
 /** Responses by path pattern; anything else answers `[]`. */

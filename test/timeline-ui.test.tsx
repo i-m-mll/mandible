@@ -254,6 +254,16 @@ function projectProjection(
   });
 }
 
+/** One response of `POST /api/timeline/project`; a single complete page unless `page` says otherwise. */
+function timelineResponse(
+  body: ProjectTimelineProjection,
+  page: { row_offset: number; next_row_offset: number | null } = { row_offset: 0, next_row_offset: null },
+): Response {
+  return new Response(JSON.stringify({ ...body, page }), {
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promise<ProjectTimelineProjection>>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
     const next = responses.shift() ?? projection();
@@ -261,9 +271,7 @@ function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promi
       if (init?.signal?.aborted) {
         throw new DOMException('Aborted', 'AbortError');
       }
-      return new Response(JSON.stringify(body), {
-        headers: { 'content-type': 'application/json' },
-      });
+      return timelineResponse(body);
     });
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -499,6 +507,31 @@ describe('TimelineView', () => {
     });
   });
 
+  it('renders a projection only once every page has loaded, and reloads when the rows change between pages', async () => {
+    const whole = projection();
+    const firstPage = projection({ events: [], links: [] });
+    const lastPage = projection({ links: [] });
+    const changedRows = projection({ rows: [...whole.rows, { ...whole.rows[0], id: 'row-new' }], events: [] });
+    const pages = [
+      timelineResponse(firstPage, { row_offset: 0, next_row_offset: 1 }),
+      timelineResponse(changedRows, { row_offset: 1, next_row_offset: null }),
+      timelineResponse(firstPage, { row_offset: 0, next_row_offset: 1 }),
+      timelineResponse(lastPage, { row_offset: 1, next_row_offset: null }),
+    ];
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => (
+      Promise.resolve(pages.shift() ?? timelineResponse(projection()))
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).row_offset)).toEqual([0, 1, 0, 1]);
+  });
+
   it('preserves an explicitly empty event-type selection across refetch and reload', async () => {
     const storageKey = 'mandible_timeline_view_state:v1:mandible';
     window.localStorage.setItem(storageKey, JSON.stringify({ visibleEventTypes: [] }));
@@ -629,9 +662,7 @@ describe('TimelineView', () => {
       const body = JSON.parse(String(init?.body));
       return new Promise<Response>((resolve) => {
         const finish = (projectionBody: ProjectTimelineProjection) => {
-          resolve(new Response(JSON.stringify(projectionBody), {
-            headers: { 'content-type': 'application/json' },
-          }));
+          resolve(timelineResponse(projectionBody));
         };
         if (body.project_ref === 'mandible') {
           resolveMandible = () => finish(mandible);
