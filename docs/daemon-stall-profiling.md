@@ -47,6 +47,22 @@ Measure only when the machine is quiet: check `uptime` and require the 1-minute
 load average to be below the core count (`sysctl -n hw.ncpu`). On a saturated
 machine the daemon is starved and every timing is noise.
 
+## Recover convergence after a repair
+
+After fixing a condition that caused a post-merge hook to fail, run
+`mandible auth retry-convergence <request> [--hook <id>] [--json]` to rerun
+its snapshotted command without repeating the merge. `complete` confirms
+convergence; `pending` means the retry was admitted and is still running;
+`failed` exits nonzero. If the daemon disappears during a self-update, the
+outcome is unconfirmed. Inspect `mandible auth show <request>` once it returns
+before deciding whether another explicit retry is needed. The CLI never
+reposts automatically.
+
+`mandible auth handoff recover <request>` is verification-only: use it when
+the exact merged generation is already live. It observes that generation and
+settles the failed handoff without rerunning a hook, build, installer, restart
+or merge. A handoff that still needs repair must be repaired before recovery.
+
 ## Probe stalls on any daemon
 
 ```sh
