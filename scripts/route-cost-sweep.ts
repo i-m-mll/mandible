@@ -564,14 +564,14 @@ export function readFixtures(dbPath: string) {
     if (versions.length < 2) throw new Error("fixture artifact versions: the most-versioned artifact has fewer than two versions");
     const bigConversations = (db.prepare(`
       SELECT c.id, c.session_id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
-       WHERE c.started_at >= datetime('now', '-3 days')
-       ORDER BY c.block_count DESC LIMIT 200`).all() as (IndexedSourceRow & { id: string; session_id: string })[])
+       AND c.started_at >= datetime('now', '-3 days')
+       ORDER BY c.block_count DESC LIMIT 200`).all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string; session_id: string })[])
       .filter(sourceIsIndexed).slice(0, 1);
     if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations is fully indexed and idle for at least an hour");
     const recentConversation = (db.prepare(`
       SELECT c.id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
-       WHERE c.parent_conversation_id IS NULL ORDER BY c.started_at DESC LIMIT 200`)
-      .all() as (IndexedSourceRow & { id: string })[]).find(sourceIsIndexed);
+       AND c.parent_conversation_id IS NULL ORDER BY c.started_at DESC LIMIT 200`)
+      .all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string })[]).find(sourceIsIndexed);
     if (!recentConversation) throw new Error("fixture recent conversation: none of the 200 newest conversations is fully indexed and idle for at least an hour");
     const consoleSession = maybe<{ id: string }>("SELECT id FROM console_sessions ORDER BY updated_at DESC LIMIT 1");
     const spawn = maybe<{ id: string }>("SELECT id FROM conversation_spawn_requests ORDER BY updated_at DESC LIMIT 1");
@@ -1008,18 +1008,21 @@ function openIssueStatus(dbPath: string, shortIds: string[]): Map<string, string
  * mtime of their source file, the facts conversation freshness checks, and
  * require at least an hour without changes to avoid active provider logs.
  */
+const FIXTURE_IDLE_MS = 60 * 60 * 1_000;
 const INDEXED_SOURCE_COLUMNS = "c.source_path, v.byte_length, v.file_mtime_ms, state.byte_offset";
+/** Candidates whose recorded facts already qualify, so a row limit cannot exclude every idle one. */
 const INDEXED_SOURCE_JOINS = `FROM conversations c
   JOIN conversation_sources s ON s.conversation_id = c.id
   JOIN conversation_source_versions v ON v.id = s.current_version_id
-  JOIN conversation_ingest_state state ON state.file_path = c.source_path`;
+  JOIN conversation_ingest_state state ON state.file_path = c.source_path
+  WHERE v.byte_length = state.byte_offset AND v.file_mtime_ms <= @idle_before`;
 interface IndexedSourceRow { source_path: string | null; byte_length: number | null; file_mtime_ms: number | null; byte_offset: number | null }
 export function sourceIsIndexed(row: IndexedSourceRow): boolean {
   if (!row.source_path) return false;
   try {
     const { byteLength, fileMtimeMs } = numericSourceExtent(fs.statSync(row.source_path, { bigint: true }));
     return byteLength === row.byte_length && byteLength === row.byte_offset && fileMtimeMs === row.file_mtime_ms
-      && Date.now() - fileMtimeMs >= 60 * 60 * 1_000;
+      && Date.now() - fileMtimeMs >= FIXTURE_IDLE_MS;
   } catch {
     return false;
   }

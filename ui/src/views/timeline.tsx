@@ -980,6 +980,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
 
   const refreshTimeline = useLiveLoad((signal) => {
     if (isPersistedDetailFresh('timeline', timelineRequestKey) && lastProjectionRef.current) {
+      setError(null);
       setStatus('ready');
       return undefined;
     }
@@ -995,6 +996,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
         writePersistedDetail('timeline', timelineRequestKey, next, undefined, detailStarted);
         lastProjectionRef.current = next;
         setProjection(next);
+        setError(null);
         setStatus('ready');
       })
       .catch((err) => {
