@@ -721,7 +721,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/check", effects: ["ledger:write","files:preview","process:external"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/artifacts/check", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/snapshot", async (req, res) => {
     try {

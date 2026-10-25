@@ -89,9 +89,9 @@ it('yields to the event loop during every Git read in artifact check', async () 
   } finally { fs.rmSync(stub.dir, { recursive: true, force: true }); }
 });
 
-it('declares the artifact check process effect in the operation catalog', () => {
+it('allows artifact checks within the standard preview effect ceiling', () => {
   const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
   registerProviderRoutes(router);
   expect(router.operationCatalog('test').routes.find(route => route.path === '/api/artifacts/check')?.effects)
-    .toContain('process:external');
+    .toEqual(['ledger:write', 'files:preview']);
 });

@@ -16,6 +16,11 @@ import { readBuildRevision } from './build-revision.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sweepWorkDirectory = 'route-cost-work';
+export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
+export function routeCostSweepArgs(run) {
+  return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory)];
+}
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -210,7 +215,7 @@ async function main() {
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' })) });
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: acceptanceOwnedOutputs });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
@@ -237,7 +242,7 @@ async function main() {
     const routeCostFile = path.join(run, 'route-cost.json');
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
-    const sweepFailure = await runSupervisedCommand(runtime, ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json'], { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
+    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
     result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
     if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').slice(-5).join(' | ')}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
