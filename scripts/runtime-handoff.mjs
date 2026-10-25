@@ -61,7 +61,10 @@ function requireDesktopRunning(binding) {
 async function restoreDesktop(journal) {
   const b = journal.binding;
   if (!b.desktopWasRunning) return;
-  if (!desktopRunning(b.nativeApp)) {
+  // The installer leaves a running desktop alone during a handoff, so one
+  // relaunch is owed until it is recorded: a desktop still running before then
+  // is the old shell. After that, relaunch only a desktop that has stopped.
+  if (!journal.stages?.desktopRelaunch || !desktopRunning(b.nativeApp)) {
     const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
     try {
       await runStage('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], {

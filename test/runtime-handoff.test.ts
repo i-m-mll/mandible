@@ -216,15 +216,15 @@ it('runs real recovery observation through complete log and journal evidence', a
   ]);
 });
 
-it.each(['running', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const)('requires the desktop before accepting recovery: %s', async state => {
+it.each(['running', 'running-unreplaced', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const)('requires the desktop before accepting recovery: %s', async state => {
   const processStart = new Date(Date.now() - 2000).toISOString();
   const f = recoveryFixture(startedAt => [startupLine(startedAt)], processStart);
   const binding = { ...f.failed.binding, desktopWasRunning: true };
-  const failed = { ...f.failed, binding, bindingDigest: bindingDigest(binding), stages: { desktopRelaunch: { completedAt: 1 } } };
+  const failed = { ...f.failed, binding, bindingDigest: bindingDigest(binding), stages: state === 'running-unreplaced' ? {} : { desktopRelaunch: { completedAt: 1 } } };
   const dir = handoffDirectory(binding.home, binding.requestId, binding.executionId);
   fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(failed));
   fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: failed.bindingDigest }));
-  let running = state === 'running';
+  let running = state === 'running' || state === 'running-unreplaced';
   const spawnSync = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
   vi.mocked(childProcess.spawnSync).mockImplementation(((binary: string, args: string[], options: any) => {
     if (binary === '/bin/ps' && args.includes(String(process.pid))) return { status: 0, stdout: processStart };
@@ -252,7 +252,7 @@ it.each(['running', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const
   } else {
     const recovered = await observe();
     expect(recovered.recovery.receipt).toBeDefined();
-    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.stages.desktopRelaunch.completedAt).toEqual(state === 'closed' ? expect.any(Number) : 1);
+    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.stages.desktopRelaunch.completedAt).toEqual(state === 'running' ? 1 : expect.any(Number));
     // Receipt verification is the acknowledgment gate, including after acceptance.
     const complete = { ...recovered, phase: 'complete', receipt: recovered.recovery.receipt };
     running = false;
