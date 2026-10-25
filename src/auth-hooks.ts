@@ -308,6 +308,7 @@ function recoveryAccepted(run: AuthHookRun, journal: RuntimeHandoffJournal): boo
 export class AuthHookManager {
   private readonly db: Db;
   private readonly handoffClient?: RuntimeHandoffClient;
+  private readonly serviceDefinitionInspector: typeof inspectServiceDefinitions;
   /**
    * Requests whose rebuild handoff was observed settled, valued by the run's
    * version at that observation. A settled handoff becomes unsettled only
@@ -322,9 +323,10 @@ export class AuthHookManager {
    */
   private readonly reportedHandoffFailures = new Map<string, Set<string>>();
 
-  constructor(db?: Db, options: { handoffClient?: RuntimeHandoffClient } = {}) {
+  constructor(db?: Db, options: { handoffClient?: RuntimeHandoffClient; serviceDefinitionInspector?: typeof inspectServiceDefinitions } = {}) {
     this.db = db ?? getDb();
     this.handoffClient = options.handoffClient;
+    this.serviceDefinitionInspector = options.serviceDefinitionInspector ?? inspectServiceDefinitions;
   }
 
   private handoffPath(run: AuthHookRun): string {
@@ -358,7 +360,7 @@ export class AuthHookManager {
     const lock = this.runtimeHandoffLock();
     if (lock) return { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(lock) };
     if (!inspectDefinitions) return null;
-    const inspection = await inspectServiceDefinitions(serviceInstallationContext({ home: getMandibleHome() }));
+    const inspection = await this.serviceDefinitionInspector(serviceInstallationContext({ home: getMandibleHome() }));
     // A handoff admitted while inspection was in flight still takes priority.
     const currentLock = this.runtimeHandoffLock();
     if (currentLock) return { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(currentLock) };

@@ -1,10 +1,10 @@
-import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
+import type { RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
 import { mintApiToken } from "../src/client-auth/tokens.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
@@ -57,6 +57,12 @@ function protectedState() {
     files: fs.readFileSync(path.join(repo, "shared.txt"), "utf8"), merge: fs.existsSync(path.join(repo, ".git", "MERGE_HEAD")) };
 }
 
+/** Approve, then wait until the execution reaches its executor: only a running execution posts a result. */
+async function approveToExecutor(id: string) {
+  await queue.approveWithOperatorProof(id, operatorId);
+  await waitUntil(() => (db.prepare("SELECT last_executed_at FROM auth_requests WHERE id = ?").get(id) as { last_executed_at: number | null }).last_executed_at, "the approved execution to reach its executor");
+}
+
 describe("protected delivery evidence", () => {
   beforeEach(prepareMergeFixture);
   it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
@@ -66,7 +72,7 @@ describe("protected delivery evidence", () => {
     let journal: RuntimeHandoffJournal | null = null;
     let receiptValid = false;
     let acknowledgements = 0;
-    const hooks = new AuthHookManager(db, { handoffClient: {
+    const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: async (home) => home === installationHome ? journal : null,
       readRuntimeHandoffPhase: async (home) => home === installationHome ? journal?.phase : undefined,
       verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
@@ -76,7 +82,7 @@ describe("protected delivery evidence", () => {
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, "handoff-close");
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
@@ -116,11 +122,11 @@ describe("protected delivery evidence", () => {
 
   it("runs frozen native post-hooks once with original arguments and refuses changed hook bytes", async () => {
     (await queue.dispose());
-    const hooks = new AuthHookManager(db);
+    const hooks = createInstalledServiceHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     for (const name of ["post-commit", "post-merge"]) fs.writeFileSync(path.join(repo, ".git", "hooks", name), `#!/bin/sh\nprintf '${name}:%s:%s:%s\\n' "$#" "\${1-}" "$(git rev-parse ORIG_HEAD)" >> .git/native-audit\n`, { mode: 0o755 });
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 0, publication.output));
     await hooks.runPending((await queue.getRequest(request.id))!);
@@ -139,11 +145,11 @@ describe("protected delivery evidence", () => {
 
   it("reconstructs only the frozen signed first-upgrade candidate and refuses binding or checkout drift", async () => {
     (await queue.dispose());
-    const hooks = new AuthHookManager(db);
+    const hooks = createInstalledServiceHookManager(db);
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
@@ -195,7 +201,7 @@ describe("protected delivery evidence", () => {
     const project = createLedgerProject(db, repo);
     const issue = createLedgerIssue(db, project.project.id, "closure-proof");
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const before = protectedState();
     const result = (await queue.setResult(request.id, 0, "ok"));
     expect(result.exit_code).not.toBe(0);
@@ -321,7 +327,7 @@ describe('runtime convergence recovery', () => {
     });
     const recheck = vi.fn(() => {});
     const persist = vi.fn((current: RuntimeHandoffJournal) => { Object.assign(journal!, current); });
-    const hooks = new AuthHookManager(db, { handoffClient: {
+    const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: () => journal,
       readRuntimeHandoffPhase: () => journal?.phase,
       verifyRuntimeHandoffReceipt: async () => {},
@@ -341,7 +347,7 @@ describe('runtime convergence recovery', () => {
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, 'builtin-mandible-rebuild');
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, 'recover-close');
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 0, publication.output));
     await (queue as any).finalizerQueue.drain();

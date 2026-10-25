@@ -1,5 +1,5 @@
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
-import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createInstalledServiceHookManager, createServiceDefinitionInspector, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 // Issue a09b4d2 — a runtime handoff lock blocks publication while preserving
 // queue admission and the review work that can safely happen before release.
@@ -10,7 +10,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
@@ -19,7 +18,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
-import * as serviceDefinitions from "../scripts/service-definitions.mjs";
+import type * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
@@ -37,6 +36,7 @@ let projectId: string;
 let credentialId: string;
 let issue: ReturnType<typeof createLedgerIssue>;
 let runs: AcceptanceRun[];
+let inspector: ReturnType<typeof createServiceDefinitionInspector>;
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
 function holdHandoffLock(phase = "failed") {
@@ -91,7 +91,7 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
 }
 
 beforeEach(() => {
-  vi.spyOn(serviceDefinitions, "inspectServiceDefinitions").mockResolvedValue({ ok: true, observations: [] });
+  inspector = createServiceDefinitionInspector();
   repo = createAuthCheckRepo();
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
@@ -108,7 +108,7 @@ beforeEach(() => {
   credentialId = addCredential(db, operatorId, { type: "api_token", fingerprint: `self-update-${randomUUID()}` }).id;
   issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
   runs = [];
-  queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
+  queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
     executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
@@ -188,7 +188,6 @@ describe("candidate acceptance gate", () => {
       fields: ["ProgramArguments", "EnvironmentVariables.PATH"], message: "Private backend definition differs from the loaded job.",
       repairCommand: "bun scripts/local-runtime.mjs restart",
     };
-    const inspector = vi.mocked(serviceDefinitions.inspectServiceDefinitions);
     inspector.mockResolvedValue({ ok: false, refusal });
     setDb(db);
     const router = authenticatedTestRouter(getOperator(db)!);
@@ -395,7 +394,7 @@ describe("candidate acceptance gate", () => {
     const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     (await queue.dispose());
-    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
     expect(db.prepare("SELECT status, error FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at, rowid").all(request.id))
@@ -411,7 +410,7 @@ describe("rebuild failure", () => {
     const restart = vi.fn();
     db.prepare("UPDATE auth_hooks SET repo_pattern = '*', command = ? WHERE id = 'builtin-mandible-rebuild'")
       .run("printf 'Another handoff owns this installation; preserving it.\\n' >&2; exit 1");
-    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false, restartFn: restart,
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false, restartFn: restart,
       broadcast: (event) => { events.push(event); },
       restartAvailability: { markRebuildStarted: (id = "") => id, markShutdownStarted: () => true, markRebuildFailed: (id) => { failed.push(id); return true; } },
       executor: async (options) => publishFixtureExecution(queue, options) });

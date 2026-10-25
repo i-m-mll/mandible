@@ -30,7 +30,8 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, expect } from "vitest";
+import { afterAll, afterEach, expect, vi } from "vitest";
+import type { inspectServiceDefinitions } from "../../scripts/service-definitions.mjs";
 
 import { AuthHookManager } from "../../src/auth-hooks.js";
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -485,6 +486,15 @@ export function advanceMainViaAuthorizedMerge(
 }
 
 // --- sessions and work units -----------------------------------------------
+
+/** Model an installed service state without inspecting the host's launchd jobs. */
+export function createServiceDefinitionInspector() {
+  return vi.fn<typeof inspectServiceDefinitions>().mockResolvedValue({ ok: true, observations: [] });
+}
+
+export function createInstalledServiceHookManager(db: Db, options: ConstructorParameters<typeof AuthHookManager>[1] = {}): AuthHookManager {
+  return new AuthHookManager(db, { serviceDefinitionInspector: createServiceDefinitionInspector(), ...options });
+}
 
 export function createNoopHookManager(): AuthHookManager {
   return {
