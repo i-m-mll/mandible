@@ -253,6 +253,17 @@ export function convergenceStateFromRuns(runs: readonly AuthHookRun[]): AuthConv
   return "complete";
 }
 
+export function isRuntimeHandoffPending(result: Pick<AuthHookExecutionResult, "hook_id" | "exit_code" | "output">): boolean {
+  return result.hook_id === MANDIBLE_REBUILD_HOOK_ID && result.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(result.output);
+}
+
+export function formatHookExecutionResult(result: AuthHookExecutionResult, retry = false): string {
+  const status = isRuntimeHandoffPending(result)
+    ? "handoff pending: the new daemon is starting; convergence will be reported"
+    : result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
+  return `[hook: ${result.label}] ${retry ? "retry " : ""}${status} (${result.duration_ms}ms)\n`;
+}
+
 export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSummary {
   return {
     hook_id: run.hook_id,
@@ -262,6 +273,7 @@ export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSu
     attempts: run.attempts,
     max_attempts: run.max_attempts,
     exit_code: run.exit_code,
+    failure: run.state === "failed" ? run.output.trim().split("\n").at(-1)?.trim() || null : null,
     command_digest: run.command_digest,
     started_at: run.started_at,
     finished_at: run.finished_at,
@@ -319,7 +331,7 @@ export class AuthHookManager {
   }
 
   private hasRuntimeHandoff(run: AuthHookRun): boolean {
-    return run.hook_id === "builtin-mandible-rebuild" && (fs.existsSync(this.handoffPath(run)) || run.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(run.output) || run.state === "complete" && /MANDIBLE_RUNTIME_(?:HANDOFF|RECOVERY)_ACCEPTED:[0-9a-f]{64}/.test(run.output));
+    return run.hook_id === MANDIBLE_REBUILD_HOOK_ID && (fs.existsSync(this.handoffPath(run)) || isRuntimeHandoffPending(run) || run.state === "complete" && /MANDIBLE_RUNTIME_(?:HANDOFF|RECOVERY)_ACCEPTED:[0-9a-f]{64}/.test(run.output));
   }
 
   /** Whether merging this repo self-updates the running installation. */
@@ -805,7 +817,7 @@ export class AuthHookManager {
       },
     ];
     const exhausted = attempt >= run.max_attempts;
-    const handoffPending = run.hook_id === "builtin-mandible-rebuild" && result.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(result.output);
+    const handoffPending = isRuntimeHandoffPending(result);
     const nextState: AuthHookRunState = ok ? "complete" : handoffPending ? "pending" : exhausted ? "failed" : "pending";
     this.db
       .prepare(

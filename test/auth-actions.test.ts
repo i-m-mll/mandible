@@ -1,16 +1,17 @@
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
-import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
+import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, createNoopHookManager, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 
 import fs from "node:fs";
 
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AUTH_REQUEST_ACTION_KINDS } from "../src/contracts.js";
 import type { Db } from "../src/db.js";
+import { longestEventLoopBlockMs } from "./helpers/event-loop-blocking.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -327,6 +328,88 @@ describe("auth request action execution", () => {
       expect(queue.listActions(request.id)).toEqual(actions);
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
     } finally { (await queue?.dispose()); db.close(); }
+  });
+
+  it.each(["startup", "idle"])("resumes an interrupted closure release exactly once on the %s sweep", async (sweep) => {
+    const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "bulk-close", "bulk-close");
+      const targets = [issue, ...Array.from({ length: 79 }, (_, index) => createSharedLedgerIssue(db, {
+        project_id: issue.project_id, title: `Closure ${index}`, kind: "feature",
+      }))];
+      let withheld = true;
+      const hooks = createNoopHookManager();
+      hooks.convergence = () => ({ state: withheld ? "pending" : "complete", hooks: [] });
+      hooks.listRuns = () => [];
+      hooks.listRequestIdsWithRunnableHooks = () => [];
+      queue = new AuthQueue({ db, hookManager: hooks, now: () => 40_000, backgroundMaintenance: false });
+      const request = await submitActionMerge(queue, {
+        type: "merge", command: "mandible auth merge feature/bulk-close --into main",
+        title: "Release bulk closures", cwd: repoRoot, repo: path.basename(repoRoot),
+        actions: targets.map((target) => ({
+          kind: "issue_close", target_issue_ref: target.short_id,
+          payload: { reason_comment: "Delivered" },
+        })),
+      });
+      await approvePausedFixtureRequest(queue, request.id);
+      await completeFixturePublication(queue, request.id);
+      await queue.drainFinalizers();
+      expect(queue.listActions(request.id).every((action) => action.state === "staged")).toBe(true);
+      withheld = false;
+      const current = (await queue.getRequest(request.id))!;
+      expect(current.merge_finalized_at).not.toBeNull();
+      const interrupted = queue;
+      const apply = (interrupted as any).applyDeferredLedgerAction.bind(interrupted);
+      let stopped: Promise<void> | undefined;
+      (interrupted as any).applyDeferredLedgerAction = (request: unknown, action: { ordinal: number }) => {
+        const result = apply(request, action);
+        if (action.ordinal === 3) setImmediate(() => { stopped = interrupted.dispose(); });
+        return result;
+      };
+      // Force each slice to yield so disposal occurs after a committed action,
+      // rather than relying on host speed to hit the 20 ms budget.
+      let clock = 0;
+      const timing = vi.spyOn(performance, "now").mockImplementation(() => clock += 21);
+      try { await (interrupted as any).releaseWithheldClosures(current); }
+      finally { timing.mockRestore(); }
+      await stopped;
+      expect(interrupted.listActions(request.id).filter((action) => action.state === "applied")).toHaveLength(3);
+      expect(interrupted.listActions(request.id).filter((action) => action.state === "staged")).toHaveLength(targets.length - 3);
+
+      const longest = await longestEventLoopBlockMs(async () => {
+        queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: sweep === "startup" });
+        if (sweep === "startup") await (queue as any).startupRecovery;
+        else await (queue as any).convergeWhileIdle();
+      });
+      console.info(`Bulk closure longest turn: ${longest.toFixed(1)} ms`);
+      expect(longest).toBeLessThan(100);
+      const actions = queue.listActions(request.id);
+      expect(actions).toHaveLength(targets.length);
+      expect(actions.every((action) => action.state === "applied")).toBe(true);
+      await (queue as any).applyLedgerCompletionForRequest(current);
+      await (queue as any).convergeWhileIdle();
+      await (queue as any).releaseWithheldClosures(current);
+      expect(queue.listActions(request.id)).toEqual(actions);
+      const store = new LedgerStore(db);
+      for (const target of targets) {
+        expect(store.getIssue(target.id)).toMatchObject({ status: "closed", resolution: "delivered" });
+        expect(db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").all(target.id))
+          .toEqual([{ body: "Delivered" }]);
+        expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'")
+          .get(target.id)).toEqual({ count: 1 });
+        expect(db.prepare(`SELECT event_type, COUNT(*) AS count FROM ledger_events
+          WHERE entity_id = ? AND json_extract(payload_json, '$.issue_id') = ?
+            AND event_type IN ('auth_request.completed', 'auth_request.issue_linked') GROUP BY event_type`)
+          .all(request.id, target.id)).toEqual([
+            { event_type: "auth_request.completed", count: 1 },
+            { event_type: "auth_request.issue_linked", count: 1 },
+          ]);
+        expect(db.prepare(`SELECT COUNT(*) AS count FROM ledger_events
+          WHERE event_type = 'commit.issue_linked' AND json_extract(payload_json, '$.issue_id') = ?`)
+          .get(target.id)).toEqual({ count: 1 });
+      }
+    } finally { await queue?.dispose(); db.close(); }
   });
 
   it("creates resolves operational links for staged issue_close actions", async () => {

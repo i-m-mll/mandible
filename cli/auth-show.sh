@@ -39,4 +39,10 @@ printf '%s\n' "$response" | jq -r '
       ($a.unexpected[] | "    \(.sha[0:10]) \(.subject) (\(if .signer then "signed by \(.signer)" else "unsigned" end))"),
       ($a.missing_merges[] | "    \(.[0:10]) recorded Mandible merge no longer in the branch history"),
       (if $a.truncated then "    only the newest \($a.checked_commits) commits were checked" else empty end)
-    end)'
+    end),
+  (if (.convergence.state // "none") == "none" then empty
+   else "", "Convergence: \(.convergence.state)" + (
+     if .convergence.state == "complete" then " (post-merge hooks finished; the merge is live)"
+     elif .convergence.state == "pending" then " (post-merge hooks or the runtime handoff are still running)"
+     else " (" + ([.convergence.hooks[] | select(.required and .state == "failed") | (if (.label // "") != "" then .label else .hook_id end) + ": " + (.failure // (if .exit_code == null then "timed out" else "exit \(.exit_code)" end))] | join("; ")) + ")" end)
+   end)'

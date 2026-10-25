@@ -1,3 +1,4 @@
+import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
@@ -275,8 +276,6 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
 
 // Bug: f3dbb3e — mapWorkUnitRow and work-unit liveness live in work-unit-utils.ts
 
-/** Longest event-loop turn a bulk acknowledgement aims to take. */
-const BULK_ACK_TURN_BUDGET_MS = 20;
 /** Rows per transaction; the commit, not the UPDATE, writes the pages. */
 const BULK_ACK_ROWS_PER_COMMIT = 8;
 
@@ -299,15 +298,12 @@ async function acknowledgeResolvedAuthRequests(db: Db, ackValue: string): Promis
   const commit = db.transaction((batch: typeof resolutions) => {
     for (const row of batch) acknowledge.run(ackValue, row.id, row.resolved_at);
   });
-  let next = 0;
-  while (next < resolutions.length) {
-    const deadline = performance.now() + BULK_ACK_TURN_BUDGET_MS;
-    do {
-      commit(resolutions.slice(next, next + BULK_ACK_ROWS_PER_COMMIT));
-      next += BULK_ACK_ROWS_PER_COMMIT;
-    } while (next < resolutions.length && performance.now() < deadline);
-    if (next < resolutions.length) await new Promise<void>((resolve) => setImmediate(resolve));
+  function* batches() {
+    for (let next = 0; next < resolutions.length; next += BULK_ACK_ROWS_PER_COMMIT) {
+      yield resolutions.slice(next, next + BULK_ACK_ROWS_PER_COMMIT);
+    }
   }
+  await forEachInEventLoopSlices(batches(), commit);
 }
 
 export function registerInboxRoutes(

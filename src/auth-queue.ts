@@ -1,3 +1,4 @@
+import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import type { ProtectedRootDirtyAction } from "./auth-protected-root-dirty-action.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
@@ -74,7 +75,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -100,6 +101,7 @@ import { resolveId } from "./entity-refs.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
+  applyAuthRequestLedgerClosure,
   applyWithheldAuthRequestClosures,
   recordAuthRequestMergeSucceededFact,
   resolveOperationalIssueRef,
@@ -5721,9 +5723,8 @@ export class AuthQueue {
           this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${hookLabel}] ${text}`, timestamp: Date.now() });
         }, { reusePlan: true });
         for (const result of hookResults) {
-          const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
           if (!this.executionIsCurrent(request.id, execution)) return;
-          this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${result.label}] ${status} (${result.duration_ms}ms)\n`, timestamp: Date.now() });
+          this.handleOutput({ request_id: request.id, stream: "stderr", text: formatHookExecutionResult(result), timestamp: Date.now() });
         }
       } catch (error) {
         authLog("warn", "auth_hook_execution_failed", { subsystem: "auth", auth_request_id: request.id, error: errorMessage(error) ?? String(error) });
@@ -5840,9 +5841,10 @@ export class AuthQueue {
   private async releaseWithheldClosures(request: AuthRequest): Promise<void> {
     const current = this.getRequestById(request.id);
     if (!current || current.status !== "completed" || current.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(current))) return;
+    const execution = this.executionToken(current.id);
     try {
       (await this.executeDeferredLedgerActions(current));
-      applyWithheldAuthRequestClosures(this.db, {
+      await applyWithheldAuthRequestClosures(this.db, {
         auth_request_id: current.id,
         repo_ref: current.repo ?? current.cwd ?? current.target_repo_root ?? null,
         merge_output: current.output,
@@ -5850,7 +5852,7 @@ export class AuthQueue {
         approval_lease_id: current.approval_lease_id,
         approved_by_user_id: current.approved_by_user_id,
         execution_evidence_id: current.execution_evidence_id,
-      });
+      }, () => this.assertExecution(current.id, execution));
     } catch (error) {
       authLog("warn", "auth_withheld_closure_release_failed", {
         subsystem: "auth",
@@ -5878,6 +5880,7 @@ export class AuthQueue {
       try {
         await this.reconcileRuntimeHandoffs();
         await this.runConvergenceSweep(limit);
+        await this.resumeDeferredLedgerActions();
       } finally {
         this.convergenceSweepInFlight = false;
       }
@@ -5885,6 +5888,26 @@ export class AuthQueue {
   }
 
   private convergenceSweepInFlight = false;
+
+  /** Interrupted releases come only from an earlier process, so one pass per process finds them all. */
+  private deferredLedgerActionsResumed = false;
+
+  private async resumeDeferredLedgerActions(): Promise<void> {
+    if (this.deferredLedgerActionsResumed || this.disposed || !this.isDbOpen() || !this.tableExists("auth_request_actions")) return;
+    this.deferredLedgerActionsResumed = true;
+    // The state/request index reads only unfinished actions, regardless of
+    // whether their hooks and background finalizers have already completed.
+    const rows = this.db.prepare(
+      "SELECT DISTINCT auth_request_id FROM auth_request_actions WHERE state = 'staged'",
+    ).all() as Array<{ auth_request_id: string }>;
+    for (const { auth_request_id } of rows) {
+      if (this.disposed || !this.isDbOpen()) return;
+      const request = this.getRequestById(auth_request_id);
+      if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0
+        || this.convergenceWithholdsClosures(request.id)) continue;
+      await this.releaseWithheldClosures(request);
+    }
+  }
 
   private async runConvergenceSweep(limit: number): Promise<void> {
     let ids: string[] = [];
@@ -5908,11 +5931,10 @@ export class AuthQueue {
           });
         });
         for (const result of results) {
-          const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
           this.handleOutput({
             request_id: request.id,
             stream: "stderr",
-            text: `[hook: ${result.label}] retry ${status} (${result.duration_ms}ms)\n`,
+            text: formatHookExecutionResult(result, true),
             timestamp: Date.now(),
           });
         }
@@ -6966,8 +6988,9 @@ export class AuthQueue {
     }
     this.assertObservation(request.id, observed);
     try {
+      const execution = this.executionToken(request.id);
       (await this.executeDeferredLedgerActions(request));
-      applyAuthRequestLedgerCompletion(this.db, {
+      await applyAuthRequestLedgerCompletion(this.db, {
         // Issue 27241e6 — a `resolves` link closes its issue here even when no
         // staged action exists, so the convergence gate has to cover this path
         // too, not only executeDeferredLedgerActions.
@@ -6986,7 +7009,7 @@ export class AuthQueue {
         approval_lease_id: request.approval_lease_id,
         approved_by_user_id: request.approved_by_user_id,
         execution_evidence_id: request.execution_evidence_id,
-      });
+      }, () => this.assertExecution(request.id, execution));
     } catch (error) {
       authLog("warn", "auth_ledger_completion_failed", {
         subsystem: "auth",
@@ -7000,10 +7023,11 @@ export class AuthQueue {
     const observed = this.observationToken(request.id, request);
     if ((await this.successfulMergeEvidenceFailure(request))) return;
     this.assertObservation(request.id, observed);
-    this.db.transaction(() => this.applyDeferredLedgerActions(request)).immediate();
+    const execution = this.executionToken(request.id);
+    await this.applyDeferredLedgerActions(request, () => this.assertExecution(request.id, execution));
   }
 
-  private applyDeferredLedgerActions(request: AuthRequest): void {
+  private async applyDeferredLedgerActions(request: AuthRequest, guard: () => void): Promise<void> {
     const persistedActions = this.tableExists("auth_request_actions")
       ? listAuthRequestActions(this.db, request.id)
       : [];
@@ -7013,25 +7037,34 @@ export class AuthQueue {
     // `releaseWithheldClosures` applies them once the hooks converge. The other
     // deferred actions (comments, worker status, labels) record what happened
     // and still run before convergence completes.
-    const withholdClosures = this.convergenceWithholdsClosures(request.id);
     const withheld: string[] = [];
-    for (const action of actions) {
+    await forEachInEventLoopSlices(actions, (snapshot) => {
+      guard();
+      const state = hasPersistedActions
+        ? this.db.prepare("SELECT state FROM auth_request_actions WHERE id = ? AND auth_request_id = ?")
+          .get(snapshot.id, request.id) as { state: AuthRequestAction["state"] } | undefined
+        : { state: snapshot.state };
+      if (!state) return;
+      const action = { ...snapshot, state: state.state };
+      const withholdClosures = this.convergenceWithholdsClosures(request.id);
       if (action.state === "vetoed") {
         this.removeActionResolveLink(request, action);
-        continue;
+        return;
       }
       if (action.state !== "staged") {
-        continue;
+        return;
       }
       if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
         withheld.push(action.target_issue_ref);
-        continue;
+        return;
       }
       try {
-        const outcome = this.applyDeferredLedgerAction(request, action);
-        if (!action.id.startsWith("legacy:")) {
-          this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
-        }
+        this.db.transaction(() => {
+          const outcome = this.applyDeferredLedgerAction(request, action);
+          if (!action.id.startsWith("legacy:")) {
+            this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
+          }
+        }).immediate();
       } catch (error) {
         if (!action.id.startsWith("legacy:")) {
           this.recordActionOutcome(
@@ -7048,7 +7081,7 @@ export class AuthQueue {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
+    });
     if (withheld.length > 0) {
       authLog("info", "auth_issue_closures_withheld", {
         subsystem: "auth",
@@ -7122,7 +7155,7 @@ export class AuthQueue {
             });
           }
         }
-        applyAuthRequestLedgerCompletion(this.db, {
+        applyAuthRequestLedgerClosure(this.db, {
           auth_request_id: request.id,
           repo_ref: repoRef,
           issue_closures: [action.target_issue_ref],
