@@ -54,6 +54,35 @@ function desktopRunning(app) {
     return command === `${app}/Contents/MacOS/mandible-app` || command?.startsWith(`${app}/Contents/MacOS/mandible-app `);
   });
 }
+function requireDesktopRunning(binding) {
+  if (binding.desktopWasRunning && !desktopRunning(binding.nativeApp)) throw new Error('Installed desktop did not remain running after relaunch.');
+}
+
+async function restoreDesktop(journal) {
+  const b = journal.binding;
+  if (!b.desktopWasRunning) return;
+  if (!desktopRunning(b.nativeApp)) {
+    const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
+    try {
+      await runStage('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], {
+        cwd: b.root,
+        env: { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(b) },
+        timeout: 15000,
+        log,
+      });
+    } catch (error) {
+      fs.appendFileSync(log, `${error.message}\n`);
+      throw new Error('Installed desktop could not be relaunched. The failed handoff and convergence log are retained.', { cause: error });
+    }
+    exactActiveOwner(journal);
+    const current = readRuntimeHandoff(b.home, b.requestId, b.executionId);
+    if (!current || current.bindingDigest !== journal.bindingDigest || current.phase !== journal.phase || current.recovery?.digest !== journal.recovery?.digest) throw new Error('Runtime handoff changed during desktop relaunch.');
+    save(current, { ...(current.phase === 'failed' ? { failure: retainedFailure(current) } : {}), stages: { ...current.stages, desktopRelaunch: { completedAt: Date.now() } } });
+    Object.assign(journal, current);
+  }
+  requireDesktopRunning(b);
+}
+
 const homeDirectory = home => path.join(home, 'config', 'local-sessions');
 export function handoffDirectory(home, requestId, executionId) {
   for (const id of [requestId, executionId]) if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id)) throw new Error('Invalid runtime handoff owner.');
@@ -257,6 +286,7 @@ export function recheckRuntimeObservation(journal, receipt) {
   if (startedAt(receipt.evidence.process.pid) !== receipt.evidence.process.startedAt) throw new Error('Observed daemon process changed.');
   if (run('git', ['rev-parse', 'HEAD'], { cwd: journal.binding.root }) !== journal.binding.mergeCommit) throw new Error('Observed approved checkout changed.');
   for (const [file, expected] of Object.entries(receipt.files)) if (fileHash(file) !== expected) throw new Error(`Observed installation changed: ${file}`);
+  requireDesktopRunning(journal.binding);
   const log = fs.statSync(receipt.evidence.daemonLog.path);
   if (log.dev !== receipt.evidence.daemonLog.dev || log.ino !== receipt.evidence.daemonLog.ino || log.size < receipt.evidence.daemonLog.size) throw new Error('Observed daemon log rotated or truncated.');
 }
@@ -306,6 +336,7 @@ export async function observeRuntimeHandoff(journal, {
   if (JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
   const fixedFiles = [marker, installedMarker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')];
   let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
+  await restoreDesktop(journal);
   const observed = await observeRuntimeHealthWindow({
     probe: async (until, signal) => {
       const value = await probeRuntime(until, signal);
@@ -386,8 +417,7 @@ export async function observeFailedRuntimeHandoff(journal, actor, observationOpt
 }
 
 // The caller holds the hook acceptance SQLite transaction while persisting this
-// receipt. Observation itself never writes, so another observer cannot overwrite
-// bytes after the corresponding hook acceptance commits.
+// receipt. The recovery receipt itself is persisted only in this transaction.
 export function persistRuntimeRecoveryObservation(journal) {
   const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
   const failure = retainedFailure(current);
@@ -452,6 +482,7 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
   // installed controllers may predate their process identity evidence.
   const evidence = probe ? JSON.parse(await controller(journal, 'handoff-verify', !!journal.recovery)) : journal.receipt.evidence;
   if (journal.receipt.evidence?.process && JSON.stringify(evidence.process) !== JSON.stringify(journal.receipt.evidence.process)) throw new Error('Converged daemon process changed after observation.');
+  requireDesktopRunning(b);
   return { bindingDigest: journal.bindingDigest, evidence };
 }
 
@@ -570,11 +601,6 @@ async function worker(file) {
     // handoff deadline. The wait never restarts the daemon.
     await controller(journal, 'handoff-start');
     await controller(journal, 'handoff-verify', false, { until: journal.deadline, awaitReady: true });
-    if (b.desktopWasRunning && !journal.stages.desktopRelaunch) {
-      run('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], { cwd: b.root, env, timeout: 15000, log });
-      save(journal, { stages: { ...journal.stages, desktopRelaunch: { completedAt: Date.now() } } });
-      if (!desktopRunning(b.nativeApp)) throw new Error('Installed desktop did not remain running after relaunch.');
-    }
     save(journal, { phase: 'observing' });
     journal = readRuntimeHandoff(b.home, b.requestId, b.executionId);
     const receipt = await observeRuntimeHandoff(journal);

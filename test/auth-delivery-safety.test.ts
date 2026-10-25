@@ -14,6 +14,7 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
+import { assessRuntimeLogs } from "../scripts/runtime-log-assessment.mjs";
 import { waitUntil } from "./helpers/wait-until.js";
 
 let repo: string;
@@ -426,6 +427,30 @@ describe('runtime convergence recovery', () => {
       expect(f.observation).toHaveBeenCalledTimes(2);
       expect(f.journal.phase).toBe('acknowledged');
     } finally { clock.mockRestore(); }
+  });
+
+  it('automatically recovers after a failed observation without poisoning the same daemon log', async () => {
+    const f = await recoveryFixture();
+    const { evidence } = automaticRecovery(f);
+    const lines: string[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: any) => { lines.push(String(chunk)); return true; });
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockRejectedValueOnce(new Error('transient health window failure'));
+    try {
+      await queue.resumeHookConvergence();
+      expect(f.journal.phase).toBe('failed');
+      expect(lines.join('')).toContain('auth_runtime_handoff_reconcile_stuck');
+      expect(db.prepare("SELECT resolved_at FROM operational_incidents WHERE task = ?").get(`runtime-handoff-reconcile/${f.request.id}`)).toMatchObject({ resolved_at: null });
+      f.observation.mockImplementation(async (journal, actor) => {
+        expect(assessRuntimeLogs(lines.join('')).failures).toEqual([]);
+        return observe(journal, actor);
+      });
+      evidence.mockResolvedValue('healthy-generation-2');
+      await queue.resumeHookConvergence();
+      expect(f.journal.phase).toBe('acknowledged');
+      expect(f.observation).toHaveBeenCalledTimes(2);
+      expect(f.ack).toHaveBeenCalledOnce();
+    } finally { stderr.mockRestore(); }
   });
 
   it('never observes a historical failed handoff while another execution owns the lock', async () => {
