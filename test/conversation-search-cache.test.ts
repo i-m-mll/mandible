@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 
@@ -74,6 +75,177 @@ afterEach(() => {
 });
 
 describe("disposable conversation search cache", () => {
+  it.each(["version", "epoch"])("rejects bodies replaced after the validated %s checkpoint", async (change) => {
+    const source = new FakeSource(new Map([
+      ["c1", [block("c1", "needle in current source")]],
+      ["sibling", []],
+    ]));
+    let version = "v0";
+    source.describe = (ids) => ids.map((conversationId) => ({ conversationId, sourceVersionId: version }));
+    let releaseOld!: () => void;
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    let startedOld!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { startedOld = resolve; });
+    const read = source.readMaskedBlocks.bind(source);
+    let first = true;
+    source.readMaskedBlocks = async (id) => {
+      if (first) {
+        first = false;
+        startedOld();
+        await oldGate;
+        return [block("c1", "obsolete body with no matching text")];
+      }
+      return read(id);
+    };
+    const cache = new ConversationSearchCache(source, { cachePath: tempCachePath() });
+    try {
+      const stale = cache.search({ conversationIds: ["c1"], needle: "needle", limit: 2 });
+      await oldStarted;
+      if (change === "version") version = "v1";
+      else source.epoch = "redaction:2";
+      await cache.search({ conversationIds: ["c1"], needle: "needle", limit: 2 });
+      await cache.whenIdle();
+      source.shortlistMaskedBlocks = async () => {
+        // Search has snapshotted the current checkpoint and is waiting on a
+        // cold sibling when the delayed old parse replaces the resident entry.
+        releaseOld();
+        await stale;
+        await cache.whenIdle();
+        return null;
+      };
+      const result = await cache.search({ conversationIds: ["c1", "sibling"], needle: "needle", limit: 2 });
+      expect(result.matches.map((match) => match.conversation_id)).toEqual(["c1"]);
+    } finally {
+      releaseOld();
+      cache.close();
+    }
+  });
+
+  it.each([0, 2])("refuses an unrelated database at schema version %i without deleting its file family or changing durable bytes", (version) => {
+    const cachePath = tempCachePath();
+    const unrelated = new SqliteDatabase(cachePath);
+    unrelated.pragma("auto_vacuum = 2");
+    unrelated.pragma("journal_mode = WAL");
+    unrelated.pragma(`user_version = ${version}`);
+    unrelated.exec("CREATE TABLE ledger_issues (body TEXT); INSERT INTO ledger_issues VALUES ('keep me')");
+    // SQLite may update read marks in -shm when validating the schema.
+    const snapshot = () => ["", "-wal"].map((suffix) => fs.readFileSync(`${cachePath}${suffix}`).toString("base64"));
+    const before = snapshot();
+    let accidentalCache: ConversationSearchCache | undefined;
+    try {
+      expect(() => { accidentalCache = new ConversationSearchCache(new FakeSource(new Map()), { cachePath }); })
+        .toThrow("not a conversation search cache");
+      expect(snapshot()).toEqual(before);
+      expect(["", "-wal", "-shm"].every((suffix) => fs.existsSync(`${cachePath}${suffix}`))).toBe(true);
+      expect(unrelated.prepare("SELECT body FROM ledger_issues").get()).toEqual({ body: "keep me" });
+    } finally {
+      accidentalCache?.close();
+      unrelated.close();
+    }
+  });
+
+  it("recognizes and rebuilds an unmarked legacy cache", async () => {
+    const source = new FakeSource(new Map([["c1", [block("c1", "needle")]]]));
+    const cachePath = tempCachePath();
+    const old = new ConversationSearchCache(source, { cachePath });
+    await old.search({ conversationIds: ["c1"], needle: "needle", limit: 1 });
+    await old.whenIdle();
+    old.close();
+    const sql = new SqliteDatabase(cachePath);
+    sql.pragma("application_id = 0");
+    sql.pragma("user_version = 2");
+    sql.close();
+    const rebuilt = new ConversationSearchCache(source, { cachePath });
+    try {
+      const empty = new SqliteDatabase(cachePath, { readonly: true });
+      expect(empty.prepare("SELECT COUNT(*) AS n FROM hot_bodies").get()).toEqual({ n: 0 });
+      empty.close();
+      expect((await rebuilt.search({ conversationIds: ["c1"], needle: "needle", limit: 1 })).matches).toHaveLength(1);
+      await rebuilt.whenIdle();
+      const check = new SqliteDatabase(cachePath, { readonly: true });
+      expect(check.pragma("application_id", { simple: true })).not.toBe(0);
+      check.close();
+    } finally {
+      rebuilt.close();
+    }
+  });
+
+  it("excludes a second writer during chunked replacement and leaves a complete repairable entry", async () => {
+    const blocks = Array.from({ length: 64 }, (_, i) => block("c1", `needle ${i} ${"body ".repeat(1600)}`, i));
+    const source = new FakeSource(new Map([["c1", blocks]]));
+    const cachePath = tempCachePath();
+    const cache = new ConversationSearchCache(source, { cachePath });
+    const sql = new SqliteDatabase(cachePath, { readonly: true });
+    let contender: ConversationSearchCache | undefined;
+    let attempted = false;
+    let rejection: unknown;
+    let watching = true;
+    const observe = () => {
+      if (!watching) return;
+      const row = sql.prepare(`SELECT c.complete, c.block_count, COUNT(h.rowid) AS rows
+        FROM search_checkpoints c LEFT JOIN hot_bodies h ON h.conversation_id = c.conversation_id
+        WHERE c.conversation_id = 'c1' GROUP BY c.conversation_id`).get() as
+        { complete: number; block_count: number; rows: number } | undefined;
+      if (row && row.complete === 0 && row.rows > 0 && row.rows < row.block_count) {
+        attempted = true;
+        try { contender = new ConversationSearchCache(source, { cachePath }); }
+        catch (error) { rejection = error; }
+        return;
+      }
+      setImmediate(observe);
+    };
+    try {
+      setImmediate(observe);
+      await cache.search({ conversationIds: ["c1"], needle: "needle", limit: 1 });
+      await cache.whenIdle();
+      expect(attempted).toBe(true);
+      expect(rejection).toBeInstanceOf(Error);
+      expect(String(rejection)).toContain("already has a writer");
+      expect(sql.prepare("SELECT complete, block_count FROM search_checkpoints").get())
+        .toEqual({ complete: 1, block_count: blocks.length });
+      expect(sql.prepare("SELECT COUNT(*) AS n FROM hot_bodies").get()).toEqual({ n: blocks.length });
+      expect((await cache.search({ conversationIds: ["c1"], needle: "needle", limit: 1 })).metrics.cold_conversations).toBe(0);
+    } finally {
+      watching = false;
+      contender?.close();
+      sql.close();
+      cache.close();
+    }
+  });
+
+  it("guards process-local accounting across processes and releases the writer lock on close", async () => {
+    const cachePath = tempCachePath();
+    const source = new FakeSource(new Map([["c1", [block("c1", "needle")]]]));
+    const cache = new ConversationSearchCache(source, { cachePath });
+    const moduleUrl = new URL("../src/conversations/search-cache.ts", import.meta.url).href;
+    const code = `import { ConversationSearchCache } from ${JSON.stringify(moduleUrl)};
+      const source = {describe: () => [], readMaskedBlocks: async () => [], redactionEpoch: () => "epoch"};
+      try { const cache = new ConversationSearchCache(source, {cachePath: process.argv[1]}); cache.close(); process.exitCode = 2; }
+      catch (error) { if (!String(error).includes("already has a writer")) throw error; }`;
+    try {
+      await cache.whenIdle();
+      const status = await new Promise<number | null>((resolve, reject) => {
+        const child = spawn(process.execPath, ["--no-install", "--eval", code, cachePath], {
+          stdio: ["ignore", "ignore", "pipe"], timeout: 10_000,
+        });
+        let stderr = "";
+        child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+        child.once("error", reject);
+        child.once("close", (exitCode) => exitCode === 0 ? resolve(exitCode) : reject(new Error(`writer probe exited ${exitCode}: ${stderr}`)));
+      });
+      expect(status).toBe(0);
+    } finally {
+      cache.close();
+    }
+    const next = new ConversationSearchCache(source, { cachePath });
+    try {
+      expect((await next.search({ conversationIds: ["c1"], needle: "needle", limit: 1 })).matches).toHaveLength(1);
+      await next.whenIdle();
+    } finally {
+      next.close();
+    }
+  });
+
   it("preserves exact lowercase-substring semantics for randomized Unicode, punctuation, and short needles", async () => {
     let seed = 0x5eed1234;
     const next = () => {
