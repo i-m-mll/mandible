@@ -14,6 +14,7 @@ import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
 import { evictFileCache } from "./evict-file-cache.ts";
 import SqliteDatabase from "../src/sqlite.ts";
+import { isProtectedIdentitySettingKey } from "../src/settings-key-policy.js";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { resolveLedgerDbPath } from "../src/db-read.ts";
@@ -254,7 +255,7 @@ const READS: Record<string, RouteEntry> = {
   "POST /api/events/subscribe": () => "stream subscription; the event stream is served outside the router",
   "POST /api/auth/check": () => "reads, but runs git in the checkout (process:external)",
   "POST /api/timeline/project": (fx) => timelineRequests(fx),
-  "POST /api/briefing-destination-routes/plan": (fx) => [post("current routes", "/api/briefing-destination-routes/plan", fx.routeManifest)],
+  "POST /api/briefing-destination-routes/plan": (fx) => [post("current routes", "/api/briefing-destination-routes/plan", destinationRouteManifest(fx))],
 };
 
 /**
@@ -336,11 +337,11 @@ const WRITES: Record<string, RouteEntry> = {
   ],
 
   "POST /api/inbox/delivered/:id": (fx) => {
-    const results = fx.undeliveredAuthResults;
+    const results = fixtureRows("undelivered auth results for all passes", fx.undeliveredAuthResults, passes);
     return [post("auth result", (pass) => `/api/inbox/delivered/${results[pass - 1]}`, {})];
   },
   "POST /api/inbox/:type/:id/ack": (fx) => {
-    const results = fx.unacknowledgedAuthResults;
+    const results = fixtureRows("unacknowledged auth results for all passes", fx.unacknowledgedAuthResults, passes);
     return [post("auth result", (pass) => `/api/inbox/auth_result/${results[pass - 1]}/ack`, {})];
   },
   "POST /api/inbox/ack-all": () => [post("everything", "/api/inbox/ack-all", {})],
@@ -349,9 +350,10 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/console/sessions/:id/permission/:requestId": () => LIVE_CONSOLE,
   "POST /api/console/sessions/:id/cancel": () => LIVE_CONSOLE,
   "PUT /api/console/pinned": (fx) => [post("pin one", "/api/console/pinned", { ids: [fx.bigConversation] })],
-  "POST /api/webhooks/:id/dismiss": (fx) => fx.webhookEvents.length >= passes
-    ? [post("pending event", (pass) => `/api/webhooks/${fx.webhookEvents[pass - 1]}/dismiss`, {})]
-    : [],
+  "POST /api/webhooks/:id/dismiss": (fx) => {
+    const events = fixtureRows("pending webhook events for all passes", fx.webhookEvents, passes);
+    return [post("pending event", (pass) => `/api/webhooks/${events[pass - 1]}/dismiss`, {})];
+  },
 
   "POST /api/spaces": (fx) => [post("new space", "/api/spaces", { title: `${SWEEP_TAG} space`, project_id: fx.project })],
   "PATCH /api/spaces/:id": (fx) => fx.space ? [post("largest space", `/api/spaces/${fx.space}`, { description: `${SWEEP_TAG}` })] : [],
@@ -378,7 +380,7 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/spaces/documents/import": () => "imports document bytes from a git commit or Mandible custody",
   "POST /api/spaces/:id/history/:history_id/import": () => "imports document bytes from Mandible custody",
 
-  "POST /api/briefing-destination-routes": (fx) => [post("re-apply current routes", "/api/briefing-destination-routes", fx.routeManifest)],
+  "POST /api/briefing-destination-routes": (fx) => [post("re-apply current routes", "/api/briefing-destination-routes", destinationRouteManifest(fx))],
   "POST /api/briefing-groups/:groupId/report-placement": () => `${NOT_DRIVEN}briefing publication needs a publisher identity and an operation key`,
   "POST /api/briefings/:briefingId/report-rounds": () => `${NOT_DRIVEN}briefing publication needs a publisher identity and an operation key`,
   "POST /api/briefing-groups": () => `${NOT_DRIVEN}briefing publication needs a publisher identity`,
@@ -532,6 +534,16 @@ class MissingFixture extends Error {
   }
 }
 
+function fixtureRows<T>(label: string, rows: T[], minimum = 1): T[] {
+  if (rows.length < minimum) throw new MissingFixture(label);
+  return rows;
+}
+
+function destinationRouteManifest(fx: Fixtures) {
+  if (!fx.routeManifest?.routes.length) throw new MissingFixture("briefing destination routes");
+  return fx.routeManifest;
+}
+
 /** Real entity identifiers, resolved once on first use, preferring the heaviest instance of each kind. */
 export function readFixtures(dbPath: string) {
   const lazy = <T>(read: (db: SqliteDatabase) => T): (() => T) => {
@@ -651,7 +663,10 @@ export function readFixtures(dbPath: string) {
   const reminder = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM managed_tasks ORDER BY updated_at DESC LIMIT 1"));
   const workflow = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM workflow_runs ORDER BY updated_at DESC LIMIT 1"));
   const attachment = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM chat_attachment_files ORDER BY created_at DESC LIMIT 1"));
-  const settingKeys = lazy((db) => (db.prepare("SELECT key FROM settings ORDER BY length(value) DESC LIMIT 3").all() as { key: string }[]).map((row) => row.key));
+  const settingKeys = lazy((db) => fixtureRows("generic settings keys",
+    (db.prepare("SELECT key FROM settings ORDER BY length(value) DESC").all() as { key: string }[])
+      .map((row) => row.key).filter((key) => !isProtectedIdentitySettingKey(key)).slice(0, 3)));
+
   return {
     get project() { return project().id; },
     get projectKey() { return project().project_key; },
@@ -694,7 +709,7 @@ export function readFixtures(dbPath: string) {
     get soloIssue() { return soloIssue().id; },
     get documentSpace() { return documentSpace()?.id ?? null; },
     get routeKey() { return routeKey()?.route_key ?? null; },
-    routeManifest: null as unknown,
+    routeManifest: null as ReturnType<typeof routeManifest> | null,
     get briefingGroup() { return briefingGroup().id; },
     get briefingBundle() { return briefingBundle().id; },
     get briefing() { return briefing().id; },

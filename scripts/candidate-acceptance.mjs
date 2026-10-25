@@ -56,6 +56,18 @@ export function routeCostCheck(text) {
   };
 }
 
+/** The sweep's reasons for failing, in the order a reader acts on them. */
+export function routeCostVerdict(check) {
+  const reasons = [
+    ...check.offenders.map(entry => `${entry.route} blocked the loop ${entry.first_call_turn_ms} ms on first call, ${entry.warm_turn_ms} ms warm`),
+    ...check.failed_requests.slice(0, 3).map(entry => `request failed: ${entry}`),
+    ...(check.failed_requests.length > 3 ? [`${check.failed_requests.length - 3} more failed requests`] : []),
+    ...check.unclassified.map(route => `${route} is unclassified`),
+    ...check.exception_problems.map(entry => `exception for ${entry.route} (${entry.issue}): ${entry.problem}`),
+  ];
+  return reasons.length > 0 ? reasons.join('; ') : 'the report names no failure; see route-cost.log';
+}
+
 export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
@@ -262,7 +274,9 @@ async function main() {
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
     result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
-    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`);
+    if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
+      ? routeCostVerdict(result.checks.route_cost)
+      : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
