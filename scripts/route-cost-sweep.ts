@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad } from "./route-cost-judgment.ts";
+import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
@@ -837,7 +837,6 @@ interface Planned {
   plan: Plan | { kind: "unclassified"; reason: string };
   measured: Measured[];
   profile?: string;
-  retrySnapshot?: string;
 }
 
 interface Daemon {
@@ -894,14 +893,14 @@ async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
  * variant of the given routes `passes` times (the first pass is each
  * variant's first call since startup), then stop it.
  */
-async function measureSession(run: Run, planned: Planned[], profile: boolean, trial = 0) {
+async function measureSession(run: Run, planned: Planned[], profile: boolean, trial = 0, replay: Planned[] = []) {
   const daemon = await startDaemon(run, profile);
   let stopped = false;
   try {
     await readTurn(daemon.socketPath);
     await new Promise((resolve) => setTimeout(resolve, BASELINE_MS));
     const baselineMs = await readTurn(daemon.socketPath);
-    const measure = async (entry: Planned, request: SweepRequest, pass: number) => {
+    const measure = async (entry: Planned, request: SweepRequest, pass: number, record = true) => {
       await readTurn(daemon.socketPath);
       const t0 = Date.now();
       const started = performance.now();
@@ -918,9 +917,20 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
       }
       result.durationMs = Math.round(performance.now() - started);
       result.worstTurnMs = await settle(daemon.socketPath, result);
-      entry.measured.push(result);
+      if (record) entry.measured.push(result);
+      return result;
     };
     const requestsOf = (entry: Planned) => (entry.plan.kind === "exercise" ? entry.plan.requests : []);
+    for (const entry of replay) {
+      for (let pass = 1; pass <= passes; pass += 1) {
+        for (const request of requestsOf(entry)) {
+          const result = await measure(entry, request, pass, false);
+          if (result.error !== undefined) {
+            throw new Error(`Invalid confirmation trial ${trial}: replay ${entry.route.method} ${result.url}, pass ${pass}, HTTP ${result.status}: ${result.error}`);
+          }
+        }
+      }
+    }
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise");
     // Reads run pass by pass, so every read's first call precedes all warm calls.
     for (let pass = 1; pass <= passes; pass += 1) {
@@ -931,10 +941,6 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
     // Writes run route by route in WRITES order, so a bulk write such as
     // ack-all cannot consume the entities a later write's second pass needs.
     for (const entry of exercised.filter((candidate) => isWrite(candidate.route)).sort((a, b) => writeOrder(a.route) - writeOrder(b.route))) {
-      if (trial === 0) {
-        entry.retrySnapshot = path.join(run.root, `write-${writeOrder(entry.route)}.db`);
-        snapshot(run.dbCopy, entry.retrySnapshot);
-      }
       for (let pass = 1; pass <= passes; pass += 1) {
         for (const request of requestsOf(entry)) await measure(entry, request, pass);
       }
@@ -1029,7 +1035,8 @@ async function main() {
       await stopDaemon(catalogDaemon.child, 30_000);
     }
 
-    const exercised = planned.filter((entry) => entry.plan.kind === "exercise");
+    const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
+      .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
     const readSnapshot = path.join(root, "before-measurement.db");
     snapshot(dbCopy, readSnapshot);
     const sessions = opts["fresh-each"]
@@ -1042,14 +1049,18 @@ async function main() {
     const suspects = exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
     // Checkpoint before retries: exception validity belongs to the main snapshot.
     const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
+    const writesByKey = new Map(exercised.filter((entry) => isWrite(entry.route))
+      .map((entry) => [`${entry.route.method} ${entry.route.path}`, entry]));
     for (const entry of suspects) {
-      const retrySnapshot = isWrite(entry.route) ? entry.retrySnapshot : readSnapshot;
-      if (!retrySnapshot) throw new Error(`missing write checkpoint for ${entry.route.method} ${entry.route.path}`);
+      const replay = isWrite(entry.route)
+        ? writeReplayPlan(Object.keys(WRITES), [...writesByKey.keys()], `${entry.route.method} ${entry.route.path}`)
+          .map((key) => writesByKey.get(key)!)
+        : [];
       log(`confirming ${entry.route.method} ${entry.route.path} in ${CONFIRMATION_TRIALS} fresh trials`);
       for (let trial = 1; trial <= CONFIRMATION_TRIALS; trial += 1) {
         for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${dbCopy}${suffix}`, { force: true });
-        fs.copyFileSync(retrySnapshot, dbCopy);
-        sessions.push(await measureSession(run, [entry], opts["cpu-prof"]!, trial));
+        fs.copyFileSync(readSnapshot, dbCopy);
+        sessions.push(await measureSession(run, [entry], opts["cpu-prof"]!, trial, replay));
       }
     }
 

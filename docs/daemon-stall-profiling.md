@@ -192,11 +192,13 @@ budget gate. Candidate acceptance runs it before the native build.
   cites an issue that is open in the snapshot. Within a trial, each call kind
   uses the maximum across request variants and, for warm calls, later passes.
   The reported first-call and warm turns are the minima of these trial maxima.
-- Before each write route's main measurement, the sweep saves a `VACUUM INTO`
-  checkpoint of the preview database. Each confirmation restores that checkpoint,
-  preserving earlier writes' prerequisites and replenishing entities consumed
-  by per-pass acknowledgements or dismissals. Read confirmations restore the
-  saved database from before measurement. Production is snapshotted only once.
+- Every confirmation restores the single saved database from before measurement.
+  Write confirmations start a fresh daemon and replay every exercised earlier
+  write in `WRITES` order, unmeasured, with the main session's requests and pass
+  numbers, then measure the target's passes. This restores prerequisites and the
+  state of entities consumed by per-pass acknowledgements or dismissals. A failed
+  replay aborts the sweep as an invalid confirmation trial. There are no per-route
+  database copies: only the working copy and the pre-measurement copy.
 - JSON report `mandible-route-cost-sweep@2` retains every request with its trial
   number (0 is the main pass), per-trial first/warm maxima, the confirmation
   rule, and load observations. Candidate acceptance retains the per-trial maxima

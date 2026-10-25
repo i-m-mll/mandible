@@ -1,11 +1,31 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { CONFIRMATION_TRIALS, judgeRoute, LOAD_WAIT_MS, trialTurns, waitForLoad } from "../scripts/route-cost-judgment.ts";
+import { CONFIRMATION_TRIALS, judgeRoute, LOAD_WAIT_MS, trialTurns, waitForLoad, writeReplayPlan } from "../scripts/route-cost-judgment.ts";
 
 const trial = (first: number, warm: number) => [
   { pass: 1, worstTurnMs: first },
   { pass: 2, worstTurnMs: warm },
 ];
+
+describe("write confirmation replay plan", () => {
+  const order = ["assume", "release", "link", "unlink", "claim", "activate", "delivered", "ack", "ack-all", "dismiss"];
+  const exercised = ["dismiss", "activate", "claim", "unlink", "link", "release", "assume", "ack-all", "ack"];
+
+  it("replays only exercised earlier writes, in write order rather than catalog order", () => {
+    expect(writeReplayPlan(order, exercised, "assume")).toEqual([]);
+    expect(writeReplayPlan(order, exercised, "release")).toEqual(["assume"]);
+    expect(writeReplayPlan(order, exercised, "unlink")).toEqual(["assume", "release", "link"]);
+    expect(writeReplayPlan(order, exercised, "activate")).toEqual(["assume", "release", "link", "unlink", "claim"]);
+    expect(writeReplayPlan(order, exercised, "dismiss")).toEqual([
+      "assume", "release", "link", "unlink", "claim", "activate", "ack", "ack-all",
+    ]);
+  });
+
+  it("rejects targets outside the exercised write plan", () => {
+    expect(() => writeReplayPlan(order, exercised, "delivered")).toThrow("Not an exercised write");
+    expect(() => writeReplayPlan(order, exercised, "read")).toThrow("Not an exercised write");
+  });
+});
 
 describe("route-cost confirmation", () => {
   it("discards a single first-call or warm spike and retains its readings", () => {

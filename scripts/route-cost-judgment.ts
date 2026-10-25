@@ -1,6 +1,14 @@
 export const CONFIRMATION_TRIALS = 3;
 export const LOAD_WAIT_MS = 180_000;
 
+/** Exercised prerequisites in write order, excluding the target itself. */
+export function writeReplayPlan(writeOrder: readonly string[], exercised: readonly string[], target: string): string[] {
+  const targetIndex = writeOrder.indexOf(target);
+  if (targetIndex < 0 || !exercised.includes(target)) throw new Error(`Not an exercised write: ${target}`);
+  const included = new Set(exercised);
+  return writeOrder.slice(0, targetIndex).filter((key) => included.has(key));
+}
+
 export interface TurnReading {
   pass: number;
   worstTurnMs: number;
