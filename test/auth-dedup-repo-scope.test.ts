@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // Issue 608d1db — auth-request duplicate detection is scoped to the repository.
 //
@@ -265,7 +266,7 @@ describe("POST /api/auth/request duplicate refusal", () => {
 
   function createRouter(queue: AuthQueue): TestRouteRegistrar {
     const app = new TestRouteRegistrar();
-    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db: db! }));
+    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db: db! }), undefined, inlineLedgerReader(() => queue.db));
     return app;
   }
 

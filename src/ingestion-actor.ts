@@ -1,6 +1,7 @@
 import { parseDomainEvent, type MandibleEventType } from "./contracts.js";
 import { Worker } from "node:worker_threads";
 import type { Logger } from "./types.js";
+import type SqliteDatabase from "./sqlite.js";
 import type {
   IngestionWorkerCommand,
   IngestionWorkerRequest,
@@ -18,6 +19,8 @@ export interface IngestionActorOptions {
   logger: Logger;
   publish: (event: MandibleEventType, data: unknown) => void;
   workerUrl?: URL;
+  mainDb?: SqliteDatabase;
+  checkpointIntervalMs?: number;
 }
 
 export function canUseDefaultIngestionWorker(): boolean {
@@ -37,6 +40,7 @@ export class IngestionActor {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private closing = false;
+  private previousAutocheckpoint: number | undefined;
 
   constructor(options: IngestionActorOptions) {
     this.options = options;
@@ -65,6 +69,7 @@ export class IngestionActor {
     this.closing = true;
     const worker = this.worker;
     this.worker = null;
+    this.restoreAutocheckpoint();
     this.rejectPending(new Error("ingestion worker stopped"));
     if (worker) {
       await worker.terminate();
@@ -90,29 +95,40 @@ export class IngestionActor {
 
   private spawn(): void {
     const worker = new Worker(this.options.workerUrl ?? defaultWorkerUrl(), {
-      workerData: { dbPath: this.options.dbPath },
+      workerData: {
+        dbPath: this.options.dbPath,
+        checkpointIntervalMs: this.options.checkpointIntervalMs,
+      },
       // `node --input-type=module` is valid for eval/stdin only and otherwise
       // makes a file-backed worker fail before loading its module.
       execArgv: process.execArgv.filter((arg) => arg !== "--input-type=module"),
     });
     this.worker = worker;
-    worker.on("message", (message: IngestionWorkerResponse) => this.onMessage(message));
+    worker.on("message", (message: IngestionWorkerResponse) => {
+      if (this.worker === worker) this.onMessage(message);
+    });
     worker.on("error", (error) => {
       this.options.logger("warn", "ingestion_worker_error", { error: String(error) });
     });
     worker.on("exit", (code) => {
       if (this.worker === worker) {
         this.worker = null;
+        this.restoreAutocheckpoint();
+        this.rejectPending(new Error(`ingestion worker exited with code ${code}`));
       }
       if (!this.closing && code !== 0) {
         this.options.logger("warn", "ingestion_worker_exit", { code });
       }
-      this.rejectPending(new Error(`ingestion worker exited with code ${code}`));
     });
   }
 
   private onMessage(message: IngestionWorkerResponse): void {
     if (message.kind === "ready") {
+      const db = this.options.mainDb;
+      if (db && this.previousAutocheckpoint === undefined) {
+        this.previousAutocheckpoint = db.pragma("wal_autocheckpoint", { simple: true }) as number;
+        db.pragma("wal_autocheckpoint = 0");
+      }
       this.options.logger("info", "ingestion_worker_ready");
       return;
     }
@@ -143,6 +159,13 @@ export class IngestionActor {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private restoreAutocheckpoint(): void {
+    if (this.previousAutocheckpoint === undefined) return;
+    const db = this.options.mainDb;
+    if (db?.open) db.pragma(`wal_autocheckpoint = ${this.previousAutocheckpoint}`);
+    this.previousAutocheckpoint = undefined;
   }
 }
 

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -25,7 +26,7 @@ beforeEach(() => {
   const operator = setupOperator(db, { display_name: "Singleton kind test operator" });
   setDb(db);
   router = authenticatedTestRouter(operator);
-  registerIssueRoutes(router as never, fakeScanner);
+  registerIssueRoutes(router as never, fakeScanner, undefined, inlineLedgerReader());
   addProject(db, { project_key: "alpha", remote_identity: "git@github.com:mll/alpha.git" });
   addProject(db, { project_key: "beta", remote_identity: "git@github.com:mll/beta.git" });
 });

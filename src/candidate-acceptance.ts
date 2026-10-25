@@ -58,11 +58,27 @@ const MAX_RESULT_CHARS = 64 * 1024;
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const ACCEPTANCE_TIMEOUT_MS = 30 * 60 * 1000;
 
+/** Stored acceptance inputs; the queue overlays its live waiting/running state. */
+export interface CandidateAcceptanceRead {
+  applies: boolean;
+  latest: CandidateAcceptanceRecord | null;
+}
+
+export function latestCandidateAcceptances(db: Db, requestIds: string[]): Map<string, CandidateAcceptanceRecord> {
+  if (requestIds.length === 0) return new Map();
+  const rows = db.prepare(`
+    SELECT auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, error
+    FROM (
+      SELECT auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, error,
+        ROW_NUMBER() OVER (PARTITION BY auth_request_id ORDER BY started_at DESC, rowid DESC) AS rank
+      FROM auth_candidate_acceptances WHERE auth_request_id IN (${requestIds.map(() => "?").join(", ")})
+    ) WHERE rank = 1
+  `).all(...requestIds) as Array<CandidateAcceptanceRecord & { auth_request_id: string }>;
+  return new Map(rows.map(({ auth_request_id, ...record }) => [auth_request_id, record]));
+}
+
 export function latestCandidateAcceptance(db: Db, requestId: string): CandidateAcceptanceRecord | null {
-  return db.prepare(
-    `SELECT pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, error FROM auth_candidate_acceptances
-     WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`,
-  ).get(requestId) as CandidateAcceptanceRecord | undefined ?? null;
+  return latestCandidateAcceptances(db, [requestId]).get(requestId) ?? null;
 }
 
 /** The request view's acceptance state for one request's current candidate. `open` means a run of it is waiting or running. */

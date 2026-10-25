@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ describe("restricted project route enforcement", () => {
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });
     router = new Router({ clientAuth: authenticator });
-    registerIssueRoutes(router, fakeScanner);
+    registerIssueRoutes(router, fakeScanner, undefined, inlineLedgerReader());
     setClientAuthMode(db, "strict");
   });
 
@@ -434,7 +435,7 @@ describe("restricted project route enforcement", () => {
       getBranches: () => [],
       scanAllAsync: vi.fn(async () => ({ scanned_repos: 0 })),
     };
-    registerProviderRoutes(router);
+    registerProviderRoutes(router, inlineLedgerReader());
     registerWorkRoutes(router, workScanner as never);
 
     const agent = createUser(db, { slug: "read-agent", kind: "agent", display_name: "Read Agent" });
@@ -472,7 +473,7 @@ describe("restricted project route enforcement", () => {
     }, 1_000, tempDir);
     associateProjectArtifact(db, { project_ref: project.id, target_type: "artifact_version",
       target_id: recorded.version.id, source: "system" });
-    registerProviderRoutes(router);
+    registerProviderRoutes(router, inlineLedgerReader());
     const agent = createUser(db, { slug: "version-reader", kind: "agent", display_name: "Version Reader" });
     const { token } = authenticator.mintApiToken(agent.id);
     const invoke = () => router.invoke({
@@ -510,7 +511,7 @@ describe("restricted project route enforcement", () => {
       target_id: logicalId,
       source: "system",
     });
-    registerProviderRoutes(router);
+    registerProviderRoutes(router, inlineLedgerReader());
     const agent = createUser(db, { slug: "ref-reader", kind: "agent", display_name: "Ref Reader" });
     const { token } = authenticator.mintApiToken(agent.id);
     const resolve = (ref: string) => router.invoke({

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
 import { setDb, type Db } from "../src/db.js";
@@ -274,7 +275,7 @@ describe("managed reminder routes", () => {
     );
     const occurrenceId = created.reminder.occurrence!.id;
     const router = new Router();
-    registerInboxRoutes(router, {} as never);
+    registerInboxRoutes(router, {} as never, undefined, undefined, inlineLedgerReader());
     expect(countGlobalInboxBadge(db)).toBe(1);
 
     const ack = await router.invoke({

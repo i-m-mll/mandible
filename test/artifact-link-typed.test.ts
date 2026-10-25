@@ -12,6 +12,7 @@ import type {
 } from "../src/server.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerGraphRoutes } from "../src/routes/graph.js";
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import {
   ensureArtifactSeries,
   registerArtifactLink,
@@ -89,7 +90,7 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
 
 async function postRoute(routePath: string, body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   const routes = new TestRoutes();
-  registerProviderRoutes(routes);
+  registerProviderRoutes(routes, inlineLedgerReader());
   const req = {
     method: "POST",
     url: routePath,
@@ -110,18 +111,18 @@ function getRoute(
   query: Record<string, string> = {},
 ): { statusCode: number; payload: any } {
   const routes = new TestRoutes();
-  registerProviderRoutes(routes);
+  registerProviderRoutes(routes, inlineLedgerReader());
   const req = { method: "GET", url: routePath, params, query } as RequestLike;
   const res = createResponse();
   routes.handler("GET", routePath)(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
 }
-function getGraphRoute(query: Record<string, string>): { statusCode: number; payload: any } {
+async function getGraphRoute(query: Record<string, string>): Promise<{ statusCode: number; payload: any }> {
   const routes = new TestRoutes();
-  registerGraphRoutes(routes, {} as never);
+  registerGraphRoutes(routes, inlineLedgerReader());
   const req = { method: "GET", url: "/api/graph", params: {}, query } as RequestLike;
   const res = createResponse();
-  routes.handler("GET", "/api/graph")(req, res);
+  await routes.handler("GET", "/api/graph")(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
 }
 function postLink(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
@@ -421,7 +422,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(detail.payload.artifacts.every((artifact: { id: string }) =>
       /^artifact-(?:blob|version):[a-f0-9]{12,64}$/.test(artifact.id))).toBe(true);
 
-    const graph = getGraphRoute({ mode: "provider-lineage", provider: "provider-public-ids" });
+    const graph = await getGraphRoute({ mode: "provider-lineage", provider: "provider-public-ids" });
     expect(graph.statusCode).toBe(200);
     expect(JSON.stringify(graph.payload)).not.toContain("artifact:sha256:");
   });

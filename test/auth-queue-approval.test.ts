@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -752,7 +753,7 @@ describe("auth queue", () => {
       }),
       hookManager: createNoopHookManager(),
     });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     try {
       const submissions = [
         { command: "mandible auth merge feature/channel-legacy", head_branch: "feature/channel-legacy" },

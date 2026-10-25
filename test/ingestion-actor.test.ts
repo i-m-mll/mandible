@@ -4,11 +4,12 @@ import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { openDb } from "../src/db.js";
+import SqliteDatabase from "../src/sqlite.js";
 import { describe, expect, it } from "vitest";
 
 import { IngestionActor } from "../src/ingestion-actor.js";
 import { ConversationSourceChangedError } from "../src/conversations/source-store.js";
-import { STATE_DEADLINE_MS } from "./helpers/wait-until.js";
+import { STATE_DEADLINE_MS, waitUntil } from "./helpers/wait-until.js";
 
 const TEST_WORKER_SOURCE = `
   import { parentPort } from "node:worker_threads";
@@ -101,6 +102,52 @@ it("opens the same pinned SQLite database in the actual ingestion Worker", async
   }
 });
 
+
+it("T4: the ingestion worker checkpoints outstanding WAL frames", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-worker-checkpoint-"));
+  const dbPath = path.join(root, "ledger.db");
+  const db = openDb(dbPath);
+  const originalAutocheckpoint = db.pragma("wal_autocheckpoint", { simple: true });
+  db.exec("CREATE TABLE checkpoint_payload (body BLOB)");
+  const reader = new SqliteDatabase(dbPath, { readonly: true });
+  const actor = new IngestionActor({
+    dbPath,
+    mainDb: db,
+    checkpointIntervalMs: 10,
+    logger: () => undefined,
+    publish: () => undefined,
+    workerUrl: new URL("../src/ingestion-worker.ts", import.meta.url),
+  });
+  const progress = () => db.prepare("PRAGMA wal_checkpoint(NOOP)").get() as {
+    busy: number; log: number; checkpointed: number;
+  };
+  try {
+    await waitUntil(() => db.pragma("wal_autocheckpoint", { simple: true }) === 0,
+      "worker checkpointer ownership");
+    // Pin the pre-write snapshot so the timer cannot finish before we observe the backlog.
+    reader.exec("BEGIN");
+    reader.prepare("SELECT count(*) FROM checkpoint_payload").get();
+    const insert = db.prepare("INSERT INTO checkpoint_payload VALUES (zeroblob(4096))");
+    db.transaction(() => {
+      for (let i = 0; i < 1100; i++) insert.run();
+    })();
+    const backlog = progress();
+    expect(backlog.log - backlog.checkpointed).toBeGreaterThan(1000);
+    reader.exec("ROLLBACK");
+    const completed = await waitUntil(() => {
+      const current = progress();
+      return current.log >= backlog.log && current.checkpointed === current.log && current;
+    }, "worker to checkpoint all WAL frames");
+    expect(completed.busy).toBe(0);
+    await actor.close();
+    expect(db.pragma("wal_autocheckpoint", { simple: true })).toBe(originalAutocheckpoint);
+  } finally {
+    await actor.close();
+    reader.close();
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it.skipIf(process.platform !== "darwin")("rejects an unowned loaded library and a forged Worker selection receipt", () => {
   const runtimeUrl = new URL("../src/sqlite-runtime.ts", import.meta.url).href;

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -22,7 +23,7 @@ beforeEach(() => {
   setDb(db);
   addProject(db, { project_key: "mandible", display_name: "Mandible" });
   router = authenticatedTestRouter(operator);
-  registerIssueRoutes(router, fakeScanner);
+  registerIssueRoutes(router, fakeScanner, undefined, inlineLedgerReader());
 });
 
 afterEach(() => {

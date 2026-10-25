@@ -336,7 +336,16 @@ export class AuthHookManager {
 
   /** Whether merging this repo self-updates the running installation. */
   selfUpdatesRuntime(repo: string | null | undefined): boolean {
-    return Boolean(repo) && this.findMatchingHooks(repo!, "merge").some(hook => hook.id === MANDIBLE_REBUILD_HOOK_ID);
+    return this.selfUpdatingRepos(repo ? [repo] : []).has(repo ?? "");
+  }
+
+  selfUpdatingRepos(repos: string[]): Set<string> {
+    if (repos.length === 0) return new Set();
+    const rows = this.db.prepare(
+      "SELECT repo_pattern FROM auth_hooks WHERE id = ? AND enabled = 1 AND auth_type = 'merge'",
+    ).all(MANDIBLE_REBUILD_HOOK_ID) as Array<{ repo_pattern: string }>;
+    const patterns = new Set(rows.map(row => row.repo_pattern));
+    return new Set(repos.filter(repo => Boolean(repo) && (patterns.has("*") || patterns.has(repo))));
   }
 
   runtimeHandoffLock(): RuntimeHandoffLock | null {
@@ -570,15 +579,23 @@ export class AuthHookManager {
   }
 
   listRuns(authRequestId: string): AuthHookRun[] {
-    if (!this.hasDurableTables()) return [];
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM auth_hook_executions
-         WHERE auth_request_id = ?
-         ORDER BY position ASC, created_at ASC`,
-      )
-      .all(authRequestId) as Record<string, unknown>[];
-    return rows.map(mapRunRow);
+    return this.listRunsForRequests([authRequestId]).get(authRequestId) ?? [];
+  }
+
+  listRunsForRequests(requestIds: string[]): Map<string, AuthHookRun[]> {
+    const runs = new Map<string, AuthHookRun[]>();
+    if (requestIds.length === 0 || !this.hasDurableTables()) return runs;
+    const rows = this.db.prepare(
+      `SELECT * FROM auth_hook_executions WHERE auth_request_id IN (${requestIds.map(() => "?").join(", ")})
+       ORDER BY position ASC, created_at ASC`,
+    ).all(...requestIds) as Record<string, unknown>[];
+    for (const row of rows) {
+      const run = mapRunRow(row);
+      const group = runs.get(run.auth_request_id) ?? [];
+      group.push(run);
+      runs.set(run.auth_request_id, group);
+    }
+    return runs;
   }
 
   getRun(authRequestId: string, hookId: string): AuthHookRun | null {
@@ -590,11 +607,15 @@ export class AuthHookManager {
   }
 
   convergence(authRequestId: string): AuthConvergence {
-    const runs = this.listRuns(authRequestId);
-    return {
-      state: convergenceStateFromRuns(runs),
-      hooks: runs.map(summarizeConvergenceRun),
-    };
+    return this.convergenceForRequests([authRequestId]).get(authRequestId)!;
+  }
+
+  convergenceForRequests(requestIds: string[]): Map<string, AuthConvergence> {
+    const runs = this.listRunsForRequests(requestIds);
+    return new Map(requestIds.map(id => {
+      const group = runs.get(id) ?? [];
+      return [id, { state: convergenceStateFromRuns(group), hooks: group.map(summarizeConvergenceRun) }];
+    }));
   }
 
   /**

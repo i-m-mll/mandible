@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -230,7 +231,7 @@ describe("atomic auth merge", () => {
     const router = new Router();
     // Issue e9cd064 — routes bound to the queue's database never reach the singleton.
     resetDb({ reason: "auth routes must use the queue's database" });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const server = createServer({
       db,
       sse: new SseManager(),

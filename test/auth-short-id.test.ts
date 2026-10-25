@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 //
@@ -40,7 +41,7 @@ function setup(): { router: Router; queue: AuthQueue; db: Db; events: SseEvent[]
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   const events: SseEvent[] = [];
   const queue = new AuthQueue({ db, broadcast: (event) => { events.push(event); } });
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
   return { router, queue, db, events };
 }
 

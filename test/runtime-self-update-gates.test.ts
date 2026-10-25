@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 // Issue a09b4d2 — a runtime handoff lock blocks publication while preserving
@@ -368,13 +369,13 @@ describe("failed handoff retirement", () => {
     expect(runs).toHaveLength(0);
     const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });
     const agentRouter = authenticatedTestRouter(agent);
-    registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const refused = await agentRouter.invoke({ method: "POST", url: "/api/runtime-handoff/retire", body: { binding_digest: held.digest, reason: "stale" } });
     expect(refused.status).toBe(403);
     expect(fs.existsSync(held.lockPath)).toBe(true);
 
     const operatorRouter = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(operatorRouter, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(operatorRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const detail = await operatorRouter.invoke({ method: "GET", url: `/api/auth/request/${request.id}` });
     expect(detail.body).toMatchObject({ publication_blocker: { code: "runtime_handoff_lock", message: expect.stringContaining("Candidate runtime readiness failed") } });
     const status = await operatorRouter.invoke({ method: "GET", url: "/api/runtime-handoff/lock" });

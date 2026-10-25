@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
+import { evictFileCache } from "./evict-file-cache.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
@@ -42,6 +43,7 @@ unclassified, or when a request does not succeed.
   --passes <n>          Requests per variant; the first is cold (default 2)
   --only <regex>        Exercise only routes whose path matches; others report as excluded
   --fresh-each          Start a fresh daemon for each route, so every first call is cold
+  --evict               Evict snapshot DB/WAL cache before first calls (macOS; timing report only)
   --cpu-prof            Profile the daemon and attribute each offender's window
   --ignore-load         Skip the bounded wait for load below the core count
   --keep                Keep the sweep root (snapshot, logs, profile)
@@ -58,6 +60,7 @@ export function parseSweepOptions(args: string[]) {
       only: { type: "string" },
       "cpu-prof": { type: "boolean", default: false },
       "fresh-each": { type: "boolean", default: false },
+      evict: { type: "boolean", default: false },
       "ignore-load": { type: "boolean", default: false },
       keep: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -689,25 +692,20 @@ function routeManifest(routes: InspectedRoute[]) {
 
 // --- daemon ----------------------------------------------------------------
 
-function snapshot(source: string, target: string) {
+async function snapshot(source: string, target: string) {
   if (!fs.existsSync(source)) throw new Error(`source ledger does not exist: ${source}`);
   const db = new SqliteDatabase(source, { readonly: true, fileMustExist: true });
   try {
-    db.prepare("VACUUM INTO ?").run(target);
+    await db.backup(target);
   } finally {
     db.close();
   }
 }
 
-function copySqlite(source: string, target: string) {
+async function copySqlite(source: string, target: string) {
   if (!fs.existsSync(source)) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const db = new SqliteDatabase(source, { readonly: true, fileMustExist: true });
-  try {
-    db.prepare("VACUUM INTO ?").run(target);
-  } finally {
-    db.close();
-  }
+  await snapshot(source, target);
   return true;
 }
 
@@ -928,6 +926,13 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
     await new Promise((resolve) => setTimeout(resolve, BASELINE_MS));
     const baselineMs = await readTurn(daemon.socketPath);
     const measure = async (entry: Planned, request: SweepRequest, pass: number, record = true) => {
+      if (opts.evict && pass === 1 && record) {
+        for (const file of [run.dbCopy, `${run.dbCopy}-wal`]) {
+          if (file.endsWith("-wal") && !fs.existsSync(file)) continue;
+          const result = evictFileCache(file);
+          if (!result.ok) throw result.error;
+        }
+      }
       await readTurn(daemon.socketPath);
       const t0 = Date.now();
       const started = performance.now();
@@ -959,10 +964,20 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
       }
     }
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise");
-    // Reads run pass by pass, so every read's first call precedes all warm calls.
-    for (let pass = 1; pass <= passes; pass += 1) {
-      for (const entry of exercised.filter((candidate) => !isWrite(candidate.route))) {
-        for (const request of requestsOf(entry)) await measure(entry, request, pass);
+    const reads = exercised.filter((candidate) => !isWrite(candidate.route));
+    if (opts.evict) {
+      // Keep warm reads ahead of the next eviction, which would cool them again.
+      for (const entry of reads) {
+        for (const request of requestsOf(entry)) {
+          for (let pass = 1; pass <= passes; pass += 1) await measure(entry, request, pass);
+        }
+      }
+    } else {
+      // Reads run pass by pass, so every read's first call precedes all warm calls.
+      for (let pass = 1; pass <= passes; pass += 1) {
+        for (const entry of reads) {
+          for (const request of requestsOf(entry)) await measure(entry, request, pass);
+        }
       }
     }
     // Writes run route by route in WRITES order, so a bulk write such as
@@ -1068,7 +1083,7 @@ async function main() {
 
   try {
     const snapshotStarted = performance.now();
-    snapshot(sourceDb, dbCopy);
+    await snapshot(sourceDb, dbCopy);
     sanitizePreviewDatabase(dbCopy);
     const conversationsDir = path.join(root, "conversations");
     await seedProjectedConversationStructureCache({
@@ -1076,7 +1091,7 @@ async function main() {
       targetCache: path.join(conversationsDir, "structure.db"),
       projectedDb: dbCopy,
     });
-    copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
+    await copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
     const cacheSnapshot = path.join(root, "seeded-conversations");
     fs.mkdirSync(conversationsDir, { recursive: true });
     fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true });
@@ -1113,7 +1128,7 @@ async function main() {
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
       .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
     const readSnapshot = path.join(root, "before-measurement.db");
-    snapshot(dbCopy, readSnapshot);
+    await snapshot(dbCopy, readSnapshot);
     const sessions = opts["fresh-each"]
       ? await sequential(exercised.map((entry) => () => measureSession(run, [entry], opts["cpu-prof"]!)))
       : [await measureSession(run, planned, opts["cpu-prof"]!)];
@@ -1121,7 +1136,7 @@ async function main() {
 
     const trialsOf = (entry: Planned) => [...new Set(entry.measured.map((reading) => reading.trial))]
       .map((trial) => entry.measured.filter((reading) => reading.trial === trial));
-    const suspects = exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
+    const suspects = opts.evict ? [] : exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
     // Checkpoint before retries: exception validity belongs to the main snapshot.
     const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
     const writesByKey = new Map(exercised.filter((entry) => isWrite(entry.route))
@@ -1181,8 +1196,10 @@ async function main() {
       stall_budget_ms: EVENT_LOOP_STALL_BUDGET_MS,
       passes,
       fresh_each: Boolean(opts["fresh-each"]),
-      confirmation_trials: CONFIRMATION_TRIALS,
-      judging_rule: "same call kind reaches threshold in main and every confirmation trial",
+      evict: Boolean(opts.evict),
+      timing_gate: !opts.evict,
+      confirmation_trials: opts.evict ? 0 : CONFIRMATION_TRIALS,
+      judging_rule: opts.evict ? "report only; OS cache evicted before each first call" : "same call kind reaches threshold in main and every confirmation trial",
       load: { ...load, end: loadEnd },
       daemon_startup_ms: sessions.map((session) => session.startupMs),
       idle_baseline_ms: Math.max(...sessions.map((session) => session.baselineMs)),
@@ -1207,6 +1224,7 @@ async function main() {
         method: entry.route.method,
         path: entry.route.path,
         first_call_turn_ms: firstCallMs,
+        cold_cache_turn_ms: opts.evict ? firstCallMs : null,
         warm_turn_ms: warmMs,
         trials: trialsOf(entry).map((readings) => {
           const turns = trialTurns(readings);
@@ -1219,7 +1237,7 @@ async function main() {
 
     if (opts.json) console.log(JSON.stringify(report, null, 2));
     else printReport(report);
-    return offenders.length === 0 && unclassified.length === 0 && failedRequests.length === 0 && exceptionProblems.length === 0 ? 0 : 1;
+    return (opts.evict || (offenders.length === 0 && exceptionProblems.length === 0)) && unclassified.length === 0 && failedRequests.length === 0 ? 0 : 1;
   } finally {
     if (!interrupted) {
       process.removeListener("SIGINT", onSigint);
@@ -1259,8 +1277,9 @@ function printReport(report: Record<string, any>) {
   lines.push(`load wait ${report.load.waited_ms} ms; measurement-start load ${report.load.measurement_start}; ${report.counts.remeasured} routes remeasured in ${report.confirmation_trials} fresh trials each`);
   lines.push(`${report.counts.routes} routes: ${report.counts.measured} measured, ${report.counts.skipped} skipped, ${report.counts.unclassified} unclassified; ${report.counts.requests} requests, ${report.counts.failed_requests} failed`);
   lines.push(`daemon startup ${report.daemon_startup_ms.length === 1 ? report.daemon_startup_ms[0] : `max ${Math.max(...report.daemon_startup_ms)}`} ms; longest idle turn ${report.idle_baseline_ms} ms over ${BASELINE_MS / 1000} s`);
+  if (report.evict) lines.push("OS file cache evicted before first calls; timing results are report-only (no confirmation trials or budget gate)");
   lines.push("");
-  lines.push(report.offenders.length ? `offenders (same call kind >= ${report.threshold_ms} ms in every trial; first call / warm minima):` : "no offenders");
+  lines.push(report.offenders.length ? (report.evict ? `over budget (report only; cold-cache / warm):` : `offenders (same call kind >= ${report.threshold_ms} ms in every trial; first call / warm minima):`) : "no offenders");
   for (const offender of report.offenders) {
     lines.push(`  ${String(offender.first_call_turn_ms).padStart(6)} / ${String(offender.warm_turn_ms).padStart(5)} ms  ${offender.method} ${offender.path}   (${offender.worst_request.label}, pass ${offender.worst_request.pass}, ${offender.worst_request.duration_ms} ms, ${offender.worst_request.bytes} B)`);
     if (offender.profile) lines.push(offender.profile.split("\n").map((line: string) => `      ${line}`).join("\n"));
@@ -1270,8 +1289,8 @@ function printReport(report: Record<string, any>) {
   for (const entry of report.unclassified) lines.push(`unclassified ${entry.method} ${entry.path}: ${entry.reason}`);
   for (const entry of report.failed_requests) lines.push(`failed ${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`);
   lines.push("");
-  lines.push("measured (minimum across trials of first-call / warm maxima), worst first:");
-  for (const entry of report.measured.slice(0, 30)) lines.push(`  ${String(entry.first_call_turn_ms).padStart(6)} / ${String(entry.warm_turn_ms).padStart(5)} ms  ${entry.method} ${entry.path}`);
+  lines.push(report.evict ? "measured (cold-cache / warm turns), worst first:" : "measured (minimum across trials of first-call / warm maxima), worst first:");
+  for (const entry of (report.evict ? report.measured : report.measured.slice(0, 30))) lines.push(`  ${String(entry.first_call_turn_ms).padStart(6)} / ${String(entry.warm_turn_ms).padStart(5)} ms  ${entry.method} ${entry.path}`);
   for (const entry of report.measured.filter((entry: { trials: unknown[] }) => entry.trials.length > 1)) {
     lines.push(`  trials ${entry.method} ${entry.path}: ${entry.trials.map((trial: { trial: number; first_call_turn_ms: number; warm_turn_ms: number }) => `${trial.trial}: ${trial.first_call_turn_ms}/${trial.warm_turn_ms} ms`).join(", ")}`);
   }

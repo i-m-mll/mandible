@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -243,7 +244,7 @@ describe("graph route", () => {
   function graphRouter(): Router {
     setDb(db);
     const router = new Router();
-    registerGraphRoutes(router);
+    registerGraphRoutes(router, inlineLedgerReader());
     return router;
   }
 

@@ -1,3 +1,5 @@
+import type { LedgerReader } from "../ledger-reads/index.js";
+import { readableArtifactEntries } from "../ledger-reads/artifacts.js";
 import { broadcast } from "../sse.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import {
@@ -29,7 +31,6 @@ import {
   deleteArtifactDraft,
   listArtifactBlobs,
   listLogicalArtifacts,
-  listArtifactSeries,
   listArtifacts,
   listProjectArtifactAssociations,
   listProviders,
@@ -62,7 +63,7 @@ import type { ArtifactVersionSourceKind } from "../types.js";
 import { isInlineManagedArtifactByteRequest } from "../security/operation-policy.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
-import { resolveArtifactProject, resolveArtifactProjects, resolveIssueProject } from "../permissions/resources.js";
+import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
 import {
   PermissionError,
   requireProjectAccess,
@@ -125,34 +126,6 @@ function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef:
     }
     throw error;
   }
-}
-
-/**
- * The entries of a list the caller may read: an entry is kept when its
- * artifact has no project, or one project the caller can read. An entry
- * without an artifact is kept.
- */
-function readableArtifactEntries<T>(req: RequestLike, entries: T[], artifactId: (entry: T) => string | null): T[] {
-  const db = getDb();
-  const projects = resolveArtifactProjects(db, entries.flatMap((entry) => artifactId(entry) ?? []));
-  const readable = new Map<string, boolean>();
-  return entries.filter((entry) => {
-    const id = artifactId(entry);
-    if (id === null) return true;
-    const project = projects.get(id)!;
-    if (!project.ok) return project.reason === "unassociated";
-    let allowed = readable.get(project.project_id);
-    if (allowed === undefined) {
-      try {
-        requireProjectAccess(db, req, project.project_id, "read");
-        allowed = true;
-      } catch {
-        allowed = false;
-      }
-      readable.set(project.project_id, allowed);
-    }
-    return allowed;
-  });
 }
 
 function enforceArtifactAccess(
@@ -363,7 +336,7 @@ function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
   return { id: combined };
 }
 
-export function registerProviderRoutes(app: RouteRegistrar): void {
+export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader): void {
   app.get("/api/providers", (_req, res) => {
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { providers: listProviders(getDb()) }));
   }, { operation: { id: "get:/api/providers", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
@@ -561,7 +534,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
     });
-    const readable = readableArtifactEntries(req, artifacts, (artifact) => artifact.id);
+    const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
   }, { operation: { id: "get:/api/artifacts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -590,7 +563,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    const readable = readableArtifactEntries(req, artifacts, (artifact) => artifact.id);
+    const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
   }, { operation: { id: "get:/api/artifacts/logical", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -645,9 +618,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { operation: { id: "post:/api/artifacts/associations", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
-  app.get("/api/artifacts/series", (req, res) => {
+  app.get("/api/artifacts/series", async (req, res) => {
     const linked = linkedEntityQuery(req);
-    const series = listArtifactSeries(getDb(), {
+    const result = await reader.run("artifact_series", { identity: req.client_identity ?? null, options: {
       q: queryString(req, "q"),
       hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
       repo: queryString(req, "repo"),
@@ -661,9 +634,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       linkedEntityId: linked.id,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
-    });
-    const readable = readableArtifactEntries(req, series, (entry) => entry.latest_artifact?.id ?? null);
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { series: readable }));
+    } });
+    sendJson(res, 200, result);
   }, { operation: { id: "get:/api/artifacts/series", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/artifacts/link", (req, res) => {

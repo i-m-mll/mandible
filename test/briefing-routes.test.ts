@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -93,7 +94,7 @@ beforeEach(() => {
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });
   humanId = createUser(db, { slug: "human", kind: "human", display_name: "Human" }).id;
   router = new Router({ clientAuth: new SlugGate(() => db) });
-  registerBriefingRoutes(router, db);
+  registerBriefingRoutes(router, db, inlineLedgerReader(() => db));
 });
 
 afterEach(() => {
@@ -296,7 +297,7 @@ describe("plural Briefing routes", () => {
       clientAuth: new SlugGate(() => db),
       instance: copiedPreviewInstance(),
     });
-    registerBriefingRoutes(rejectMode, db);
+    registerBriefingRoutes(rejectMode, db, inlineLedgerReader(() => db));
     expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
       credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true } });
     expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes",
@@ -849,7 +850,7 @@ describe("plural Briefing routes", () => {
       clientAuth: new SlugGate(() => db),
       instance: copiedPreviewInstance(),
     });
-    registerBriefingRoutes(preview, db);
+    registerBriefingRoutes(preview, db, inlineLedgerReader(() => db));
 
     const answer = await preview.invoke({
       method: "POST",
@@ -914,7 +915,7 @@ describe("plural Briefing routes", () => {
       clientAuth: new SlugGate(() => db),
       instance: copiedPreviewInstance(),
     });
-    registerBriefingRoutes(preview, db);
+    registerBriefingRoutes(preview, db, inlineLedgerReader(() => db));
 
     const selected = await preview.invoke({
       method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`, credential: "operator",
@@ -943,7 +944,7 @@ describe("plural Briefing routes", () => {
       clientAuth: new SlugGate(() => db),
       instance: copiedPreviewInstance(),
     });
-    registerBriefingRoutes(preview, db);
+    registerBriefingRoutes(preview, db, inlineLedgerReader(() => db));
     const request = (credential?: string) => preview.invoke({
       method: "POST",
       url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,

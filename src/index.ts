@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
+import { startLedgerWarmTimer, warmLedger } from "./ledger-warm.js";
 import {
   configureDaemonLogger,
   flushDaemonLogger,
@@ -71,6 +72,7 @@ import { registerBackupRoutes } from "./routes/backup.js";
 import { MetadataBackupService } from "./metadata-backup-service.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
+import { workerLedgerReaderPool } from "./ledger-reads/index.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
 import { registerBriefingRoutes } from "./routes/briefing.js";
@@ -193,6 +195,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // longest measured ingestion transaction (a 1.4 GB transcript) holds the lock
   // for about 0.9 s, within openDb's busy budget. Issue: 29e81ab.
   const db = openDb(dbPath);
+  const ledgerWarm = instance.role === "main"
+    ? warmLedger(db.name, (level, event, details) => logger(level, event, details))
+    : null;
+  const ledgerReader = workerLedgerReaderPool(db.name, { size: 2 });
   let operationalLogStore: OperationalLogStore | null = null;
   if (operationalMutationsAllowed) {
     try {
@@ -283,7 +289,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // self-update requests and runs it automatically.
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
   });
-  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
+  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager, ledgerReader);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"
       ? path.join(instance.preview_root!, "work", "repos.json")
@@ -300,7 +306,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
-  registerIssueRoutes(router, workScanner, issueDeps);
+  registerIssueRoutes(router, workScanner, issueDeps, ledgerReader);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router, instance.role);
@@ -312,8 +318,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const reaperTimer = new ReaperTimer(sessionRegistry, logger);
   registerSessionRoutes(router, sessionRegistry, workScanner);
 
-  registerGraphRoutes(router);
-  registerProviderRoutes(router);
+  registerGraphRoutes(router, ledgerReader);
+  registerProviderRoutes(router, ledgerReader);
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
@@ -354,7 +360,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.sessionManager = sessionManager;
   issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
-  registerInboxRoutes(router, sessionManager, authQueue, workScanner);
+  registerInboxRoutes(router, sessionManager, authQueue, workScanner, ledgerReader);
   registerDashboardRoutes(router, db);
   const detachDashboardBadgePublisher = attachDashboardBadgePublisher(sse, () => readDashboardBadgeCounts(db), logger);
   registerConsoleRoutes(router, sessionManager);
@@ -364,10 +370,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
   registerWebhookRoutes(router, sessionManager);
-  registerTimelineRoutes(router);
+  registerTimelineRoutes(router, ledgerReader);
   registerSpacesRoutes(router);
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
-  registerBriefingRoutes(router, db);
+  registerBriefingRoutes(router, db, ledgerReader);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
@@ -562,6 +568,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so health reports ready:true and the UI can drop the splash / re-enable
   // mutation controls. Deferred background scans (issue scan, session
   // discovery) run after this point and intentionally do NOT gate readiness.
+  await ledgerWarm;
+  const ledgerWarmTimer = instance.role === "main" ? startLedgerWarmTimer(db.name, logger) : null;
   setDaemonReady(true);
   readyRestartGeneration = restartAvailability?.markReady() ?? null;
   logger("info", "daemon_ready", { port: actualPort });
@@ -715,6 +723,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       process.exit(1);
     }
     closing = true;
+    const ledgerWarmDrain = ledgerWarmTimer?.stop();
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
     const scannerDrain = workScanner.stop();
@@ -769,12 +778,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     await reaperDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
+    await ledgerWarmDrain;
     clearTimeout(shutdownTimeout);
     // Persist the final batch of queued daemon_log rows before the connection
     // closes so recent activity is not lost on a clean shutdown.
     flushDaemonLogger();
     stopDaemonLogger();
     operationalLogStore?.close();
+    await ledgerReader.close();
     db.close();
     removePidFile(options.pidFilePath);
     logger("info", "server_stopped");
