@@ -23,6 +23,7 @@ import {
   PROJECT_ISSUE_READ_INDEX_SQL,
   ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL,
   AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
+  AUTH_REQUEST_HISTORY_INDEX_SQL,
   GRAPH_READ_INDEX_SQL,
   ISSUE_EVENT_READ_INDEX_SQL,
   createFreshSchemaBaseline,
@@ -2188,6 +2189,7 @@ export const MIGRATIONS: readonly Migration[] = [
     ...GRAPH_READ_INDEX_SQL,
   ] },
   { version: 217, name: "issue_event_read_indexes", statements: [...ISSUE_EVENT_READ_INDEX_SQL] },
+  { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
 ];
 
 /**
