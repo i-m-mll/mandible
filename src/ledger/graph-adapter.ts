@@ -16,13 +16,21 @@ interface ProjectInfo {
   candidates: string[];
 }
 
+/** What every visible issue needs: identity, filtering, and display ranking. */
 interface IssueRow {
   id: string;
   short_id: string;
   project_id: string;
   title: string;
-  body: string;
   status: string;
+  created_at: number | string;
+  updated_at: number | string;
+}
+
+/** What only a displayed issue's full node needs. */
+interface IssueDetailRow {
+  id: string;
+  body: string;
   resolution: string | null;
   kind: string;
   priority: string;
@@ -33,8 +41,6 @@ interface IssueRow {
   evidence_method: string | null;
   evidence_id: string | null;
   source: string;
-  created_at: number | string;
-  updated_at: number | string;
   closed_at: number | string | null;
 }
 
@@ -68,10 +74,21 @@ interface AttachmentAnnotation {
 }
 
 export interface LedgerIssueProjection {
+  /**
+   * Every visible issue, carrying only what display selection ranks by: id,
+   * type, label, status, timestamps, and graph activity time.
+   */
   nodes: GraphNode[];
   edges: GraphEdge[];
   issueNodeIds: Set<string>;
   issueNodeIdByLedgerId: Map<string, string>;
+  /** The given nodes with each issue node replaced by its full node, reading only those issues' details. */
+  detail(nodes: readonly GraphNode[]): GraphNode[];
+}
+
+/** A JSON array of ids, for `IN (SELECT value FROM json_each(?))`. */
+function idList(ids: Iterable<string>): string {
+  return JSON.stringify([...ids]);
 }
 
 
@@ -215,41 +232,42 @@ function rowsByIssue<T extends { issue_id: string }>(rows: T[]): Map<string, T[]
   return grouped;
 }
 
-function getAliasRows(db: Db): Map<string, AliasRow[]> {
+function getAliasRows(db: Db, issueIds: Set<string>): Map<string, AliasRow[]> {
   if (!tableExists(db, "ledger_issue_aliases")) return new Map();
   return rowsByIssue(db.prepare(
     `SELECT issue_id, alias_kind, alias, external_id, source, is_primary
        FROM ledger_issue_aliases
+      WHERE issue_id IN (SELECT value FROM json_each(?))
       ORDER BY is_primary DESC, alias_kind, alias`,
-  ).all() as AliasRow[]);
+  ).all(idList(issueIds)) as AliasRow[]);
 }
 
 function displayIssueId(issue: IssueRow): string {
   return issue.short_id || issue.id.slice(0, 7);
 }
 
-function getLabelsByIssue(db: Db): Map<string, string[]> {
+function getLabelsByIssue(db: Db, issueIds: Set<string>): Map<string, string[]> {
   if (!tableExists(db, "ledger_labels")) return new Map();
   const grouped = rowsByIssue(db.prepare(
     `SELECT issue_id, label
        FROM ledger_labels
-      WHERE deleted_at IS NULL
+      WHERE deleted_at IS NULL AND issue_id IN (SELECT value FROM json_each(?))
       ORDER BY label`,
-  ).all() as Array<{ issue_id: string; label: string }>);
+  ).all(idList(issueIds)) as Array<{ issue_id: string; label: string }>);
   return new Map(Array.from(grouped.entries()).map(([issueId, labels]) => [
     issueId,
     labels.map((row) => row.label),
   ]));
 }
 
-function getCommentStats(db: Db): Map<string, { count: number; latest_comment_at?: string }> {
+function getCommentStats(db: Db, issueIds: Set<string>): Map<string, { count: number; latest_comment_at?: string }> {
   if (!tableExists(db, "ledger_comments")) return new Map();
   const rows = db.prepare(
     `SELECT issue_id, COUNT(*) AS count, MAX(created_at) AS latest_comment_at
        FROM ledger_comments
-      WHERE deleted_at IS NULL
+      WHERE deleted_at IS NULL AND issue_id IN (SELECT value FROM json_each(?))
       GROUP BY issue_id`,
-  ).all() as Array<{ issue_id: string; count: number; latest_comment_at: number | null }>;
+  ).all(idList(issueIds)) as Array<{ issue_id: string; count: number; latest_comment_at: number | null }>;
   return new Map(rows.map((row) => [
     row.issue_id,
     { count: row.count, latest_comment_at: toIso(row.latest_comment_at) },
@@ -261,7 +279,7 @@ function getAuthAnnotations(db: Db): Map<string, AttachmentAnnotation[]> {
   const rows = db.prepare(
     `SELECT l.issue_id, l.auth_request_id, l.link_type, a.title, a.status
        FROM ledger_auth_issue_links l
-       JOIN auth_requests a ON a.id = l.auth_request_id
+       JOIN auth_requests a INDEXED BY idx_auth_requests_activity ON a.id = l.auth_request_id
       ORDER BY l.created_at DESC`,
   ).all() as Array<{
     issue_id: string;
@@ -402,7 +420,7 @@ function getIssueActivityTimes(db: Db, issues: IssueRow[]): Map<string, number> 
                   ELSE l.created_at
                 END) AS activity_at
            FROM ledger_auth_issue_links l
-           LEFT JOIN auth_requests a ON a.id = l.auth_request_id
+           LEFT JOIN auth_requests a INDEXED BY idx_auth_requests_activity ON a.id = l.auth_request_id
           GROUP BY l.issue_id`,
       ).all() as Array<{ issue_id: string; activity_at: number | null }>);
     } else {
@@ -549,10 +567,7 @@ export function buildLedgerIssueProjection(
 
   const projectInfos = getProjectInfos(db);
   const issueRows = db.prepare(
-    `SELECT id, short_id, project_id, title, body, status, resolution, kind, priority,
-            author_actor_id, author_actor_type, author_display,
-            author_user_id, evidence_method, evidence_id, source,
-            created_at, updated_at, closed_at
+    `SELECT id, short_id, project_id, title, status, created_at, updated_at
        FROM ledger_issues
       WHERE deleted_at IS NULL
       ORDER BY updated_at DESC, created_at DESC`,
@@ -572,23 +587,18 @@ export function buildLedgerIssueProjection(
       edges: [],
       issueNodeIds: new Set(),
       issueNodeIdByLedgerId: new Map(),
+      detail: (nodes) => [...nodes],
     };
   }
 
   const visibleIssueIds = new Set(visibleIssues.map((issue) => issue.id));
-  const aliasesByIssue = getAliasRows(db);
-  const labelsByIssue = getLabelsByIssue(db);
-  const commentStats = getCommentStats(db);
-  const authByIssue = getAuthAnnotations(db);
-  const sessionsByIssue = getSessionSummaries(db, visibleIssueIds);
   const relationships = getRelationships(db).filter((rel) =>
     visibleIssueIds.has(rel.source_issue_id) && visibleIssueIds.has(rel.target_issue_id)
   );
-  const layoutHints = buildLayoutHints(visibleIssueIds, relationships);
-  const attributionResolver = new AttributionReadResolver(db);
 
   const issueNodeIdByLedgerId = new Map<string, string>();
   const issueNodeIds = new Set<string>();
+  const issueByNodeId = new Map<string, IssueRow>();
   for (const issue of visibleIssues) {
     const project = projectInfos.get(issue.project_id);
     const repoId = project?.repo_id ?? issue.project_id;
@@ -596,106 +606,21 @@ export function buildLedgerIssueProjection(
     const nodeId = `issue:${repoId}:${displayId}`;
     issueNodeIdByLedgerId.set(issue.id, nodeId);
     issueNodeIds.add(nodeId);
+    issueByNodeId.set(nodeId, issue);
   }
 
-  const relationshipCounts = new Map<string, { incoming: number; outgoing: number; children: number; parents: number }>();
-  for (const rel of relationships) {
-    const source = relationshipCounts.get(rel.source_issue_id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
-    source.outgoing += 1;
-    if (rel.relationship_type === "parent_child") source.children += 1;
-    relationshipCounts.set(rel.source_issue_id, source);
+  const graphActivityAt = (issue: IssueRow) =>
+    activityByIssue.get(issue.id) ?? maxTimestamp(issue.updated_at, issue.created_at);
 
-    const target = relationshipCounts.get(rel.target_issue_id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
-    target.incoming += 1;
-    if (rel.relationship_type === "parent_child") target.parents += 1;
-    relationshipCounts.set(rel.target_issue_id, target);
-  }
-
-  const nodes: GraphNode[] = visibleIssues.map((issue) => {
-    const project = projectInfos.get(issue.project_id);
-    const aliases = aliasesByIssue.get(issue.id) ?? [];
-    const labels = labelsByIssue.get(issue.id) ?? [];
-    const authAnnotations = authByIssue.get(issue.id) ?? [];
-    const sessionSummary = sessionsByIssue.get(issue.id) ?? { live: [], historical_count: 0, live_count: 0 };
-    const comments = commentStats.get(issue.id);
-    const relationshipSummary = relationshipCounts.get(issue.id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
-    const displayId = displayIssueId(issue);
-    const nodeId = issueNodeIdByLedgerId.get(issue.id)!;
-    const bodyExcerpt = issue.body.trim().slice(0, 360);
-    const annotations = [...authAnnotations, ...sessionSummary.live];
-    const graphActivityAt = activityByIssue.get(issue.id) ?? maxTimestamp(issue.updated_at, issue.created_at);
-    const authorAttribution = attributionResolver.attribution({
-      user_id: issue.author_user_id,
-      evidence_method: issue.evidence_method,
-      evidence_id: issue.evidence_id,
-    });
-    const authorDisplay = resolvedActorDisplay(
-      issue.author_display,
-      issue.author_actor_type,
-      authorAttribution,
-    );
-
-    return {
-      id: nodeId,
-      type: "issue",
-      label: issue.title,
-      status: issue.status,
-      labels,
-      repo: project?.repo_name,
-      repo_id: project?.repo_id ?? issue.project_id,
-      created_at: toIso(issue.created_at),
-      updated_at: toIso(issue.updated_at),
-      summary: {
-        issue_id: displayId,
-        kind: issue.kind,
-        priority: issue.priority,
-        author: authorDisplay,
-        comments: comments?.count ?? 0,
-        children: relationshipSummary.children,
-        parents: relationshipSummary.parents,
-        auth_evidence: authAnnotations.length,
-        live_sessions: sessionSummary.live_count,
-        historical_sessions: sessionSummary.historical_count,
-        graph_activity_at: toIso(graphActivityAt),
-      },
-      detail: {
-        ledger_issue_id: issue.id,
-        project_id: issue.project_id,
-        repo_root: project?.repo_root,
-        display_id: displayId,
-        aliases: aliases.map((alias) => ({
-          kind: alias.alias_kind,
-          alias: alias.alias,
-          source: alias.source,
-          primary: alias.is_primary === 1,
-        })),
-        body_excerpt: bodyExcerpt || undefined,
-        resolution: issue.resolution,
-        source: issue.source,
-        author_actor_id: issue.author_actor_id,
-        author_actor_type: issue.author_actor_type,
-        author_legacy_display: issue.author_display,
-        author_attribution: authorAttribution,
-        closed_at: toIso(issue.closed_at),
-        issue_created_at: toIso(issue.created_at),
-        issue_updated_at: toIso(issue.updated_at),
-        graph_activity_at: toIso(graphActivityAt),
-        graph_activity_time_fields: [
-          "issue.updated_at",
-          "issue.created_at",
-          "comments.created_at/updated_at",
-          "auth_links.created_at/auth.updated_at/resolved_at",
-          "session_links.created_at/last_seen_at",
-        ],
-        latest_comment_at: comments?.latest_comment_at,
-        relationship_counts: relationshipSummary,
-        annotations,
-        layout: layoutHints.get(issue.id),
-      },
-      actions: [{ id: "open-issue", label: "Open Issue", kind: "navigate", target: nodeId }],
-      source: "ledger",
-    };
-  });
+  const nodes: GraphNode[] = visibleIssues.map((issue) => ({
+    id: issueNodeIdByLedgerId.get(issue.id)!,
+    type: "issue",
+    label: issue.title,
+    status: issue.status,
+    created_at: toIso(issue.created_at),
+    updated_at: toIso(issue.updated_at),
+    summary: { graph_activity_at: toIso(graphActivityAt(issue)) },
+  }));
 
   const edges: GraphEdge[] = relationships.map((rel) => {
     const source = issueNodeIdByLedgerId.get(rel.source_issue_id)!;
@@ -724,5 +649,130 @@ export function buildLedgerIssueProjection(
     };
   });
 
-  return { nodes, edges, issueNodeIds, issueNodeIdByLedgerId };
+  const detail = (selected: readonly GraphNode[]): GraphNode[] => {
+    const issues = selected.flatMap((node) => {
+      const issue = node.type === "issue" ? issueByNodeId.get(node.id) : undefined;
+      return issue ? [issue] : [];
+    });
+    if (issues.length === 0) return [...selected];
+    const issueIds = new Set(issues.map((issue) => issue.id));
+    const issueDetails = new Map((db.prepare(
+      `SELECT id, body, resolution, kind, priority,
+              author_actor_id, author_actor_type, author_display,
+              author_user_id, evidence_method, evidence_id, source, closed_at
+         FROM ledger_issues
+        WHERE id IN (SELECT value FROM json_each(?))`,
+    ).all(idList(issueIds)) as IssueDetailRow[]).map((row) => [row.id, row]));
+    const aliasesByIssue = getAliasRows(db, issueIds);
+    const labelsByIssue = getLabelsByIssue(db, issueIds);
+    const commentStats = getCommentStats(db, issueIds);
+    const authByIssue = getAuthAnnotations(db);
+    const sessionsByIssue = getSessionSummaries(db, issueIds);
+    const layoutHints = buildLayoutHints(visibleIssueIds, relationships);
+    const attributionResolver = new AttributionReadResolver(db);
+
+    const relationshipCounts = new Map<string, { incoming: number; outgoing: number; children: number; parents: number }>();
+    for (const rel of relationships) {
+      const source = relationshipCounts.get(rel.source_issue_id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
+      source.outgoing += 1;
+      if (rel.relationship_type === "parent_child") source.children += 1;
+      relationshipCounts.set(rel.source_issue_id, source);
+
+      const target = relationshipCounts.get(rel.target_issue_id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
+      target.incoming += 1;
+      if (rel.relationship_type === "parent_child") target.parents += 1;
+      relationshipCounts.set(rel.target_issue_id, target);
+    }
+
+    return selected.map((node) => {
+      const issue = node.type === "issue" ? issueByNodeId.get(node.id) : undefined;
+      if (!issue) return node;
+      const project = projectInfos.get(issue.project_id);
+      const aliases = aliasesByIssue.get(issue.id) ?? [];
+      const labels = labelsByIssue.get(issue.id) ?? [];
+      const authAnnotations = authByIssue.get(issue.id) ?? [];
+      const sessionSummary = sessionsByIssue.get(issue.id) ?? { live: [], historical_count: 0, live_count: 0 };
+      const comments = commentStats.get(issue.id);
+      const relationshipSummary = relationshipCounts.get(issue.id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
+      const displayId = displayIssueId(issue);
+      const nodeId = node.id;
+      const facts = issueDetails.get(issue.id)!;
+      const bodyExcerpt = facts.body.trim().slice(0, 360);
+      const annotations = [...authAnnotations, ...sessionSummary.live];
+      const activityAt = graphActivityAt(issue);
+      const authorAttribution = attributionResolver.attribution({
+        user_id: facts.author_user_id,
+        evidence_method: facts.evidence_method,
+        evidence_id: facts.evidence_id,
+      });
+      const authorDisplay = resolvedActorDisplay(
+        facts.author_display,
+        facts.author_actor_type,
+        authorAttribution,
+      );
+
+      return {
+        id: nodeId,
+        type: "issue",
+        label: issue.title,
+        status: issue.status,
+        labels,
+        repo: project?.repo_name,
+        repo_id: project?.repo_id ?? issue.project_id,
+        created_at: toIso(issue.created_at),
+        updated_at: toIso(issue.updated_at),
+        summary: {
+          issue_id: displayId,
+          kind: facts.kind,
+          priority: facts.priority,
+          author: authorDisplay,
+          comments: comments?.count ?? 0,
+          children: relationshipSummary.children,
+          parents: relationshipSummary.parents,
+          auth_evidence: authAnnotations.length,
+          live_sessions: sessionSummary.live_count,
+          historical_sessions: sessionSummary.historical_count,
+          graph_activity_at: toIso(activityAt),
+        },
+        detail: {
+          ledger_issue_id: issue.id,
+          project_id: issue.project_id,
+          repo_root: project?.repo_root,
+          display_id: displayId,
+          aliases: aliases.map((alias) => ({
+            kind: alias.alias_kind,
+            alias: alias.alias,
+            source: alias.source,
+            primary: alias.is_primary === 1,
+          })),
+          body_excerpt: bodyExcerpt || undefined,
+          resolution: facts.resolution,
+          source: facts.source,
+          author_actor_id: facts.author_actor_id,
+          author_actor_type: facts.author_actor_type,
+          author_legacy_display: facts.author_display,
+          author_attribution: authorAttribution,
+          closed_at: toIso(facts.closed_at),
+          issue_created_at: toIso(issue.created_at),
+          issue_updated_at: toIso(issue.updated_at),
+          graph_activity_at: toIso(activityAt),
+          graph_activity_time_fields: [
+            "issue.updated_at",
+            "issue.created_at",
+            "comments.created_at/updated_at",
+            "auth_links.created_at/auth.updated_at/resolved_at",
+            "session_links.created_at/last_seen_at",
+          ],
+          latest_comment_at: comments?.latest_comment_at,
+          relationship_counts: relationshipSummary,
+          annotations,
+          layout: layoutHints.get(issue.id),
+        },
+        actions: [{ id: "open-issue", label: "Open Issue", kind: "navigate", target: nodeId }],
+        source: "ledger",
+      };
+    });
+  };
+
+  return { nodes, edges, issueNodeIds, issueNodeIdByLedgerId, detail };
 }

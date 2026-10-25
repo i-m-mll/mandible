@@ -36,8 +36,52 @@ function upsertEdge(edges: Map<string, GraphEdge>, edge: GraphEdge): void {
 }
 
 
+/**
+ * The issue nodes whose human id (the third `:` part of the node id) starts
+ * with a ref, in the order of the node set, found by binary search over the
+ * human ids in sorted order.
+ */
+class IssueHumanIdIndex {
+  private sorted: ReadonlyArray<{ humanId: string; nodeId: string; order: number }> | null = null;
+
+  constructor(private readonly issueNodeIds: Iterable<string>) {}
+
+  private entries(): ReadonlyArray<{ humanId: string; nodeId: string; order: number }> {
+    if (this.sorted) return this.sorted;
+    const entries: Array<{ humanId: string; nodeId: string; order: number }> = [];
+    let order = 0;
+    for (const nodeId of this.issueNodeIds) {
+      const humanId = nodeId.split(":")[2];
+      if (humanId) entries.push({ humanId, nodeId, order });
+      order += 1;
+    }
+    return this.sorted = entries.sort((a, b) => (a.humanId < b.humanId ? -1 : a.humanId > b.humanId ? 1 : a.order - b.order));
+  }
+
+  nodesWithPrefix(ref: string): string[] {
+    const entries = this.entries();
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (entries[mid].humanId < ref) low = mid + 1;
+      else high = mid;
+    }
+    const matches: Array<{ nodeId: string; order: number }> = [];
+    for (let index = low; index < entries.length && entries[index].humanId.startsWith(ref); index += 1) {
+      matches.push(entries[index]);
+    }
+    return matches.sort((a, b) => a.order - b.order).map((match) => match.nodeId);
+  }
+
+  firstWithPrefix(ref: string): string | null {
+    return this.nodesWithPrefix(ref)[0] ?? null;
+  }
+}
+
 function issueNodeIdFromOperationalMetadata(
   issueNodeIds: Set<string>,
+  humanIds: IssueHumanIdIndex,
   metadataJson: string | null | undefined,
 ): string | null {
   const metadata = parseJsonObject(metadataJson);
@@ -50,14 +94,7 @@ function issueNodeIdFromOperationalMetadata(
     if (issueNodeIds.has(exact)) return exact;
   }
 
-  for (const issueNodeId of issueNodeIds) {
-    const parts = issueNodeId.split(":");
-    const issueHumanId = parts[2];
-    if (issueHumanId && (issueHumanId === issueRef || issueHumanId.startsWith(issueRef))) {
-      return issueNodeId;
-    }
-  }
-  return null;
+  return humanIds.firstWithPrefix(issueRef);
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -119,6 +156,7 @@ function getLedgerIssueNodes(
   issueNodeIds: Set<string>;
   issueNodeIdByLedgerId: Map<string, string>;
   edges: GraphEdge[];
+  detail: (nodes: readonly GraphNode[]) => GraphNode[];
 } | null {
   const projection = buildLedgerIssueProjection(getDb(), params);
   if (!projection) return null;
@@ -127,6 +165,7 @@ function getLedgerIssueNodes(
     issueNodeIds: projection.issueNodeIds,
     issueNodeIdByLedgerId: projection.issueNodeIdByLedgerId,
     edges: projection.edges,
+    detail: projection.detail,
   };
 }
 
@@ -215,7 +254,6 @@ interface AuthRow {
   status: string | null;
   repo: string | null;
   head_branch: string | null;
-  commit_message: string | null;
   issue_references: string | null;
   issue_closures: string | null;
   issue_ids: string | null;
@@ -226,7 +264,7 @@ interface AuthRow {
 function getAuthRows(params: GraphQueryParams, sinceMs: number | null, limit: number): AuthRow[] {
   const db = getDb();
   let query = `
-    SELECT id, title, status, repo, head_branch, commit_message,
+    SELECT id, title, status, repo, head_branch,
            issue_references, issue_closures, issue_ids, issues, created_at
       FROM auth_requests
      WHERE 1=1
@@ -251,6 +289,7 @@ function getAuthRows(params: GraphQueryParams, sinceMs: number | null, limit: nu
 function addAuthNodesAndEdges(
   authRows: AuthRow[],
   issueNodeIds: Set<string>,
+  humanIds: IssueHumanIdIndex,
   issueNodeIdByLedgerId: Map<string, string>,
   nodes: Map<string, GraphNode>,
   edges: Map<string, GraphEdge>,
@@ -283,21 +322,17 @@ function addAuthNodesAndEdges(
     }
 
     for (const ref of refs) {
-      for (const issueNodeId of issueNodeIds) {
-        const parts = issueNodeId.split(":");
-        const issueHumanId = parts[2];
-        if (issueHumanId && (issueHumanId === ref || issueHumanId.startsWith(ref))) {
-          const authNodeId = `auth_request:${auth.id}`;
-          if (authNodeIds.has(authNodeId)) {
-            upsertEdge(edges, {
-              id: `auth_issue:${auth.id}:${issueNodeId}`,
-              source: authNodeId,
-              target: issueNodeId,
-              type: "auth_issue",
-              edge_class: "lifecycle",
-              provenance: "auth_requests",
-            });
-          }
+      for (const issueNodeId of humanIds.nodesWithPrefix(ref)) {
+        const authNodeId = `auth_request:${auth.id}`;
+        if (authNodeIds.has(authNodeId)) {
+          upsertEdge(edges, {
+            id: `auth_issue:${auth.id}:${issueNodeId}`,
+            source: authNodeId,
+            target: issueNodeId,
+            type: "auth_issue",
+            edge_class: "lifecycle",
+            provenance: "auth_requests",
+          });
         }
       }
     }
@@ -319,7 +354,7 @@ function addAuthNodesAndEdges(
       }>;
       for (const row of rows) {
         const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
-          ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+          ?? issueNodeIdFromOperationalMetadata(issueNodeIds, humanIds, row.metadata_json);
         if (!issueNodeId) continue;
         upsertEdge(edges, {
           id: `ledger_auth_issue:${row.auth_request_id}:${row.ledger_issue_id}`,
@@ -338,6 +373,7 @@ function addAuthNodesAndEdges(
 
 function addSessionIssueEdges(
   issueNodeIds: Set<string>,
+  humanIds: IssueHumanIdIndex,
   issueNodeIdByLedgerId: Map<string, string>,
   sessionNodeIds: Set<string>,
   edges: Map<string, GraphEdge>,
@@ -361,7 +397,7 @@ function addSessionIssueEdges(
   for (const row of ledgerRows) {
     const sessionNodeId = `session:${row.session_id}`;
     const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
-      ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+      ?? issueNodeIdFromOperationalMetadata(issueNodeIds, humanIds, row.metadata_json);
     if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
       upsertEdge(edges, {
         id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
@@ -484,12 +520,14 @@ function emptyLedgerIssueProjection(): {
   issueNodeIds: Set<string>;
   issueNodeIdByLedgerId: Map<string, string>;
   edges: GraphEdge[];
+  detail: (nodes: readonly GraphNode[]) => GraphNode[];
 } {
   return {
     nodes: new Map(),
     issueNodeIds: new Set(),
     issueNodeIdByLedgerId: new Map(),
     edges: [],
+    detail: (nodes) => [...nodes],
   };
 }
 
@@ -507,6 +545,7 @@ export function buildOperationalGraph(
     issueNodeIds,
     issueNodeIdByLedgerId,
     edges: ledgerEdges,
+    detail,
   } = ledgerProjection;
   for (const edge of ledgerEdges) {
     upsertEdge(edges, edge);
@@ -517,13 +556,15 @@ export function buildOperationalGraph(
   const sessionRows = includeSessions ? getSessionRows(params, sinceIso, limit) : [];
   const authRows = includeAuthRequests ? getAuthRows(params, sinceMs, limit) : [];
   const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
-  addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
-  addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
+  const humanIds = new IssueHumanIdIndex(issueNodeIds);
+  addAuthNodesAndEdges(authRows, issueNodeIds, humanIds, issueNodeIdByLedgerId, nodes, edges);
+  addSessionIssueEdges(issueNodeIds, humanIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
   if (includeWorkUnits) {
     addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
   }
 
-  return selectGraphForDisplay(Array.from(nodes.values()), Array.from(edges.values()), spec);
+  const selected = selectGraphForDisplay(Array.from(nodes.values()), Array.from(edges.values()), spec);
+  return { ...selected, nodes: detail(selected.nodes) };
 }
 
 function normalizeRepoOption(value: string | null | undefined): string | undefined {
@@ -551,7 +592,7 @@ export function graphFilterOptions(): GraphPayload["filters"] {
   for (const branch of ledgerFilters.branches) branches.add(branch);
 
   try {
-    const rows = db.prepare("SELECT repo, head_branch FROM auth_requests").all() as Array<{
+    const rows = db.prepare("SELECT DISTINCT repo, head_branch FROM auth_requests").all() as Array<{
       repo: string | null;
       head_branch: string | null;
     }>;
@@ -564,7 +605,7 @@ export function graphFilterOptions(): GraphPayload["filters"] {
   }
 
   try {
-    const rows = db.prepare("SELECT repo_id, branch FROM work_units").all() as Array<{
+    const rows = db.prepare("SELECT DISTINCT repo_id, branch FROM work_units").all() as Array<{
       repo_id: string | null;
       branch: string | null;
     }>;
@@ -578,7 +619,7 @@ export function graphFilterOptions(): GraphPayload["filters"] {
 
   try {
     const knownRepoValues = Array.from(repos);
-    const rows = db.prepare("SELECT cwd, branch FROM sessions").all() as Array<{
+    const rows = db.prepare("SELECT DISTINCT cwd, branch FROM sessions").all() as Array<{
       cwd: string | null;
       branch: string | null;
     }>;
