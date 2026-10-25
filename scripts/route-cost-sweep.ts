@@ -692,25 +692,20 @@ function routeManifest(routes: InspectedRoute[]) {
 
 // --- daemon ----------------------------------------------------------------
 
-function snapshot(source: string, target: string) {
+async function snapshot(source: string, target: string) {
   if (!fs.existsSync(source)) throw new Error(`source ledger does not exist: ${source}`);
   const db = new SqliteDatabase(source, { readonly: true, fileMustExist: true });
   try {
-    db.prepare("VACUUM INTO ?").run(target);
+    await db.backup(target);
   } finally {
     db.close();
   }
 }
 
-function copySqlite(source: string, target: string) {
+async function copySqlite(source: string, target: string) {
   if (!fs.existsSync(source)) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const db = new SqliteDatabase(source, { readonly: true, fileMustExist: true });
-  try {
-    db.prepare("VACUUM INTO ?").run(target);
-  } finally {
-    db.close();
-  }
+  await snapshot(source, target);
   return true;
 }
 
@@ -1088,7 +1083,7 @@ async function main() {
 
   try {
     const snapshotStarted = performance.now();
-    snapshot(sourceDb, dbCopy);
+    await snapshot(sourceDb, dbCopy);
     sanitizePreviewDatabase(dbCopy);
     const conversationsDir = path.join(root, "conversations");
     await seedProjectedConversationStructureCache({
@@ -1096,7 +1091,7 @@ async function main() {
       targetCache: path.join(conversationsDir, "structure.db"),
       projectedDb: dbCopy,
     });
-    copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
+    await copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
     const cacheSnapshot = path.join(root, "seeded-conversations");
     fs.mkdirSync(conversationsDir, { recursive: true });
     fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true });
@@ -1133,7 +1128,7 @@ async function main() {
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
       .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
     const readSnapshot = path.join(root, "before-measurement.db");
-    snapshot(dbCopy, readSnapshot);
+    await snapshot(dbCopy, readSnapshot);
     const sessions = opts["fresh-each"]
       ? await sequential(exercised.map((entry) => () => measureSession(run, [entry], opts["cpu-prof"]!)))
       : [await measureSession(run, planned, opts["cpu-prof"]!)];
