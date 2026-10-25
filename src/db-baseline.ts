@@ -25,7 +25,11 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 217;
+export const BASELINE_SCHEMA_VERSION = 218;
+
+export const AUTH_REQUEST_HISTORY_INDEX_SQL =
+  `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
+    WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed')`;
 
 // Issue 08b4426 — a blob is named by a prefix of its id or of its content
 // hash, and short refs for a page of blobs are found by prefix ranges over
@@ -573,6 +577,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_auth_requests_target_repo\n        ON auth_requests(target_repo_root) WHERE target_repo_root IS NOT NULL",
   "CREATE INDEX idx_auth_requests_target_session\n        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL",
   AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
+  AUTH_REQUEST_HISTORY_INDEX_SQL,
   "CREATE INDEX idx_blocks_conv ON conversation_blocks(conversation_id)",
   "CREATE INDEX idx_blocks_dag_parent\n      ON conversation_blocks(conversation_id, dag_parent_uuid)\n      WHERE dag_parent_uuid IS NOT NULL",
   "CREATE INDEX idx_blocks_parent ON conversation_blocks(parent_id) WHERE parent_id IS NOT NULL",

@@ -3224,7 +3224,7 @@ export class AuthQueue {
   listHistorySummaries(limit = 50): AuthRequestSummary[] {
     const rows = this.db
       .prepare(
-        `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests ` +
+        `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests INDEXED BY idx_auth_requests_history ` +
           "WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
