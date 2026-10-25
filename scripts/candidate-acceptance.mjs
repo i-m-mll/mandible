@@ -244,7 +244,7 @@ async function main() {
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
     result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
-    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').slice(-5).join(' | ')}`);
+    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
