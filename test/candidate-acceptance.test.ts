@@ -6,10 +6,43 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth, routeCostCheck } from '../scripts/candidate-acceptance.mjs';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
+  it('retains the confirmation rule, discarded spikes, load wait and hard failures', () => {
+    const trials = [
+      { trial: 0, first_call_turn_ms: 186, warm_turn_ms: 35 },
+      { trial: 1, first_call_turn_ms: 11, warm_turn_ms: 35 },
+      { trial: 2, first_call_turn_ms: 15, warm_turn_ms: 35 },
+      { trial: 3, first_call_turn_ms: 13, warm_turn_ms: 35 },
+    ];
+    const report = {
+      schema: 'mandible-route-cost-sweep@2',
+      judging_rule: 'same call kind reaches threshold in main and every confirmation trial',
+      confirmation_trials: 3,
+      threshold_ms: 100,
+      load: { start: 17, measurement_start: 16, end: 15, cpus: 14, waited_ms: 180000, wait_limit_ms: 180000 },
+      counts: { offenders: 1, excepted: 1, remeasured: 3, failed_requests: 1 },
+      measured: [{ method: 'GET', path: '/noisy', trials }, { method: 'GET', path: '/fast', trials: [trials[1]] }],
+      offenders: [{ method: 'GET', path: '/slow', first_call_turn_ms: 110, warm_turn_ms: 11 }],
+      excepted: [{ method: 'POST', path: '/excepted', issue: 'abc1234', first_call_turn_ms: 11, warm_turn_ms: 100 }],
+      exception_problems: [{ route: 'GET /stale', issue: 'def1234', problem: 'issue is closed' }],
+      unclassified: [{ method: 'POST', path: '/new' }],
+      failed_requests: [{ url: '/write', trial: 2, pass: 1, status: 409, error: 'consumed' }],
+    };
+    expect(routeCostCheck(JSON.stringify(report))).toEqual({
+      schema: report.schema, judging_rule: report.judging_rule, confirmation_trials: 3,
+      threshold_ms: 100, load: report.load, counts: report.counts,
+      remeasured: [{ route: 'GET /noisy', trials }],
+      offenders: [{ route: 'GET /slow', first_call_turn_ms: 110, warm_turn_ms: 11 }],
+      excepted: [{ route: 'POST /excepted', issue: 'abc1234', first_call_turn_ms: 11, warm_turn_ms: 100 }],
+      exception_problems: report.exception_problems,
+      unclassified: ['POST /new'],
+      failed_requests: ['/write (trial 2, pass 1): 409 consumed'],
+    });
+    expect(routeCostCheck('')).toBeNull();
+  });
   it('rejects closed-database shutdown errors and event storms', () => {
     const stopped = JSON.stringify({ level: 'info', message: 'server_stopped' });
     const closedDb = JSON.stringify({ level: 'error', message: 'work_scanner_repo_scan_failed', error: 'The database connection is not open' });

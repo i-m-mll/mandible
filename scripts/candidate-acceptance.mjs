@@ -33,14 +33,18 @@ export function routeCostCheck(text) {
   const report = JSON.parse(text);
   const route = entry => `${entry.method} ${entry.path}`;
   return {
+    schema: report.schema,
+    judging_rule: report.judging_rule,
+    confirmation_trials: report.confirmation_trials,
     load: report.load,
     threshold_ms: report.threshold_ms,
     counts: report.counts,
     offenders: report.offenders.map(entry => ({ route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
     excepted: report.excepted.map(entry => ({ route: route(entry), issue: entry.issue, first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
     exception_problems: report.exception_problems,
+    remeasured: report.measured.filter(entry => entry.trials.length > 1).map(entry => ({ route: route(entry), trials: entry.trials })),
     unclassified: report.unclassified.map(route),
-    failed_requests: report.failed_requests.map(entry => `${entry.url} (pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
+    failed_requests: report.failed_requests.map(entry => `${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
   };
 }
 
