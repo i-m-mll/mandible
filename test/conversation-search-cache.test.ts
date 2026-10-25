@@ -10,6 +10,7 @@ import {
   type ConversationSearchSourceAdapter,
   type SearchBlockSource,
 } from "../src/conversations/search-cache.js";
+import { longestEventLoopBlockMs } from "./helpers/event-loop-blocking.js";
 
 class FakeSource implements ConversationSearchSourceAdapter {
   active = 0;
@@ -123,6 +124,7 @@ describe("disposable conversation search cache", () => {
       const cold = await cache.search({ conversationIds: ids, needle: "needle", limit: ids.length });
       expect(cold.metrics).toMatchObject({ cold_conversations: 12, hot_conversations: 0, max_cold_parse_concurrency: 3 });
       expect(source.maxActive).toBe(3);
+      await cache.whenIdle();
 
       const hot = await cache.search({ conversationIds: ids, needle: "needle", limit: ids.length });
       expect(hot.metrics).toMatchObject({ cold_conversations: 0, hot_conversations: 12, max_cold_parse_concurrency: 0 });
@@ -151,6 +153,7 @@ describe("disposable conversation search cache", () => {
     const cache = new ConversationSearchCache(source, { cachePath });
     try {
       const result = await cache.search({ conversationIds: ["c1"], needle: "before", limit: 1 });
+      await cache.whenIdle();
       expect(JSON.stringify(result)).not.toContain(token);
       expect(result.matches[0].snippet).toContain("[mandible-credential:unverified#1]");
       expect(await cache.search({ conversationIds: ["c1"], needle: token, limit: 1 })).toMatchObject({ matches: [] });
@@ -168,6 +171,7 @@ describe("disposable conversation search cache", () => {
     const cachePath = tempCachePath();
     let cache = new ConversationSearchCache(source, { cachePath });
     await cache.search({ conversationIds: ["c1"], needle: "safely", limit: 1 });
+    await cache.whenIdle();
     cache.close();
     for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${cachePath}${suffix}`, { force: true });
 
@@ -176,6 +180,38 @@ describe("disposable conversation search cache", () => {
       const rebuilt = await cache.search({ conversationIds: ["c1"], needle: "safely", limit: 1 });
       expect(rebuilt.matches).toHaveLength(1);
       expect(rebuilt.metrics.cold_conversations).toBe(1);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("serves a scan larger than the cache without blocking the event loop or churning entries", async () => {
+    const filler = "searchable transcript text with a needle inside ".repeat(40);
+    const blocks = new Map(Array.from({ length: 8 }, (_, conversation) => {
+      const id = `c${conversation}`;
+      return [id, Array.from({ length: 400 }, (_, position) => block(id, `${filler}${position}`, position))];
+    }));
+    const source = new FakeSource(blocks);
+    const cache = new ConversationSearchCache(source, {
+      cachePath: tempCachePath(),
+      maxCacheBytes: 2 * 1024 * 1024,
+    });
+    const ids = [...blocks.keys()];
+    try {
+      const passes = [];
+      for (let pass = 0; pass < 3; pass += 1) {
+        const readsBefore = source.reads.length;
+        let result!: Awaited<ReturnType<ConversationSearchCache["search"]>>;
+        const blockedMs = await longestEventLoopBlockMs(async () => {
+          result = await cache.search({ conversationIds: ids, needle: "needle", limit: ids.length });
+          await cache.whenIdle();
+        });
+        expect(blockedMs, `pass ${pass}`).toBeLessThan(100);
+        expect(result.matches.map((match) => match.conversation_id)).toEqual(ids);
+        passes.push({ hot: result.metrics.hot_conversations, reads: source.reads.length - readsBefore });
+      }
+      expect(passes[1].hot).toBeGreaterThan(0);
+      expect(passes[2]).toEqual(passes[1]);
     } finally {
       cache.close();
     }

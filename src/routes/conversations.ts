@@ -1311,14 +1311,14 @@ export function registerConversationRoutes(
       convParams.push(since);
     }
 
-    const conversations = db
+    const selectConversations = (columns: string, conditions: string[], params: unknown[]) => db
       .prepare(
-        `SELECT conversations.*,
+        `SELECT ${columns},
            (SELECT archived_at FROM conversation_archive_states archive
              WHERE archive.conversation_id = conversations.id) AS archived_at
-         FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`,
+         FROM conversations WHERE ${conditions.join(" AND ")} ORDER BY started_at DESC`,
       )
-      .all(...convParams) as ConversationRow[];
+      .all(...params) as ConversationRow[];
 
     const results: Array<{
       conversation: ReturnType<typeof mapSearchConversation>;
@@ -1336,7 +1336,7 @@ export function registerConversationRoutes(
     };
 
     if (titleOnly) {
-      for (const conversation of conversations) {
+      for (const conversation of selectConversations("conversations.*", convConditions, convParams)) {
         if (results.length >= limit) break;
         const snippet = makeSnippet(maskUnverifiedCandidates(conversation.title || "").text);
         if (snippet) {
@@ -1347,13 +1347,25 @@ export function registerConversationRoutes(
       return;
     }
 
+    const eligible = db
+      .prepare(`SELECT id FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`)
+      .all(...convParams) as Array<{ id: string }>;
     const searched = await getConversationSearchCache(db).search({
-      conversationIds: conversations.map((conversation) => conversation.id),
+      conversationIds: eligible.map((conversation) => conversation.id),
       needle,
       blockType,
       limit,
     });
-    const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+    const matchedIds = [...new Set(searched.matches.map((match) => match.conversation_id))];
+    const conversationsById = new Map(
+      (matchedIds.length === 0
+        ? []
+        : selectConversations(
+          "conversations.*",
+          ["conversations.id IN (SELECT value FROM json_each(?))"],
+          [JSON.stringify(matchedIds)],
+        )).map((conversation) => [conversation.id, conversation]),
+    );
     for (const match of searched.matches) {
       const conversation = conversationsById.get(match.conversation_id);
       if (!conversation) continue;
