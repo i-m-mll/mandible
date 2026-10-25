@@ -25,7 +25,13 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 213;
+export const BASELINE_SCHEMA_VERSION = 214;
+
+// Issue 08b4426 — a blob is named by a prefix of its id or of its content
+// hash, and short refs for a page of blobs are found by prefix ranges over
+// both columns. Shared by the fresh baseline and migration v214.
+export const ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL =
+  "CREATE INDEX idx_artifact_blob_content_hash ON artifact_blob(content_hash)";
 
 // Issue 3a05327 — Timeline and Spaces seeding read every issue of a project,
 // the references among them, and the events and comments of the issues a view
@@ -487,6 +493,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_artifact_aliases_blob\n      ON artifact_aliases(blob_id) WHERE blob_id IS NOT NULL",
   "CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref\n      ON artifact_aliases(scheme, normalized_ref)",
   "CREATE INDEX idx_artifact_aliases_status\n      ON artifact_aliases(resolution_status, scheme)",
+  ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL,
   "CREATE INDEX idx_artifact_blob_provider\n        ON artifact_blob(provider_id)\n        WHERE provider_id IS NOT NULL",
   "CREATE INDEX idx_artifact_blob_role\n        ON artifact_blob(role)\n        WHERE role IS NOT NULL",
   "CREATE INDEX idx_artifact_drafts_version ON artifact_drafts(version_id)",
