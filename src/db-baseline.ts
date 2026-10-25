@@ -25,7 +25,29 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 212;
+export const BASELINE_SCHEMA_VERSION = 213;
+
+// Issue 3a05327 — Timeline and Spaces seeding read every issue of a project,
+// the references among them, and the events and comments of the issues a view
+// shows. Each index answers one of those reads from its own pages, so a cold
+// page cache costs reads proportional to the project and the visible issues
+// rather than to the whole ledger:
+// - issue summaries (every column but the long texts) and their live labels;
+// - (source issue, target issue) pairs of live references;
+// - events about another entity, by the issue their payload names.
+// Shared by the fresh baseline and migration v213.
+export const PROJECT_ISSUE_READ_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_ledger_issues_project_summary
+    ON ledger_issues(project_id, created_at, short_id, id, title, status, resolution, kind, priority, deleted_at)`,
+  `CREATE INDEX idx_ledger_labels_live
+    ON ledger_labels(issue_id, label)
+    WHERE deleted_at IS NULL`,
+  `CREATE INDEX idx_ledger_relationship_sources_source_issue
+    ON ledger_issue_relationship_sources(source_issue_id, relationship_type, deleted_at, target_issue_id)`,
+  `CREATE INDEX idx_ledger_events_payload_issue
+    ON ledger_events(json_extract(payload_json, '$.issue_id'), event_type)
+    WHERE entity_type != 'issue'`,
+];
 
 // Issue effe9ef — the Chat sidebar scans every top-level conversation on each
 // request. The partial index covers every column that scan reads, so it never
@@ -551,6 +573,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_ledger_events_actor_user\n        ON ledger_events(actor_user_id) WHERE actor_user_id IS NOT NULL",
   "CREATE INDEX idx_ledger_events_entity\n        ON ledger_events(entity_type, entity_id, occurred_at)",
   "CREATE INDEX idx_ledger_events_occurred\n        ON ledger_events(occurred_at DESC)",
+  ...PROJECT_ISSUE_READ_INDEX_SQL,
   "CREATE INDEX idx_ledger_change_log_event\n        ON ledger_change_log(event_id)",
   "CREATE INDEX idx_ledger_issue_aliases_alias\n        ON ledger_issue_aliases(alias)",
   "CREATE INDEX idx_ledger_issue_aliases_issue\n        ON ledger_issue_aliases(issue_id)",

@@ -22,17 +22,28 @@ import { LEDGER_ISSUE_KINDS } from "./types.js";
  * concerns so other surfaces can reuse it.
  */
 
-export type IssueRow = LedgerIssue & { labels: string };
+/** The issue fields predicates, Timeline rows, and Spaces seeding read for every project issue. */
+export type IssueRow = Pick<
+  LedgerIssue,
+  "id" | "short_id" | "project_id" | "title" | "status" | "resolution" | "kind" | "priority" | "created_at" | "deleted_at"
+> & { labels: string };
+
+/** One live `references` relationship source, reduced to the issues it joins. */
+export type IssueReference = Pick<LedgerIssueRelationshipSource, "source_issue_id" | "target_issue_id">;
+
+export interface ParentChildIndex {
+  childrenOf(issueId: string): readonly string[];
+}
 
 export interface LabelHistoryIndex {
-  intervalsByLabel: Map<string, TimelineLabelMembershipInterval[]>;
+  intervalsForLabel(label: string): readonly TimelineLabelMembershipInterval[];
 }
 
 export interface PredicateEvalContext {
   allIssues: IssueRow[];
   issueById: Map<string, IssueRow>;
-  relationshipSources: LedgerIssueRelationshipSource[];
-  parentChildrenByIssueId: Map<string, string[]>;
+  references: readonly IssueReference[];
+  parentChildren: ParentChildIndex;
   residualCoveredIssueIds: Set<string>;
   labelHistory: LabelHistoryIndex;
   window: { from: number | null; to: number | null };
@@ -155,7 +166,7 @@ function parentSubtreeIssueIds(
     }
     if (visited.has(issueId)) return;
     visiting.add(issueId);
-    for (const childId of context.parentChildrenByIssueId.get(issueId) ?? []) {
+    for (const childId of context.parentChildren.childrenOf(issueId)) {
       result.add(childId);
       visit(childId, [...path, `issue:${childId}`]);
     }
@@ -209,7 +220,7 @@ export function evaluatePredicate(
         }));
         return new Set<string>();
       }
-      return new Set(context.relationshipSources
+      return new Set(context.references
         .filter((source) => source.source_issue_id === sourceId)
         .map((source) => source.target_issue_id));
     }
@@ -235,7 +246,7 @@ export function evaluatePredicate(
       }
       const membership = context.labelMembershipModeOverride ?? normalizeLabelMembershipMode(predicate.membership);
       if (membership === "ever_in_window") {
-        return new Set((context.labelHistory.intervalsByLabel.get(name) ?? [])
+        return new Set(context.labelHistory.intervalsForLabel(name)
           .filter((interval) => intervalOverlapsWindow(interval, context.window))
           .map((interval) => interval.issue_id));
       }

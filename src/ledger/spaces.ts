@@ -1,12 +1,8 @@
 import crypto from "node:crypto";
 import type { Db } from "../db.js";
 import type { TimelineDiagnostic, TimelineIssuePredicate } from "../types.js";
-import type { LedgerIssueRelationshipSource, LedgerRelationshipEdge } from "./types.js";
-import {
-  buildParentChildrenByIssueId,
-  evaluatePredicate,
-  type IssueRow,
-} from "./issue-predicate.js";
+import { evaluatePredicate } from "./issue-predicate.js";
+import { EMPTY_PROJECT_ISSUE_SET, loadProjectIssueSet } from "./issue-predicate-context.js";
 import { parseJsonObject } from "../row-coerce.js";
 import type {
   Space,
@@ -774,39 +770,6 @@ interface IssueArtifactRow {
   target_id: string;
 }
 
-/**
- * Load the project's issues in the shape the shared predicate evaluator expects.
- * Mirrors the (private) Timeline loader so `/seed` can reuse the C7a-extracted
- * `evaluatePredicate` against the same data.
- */
-function loadProjectIssueRows(db: Db, projectId: string | null): IssueRow[] {
-  // A top-level Space (project_id IS NULL) owns no project issue set, so seeding
-  // from a project predicate yields no matches.
-  if (projectId === null) return [];
-  return db.prepare(
-    `SELECT i.*,
-            COALESCE(group_concat(l.label, char(31)), '') AS labels
-       FROM ledger_issues i
-       LEFT JOIN ledger_labels l ON l.issue_id = i.id AND l.deleted_at IS NULL
-      WHERE i.project_id = ?
-      GROUP BY i.id
-      ORDER BY i.created_at ASC, i.short_id ASC, i.id ASC`,
-  ).all(projectId) as IssueRow[];
-}
-
-function loadProjectRelationshipSources(db: Db, projectId: string | null): LedgerIssueRelationshipSource[] {
-  if (projectId === null) return [];
-  return db.prepare(
-    `SELECT s.*
-       FROM ledger_issue_relationship_sources s
-       JOIN ledger_issues source ON source.id = s.source_issue_id
-      WHERE source.project_id = ?
-        AND s.relationship_type = 'references'
-        AND s.deleted_at IS NULL
-      ORDER BY s.created_at ASC, s.id ASC`,
-  ).all(projectId) as LedgerIssueRelationshipSource[];
-}
-
 function loadArtifactsForIssues(db: Db, issueIds: string[]): Map<string, string[]> {
   const byIssue = new Map<string, string[]>();
   if (issueIds.length === 0) return byIssue;
@@ -858,24 +821,21 @@ export function seedSpaceFromPredicate(
   input: SeedSpaceInput,
   now = Date.now(),
 ): SeedSpaceResult {
-  const issues = loadProjectIssueRows(db, space.project_id);
-  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
-  const relationshipSources = loadProjectRelationshipSources(db, space.project_id);
-  const parentChildrenByIssueId = buildParentChildrenByIssueId(
-    issues,
-    loadProjectParentChildEdges(db, space.project_id),
-  );
+  // A top-level Space (project_id IS NULL) owns no project issue set, so seeding
+  // from a project predicate yields no matches.
+  const issueSet = space.project_id === null ? EMPTY_PROJECT_ISSUE_SET : loadProjectIssueSet(db, space.project_id);
+  const { issueById } = issueSet;
   const diagnostics: TimelineDiagnostic[] = [];
 
   const matchedSet = evaluatePredicate(
     input.predicate,
     {
-      allIssues: issues,
+      allIssues: issueSet.issues,
       issueById,
-      relationshipSources,
-      parentChildrenByIssueId,
+      references: issueSet.references,
+      parentChildren: issueSet.parentChildren,
       residualCoveredIssueIds: new Set<string>(),
-      labelHistory: { intervalsByLabel: new Map() },
+      labelHistory: issueSet.labelHistory,
       window: { from: null, to: null },
       // Seed is a point-in-time snapshot: force "now" membership for determinism.
       labelMembershipModeOverride: "now",
@@ -934,18 +894,4 @@ export function seedSpaceFromPredicate(
   });
 
   return run();
-}
-
-function loadProjectParentChildEdges(db: Db, projectId: string | null): LedgerRelationshipEdge[] {
-  if (!projectId) return [];
-  return db.prepare(
-    `SELECT *
-       FROM ledger_relationship_edges
-      WHERE target_project_id = ?
-        AND source_entity_type = 'issue'
-        AND target_entity_type = 'issue'
-        AND link_type = 'parent_child'
-        AND deleted_at IS NULL
-      ORDER BY created_at ASC, id ASC`,
-  ).all(projectId) as LedgerRelationshipEdge[];
 }
