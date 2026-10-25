@@ -555,12 +555,16 @@ export function readFixtures(dbPath: string) {
       .all(artifact.id) as { id: string }[];
     if (versions.length < 2) throw new Error("fixture artifact versions: the most-versioned artifact has fewer than two versions");
     const bigConversations = (db.prepare(`
-      SELECT id, session_id, source_path FROM conversations WHERE started_at >= datetime('now', '-3 days')
-      ORDER BY block_count DESC LIMIT 200`).all() as { id: string; session_id: string; source_path: string }[])
-      .filter((row) => fs.existsSync(row.source_path)).slice(0, 1);
-    if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations has its source file");
-    const recentConversation = one<{ id: string }>("recent conversation", `
-      SELECT id FROM conversations WHERE parent_conversation_id IS NULL ORDER BY started_at DESC LIMIT 1`);
+      SELECT c.id, c.session_id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
+       WHERE c.started_at >= datetime('now', '-3 days')
+       ORDER BY c.block_count DESC LIMIT 200`).all() as (IndexedSourceRow & { id: string; session_id: string })[])
+      .filter(sourceIsIndexed).slice(0, 1);
+    if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations is indexed to the end of its source file");
+    const recentConversation = (db.prepare(`
+      SELECT c.id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
+       WHERE c.parent_conversation_id IS NULL ORDER BY c.started_at DESC LIMIT 200`)
+      .all() as (IndexedSourceRow & { id: string })[]).find(sourceIsIndexed);
+    if (!recentConversation) throw new Error("fixture recent conversation: none of the 200 newest conversations is indexed to the end of its source file");
     const consoleSession = maybe<{ id: string }>("SELECT id FROM console_sessions ORDER BY updated_at DESC LIMIT 1");
     const spawn = maybe<{ id: string }>("SELECT id FROM conversation_spawn_requests ORDER BY updated_at DESC LIMIT 1");
     const space = maybe<{ id: string }>(`
@@ -974,6 +978,28 @@ function openIssueStatus(dbPath: string, shortIds: string[]): Map<string, string
 }
 
 /** Writes run in WRITES order, so one write can rely on an earlier one. */
+/**
+ * A conversation whose source file has outgrown its index needs a re-parse
+ * before it can be read, and a preview has no worker to re-parse it, so its
+ * reads answer 503. Fixtures use conversations indexed to the exact size and
+ * mtime of their source file, the facts conversation freshness checks.
+ */
+const INDEXED_SOURCE_COLUMNS = "c.source_path, v.byte_length, v.file_mtime_ms, state.byte_offset";
+const INDEXED_SOURCE_JOINS = `FROM conversations c
+  JOIN conversation_sources s ON s.conversation_id = c.id
+  JOIN conversation_source_versions v ON v.id = s.current_version_id
+  JOIN conversation_ingest_state state ON state.file_path = c.source_path`;
+interface IndexedSourceRow { source_path: string | null; byte_length: number | null; file_mtime_ms: number | null; byte_offset: number | null }
+function sourceIsIndexed(row: IndexedSourceRow): boolean {
+  if (!row.source_path) return false;
+  try {
+    const stat = fs.statSync(row.source_path);
+    return stat.size === row.byte_length && stat.size === row.byte_offset && stat.mtimeMs === row.file_mtime_ms;
+  } catch {
+    return false;
+  }
+}
+
 function writeOrder(route: CatalogRoute): number {
   return Object.keys(WRITES).indexOf(`${route.method} ${route.path}`);
 }
