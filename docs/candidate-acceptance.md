@@ -16,23 +16,18 @@ The packaged app runs unattended: in acceptance mode its window is never shown, 
 
 Candidate acceptance and the built-in post-merge rebuild apply to runtime self-update requests whose server-captured change report touches the production source paths declared in `scripts/build-revision.mjs`. These include the daemon, channel server, UI and its assets, native app, CLI, build and acceptance scripts, configuration, and dependency/runtime pins. Both old and new paths count for renames and deletions. Changes outside those paths, such as `README.md` and `docs/` screenshots, skip acceptance and the built-in rebuild, without opening a rebuild window or scheduling a restart. A request without a change report bound to its reviewed head remains gated. Other configured hooks still run, and existing durable hook plans retain their reviewed commands and execution history.
 
-Service-definition inspection checks the real target installation before checkout
-preparation, dependency installation or build, and again before recording a pass.
-A held runtime handoff lock defers acceptance. Installed/loaded drift, missing or
-malformed definitions, duplicate labels, and unreadable launchd state fail it with
-the service and differing fields. The comparison uses the installed runtime,
-not the candidate's pin, so a legitimate runtime upgrade does not create drift.
-The standalone command inspects the target before entering its isolated fixture.
+A held runtime handoff lock defers acceptance scheduling until the installation
+is available. A lock appearing during a valid isolated run does not invalidate
+its result. Acceptance does not inspect production service definitions: owned
+drift neither fails a run nor invalidates a passing result.
 
-The request detail, queue and history expose a typed publication blocker with
-its service, mismatch category, differing fields and repair command. The approval
-view renders it and disables approval for both service-definition and handoff-lock
-blockers. Publication is rechecked before approval and when queued execution takes
-its turn. Current drift blocks publication even if acceptance previously passed.
-Repair it with `bun scripts/local-runtime.mjs restart` from the registered
-checkout, then explicitly rerun `mandible auth acceptance run <request>`. A repair
-does not automatically rerun failed acceptance. Documentation-only exemptions
-remain unchanged.
+Before approval and when queued execution takes its turn, publication checks
+service ownership for requests that rebuild the runtime. Foreign jobs or files
+and unreadable ownership evidence refuse publication with the affected service
+and concrete reason. Entirely absent services are ready. Owned drift is
+reconciled by the ordinary handoff. The request detail, queue and history expose
+ownership refusals and the retained handoff-lock blocker, without repair
+commands. Documentation-only exemptions remain unchanged.
 
 Approval of a request within that scope requires a passing result for its exact retained candidate. The main daemon starts a run when such a request is submitted or superseded, whenever its candidate is re-pinned onto a moved base, and at startup for pending requests without a result for their current candidate. A failed result requires an explicit retry, including after restart. After a merge moves the base, the merge's finalizer re-pins every pending request's candidate. While a runtime handoff holds its lock the finalizer cannot, so the daemon's 30-second idle tick re-pins every stale candidate once no lock is held, as does startup. The tick never repeats a failed result. Approval and `mandible auth acceptance run` also re-pin a stale candidate first. Runs execute one at a time; each checks out the request's pin commit in the daemon's detached acceptance checkout, runs a frozen install, and runs this command there. The record binds the candidate tree, reviewed base and reviewed head, so a moved base or head makes it stale.
 

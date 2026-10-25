@@ -89,7 +89,7 @@ function completeDefinition(record) {
 }
 
 /** Successful observation means ownership is safe; differing definitions remain data. */
-export function assessServiceObservation(context, service, installed, job, { desired, allowAbsent = false } = {}) {
+export function assessServiceObservation(context, service, installed, job, { desired } = {}) {
   const label = context[`${service}Label`];
   const loadedDefinition = job.loaded ? loadedServiceDefinition(label, job) : null;
   for (const [source, record] of [...installed.map(item => [item.file, item.record]), ...(loadedDefinition ? [['loaded', loadedDefinition]] : [])]) {
@@ -101,7 +101,6 @@ export function assessServiceObservation(context, service, installed, job, { des
       return refusal(service, label, 'ownership_conflict', [], `${source} service ${label} is not owned by this installation; preserving it.`);
     }
   }
-  if (!installed.length && !job.loaded && !allowAbsent) return refusal(service, label, 'unreadable_state', [], `No installed or loaded ownership evidence is available for ${label}.`);
   return { ok: true, observation: { service, label, installed, job, loadedDefinition, desired: desired ?? null,
     differences: installed.map(item => ({ file: item.file, fields: job.loaded ? differingServiceFields(item.record, job) : [] })),
     desiredDifferences: desired && job.loaded ? differingServiceFields(desired, job) : [] } };

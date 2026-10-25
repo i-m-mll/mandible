@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { AuthPublicationBlocker, CandidateAcceptanceProjection } from "./contracts.js";
+import type { CandidateAcceptanceProjection } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
@@ -127,7 +127,7 @@ export class CandidateAcceptanceRuns {
     private readonly executor: CandidateAcceptanceExecutor,
     private readonly now: () => number,
     private readonly changed: (requestId: string) => void,
-    private readonly publicationBlocker: () => Promise<AuthPublicationBlocker | null>,
+    private readonly handoffLocked: () => boolean,
   ) {}
 
   /** Fail the rows a previous daemon left running; a restart interrupted them. */
@@ -189,9 +189,7 @@ export class CandidateAcceptanceRuns {
   private async next(requestId: string): Promise<void> {
     const job = this.waiting.get(requestId);
     if (!job || this.stopped) return;
-    const blocked = await this.publicationBlocker();
-    if (this.stopped || this.waiting.get(requestId) !== job) return;
-    if (blocked?.code === "runtime_handoff_lock") return;
+    if (this.handoffLocked()) return;
     this.waiting.delete(requestId);
     const { candidate } = job;
     const recordId = randomUUID();
@@ -203,12 +201,8 @@ export class CandidateAcceptanceRuns {
     this.active = { requestId, pinSha: candidate.pin_sha, recordId, controller };
     this.changed(requestId);
     const outcome = await Promise.resolve().then(async () => {
-      if (blocked) return { status: "failed" as const, result: { publication_blocker: blocked }, error: blocked.message };
       if (controller.signal.aborted) return { status: "failed" as const, result: null, error: "Acceptance stopped." };
-      const outcome = await this.executor({ ...job.input(), signal: controller.signal });
-      if (outcome.status !== "passed") return outcome;
-      const finalBlocker = await this.publicationBlocker();
-      return finalBlocker ? { status: "failed" as const, result: { acceptance: outcome.result, publication_blocker: finalBlocker }, error: finalBlocker.message } : outcome;
+      return this.executor({ ...job.input(), signal: controller.signal });
     })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;

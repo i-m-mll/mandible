@@ -675,7 +675,7 @@ export class AuthQueue {
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
-      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.hookManager.publicationBlocker(true))
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null)
       : null;
     // Before anything can start a run: rows a previous daemon left running were interrupted.
     this.acceptanceRuns?.start();
@@ -792,18 +792,18 @@ export class AuthQueue {
   async publicationBlockersForRequests(requests: AuthRequest[]): Promise<Map<string, AuthPublicationBlocker | null>> {
     const applicable = requests.filter(request => isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo));
     const applicableIds = new Set(applicable.map(request => request.id));
-    const definitions = new Set(applicable.filter(request => this.candidateAcceptanceApplies(request)).map(request => request.id));
-    const blocker = applicable.length ? await this.publicationObservation(definitions.size > 0) : null;
+    const ownershipIds = new Set(applicable.filter(request => this.candidateAcceptanceApplies(request)).map(request => request.id));
+    const blocker = applicable.length ? await this.publicationObservation(ownershipIds.size > 0) : null;
     return new Map(requests.map(request => [request.id,
-      publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: definitions.has(request.id) }, blocker)]));
+      publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: ownershipIds.has(request.id) }, blocker)]));
   }
 
   /**
    * The installation-wide blocker, observed once per response. Which requests it
    * applies to is `publicationBlockerFor`; history computes those flags on a reader.
    */
-  publicationObservation(inspectDefinitions: boolean): Promise<AuthPublicationBlocker | null> {
-    return this.hookManager.publicationBlocker(inspectDefinitions);
+  publicationObservation(inspectOwnership: boolean): Promise<AuthPublicationBlocker | null> {
+    return this.hookManager.publicationBlocker(inspectOwnership);
   }
 
   async publicationBlockerForRequest(request: AuthRequest): Promise<AuthPublicationBlocker | null> {
@@ -862,11 +862,7 @@ export class AuthQueue {
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running") return acceptance;
-    if (acceptance.state === "passed") {
-      const definitionBlocker = await this.hookManager.publicationBlocker(true);
-      this.assertObservation(request.id, observed);
-      if (!definitionBlocker) return acceptance;
-    }
+    if (acceptance.state === "passed") return acceptance;
     const lock = this.runtimeHandoffLock();
     const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
     if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
@@ -8294,8 +8290,8 @@ function normalizeRepoRef(repo: string | null | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 /**
- * A held handoff lock blocks every self-updating request; service-definition drift
- * blocks only those that rebuild the runtime (documentation-only changes stay exempt).
+ * A held handoff lock blocks every self-updating request. Ownership conflicts and
+ * unavailable evidence block only requests that rebuild the runtime.
  */
 export function publicationBlockerFor(request: { selfUpdates: boolean; changesBuildInputs: boolean }, blocker: AuthPublicationBlocker | null): AuthPublicationBlocker | null {
   return request.selfUpdates && (blocker?.code === "runtime_handoff_lock" || request.changesBuildInputs) ? blocker : null;

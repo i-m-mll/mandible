@@ -489,12 +489,8 @@ export type AuthRequestAction = AuthRequestActionInput & {
 };
 
 export type AuthPublicationBlocker = {
-  code: "runtime_handoff_lock";
+  code: "runtime_handoff_lock" | "ownership_conflict" | "unreadable_state";
   message: string;
-} | {
-  code: "service_definition";
-  message: string;
-  refusal: import("../scripts/service-definitions.mjs").ServiceDefinitionRefusal;
 };
 
 export type AuthRequest = {

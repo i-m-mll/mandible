@@ -39,7 +39,12 @@ it('admits owned duplicates and missing generated plists, but requires one insta
     expect(matchingServiceDefinitions({ ok: true, observations: [result.observation] }).ok).toBe(false);
   }
   expect(assessServiceObservation(context, 'backend', [installed(backend)], { loaded: false, pid: null }).ok).toBe(true);
-  expect(assessServiceObservation(context, 'backend', [], { loaded: false, pid: null })).toMatchObject({ ok: false, refusal: { category: 'unreadable_state' } });
+  const absent = assessServiceObservation(context, 'backend', [], { loaded: false, pid: null });
+  expect(absent.ok).toBe(true);
+  if (!absent.ok) throw new Error(absent.refusal.message);
+  const inspection = { ok: true as const, observations: [absent.observation] };
+  expect(serviceOwnershipReady(inspection)).toBe(true);
+  expect(matchingServiceDefinitions(inspection)).toMatchObject({ ok: false, refusal: { category: 'missing_definition' } });
 });
 
 it('refuses foreign executables, installation identities, and incomplete loaded evidence despite a matching label or comment', () => {

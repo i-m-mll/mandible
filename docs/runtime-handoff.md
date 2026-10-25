@@ -125,7 +125,8 @@ The shared typed inspector is `inspectServiceDefinitions(context)` in
 `scripts/service-definitions.mjs`. It asynchronously observes three separate
 facts: installed plist paths, bytes and digests; loaded launchd definitions and
 process identity; and optional desired definitions supplied by the controller.
-Owned differences are successful observations with differing fields.
+Owned differences and entirely absent services are successful observations.
+Differences remain observation data; they never block approval or acceptance.
 `serviceOwnershipReady` is the ownership-only admission predicate;
 `matchingServiceDefinitions` is the strict lifecycle and handoff postcondition.
 The controller-only synchronous entry point uses the same classifier.
@@ -136,7 +137,9 @@ proves nothing. Conflicting installation identity, foreign jobs or files, and
 unavailable ownership evidence refuse mutation and identify the affected
 service. Owned duplicates are consolidated at the desired location; a missing
 plist can be recreated when the loaded job establishes ownership. An unloaded
-owned service can be published and loaded when the operation requires it.
+owned service or an entirely absent service can be published and loaded when
+the operation requires it. Unreadable launchd state remains a refusal with the
+concrete reason and no repair command.
 
 Handoff admission captures the loaded backend and gateway definitions as prior
 state evidence. Installed snapshots and digests are retained separately and do

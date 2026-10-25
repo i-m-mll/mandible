@@ -750,7 +750,7 @@ async function unloadOwnedDefinition(label, job) {
 }
 
 function observeOwnedService(service) {
-  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { allowAbsent: true });
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   return inspection.observations.find(observation => observation.service === service);
 }
@@ -760,7 +760,7 @@ export async function reconcileServiceDefinitions(production, main, launchMode, 
   const desired = prepareServicePlists(production, main, launchMode, { configuration });
   const runnersChanged = services.includes('backend') && runnerChanged(production.root);
   // Observe and validate both services before the first write or bootout.
-  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { allowAbsent: true, desired: Object.fromEntries(desired.definitions.map(item => [item.service, item.record])) });
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { desired: Object.fromEntries(desired.definitions.map(item => [item.service, item.record])) });
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   const observed = desired.definitions.map(definition => {
     const { installed, job } = inspection.observations.find(item => item.service === definition.service);
