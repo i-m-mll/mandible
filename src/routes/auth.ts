@@ -1,3 +1,4 @@
+import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
@@ -61,6 +62,7 @@ export function registerAuthRoutes(
   authQueue: AuthQueue,
   autoApproveManager: AuthAutoApproveManager,
   clearance?: AuthClearanceManager,
+  reader: LedgerReader = inlineLedgerReader(() => authQueue.db),
 ): AuthQueue {
   const db = authQueue.db;
   const fallbackRuntimeEpoch = randomUUID();
@@ -657,7 +659,7 @@ export function registerAuthRoutes(
     res.json({ requests: enriched });
   }, { operation: { id: "get:/api/auth/queue", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  app.get("/api/auth/history", (req, res) => {
+  app.get("/api/auth/history", async (req, res) => {
     const query = req.query ?? {};
     // Bug: dd21c1e — optional ?type=X filter
     const typeFilter = typeof query.type === "string" && AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
@@ -668,16 +670,7 @@ export function registerAuthRoutes(
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    // Bug: 0de95bf — list projection omits diff/spec/output body blobs and
-    // resolves action counts in one batched query; the detail route serves the
-    // full body on selection.
-    let requests = authQueue.listHistorySummaries(limit);
-    if (typeFilter) {
-      requests = requests.filter((r) => r.type === typeFilter);
-    }
-    // action_count is already resolved in one batched query by
-    // listHistorySummaries (0de95bf); only fold in main's user-attribution fields.
-    const attributionResolver = new AttributionReadResolver(db);
+    const requests = await reader.run("auth_history", { limit, type: typeFilter });
     res.json({
       requests: requests.map((r) => ({
         ...r,
@@ -687,8 +680,6 @@ export function registerAuthRoutes(
         convergence: authQueue.convergenceForRequest(r.id),
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
         publication_blocker: authQueue.publicationBlockerForRequest(r),
-        execution_attempts: listAuthExecutionAttempts(db, r.id),
-        ...authAttributionReadFields(attributionResolver, r),
       })),
     });
   }, { operation: { id: "get:/api/auth/history", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });

@@ -1,3 +1,4 @@
+import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
 import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
@@ -8,7 +9,6 @@ import {
   applyBriefingAnswers,
   BriefingStoreError,
   exportBriefingSubmissionMarkdown,
-  listBriefings,
   parseBriefingRunRequest,
   publishBriefingFromArtifactVersion,
   publishBriefingRun,
@@ -426,7 +426,7 @@ function placementOverride(req: RequestLike, requestBody: Record<string, unknown
 }
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
-export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb(), reader: LedgerReader = inlineLedgerReader(() => db)): void {
   server.get("/api/briefing-destination-routes", (req, res) => {
     try {
       destinationPrincipal(db, req);
@@ -1106,13 +1106,10 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     }
   }, { operation: { id: "post:/api/briefings/runs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
-  server.get("/api/briefings", (req, res) => {
+  server.get("/api/briefings", async (req, res) => {
     try {
       const viewer = briefingReadViewer(db, req);
-      const briefings = listBriefings(db, viewer) as Array<{ logical_artifact_id: string | null }>;
-      sendJson(res, 200, { briefings: viewer.projectScoped
-        ? briefings.filter((briefing) => agentMayReadBriefing(db, req, briefing.logical_artifact_id))
-        : briefings });
+      sendJson(res, 200, await reader.run("briefings_list", { viewer, identity: req.client_identity ?? null }));
     } catch (error) {
       handleError(res, error);
     }

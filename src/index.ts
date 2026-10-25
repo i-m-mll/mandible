@@ -285,7 +285,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // self-update requests and runs it automatically.
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
   });
-  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
+  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager, ledgerReader);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"
       ? path.join(instance.preview_root!, "work", "repos.json")
@@ -302,7 +302,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
-  registerIssueRoutes(router, workScanner, issueDeps);
+  registerIssueRoutes(router, workScanner, issueDeps, ledgerReader);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router, instance.role);
@@ -314,8 +314,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const reaperTimer = new ReaperTimer(sessionRegistry, logger);
   registerSessionRoutes(router, sessionRegistry, workScanner);
 
-  registerGraphRoutes(router);
-  registerProviderRoutes(router);
+  registerGraphRoutes(router, ledgerReader);
+  registerProviderRoutes(router, ledgerReader);
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
@@ -356,7 +356,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.sessionManager = sessionManager;
   issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
-  registerInboxRoutes(router, sessionManager, authQueue, workScanner);
+  registerInboxRoutes(router, sessionManager, authQueue, workScanner, ledgerReader);
   registerDashboardRoutes(router, db);
   const detachDashboardBadgePublisher = attachDashboardBadgePublisher(sse, () => readDashboardBadgeCounts(db), logger);
   registerConsoleRoutes(router, sessionManager);
@@ -369,7 +369,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTimelineRoutes(router, ledgerReader);
   registerSpacesRoutes(router);
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
-  registerBriefingRoutes(router, db);
+  registerBriefingRoutes(router, db, ledgerReader);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
