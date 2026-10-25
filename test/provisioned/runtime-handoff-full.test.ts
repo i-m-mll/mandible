@@ -226,6 +226,18 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${repo}/bin`);
     await acceptBootstrapDelivery(agentApi, request.id);
+    // Owned drift introduced after acceptance must be absorbed by the ordinary
+    // signed self-update. Neither repair nor retry is part of this flow.
+    for (const label of [backendLabel, gatewayLabel]) {
+      const detail = command('/bin/launchctl', ['print', `${domain}/${label}`]);
+      const file = detail.split('\n').map(line => line.trim()).find(line => line.startsWith('path = '))?.slice(7);
+      expect(file).toBeTruthy();
+      const bytes = fs.readFileSync(file!, 'utf8');
+      expect(bytes).toContain('<key>PATH</key><string>');
+      fs.writeFileSync(file!, bytes.replace('<key>PATH</key><string>', '<key>PATH</key><string>/private-owned-drift:'));
+      const installed = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file!]));
+      expect(loadedServiceMatches(installed, parseLoadedService(detail))).toBe(false);
+    }
     await approveBootstrapDelivery(operatorApi, request.id);
     await until(() => {
       const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
@@ -257,6 +269,12 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const nativeRuns = db.prepare('SELECT hook_id, position, state, exit_code FROM auth_hook_executions WHERE auth_request_id=? AND position < 0 ORDER BY position').all(request.id) as any[];
     expect(nativeRuns.map(row => [row.position, row.state, row.exit_code])).toEqual([[-2, 'complete', 0], [-1, 'complete', 0]]);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).toContain(`${repo}/bin`); expect(newJob).toContain(securityAdapter);
+    for (const label of [backendLabel, gatewayLabel]) {
+      const detail = command('/bin/launchctl', ['print', `${domain}/${label}`]);
+      const file = detail.split('\n').map(line => line.trim()).find(line => line.startsWith('path = '))?.slice(7);
+      expect(file).toBeTruthy();
+      expect(loadedServiceMatches(JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file!])), parseLoadedService(detail))).toBe(true);
+    }
     fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: 'installed protected-root update', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), oldGatewayLoadedDefinitionHash: digest(oldGatewayJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, '.cache/mandible/production-stderr.log'), path.join(scratch, '.cache/mandible/local-front-door-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log'), path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'helper.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));

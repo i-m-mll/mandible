@@ -98,9 +98,11 @@ Paths must be absolute and literal; tool directories cannot contain empty PATH
 components or shell expansions. Apply an explicit JSON file with
 `bun scripts/local-runtime.mjs configure-launch-mode --service-config /absolute/config.json`
 or pass `--service-config` to `install`. This replaces the configuration; omit
-it to preserve existing configuration. Initial migration imports only allowlisted
-overrides from the existing backend plist, excluding its program and PATH.
-The installed login mode is preserved unless `--launch-mode` explicitly changes it.
+it to preserve existing configuration. Initial migration imports allowlisted
+overrides and tool directories from the loaded backend environment. When the
+backend is unloaded, lifecycle configuration may import its installed plist.
+Runtime and checkout PATH entries are derived again rather than imported.
+The login mode is preserved unless `--launch-mode` explicitly changes it.
 
 One reconciler validates both services before changing them. Changed jobs are
 booted out and observed until both the definition and old process disappear,
@@ -116,16 +118,39 @@ preserves the old files and reports unresolved drift.
 it. `reload-gateway` never republishes the backend. Lifecycle mutation refuses
 while a handoff owns the installation. Candidate installation within that handoff
 leaves the backend unloaded, and unloads any changed gateway before replacement;
-`handoff-start` starts them. Handoff admission inspects drift without repairing it.
+`handoff-start` starts them. Owned drift is reconciled during this handoff and
+does not require a separate repair or retry command.
 
 The shared typed inspector is `inspectServiceDefinitions(context)` in
-`scripts/service-definitions.mjs`. It asynchronously reads installed plists and
-launchd state and returns matching observations or a structured service refusal.
-Missing, malformed or duplicate definitions and unreadable launchd state refuse
-inspection. An unloaded owned job is a valid observation. It compares installed
-definitions to loaded jobs, independently of a candidate's runtime pin, allowing
-legitimate runtime upgrades. The controller-only synchronous entry point uses
-the same normalization.
+`scripts/service-definitions.mjs`. It asynchronously observes three separate
+facts: installed plist paths, bytes and digests; loaded launchd definitions and
+process identity; and optional desired definitions supplied by the controller.
+Owned differences are successful observations with differing fields.
+`serviceOwnershipReady` is the ownership-only admission predicate;
+`matchingServiceDefinitions` is the strict lifecycle and handoff postcondition.
+The controller-only synchronous entry point uses the same classifier.
+
+Ownership requires exact installation runner or gateway configuration paths
+and recognisable executable arguments. The label or generated comment alone
+proves nothing. Conflicting installation identity, foreign jobs or files, and
+unavailable ownership evidence refuse mutation and identify the affected
+service. Owned duplicates are consolidated at the desired location; a missing
+plist can be recreated when the loaded job establishes ownership. An unloaded
+owned service can be published and loaded when the operation requires it.
+
+Handoff admission captures the loaded backend and gateway definitions as prior
+state evidence. Installed snapshots and digests are retained separately and do
+not describe the running job. Launch mode and daemon-log provenance come from
+the loaded backend. The journal also binds configuration migration inputs: an
+existing `service-config.json` stays authoritative; otherwise overrides and
+tool directories are derived from the loaded environment. After the handoff
+owns the installation, the staged controller publishes those captured inputs
+before unloading. A changed configuration or loaded definition after capture
+refuses mutation. Gateway reload compares loaded state with the candidate's
+desired definition even when the plist on disk already contains desired bytes.
+Completion still requires exact installed/loaded equality, publication proof,
+process and generation identity, desktop provenance and the health/log window.
+Prior-state capture does not provide rollback of binaries or dependencies.
 
 Private fixtures pass an explicit installation context. Controllers also accept
 `MANDIBLE_SERVICE_ACCOUNT_HOME` for a nondefault `MANDIBLE_HOME`, so fixture
@@ -159,13 +184,18 @@ failure, until that handoff's journal fails.
 
 ## Verification
 
-Two provisioned tests cover the handoff on macOS. Each derives its inputs from
+Three provisioned tests cover lifecycle reconciliation and handoff on macOS. Each derives its inputs from
 the machine and throws, naming the prerequisite, when one is missing.
 
 ```bash
+bun run test:provisioned test/provisioned/service-definition-reconciliation.test.ts
 bun run test:provisioned test/provisioned/runtime-handoff-launchd.test.ts
 bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
 ```
+
+`service-definition-reconciliation` exercises real launchd capture before
+repairing owned drift, loaded configuration migration, strict convergence,
+gateway-only reload, foreign-job preservation and bootstrap refusal.
 
 `runtime-handoff-launchd` arms the independent helper under launchd with a
 private installation directory and unique labels, using a stub old daemon and a
@@ -180,6 +210,8 @@ candidate is `HEAD` of the checkout under test, committed on a `wt` branch of
 the private canonical root. A durable private agent submits one issue-linked
 request through the normal HTTP API, candidate acceptance runs, and the
 private operator approves through the ordinary action-bound signing challenge.
+Both private plists are drifted after acceptance and before approval; the
+ordinary update must reconcile them and acknowledge its receipt.
 The old protected-root executor keeps serving until the reviewed request merges
 the candidate; then `cli/post-merge-build-dist.sh` hands off independently
 under launchd. The test verifies the canonical independent handoff, the exact
@@ -280,3 +312,5 @@ healthy daemon to satisfy coverage. A fresh launch requires separate
 authorization.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+
+Co-Authored-By: Codex (GPT) <codex@openai.com>
