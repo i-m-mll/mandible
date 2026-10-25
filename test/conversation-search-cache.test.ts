@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import SqliteDatabase from "../src/sqlite.ts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ConversationSearchCache,
@@ -141,6 +141,31 @@ describe("disposable conversation search cache", () => {
     } finally {
       accidentalCache?.close();
       unrelated.close();
+    }
+  });
+
+  it("rebuilds a fresh cache after initialization fails part-way through its schema", async () => {
+    const cachePath = tempCachePath();
+    const source = new FakeSource(new Map([["c1", [block("c1", "needle")]]]));
+    const exec = SqliteDatabase.prototype.exec;
+    const failSchema = vi.spyOn(SqliteDatabase.prototype, "exec").mockImplementation(function (sql) {
+      if (sql.includes("CREATE TABLE IF NOT EXISTS search_checkpoints")) {
+        exec.call(this, "CREATE TABLE interrupted_initialization (id TEXT)");
+        throw new Error("interrupted initialization");
+      }
+      return exec.call(this, sql);
+    });
+    try {
+      expect(() => new ConversationSearchCache(source, { cachePath })).toThrow("interrupted initialization");
+    } finally {
+      failSchema.mockRestore();
+    }
+    const rebuilt = new ConversationSearchCache(source, { cachePath });
+    try {
+      expect((await rebuilt.search({ conversationIds: ["c1"], needle: "needle", limit: 1 })).matches).toHaveLength(1);
+      await rebuilt.whenIdle();
+    } finally {
+      rebuilt.close();
     }
   });
 

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
 import SqliteDatabase from "../src/sqlite.ts";
+import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
 import { DEFAULT_TIMELINE_VIEW_STATE } from "../ui/src/types/timeline.ts";
@@ -566,12 +567,12 @@ export function readFixtures(dbPath: string) {
        WHERE c.started_at >= datetime('now', '-3 days')
        ORDER BY c.block_count DESC LIMIT 200`).all() as (IndexedSourceRow & { id: string; session_id: string })[])
       .filter(sourceIsIndexed).slice(0, 1);
-    if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations is indexed to the end of its source file");
+    if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations is fully indexed and idle for at least an hour");
     const recentConversation = (db.prepare(`
       SELECT c.id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
        WHERE c.parent_conversation_id IS NULL ORDER BY c.started_at DESC LIMIT 200`)
       .all() as (IndexedSourceRow & { id: string })[]).find(sourceIsIndexed);
-    if (!recentConversation) throw new Error("fixture recent conversation: none of the 200 newest conversations is indexed to the end of its source file");
+    if (!recentConversation) throw new Error("fixture recent conversation: none of the 200 newest conversations is fully indexed and idle for at least an hour");
     const consoleSession = maybe<{ id: string }>("SELECT id FROM console_sessions ORDER BY updated_at DESC LIMIT 1");
     const spawn = maybe<{ id: string }>("SELECT id FROM conversation_spawn_requests ORDER BY updated_at DESC LIMIT 1");
     const space = maybe<{ id: string }>(`
@@ -708,6 +709,14 @@ function copySqlite(source: string, target: string) {
     db.close();
   }
   return true;
+}
+
+/** Restore only after the preceding daemon has exited, releasing its cache writer lock. */
+export function restoreSweepSnapshot(dbSnapshot: string, dbCopy: string, cacheSnapshot: string, conversationsDir: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${dbCopy}${suffix}`, { force: true });
+  fs.copyFileSync(dbSnapshot, dbCopy);
+  fs.rmSync(conversationsDir, { recursive: true, force: true });
+  fs.cpSync(cacheSnapshot, conversationsDir, { recursive: true });
 }
 
 function freePort(): Promise<number> {
@@ -996,7 +1005,8 @@ function openIssueStatus(dbPath: string, shortIds: string[]): Map<string, string
  * A conversation whose source file has outgrown its index needs a re-parse
  * before it can be read, and a preview has no worker to re-parse it, so its
  * reads answer 503. Fixtures use conversations indexed to the exact size and
- * mtime of their source file, the facts conversation freshness checks.
+ * mtime of their source file, the facts conversation freshness checks, and
+ * require at least an hour without changes to avoid active provider logs.
  */
 const INDEXED_SOURCE_COLUMNS = "c.source_path, v.byte_length, v.file_mtime_ms, state.byte_offset";
 const INDEXED_SOURCE_JOINS = `FROM conversations c
@@ -1004,11 +1014,12 @@ const INDEXED_SOURCE_JOINS = `FROM conversations c
   JOIN conversation_source_versions v ON v.id = s.current_version_id
   JOIN conversation_ingest_state state ON state.file_path = c.source_path`;
 interface IndexedSourceRow { source_path: string | null; byte_length: number | null; file_mtime_ms: number | null; byte_offset: number | null }
-function sourceIsIndexed(row: IndexedSourceRow): boolean {
+export function sourceIsIndexed(row: IndexedSourceRow): boolean {
   if (!row.source_path) return false;
   try {
-    const stat = fs.statSync(row.source_path);
-    return stat.size === row.byte_length && stat.size === row.byte_offset && stat.mtimeMs === row.file_mtime_ms;
+    const { byteLength, fileMtimeMs } = numericSourceExtent(fs.statSync(row.source_path, { bigint: true }));
+    return byteLength === row.byte_length && byteLength === row.byte_offset && fileMtimeMs === row.file_mtime_ms
+      && Date.now() - fileMtimeMs >= 60 * 60 * 1_000;
   } catch {
     return false;
   }
@@ -1063,6 +1074,9 @@ async function main() {
       projectedDb: dbCopy,
     });
     copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
+    const cacheSnapshot = path.join(root, "seeded-conversations");
+    fs.mkdirSync(conversationsDir, { recursive: true });
+    fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true });
     seedPreviewUserPreferences({ previewRoot: root });
     fs.mkdirSync(path.join(root, "artifacts"), { recursive: true });
     log(`snapshot of ${sourceDb} in ${Math.round(performance.now() - snapshotStarted)} ms`);
@@ -1116,8 +1130,7 @@ async function main() {
         : [];
       log(`confirming ${entry.route.method} ${entry.route.path} in ${CONFIRMATION_TRIALS} fresh trials`);
       for (let trial = 1; trial <= CONFIRMATION_TRIALS; trial += 1) {
-        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${dbCopy}${suffix}`, { force: true });
-        fs.copyFileSync(readSnapshot, dbCopy);
+        restoreSweepSnapshot(readSnapshot, dbCopy, cacheSnapshot, conversationsDir);
         sessions.push(await measureSession(run, [entry], opts["cpu-prof"]!, trial, replay));
       }
     }

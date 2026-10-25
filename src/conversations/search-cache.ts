@@ -529,6 +529,7 @@ export class ConversationSearchCache {
     const fresh = this.cachePath === ":memory:" || !fs.existsSync(this.cachePath);
     let cache = new SqliteDatabase(this.cachePath, { readonly: !fresh });
     try {
+      if (fresh) cache.pragma(`application_id = ${CACHE_APPLICATION_ID}`);
       const applicationId = Number(cache.pragma("application_id", { simple: true }));
       if (!fresh && applicationId !== CACHE_APPLICATION_ID
         && !(applicationId === 0 && this.isLegacyCache(cache))) {
@@ -540,6 +541,7 @@ export class ConversationSearchCache {
         cache.close();
         this.removeFiles();
         cache = new SqliteDatabase(this.cachePath);
+        cache.pragma(`application_id = ${CACHE_APPLICATION_ID}`);
         cache.pragma(`auto_vacuum = ${SQLITE_AUTO_VACUUM_INCREMENTAL}`);
       } else if (!fresh) {
         cache.close();
