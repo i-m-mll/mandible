@@ -185,9 +185,26 @@ budget gate. Candidate acceptance runs it before the native build.
   window. Each request is
   charged until the loop is quiet again, so background work it starts counts.
   Wall time does not count.
-- A route fails at or above `HANDLER_TURN_BUDGET_MS` unless `BUDGET_EXCEPTIONS`
-  names it and cites an issue that is open in the snapshot.
-- It also fails on a request that does not succeed, and on any non-GET route,
+- A route reaching `HANDLER_TURN_BUDGET_MS` in the main pass is remeasured in
+  three confirmation trials, each on its own fresh daemon. A route fails only
+  if the same call kind (first or warm) reaches the budget in the main pass
+  and all three confirmation trials, unless `BUDGET_EXCEPTIONS` names it and
+  cites an issue that is open in the snapshot. Within a trial, each call kind
+  uses the maximum across request variants and, for warm calls, later passes.
+  The reported first-call and warm turns are the minima of these trial maxima.
+- Every confirmation restores the single saved database from before measurement.
+  Write confirmations start a fresh daemon and replay every exercised earlier
+  write in `WRITES` order, unmeasured, with the main session's requests and pass
+  numbers, then measure the target's passes. This restores prerequisites and the
+  state of entities consumed by per-pass acknowledgements or dismissals. A failed
+  replay aborts the sweep as an invalid confirmation trial. There are no per-route
+  database copies: only the working copy and the pre-measurement copy.
+- JSON report `mandible-route-cost-sweep@2` retains every request with its trial
+  number (0 is the main pass), per-trial first/warm maxima, the confirmation
+  rule, and load observations. Candidate acceptance retains the per-trial maxima
+  for remeasured routes, including spikes discarded by confirmation.
+- It also fails on any request that does not succeed (including confirmations),
+  invalid or obsolete budget exceptions, and on any non-GET route,
   or GET route with path parameters, that has neither requests nor a skip
   reason in `READS`/`WRITES`. Every skip says why, for example an effect a
   preview cannot hold, credentials, or files outside the snapshot.
@@ -201,8 +218,11 @@ Useful options:
   `cpuprofile-windows.mjs`.
 - `--keep` retains the snapshot, logs and profile.
 
-The sweep refuses to measure when the 1-minute load average is at or above the
-core count.
+When the 1-minute load average is at or above the core count, the sweep polls
+every five seconds for up to three minutes. It then measures even if load stays
+high; load alone never fails the gate. The report records initial load, load
+after the wait, final load, core count, and time spent waiting. `--ignore-load`
+skips this wait. Confirmation trials handle isolated scheduling spikes.
 
 ## Limits
 

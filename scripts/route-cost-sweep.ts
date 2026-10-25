@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
@@ -29,8 +30,9 @@ const USAGE = `Usage: bun scripts/route-cost-sweep.ts [options]
 Snapshots the production ledger, starts a preview daemon of this checkout on
 it, drives every route the router declares with parameters drawn from the
 snapshot (all read passes first, then the database-only writes), and reports
-each route's largest event-loop turn. Fails when any route reaches
---threshold-ms without a BUDGET_EXCEPTIONS entry, when a route is
+each route's event-loop turns. Confirms suspected offenders in three fresh
+trials. Fails when the same call kind reaches --threshold-ms in every trial
+without a BUDGET_EXCEPTIONS entry, when a route is
 unclassified, or when a request does not succeed.
 
   --source-db <path>    Ledger to snapshot (default ~/.mandible/mandible.db)
@@ -39,7 +41,7 @@ unclassified, or when a request does not succeed.
   --only <regex>        Exercise only routes whose path matches; others report as excluded
   --fresh-each          Start a fresh daemon for each route, so every first call is cold
   --cpu-prof            Profile the daemon and attribute each offender's window
-  --ignore-load         Measure even when the 1-minute load average is at or above the core count
+  --ignore-load         Skip the bounded wait for load below the core count
   --keep                Keep the sweep root (snapshot, logs, profile)
   --json                Print the result as JSON on stdout`;
 
@@ -788,6 +790,7 @@ function stopDaemon(daemon: ChildProcess, timeoutMs: number): Promise<void> {
 // --- measurement -----------------------------------------------------------
 
 interface Measured {
+  trial: number;
   label: string;
   url: string;
   pass: number;
@@ -890,19 +893,19 @@ async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
  * variant of the given routes `passes` times (the first pass is each
  * variant's first call since startup), then stop it.
  */
-async function measureSession(run: Run, planned: Planned[], profile: boolean) {
+async function measureSession(run: Run, planned: Planned[], profile: boolean, trial = 0, replay: Planned[] = []) {
   const daemon = await startDaemon(run, profile);
   let stopped = false;
   try {
     await readTurn(daemon.socketPath);
     await new Promise((resolve) => setTimeout(resolve, BASELINE_MS));
     const baselineMs = await readTurn(daemon.socketPath);
-    const measure = async (entry: Planned, request: SweepRequest, pass: number) => {
+    const measure = async (entry: Planned, request: SweepRequest, pass: number, record = true) => {
       await readTurn(daemon.socketPath);
       const t0 = Date.now();
       const started = performance.now();
       const url = typeof request.url === "function" ? request.url(pass) : request.url;
-      const result: Measured = { label: request.label, url, pass, status: 0, bytes: 0, durationMs: 0, t0, t1: t0, worstTurnMs: 0 };
+      const result: Measured = { trial, label: request.label, url, pass, status: 0, bytes: 0, durationMs: 0, t0, t1: t0, worstTurnMs: 0 };
       try {
         const body = typeof request.body === "function" ? request.body(pass) : request.body;
         const response = await socketRequest(daemon.socketPath, entry.route.method, url, body);
@@ -914,9 +917,20 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean) {
       }
       result.durationMs = Math.round(performance.now() - started);
       result.worstTurnMs = await settle(daemon.socketPath, result);
-      entry.measured.push(result);
+      if (record) entry.measured.push(result);
+      return result;
     };
     const requestsOf = (entry: Planned) => (entry.plan.kind === "exercise" ? entry.plan.requests : []);
+    for (const entry of replay) {
+      for (let pass = 1; pass <= passes; pass += 1) {
+        for (const request of requestsOf(entry)) {
+          const result = await measure(entry, request, pass, false);
+          if (result.error !== undefined) {
+            throw new Error(`Invalid confirmation trial ${trial}: replay ${entry.route.method} ${result.url}, pass ${pass}, HTTP ${result.status}: ${result.error}`);
+          }
+        }
+      }
+    }
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise");
     // Reads run pass by pass, so every read's first call precedes all warm calls.
     for (let pass = 1; pass <= passes; pass += 1) {
@@ -934,7 +948,7 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean) {
     if (profile) {
       await stopDaemon(daemon.child, 60_000);
       stopped = true;
-      attributeProfile(run.profileDir, planned);
+      attributeProfile(run.profileDir, planned, trial);
     }
     return { startupMs: daemon.startupMs, baselineMs };
   } finally {
@@ -968,17 +982,11 @@ function isWrite(route: CatalogRoute): boolean {
   return Boolean(WRITES[`${route.method} ${route.path}`]);
 }
 
-function turnOf(requests: Measured[], first: boolean) {
-  return requests.filter((entry) => (entry.pass === 1) === first).reduce((max, entry) => Math.max(max, entry.worstTurnMs), 0);
-}
-
 async function main() {
   const cpus = os.availableParallelism();
-  const loadStart = os.loadavg()[0];
-  if (loadStart >= cpus && !opts["ignore-load"]) {
-    log(`1-minute load average ${loadStart.toFixed(2)} is at or above ${cpus} cores; timings would be noise (pass --ignore-load to measure anyway)`);
-    return 2;
-  }
+  if (os.loadavg()[0] >= cpus && !opts["ignore-load"]) log("waiting up to 180 s for the 1-minute load average to fall below the core count");
+  const load = await waitForLoad({ cpus, readLoad: () => os.loadavg()[0], ...(opts["ignore-load"] ? { maxWaitMs: 0 } : {}) });
+  if (load.measurement_start >= cpus) log(`measuring under load ${load.measurement_start.toFixed(2)} on ${cpus} cores; fresh trials will confirm suspected offenders`);
 
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
   const root = path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep", `run-${stamp}`);
@@ -1027,20 +1035,40 @@ async function main() {
       await stopDaemon(catalogDaemon.child, 30_000);
     }
 
-    const exercised = planned.filter((entry) => entry.plan.kind === "exercise");
+    const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
+      .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
+    const readSnapshot = path.join(root, "before-measurement.db");
+    snapshot(dbCopy, readSnapshot);
     const sessions = opts["fresh-each"]
       ? await sequential(exercised.map((entry) => () => measureSession(run, [entry], opts["cpu-prof"]!)))
       : [await measureSession(run, planned, opts["cpu-prof"]!)];
     log(`measured ${exercised.length} routes over ${sessions.length} daemon start(s)`);
 
+    const trialsOf = (entry: Planned) => [...new Set(entry.measured.map((reading) => reading.trial))]
+      .map((trial) => entry.measured.filter((reading) => reading.trial === trial));
+    const suspects = exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
+    // Checkpoint before retries: exception validity belongs to the main snapshot.
+    const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
+    const writesByKey = new Map(exercised.filter((entry) => isWrite(entry.route))
+      .map((entry) => [`${entry.route.method} ${entry.route.path}`, entry]));
+    for (const entry of suspects) {
+      const replay = isWrite(entry.route)
+        ? writeReplayPlan(Object.keys(WRITES), [...writesByKey.keys()], `${entry.route.method} ${entry.route.path}`)
+          .map((key) => writesByKey.get(key)!)
+        : [];
+      log(`confirming ${entry.route.method} ${entry.route.path} in ${CONFIRMATION_TRIALS} fresh trials`);
+      for (let trial = 1; trial <= CONFIRMATION_TRIALS; trial += 1) {
+        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${dbCopy}${suffix}`, { force: true });
+        fs.copyFileSync(readSnapshot, dbCopy);
+        sessions.push(await measureSession(run, [entry], opts["cpu-prof"]!, trial, replay));
+      }
+    }
+
     const routeResult = (entry: Planned) => {
-      const firstCallMs = turnOf(entry.measured, true);
-      const warmMs = turnOf(entry.measured, false);
-      return { entry, firstCallMs, warmMs, worstMs: Math.max(firstCallMs, warmMs) };
+      return { entry, ...judgeRoute(trialsOf(entry), thresholdMs) };
     };
     const measuredRoutes = exercised.map(routeResult).sort((a, b) => b.worstMs - a.worstMs);
     const overBudget = measuredRoutes.filter((result) => result.worstMs >= thresholdMs);
-    const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
     const exceptionFor = (route: CatalogRoute) => {
       const exception = BUDGET_EXCEPTIONS[`${route.method} ${route.path}`];
       return exception && exceptionIssues.get(exception.issue) === "open" ? exception : null;
@@ -1060,7 +1088,7 @@ async function main() {
 
     const describeWorst = (requests: Measured[]) => {
       const pick = requests.reduce((a, b) => (b.worstTurnMs > a.worstTurnMs ? b : a));
-      return { label: pick.label, pass: pick.pass, duration_ms: pick.durationMs, bytes: pick.bytes };
+      return { label: pick.label, trial: pick.trial, pass: pick.pass, duration_ms: pick.durationMs, bytes: pick.bytes };
     };
     const describeOffender = ({ entry, firstCallMs, warmMs }: ReturnType<typeof routeResult>) => ({
       method: entry.route.method,
@@ -1072,14 +1100,16 @@ async function main() {
     });
     const loadEnd = os.loadavg()[0];
     const report = {
-      schema: "mandible-route-cost-sweep@1",
+      schema: "mandible-route-cost-sweep@2",
       revision,
       source_db: sourceDb,
       threshold_ms: thresholdMs,
       stall_budget_ms: EVENT_LOOP_STALL_BUDGET_MS,
       passes,
       fresh_each: Boolean(opts["fresh-each"]),
-      load: { start: Number(loadStart.toFixed(2)), end: Number(loadEnd.toFixed(2)), cpus },
+      confirmation_trials: CONFIRMATION_TRIALS,
+      judging_rule: "same call kind reaches threshold in main and every confirmation trial",
+      load: { ...load, end: loadEnd },
       daemon_startup_ms: sessions.map((session) => session.startupMs),
       idle_baseline_ms: Math.max(...sessions.map((session) => session.baselineMs)),
       counts: {
@@ -1091,26 +1121,31 @@ async function main() {
         failed_requests: failedRequests.length,
         offenders: offenders.length,
         excepted: excepted.length,
+        remeasured: suspects.length,
       },
       offenders: offenders.map(describeOffender),
       excepted: excepted.map((result) => ({ ...describeOffender(result), issue: exceptionFor(result.entry.route)!.issue })),
       exception_problems: exceptionProblems,
       unclassified: unclassified.map(({ route, plan }) => ({ method: route.method, path: route.path, reason: (plan as { reason: string }).reason })),
-      failed_requests: failedRequests.map(({ label, url, pass, status, error }) => ({ label, url, pass, status, error })),
+      failed_requests: failedRequests.map(({ label, url, trial, pass, status, error }) => ({ label, url, trial, pass, status, error })),
       skipped: skipped.map(({ route, plan }) => ({ method: route.method, path: route.path, reason: (plan as { reason: string }).reason })),
       measured: measuredRoutes.map(({ entry, firstCallMs, warmMs }) => ({
         method: entry.route.method,
         path: entry.route.path,
         first_call_turn_ms: firstCallMs,
         warm_turn_ms: warmMs,
-        requests: entry.measured.map(({ label, pass, status, bytes, durationMs, worstTurnMs, t0, t1 }) => ({ label, pass, status, bytes, duration_ms: durationMs, settled_ms: t1 - t0, worst_turn_ms: worstTurnMs })),
+        trials: trialsOf(entry).map((readings) => {
+          const turns = trialTurns(readings);
+          return { trial: readings[0].trial, first_call_turn_ms: turns.firstCallMs, warm_turn_ms: turns.warmMs };
+        }),
+        requests: entry.measured.map(({ label, trial, pass, status, bytes, durationMs, worstTurnMs, t0, t1 }) => ({ label, trial, pass, status, bytes, duration_ms: durationMs, settled_ms: t1 - t0, worst_turn_ms: worstTurnMs })),
       })),
       root: opts.keep ? root : null,
     };
 
     if (opts.json) console.log(JSON.stringify(report, null, 2));
     else printReport(report);
-    return offenders.length === 0 && unclassified.length === 0 && failedRequests.length === 0 ? 0 : 1;
+    return offenders.length === 0 && unclassified.length === 0 && failedRequests.length === 0 && exceptionProblems.length === 0 ? 0 : 1;
   } finally {
     if (!opts.keep) {
       fs.rmSync(root, { recursive: true, force: true });
@@ -1127,12 +1162,13 @@ async function sequential<T>(tasks: (() => Promise<T>)[]): Promise<T[]> {
   return results;
 }
 
-function attributeProfile(profileDir: string, planned: Planned[]) {
+function attributeProfile(profileDir: string, planned: Planned[], trial: number) {
   const profile = fs.readdirSync(profileDir).find((name) => name.endsWith(".cpuprofile"));
   if (!profile) throw new Error(`--cpu-prof: the daemon wrote no profile to ${profileDir}`);
   for (const entry of planned) {
-    if (entry.measured.length === 0) continue;
-    const pick = entry.measured.reduce((a, b) => (b.worstTurnMs > a.worstTurnMs ? b : a));
+    const readings = entry.measured.filter((reading) => reading.trial === trial);
+    if (readings.length === 0) continue;
+    const pick = readings.reduce((a, b) => (b.worstTurnMs > a.worstTurnMs ? b : a));
     if (pick.worstTurnMs < thresholdMs) continue;
     const result = spawnSync(process.execPath, [
       path.join(REPO_ROOT, "scripts", "cpuprofile-windows.mjs"),
@@ -1147,10 +1183,11 @@ function attributeProfile(profileDir: string, planned: Planned[]) {
 function printReport(report: Record<string, any>) {
   const lines: string[] = [];
   lines.push(`revision ${report.revision.slice(0, 8)}; load ${report.load.start} -> ${report.load.end} on ${report.load.cpus} cores; threshold ${report.threshold_ms} ms`);
+  lines.push(`load wait ${report.load.waited_ms} ms; measurement-start load ${report.load.measurement_start}; ${report.counts.remeasured} routes remeasured in ${report.confirmation_trials} fresh trials each`);
   lines.push(`${report.counts.routes} routes: ${report.counts.measured} measured, ${report.counts.skipped} skipped, ${report.counts.unclassified} unclassified; ${report.counts.requests} requests, ${report.counts.failed_requests} failed`);
   lines.push(`daemon startup ${report.daemon_startup_ms.length === 1 ? report.daemon_startup_ms[0] : `max ${Math.max(...report.daemon_startup_ms)}`} ms; longest idle turn ${report.idle_baseline_ms} ms over ${BASELINE_MS / 1000} s`);
   lines.push("");
-  lines.push(report.offenders.length ? `offenders (worst turn >= ${report.threshold_ms} ms; first call / warm):` : "no offenders");
+  lines.push(report.offenders.length ? `offenders (same call kind >= ${report.threshold_ms} ms in every trial; first call / warm minima):` : "no offenders");
   for (const offender of report.offenders) {
     lines.push(`  ${String(offender.first_call_turn_ms).padStart(6)} / ${String(offender.warm_turn_ms).padStart(5)} ms  ${offender.method} ${offender.path}   (${offender.worst_request.label}, pass ${offender.worst_request.pass}, ${offender.worst_request.duration_ms} ms, ${offender.worst_request.bytes} B)`);
     if (offender.profile) lines.push(offender.profile.split("\n").map((line: string) => `      ${line}`).join("\n"));
@@ -1158,10 +1195,13 @@ function printReport(report: Record<string, any>) {
   for (const entry of report.excepted) lines.push(`  excepted ${entry.first_call_turn_ms} / ${entry.warm_turn_ms} ms  ${entry.method} ${entry.path} [issue:${entry.issue}]`);
   for (const entry of report.exception_problems) lines.push(`exception ${entry.route} [issue:${entry.issue}]: ${entry.problem}`);
   for (const entry of report.unclassified) lines.push(`unclassified ${entry.method} ${entry.path}: ${entry.reason}`);
-  for (const entry of report.failed_requests) lines.push(`failed ${entry.url} (pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`);
+  for (const entry of report.failed_requests) lines.push(`failed ${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`);
   lines.push("");
-  lines.push("measured (first call / warm), worst first:");
+  lines.push("measured (minimum across trials of first-call / warm maxima), worst first:");
   for (const entry of report.measured.slice(0, 30)) lines.push(`  ${String(entry.first_call_turn_ms).padStart(6)} / ${String(entry.warm_turn_ms).padStart(5)} ms  ${entry.method} ${entry.path}`);
+  for (const entry of report.measured.filter((entry: { trials: unknown[] }) => entry.trials.length > 1)) {
+    lines.push(`  trials ${entry.method} ${entry.path}: ${entry.trials.map((trial: { trial: number; first_call_turn_ms: number; warm_turn_ms: number }) => `${trial.trial}: ${trial.first_call_turn_ms}/${trial.warm_turn_ms} ms`).join(", ")}`);
+  }
   lines.push("");
   lines.push("skipped:");
   for (const entry of report.skipped) lines.push(`  ${entry.method} ${entry.path}: ${entry.reason}`);
