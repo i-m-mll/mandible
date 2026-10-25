@@ -12,7 +12,7 @@ import {
   resolvedArtifactRecord,
 } from "../provider-artifacts.js";
 import type { ArtifactRecord } from "../types.js";
-import { computeWorkUnitLiveness, mapWorkUnitRow } from "../work-unit-utils.js";
+import { mapWorkUnitRow, workUnitLiveness } from "../work-unit-utils.js";
 import { summarizeSessionKey } from "../session-summary.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
@@ -942,6 +942,7 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
          ORDER BY wu.created_at DESC`,
       ).all(issueId) as Array<Record<string, unknown>>;
 
+  const liveness = workUnitLiveness(db, rows.map(mapWorkUnitRow));
   const seen = new Set<string>();
   const result: LedgerIssueDetailWorkUnit[] = [];
   for (const row of rows) {
@@ -955,7 +956,7 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
       link_created_at: numberOrNull(row.link_created_at),
       last_seen_at: numberOrNull(row.last_seen_at),
       metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
-      liveness: computeWorkUnitLiveness(db, workUnit),
+      liveness: liveness(workUnit),
     });
   }
   return result;

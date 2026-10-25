@@ -233,4 +233,4 @@ curl http://localhost:19420/api/work-units?state=open&repo_id=abc
 curl http://localhost:19420/api/work-units/unit-id-here
 ```
 
-The response includes a `liveness` overlay with `state`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time. `state` is `live`, `stopped`, or `unknown`; `unknown` means a liveness check could not complete (for example, the Codex thread-writer lock scan failed), and Mandible never clears, archives, or takes over behind it.
+An `open` or `committed` unit carries a `liveness` overlay with `state`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time. A `resolved` or `abandoned` unit has no work in progress, so it carries none. `state` is `live`, `stopped`, or `unknown`; `unknown` means a liveness check could not complete (for example, the Codex thread-writer lock scan failed), and Mandible never clears, archives, or takes over behind it.

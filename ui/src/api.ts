@@ -2589,44 +2589,6 @@ export type WorkUnit = ContractWorkUnit;
 
 export type WorkUnitWithLiveness = ContractWorkUnitWithLiveness;
 
-export type WorkUnitFilters = {
-  state?: WorkUnitState;
-  repo_id?: string;
-  branch?: string;
-  issue_id?: string;
-};
-
-export type WorkUnitPatch = {
-  state?: WorkUnitState;
-  assigned_session_id?: string | null;
-  continuation?: string | null;
-  continuation_by?: string | null;
-  continuation_at?: number | null;
-  auth_request_id?: string | null;
-};
-
-export async function getWorkUnits(
-  filters?: WorkUnitFilters,
-): Promise<WorkUnitWithLiveness[]> {
-  const query = filters ? buildQuery(filters as Record<string, string | undefined>) : '';
-  const response = await apiGet(`/api/work-units${query}`);
-  const payload = (await parseMaybeJson(response)) as { work_units?: WorkUnitWithLiveness[] };
-  return payload.work_units ?? [];
-}
-
-export async function getWorkUnit(id: string): Promise<WorkUnitWithLiveness> {
-  const response = await apiGet(`/api/work-units/${encodeURIComponent(id)}`);
-  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
-}
-
-export async function updateWorkUnit(
-  id: string,
-  patch: WorkUnitPatch,
-): Promise<WorkUnitWithLiveness> {
-  const response = await apiPatch(`/api/work-units/${encodeURIComponent(id)}`, patch);
-  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
-}
-
 // ── Logs API — Bug: af91bdd ──
 
 export type LogFacetValue = {

@@ -674,6 +674,15 @@ export type WorkUnitWithLiveness = WorkUnit & {
   liveness: WorkUnitLiveness;
 };
 
+/**
+ * A work unit as the work-unit routes return it. Liveness answers whether an
+ * agent is working the unit, so it is derived only while the unit is open or
+ * committed; a resolved or abandoned unit has no work in progress to report.
+ */
+export type WorkUnitView =
+  | (WorkUnitWithLiveness & { state: "open" | "committed" })
+  | (WorkUnit & { state: "resolved" | "abandoned" });
+
 export type {
   AcceptedConversationSubmission,
   ControllerOwnership,

@@ -47,6 +47,54 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("lists in-progress units' liveness with a fixed number of queries, matching each unit's own read", async () => {
+    db.prepare("INSERT INTO sessions (id, app, status, last_active, branch, conversation_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("sess-live", "claude", "active", "2026-10-01T00:00:00Z", "feature/live-branch", "conv-live");
+    db.prepare("INSERT INTO sessions (id, app, status, last_active, conversation_id) VALUES (?, ?, ?, ?, ?)")
+      .run("sess-ended", "codex", "ended", "2026-09-01T00:00:00Z", "conv-ended");
+    db.prepare(`INSERT INTO console_sessions (id, label, command, status, mandible_session_id, provider_session_id, created_at, updated_at)
+      VALUES ('console-run', 'run', 'claude', 'running', NULL, 'thread-run', 1, 1)`).run();
+    const identities: Array<Partial<Record<"assigned_session_id" | "provider_session_id" | "worker_provider_session_id" | "branch", string>>> = [
+      { assigned_session_id: "sess-live" },
+      { provider_session_id: "conv-ended" },
+      { provider_session_id: "thread-run", worker_provider_session_id: "sess-ended" },
+      { assigned_session_id: "never-recorded" },
+      { branch: "feature/live-branch" },
+      { branch: "feature/nobody" },
+    ];
+    const insert = db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+      provider_session_id, worker_provider_session_id, created_at) VALUES (?, 'abc123', 'mandible', ?, 'solo', ?, ?, ?, ?, ?)`);
+    const seed = (from: number, to: number) => {
+      for (let i = from; i < to; i++) {
+        const identity = identities[i % identities.length]!;
+        insert.run(`wu-${String(i).padStart(3, "0")}`, identity.branch ?? `feature/unit-${i}`, ["open", "committed", "resolved", "abandoned"][i % 4],
+          identity.assigned_session_id ?? null, identity.provider_session_id ?? null, identity.worker_provider_session_id ?? null, i);
+      }
+    };
+    const listed = async () => {
+      const prepare = vi.spyOn(db, "prepare");
+      const response = await router.invoke({ method: "GET", url: "/api/work-units" });
+      const queries = prepare.mock.calls.length;
+      prepare.mockRestore();
+      expect(response.status).toBe(200);
+      return { queries, units: (response.body as { work_units: Array<{ id: string; state: string; liveness?: { state: string } }> }).work_units };
+    };
+
+    seed(0, identities.length);
+    const few = await listed();
+    seed(identities.length, 10 * identities.length);
+    const many = await listed();
+    expect(many.units).toHaveLength(10 * identities.length);
+    expect(many.queries).toBe(few.queries);
+    const inProgress = many.units.filter((unit) => unit.state === "open" || unit.state === "committed");
+    expect(new Set(inProgress.map((unit) => unit.liveness?.state))).toEqual(new Set(["live", "stopped"]));
+    expect(many.units.filter((unit) => "liveness" in unit)).toEqual(inProgress);
+    for (const unit of many.units) {
+      const own = await router.invoke({ method: "GET", url: `/api/work-units/${unit.id}` });
+      expect(unit, unit.id).toEqual(own.body);
+    }
+  });
+
   it("binds a claim to an issue in another project and refuses a ref that names no issue", async () => {
     const other = addProject(db, { project_key: "elsewhere", display_name: "Elsewhere" });
     const issue = createLedgerIssue(db, { project_id: other.id, alias: "far1234" });
