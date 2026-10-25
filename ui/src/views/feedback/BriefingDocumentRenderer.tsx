@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
+import { ROUTE_DATA_FRESH_MS } from '../../detail-cache';
 import { browserResourceKeys } from '../../query/browserResources';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -185,6 +186,7 @@ export function BriefingDocumentRenderer({
       return round;
     },
     enabled: active,
+    staleTime: ROUTE_DATA_FRESH_MS,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[2] === briefingId && previousQuery.queryKey[3] === roundId ? previous : undefined,
     refetchOnWindowFocus: true,
   }, queryClient);
@@ -216,7 +218,7 @@ export function BriefingDocumentRenderer({
   }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
 
   useRouteLoad((register) => {
-    register(projectionQuery.refetch({ cancelRefetch: false }));
+    if (projectionQuery.isStale) register(projectionQuery.refetch({ cancelRefetch: false }));
   }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
 
   useEffect(() => {

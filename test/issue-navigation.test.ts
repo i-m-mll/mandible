@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
+import { detailRequestKey, invalidatePersistedDetail, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { issueDetailProjection, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, act } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -442,6 +442,7 @@ it.each([404, 409, 503])('reconciles cached issue prefix identity with authorita
     const cached = { ...issueDetailProjection({ displayId: prefix, title: 'Cached unique A' }), id: prefix + 'a'.repeat(57) };
     writePersistedDetail('issue-detail', key, cached);
     writePersistedDetail('issue-detail', 'unrelated', { id: 'unrelated' });
+    invalidatePersistedDetail();
     let finish!: (response: Response) => void;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
     render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: prefix }));

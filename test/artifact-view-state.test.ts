@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
+import { detailRequestKey, invalidatePersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { makeArtifactResolution } from "./helpers/artifact-resolution-fixtures";
 import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from './helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from './helpers/dom.js';
@@ -42,6 +42,7 @@ describe('ArtifactsView', () => {
         cacheCase === 'wrong record' ? { ...artifact, id: 'other-artifact', metadata: { title: 'Wrong cached record' } } : artifact);
       writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifact.id }),
         cacheCase === 'wrong content' ? { ...content, artifact_id: 'other-artifact', preview: { ...content.preview, text: 'Wrong cached content' } } : content);
+      invalidatePersistedDetail();
       let finishRecord!: (value: Response) => void;
       let finishContent!: (value: Response) => void;
       const recordRead = new Promise<Response>((resolve) => { finishRecord = resolve; });
@@ -606,6 +607,7 @@ describe('authoritative series references', () => {
       const series = makeArtifactSeries('abcdef0' + '1'.repeat(57), [artifact]);
       const ref = 'artifact-series:abcdef0';
       writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref }), series.history);
+      invalidatePersistedDetail();
       const requests: string[] = [];
       let finish!: (response: Response) => void;
       seriesFetch([artifact], (requested) => {

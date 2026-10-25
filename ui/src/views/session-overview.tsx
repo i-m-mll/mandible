@@ -84,10 +84,13 @@ export type SessionOverviewViewProps = {
   managedConversation?: ManagedConversationOverview;
 };
 
-export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const sessionId = params.session?.trim();
-  if (sessionId) {
-    await getSessionOverview(sessionId);
+export async function warmInitialData(
+  params: Record<string, string>,
+  context: { agentBinding: string | null },
+): Promise<void> {
+  const sessionRef = params.session?.trim() || context.agentBinding;
+  if (sessionRef) {
+    await getSessionOverview(sessionRef);
     return;
   }
   await getSessions<SessionRecord>();
@@ -268,7 +271,7 @@ function SessionPicker({
 
   useRouteLoad((registerInitialRouteLoad) => {
     let cancelled = false;
-    const initialLoad = getSessions<SessionRecord>()
+    const initialLoad = getSessions<SessionRecord>(undefined, { onCached: setSessions })
       .then((rows) => {
         if (!cancelled) {
           setSessions(rows);
@@ -417,20 +420,22 @@ export function SessionOverviewView({
   const refreshOverview = useLiveLoad((signal) => {
     if (!selectedRef) return undefined;
     const ref = selectedRef;
-    if (loadedOverviewRef.current === ref) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(ref)}/overview`);
+    const refreshing = loadedOverviewRef.current === ref;
+    if (refreshing) invalidateApiGetCache(`/api/sessions/${encodeURIComponent(ref)}/overview`);
     loadedOverviewRef.current = ref;
     const setState = (state: OverviewState) => setResult({ ref, state });
     setResult((current) => current.ref === ref && current.state.kind === 'resolved'
       ? current : { ref, state: { kind: 'loading' } });
-    return getSessionOverview(ref, signal)
+    const show = (payload: SessionOverview | SessionOverviewAmbiguous) => {
+      setState(payload.status === 'ambiguous'
+        ? { kind: 'ambiguous', result: payload }
+        : { kind: 'resolved', overview: payload });
+    };
+    return getSessionOverview(ref, { signal, onCached: refreshing ? undefined : show })
       .then((payload) => {
         if (signal.aborted) return;
-        if (payload.status === 'ambiguous') {
-          setState({ kind: 'ambiguous', result: payload });
-          return;
-        }
-        setState({ kind: 'resolved', overview: payload });
-        if (!embedded && !initialSessionId) writeSessionParamToHash(payload.session.id);
+        show(payload);
+        if (payload.status !== 'ambiguous' && !embedded && !initialSessionId) writeSessionParamToHash(payload.session.id);
       })
       .catch((err: unknown) => {
         if (refreshAbandoned(signal)) return;

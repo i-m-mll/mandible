@@ -396,9 +396,7 @@ export function ArtifactsView({
     listRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
-    try {
-      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters));
-      if (listRequestIdRef.current !== requestId) return;
+    const show = (next: ArtifactSeriesSummary[]) => {
       const ordered = sortArtifactSeries(next, sortField, sortDirection);
       setSeries(ordered);
       setSelectedSeriesRef((current) => {
@@ -412,6 +410,11 @@ export function ArtifactsView({
         if (current || deepLinkActiveRef.current || !ordered[0]?.latest_artifact) return current;
         return ordered[0].latest_artifact;
       });
+    };
+    try {
+      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters), { onCached: show });
+      if (listRequestIdRef.current !== requestId) return;
+      show(next);
     } catch (err) {
       if (listRequestIdRef.current === requestId) {
         setError(err instanceof Error ? err.message : String(err));

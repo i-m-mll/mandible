@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { AppShellProvider } from '../ui/src/app-shell';
-import { invalidateApiGetCache } from '../ui/src/api';
+import { clearApiGetCache } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Routing + shell tests for Spaces nav/route scaffold (umbrella de56ffa,
@@ -70,7 +70,7 @@ function makePacket(space: Space = makeSpace()): SpaceFactPacket {
 }
 
 beforeEach(async () => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   await establishTestClientAccess();
   installMemoryLocalStorage();
@@ -79,7 +79,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   cleanup();
   document.getElementById('spaces-test-notices')?.remove();

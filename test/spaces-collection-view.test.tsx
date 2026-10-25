@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { clearApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Collection renderer component tests (umbrella de56ffa, C8 / issue fa83ec7).
@@ -170,7 +170,7 @@ function stubLocalStorage(): void {
 }
 
 beforeEach(async () => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   await establishTestClientAccess();
   stubLocalStorage();
@@ -180,7 +180,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { clearApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Board renderer component tests (umbrella de56ffa, child 4d4d364 / C17).
@@ -271,7 +271,7 @@ function createDeferred<T>(): {
 }
 
 beforeEach(async () => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   await establishTestClientAccess();
   stubLocalStorage();
@@ -281,7 +281,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();

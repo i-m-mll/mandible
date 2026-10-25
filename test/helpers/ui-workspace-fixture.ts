@@ -11,7 +11,7 @@ import { clearPersistedDetailCache } from '../../ui/src/detail-cache';
 import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { PRODUCTION_EFFECTS } from '../../src/security/effect-policy.js';
 
-import { invalidateApiGetCache, type InstanceInfo } from '../../ui/src/api';
+import { clearApiGetCache, type InstanceInfo } from '../../ui/src/api';
 
 
 
@@ -174,7 +174,7 @@ beforeEach(async () => {
 afterEach(() => {
   document.getElementById('app-operational-notices')?.remove();
   __resetBrowserSessionForTests();
-  invalidateApiGetCache();
+  clearApiGetCache();
   cleanup();
   __resetSharedSseForTests();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');

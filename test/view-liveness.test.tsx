@@ -267,7 +267,7 @@ it('Logs folds events during its activation load into one trailing read', async 
 it('Logs shows a read that hangs past the deadline as a failed load, then reads again', async () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   const { client, emit, loadLogs: answer } = silentLogs();
-  const loadLogs = vi.fn((params: unknown, signal?: AbortSignal) => (loadLogs.mock.calls.length === 1
+  const loadLogs = vi.fn((params: unknown, { signal }: { signal?: AbortSignal } = {}) => (loadLogs.mock.calls.length === 1
     ? new Promise<LogsResponse>((_, reject) => signal?.addEventListener('abort', () => reject(signal.reason)))
     : answer()));
   renderWithNotices(

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen, waitFor, cleanup, fireEvent, act } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearPersistedDetailCache, invalidatePersistedDetail } from '../ui/src/detail-cache';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import {
@@ -32,6 +33,7 @@ function stubLocalStorage(): void {
 
 beforeEach(async () => {
   stubLocalStorage();
+  clearPersistedDetailCache();
   __resetBrowserSessionForTests();
   await ensureClientAccess(async () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'timeline-csrf',
   } }), { status: 200, headers: { 'content-type': 'application/json' } }));
@@ -521,6 +523,7 @@ describe('TimelineView', () => {
     });
 
     cleanup();
+    invalidatePersistedDetail();
     const reloadFetchMock = stubTimelineFetch(projection());
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],

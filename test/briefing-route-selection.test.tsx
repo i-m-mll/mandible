@@ -6,6 +6,7 @@ import * as api from '../ui/src/api';
 import { ApiError, normalizeBriefingProjection, type BriefingSidebarSnapshot } from '../ui/src/api';
 import type { CollectionShellProps } from '../ui/src/views/feedback/CollectionShell';
 import { queryClient } from '../ui/src/query/client';
+import { ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
 import { browserResourceKeys } from '../ui/src/query/browserResources';
 import { parseRouteFromHash } from '../ui/src/routing';
 import { BriefingView, warmInitialData } from '../ui/src/views/briefing';
@@ -173,7 +174,11 @@ describe('Briefing route intent', () => {
 
   it('honors an authoritative ambiguity even when an earlier resolution remains cached', async () => {
     query.data = snapshot(); query.isFetching = false;
-    queryClient.setQueryData(browserResourceKeys.briefingProjection('target', null, null), projection('target-one'));
+    queryClient.setQueryData(
+      browserResourceKeys.briefingProjection('target', null, null),
+      projection('target-one'),
+      { updatedAt: Date.now() - ROUTE_DATA_FRESH_MS - 1 },
+    );
     render(<BriefingView instance={null} initialBriefingId="target" />);
     await waitFor(() => expect(screen.getByRole('alert').getAttribute('data-route-state')).toBe('ambiguous'));
     expect(screen.queryByTestId('document')).toBeNull();

@@ -5,6 +5,7 @@ import {
   getSidebarOrderPreference,
   isApiErrorStatus,
   updateSidebarOrderPreference,
+  type SidebarOrderPreference,
   type SidebarOrderPreferenceValue,
 } from '../api';
 import { subscribeClientAccessState } from '../client-auth-token';
@@ -28,12 +29,15 @@ export function useSidebarOrderPreference() {
   const pendingWritesRef = useRef(0);
   valueRef.current = value;
 
+  const firstLoadRef = useRef(true);
+
   const load = useCallback(async () => {
     const request = ++requestRef.current;
     const intent = intentRef.current;
     const authEpoch = authEpochRef.current;
-    try {
-      const snapshot = await getSidebarOrderPreference();
+    const warm = firstLoadRef.current;
+    firstLoadRef.current = false;
+    const show = (snapshot: SidebarOrderPreference) => {
       if (request !== requestRef.current
           || intent !== intentRef.current
           || authEpoch !== authEpochRef.current
@@ -46,6 +50,9 @@ export function useSidebarOrderPreference() {
       setValue(next);
       setReady(true);
       setNotice(null);
+    };
+    try {
+      show(await getSidebarOrderPreference({ warm, onCached: warm ? show : undefined }));
     } catch (error) {
       if (request !== requestRef.current || authEpoch !== authEpochRef.current || pendingWritesRef.current > 0) return;
       setReady(false);

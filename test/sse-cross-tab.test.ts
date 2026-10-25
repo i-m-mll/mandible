@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { getGraph, invalidateApiGetCache } from '../ui/src/api';
+import { getGraph, clearApiGetCache } from '../ui/src/api';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import {
@@ -282,7 +282,7 @@ describe('cross-tab SSE coordinator', () => {
 
 it('invalidates warmed data before exact and wildcard consumer reads while heartbeat stays warm', async () => {
   await establishTestClientAccess();
-  invalidateApiGetCache();
+  clearApiGetCache();
   let revision = 1;
   const fetchMock = vi.fn(async () => new Response(JSON.stringify({ nodes: [], edges: [], mode: 'issue', revision }), {
     headers: { 'content-type': 'application/json' },
@@ -307,7 +307,7 @@ it('invalidates warmed data before exact and wildcard consumer reads while heart
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     coordinator.disconnect();
-    invalidateApiGetCache();
+    clearApiGetCache();
     __resetBrowserSessionForTests();
     vi.unstubAllGlobals();
   }

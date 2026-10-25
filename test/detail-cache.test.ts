@@ -58,11 +58,16 @@ describe('persisted detail cache', () => {
     expect(window.localStorage.getItem('mandible:detail-cache:v2')).toBeNull();
   });
 
-  it('rejects oversized or unserializable payloads without breaking live data', () => {
-    expect(writePersistedDetail('conversation', 'huge', 'x'.repeat(DETAIL_CACHE_LIMITS.maxEntryBytes + 1))).toBe(false);
+  it('keeps oversized payloads for this page only and rejects unserializable ones', async () => {
+    const huge = 'x'.repeat(DETAIL_CACHE_LIMITS.maxEntryBytes + 1);
+    expect(writePersistedDetail('conversation', 'huge', huge)).toBe(false);
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     expect(writePersistedDetail('conversation', 'circular', circular)).toBe(false);
-    expect(readPersistedDetail('conversation', 'huge')).toBeNull();
+    expect(readPersistedDetail('conversation', 'circular')).toBeNull();
+    expect(readPersistedDetail('conversation', 'huge')).toBe(huge);
+    vi.resetModules();
+    const reloaded = await import('../ui/src/detail-cache');
+    expect(reloaded.readPersistedDetail('conversation', 'huge')).toBeNull();
   });
 });

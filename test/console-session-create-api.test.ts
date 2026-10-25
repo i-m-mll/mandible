@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ConversationSpawnApiError, invalidateApiGetCache, listCanonicalProjects, startProviderChat } from '../ui/src/api';
+import { ConversationSpawnApiError, clearApiGetCache, listCanonicalProjects, startProviderChat } from '../ui/src/api';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 import { establishTestClientAccess } from './helpers/local-client-access';
@@ -9,7 +9,7 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 beforeEach(establishTestClientAccess);
 
 afterEach(() => {
-  invalidateApiGetCache();
+  clearApiGetCache();
   __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });

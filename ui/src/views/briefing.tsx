@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../query/client';
+import { ROUTE_DATA_FRESH_MS } from '../detail-cache';
 import { browserResourceKeys } from '../query/browserResources';
 import { useEffect, useMemo } from 'preact/hooks';
 
@@ -156,6 +157,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     queryKey: browserResourceKeys.briefingSidebar,
     queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
     enabled: viewActive,
+    staleTime: ROUTE_DATA_FRESH_MS,
     refetchOnWindowFocus: true,
   }, queryClient);
   const sidebar = sidebarQuery.data ?? { briefings: [], bundles: [], groups: [], invalidBriefings: [] };
@@ -168,13 +170,14 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   const explicitBriefingQuery = useQuery({
     ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null),
     enabled: viewActive && Boolean(initialBriefingId),
+    staleTime: ROUTE_DATA_FRESH_MS,
     refetchOnWindowFocus: true,
   }, queryClient);
   useRouteLoad((register) => {
-    register(sidebarQuery.refetch({ cancelRefetch: false }));
+    if (sidebarQuery.isStale) register(sidebarQuery.refetch({ cancelRefetch: false }));
   }, []);
   useRouteLoad((register) => {
-    if (initialBriefingId) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
+    if (initialBriefingId && explicitBriefingQuery.isStale) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
   }, [initialBriefingId, initialRoundId]);
 
   const hasExplicitTarget = Boolean(initialBriefingId || initialGroupId);
@@ -344,14 +347,18 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 }
 
 /** Warm the Briefing sidebar and only its explicit, saved, or default selection. */
+// Warmed Briefing queries stay for the page, so a later first visit still paints them.
+const WARMED_QUERY_GC_TIME_MS = Number.POSITIVE_INFINITY;
+
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
   if (params.briefing) {
-    await queryClient.fetchQuery(briefingTargetQuery(params.briefing, params.round || null));
+    await queryClient.fetchQuery({ ...briefingTargetQuery(params.briefing, params.round || null), gcTime: WARMED_QUERY_GC_TIME_MS });
     return;
   }
   const sidebar = await queryClient.fetchQuery({
     queryKey: browserResourceKeys.briefingSidebar,
     queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
+    gcTime: WARMED_QUERY_GC_TIME_MS,
   });
   const viewState = readPersistedViewState(
     BRIEFING_VIEW_STATE_KEY,
@@ -366,6 +373,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   await queryClient.fetchQuery({
     queryKey: browserResourceKeys.briefingProjection(briefingId, selection.roundId, null, displayContext),
     queryFn: ({ signal }) => getBriefing(briefingId, selection.roundId, null, signal, displayContext),
+    gcTime: WARMED_QUERY_GC_TIME_MS,
   });
 }
 

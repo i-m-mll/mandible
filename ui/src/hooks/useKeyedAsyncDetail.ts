@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { isPersistedDetailFresh, readPersistedDetail, writePersistedDetail, type LiveDetailNamespace } from '../detail-cache';
 
 type DetailState<T> = {
   key: string | null;
@@ -24,7 +24,7 @@ export function useKeyedAsyncDetail<T>({
   accept,
 }: {
   requestKey: string | null;
-  namespace: string;
+  namespace: LiveDetailNamespace;
   load: (signal: AbortSignal) => Promise<T>;
   accept?: (data: T) => boolean;
 }): KeyedAsyncDetail<T> {
@@ -35,17 +35,22 @@ export function useKeyedAsyncDetail<T>({
     },
     [accept, namespace, requestKey],
   );
+  const hydratedState = (): DetailState<T> => {
+    const fresh = Boolean(requestKey && hydrated && isPersistedDetailFresh(namespace, requestKey));
+    return {
+      key: requestKey,
+      data: hydrated,
+      loading: Boolean(requestKey) && !hydrated,
+      revalidating: Boolean(requestKey && hydrated) && !fresh,
+      error: null,
+      failure: null,
+      stale: Boolean(hydrated) && !fresh,
+    };
+  };
   const [nonce, setNonce] = useState(0);
-  const [state, setState] = useState<DetailState<T>>(() => ({
-    key: requestKey,
-    data: hydrated,
-    loading: Boolean(requestKey) && !hydrated,
-    revalidating: Boolean(requestKey && hydrated),
-    error: null,
-    failure: null,
-    stale: Boolean(hydrated),
-  }));
+  const [state, setState] = useState<DetailState<T>>(hydratedState);
   const generationRef = useRef(0);
+  const loadedNonceRef = useRef(nonce);
 
   useLayoutEffect(() => {
     const generation = generationRef.current + 1;
@@ -56,6 +61,12 @@ export function useKeyedAsyncDetail<T>({
     }
     const persisted = readPersistedDetail<T>(namespace, requestKey);
     const cached = persisted && (!accept || accept(persisted)) ? persisted : null;
+    const refreshRequested = loadedNonceRef.current !== nonce;
+    loadedNonceRef.current = nonce;
+    if (cached && !refreshRequested && isPersistedDetailFresh(namespace, requestKey)) {
+      setState({ key: requestKey, data: cached, loading: false, revalidating: false, error: null, failure: null, stale: false });
+      return undefined;
+    }
     setState((current) => {
       const sameKeyData = current.key === requestKey ? current.data : null;
       const data = sameKeyData ?? cached;
@@ -95,17 +106,7 @@ export function useKeyedAsyncDetail<T>({
     return () => controller.abort();
   }, [accept, load, namespace, nonce, requestKey]);
 
-  const coherentState = state.key === requestKey
-    ? state
-    : {
-        key: requestKey,
-        data: hydrated,
-        loading: Boolean(requestKey) && !hydrated,
-        revalidating: Boolean(requestKey && hydrated),
-        error: null,
-        failure: null,
-        stale: Boolean(hydrated),
-      };
+  const coherentState = state.key === requestKey ? state : hydratedState();
 
   const setData = useCallback((next: T | null | ((current: T | null) => T | null)) => {
     setState((current) => {
