@@ -1,3 +1,9 @@
+import { issueSummaries } from "./issues.js";
+import { authHistory } from "./auth-history.js";
+import { artifactSeries } from "./artifacts.js";
+import { graphPayload } from "./graph.js";
+import { inboxGlobal } from "./inbox.js";
+import { briefingsList } from "./briefings.js";
 import type { Db } from "../db.js";
 import { buildProjectTimelineProjection } from "../ledger/timeline-projection.js";
 
@@ -17,6 +23,12 @@ function diagnosticsDelay(db: Db, { ms }: { ms: number }): { elapsed_ms: number;
 
 /** Add pure ledger reads here; the transport derives its closed protocol from this registry. */
 export const ledgerReads = {
+  briefings_list: briefingsList,
+  inbox_global: inboxGlobal,
+  graph_payload: graphPayload,
+  artifact_series: artifactSeries,
+  auth_history: authHistory,
+  issue_summaries: issueSummaries,
   timeline_projection: buildProjectTimelineProjection,
   diagnostics_delay: diagnosticsDelay,
 };

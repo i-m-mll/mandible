@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { getDb } from "../db.js";
+import { getDb, type Db } from "../db.js";
 import { runLedgerRead, type LedgerReadKind, type LedgerReadParams, type LedgerReadResult, type LedgerReadResponse } from "./registry.js";
 
 export type { LedgerReadKind, LedgerReadParams, LedgerReadResult } from "./registry.js";
@@ -10,9 +10,9 @@ export interface LedgerReader {
 }
 
 /** Tests explicitly choose the calling thread's injected, often in-memory database. */
-export function inlineLedgerReader(): LedgerReader {
+export function inlineLedgerReader(database: () => Db = getDb): LedgerReader {
   return {
-    async run(kind, params) { return runLedgerRead(getDb(), kind, params); },
+    async run(kind, params) { return runLedgerRead(database(), kind, params); },
     async close() {},
   };
 }

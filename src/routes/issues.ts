@@ -1,3 +1,4 @@
+import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
 import type { SessionExecutionObservation } from "../contracts.js";
 import { formatExecutionEvidence } from "../session-execution-format.js";
 import { existsSync } from "node:fs";
@@ -67,7 +68,6 @@ import {
 } from "../ledger/project-registry.js";
 import {
   getLedgerIssueDetailForRoute,
-  listLedgerIssueSummaries,
   resolveLedgerIssueIdForRoute,
 } from "../ledger/issue-projection.js";
 import { issueSearchExpression, searchLedgerIssues } from "../ledger/issue-search.js";
@@ -75,7 +75,7 @@ import {
   linkCommitToLedgerIssue,
   resolveOperationalIssueRef,
 } from "../ledger/operational-links.js";
-import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
+import type { GitBugIssueDetail } from "../types.js";
 import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
 import { entityRefs, resolveCommentRef } from "../entity-refs.js";
@@ -194,51 +194,6 @@ function withMarkdownBodyWarnings<T extends object>(
   warnings: MarkdownBodyPolicyWarning[],
 ): T & { markdown_body_warnings?: MarkdownBodyPolicyWarning[] } {
   return warnings.length > 0 ? { ...payload, markdown_body_warnings: warnings } : payload;
-}
-
-function filterIssueSummaries(
-  summaries: IssueRepoSummary[],
-  filters: { repo?: string; status?: string; resolution?: string; label?: string },
-): IssueRepoSummary[] {
-  let filtered = summaries;
-
-  if (filters.repo) {
-    // Issue 3d85f43: accept the canonical project_key as a repo filter (the
-    // value the issue-detail surface and /r/issue redirect now emit), alongside
-    // the legacy work_repo_id / name / root, so the key round-trips.
-    filtered = filtered.filter(
-      (s) =>
-        s.repo_id === filters.repo ||
-        s.repo_name === filters.repo ||
-        s.repo_root === filters.repo ||
-        (s.project_key !== undefined && s.project_key === filters.repo),
-    );
-  }
-
-  if (filters.status === "open" || filters.status === "closed") {
-    filtered = filtered.map((s) => ({
-      ...s,
-      issues: s.issues.filter((issue) => issue.status === filters.status),
-    }));
-  }
-
-  if (filters.resolution) {
-    filtered = filtered.map((s) => ({
-      ...s,
-      issues: s.issues.filter((issue) => issue.resolution === filters.resolution),
-    }));
-  }
-
-  if (filters.label) {
-    filtered = filtered.map((s) => ({
-      ...s,
-      issues: s.issues.filter((issue) =>
-        issue.labels.some((label) => label.toLowerCase() === filters.label!.toLowerCase()),
-      ),
-    }));
-  }
-
-  return filtered.filter((s) => s.issues.length > 0 || (!filters.status && !filters.resolution && !filters.label));
 }
 
 function resolveLedgerIssueId(
@@ -1100,6 +1055,7 @@ export function registerIssueRoutes(
     conversationControl?: import("../conversation-control/service.js").ConversationControlService;
     sessionAliasResolver?: SessionAliasResolver;
   },
+  reader: LedgerReader = inlineLedgerReader(),
 ): void {
   const sessionAliasResolver = deps?.sessionAliasResolver ?? resolveSessionAlias;
   /**
@@ -1117,7 +1073,7 @@ export function registerIssueRoutes(
       });
 
   // GET /api/issues — list repo summaries with optional filtering
-  server.get("/api/issues", (req, res) => {
+  server.get("/api/issues", async (req, res) => {
     const repoFilter = getQueryParam(req, "repo");
     const statusFilter = getQueryParam(req, "status");
     const resolutionFilter = getQueryParam(req, "resolution");
@@ -1130,34 +1086,16 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: `resolution must be ${LEDGER_ISSUE_RESOLUTIONS.join(", ")}` });
       return;
     }
-    const db = getDb();
-
-    let summaries: IssueRepoSummary[];
     try {
-      summaries = listLedgerIssueSummaries(db, workScanner);
+      const summaries = await reader.run("issue_summaries", {
+        repos: workScanner.getRepos(),
+        identity: req.client_identity ?? null,
+        filters: { repo: repoFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter },
+      });
+      sendJson(res, 200, summaries);
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-      return;
     }
-
-    summaries = filterIssueSummaries(summaries, {
-      repo: repoFilter,
-      status: statusFilter,
-      resolution: resolutionFilter,
-      label: labelFilter,
-    });
-    summaries = summaries.filter((summary) => {
-      const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
-      if ((!project.ok && project.reason === "ambiguous")) return false;
-      if (!project.ok) return true;
-      return evaluateProjectAccess(db, {
-        identity: req.client_identity ?? null,
-        project_id: project.project.id,
-        required_role: "read",
-      }).allowed;
-    });
-
-    sendJson(res, 200, summaries);
   }, { operation: { id: "get:/api/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/issues/search", (req, res) => {
