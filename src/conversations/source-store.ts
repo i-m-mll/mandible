@@ -16,6 +16,7 @@ import type {
 } from "./source-types.js";
 import {
   ConversationSourceChangedError,
+  numericSourceExtent,
   sameSourceFilesystemIdentity,
   sourceFilesystemIdentity,
   type SourceFilesystemIdentity,
@@ -275,7 +276,7 @@ async function snapshotJsonl(
     return {
       contentHash: snapshotHash,
       size,
-      mtimeMs: Number(after.mtimeNs) / 1_000_000,
+      mtimeMs: numericSourceExtent(after).fileMtimeMs,
       records,
       filesystemIdentity: afterIdentity,
       mode: Number(after.mode),

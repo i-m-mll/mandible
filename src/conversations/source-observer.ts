@@ -26,7 +26,7 @@ export function sameSourceFilesystemIdentity(
   return left.device === right.device && left.inode === right.inode && left.ctimeNs === right.ctimeNs;
 }
 
-function numericSourceExtent(stat: fs.BigIntStats): { byteLength: number; fileMtimeMs: number } {
+export function numericSourceExtent(stat: fs.BigIntStats): { byteLength: number; fileMtimeMs: number } {
   const byteLength = Number(stat.size);
   if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
     throw new SourceObservationError("conversation source extent exceeds safe integer range", "unsupported");
