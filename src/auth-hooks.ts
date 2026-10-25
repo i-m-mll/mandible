@@ -30,7 +30,9 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from "./runtime-handoff-proof.js";
-import { readRuntimeHandoffLock, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { readRuntimeHandoffLock, runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { inspectServiceDefinitions, serviceInstallationContext } from "../scripts/service-definitions.mjs";
+import type { AuthPublicationBlocker } from "./contracts.js";
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
@@ -350,6 +352,17 @@ export class AuthHookManager {
 
   runtimeHandoffLock(): RuntimeHandoffLock | null {
     return readRuntimeHandoffLock(getMandibleHome());
+  }
+
+  async publicationBlocker(inspectDefinitions: boolean): Promise<AuthPublicationBlocker | null> {
+    const lock = this.runtimeHandoffLock();
+    if (lock) return { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(lock) };
+    if (!inspectDefinitions) return null;
+    const inspection = await inspectServiceDefinitions(serviceInstallationContext({ home: getMandibleHome() }));
+    // A handoff admitted while inspection was in flight still takes priority.
+    const currentLock = this.runtimeHandoffLock();
+    if (currentLock) return { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(currentLock) };
+    return inspection.ok ? null : { code: "service_definition", message: inspection.refusal.message, refusal: inspection.refusal };
   }
 
   async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {

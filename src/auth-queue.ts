@@ -68,6 +68,7 @@ import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/r
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 import {
   CandidateAcceptanceRuns,
+  CANDIDATE_ACCEPTANCE_INTERRUPTED,
   candidateAcceptanceProjection,
   candidateAcceptanceRefusal,
   latestCandidateAcceptance,
@@ -674,7 +675,7 @@ export class AuthQueue {
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
-      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId))
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.hookManager.publicationBlocker(true))
       : null;
     // Before anything can start a run: rows a previous daemon left running were interrupted.
     this.acceptanceRuns?.start();
@@ -787,21 +788,25 @@ export class AuthQueue {
     return this.hookManager.runtimeHandoffLock();
   }
 
-  /** A held handoff lock blocks every rebuild, so nothing may start a self-update of this repo. */
-  private selfUpdateBlock(repo: string | null | undefined): string | null {
-    if (!this.hookManager.selfUpdatesRuntime(repo)) return null;
-    const lock = this.runtimeHandoffLock();
-    return lock ? runtimeHandoffLockRefusal(lock) : null;
+  async publicationBlockersForRequests(requests: AuthRequest[]): Promise<Map<string, AuthPublicationBlocker | null>> {
+    const applicable = requests.filter(request => isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo));
+    const applicableIds = new Set(applicable.map(request => request.id));
+    const definitions = new Set(applicable.filter(request => this.candidateAcceptanceApplies(request)).map(request => request.id));
+    const blocker = applicable.length ? await this.publicationObservation(definitions.size > 0) : null;
+    return new Map(requests.map(request => [request.id,
+      publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: definitions.has(request.id) }, blocker)]));
   }
 
-  private publicationBlocker(repo: string | null | undefined): AuthPublicationBlocker | null {
-    const message = this.selfUpdateBlock(repo);
-    return message ? { code: "runtime_handoff_lock", message } : null;
+  /**
+   * The installation-wide blocker, observed once per response. Which requests it
+   * applies to is `publicationBlockerFor`; history computes those flags on a reader.
+   */
+  publicationObservation(inspectDefinitions: boolean): Promise<AuthPublicationBlocker | null> {
+    return this.hookManager.publicationBlocker(inspectDefinitions);
   }
 
-  publicationBlockerForRequest(request: Pick<AuthRequest, "type" | "command" | "repo">): AuthPublicationBlocker | null {
-    if (!isAuthMergeCommand(request)) return null;
-    return this.publicationBlocker(request.repo);
+  async publicationBlockerForRequest(request: AuthRequest): Promise<AuthPublicationBlocker | null> {
+    return (await this.publicationBlockersForRequests([request])).get(request.id) ?? null;
   }
 
   private candidateAcceptanceApplies(request: Pick<AuthRequest, "id" | "type" | "command" | "repo" | "merge_head_sha" | "change_report">): boolean {
@@ -855,8 +860,10 @@ export class AuthQueue {
     }
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
-    if (acceptance.state === "running" || acceptance.state === "passed") return acceptance;
-    const blocker = this.publicationBlockerForRequest(request);
+    if (acceptance.state === "running") return acceptance;
+    if (acceptance.state === "passed" && !await this.hookManager.publicationBlocker(true)) return acceptance;
+    const lock = this.runtimeHandoffLock();
+    const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
     if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
     runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
@@ -890,22 +897,23 @@ export class AuthQueue {
   /**
    * Issue 7d83fe5 — on the idle tick, re-pin each pending self-update request
    * whose candidate the base moved past, which starts its acceptance. At
-   * startup, also start acceptance of exact candidates without a passing or
-   * running result, since a restart interrupts runs; the tick never repeats a
-   * failed verdict. Nothing launches while the runtime handoff lock is held.
+   * startup, also start acceptance of exact candidates with no result or an
+   * interrupted run. Failed verdicts require an explicit retry. Nothing launches while the runtime handoff lock is held.
    * Each request is handled once merges on its repository have settled.
    */
   async refreshPendingCandidates(startup = false): Promise<void> {
     const finishObservation = this.beginObservation();
     try {
       if (!this.acceptanceRuns || this.runtimeHandoffLock()) return;
+      this.acceptanceRuns.resume();
       const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
       for (const { id } of rows) {
         const request = this.readRequestByExactId(id);
         if (!request || !this.candidateAcceptanceApplies(request)) continue;
         const exact = await this.mergeCandidateExactUnblocking(request);
         const acceptance = this.candidateAcceptanceForRequest(request);
-        if (!startup && exact && acceptance?.state !== "none" && acceptance?.state !== "stale") continue;
+        if (exact && acceptance?.state === "failed" && acceptance.reason !== CANDIDATE_ACCEPTANCE_INTERRUPTED) continue;
+        if (exact && !startup && acceptance?.state !== "none" && acceptance?.state !== "stale") continue;
         await this.onObservedRepoChain(request, () => this.startCandidateAcceptanceAutomatically(id, true));
       }
     } finally { finishObservation(); }
@@ -2557,7 +2565,7 @@ export class AuthQueue {
         const readiness = (await validateRuntimeSource(this.db, process.env.MANDIBLE_PRODUCTION_ROOT, context.targetRepoRoot));
         if (!readiness.ok) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: readiness.reason };
       }
-      const publicationBlocker = this.publicationBlocker(repo);
+      const publicationBlocker = this.hookManager.selfUpdatesRuntime(repo) ? await this.hookManager.publicationBlocker(true) : null;
       const worktreeReady = (await this.checkMergeWorktreeReady(cwd));
       if (worktreeReady.status === "error") {
         return {
@@ -3380,8 +3388,8 @@ export class AuthQueue {
     const shownBaseAudit = loadProtectedBaseAudit(this.db, request.id);
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
-    const selfUpdateBlock = isAuthMergeCommand(request) ? this.selfUpdateBlock(request.repo) : null;
-    if (selfUpdateBlock) throw new AuthQueueError("merge_check_failed", `${selfUpdateBlock} No protected state changed.`);
+    const lock = isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo) ? this.runtimeHandoffLock() : null;
+    if (lock) throw new AuthQueueError("merge_check_failed", `${runtimeHandoffLockRefusal(lock)} No protected state changed.`);
     // Bug: 58d93ee — guard against null/empty command before spawning execution
     if (!request.command?.trim()) {
       throw new AuthQueueError("invalid_command", "Auth request has no command set — update the request with a valid command before approving");
@@ -3412,6 +3420,9 @@ export class AuthQueue {
     if (unattended) (await this.assertBaseAuditClean(request, shownBaseAudit));
     else (await this.assertBaseAuditShown(request, shownBaseAudit));
     this.assertObservation(request.id, observed);
+    const publicationBlocker = await this.publicationBlockerForRequest(request);
+    this.assertObservation(request.id, observed);
+    if (publicationBlocker) throw new AuthQueueError("merge_check_failed", `${publicationBlocker.message} No protected state changed.`);
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
@@ -5273,7 +5284,12 @@ export class AuthQueue {
     // Bug: 681739e — admission is closed while a self-merge restart is pending.
     // Park the request now rather than chaining an execution that the imminent
     // process.exit would kill mid-merge.
-    const publicationBlocker = this.publicationBlockerForRequest(request);
+    const admitted = this.executionToken(request.id);
+    const publicationBlocker = await this.publicationBlockerForRequest(request);
+    if (!this.executionIsCurrent(request.id, admitted)) {
+      if (settleClearance) await settleClearance();
+      return;
+    }
     if (this._rebuilding || publicationBlocker) {
       (await this.parkExecutionForRestart(request, publicationBlocker?.message));
       if (settleClearance) void settleClearance().catch(() => undefined);
@@ -5282,7 +5298,6 @@ export class AuthQueue {
 
     // Issue ded17e6 — chain onto this request's canonical repo identity so only
     // same-repo merges serialize; distinct repos proceed concurrently.
-    const admitted = this.executionToken(request.id);
     let execution: string | undefined;
     let executionEnv = this.executionEnvs.get(request.id);
     const pendingIdentity = completionSignal();
@@ -5305,7 +5320,8 @@ export class AuthQueue {
               // Bug: 681739e — a self-merge restart may have been scheduled after
               // this execution was chained but before it reached the head of the
               // queue. Re-check admission here so it parks instead of starting.
-              const queuedPublicationBlocker = this.publicationBlockerForRequest(request);
+              const queuedPublicationBlocker = await this.publicationBlockerForRequest(request);
+              if (!this.executionIsCurrent(request.id, admitted)) return;
               if (this._rebuilding || queuedPublicationBlocker) {
                 (await this.parkExecutionForRestart(request, queuedPublicationBlocker?.message));
                 return;
@@ -8271,4 +8287,11 @@ function normalizeRepoRef(repo: string | null | undefined): string | null {
   }
   const trimmed = repo.trim();
   return trimmed === "" ? null : trimmed;
+}
+/**
+ * A held handoff lock blocks every self-updating request; service-definition drift
+ * blocks only those that rebuild the runtime (documentation-only changes stay exempt).
+ */
+export function publicationBlockerFor(request: { selfUpdates: boolean; changesBuildInputs: boolean }, blocker: AuthPublicationBlocker | null): AuthPublicationBlocker | null {
+  return request.selfUpdates && (blocker?.code === "runtime_handoff_lock" || request.changesBuildInputs) ? blocker : null;
 }
