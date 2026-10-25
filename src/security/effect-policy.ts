@@ -58,7 +58,8 @@ export function validatePreviewWritableRoots(instance: InstanceInfo): void {
     throw new Error("Preview artifact root escapes registered custody.");
   }
   const sourceArtifactRoot = instance.source_artifact_root;
-  if (sourceArtifactRoot) {
+  // A source installation that has never stored an artifact has no custody to alias.
+  if (sourceArtifactRoot && fs.existsSync(sourceArtifactRoot)) {
     const sourceRoot = canonicalDirectory(sourceArtifactRoot);
     if (sameFile(artifactRoot, sourceRoot) || inside(previewRoot, sourceRoot)) {
       throw new Error("Preview artifact root aliases production or source custody.");

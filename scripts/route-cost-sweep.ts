@@ -16,6 +16,7 @@ import { evictFileCache } from "./evict-file-cache.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
+import { resolveLedgerDbPath } from "../src/db-read.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
 import { DEFAULT_TIMELINE_VIEW_STATE } from "../ui/src/types/timeline.ts";
 import {
@@ -37,7 +38,7 @@ trials. Fails when the same call kind reaches --threshold-ms in every trial
 without a BUDGET_EXCEPTIONS entry, when a route is
 unclassified, or when a request does not succeed.
 
-  --source-db <path>    Ledger to snapshot (default ~/.mandible/mandible.db)
+  --source-db <path>    Ledger to snapshot (default: the installation ledger, MANDIBLE_DB or MANDIBLE_HOME/mandible.db)
   --work-root <path>    Parent directory for this sweep's private working files
   --threshold-ms <n>    Fail at or above this turn (default HANDLER_TURN_BUDGET_MS)
   --passes <n>          Requests per variant; the first is cold (default 2)
@@ -92,7 +93,7 @@ if (!(thresholdMs > 0) || !Number.isInteger(passes) || passes < 1) {
   process.exit(2);
 }
 const only = opts.only ? new RegExp(opts.only) : null;
-const sourceDb = path.resolve(opts["source-db"] ?? path.join(os.homedir(), ".mandible", "mandible.db"));
+const sourceDb = path.resolve(opts["source-db"] ?? resolveLedgerDbPath());
 
 function log(message: string) {
   console.error(`route-cost-sweep: ${message}`);
@@ -236,12 +237,12 @@ const READS: Record<string, RouteEntry> = {
   "GET /api/conversations/:id/forks": (fx) => fx.conversations.map((id) => req(`/api/conversations/${id}/forks`)),
   "GET /api/conversations/:id/blocks": (fx) => fx.conversations.map((id) => req(`/api/conversations/${id}/blocks?limit=200`)),
 
-  "GET /api/conversations/:id/control/attachments": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control/attachments`)],
-  "GET /api/conversations/:id/control": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control`)],
-  "GET /api/conversations/:id/control/live": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control/live`)],
-  "GET /api/conversations/:id/control/permissions": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control/permissions`)],
-  "GET /api/conversations/:id/control/settings": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control/settings`)],
-  "GET /api/conversations/:id/control/options": (fx) => [req(`/api/conversations/${fx.conversations[0]}/control/options`)],
+  "GET /api/conversations/:id/control/attachments": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/attachments`)],
+  "GET /api/conversations/:id/control": (fx) => [req(`/api/conversations/${fx.bigConversation}/control`)],
+  "GET /api/conversations/:id/control/live": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/live`)],
+  "GET /api/conversations/:id/control/permissions": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/permissions`)],
+  "GET /api/conversations/:id/control/settings": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/settings`)],
+  "GET /api/conversations/:id/control/options": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/options`)],
 
   "GET /api/auth/clearances": () => "requires the durable Keychain client credential",
   "GET /api/users/operator/signing-key": () => "requires the durable Keychain client credential",
@@ -334,14 +335,20 @@ const WRITES: Record<string, RouteEntry> = {
     post("continuation", `/api/work-units/${fx.workUnit}`, { continuation: `${SWEEP_TAG} handoff` }),
   ],
 
-  "POST /api/inbox/delivered/:id": (fx) => [post("auth result", (pass) => `/api/inbox/delivered/${fx.undeliveredAuthResults[pass - 1]}`, {})],
-  "POST /api/inbox/:type/:id/ack": (fx) => [post("auth result", (pass) => `/api/inbox/auth_result/${fx.unacknowledgedAuthResults[pass - 1]}/ack`, {})],
+  "POST /api/inbox/delivered/:id": (fx) => {
+    const results = fx.undeliveredAuthResults;
+    return [post("auth result", (pass) => `/api/inbox/delivered/${results[pass - 1]}`, {})];
+  },
+  "POST /api/inbox/:type/:id/ack": (fx) => {
+    const results = fx.unacknowledgedAuthResults;
+    return [post("auth result", (pass) => `/api/inbox/auth_result/${results[pass - 1]}/ack`, {})];
+  },
   "POST /api/inbox/ack-all": () => [post("everything", "/api/inbox/ack-all", {})],
 
   "PATCH /api/console/sessions/:id/options": () => LIVE_CONSOLE,
   "POST /api/console/sessions/:id/permission/:requestId": () => LIVE_CONSOLE,
   "POST /api/console/sessions/:id/cancel": () => LIVE_CONSOLE,
-  "PUT /api/console/pinned": (fx) => [post("pin one", "/api/console/pinned", { ids: fx.conversations.slice(0, 1) })],
+  "PUT /api/console/pinned": (fx) => [post("pin one", "/api/console/pinned", { ids: [fx.bigConversation] })],
   "POST /api/webhooks/:id/dismiss": (fx) => fx.webhookEvents.length >= passes
     ? [post("pending event", (pass) => `/api/webhooks/${fx.webhookEvents[pass - 1]}/dismiss`, {})]
     : [],
@@ -409,7 +416,7 @@ const WRITES: Record<string, RouteEntry> = {
   "PATCH /api/projects/:ref": (fx) => [post("display name", `/api/projects/${fx.projectKey}`, { display_name: fx.projectDisplay })],
 
   "POST /api/conversations/ingest": () => "parses provider log files in the live home directory",
-  "PATCH /api/conversations/:id": (fx) => [post("star", `/api/conversations/${fx.conversations[0]}`, { starred: true })],
+  "PATCH /api/conversations/:id": (fx) => [post("star", `/api/conversations/${fx.bigConversation}`, { starred: true })],
   "POST /api/chat-attachments": () => "stores attachment bytes outside the ledger",
 
   "PUT /api/settings/:key": () => "some keys also write the dotfiles configuration",
@@ -493,16 +500,21 @@ function timelineRequests(fx: Fixtures): SweepRequest[] {
 }
 
 
-function planRoute(route: CatalogRoute, allowedEffects: Set<string>, fx: Fixtures): Plan | { kind: "unclassified"; reason: string } {
+export function planRoute(route: CatalogRoute, allowedEffects: Set<string>, fx: Fixtures): Plan | { kind: "unclassified"; reason: string } {
   const key = `${route.method} ${route.path}`;
   if (only && !only.test(route.path)) return skip(`excluded by --only ${only.source}`);
   const missing = (route.effects ?? []).filter((effect) => !allowedEffects.has(effect));
   if (missing.length > 0) return skip(`needs ${missing.join(", ")}, which a preview cannot hold`);
   const entry = READS[key] ?? WRITES[key];
   if (entry) {
-    const requests = entry(fx);
-    if (typeof requests === "string") return skip(requests);
-    return requests.length > 0 ? { kind: "exercise", requests } : skip("the snapshot holds no entity to name");
+    try {
+      const requests = entry(fx);
+      if (typeof requests === "string") return skip(requests);
+      return requests.length > 0 ? { kind: "exercise", requests } : skip("the snapshot holds no entity to name");
+    } catch (error) {
+      if (error instanceof MissingFixture) return skip(error.message);
+      throw error;
+    }
   }
   if (route.method !== "GET") return { kind: "unclassified", reason: "non-GET route; give it requests or a skip reason in WRITES" };
   if (route.path.includes(":")) return { kind: "unclassified", reason: "GET route with path parameters; give it requests in READS" };
@@ -513,150 +525,185 @@ function planRoute(route: CatalogRoute, allowedEffects: Set<string>, fx: Fixture
 
 type Fixtures = ReturnType<typeof readFixtures>;
 
-/** Real entity identifiers, preferring the heaviest instance of each kind. */
+class MissingFixture extends Error {
+  constructor(label: string) {
+    super(`no ${label} in the ledger`);
+    this.name = "MissingFixture";
+  }
+}
+
+/** Real entity identifiers, resolved once on first use, preferring the heaviest instance of each kind. */
 export function readFixtures(dbPath: string) {
-  const db = new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true });
-  const one = <T>(label: string, sql: string, ...params: unknown[]): T => {
+  const lazy = <T>(read: (db: SqliteDatabase) => T): (() => T) => {
+    let cached: { value: T } | { missing: MissingFixture } | undefined;
+    return () => {
+      if (cached) {
+        if ("missing" in cached) throw cached.missing;
+        return cached.value;
+      }
+      const db = new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        const value = read(db);
+        cached = { value };
+        return value;
+      } catch (error) {
+        if (error instanceof MissingFixture) cached = { missing: error };
+        throw error;
+      } finally {
+        db.close();
+      }
+    };
+  };
+  const one = <T>(db: SqliteDatabase, label: string, sql: string, ...params: unknown[]): T => {
     const row = db.prepare(sql).get(...params) as T | undefined;
-    if (row === undefined) throw new Error(`fixture ${label}: no row from ${sql}`);
+    if (row === undefined) throw new MissingFixture(label);
     return row;
   };
-  const maybe = <T>(sql: string, ...params: unknown[]): T | null => (db.prepare(sql).get(...params) as T | undefined) ?? null;
-  try {
-    const project = one<{ id: string; project_key: string; display_name: string | null }>("project", `
+  const maybe = <T>(db: SqliteDatabase, sql: string, ...params: unknown[]): T | null => (db.prepare(sql).get(...params) as T | undefined) ?? null;
+  const project = lazy((db) => one<{ id: string; project_key: string; display_name: string | null }>(db, "project", `
       SELECT p.id, p.project_key, p.display_name FROM ledger_projects p JOIN ledger_issues i ON i.project_id = p.id
-      WHERE p.project_key != '' GROUP BY p.id ORDER BY count(*) DESC LIMIT 1`);
-    const checkout = one<{ work_repo_id: string; root: string }>("checkout", `
+      WHERE p.project_key != '' GROUP BY p.id ORDER BY count(*) DESC LIMIT 1`));
+  const checkout = lazy((db) => one<{ work_repo_id: string; root: string }>(db, "checkout", `
       SELECT work_repo_id, root FROM ledger_project_checkouts WHERE project_id = ? AND work_repo_id IS NOT NULL
-      ORDER BY length(root) LIMIT 1`, project.id);
-    const issue = one<{ id: string; short_id: string }>("issue", `
+      ORDER BY length(root) LIMIT 1`, project().id));
+  const issue = lazy((db) => one<{ id: string; short_id: string }>(db, "issue", `
       SELECT i.id, i.short_id FROM ledger_issues i JOIN ledger_comments c ON c.issue_id = i.id
-      WHERE i.project_id = ? AND i.short_id != '' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`, project.id);
-    const umbrella = one<{ id: string }>("umbrella", `
+      WHERE i.project_id = ? AND i.short_id != '' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`, project().id));
+  const umbrella = lazy((db) => one<{ id: string }>(db, "umbrella", `
       SELECT i.id FROM ledger_issues i JOIN ledger_issue_relationships r ON r.source_issue_id = i.id
-      WHERE i.kind = 'umbrella' AND r.relationship_type = 'parent_child' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`);
-    const umbrellaChildren = (db.prepare(`
+      WHERE i.kind = 'umbrella' AND r.relationship_type = 'parent_child' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`));
+  const umbrellaChildren = lazy((db) => (db.prepare(`
       SELECT target_issue_id FROM ledger_issue_relationships WHERE source_issue_id = ? AND relationship_type = 'parent_child'
-      ORDER BY created_at LIMIT 3`).all(umbrella.id) as { target_issue_id: string }[]).map((row) => row.target_issue_id);
-    const comment = one<{ entity_id: string }>("comment", `
+      ORDER BY created_at LIMIT 3`).all(umbrella().id) as { target_issue_id: string }[]).map((row) => row.target_issue_id));
+  const comment = lazy((db) => one<{ entity_id: string }>(db, "comment", `
       SELECT entity_id FROM ledger_body_revisions WHERE entity_type = 'comment_body'
-      GROUP BY entity_id ORDER BY count(*) DESC LIMIT 1`);
-    const bodyRevision = one<{ id: string }>("body revision", `
-      SELECT id FROM ledger_body_revisions WHERE entity_type = 'issue_body' AND issue_id = ? ORDER BY revision_no DESC LIMIT 1`, issue.id);
-    const searchWord = "daemon";
-    const authRequest = one<{ id: string }>("auth request", `
+      GROUP BY entity_id ORDER BY count(*) DESC LIMIT 1`));
+  const bodyRevision = lazy((db) => one<{ id: string }>(db, "body revision", `
+      SELECT id FROM ledger_body_revisions WHERE entity_type = 'issue_body' AND issue_id = ? ORDER BY revision_no DESC LIMIT 1`, issue().id));
+  const searchWord = "daemon";
+  const authRequest = lazy((db) => one<{ id: string }>(db, "auth request", `
       SELECT r.id FROM auth_requests r JOIN auth_request_actions a ON a.auth_request_id = r.id
-      GROUP BY r.id ORDER BY count(*) DESC, r.created_at DESC LIMIT 1`);
-    const acceptedAuthRequest = one<{ request_id: string }>("accepted auth request", `
-      SELECT auth_request_id AS request_id FROM auth_candidate_acceptances ORDER BY started_at DESC LIMIT 1`);
-    const clearance = maybe<{ id: string }>("SELECT id FROM auth_clearances ORDER BY issued_at DESC LIMIT 1");
-    const branch = one<{ branch: string }>("branch", `
-      SELECT branch FROM branches WHERE repo_root = ? AND is_worktree = 1 ORDER BY updated_at DESC LIMIT 1`, checkout.root);
-    const workUnit = one<{ id: string; repo_id: string; branch: string }>("work unit", `
-      SELECT id, repo_id, branch FROM work_units WHERE branch IS NOT NULL ORDER BY created_at DESC LIMIT 1`);
-    const session = one<{ id: string; pid: number | null }>("session", `
+      GROUP BY r.id ORDER BY count(*) DESC, r.created_at DESC LIMIT 1`));
+  const acceptedAuthRequest = lazy((db) => one<{ request_id: string }>(db, "accepted auth request", `
+      SELECT auth_request_id AS request_id FROM auth_candidate_acceptances ORDER BY started_at DESC LIMIT 1`));
+  const clearance = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM auth_clearances ORDER BY issued_at DESC LIMIT 1"));
+  const branch = lazy((db) => one<{ branch: string }>(db, "branch", `
+      SELECT branch FROM branches WHERE repo_root = ? AND is_worktree = 1 ORDER BY updated_at DESC LIMIT 1`, checkout().root));
+  const workUnit = lazy((db) => one<{ id: string; repo_id: string; branch: string }>(db, "work unit", `
+      SELECT id, repo_id, branch FROM work_units WHERE branch IS NOT NULL ORDER BY created_at DESC LIMIT 1`));
+  const session = lazy((db) => one<{ id: string; pid: number | null }>(db, "session", `
       SELECT s.id, s.pid FROM sessions s LEFT JOIN sessions c ON c.parent_id = s.id
-      GROUP BY s.id ORDER BY count(c.id) DESC, s.updated_at DESC LIMIT 1`);
-    const pidSession = one<{ pid: number }>("session pid", "SELECT pid FROM sessions WHERE pid IS NOT NULL ORDER BY updated_at DESC LIMIT 1");
-    const providerSession = one<{ session_id: string }>("provider session", `
-      SELECT session_id FROM conversations ORDER BY started_at DESC LIMIT 1`);
-    const provider = maybe<{ id: string }>("SELECT id FROM providers ORDER BY updated_at DESC LIMIT 1");
-    const artifact = one<{ id: string }>("artifact", "SELECT id FROM artifact ORDER BY version_count DESC, updated_at DESC LIMIT 1");
-    const versions = db.prepare("SELECT id FROM artifact_version WHERE artifact_id = ? ORDER BY version_no DESC LIMIT 2")
-      .all(artifact.id) as { id: string }[];
-    if (versions.length < 2) throw new Error("fixture artifact versions: the most-versioned artifact has fewer than two versions");
-    const bigConversations = (db.prepare(`
+      GROUP BY s.id ORDER BY count(c.id) DESC, s.updated_at DESC LIMIT 1`));
+  const pidSession = lazy((db) => one<{ pid: number }>(db, "session pid", "SELECT pid FROM sessions WHERE pid IS NOT NULL ORDER BY updated_at DESC LIMIT 1"));
+  const providerSession = lazy((db) => one<{ session_id: string }>(db, "provider session", `
+      SELECT session_id FROM conversations ORDER BY started_at DESC LIMIT 1`));
+  const provider = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM providers ORDER BY updated_at DESC LIMIT 1"));
+  const artifact = lazy((db) => one<{ id: string }>(db, "artifact", "SELECT id FROM artifact ORDER BY version_count DESC, updated_at DESC LIMIT 1"));
+  const versions = lazy((db) => {
+    const value = db.prepare("SELECT id FROM artifact_version WHERE artifact_id = ? ORDER BY version_no DESC LIMIT 2")
+      .all(artifact().id) as { id: string }[];
+    if (value.length < 2) throw new MissingFixture("artifact versions");
+    return value;
+  });
+  const bigConversations = lazy((db) => {
+    const value = (db.prepare(`
       SELECT c.id, c.session_id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
        AND c.started_at >= datetime('now', '-3 days')
        ORDER BY c.block_count DESC LIMIT 200`).all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string; session_id: string })[])
       .filter(sourceIsIndexed).slice(0, 1);
-    if (bigConversations.length === 0) throw new Error("fixture conversation: none of the 200 largest recent conversations is fully indexed and idle for at least an hour");
-    const recentConversation = (db.prepare(`
+    if (value.length === 0) throw new MissingFixture("conversation");
+    return value;
+  });
+  const recentConversation = lazy((db) => {
+    const value = (db.prepare(`
       SELECT c.id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
        AND c.parent_conversation_id IS NULL ORDER BY c.started_at DESC LIMIT 200`)
       .all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string })[]).find(sourceIsIndexed);
-    if (!recentConversation) throw new Error("fixture recent conversation: none of the 200 newest conversations is fully indexed and idle for at least an hour");
-    const consoleSession = maybe<{ id: string }>("SELECT id FROM console_sessions ORDER BY updated_at DESC LIMIT 1");
-    const spawn = maybe<{ id: string }>("SELECT id FROM conversation_spawn_requests ORDER BY updated_at DESC LIMIT 1");
-    const space = maybe<{ id: string }>(`
-      SELECT s.id FROM spaces s LEFT JOIN space_items i ON i.space_id = s.id GROUP BY s.id ORDER BY count(i.space_id) DESC LIMIT 1`);
-    const spaceItem = space ? maybe<{ id: string }>("SELECT id FROM space_items WHERE space_id = ? ORDER BY updated_at DESC LIMIT 1", space.id) : null;
-    const webhookEvents = (db.prepare("SELECT id FROM webhook_events WHERE status = 'pending' ORDER BY id LIMIT ?").all(passes) as { id: string }[])
-      .map((row) => row.id);
-    const authResults = (column: string) => (db.prepare(`
+    if (!value) throw new MissingFixture("recent conversation");
+    return value;
+  });
+  const consoleSession = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM console_sessions ORDER BY updated_at DESC LIMIT 1"));
+  const spawn = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM conversation_spawn_requests ORDER BY updated_at DESC LIMIT 1"));
+  const space = lazy((db) => maybe<{ id: string }>(db, `
+      SELECT s.id FROM spaces s LEFT JOIN space_items i ON i.space_id = s.id GROUP BY s.id ORDER BY count(i.space_id) DESC LIMIT 1`));
+  const spaceItem = lazy((db) => {
+    const selected = space();
+    return selected ? maybe<{ id: string }>(db, "SELECT id FROM space_items WHERE space_id = ? ORDER BY updated_at DESC LIMIT 1", selected.id) : null;
+  });
+  const webhookEvents = lazy((db) => (db.prepare("SELECT id FROM webhook_events WHERE status = 'pending' ORDER BY id LIMIT ?").all(passes) as { id: string }[])
+      .map((row) => row.id));
+  const authResults = (db: SqliteDatabase, column: string) => (db.prepare(`
       SELECT id FROM auth_requests WHERE ${column} IS NULL AND status IN ('approved', 'rejected', 'completed', 'failed')
       ORDER BY updated_at DESC LIMIT ?`).all(passes) as { id: string }[]).map((row) => row.id);
-    const undeliveredAuthResults = authResults("delivered_at");
-    const unacknowledgedAuthResults = authResults("acknowledged_by");
-    const soloIssue = one<{ id: string }>("issue in a single-checkout project", `
+  const undeliveredAuthResults = lazy((db) => authResults(db, "delivered_at"));
+  const unacknowledgedAuthResults = lazy((db) => authResults(db, "acknowledged_by"));
+  const soloIssue = lazy((db) => one<{ id: string }>(db, "issue in a single-checkout project", `
       SELECT i.id FROM ledger_issues i JOIN ledger_project_checkouts c ON c.project_id = i.project_id
-      GROUP BY i.id HAVING count(*) = 1 ORDER BY max(i.updated_at) DESC LIMIT 1`);
-    const documentSpace = maybe<{ id: string }>("SELECT id FROM spaces WHERE default_renderer = 'document' ORDER BY updated_at DESC LIMIT 1");
-    const routeKey = maybe<{ route_key: string }>("SELECT route_key FROM briefing_destination_routes ORDER BY updated_at DESC LIMIT 1");
-    const briefingGroup = one<{ id: string }>("briefing group", "SELECT id FROM briefing_groups WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 1");
-    const briefingBundle = one<{ id: string }>("briefing bundle", `
-      SELECT b.id FROM briefing_bundles b JOIN briefing_bundle_members m ON m.bundle_id = b.id GROUP BY b.id ORDER BY count(*) DESC LIMIT 1`);
-    const briefing = one<{ id: string }>("briefing", "SELECT id FROM briefings ORDER BY round_count DESC, updated_at DESC LIMIT 1");
-    const submission = maybe<{ id: string; round: string; briefing: string }>(`
-      SELECT id, round_id AS round, briefing_id AS briefing FROM briefing_submissions ORDER BY created_at DESC LIMIT 1`);
-    const reminder = maybe<{ id: string }>("SELECT id FROM managed_tasks ORDER BY updated_at DESC LIMIT 1");
-    const workflow = maybe<{ id: string }>("SELECT id FROM workflow_runs ORDER BY updated_at DESC LIMIT 1");
-    const attachment = maybe<{ id: string }>("SELECT id FROM chat_attachment_files ORDER BY created_at DESC LIMIT 1");
-    const settingKeys = (db.prepare("SELECT key FROM settings ORDER BY length(value) DESC LIMIT 3").all() as { key: string }[]).map((row) => row.key);
-    return {
-      project: project.id,
-      projectKey: project.project_key,
-      projectDisplay: project.display_name ?? project.project_key,
-      checkoutRoot: checkout.root,
-      workRepo: checkout.work_repo_id,
-      issueRepo: checkout.work_repo_id,
-      issue: issue.id,
-      issueShort: issue.short_id,
-      umbrella: umbrella.id,
-      umbrellaChildren,
-      comment: comment.entity_id,
-      bodyRevision: bodyRevision.id,
-      searchWord,
-      authRequest: authRequest.id,
-      acceptedAuthRequest: acceptedAuthRequest.request_id,
-      clearance: clearance?.id ?? null,
-      branch: branch.branch,
-      workUnit: workUnit.id,
-      workUnitRepo: workUnit.repo_id,
-      workUnitBranch: workUnit.branch,
-      session: session.id,
-      sessionPid: pidSession.pid,
-      providerSession: providerSession.session_id,
-      provider: provider?.id ?? null,
-      artifact: artifact.id,
-      artifactRef: artifact.id,
-      artifactVersionA: versions[1].id,
-      artifactVersionB: versions[0].id,
-      conversations: [...bigConversations.map((row) => row.id), recentConversation.id],
-      bigConversationSession: bigConversations[0].session_id,
-      consoleSession: consoleSession?.id ?? null,
-      spawn: spawn?.id ?? null,
-      space: space?.id ?? null,
-      spaceItem: spaceItem?.id ?? null,
-      webhookEvents,
-      undeliveredAuthResults,
-      unacknowledgedAuthResults,
-      soloIssue: soloIssue.id,
-      documentSpace: documentSpace?.id ?? null,
-      routeKey: routeKey?.route_key ?? null,
-      routeManifest: null as unknown,
-      briefingGroup: briefingGroup.id,
-      briefingBundle: briefingBundle.id,
-      briefing: briefing.id,
-      submission,
-      reminder: reminder?.id ?? null,
-      workflow: workflow?.id ?? null,
-      attachment: attachment?.id ?? null,
-      settingKeys,
-    };
-  } finally {
-    db.close();
-  }
+      GROUP BY i.id HAVING count(*) = 1 ORDER BY max(i.updated_at) DESC LIMIT 1`));
+  const documentSpace = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM spaces WHERE default_renderer = 'document' ORDER BY updated_at DESC LIMIT 1"));
+  const routeKey = lazy((db) => maybe<{ route_key: string }>(db, "SELECT route_key FROM briefing_destination_routes ORDER BY updated_at DESC LIMIT 1"));
+  const briefingGroup = lazy((db) => one<{ id: string }>(db, "briefing group", "SELECT id FROM briefing_groups WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 1"));
+  const briefingBundle = lazy((db) => one<{ id: string }>(db, "briefing bundle", `
+      SELECT b.id FROM briefing_bundles b JOIN briefing_bundle_members m ON m.bundle_id = b.id GROUP BY b.id ORDER BY count(*) DESC LIMIT 1`));
+  const briefing = lazy((db) => one<{ id: string }>(db, "briefing", "SELECT id FROM briefings ORDER BY round_count DESC, updated_at DESC LIMIT 1"));
+  const submission = lazy((db) => maybe<{ id: string; round: string; briefing: string }>(db, `
+      SELECT id, round_id AS round, briefing_id AS briefing FROM briefing_submissions ORDER BY created_at DESC LIMIT 1`));
+  const reminder = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM managed_tasks ORDER BY updated_at DESC LIMIT 1"));
+  const workflow = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM workflow_runs ORDER BY updated_at DESC LIMIT 1"));
+  const attachment = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM chat_attachment_files ORDER BY created_at DESC LIMIT 1"));
+  const settingKeys = lazy((db) => (db.prepare("SELECT key FROM settings ORDER BY length(value) DESC LIMIT 3").all() as { key: string }[]).map((row) => row.key));
+  return {
+    get project() { return project().id; },
+    get projectKey() { return project().project_key; },
+    get projectDisplay() { return project().display_name ?? project().project_key; },
+    get checkoutRoot() { return checkout().root; },
+    get workRepo() { return checkout().work_repo_id; },
+    get issueRepo() { return checkout().work_repo_id; },
+    get issue() { return issue().id; },
+    get issueShort() { return issue().short_id; },
+    get umbrella() { return umbrella().id; },
+    get umbrellaChildren() { return umbrellaChildren(); },
+    get comment() { return comment().entity_id; },
+    get bodyRevision() { return bodyRevision().id; },
+    searchWord,
+    get authRequest() { return authRequest().id; },
+    get acceptedAuthRequest() { return acceptedAuthRequest().request_id; },
+    get clearance() { return clearance()?.id ?? null; },
+    get branch() { return branch().branch; },
+    get workUnit() { return workUnit().id; },
+    get workUnitRepo() { return workUnit().repo_id; },
+    get workUnitBranch() { return workUnit().branch; },
+    get session() { return session().id; },
+    get sessionPid() { return pidSession().pid; },
+    get providerSession() { return providerSession().session_id; },
+    get provider() { return provider()?.id ?? null; },
+    get artifact() { return artifact().id; },
+    get artifactRef() { return artifact().id; },
+    get artifactVersionA() { return versions()[1].id; },
+    get artifactVersionB() { return versions()[0].id; },
+    get conversations() { return [...bigConversations().map((row) => row.id), recentConversation().id]; },
+    get bigConversation() { return bigConversations()[0].id; },
+    get bigConversationSession() { return bigConversations()[0].session_id; },
+    get consoleSession() { return consoleSession()?.id ?? null; },
+    get spawn() { return spawn()?.id ?? null; },
+    get space() { return space()?.id ?? null; },
+    get spaceItem() { return spaceItem()?.id ?? null; },
+    get webhookEvents() { return webhookEvents(); },
+    get undeliveredAuthResults() { return undeliveredAuthResults(); },
+    get unacknowledgedAuthResults() { return unacknowledgedAuthResults(); },
+    get soloIssue() { return soloIssue().id; },
+    get documentSpace() { return documentSpace()?.id ?? null; },
+    get routeKey() { return routeKey()?.route_key ?? null; },
+    routeManifest: null as unknown,
+    get briefingGroup() { return briefingGroup().id; },
+    get briefingBundle() { return briefingBundle().id; },
+    get briefing() { return briefing().id; },
+    get submission() { return submission(); },
+    get reminder() { return reminder()?.id ?? null; },
+    get workflow() { return workflow()?.id ?? null; },
+    get attachment() { return attachment()?.id ?? null; },
+    get settingKeys() { return settingKeys(); },
+  };
 }
 
 interface InspectedRoute {
