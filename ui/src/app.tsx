@@ -25,6 +25,7 @@ import {
   getUserTypographySetting,
   getWorkRepos,
   invalidateApiGetCache,
+  invalidateDashboardCaches,
   normalizeInstanceInfo,
   sameInstanceInfo,
   loadOperationCatalog,
@@ -74,7 +75,6 @@ import {
   type DaemonHealthSnapshot,
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
-import { invalidatePersistedDetail } from './detail-cache';
 import {
   hashWithViewSidebarHidden,
   hashWithViewSidebarVisible,
@@ -1733,9 +1733,7 @@ function App(): JSX.Element {
       setSseWireError(error ?? null);
       if (!reconnected) return;
       // Events may have been missed while disconnected: no cached read is fresh any more.
-      invalidateApiGetCache();
-      invalidatePersistedDetail();
-      void queryClient.invalidateQueries({ refetchType: 'none' });
+      invalidateDashboardCaches();
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
@@ -1795,7 +1793,7 @@ function App(): JSX.Element {
         return;
       }
       // Without a live stream no event invalidates cached reads, so the poll reads the network.
-      invalidateApiGetCache();
+      invalidateDashboardCaches();
       void loadVisibleRouteData(route.tab);
       void refreshRailOrder();
     }, POLL_INTERVAL);

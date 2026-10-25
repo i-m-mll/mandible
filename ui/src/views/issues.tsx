@@ -20,7 +20,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
-import { detailRequestKey, isPersistedDetailFresh, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
+import { beginDetailRequest, detailRequestKey, isPersistedDetailFresh, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell, useRouteLoad } from '../app-shell';
 import {
@@ -810,6 +810,7 @@ export function IssuesView({
     setDetailLoadFailed(false);
     setDetailError(null);
     if (repoId && hasCachedDetail && isPersistedDetailFresh('issue-detail', persistedKey)) return undefined;
+    const detailStarted = beginDetailRequest();
     const initialDetail = hasCachedDetail
       ? null
       : repoId
@@ -838,7 +839,7 @@ export function IssuesView({
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
         putCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId, detail);
-        writePersistedDetail('issue-detail', persistedKey, detail);
+        writePersistedDetail('issue-detail', persistedKey, detail, undefined, detailStarted);
         setLedgerIssueDetail(detail);
         if (!repoId) {
           const canonicalRepo = detail.project.project_key;
@@ -920,6 +921,7 @@ export function IssuesView({
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
     setDetailLoadFailed(false);
+    const detailStarted = beginDetailRequest();
     try {
       const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
       if (detailRequestSeqRef.current === requestSeq) {
@@ -928,6 +930,8 @@ export function IssuesView({
           'issue-detail',
           detailRequestKey('issue', { repoId: selectedRepoId, issueId: selectedIssueId }),
           detail,
+          undefined,
+          detailStarted,
         );
         setLedgerIssueDetail(detail);
       }
@@ -1374,6 +1378,7 @@ export async function warmInitialData(
   params: Record<string, string>,
   context: IssueWarmupContext = {},
 ): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const repos = await getIssueRepos<IssueRepoSummary>();
   const normalizedDefaultFilter = normalizeIssueDefaultFilter(context.settings?.['issues.default_filter']);
   const defaults: IssuesViewState = {
@@ -1408,5 +1413,5 @@ export async function warmInitialData(
   const detail = repoId
     ? await getLedgerIssueDetailByRef(repoId, issueId)
     : await getLedgerIssueDetailByIssueId(issueId);
-  writePersistedDetail('issue-detail', key, detail);
+  writePersistedDetail('issue-detail', key, detail, undefined, detailStarted);
 }

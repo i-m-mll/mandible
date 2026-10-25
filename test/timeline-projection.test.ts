@@ -1,3 +1,5 @@
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +25,19 @@ afterEach(() => {
 });
 
 describe("project timeline projection", () => {
+
+  it("fences pages against a comment and backlink added between requests", () => {
+    const input = { project_id: fixture.project.id };
+    const budget = { events: 0, ms: Infinity, now: () => 0 };
+    const first = buildProjectTimelineProjection(fixture.db, input, budget);
+    new LedgerStore(fixture.db).addComment(fixture.issues.rootA.id, {
+      attribution: systemAction(), body: `New reference [issue:${fixture.issues.rootB.short_id}]`,
+    });
+    const last = buildProjectTimelineProjection(fixture.db, { ...input, row_offset: first.page.next_row_offset! });
+    expect(first.rows.map((row) => row.id)).toEqual(last.rows.map((row) => row.id));
+    expect(last.page.ledger_watermark).toBeGreaterThan(first.page.ledger_watermark);
+    expect(() => mergeTimelinePages([first, last])).toThrow(/different ledger snapshots/);
+  });
 
   it("projects coordination roots on one global time axis without per-row domains", () => {
     const projection = buildProjectTimelineProjection(fixture.db, {
@@ -536,7 +551,7 @@ describe("project timeline projection", () => {
     ];
     for (const input of inputs) {
       const whole = buildProjectTimelineProjection(fixture.db, input, unbounded);
-      expect(whole.page).toEqual({ row_offset: 0, next_row_offset: null });
+      expect(whole.page).toEqual({ row_offset: 0, next_row_offset: null, ledger_watermark: expect.any(Number) });
       for (const budget of budgets) {
         const pages: ProjectTimelineProjection[] = [];
         let rowOffset: number | null = 0;

@@ -1,3 +1,4 @@
+import { SseManager, setSseManager } from "../src/sse.js";
 import { runCli } from "./helpers/cli-process.js";
 import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 import fs from "node:fs";
@@ -70,6 +71,25 @@ afterEach(() => {
 });
 
 describe("artifact write authorization", () => {
+  it("notifies other windows after knowledge-backref writes", async () => {
+    const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "backrefs", content: "one" });
+    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
+    const manager = new SseManager();
+    const events: string[] = [];
+    manager.observe((type) => events.push(type));
+    setSseManager(manager);
+    try {
+      const result = await invoke("POST", `/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, {
+        ref_type: "claim", external_id: "new-reference",
+      });
+      expect(result.status).toBe(200);
+      expect(events).toContain("artifact:changed");
+    } finally {
+      manager.closeAll();
+      setSseManager(null);
+    }
+  });
+
   it("writes inline artifact bytes only to copied preview storage", async () => {
     const sourceCas = path.join(root, "cas");
     const sourceFile = path.join(root, "external-source.md");

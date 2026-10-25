@@ -2,6 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  beginDetailRequest,
+  invalidatePersistedDetail,
+  isPersistedDetailFresh,
   DETAIL_CACHE_LIMITS,
   clearPersistedDetailCache,
   detailRequestKey,
@@ -33,6 +36,26 @@ describe('persisted detail cache', () => {
     window.localStorage.clear();
     clearPersistedDetailCache();
     vi.useRealTimers();
+  });
+
+  it('rejects a warmer that finishes after invalidation or a newer fetch', () => {
+    const old = beginDetailRequest();
+    invalidatePersistedDetail('timeline');
+    expect(writePersistedDetail('timeline', 'key', { version: 1 }, undefined, old)).toBe(false);
+    expect(isPersistedDetailFresh('timeline', 'key')).toBe(false);
+    const warmer = beginDetailRequest();
+    const fetch = beginDetailRequest();
+    writePersistedDetail('timeline', 'key', { version: 3 }, undefined, fetch);
+    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, warmer)).toBe(false);
+    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 3 });
+  });
+
+  it('accepts the newer request when it finishes after an earlier request', () => {
+    const first = beginDetailRequest();
+    const second = beginDetailRequest();
+    writePersistedDetail('timeline', 'key', { version: 1 }, undefined, first);
+    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, second)).toBe(true);
+    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 2 });
   });
 
   it('builds stable request keys without conflating different selections', () => {

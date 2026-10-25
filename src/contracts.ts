@@ -42,6 +42,7 @@ export type LegacyListEnvelope<T> = Partial<Record<ListEnvelopeKey, T[]>> &
 export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 
 export const DOMAIN_EVENTS = Object.freeze({
+  ARTIFACT_CHANGED: "artifact:changed",
   AUTH_AUTO_APPROVE: "auth:auto-approve",
   AUTH_COMPLETED: "auth:completed",
   AUTH_CONVERGENCE: "auth:convergence",

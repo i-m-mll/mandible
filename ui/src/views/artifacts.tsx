@@ -19,7 +19,7 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
-import { detailRequestKey, removePersistedDetail, writePersistedDetail } from '../detail-cache';
+import { beginDetailRequest, detailRequestKey, removePersistedDetail, writePersistedDetail } from '../detail-cache';
 import { ARTIFACT_ROUTE_SELECTORS, routeHashWithParams, parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -2611,18 +2611,20 @@ function entityHref(type: string, id: string, repoId: string | null): string {
 }
 
 async function warmArtifactDetail(artifactId: string, knownArtifact: ArtifactRecord | null): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const artifact = knownArtifact?.id === artifactId ? knownArtifact : await getArtifact(artifactId);
-  writePersistedDetail('artifact-record', detailRequestKey('artifact-record', { id: artifactId }), artifact);
+  writePersistedDetail('artifact-record', detailRequestKey('artifact-record', { id: artifactId }), artifact, undefined, detailStarted);
   const [content, backrefs] = await Promise.all([
     getArtifactContent(artifactId),
     getArtifactKnowledgeBackrefs(artifactId),
   ]);
-  writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifactId }), content);
-  writePersistedDetail('artifact-backrefs', detailRequestKey('artifact-backrefs', { id: artifactId }), backrefs);
+  writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifactId }), content, undefined, detailStarted);
+  writePersistedDetail('artifact-backrefs', detailRequestKey('artifact-backrefs', { id: artifactId }), backrefs, undefined, detailStarted);
 }
 
 /** Warm the Artifacts list and only its explicit, saved, or default selection. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const selection = artifactRouteSelection({
     artifactId: params.artifact,
     ref: params.ref,
@@ -2672,6 +2674,8 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
           'artifact-versions',
           detailRequestKey('artifact-versions', { ref: resolvedArtifactRecord(resolution)!.id }),
           loadedHistory,
+          undefined,
+          detailStarted,
         );
         const pinnedVersion = loadedHistory.versions.find((version) => version.artifact_id === resolvedArtifactRecord(resolution)?.id) ?? null;
         if (pinnedVersion) {
@@ -2702,6 +2706,8 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
       'artifact-versions',
       detailRequestKey('artifact-versions', { ref: selectedSeriesRef }),
       loadedHistory,
+      undefined,
+      detailStarted,
     );
     const selectedVersion = selectedVersionNo === null
       ? loadedHistory.versions[0] ?? null

@@ -1,3 +1,5 @@
+import { broadcast } from "../sse.js";
+import { DOMAIN_EVENTS } from "../contracts.js";
 import {
   artifactMaterializationTarget
 } from "../artifact-identity.js";
@@ -1003,6 +1005,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/knowledge-backrefs", (req, res) => {
     try {
       const backref = createKnowledgeBackref(getDb(), bodyRecord(req));
+      if (backref.source_type === "artifact") broadcast(DOMAIN_EVENTS.ARTIFACT_CHANGED, { artifact_id: backref.source_id });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);
@@ -1066,6 +1069,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         source_type: "artifact",
         source_id: artifact?.id ?? req.params.id,
       });
+      if (backref.source_type === "artifact") broadcast(DOMAIN_EVENTS.ARTIFACT_CHANGED, { artifact_id: backref.source_id });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);

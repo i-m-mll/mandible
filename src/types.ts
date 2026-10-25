@@ -750,6 +750,7 @@ export interface ProjectTimelineProjection {
  * `next_row_offset`, which is null on the last page.
  */
 export interface TimelineProjectionPage {
+  ledger_watermark: number;
   row_offset: number;
   next_row_offset: number | null;
 }

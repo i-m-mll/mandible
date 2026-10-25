@@ -111,9 +111,9 @@ export function daemonIsReadyAfterEpoch(
   return daemonIsReady(health) && (!requireNewEpoch || daemonEpochChanged(health, previousEpoch));
 }
 
-/** Missing warm is treated as warm for compatibility with older daemons. */
+/** Warmup requires affirmative readiness and warmup completion from health. */
 export function daemonIsWarm(health: DaemonHealthSnapshot | null | undefined): boolean {
-  return health?.warm !== false;
+  return health?.ready === true && health.warm === true && health.rebuilding !== true;
 }
 
 /**

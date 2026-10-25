@@ -65,7 +65,7 @@ import {
   rowSpecFromChips,
 } from './filters/issue-predicate-filter';
 import { IssuePredicateFilter } from './filters/IssuePredicateFilter';
-import { detailRequestKey, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { beginDetailRequest, detailRequestKey, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
@@ -487,6 +487,7 @@ function buildProjectTimelineRequest(
 }
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const repos = await getWorkRepos<WorkRepo>();
   const urlState = parseUrlState(params);
   const projectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -500,7 +501,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   const requestKey = detailRequestKey('timeline', request);
   if (readPersistedDetail<ProjectTimelineProjection>('timeline', requestKey)) return;
   const projection = await getProjectTimeline(request);
-  writePersistedDetail('timeline', requestKey, projection);
+  writePersistedDetail('timeline', requestKey, projection, undefined, detailStarted);
 }
 
 function projectedFilterRowId(row: TimelineFilterRowSpec, rows: readonly TimelineFilterRowSpec[]): string {
@@ -982,6 +983,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     }
     const generation = requestGeneration.current;
     const controller = new AbortController();
+    const detailStarted = beginDetailRequest();
     const initialLoad = getProjectTimeline(timelineRequestRef.current, controller.signal)
       .then((next) => {
         if (
@@ -989,7 +991,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           || requestGeneration.current !== generation
           || activeProjectionRequestKeyRef.current !== timelineRequestKey
         ) return;
-        writePersistedDetail('timeline', timelineRequestKey, next);
+        writePersistedDetail('timeline', timelineRequestKey, next, undefined, detailStarted);
         lastProjectionRef.current = next;
         setProjection(next);
         setStatus('ready');

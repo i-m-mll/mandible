@@ -63,6 +63,7 @@ const memoryEntries = new Map<string, {
 const namespaceInvalidatedSeq = new Map<string, number>();
 let allInvalidatedSeq = 0;
 let detailSeq = 0;
+const keyWrittenSeq = new Map<string, number>();
 let accessClock = 0;
 let legacyPurged = false;
 
@@ -212,11 +213,20 @@ export function detailRequestKey(namespace: string, request: unknown): string {
   return `${namespace}:${JSON.stringify(stableValue(request))}`;
 }
 
-function rememberDetail(namespace: string, key: string, serialized: string, now: number, expiresAt: number): void {
+/** Capture before starting asynchronous work; later writes and invalidations fence it. */
+export function beginDetailRequest(): number {
+  return ++detailSeq;
+}
+
+export function isDetailRequestCurrent(namespace: string, key: string, started: number): boolean {
+  return started >= Math.max(allInvalidatedSeq, namespaceInvalidatedSeq.get(namespace) ?? 0, keyWrittenSeq.get(accessKey(namespace, key)) ?? 0);
+}
+
+function rememberDetail(namespace: string, key: string, serialized: string, now: number, expiresAt: number, requestStarted: number): void {
   const id = accessKey(namespace, key);
   memoryEntries.delete(id);
-  detailSeq += 1;
-  memoryEntries.set(id, { namespace, serialized, writtenAt: now, writeSeq: detailSeq, expiresAt });
+  keyWrittenSeq.set(id, requestStarted);
+  memoryEntries.set(id, { namespace, serialized, writtenAt: now, writeSeq: requestStarted, expiresAt });
   let namespaceCount = 0;
   for (const [candidateId, entry] of [...memoryEntries].reverse()) {
     if (entry.namespace !== namespace) continue;
@@ -284,11 +294,13 @@ export function writePersistedDetail(
   key: string,
   value: unknown,
   maxAgeMs = DEFAULT_MAX_AGE_MS,
+  requestStarted = beginDetailRequest(),
 ): boolean {
+  if (!isDetailRequestCurrent(namespace, key, requestStarted)) return false;
   const serialized = serialize(value);
   if (serialized === null) return false;
   const now = Date.now();
-  rememberDetail(namespace, key, serialized, now, now + Math.max(1, maxAgeMs));
+  rememberDetail(namespace, key, serialized, now, now + Math.max(1, maxAgeMs), requestStarted);
   const storage = browserStorage();
   if (!storage) return false;
   const bytes = new TextEncoder().encode(serialized).byteLength;
@@ -376,6 +388,7 @@ function flush(storage: Storage, index: CacheIndex, staleKeys: string[]): void {
 }
 
 export function removePersistedDetail(namespace: string, key: string): void {
+  keyWrittenSeq.set(accessKey(namespace, key), ++detailSeq);
   pendingAccess.delete(accessKey(namespace, key));
   memoryEntries.delete(accessKey(namespace, key));
   const storage = browserStorage();
@@ -390,7 +403,8 @@ export function clearPersistedDetailCache(): void {
   pendingAccess.clear();
   memoryEntries.clear();
   namespaceInvalidatedSeq.clear();
-  allInvalidatedSeq = 0;
+  allInvalidatedSeq = ++detailSeq;
+  keyWrittenSeq.clear();
   const storage = browserStorage();
   if (!storage) return;
   purgeAll(storage);

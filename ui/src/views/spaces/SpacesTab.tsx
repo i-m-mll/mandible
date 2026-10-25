@@ -1,5 +1,5 @@
 import { getSpaceFactPacket, listSpacesGrouped, type InstanceInfo, type SpaceRenderer } from '../../api';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+import { beginDetailRequest, detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
 import { defaultInitialSpaceId, persistGroups } from './SpacesSidebar';
 import { SpacesViewShell } from './SpacesViewShell';
@@ -21,6 +21,7 @@ export function SpacesTab(props: SpacesTabProps): JSX.Element {
 }
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const detailStarted = beginDetailRequest();
   const groups = await listSpacesGrouped();
   persistGroups(groups);
   const spaceId = params.space?.trim() || savedSpacesSelection(params)?.spaceId || defaultInitialSpaceId(groups);
@@ -32,6 +33,8 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     'spaces',
     detailRequestKey('spaces', { spaceId: packet.space.id }),
     packet,
+    undefined,
+    detailStarted,
   );
 }
 

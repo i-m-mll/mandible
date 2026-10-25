@@ -18,7 +18,7 @@ type TimelinePageShape<Event extends OrderedEvent, Link extends OrderedLink> = {
   events: Event[];
   links: Link[];
   diagnostics: unknown;
-  page: { row_offset: number; next_row_offset: number | null };
+  page: { row_offset: number; next_row_offset: number | null; ledger_watermark: number };
 };
 
 export function compareTimelineEvents(a: OrderedEvent, b: OrderedEvent): number {
@@ -60,6 +60,9 @@ export function mergeTimelinePages<
   const last = pages.at(-1);
   if (!last || last.page.next_row_offset !== null) {
     throw new Error("Timeline pages end before the last page");
+  }
+  if (pages.some((page) => page.page.ledger_watermark !== last.page.ledger_watermark || !sameTimelineRows(page.rows, last.rows))) {
+    throw new Error("Timeline pages describe different ledger snapshots");
   }
   const events = pages.flatMap((page) => page.events).sort(compareTimelineEvents);
   const links = pages.flatMap((page) => page.links).sort(compareTimelineLinks);
