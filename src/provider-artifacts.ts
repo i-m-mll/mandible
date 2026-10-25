@@ -13,7 +13,7 @@ import {
   readCommittedArtifactFiles, retainArtifactCommit, type CommittedArtifactFile,
 } from "./artifact-commit-source.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
-import { resolveId, shortRef, type RefResolution } from "./entity-refs.js";
+import { resolveId, resolveIds, shortRefs, type RefResolution } from "./entity-refs.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 import {
   classifyArtifactRef,
@@ -3737,8 +3737,14 @@ function assertVersioningTables(db: Db): void {
   }
 }
 
+const artifactIdentityTablesPresent = new WeakSet<Db>();
+
+/** Whether the identity tables exist; once they do, no later call asks SQLite again. */
 function artifactIdentityTablesExist(db: Db): boolean {
-  return tableExists(db, "artifact") && tableExists(db, "artifact_version") && tableExists(db, "artifact_blob");
+  if (artifactIdentityTablesPresent.has(db)) return true;
+  const present = tableExists(db, "artifact") && tableExists(db, "artifact_version") && tableExists(db, "artifact_blob");
+  if (present) artifactIdentityTablesPresent.add(db);
+  return present;
 }
 
 function artifactBlobIdFromHash(hash: string): string {
@@ -3810,61 +3816,169 @@ export function canonicalArtifactShortRef(db: Db, hash: string): string {
 }
 
 export function canonicalArtifactBlobShortRef(db: Db, ref: string): string {
-  const trimmed = ref.trim();
-  const hash = trimmed.replace(/^artifact-blob:/i, "").toLowerCase();
-  if (!isSha256(hash)) throw new Error("artifact blob ref must contain a 64-character SHA-256 hash");
-  const blob = getArtifactBlob(db, artifactBlobIdFromHash(hash));
-  if (!blob) return artifactBlobIdFromHash(hash);
-  return `artifact-blob:${shortRef(db, "artifact_blob", blob.id, { key: hash, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
+  return canonicalArtifactBlobShortRefs(db, [ref])[0];
+}
+
+/** Ids among `ids` that are rows of `table`. */
+function existingArtifactIds(db: Db, table: "artifact" | "artifact_version" | "artifact_blob", ids: readonly string[]): Set<string> {
+  if (ids.length === 0 || !artifactIdentityTablesExist(db)) return new Set();
+  return new Set((db.prepare(`SELECT id FROM ${table} WHERE id IN (SELECT value FROM json_each(?))`)
+    .all(JSON.stringify([...new Set(ids)])) as Array<{ id: string }>).map((row) => row.id));
+}
+
+/** Short refs for entities found by `id`, computed once per distinct id. */
+function shortRefsByKey(
+  db: Db,
+  kind: "artifact" | "artifact_version" | "artifact_blob",
+  entities: ReadonlyArray<{ id: string; key: string }>,
+): Map<string, string> {
+  const distinct = [...new Map(entities.map((entity) => [entity.id, entity])).values()];
+  const shorts = shortRefs(db, kind, distinct, { minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH });
+  return new Map(distinct.map((entity, index) => [entity.id, shorts[index]]));
+}
+
+export function canonicalArtifactBlobShortRefs(db: Db, refs: readonly string[]): string[] {
+  const hashes = refs.map((ref) => {
+    const hash = ref.trim().replace(/^artifact-blob:/i, "").toLowerCase();
+    if (!isSha256(hash)) throw new Error("artifact blob ref must contain a 64-character SHA-256 hash");
+    return hash;
+  });
+  const present = existingArtifactIds(db, "artifact_blob", hashes.map(artifactBlobIdFromHash));
+  const shorts = shortRefsByKey(db, "artifact_blob", hashes
+    .map((hash) => ({ id: artifactBlobIdFromHash(hash), key: hash }))
+    .filter((entity) => present.has(entity.id)));
+  return hashes.map((hash) => {
+    const id = artifactBlobIdFromHash(hash);
+    const short = shorts.get(id);
+    return short === undefined ? id : `artifact-blob:${short}`;
+  });
 }
 
 export function canonicalLogicalArtifactShortRef(db: Db, ref: string): string {
-  const logical = getLogicalArtifact(db, ref);
-  if (!logical) return ref.trim();
-  const key = logical.id.replace(/^artifact:/i, "");
-  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
-    const candidate = `artifact:${key.slice(0, length)}`;
-    const resolution = resolveArtifactIdentityRef(db, candidate);
-    if (resolution?.status === "resolved"
-      && resolution.target_type === "artifact"
-      && resolution.target_id === logical.id) {
-      return candidate;
-    }
-  }
-  return logical.id;
+  return canonicalLogicalArtifactShortRefs(db, [ref])[0];
 }
 
-/** Strip internal legacy compatibility refs from current API projections. */
+/**
+ * The shortest `artifact:<prefix>`, at least the default length, that
+ * `resolveArtifactIdentityRef` resolves to each logical artifact; its id when
+ * none does. Each round decides every artifact still searching with one
+ * logical and one blob lookup.
+ */
+export function canonicalLogicalArtifactShortRefs(db: Db, refs: readonly string[]): string[] {
+  const present = existingArtifactIds(db, "artifact", refs);
+  const searches = [...new Set(refs.filter((ref) => present.has(ref)))].map((id) => {
+    const key = id.replace(/^artifact:/i, "");
+    return { id, key, length: Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length), short: id };
+  });
+  let pending = searches.filter((search) => search.length <= search.key.length);
+  while (pending.length > 0) {
+    const candidates = pending.map((search) => {
+      const trimmed = `artifact:${search.key.slice(0, search.length)}`.trim();
+      const classified = classifyArtifactRef(trimmed);
+      const logicalKey = classified.kind === "blob" || classified.kind === "logical" ? canonicalArtifactKey(trimmed) : null;
+      return { search, trimmed, compact: classified.kind === "blob" && classified.compact, logicalKey };
+    });
+    const logical = resolveIds(db, "artifact", candidates.flatMap((candidate) => candidate.logicalKey ?? []));
+    const namesSearched = candidates.map((candidate) => {
+      const resolved = candidate.logicalKey === null ? undefined : logical.get(candidate.logicalKey);
+      return resolved?.ok === true && resolved.id === candidate.search.id;
+    });
+    const blobKeys = candidates.map((candidate, index) => namesSearched[index]
+        && candidate.compact
+        && candidate.search.id.toLowerCase() !== candidate.trimmed.toLowerCase()
+      ? candidate.trimmed.replace(/^artifact:/i, "").toLowerCase()
+      : null);
+    const blobs = resolveIds(db, "artifact_blob", blobKeys.flatMap((key) => key ?? []));
+    pending = candidates.flatMap((candidate, index) => {
+      const blobKey = blobKeys[index];
+      const blob = blobKey === null ? undefined : blobs.get(blobKey);
+      const blobNamed = blob !== undefined
+        && (blob.ok ? getArtifactBlob(db, blob.id) !== null : blob.error === "ambiguous");
+      if (namesSearched[index] && !blobNamed) {
+        candidate.search.short = candidate.trimmed;
+        return [];
+      }
+      candidate.search.length += 1;
+      return candidate.search.length <= candidate.search.key.length ? [candidate.search] : [];
+    });
+  }
+  const shorts = new Map(searches.map((search) => [search.id, search.short]));
+  return refs.map((ref) => shorts.get(ref) ?? ref.trim());
+}
+
+type PendingArtifactRef = {
+  target: Record<string, unknown>;
+  kind: "blob" | "series" | "version" | "logical";
+  ref: string;
+};
+
+const ARTIFACT_SHORT_REF_BATCHES: Record<PendingArtifactRef["kind"], (db: Db, refs: readonly string[]) => string[]> = {
+  blob: canonicalArtifactBlobShortRefs,
+  series: canonicalArtifactSeriesShortRefs,
+  version: canonicalArtifactVersionShortRefs,
+  logical: canonicalLogicalArtifactShortRefs,
+};
+
+/**
+ * Strip internal legacy compatibility refs from current API projections. The
+ * `ref` of every artifact record in the value is computed in one batch per
+ * kind after the walk.
+ */
 export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
+  const pending: PendingArtifactRef[] = [];
+  const projected = projectArtifactValue(db, value, pending, new Map());
+  for (const kind of Object.keys(ARTIFACT_SHORT_REF_BATCHES) as Array<PendingArtifactRef["kind"]>) {
+    const entries = pending.filter((entry) => entry.kind === kind);
+    if (entries.length === 0) continue;
+    const refs = ARTIFACT_SHORT_REF_BATCHES[kind](db, entries.map((entry) => entry.ref));
+    entries.forEach((entry, index) => { entry.target.ref = refs[index]; });
+  }
+  return projected;
+}
+
+function projectArtifactValue(
+  db: Db,
+  value: unknown,
+  pending: PendingArtifactRef[],
+  legacyRefs: Map<string, string>,
+): unknown {
   if (typeof value === "string") {
     return value.replace(
       /artifact:sha256:([a-f0-9]{64})/gi,
-      (_match, hash: string) => canonicalArtifactShortRef(db, hash),
+      (_match, hash: string) => {
+        let short = legacyRefs.get(hash);
+        if (short === undefined) legacyRefs.set(hash, short = canonicalArtifactShortRef(db, hash));
+        return short;
+      },
     );
   }
   if (Buffer.isBuffer(value) || value instanceof Date) return value;
-  if (Array.isArray(value)) return value.map((entry) => projectArtifactPublicValue(db, entry));
+  if (Array.isArray(value)) return value.map((entry) => projectArtifactValue(db, entry, pending, legacyRefs));
   if (value && typeof value === "object") {
-    const projected = Object.fromEntries(
+    const projected: Record<string, unknown> = Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .map(([key, entry]) => [key, projectArtifactPublicValue(db, entry)]),
+        .map(([key, entry]) => [key, projectArtifactValue(db, entry, pending, legacyRefs)]),
     );
     if (typeof projected.scheme === "string" && typeof projected.normalized_ref === "string" && "blob_id" in projected) {
       projected.artifact_id = projected.blob_id;
     }
+    const defer = (kind: PendingArtifactRef["kind"], ref: string) => {
+      projected.ref = null;
+      pending.push({ target: projected, kind, ref });
+    };
     const id = asString(projected.id);
     if (id && /^artifact-blob:/i.test(id) && asString(projected.content_hash)) {
-      projected.ref = canonicalArtifactBlobShortRef(db, id);
+      defer("blob", id);
     } else if (id && /^artifact-series:/i.test(id) && asString(projected.series_key)) {
-      projected.ref = canonicalArtifactSeriesShortRef(db, id);
+      defer("series", id);
     } else if (id && /^artifact-version:/i.test(id) && typeof projected.version_no === "number") {
-      projected.ref = canonicalArtifactVersionShortRef(db, id);
+      defer("version", id);
     } else if (asString(projected.content_hash)
       && asString(projected.custody_mode)
       && !asString(projected.identity_key)) {
-      projected.ref = canonicalArtifactBlobShortRef(db, `artifact-blob:${asString(projected.content_hash)}`);
+      defer("blob", `artifact-blob:${asString(projected.content_hash)}`);
     } else if (id && /^artifact:/i.test(id) && asString(projected.identity_key)) {
-      projected.ref = canonicalLogicalArtifactShortRef(db, id);
+      defer("logical", id);
     }
     return projected;
   }
@@ -4585,19 +4699,56 @@ export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | 
 }
 
 export function canonicalArtifactSeriesShortRef(db: Db, ref: string): string {
-  const series = getArtifactSeries(db, ref);
-  if (!series) return canonicalArtifactSeriesRef(ref);
-  const canonical = canonicalArtifactSeriesRef(series.id);
-  const key = canonical.replace(/^artifact-series:/i, "");
-  return `artifact-series:${shortRef(db, "artifact", `artifact:${key}`, { key, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
+  return canonicalArtifactSeriesShortRefs(db, [ref])[0];
+}
+
+/** The logical artifact id each series ref, id, or key names, as `getLogicalArtifactForSeriesRef` finds it. */
+function logicalArtifactIdsForSeriesRefs(db: Db, refs: readonly string[]): Map<string, string> {
+  if (!artifactIdentityTablesExist(db)) return new Map();
+  const lookups = refs.map((ref) => /^artifact-series:/i.test(ref)
+    ? { ref, id: canonicalArtifactIdForSeriesRef(ref) }
+    : /^artifact:/i.test(ref) ? { ref, id: ref } : { ref, key: ref });
+  const ids = existingArtifactIds(db, "artifact", lookups.flatMap((lookup) => lookup.id ?? []));
+  const keyed = lookups.flatMap((lookup) => lookup.key ?? []);
+  const byKey = new Map(keyed.length === 0 ? [] : (db.prepare(
+    "SELECT identity_key, id FROM artifact WHERE identity_key IN (SELECT value FROM json_each(?))",
+  ).all(JSON.stringify([...new Set(keyed)])) as Array<{ identity_key: string; id: string }>)
+    .map((row) => [row.identity_key, row.id]));
+  const found = new Map<string, string>();
+  for (const lookup of lookups) {
+    const id = lookup.id !== undefined ? (ids.has(lookup.id) ? lookup.id : undefined) : byKey.get(lookup.key);
+    if (id !== undefined) found.set(lookup.ref, id);
+  }
+  return found;
+}
+
+export function canonicalArtifactSeriesShortRefs(db: Db, refs: readonly string[]): string[] {
+  const logicalIds = logicalArtifactIdsForSeriesRefs(db, refs);
+  const keys = new Map([...logicalIds].map(([ref, logicalId]) => [
+    ref,
+    canonicalArtifactSeriesRef(legacySeriesIdFromCanonicalArtifact(logicalId)).replace(/^artifact-series:/i, ""),
+  ]));
+  const shorts = shortRefsByKey(db, "artifact", [...keys.values()].map((key) => ({ id: `artifact:${key}`, key })));
+  return refs.map((ref) => {
+    const key = keys.get(ref);
+    return key === undefined ? canonicalArtifactSeriesRef(ref) : `artifact-series:${shorts.get(`artifact:${key}`)}`;
+  });
 }
 
 export function canonicalArtifactVersionShortRef(db: Db, ref: string): string {
-  const version = getArtifactVersion(db, ref);
-  if (!version) return canonicalVersionIdForVersionRef(ref);
-  const canonical = canonicalVersionIdForVersionRef(version.id);
-  const key = canonical.replace(/^artifact-version:/i, "");
-  return `artifact-version:${shortRef(db, "artifact_version", canonical, { key, minimum: DEFAULT_ARTIFACT_ID_PREFIX_LENGTH })}`;
+  return canonicalArtifactVersionShortRefs(db, [ref])[0];
+}
+
+export function canonicalArtifactVersionShortRefs(db: Db, refs: readonly string[]): string[] {
+  const present = existingArtifactIds(db, "artifact_version", refs);
+  const keys = new Map(refs.filter((ref) => present.has(ref)).map((ref) => [
+    ref,
+    canonicalVersionIdForVersionRef(ref).replace(/^artifact-version:/i, ""),
+  ]));
+  const shorts = shortRefsByKey(db, "artifact_version", [...keys].map(([ref, key]) => ({ id: canonicalVersionIdForVersionRef(ref), key })));
+  return refs.map((ref) => present.has(ref)
+    ? `artifact-version:${shorts.get(canonicalVersionIdForVersionRef(ref))}`
+    : canonicalVersionIdForVersionRef(ref));
 }
 
 export function listArtifactVersions(db: Db, seriesId: string): ArtifactVersionRecord[] {
