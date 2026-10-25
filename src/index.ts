@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
+import { startLedgerWarmTimer, warmLedger } from "./ledger-warm.js";
 import {
   configureDaemonLogger,
   flushDaemonLogger,
@@ -194,6 +195,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // longest measured ingestion transaction (a 1.4 GB transcript) holds the lock
   // for about 0.9 s, within openDb's busy budget. Issue: 29e81ab.
   const db = openDb(dbPath);
+  const ledgerWarm = instance.role === "main"
+    ? warmLedger(db.name, (level, event, details) => logger(level, event, details))
+    : null;
   const ledgerReader = workerLedgerReaderPool(db.name, { size: 2 });
   let operationalLogStore: OperationalLogStore | null = null;
   if (operationalMutationsAllowed) {
@@ -564,6 +568,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so health reports ready:true and the UI can drop the splash / re-enable
   // mutation controls. Deferred background scans (issue scan, session
   // discovery) run after this point and intentionally do NOT gate readiness.
+  await ledgerWarm;
+  const ledgerWarmTimer = instance.role === "main" ? startLedgerWarmTimer(db.name, logger) : null;
   setDaemonReady(true);
   readyRestartGeneration = restartAvailability?.markReady() ?? null;
   logger("info", "daemon_ready", { port: actualPort });
@@ -717,6 +723,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       process.exit(1);
     }
     closing = true;
+    const ledgerWarmDrain = ledgerWarmTimer?.stop();
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
     const scannerDrain = workScanner.stop();
@@ -771,6 +778,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     await reaperDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
+    await ledgerWarmDrain;
     clearTimeout(shutdownTimeout);
     // Persist the final batch of queued daemon_log rows before the connection
     // closes so recent activity is not lost on a clean shutdown.
