@@ -71,6 +71,7 @@ import { registerBackupRoutes } from "./routes/backup.js";
 import { MetadataBackupService } from "./metadata-backup-service.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
+import { workerLedgerReaderPool } from "./ledger-reads/index.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
 import { registerBriefingRoutes } from "./routes/briefing.js";
@@ -193,6 +194,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // longest measured ingestion transaction (a 1.4 GB transcript) holds the lock
   // for about 0.9 s, within openDb's busy budget. Issue: 29e81ab.
   const db = openDb(dbPath);
+  const ledgerReader = workerLedgerReaderPool(db.name, { size: 2 });
   let operationalLogStore: OperationalLogStore | null = null;
   if (operationalMutationsAllowed) {
     try {
@@ -364,7 +366,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
   registerWebhookRoutes(router, sessionManager);
-  registerTimelineRoutes(router);
+  registerTimelineRoutes(router, ledgerReader);
   registerSpacesRoutes(router);
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
   registerBriefingRoutes(router, db);
@@ -775,6 +777,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     flushDaemonLogger();
     stopDaemonLogger();
     operationalLogStore?.close();
+    await ledgerReader.close();
     db.close();
     removePidFile(options.pidFilePath);
     logger("info", "server_stopped");
