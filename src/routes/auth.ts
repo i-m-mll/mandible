@@ -1,4 +1,4 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
@@ -61,8 +61,8 @@ export function registerAuthRoutes(
   app: RouteRegistrar,
   authQueue: AuthQueue,
   autoApproveManager: AuthAutoApproveManager,
-  clearance?: AuthClearanceManager,
-  reader: LedgerReader = inlineLedgerReader(() => authQueue.db),
+  clearance: AuthClearanceManager | undefined,
+  reader: LedgerReader,
 ): AuthQueue {
   const db = authQueue.db;
   const fallbackRuntimeEpoch = randomUUID();
@@ -672,14 +672,9 @@ export function registerAuthRoutes(
         : 50;
     const requests = await reader.run("auth_history", { limit, type: typeFilter });
     res.json({
-      requests: requests.map((r) => ({
-        ...r,
-        dependency: authQueue.dependencyForRequest(r),
-        // Issue 27241e6 — history is where "was it actually delivered?" is
-        // asked after the fact, so it carries convergence too.
-        convergence: authQueue.convergenceForRequest(r.id),
-        candidate_acceptance: authQueue.candidateAcceptanceForRequest(r),
-        publication_blocker: authQueue.publicationBlockerForRequest(r),
+      requests: requests.map(({ request, acceptance }) => ({
+        ...request,
+        candidate_acceptance: authQueue.candidateAcceptanceForRequest(request, acceptance),
       })),
     });
   }, { operation: { id: "get:/api/auth/history", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });

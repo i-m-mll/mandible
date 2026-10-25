@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { execFileSync } from "node:child_process";
@@ -469,7 +470,7 @@ describe("auth clearance API", () => {
     const routes = new CapturingRoutes();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      registerAuthRoutes(routes, queue, new AuthAutoApproveManager({ db }), manager as never);
+      registerAuthRoutes(routes, queue, new AuthAutoApproveManager({ db }), manager as never, inlineLedgerReader(() => queue.db));
       const handler = routes.handlers.get("POST /api/auth/clearances")!;
 
       const anonymous = response();

@@ -1,4 +1,4 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import type { SessionExecutionObservation } from "../contracts.js";
 import { formatExecutionEvidence } from "../session-execution-format.js";
 import { existsSync } from "node:fs";
@@ -1049,13 +1049,13 @@ function resolveIssueDetailForRoute(
 export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
-  deps?: {
+  deps: {
     sessionRegistry?: import("../registry.js").SessionRegistry;
     sessionManager?: import("../session-manager.js").SessionManager;
     conversationControl?: import("../conversation-control/service.js").ConversationControlService;
     sessionAliasResolver?: SessionAliasResolver;
-  },
-  reader: LedgerReader = inlineLedgerReader(),
+  } | undefined,
+  reader: LedgerReader,
 ): void {
   const sessionAliasResolver = deps?.sessionAliasResolver ?? resolveSessionAlias;
   /**

@@ -1,9 +1,9 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
-import { getDb, type Db } from "../db.js";
+import type { Db } from "../db.js";
 import {
   applyBriefingAnnotations,
   applyBriefingAnswers,
@@ -426,7 +426,7 @@ function placementOverride(req: RequestLike, requestBody: Record<string, unknown
 }
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
-export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb(), reader: LedgerReader = inlineLedgerReader(() => db)): void {
+export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: LedgerReader): void {
   server.get("/api/briefing-destination-routes", (req, res) => {
     try {
       destinationPrincipal(db, req);

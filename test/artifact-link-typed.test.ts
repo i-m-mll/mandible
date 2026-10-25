@@ -90,7 +90,7 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
 
 async function postRoute(routePath: string, body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   const routes = new TestRoutes();
-  registerProviderRoutes(routes);
+  registerProviderRoutes(routes, inlineLedgerReader());
   const req = {
     method: "POST",
     url: routePath,
@@ -111,7 +111,7 @@ function getRoute(
   query: Record<string, string> = {},
 ): { statusCode: number; payload: any } {
   const routes = new TestRoutes();
-  registerProviderRoutes(routes);
+  registerProviderRoutes(routes, inlineLedgerReader());
   const req = { method: "GET", url: routePath, params, query } as RequestLike;
   const res = createResponse();
   routes.handler("GET", routePath)(req, res);

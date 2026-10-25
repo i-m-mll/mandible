@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { Router } from "../src/server.js";
 import { uniqueMissingPath } from "./helpers/auth-queue-fixtures.js";
@@ -79,7 +80,7 @@ describe("auth request immutable lifecycle", () => {
     const router = new Router({ clientAuth: {
       authenticate: () => identity, mode: () => "strict", recordUnattributedWrite: () => undefined,
     } });
-    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const before = queue.listLifecycleEvents(request.id);
     for (const operator_recovery of [false,true]) {
       const refused = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
@@ -98,7 +99,7 @@ describe("auth request immutable lifecycle", () => {
     setDb(db);
     const request = (await submit());
     const router = authenticatedTestRouter(operator, { credentialId: credential.id });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const edited = "Merge feature/original: Explain the reviewed change\r\n\r\nWhy:\r\nMake the action understandable.\r\n\r\nVerification:\r\nThe edited document's checks pass.\r\n";
     const result = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
       body: { commit_message: edited, canonical_message: true, verification: "The edited document's checks pass.", expected_revision: 1, expected_custody_generation: 1 } });

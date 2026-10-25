@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,7 +55,7 @@ it('serves open issues with current labels under canonical project and checkout 
     labels: ['a', 'z'], repo_id: name, repo_name: name + '-recent',
   })));
   const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
-  registerInboxRoutes(router, undefined, undefined, scanner);
+  registerInboxRoutes(router, undefined, undefined, scanner, inlineLedgerReader());
   for (let pass = 0; pass < 2; pass++) {
     const result = await router.invoke({ method: 'GET', url: '/api/inbox/global' });
     expect(result.status).toBe(200);
@@ -72,7 +73,7 @@ it('yields to the event loop during every Git read in artifact check', async () 
   insertRawLedgerCheckout(db, { projectId: project, name: 'report', root: repo });
   const artifact = recordArtifactVersion(db, { source_kind: 'tracked_repo', path: path.join(repo, 'report.md') });
   const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
-  registerProviderRoutes(router);
+  registerProviderRoutes(router, inlineLedgerReader());
   const stub = useSlowCommand('git');
   try {
     for (let pass = 0; pass < 2; pass++) {

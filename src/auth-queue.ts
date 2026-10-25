@@ -1,3 +1,4 @@
+import { authDependencies } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
@@ -71,6 +72,7 @@ import {
   candidateAcceptanceRefusal,
   latestCandidateAcceptance,
   type CandidateAcceptanceCandidate,
+  type CandidateAcceptanceRead,
   type CandidateAcceptanceExecutor,
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
@@ -817,11 +819,11 @@ export class AuthQueue {
   }
 
   /** Issue 7d83fe5 — acceptance of the request's current candidate; null when acceptance does not apply. */
-  candidateAcceptanceForRequest(request: CandidateRef & Pick<AuthRequest, "id" | "type" | "command" | "repo" | "change_report">): CandidateAcceptanceProjection | null {
-    if (!this.candidateAcceptanceApplies(request)) return null;
+  candidateAcceptanceForRequest(request: CandidateRef & Pick<AuthRequest, "id" | "type" | "command" | "repo" | "change_report">, stored?: CandidateAcceptanceRead): CandidateAcceptanceProjection | null {
+    if (!(stored ? stored.applies : this.candidateAcceptanceApplies(request))) return null;
     const candidate = this.acceptanceCandidate(request);
     const open = Boolean(candidate && this.acceptanceRuns?.isOpen(request.id, candidate.pin_sha));
-    return candidateAcceptanceProjection(latestCandidateAcceptance(this.db, request.id), candidate, open);
+    return candidateAcceptanceProjection(stored ? stored.latest : latestCandidateAcceptance(this.db, request.id), candidate, open);
   }
 
   /**
@@ -2779,52 +2781,7 @@ export class AuthQueue {
   dependencyForRequest(
     request: Pick<AuthRequest, "depends_on_id">,
   ): AuthDependencyProjection | null {
-    const requestedId = request.depends_on_id;
-    if (!requestedId) {
-      return null;
-    }
-
-    const resolved = resolveId(this.db, "auth_request", requestedId);
-    if (!resolved.ok) {
-      return {
-        state: resolved.error === "not_found" ? "missing" : "ambiguous",
-        requested_id: requestedId,
-        request_id: null,
-        status: null,
-        outcome: null,
-        exit_code: null,
-        merge_finalized_at: null,
-      };
-    }
-
-    const dependency = this.readRequestByExactId(resolved.id);
-    if (!dependency) {
-      return {
-        state: "missing",
-        requested_id: requestedId,
-        request_id: null,
-        status: null,
-        outcome: null,
-        exit_code: null,
-        merge_finalized_at: null,
-      };
-    }
-
-    const outcome = computeAuthRequestOutcome(dependency.status);
-    const state = dependency.status !== "completed"
-      ? (outcome === null ? "pending" : "failed")
-      : dependency.merge_finalized_at == null
-          ? "unfinalized"
-          : "ready";
-    return {
-      state,
-      requested_id: requestedId,
-      request_id: dependency.id,
-      status: dependency.status,
-      outcome,
-      exit_code: dependency.exit_code,
-      merge_finalized_at: dependency.merge_finalized_at ?? null,
-    };
+    return request.depends_on_id ? authDependencies(this.db, [request.depends_on_id]).get(request.depends_on_id)! : null;
   }
 
   private enforceDependencyReadiness(request: AuthRequest): void {

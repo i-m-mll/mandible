@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { execFileSync } from "node:child_process";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -39,7 +40,7 @@ beforeEach(() => {
   issueId = createLedgerIssue(db, { project_id: project.id, alias: "ref1234" }).id;
   store = new LedgerStore(db);
   router = authenticatedTestRouter(setupOperator(db, { display_name: "Operator" }));
-  registerIssueRoutes(router, fakeScanner);
+  registerIssueRoutes(router, fakeScanner, undefined, inlineLedgerReader());
 });
 
 afterEach(() => {

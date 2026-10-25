@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { SseManager, setSseManager } from "../src/sse.js";
 import { runCli } from "./helpers/cli-process.js";
 import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
@@ -54,7 +55,7 @@ beforeEach(() => {
   setSetting(db, "artifact_root", path.join(root, "cas"));
   operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   agent = createUser(db, { slug: "writer", kind: "agent", display_name: "Writer" });
-  router = authenticatedTestRouter(agent); registerProviderRoutes(router);
+  router = authenticatedTestRouter(agent); registerProviderRoutes(router, inlineLedgerReader());
 });
 afterEach(() => {
   setDb(db);
@@ -134,7 +135,7 @@ describe("artifact write authorization", () => {
     process.env.MANDIBLE_ARTIFACT_DIR = previewCas;
     setDb(previewDb);
     router = authenticatedTestRouter(agent, { instance: previewInstance });
-    registerProviderRoutes(router);
+    registerProviderRoutes(router, inlineLedgerReader());
 
     expect((await invoke("POST", "/api/artifacts/ingest", {
       content: "preview bytes", media_type: "text/plain",
@@ -228,7 +229,7 @@ describe("artifact write authorization", () => {
     const id = (response.body as any).result.series.id.replace(/^artifact-series:/, "artifact:");
     expect(db.prepare("SELECT source_project_id FROM artifact WHERE id=?").get(id)).toEqual({ source_project_id: project.id });
     const reader = createUser(db, { slug: "upload-reader", kind: "agent", display_name: "Upload reader" });
-    const readerRouter = authenticatedTestRouter(reader); registerProviderRoutes(readerRouter);
+    const readerRouter = authenticatedTestRouter(reader); registerProviderRoutes(readerRouter, inlineLedgerReader());
     const read = await readerRouter.invoke({ method: "GET", url: `/api/artifacts/${encodeURIComponent(id)}/content`, transport: "http" });
     expect(read.status).toBe(403);
   });
@@ -239,7 +240,7 @@ describe("artifact write authorization", () => {
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "move-test", content: "old\n" });
     const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(projects[0].id, id);
-    const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter);
+    const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter, inlineLedgerReader());
     const initial = getArtifactCurrentSource(db, id)!;
     const origin = await operatorRouter.invoke({ method: "POST", url: "/api/artifacts/source/move", transport: "http",
       body: { artifact_id: id, expected_revision: initial.revision, source: { kind: "repo", project_id: projects[1].id, path: "old.md" } } });
@@ -283,7 +284,7 @@ describe("artifact write authorization", () => {
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "draft-test", content: "old" });
     const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(owner.id, id);
-    const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter);
+    const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter, inlineLedgerReader());
     expect((await operatorRouter.invoke({ method: "POST", url: "/api/artifacts/source/move", transport: "http", body: {
       artifact_id: id, expected_revision: getArtifactCurrentSource(db, id)!.revision,
       source: { kind: "repo", project_id: destination.id, path: "draft.md" },
@@ -327,7 +328,7 @@ describe("artifact write authorization", () => {
 
   it("denies recurring publication before artifact, source, run or round mutation", async () => {
     const publisher = createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Scheduler" });
-    router = authenticatedTestRouter(publisher); registerBriefingRoutes(router, db);
+    router = authenticatedTestRouter(publisher); registerBriefingRoutes(router, db, inlineLedgerReader(() => db));
     const body = {
       schema: "mandible-briefing-run@1", briefing_key: "permission-report", title: "Report",
       task_identity: "agent-schedule/daily-digest", run_id: "first", run_key: "first",
@@ -382,7 +383,7 @@ describe("artifact write authorization", () => {
     const requests: string[] = [];
     const cliInstance = resolveInstanceInfo({ env: {} });
     router = authenticatedTestRouter(agent, { instance: cliInstance });
-    registerProviderRoutes(router);
+    registerProviderRoutes(router, inlineLedgerReader());
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/api/instance") {
         res.writeHead(200, { "Content-Type": "application/json" });

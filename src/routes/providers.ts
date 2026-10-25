@@ -1,4 +1,4 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import { readableArtifactEntries } from "../ledger-reads/artifacts.js";
 import { broadcast } from "../sse.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
@@ -336,7 +336,7 @@ function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
   return { id: combined };
 }
 
-export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader = inlineLedgerReader()): void {
+export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader): void {
   app.get("/api/providers", (_req, res) => {
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { providers: listProviders(getDb()) }));
   }, { operation: { id: "get:/api/providers", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });

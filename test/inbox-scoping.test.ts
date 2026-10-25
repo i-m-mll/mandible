@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 /**
  * Scoped auth-result delivery (Bug: 4e32923): the inbox tiers (owner, project
  * after its grace window, global after its grace window), the channel-server
@@ -373,7 +374,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
       },
       post: () => {},
     };
-    registerInboxRoutes(server, undefined, undefined);
+    registerInboxRoutes(server, undefined, undefined, undefined, inlineLedgerReader());
     if (!handler) throw new Error("/api/inbox/undelivered handler not registered");
     let capturedStatus = 0;
     let capturedBody: unknown = null;
@@ -558,7 +559,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     const db = setupInMemoryDb();
     const queue = new AuthQueue({ db });
     const app = new TestRouteRegistrar();
-    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
     const response = await app.invoke("POST", "/api/auth/request", {
       body: {
@@ -583,7 +584,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const db = setupInMemoryDb();
       const queue = new AuthQueue({ db });
       const app = new TestRouteRegistrar();
-      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
       const response = await app.invoke("POST", "/api/auth/request", {
         body: {
@@ -613,7 +614,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const queue = new AuthQueue({ db });
       registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
-      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
       const response = await app.invoke("POST", "/api/auth/request", {
         body: {
@@ -672,7 +673,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const queue = new AuthQueue({ db });
       registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
-      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
       const response = await app.invoke("POST", "/api/auth/request", {
         body: {
@@ -718,7 +719,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const queue = new AuthQueue({ db });
       registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
-      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
       const response = await app.invoke("POST", "/api/auth/request", {
         body: {
@@ -761,7 +762,7 @@ describe("inbox acknowledgement attribution", () => {
       });
 
       const app = new TestRouteRegistrar();
-      registerInboxRoutes(app, {} as never);
+      registerInboxRoutes(app, {} as never, undefined, undefined, inlineLedgerReader());
 
       const bound = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
         params: { type: "auth_result", id: "bound-ack" },
@@ -819,7 +820,7 @@ describe("POST /api/inbox/ack-all", () => {
         seedAuthRow(db, { id: `retry-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1, status: "failed" });
       }
       const app = new TestRouteRegistrar();
-      registerInboxRoutes(app, {} as never);
+      registerInboxRoutes(app, {} as never, undefined, undefined, inlineLedgerReader());
       const queue = new AuthQueue({ db });
       let clock = 0;
       vi.spyOn(performance, "now").mockImplementation(() => (clock += 1_000));
@@ -859,7 +860,7 @@ describe("POST /api/inbox/ack-all", () => {
         seedAuthRow(db, { id: `failure-${index}`, target_session_id: null, target_repo_root: null, resolved_at: index + 1 });
       }
       const app = new TestRouteRegistrar();
-      registerInboxRoutes(app, {} as never);
+      registerInboxRoutes(app, {} as never, undefined, undefined, inlineLedgerReader());
       const sse = new SseManager();
       setSseManager(sse);
       const broadcast = vi.spyOn(sse, "broadcast");
@@ -899,7 +900,7 @@ describe("POST /api/inbox/ack-all", () => {
       seedAuthRow(db, { id: "acked-earlier", target_session_id: null, target_repo_root: null, resolved_at: 101 });
       db.prepare("UPDATE auth_requests SET acknowledged_by = 'earlier' WHERE id = 'acked-earlier'").run();
       const app = new TestRouteRegistrar();
-      registerInboxRoutes(app, {} as never);
+      registerInboxRoutes(app, {} as never, undefined, undefined, inlineLedgerReader());
 
       // Every clock read passes a slice's budget, so each commit ends a turn.
       let clock = 0;
@@ -1022,7 +1023,7 @@ function callInbox(
     },
     post: () => {}
   };
-  registerInboxRoutes(server, undefined, undefined);
+  registerInboxRoutes(server, undefined, undefined, undefined, inlineLedgerReader());
   if (!handler) throw new Error("Inbox route handler was not registered");
 
   let captured: unknown = null;

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import fs from "node:fs";
@@ -300,7 +301,7 @@ describe("auth change reports", () => {
       .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
     const queue = new AuthQueue({ db, backgroundMaintenance: false, broadcast: () => {} });
     const router = new Router({ clientAuth: authenticator });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const submit = (body: Record<string, unknown>) => router.invoke({
       method: "POST",
       url: "/api/auth/request",

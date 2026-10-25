@@ -1,6 +1,13 @@
+import { AuthHookManager } from "../auth-hooks.js";
+import { authDependencies } from "../auth-dependency.js";
+import { isAuthMergeCommand } from "../auth-context.js";
+import { authRequestChangesBuildInputs } from "../runtime-build-scope.js";
+import { latestCandidateAcceptances, type CandidateAcceptanceRead } from "../candidate-acceptance.js";
+import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
+import type { AuthPublicationBlocker } from "../contracts.js";
 import type { Db } from "../db.js";
-import type { AuthRequestSummary } from "../types.js";
-import { mapRow } from "../auth-request-row.js";
+import type { AuthRequestSummary, AuthConvergence } from "../types.js";
+import { mapRow, parseChangeReport } from "../auth-request-row.js";
 import { AttributionReadResolver, authAttributionReadFields } from "../identity/read-projection.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 
@@ -86,7 +93,37 @@ function countActionsForRequests(db: Db, ids: string[]): Map<string, number> {
 
 export function authHistory(db: Db, params: { limit: number; type?: string }) {
   const resolver = new AttributionReadResolver(db);
-  return listAuthHistorySummaries(db, params)
-    .filter(row => !params.type || row.type === params.type)
-    .map(row => ({ ...row, execution_attempts: listAuthExecutionAttempts(db, row.id), ...authAttributionReadFields(resolver, row) }));
+  const requests = listAuthHistorySummaries(db, params).filter(row => !params.type || row.type === params.type);
+  const hooks = new AuthHookManager(db);
+  const selfUpdatingRepos = hooks.selfUpdatingRepos([...new Set(requests.filter(isAuthMergeCommand).flatMap(row => row.repo ? [row.repo] : []))]);
+  const selfUpdates = requests.filter(row => isAuthMergeCommand(row) && selfUpdatingRepos.has(row.repo ?? ""));
+  const reports = selfUpdates.length === 0 ? [] : db.prepare(
+    `SELECT id, change_report_json FROM auth_requests WHERE id IN (${selfUpdates.map(() => "?").join(", ")})`,
+  ).all(...selfUpdates.map(row => row.id)) as Array<{ id: string; change_report_json: unknown }>;
+  const changeReports = new Map(reports.map(row => [row.id, parseChangeReport(row.change_report_json)]));
+  const acceptanceIds = new Set(selfUpdates.filter(row => authRequestChangesBuildInputs({
+    ...row, change_report: changeReports.get(row.id) ?? null,
+  })).map(row => row.id));
+  const acceptances = latestCandidateAcceptances(db, [...acceptanceIds]);
+  const dependencies = authDependencies(db, [...new Set(requests.flatMap(row => row.depends_on_id ? [row.depends_on_id] : []))]);
+  let convergence: Map<string, AuthConvergence>;
+  try {
+    convergence = hooks.convergenceForRequests(requests.map(row => row.id));
+  } catch {
+    // Match AuthQueue.convergenceForRequest when durable hook rows cannot be read.
+    convergence = new Map(requests.map(row => [row.id, { state: "none", hooks: [] }]));
+  }
+  const lock = selfUpdates.length > 0 ? hooks.runtimeHandoffLock() : null;
+  const blocker: AuthPublicationBlocker | null = lock ? { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(lock) } : null;
+  return requests.map(row => ({
+    request: {
+      ...row,
+      dependency: row.depends_on_id ? dependencies.get(row.depends_on_id)! : null,
+      convergence: convergence.get(row.id)!,
+      publication_blocker: isAuthMergeCommand(row) && selfUpdatingRepos.has(row.repo ?? "") ? blocker : null,
+      execution_attempts: listAuthExecutionAttempts(db, row.id),
+      ...authAttributionReadFields(resolver, row),
+    },
+    acceptance: { applies: acceptanceIds.has(row.id), latest: acceptances.get(row.id) ?? null } satisfies CandidateAcceptanceRead,
+  }));
 }

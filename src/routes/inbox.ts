@@ -1,4 +1,4 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import { RESOLVED_STATUSES, type ContinuationRow, authActionOutcomes, parseWebhookData, getSessionRepoRoot, mapAuthResultRow, reminderOccurrenceItems, queryAuthResultsForSession, countAuthResultsForSession, hookAlertItems } from "../ledger-reads/inbox.js";
 import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { AuthQueue } from "../auth-queue.js";
@@ -153,12 +153,12 @@ async function acknowledgeResolvedAuthRequests(db: Db, ackValue: string): Promis
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
-  sessionManager?: SessionManager,
+  sessionManager: SessionManager | undefined,
   // Bug: 4e32923 — authQueue is required for the new /api/inbox/delivered
   // endpoint that marks auth_requests as delivered to the owner session.
-  authQueue?: AuthQueue,
-  workScanner?: WorkScanner,
-  reader: LedgerReader = inlineLedgerReader(),
+  authQueue: AuthQueue | undefined,
+  workScanner: WorkScanner | undefined,
+  reader: LedgerReader,
 ): void {
   const db = getDb();
 

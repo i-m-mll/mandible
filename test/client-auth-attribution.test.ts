@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -58,14 +59,14 @@ describe("client-auth durable attribution", () => {
     authEvents = [];
     authQueue = new AuthQueue({ db, broadcast: (event) => authEvents.push(event), backgroundMaintenance: false });
     router = new Router({ clientAuth: authenticator });
-    registerAuthRoutes(router, authQueue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, authQueue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => authQueue.db));
     registerIssueRoutes(router, {
       getRepos: () => [],
       getRepoById: () => undefined,
       getBranches: () => [],
     } as never, {
       conversationControl: { getSnapshot: controllerSnapshot } as never,
-    });
+    }, inlineLedgerReader());
   });
 
   afterEach(async () => {
