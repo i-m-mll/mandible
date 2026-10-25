@@ -885,50 +885,18 @@ branch_cleanup_guard() {
   return 1
 }
 
-# Release the unbound active work unit of a merged branch whose worktree
-# carried an `.issue` file. A unit bound to an auth request belongs to the
-# merge pipeline, which resolves it. Release is advisory: a failed lookup or
-# release prints a warning and never aborts cleanup.
-release_merged_work_unit() {
-  local branch="$1"
-  local root="$2"
-  local active='[.work_units[]? | select(.state == "open" or .state == "committed")]'
-  local units count unit auth_request
-  if ! units=$(mandible_work_unit_find --repo "$root" --branch "$branch" 2>/dev/null) ||
-     ! count=$(printf '%s' "$units" | jq -e "$active | length" 2>/dev/null); then
-    err "warning: could not read the work unit for ${branch}; it was not released"
-    return 0
-  fi
-  if (( count > 1 )); then
-    err "warning: multiple active work units for ${branch}; none was released"
-    return 0
-  fi
-  (( count == 1 )) || return 0
-  unit=$(printf '%s' "$units" | jq -c "$active | .[0]")
-  auth_request=$(printf '%s' "$unit" | jq -r '.auth_request_id // empty')
-  if [[ -n "$auth_request" ]]; then
-    err "note: work unit for ${branch} is bound to auth request ${auth_request}; left for the merge pipeline"
-  elif mandible_work_unit_release \
-         --id "$(printf '%s' "$unit" | jq -r '.id')" \
-         --expected-generation "$(printf '%s' "$unit" | jq -r '.custody_generation')" >/dev/null 2>&1; then
-    err "note: released work unit for ${branch} (merged into the target)"
-  else
-    err "warning: work-unit release failed for ${branch}; it was not released"
-  fi
-}
-
 # Every post-merge branch removal goes through the trash service. It proves
 # the branch merged or tree-equivalent to the target, then removes it outright
 # when nothing unique remains, keeps reversible custody when tracked, untracked
 # or kept ignored bytes remain, and refuses (removing nothing) otherwise.
+# Work units are not touched here: the daemon's merge finalizer resolves them.
 remove_merged_branch() {
   local branch="$1"
   local target="$2"
   local issue_ids="$3"
-  local root worktree_path had_issue_file=0
+  local root worktree_path
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
   worktree_path="$(branch_worktree_path "$branch")"
-  [[ -n "$worktree_path" && -f "${worktree_path}/.issue" ]] && had_issue_file=1
   local -a args=(--project "$root" --checkout-root "$root" --branch "$branch" --reason merged
     --actor auth-merge --merged-into "$target")
   local issue_id
@@ -973,9 +941,6 @@ remove_merged_branch() {
   esac
   if printf '%s' "$response" | jq -e '.outcome.worktree_removed == true' >/dev/null 2>&1; then
     err "${BOLD_YELLOW}Worktree path ${reported_path:-${worktree_path:-for ${branch}}} is gone. No further work may happen there.${RESET}"
-  fi
-  if [[ "$result" == "removed" && "$evidence" == "merged" && "$had_issue_file" == "1" ]]; then
-    release_merged_work_unit "$branch" "$root"
   fi
 }
 

@@ -136,8 +136,8 @@ changes on auth-bound units are refused.
 
 `release` abandons exactly one unit, by ID or repository and branch. Read its
 `custody_generation` from `find` and pass that number as `--expected-generation`.
-Only its exact durable credential owner can release or resolve it. Cleanup cannot
-release a unit bound to an auth request. An ID retry on the same abandoned unit
+Only its exact durable credential owner can release or resolve it. Release
+refuses a unit bound to an auth request. An ID retry on the same abandoned unit
 is unchanged; stale custody or ambiguous branch matches fail without mutation.
 
 `release-issue` is deliberate issue-wide abandonment. Its snapshot file is an
@@ -203,6 +203,12 @@ mandible inbox ack continuation <session-id>
 When an agent submits an auth request for a branch that has a work unit, the work unit's `auth_request_id` field is set. This links the work lifecycle to the merge lifecycle:
 
 - When the auth merge completes, the work unit transitions to `resolved`
+
+The daemon's merge finalizer is the only post-merge owner of work-unit state. It
+resolves the units bound to the request or on its head branch, the units of every
+issue the request closes, and any other unit whose branch the merge contains,
+judged by Git ancestry of the branch or its last scanned tip. Post-merge branch
+cleanup removes branches and worktrees and never changes a work unit.
 - Issues linked as explicit auth closure targets are auto-closed
 - The auth result (success/failure) is delivered to the next session's inbox
 
