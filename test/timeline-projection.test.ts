@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb } from "../src/db.js";
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { buildProjectTimelineProjection, type TimelinePageBudget } from "../src/ledger/timeline-projection.js";
 import { mergeTimelinePages } from "../src/timeline-pages.js";
 import { registerTimelineRoutes } from "../src/routes/timeline.js";
@@ -320,7 +321,7 @@ describe("project timeline projection", () => {
     ]));
   });
 
-  it("represents explicit roots, promoted roots, include-closed, status filters, and route payloads deterministically", () => {
+  it("represents explicit roots, promoted roots, include-closed, status filters, and route payloads deterministically", async () => {
     const explicit = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
       root_policy: "explicit",
@@ -357,7 +358,7 @@ describe("project timeline projection", () => {
 
     setDb(fixture.db);
     const route = captureTimelineRoute();
-    const response = route({
+    const response = await route({
       project_id: fixture.project.id,
       root_policy: "explicit",
       explicit_root_issue_ids: [fixture.issues.shared.id],
@@ -368,6 +369,10 @@ describe("project timeline projection", () => {
         fixture.issues.shared.id,
         "residual",
       ]);
+    expect(await route({})).toEqual({
+      statusCode: 400,
+      body: { error: "project_id or project_ref is required" },
+    });
   });
 
   it("keeps default residual as the allowed project-issue complement for empty filters", () => {
@@ -593,7 +598,7 @@ function memberIssueIds(projection: ProjectTimelineProjection, specId: string) {
     .map((row) => row.issue?.id);
 }
 
-function captureTimelineRoute(): (body: unknown) => { statusCode: number; body: unknown } {
+function captureTimelineRoute(): (body: unknown) => Promise<{ statusCode: number; body: unknown }> {
   let handler: ((req: unknown, res: unknown) => unknown) | null = null;
   registerTimelineRoutes({
     get: () => undefined,
@@ -603,11 +608,11 @@ function captureTimelineRoute(): (body: unknown) => { statusCode: number; body: 
     post: (route, routeHandler) => {
       if (route === "/api/timeline/project") handler = routeHandler;
     },
-  });
+  }, inlineLedgerReader());
   if (!handler) throw new Error("timeline route was not registered");
-  return (body: unknown) => {
+  return async (body: unknown) => {
     const response: { statusCode: number; body: unknown } = { statusCode: 200, body: null };
-    handler?.({ body }, {
+    await handler?.({ body }, {
       status: (code: number) => {
         response.statusCode = code;
       },
