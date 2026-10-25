@@ -543,7 +543,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const healthCheckTimer = setInterval(() => {
     const intervalEndedAt = Date.now();
     memoryDiagnostics.sample(intervalEndedAt);
-    eventLoopStallIncident?.observe(eventLoopDiagnostics.sample(intervalEndedAt));
+    const eventLoopWindow = eventLoopDiagnostics.sample(intervalEndedAt);
+    eventLoopStallIncident?.observe(eventLoopWindow);
     if (!server.listening) {
       logger("error", "self_health_check_failed", {
         message: "server.listening is false, exiting for supervisor restart"

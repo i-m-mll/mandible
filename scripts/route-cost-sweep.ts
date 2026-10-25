@@ -36,6 +36,7 @@ without a BUDGET_EXCEPTIONS entry, when a route is
 unclassified, or when a request does not succeed.
 
   --source-db <path>    Ledger to snapshot (default ~/.mandible/mandible.db)
+  --work-root <path>    Parent directory for this sweep's private working files
   --threshold-ms <n>    Fail at or above this turn (default HANDLER_TURN_BUDGET_MS)
   --passes <n>          Requests per variant; the first is cold (default 2)
   --only <regex>        Exercise only routes whose path matches; others report as excluded
@@ -45,20 +46,26 @@ unclassified, or when a request does not succeed.
   --keep                Keep the sweep root (snapshot, logs, profile)
   --json                Print the result as JSON on stdout`;
 
-const { values: opts } = parseArgs({
-  options: {
-    "source-db": { type: "string" },
-    "threshold-ms": { type: "string", default: String(HANDLER_TURN_BUDGET_MS) },
-    passes: { type: "string", default: "2" },
-    only: { type: "string" },
-    "cpu-prof": { type: "boolean", default: false },
-    "fresh-each": { type: "boolean", default: false },
-    "ignore-load": { type: "boolean", default: false },
-    keep: { type: "boolean", default: false },
-    json: { type: "boolean", default: false },
-    help: { type: "boolean", short: "h", default: false },
-  },
-});
+export function parseSweepOptions(args: string[]) {
+  return parseArgs({
+    args,
+    options: {
+      "source-db": { type: "string" },
+      "work-root": { type: "string" },
+      "threshold-ms": { type: "string", default: String(HANDLER_TURN_BUDGET_MS) },
+      passes: { type: "string", default: "2" },
+      only: { type: "string" },
+      "cpu-prof": { type: "boolean", default: false },
+      "fresh-each": { type: "boolean", default: false },
+      "ignore-load": { type: "boolean", default: false },
+      keep: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+  }).values;
+}
+
+const opts = parseSweepOptions(import.meta.main ? process.argv.slice(2) : []);
 
 if (opts.help) {
   console.log(USAGE);
@@ -856,7 +863,11 @@ interface Run {
   profileDir: string;
 }
 
+const activeDaemons = new Set<ChildProcess>();
+let interrupted = false;
+
 async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
+  if (interrupted) throw new Error("Sweep interrupted");
   if (profile) {
     fs.rmSync(run.profileDir, { recursive: true, force: true });
     fs.mkdirSync(run.profileDir, { recursive: true });
@@ -873,6 +884,9 @@ async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
     },
     stdio: ["ignore", stdoutFd, stderrFd],
   });
+  activeDaemons.add(child);
+  child.once("exit", () => activeDaemons.delete(child));
+  child.once("error", () => activeDaemons.delete(child));
   fs.closeSync(stdoutFd);
   fs.closeSync(stderrFd);
   const socketPath = localApiSocketPath({ role: "preview", instance_id: run.env.MANDIBLE_INSTANCE_ID });
@@ -989,11 +1003,28 @@ async function main() {
   if (load.measurement_start >= cpus) log(`measuring under load ${load.measurement_start.toFixed(2)} on ${cpus} cores; fresh trials will confirm suspected offenders`);
 
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
-  const root = path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep", `run-${stamp}`);
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
+  fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+  const root = fs.mkdtempSync(path.join(workRoot, `run-${stamp}-`));
   const dbCopy = path.join(root, "mandible.db");
   const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" }).stdout.trim();
-  let env: Record<string, string> | null = null;
+  const cleanup = () => {
+    if (!opts.keep) fs.rmSync(root, { recursive: true, force: true });
+    else log(`kept ${root}`);
+  };
+  const interrupt = (signal: NodeJS.Signals) => {
+    if (interrupted) return;
+    interrupted = true;
+    void Promise.all([...activeDaemons].map((daemon) => stopDaemon(daemon, 2_000)))
+      .then(() => {
+        cleanup();
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+  };
+  const onSigint = () => interrupt("SIGINT");
+  const onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
 
   try {
     const snapshotStarted = performance.now();
@@ -1011,7 +1042,8 @@ async function main() {
     log(`snapshot of ${sourceDb} in ${Math.round(performance.now() - snapshotStarted)} ms`);
 
     const port = await freePort();
-    env = previewInstanceEnv({ port, dbCopy, sourceDb, pidFile: path.join(root, "mandible.pid"), generation: revision }) as Record<string, string>;
+    const env = previewInstanceEnv({ port, dbCopy, sourceDb, pidFile: path.join(root, "mandible.pid"), generation: revision }) as Record<string, string>;
+    env.MANDIBLE_CLIENT_AUTH_DIR = path.join(root, "preview-authority", "client-auth");
     const run: Run = {
       root, dbCopy, sourceDb, revision, env,
       stderrLog: path.join(root, "stderr.log"),
@@ -1147,11 +1179,10 @@ async function main() {
     else printReport(report);
     return offenders.length === 0 && unclassified.length === 0 && failedRequests.length === 0 && exceptionProblems.length === 0 ? 0 : 1;
   } finally {
-    if (!opts.keep) {
-      fs.rmSync(root, { recursive: true, force: true });
-      if (env?.MANDIBLE_CLIENT_AUTH_DIR) fs.rmSync(path.dirname(env.MANDIBLE_CLIENT_AUTH_DIR), { recursive: true, force: true });
-    } else {
-      log(`kept ${root}`);
+    if (!interrupted) {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+      cleanup();
     }
   }
 }
@@ -1209,8 +1240,8 @@ function printReport(report: Record<string, any>) {
 }
 
 if (import.meta.main) {
-  main().then((code) => process.exit(code), (error) => {
+  main().then((code) => { if (!interrupted) process.exit(code); }, (error) => {
     log(error instanceof Error ? error.stack ?? error.message : String(error));
-    process.exit(2);
+    if (!interrupted) process.exit(2);
   });
 }

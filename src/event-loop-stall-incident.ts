@@ -41,9 +41,9 @@ export class EventLoopStallIncident {
       }
       if (this.incidentId === null || ++this.cleanWindows < CLEAN_WINDOWS_TO_RESOLVE) return;
       const incidentId = this.incidentId;
+      resolveDaemonIncident(this.db, { incidentId, task: EVENT_LOOP_STALL_TASK, observedAt: window.intervalEndedAt });
       this.incidentId = null;
       this.cleanWindows = 0;
-      resolveDaemonIncident(this.db, { incidentId, task: EVENT_LOOP_STALL_TASK, observedAt: window.intervalEndedAt });
     } catch (error) {
       this.logger("error", "daemon_event_loop_stall_incident_failed", { error: String(error) });
     }

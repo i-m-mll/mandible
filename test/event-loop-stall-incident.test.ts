@@ -95,6 +95,23 @@ describe("event-loop stall incident", () => {
     expect(getOperationalIncident(db, left!.id)).toMatchObject({ resolved: true, resolution_kind: "successful_run" });
   });
 
+  it("retries a failed resolution on the next clean window", () => {
+    const stalls = monitor();
+    stalls.observe(window(STALL));
+    const [incident] = stallIncidents();
+    db.exec(`CREATE TEMP TRIGGER fail_stall_resolution BEFORE UPDATE ON operational_incidents
+      WHEN NEW.resolved_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'SQLITE_BUSY injected'); END`);
+    stalls.observe(window(CLEAN));
+    stalls.observe(window(CLEAN));
+    expect(errors).toHaveLength(1);
+    expect(getOperationalIncident(db, incident!.id).resolved).toBe(false);
+
+    db.exec("DROP TRIGGER fail_stall_resolution");
+    stalls.observe(window(CLEAN));
+    expect(getOperationalIncident(db, incident!.id)).toMatchObject({ resolved: true, resolution_kind: "successful_run" });
+    expect(errors).toHaveLength(1);
+  });
+
   it("leaves alone an incident an operator closed and the one that replaced it", () => {
     const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
     const stalls = monitor();

@@ -966,7 +966,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
   }, { operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   const readEventLoopTurnMs = options.readEventLoopTurnMs;
-  if (readEventLoopTurnMs) {
+  if (instance.role === "preview" && readEventLoopTurnMs) {
     router.post("/api/diagnostics/event-loop-turn", (_req, res) => {
       res.json({ max_turn_ms: readEventLoopTurnMs() });
     }, { operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
