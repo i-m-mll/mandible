@@ -7,6 +7,7 @@ import SqliteDatabase from "../sqlite.js";
 
 import { decompressContentAsync } from "../compression.js";
 import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
+import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
 import { ConversationSourceReader } from "./source-reader.js";
@@ -20,10 +21,26 @@ export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
 
 export const DEFAULT_SEARCH_CACHE_LIMITS = Object.freeze({
   maxConcurrentColdParses: 4,
-  maxBodyBytes: 1024 * 1024,
+  /**
+   * Largest block body the cache retains. One trigram insert of this size
+   * costs about 20 ms, which bounds every background maintenance statement.
+   */
+  maxBodyBytes: 128 * 1024,
   maxCacheBytes: 32 * 1024 * 1024,
   maxPhysicalBytes: 256 * 1024 * 1024,
 });
+
+/** Bumping this discards existing cache files on open; they are disposable. */
+const CACHE_SCHEMA_VERSION = 2;
+const SQLITE_AUTO_VACUUM_INCREMENTAL = 2;
+const COLD_PROBE_BATCH_SIZE = 64;
+const SEARCH_TURN_MS = 10;
+const MAINTENANCE_TURN_MS = 4;
+const MAINTENANCE_CHUNK_ROWS = 8;
+const MAINTENANCE_CHUNK_BYTES = 16 * 1024;
+const FTS_MERGE_PAGES = 8;
+const INCREMENTAL_VACUUM_PAGES = 256;
+const FREQUENCY_SAMPLE_SIZE = 16_384;
 
 export interface SearchConversationSource {
   conversationId: string;
@@ -67,8 +84,6 @@ export interface ConversationSearchMetrics {
   max_cold_parse_concurrency: number;
   elapsed_ms: number;
 }
-
-const COLD_PROBE_BATCH_SIZE = 64;
 
 function rawLiteralCanShortlist(needle: string): boolean {
   // Provider JSON preserves ordinary ASCII terms verbatim. Escapes, control
@@ -138,6 +153,18 @@ interface CacheKey {
   redactionEpoch: string;
 }
 
+interface Checkpoint {
+  sourceVersionId: string;
+  blockCount: number;
+}
+
+interface AdmissionCandidate {
+  conversationId: string;
+  key: CacheKey;
+  blocks: readonly SearchBlockSource[];
+  bytes: number;
+}
+
 export interface ConversationSearchCacheOptions {
   cachePath?: string;
   maxConcurrentColdParses?: number;
@@ -167,10 +194,9 @@ export class LegacyConversationSearchSourceAdapter implements ConversationSearch
 
   describe(conversationIds: readonly string[]): SearchConversationSource[] {
     if (conversationIds.length === 0) return [];
-    const placeholders = conversationIds.map(() => "?").join(",");
     const rows = this.db.prepare(
-      `SELECT id, source_hash FROM conversations WHERE id IN (${placeholders})`,
-    ).all(...conversationIds) as Array<{ id: string; source_hash: string }>;
+      `SELECT c.id, c.source_hash FROM json_each(?) ids JOIN conversations c ON c.id = ids.value`,
+    ).all(JSON.stringify([...new Set(conversationIds)])) as Array<{ id: string; source_hash: string }>;
     const byId = new Map(rows.map((row) => [row.id, row.source_hash]));
     return conversationIds.flatMap((conversationId) => {
       const sourceHash = byId.get(conversationId);
@@ -241,19 +267,20 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   }
 
   describe(conversationIds: readonly string[]): SearchConversationSource[] {
+    let sources: ReturnType<ConversationSourceStore["latestSources"]> = new Map();
+    try {
+      sources = this.store.latestSources(conversationIds);
+    } catch (error) {
+      if (!isMissingSourceSchema(error)) throw error;
+      // Minimal pre-v140 fixtures deliberately exercise the legacy seam.
+    }
     const legacy = new Map(
-      this.legacy.describe(conversationIds).map((item) => [item.conversationId, item]),
+      this.legacy.describe(conversationIds.filter((id) => !sources.get(id)?.currentVersionId))
+        .map((item) => [item.conversationId, item]),
     );
     return conversationIds.flatMap((conversationId) => {
-      try {
-        const source = this.store.resolveConversation(conversationId);
-        if (source?.currentVersionId) {
-          return [{ conversationId, sourceVersionId: source.currentVersionId }];
-        }
-      } catch (error) {
-        if (!isMissingSourceSchema(error)) throw error;
-        // Minimal pre-v140 fixtures deliberately exercise the legacy seam.
-      }
+      const currentVersionId = sources.get(conversationId)?.currentVersionId;
+      if (currentVersionId) return [{ conversationId, sourceVersionId: currentVersionId }];
       const fallback = legacy.get(conversationId);
       return fallback ? [fallback] : [];
     });
@@ -286,30 +313,37 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     needle: string,
   ): Promise<ReadonlySet<string> | null> {
     if (!rawLiteralCanShortlist(needle)) return null;
+    let sources: ReturnType<ConversationSourceStore["latestSources"]>;
+    try {
+      sources = this.store.latestSources(conversationIds);
+    } catch (error) {
+      if (!isMissingSourceSchema(error)) throw error;
+      return new Set(conversationIds);
+    }
+    const aliasPaths = this.store.availableAliasPaths([...sources.values()].map((source) => source.sourceId));
+    const candidatePaths = [...new Set([...aliasPaths.values()].flat())];
+    const existing = new Set((await Promise.all(candidatePaths.map(async (candidate) => {
+      try {
+        await fs.promises.access(candidate);
+        return [candidate];
+      } catch {
+        return [];
+      }
+    }))).flat());
     const pathsToConversations = new Map<string, string[]>();
     const mustParse = new Set<string>();
     for (const conversationId of conversationIds) {
-      let source;
-      try {
-        source = this.store.resolveConversation(conversationId);
-      } catch (error) {
-        if (!isMissingSourceSchema(error)) throw error;
-        mustParse.add(conversationId);
-        continue;
-      }
-      const aliases = source
-        ? this.store.listAliases(source.sourceId).filter((alias) =>
-          alias.availability === "available" && fs.existsSync(alias.path))
-        : [];
+      const source = sources.get(conversationId);
+      const readable = source ? (aliasPaths.get(source.sourceId) ?? []).filter((alias) => existing.has(alias)) : [];
       // A durable source record with no readable alias has no searchable body
       // after sparse cutover. Do not invoke the parser only to rediscover that
       // fact; legacy-only rows (no source descriptor) still take the fallback.
-      if (aliases.length === 0) {
+      if (readable.length === 0) {
         if (!source) mustParse.add(conversationId);
         continue;
       }
-      for (const alias of aliases) {
-        const resolved = path.resolve(alias.path);
+      for (const alias of readable) {
+        const resolved = path.resolve(alias);
         const ids = pathsToConversations.get(resolved) ?? [];
         ids.push(conversationId);
         pathsToConversations.set(resolved, ids);
@@ -357,13 +391,58 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+/** Cooperative scheduling: hand the event loop back once a turn has run long enough. */
+class TurnBudget {
+  private since = performance.now();
+
+  constructor(private readonly turnMs: number) {}
+
+  due(): boolean {
+    return performance.now() - this.since >= this.turnMs;
+  }
+
+  async yield(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    this.since = performance.now();
+  }
+
+  async yieldIfDue(): Promise<void> {
+    if (this.due()) await this.yield();
+  }
+}
+
+/**
+ * A bounded, disposable trigram cache in front of verified conversation
+ * sources. `search` only reads it. Every write — admitting freshly parsed
+ * conversations, recording recency, evicting, compacting — runs in background
+ * turns of a few milliseconds each. A conversation's checkpoint row exists
+ * before any of its body rows and outlives them; it is `complete` only while
+ * exactly its key's rows are present, so a search between maintenance turns
+ * never trusts a partial entry.
+ *
+ * Admission is frequency-gated (TinyLFU): a candidate displaces residents only
+ * if it has been searched strictly more often than each of them, so a scan
+ * over more conversations than the cache holds settles instead of evicting and
+ * re-admitting the same entries on every search.
+ */
 export class ConversationSearchCache {
   readonly cachePath: string;
-  private readonly cache: SqliteDatabase;
+  private cache!: SqliteDatabase;
   private readonly maxConcurrentColdParses: number;
   private readonly maxBodyBytes: number;
   private readonly maxCacheBytes: number;
   private readonly maxPhysicalBytes: number;
+  private closed = false;
+  private readonly frequency = new Map<string, number>();
+  private frequencyEvents = 0;
+  private readonly candidates = new Map<string, AdmissionCandidate>();
+  private candidateBytes = 0;
+  private readonly touches = new Set<string>();
+  /** Conversations holding body rows: bytes retained and last search access. */
+  private readonly residents = new Map<string, { bytes: number; accessedAt: number }>();
+  private residentBytes = 0;
+  private capsVerified = false;
+  private maintenance: Promise<void> | null = null;
 
   constructor(
     private readonly source: ConversationSearchSourceAdapter,
@@ -377,20 +456,35 @@ export class ConversationSearchCache {
       64 * 1024,
       options.maxPhysicalBytes ?? DEFAULT_SEARCH_CACHE_LIMITS.maxPhysicalBytes,
     );
-    if (this.cachePath !== ":memory:") fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-    this.cache = new SqliteDatabase(this.cachePath);
-    this.cache.pragma("journal_mode = WAL");
-    this.cache.pragma("synchronous = NORMAL");
-    this.initialize();
-    this.prune();
+    this.open();
+    this.scheduleMaintenance();
   }
 
   close(): void {
+    this.closed = true;
     this.cache.close();
   }
 
-  private initialize(): void {
-    this.cache.exec(`
+  /** Resolves once no background maintenance is pending. */
+  async whenIdle(): Promise<void> {
+    while (this.maintenance) await this.maintenance;
+  }
+
+  private open(): void {
+    if (this.cachePath !== ":memory:") fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
+    let cache = new SqliteDatabase(this.cachePath);
+    const compatible = Number(cache.pragma("user_version", { simple: true })) === CACHE_SCHEMA_VERSION
+      && Number(cache.pragma("auto_vacuum", { simple: true })) === SQLITE_AUTO_VACUUM_INCREMENTAL;
+    if (!compatible) {
+      cache.close();
+      this.removeFiles();
+      cache = new SqliteDatabase(this.cachePath);
+      cache.pragma(`auto_vacuum = ${SQLITE_AUTO_VACUUM_INCREMENTAL}`);
+    }
+    cache.pragma("journal_mode = WAL");
+    cache.pragma("synchronous = NORMAL");
+    cache.pragma(`journal_size_limit = ${8 * 1024 * 1024}`);
+    cache.exec(`
       CREATE TABLE IF NOT EXISTS search_checkpoints (
         conversation_id TEXT PRIMARY KEY,
         source_version_id TEXT NOT NULL,
@@ -399,37 +493,58 @@ export class ConversationSearchCache {
         tokenizer_version TEXT NOT NULL,
         redaction_epoch TEXT NOT NULL,
         block_count INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        complete INTEGER NOT NULL,
+        accessed_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS hot_bodies (
         rowid INTEGER PRIMARY KEY,
-        block_id TEXT NOT NULL UNIQUE,
         conversation_id TEXT NOT NULL,
-        source_version_id TEXT NOT NULL,
-        parser_version TEXT NOT NULL,
-        normalization_version TEXT NOT NULL,
-        tokenizer_version TEXT NOT NULL,
-        redaction_epoch TEXT NOT NULL,
+        block_id TEXT NOT NULL,
         block_type TEXT NOT NULL,
         role TEXT NOT NULL,
         position INTEGER NOT NULL,
-        body TEXT NOT NULL,
         body_bytes INTEGER NOT NULL,
-        accessed_at INTEGER NOT NULL
+        -- Last, so size scans never read a body's overflow pages.
+        body TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS hot_bodies_conversation ON hot_bodies(conversation_id, position);
-      CREATE INDEX IF NOT EXISTS hot_bodies_accessed ON hot_bodies(accessed_at);
+      CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram');
     `);
-    try {
-      this.cache.exec(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram')",
-      );
-    } catch {
-      // Older bundled SQLite versions lack contentless_delete. The whole file
-      // is disposable, so rebuilding a plain contentless trigram table is safe.
-      this.cache.exec("DROP TABLE IF EXISTS search_fts");
-      this.cache.exec("CREATE VIRTUAL TABLE search_fts USING fts5(body, content='', tokenize='trigram')");
-    }
+    // FTS5's own merging runs inside whichever commit trips it and can take
+    // hundreds of milliseconds on a large index. Maintenance merges instead,
+    // a few pages per turn, and the crisis threshold is set out of reach.
+    cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('automerge', 0)").run();
+    cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('crisismerge', 2000)").run();
+    cache.pragma(`user_version = ${CACHE_SCHEMA_VERSION}`);
+    this.cache = cache;
+    this.residents.clear();
+    this.residentBytes = 0;
+    const rows = cache.prepare(
+      `SELECT c.conversation_id, c.accessed_at, SUM(h.body_bytes) AS bytes
+       FROM search_checkpoints c JOIN hot_bodies h ON h.conversation_id = c.conversation_id
+       GROUP BY c.conversation_id`,
+    ).all() as Array<{ conversation_id: string; accessed_at: number; bytes: number }>;
+    for (const row of rows) this.adjustResident(row.conversation_id, row.bytes, row.accessed_at);
+  }
+
+  private adjustResident(conversationId: string, deltaBytes: number, accessedAt?: number): void {
+    const resident = this.residents.get(conversationId) ?? { bytes: 0, accessedAt: accessedAt ?? Date.now() };
+    resident.bytes += deltaBytes;
+    if (accessedAt !== undefined) resident.accessedAt = accessedAt;
+    this.residentBytes += deltaBytes;
+    if (resident.bytes > 0) this.residents.set(conversationId, resident);
+    else this.residents.delete(conversationId);
+  }
+
+  private removeFiles(): void {
+    if (this.cachePath === ":memory:") return;
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${this.cachePath}${suffix}`, { force: true });
+  }
+
+  private reset(): void {
+    this.cache.close();
+    this.removeFiles();
+    this.open();
   }
 
   private key(sourceVersionId: string, redactionEpoch: string): CacheKey {
@@ -442,123 +557,414 @@ export class ConversationSearchCache {
     };
   }
 
-  private removeFtsRow(rowid: number, body: string): void {
-    try {
-      this.cache.prepare("DELETE FROM search_fts WHERE rowid = ?").run(rowid);
-    } catch {
-      // Pre-contentless-delete FTS5 uses its control command and requires the
-      // old indexed bytes. They are already masked hot-cache bytes.
-      try {
-        this.cache.prepare(
-          "INSERT INTO search_fts(search_fts, rowid, body) VALUES ('delete', ?, ?)",
-        ).run(rowid, body);
-      } catch {
-        // A stale posting can only over-select: the join to hot_bodies and the
-        // exact verification pass prevent it from becoming a returned match.
-      }
-    }
-  }
-
-  private cachedBlocks(conversationId: string, key: CacheKey): CachedBodyRow[] | null {
-    const checkpoint = this.cache.prepare(
-      `SELECT block_count FROM search_checkpoints
-       WHERE conversation_id = ? AND source_version_id = ? AND parser_version = ?
-         AND normalization_version = ? AND tokenizer_version = ? AND redaction_epoch = ?`,
-    ).get(
-      conversationId,
-      key.sourceVersionId,
-      key.parserVersion,
-      key.normalizationVersion,
-      key.tokenizerVersion,
-      key.redactionEpoch,
-    ) as { block_count: number } | undefined;
-    if (!checkpoint) return null;
+  private completeCheckpoints(redactionEpoch: string): Map<string, Checkpoint> {
     const rows = this.cache.prepare(
-      `SELECT block_id, conversation_id, block_type, role, position, body
-       FROM hot_bodies WHERE conversation_id = ? AND source_version_id = ?
-         AND parser_version = ? AND normalization_version = ?
-         AND tokenizer_version = ? AND redaction_epoch = ? ORDER BY position ASC`,
+      `SELECT conversation_id, source_version_id, block_count FROM search_checkpoints
+       WHERE complete = 1 AND parser_version = ? AND normalization_version = ?
+         AND tokenizer_version = ? AND redaction_epoch = ?`,
     ).all(
-      conversationId,
-      key.sourceVersionId,
-      key.parserVersion,
-      key.normalizationVersion,
-      key.tokenizerVersion,
-      key.redactionEpoch,
-    ) as CachedBodyRow[];
-    // Oversize blocks are intentionally not retained, so their checkpoint can
-    // never masquerade as a complete hot read.
-    if (rows.length !== checkpoint.block_count) return null;
-    this.cache.prepare("UPDATE hot_bodies SET accessed_at = ? WHERE conversation_id = ?").run(Date.now(), conversationId);
-    return rows;
+      CONVERSATION_SEARCH_EPOCHS.parser,
+      CONVERSATION_SEARCH_EPOCHS.normalization,
+      CONVERSATION_SEARCH_EPOCHS.tokenizer,
+      redactionEpoch,
+    ) as Array<{ conversation_id: string; source_version_id: string; block_count: number }>;
+    return new Map(rows.map((row) => [row.conversation_id, {
+      sourceVersionId: row.source_version_id,
+      blockCount: row.block_count,
+    }]));
   }
 
-  private replaceConversation(conversationId: string, key: CacheKey, blocks: readonly SearchBlockSource[]): number {
-    const cacheable = blocks.filter((block) => Buffer.byteLength(block.content, "utf8") <= this.maxBodyBytes);
-    const replace = this.cache.transaction(() => {
-      const oldRows = this.cache.prepare("SELECT rowid, body FROM hot_bodies WHERE conversation_id = ?").all(conversationId) as Array<{ rowid: number; body: string }>;
-      for (const row of oldRows) {
-        this.removeFtsRow(row.rowid, row.body);
-      }
-      this.cache.prepare("DELETE FROM hot_bodies WHERE conversation_id = ?").run(conversationId);
-      const insert = this.cache.prepare(
-        `INSERT INTO hot_bodies
-          (block_id, conversation_id, source_version_id, parser_version, normalization_version,
-           tokenizer_version, redaction_epoch, block_type, role, position, body, body_bytes, accessed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      for (const block of cacheable) {
-        const info = insert.run(
-          block.id, conversationId, key.sourceVersionId, key.parserVersion,
-          key.normalizationVersion, key.tokenizerVersion, key.redactionEpoch,
-          block.type, block.role, block.position, block.content,
-          Buffer.byteLength(block.content, "utf8"), Date.now(),
-        );
-        this.cache.prepare("INSERT INTO search_fts(rowid, body) VALUES (?, ?)").run(Number(info.lastInsertRowid), block.content);
-      }
-      this.cache.prepare(
-        `INSERT INTO search_checkpoints
-          (conversation_id, source_version_id, parser_version, normalization_version,
-           tokenizer_version, redaction_epoch, block_count, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(conversation_id) DO UPDATE SET
-           source_version_id=excluded.source_version_id, parser_version=excluded.parser_version,
-           normalization_version=excluded.normalization_version, tokenizer_version=excluded.tokenizer_version,
-           redaction_epoch=excluded.redaction_epoch, block_count=excluded.block_count,
-           updated_at=excluded.updated_at`,
-      ).run(
-        conversationId, key.sourceVersionId, key.parserVersion, key.normalizationVersion,
-        key.tokenizerVersion, key.redactionEpoch, blocks.length, Date.now(),
-      );
-    });
-    replace();
-    this.prune();
-    return blocks.length - cacheable.length;
+  private hotBodies(conversationId: string): CachedBodyRow[] {
+    return this.cache.prepare(
+      `SELECT block_id, conversation_id, block_type, role, position, body
+       FROM hot_bodies WHERE conversation_id = ? ORDER BY position ASC`,
+    ).all(conversationId) as CachedBodyRow[];
   }
 
-  private prune(): void {
-    const total = this.cache.prepare("SELECT COALESCE(SUM(body_bytes), 0) AS bytes FROM hot_bodies").get() as { bytes: number };
-    let bytes = total.bytes;
-    let liveBytes = this.livePageBytes();
-    if (bytes <= this.maxCacheBytes && liveBytes <= this.maxPhysicalBytes) {
-      this.compactIfNeeded();
-      return;
+  private ftsShortlist(needle: string): { blocks: number; conversations: Set<string> } | null {
+    if (!rawLiteralCanShortlist(needle)) return null;
+    try {
+      const escaped = `"${needle.replaceAll('"', '""')}"`;
+      const rows = this.cache.prepare(
+        `SELECT h.conversation_id FROM search_fts f JOIN hot_bodies h ON h.rowid = f.rowid
+         WHERE search_fts MATCH ?`,
+      ).all(escaped) as Array<{ conversation_id: string }>;
+      return { blocks: rows.length, conversations: new Set(rows.map((row) => row.conversation_id)) };
+    } catch {
+      // Punctuation and tokenizer edge cases deliberately fall back to the
+      // exact source-verified scan below.
+      return null;
     }
-    const victims = this.cache.prepare(
-      "SELECT conversation_id, SUM(body_bytes) AS bytes FROM hot_bodies GROUP BY conversation_id ORDER BY MIN(accessed_at) ASC",
-    ).all() as Array<{ conversation_id: string; bytes: number }>;
-    for (const victim of victims) {
-      if (bytes <= this.maxCacheBytes && liveBytes <= this.maxPhysicalBytes) break;
-      this.cache.prepare("DELETE FROM search_checkpoints WHERE conversation_id = ?").run(victim.conversation_id);
-      const rows = this.cache.prepare("SELECT rowid, body FROM hot_bodies WHERE conversation_id = ?").all(victim.conversation_id) as Array<{ rowid: number; body: string }>;
-      for (const row of rows) {
-        this.removeFtsRow(row.rowid, row.body);
+  }
+
+  async search(input: {
+    conversationIds: readonly string[];
+    needle: string;
+    blockType?: string | null;
+    limit: number;
+  }): Promise<{ matches: ConversationSearchMatch[]; metrics: ConversationSearchMetrics }> {
+    const started = performance.now();
+    const budget = new TurnBudget(SEARCH_TURN_MS);
+    const needleLower = input.needle.toLowerCase();
+    const metrics: ConversationSearchMetrics = {
+      hot_conversations: 0,
+      cold_conversations: 0,
+      hot_blocks: 0,
+      cold_blocks: 0,
+      uncached_oversize_blocks: 0,
+      fts_shortlist: 0,
+      cold_shortlist: 0,
+      exact_verified_blocks: 0,
+      max_cold_parse_concurrency: 0,
+      elapsed_ms: 0,
+    };
+    const shortlist = this.ftsShortlist(input.needle);
+    metrics.fts_shortlist = shortlist?.blocks ?? 0;
+    const redactionEpoch = this.source.redactionEpoch();
+    const checkpoints = this.completeCheckpoints(redactionEpoch);
+    let activeCold = 0;
+    const matches: ConversationSearchMatch[] = [];
+    try {
+      // Probe native files in modest batches (the same approach used by editor
+      // search): cheap fixed-string search rules out most cold files, then only
+      // candidate conversations pay the parser cost. Exact masked block matching
+      // remains the authority, and unsupported needles simply skip the probe.
+      for (let windowStart = 0;
+        windowStart < input.conversationIds.length && matches.length < input.limit;
+        windowStart += COLD_PROBE_BATCH_SIZE) {
+        await budget.yieldIfDue();
+        const work: Array<{ item: SearchConversationSource; hot: Checkpoint | null }> = [];
+        const coldIds: string[] = [];
+        const window = this.source.describe(input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE));
+        for (const item of window) {
+          const checkpoint = checkpoints.get(item.conversationId);
+          if (checkpoint?.sourceVersionId === item.sourceVersionId) {
+            metrics.hot_conversations += 1;
+            metrics.hot_blocks += checkpoint.blockCount;
+            if (checkpoint.blockCount === 0) continue;
+            if (shortlist && !shortlist.conversations.has(item.conversationId)) continue;
+            work.push({ item, hot: checkpoint });
+          } else {
+            coldIds.push(item.conversationId);
+            work.push({ item, hot: null });
+          }
+        }
+        const coldShortlist = coldIds.length > 0 && this.source.shortlistMaskedBlocks
+          ? await this.source.shortlistMaskedBlocks(coldIds, input.needle)
+          : null;
+        metrics.cold_shortlist += coldShortlist?.size ?? 0;
+        const pending = work.filter(({ item, hot }) =>
+          hot !== null || coldShortlist === null || coldShortlist.has(item.conversationId));
+
+        for (let batchStart = 0;
+          batchStart < pending.length && matches.length < input.limit;
+          batchStart += this.maxConcurrentColdParses) {
+          const batch = pending.slice(batchStart, batchStart + this.maxConcurrentColdParses);
+          const bodies = await mapConcurrent(batch, this.maxConcurrentColdParses, async ({ item, hot }) => {
+            if (hot) {
+              const rows = this.hotBodies(item.conversationId);
+              // A maintenance turn may have started replacing this entry since
+              // the checkpoints were read; only a complete read is trusted.
+              if (rows.length === hot.blockCount) {
+                this.recordAccess(item.conversationId);
+                return rows;
+              }
+            }
+            activeCold += 1;
+            metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, activeCold);
+            try {
+              const blocks = await this.source.readMaskedBlocks(item.conversationId);
+              metrics.cold_conversations += 1;
+              metrics.cold_blocks += blocks.length;
+              this.recordAccess(item.conversationId);
+              metrics.uncached_oversize_blocks += this.offer(
+                item.conversationId,
+                this.key(item.sourceVersionId, redactionEpoch),
+                blocks,
+              );
+              return blocks.map((block) => ({
+                block_id: block.id,
+                conversation_id: block.conversationId,
+                block_type: block.type,
+                role: block.role,
+                position: block.position,
+                body: block.content,
+              }));
+            } finally {
+              activeCold -= 1;
+            }
+          });
+
+          for (const blocks of bodies) {
+            for (const block of blocks) {
+              if (budget.due()) await budget.yield();
+              if (input.blockType && block.block_type !== input.blockType) continue;
+              metrics.exact_verified_blocks += 1;
+              const snippet = snippetFor(block.body, needleLower);
+              if (snippet !== null) {
+                matches.push({ conversation_id: block.conversation_id, block_id: block.block_id, snippet });
+                break;
+              }
+            }
+            if (matches.length >= input.limit) break;
+          }
+        }
       }
-      this.cache.prepare("DELETE FROM hot_bodies WHERE conversation_id = ?").run(victim.conversation_id);
-      bytes -= victim.bytes;
-      liveBytes = this.livePageBytes();
+    } finally {
+      this.scheduleMaintenance();
     }
-    this.compactIfNeeded();
+    metrics.elapsed_ms = Math.round((performance.now() - started) * 100) / 100;
+    return { matches, metrics };
+  }
+
+  private recordAccess(conversationId: string): void {
+    this.touches.add(conversationId);
+    const resident = this.residents.get(conversationId);
+    if (resident) resident.accessedAt = Date.now();
+    this.frequency.set(conversationId, (this.frequency.get(conversationId) ?? 0) + 1);
+    this.frequencyEvents += 1;
+    if (this.frequencyEvents < FREQUENCY_SAMPLE_SIZE) return;
+    // Periodic halving ages old popularity out, as in TinyLFU's reset.
+    for (const [id, count] of this.frequency) {
+      if (count <= 1) this.frequency.delete(id);
+      else this.frequency.set(id, count >> 1);
+    }
+    this.frequencyEvents = 0;
+  }
+
+  /** Queues a parsed conversation for admission; returns its blocks too large to retain. */
+  private offer(conversationId: string, key: CacheKey, blocks: readonly SearchBlockSource[]): number {
+    let bytes = 0;
+    let oversize = 0;
+    for (const block of blocks) {
+      const blockBytes = Buffer.byteLength(block.content, "utf8");
+      if (blockBytes > this.maxBodyBytes) oversize += 1;
+      bytes += blockBytes;
+    }
+    // An entry missing any block could never be read back as complete.
+    if (oversize > 0 || bytes > this.maxCacheBytes) return oversize;
+    if (bytes > 0 && this.victimsFor(conversationId, bytes) === null) return oversize;
+    const queued = this.candidates.get(conversationId);
+    if (queued) {
+      this.candidates.delete(conversationId);
+      this.candidateBytes -= queued.bytes;
+    }
+    if (this.candidateBytes + bytes > this.maxCacheBytes) return oversize;
+    this.candidates.set(conversationId, { conversationId, key, blocks, bytes });
+    this.candidateBytes += bytes;
+    return oversize;
+  }
+
+  private scheduleMaintenance(): void {
+    if (this.maintenance || this.closed) return;
+    if (this.capsVerified && this.candidates.size === 0 && this.touches.size === 0) return;
+    this.maintenance = this.maintain()
+      .catch((error: unknown) => {
+        // Searches re-offer whatever they still need; a failing pass must not retry in a loop.
+        this.candidates.clear();
+        this.candidateBytes = 0;
+        this.touches.clear();
+        getDaemonLogger()("error", "conversation_search_cache_maintenance_failed", {
+          cache: this.cachePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.maintenance = null;
+        // Work offered while the last pass was finishing must not wait for the next search.
+        this.scheduleMaintenance();
+      });
+  }
+
+  private async maintain(): Promise<void> {
+    const budget = new TurnBudget(MAINTENANCE_TURN_MS);
+    for (;;) {
+      await budget.yield();
+      if (this.closed) return;
+      this.flushTouches();
+      if (!this.capsVerified) {
+        this.capsVerified = true;
+        if (!(await this.enforceCaps(budget))) return;
+        continue;
+      }
+      const next = this.candidates.values().next();
+      if (next.done) {
+        if (this.mergeStep()) continue;
+        return;
+      }
+      const candidate = next.value;
+      this.candidates.delete(candidate.conversationId);
+      this.candidateBytes -= candidate.bytes;
+      if (!(await this.admit(candidate, budget))) return;
+      if (!(await this.enforceCaps(budget))) return;
+    }
+  }
+
+  /** Each `pause` may hand the loop back; false means the cache closed meanwhile. */
+  private async pause(budget: TurnBudget): Promise<boolean> {
+    await budget.yieldIfDue();
+    return !this.closed;
+  }
+
+  /** One bounded FTS segment merge; false once nothing is left to merge. */
+  private mergeStep(): boolean {
+    // SQLite's documented progress test for 'merge': fewer than two changes means no work.
+    const totalChanges = this.cache.prepare("SELECT total_changes() AS changes");
+    const before = Number((totalChanges.get() as { changes: number }).changes);
+    this.cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('merge', ?)").run(FTS_MERGE_PAGES);
+    return Number((totalChanges.get() as { changes: number }).changes) - before >= 2;
+  }
+
+  private flushTouches(): void {
+    if (this.touches.size === 0) return;
+    this.cache.prepare(
+      "UPDATE search_checkpoints SET accessed_at = ? WHERE conversation_id IN (SELECT value FROM json_each(?))",
+    ).run(Date.now(), JSON.stringify([...this.touches]));
+    this.touches.clear();
+  }
+
+  private async admit(candidate: AdmissionCandidate, budget: TurnBudget): Promise<boolean> {
+    const { conversationId, key } = candidate;
+    const current = this.cache.prepare(
+      `SELECT 1 FROM search_checkpoints WHERE conversation_id = ? AND complete = 1
+         AND source_version_id = ? AND parser_version = ? AND normalization_version = ?
+         AND tokenizer_version = ? AND redaction_epoch = ?`,
+    ).get(
+      conversationId, key.sourceVersionId, key.parserVersion,
+      key.normalizationVersion, key.tokenizerVersion, key.redactionEpoch,
+    );
+    if (current) return true;
+    if (candidate.bytes > 0) {
+      const victims = this.victimsFor(conversationId, candidate.bytes);
+      if (victims === null) return true;
+      for (const victim of victims) {
+        if (!(await this.evict(victim, budget))) return false;
+      }
+    }
+    return this.replace(candidate, budget);
+  }
+
+  /**
+   * The least recently used residents that must leave for `conversationId` to
+   * fit, or `null` when any of them has been searched at least as often.
+   */
+  private victimsFor(conversationId: string, bytes: number): string[] | null {
+    let excess = this.residentBytes - (this.residents.get(conversationId)?.bytes ?? 0) + bytes - this.maxCacheBytes;
+    if (excess <= 0) return [];
+    const popularity = this.frequency.get(conversationId) ?? 0;
+    const victims: string[] = [];
+    for (const [id, resident] of this.residentsByRecency()) {
+      if (id === conversationId) continue;
+      if ((this.frequency.get(id) ?? 0) >= popularity) return null;
+      victims.push(id);
+      excess -= resident.bytes;
+      if (excess <= 0) return victims;
+    }
+    return null;
+  }
+
+  private residentsByRecency(): Array<[string, { bytes: number; accessedAt: number }]> {
+    return [...this.residents].sort((left, right) => left[1].accessedAt - right[1].accessedAt);
+  }
+
+  private async replace(candidate: AdmissionCandidate, budget: TurnBudget): Promise<boolean> {
+    const { conversationId, key, blocks } = candidate;
+    this.cache.prepare(
+      `INSERT INTO search_checkpoints
+        (conversation_id, source_version_id, parser_version, normalization_version,
+         tokenizer_version, redaction_epoch, block_count, complete, accessed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET
+         source_version_id=excluded.source_version_id, parser_version=excluded.parser_version,
+         normalization_version=excluded.normalization_version, tokenizer_version=excluded.tokenizer_version,
+         redaction_epoch=excluded.redaction_epoch, block_count=excluded.block_count,
+         complete=0, accessed_at=excluded.accessed_at`,
+    ).run(
+      conversationId, key.sourceVersionId, key.parserVersion, key.normalizationVersion,
+      key.tokenizerVersion, key.redactionEpoch, blocks.length, Date.now(),
+    );
+    if (!(await this.deleteBodies(conversationId, budget))) return false;
+    const insertBody = this.cache.prepare(
+      `INSERT INTO hot_bodies (conversation_id, block_id, block_type, role, position, body, body_bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertFts = this.cache.prepare("INSERT INTO search_fts(rowid, body) VALUES (?, ?)");
+    let next = 0;
+    while (next < blocks.length) {
+      if (!(await this.pause(budget))) return false;
+      this.cache.transaction(() => {
+        // Trigram indexing costs grow with bytes, so a chunk is bounded by both.
+        let chunkBytes = 0;
+        for (let rows = 0; next < blocks.length && rows < MAINTENANCE_CHUNK_ROWS && chunkBytes < MAINTENANCE_CHUNK_BYTES; rows += 1) {
+          const block = blocks[next++];
+          const bodyBytes = Buffer.byteLength(block.content, "utf8");
+          const info = insertBody.run(
+            conversationId, block.id, block.type, block.role, block.position, block.content, bodyBytes,
+          );
+          insertFts.run(Number(info.lastInsertRowid), block.content);
+          chunkBytes += bodyBytes;
+        }
+        this.adjustResident(conversationId, chunkBytes);
+      })();
+      if (!(await this.pause(budget))) return false;
+      this.mergeStep();
+    }
+    this.cache.prepare(
+      "UPDATE search_checkpoints SET complete = 1 WHERE conversation_id = ? AND source_version_id = ?",
+    ).run(conversationId, key.sourceVersionId);
+    return true;
+  }
+
+  private async evict(conversationId: string, budget: TurnBudget): Promise<boolean> {
+    this.cache.prepare("UPDATE search_checkpoints SET complete = 0 WHERE conversation_id = ?").run(conversationId);
+    if (!(await this.deleteBodies(conversationId, budget))) return false;
+    this.cache.prepare("DELETE FROM search_checkpoints WHERE conversation_id = ?").run(conversationId);
+    return true;
+  }
+
+  private async deleteBodies(conversationId: string, budget: TurnBudget): Promise<boolean> {
+    const select = this.cache.prepare("SELECT rowid, body_bytes FROM hot_bodies WHERE conversation_id = ? LIMIT ?");
+    for (;;) {
+      if (!(await this.pause(budget))) return false;
+      const rows = select.all(conversationId, MAINTENANCE_CHUNK_ROWS) as Array<{ rowid: number; body_bytes: number }>;
+      if (rows.length === 0) return true;
+      const ids = JSON.stringify(rows.map((row) => row.rowid));
+      this.cache.transaction(() => {
+        this.cache.prepare("DELETE FROM search_fts WHERE rowid IN (SELECT value FROM json_each(?))").run(ids);
+        this.cache.prepare("DELETE FROM hot_bodies WHERE rowid IN (SELECT value FROM json_each(?))").run(ids);
+        this.adjustResident(conversationId, -rows.reduce((total, row) => total + row.body_bytes, 0));
+      })();
+      if (!(await this.pause(budget))) return false;
+      this.mergeStep();
+    }
+  }
+
+  /** Least recently used entries give way to the hard body and page caps. */
+  private async enforceCaps(budget: TurnBudget): Promise<boolean> {
+    while (this.residentBytes > this.maxCacheBytes || this.livePageBytes() > this.maxPhysicalBytes) {
+      const victim = this.residentsByRecency()[0]?.[0];
+      if (!victim) {
+        // Contentless FTS can retain tombstone pages after every body has gone;
+        // resetting the disposable file is the honest way to meet the cap.
+        this.reset();
+        return true;
+      }
+      if (!(await this.evict(victim, budget))) return false;
+    }
+    return this.compact(budget);
+  }
+
+  private async compact(budget: TurnBudget): Promise<boolean> {
+    if (this.cachePath === ":memory:" || this.physicalBytes() <= this.maxPhysicalBytes) return true;
+    this.cache.pragma("wal_checkpoint(TRUNCATE)");
+    while (this.physicalBytes() > this.maxPhysicalBytes
+      && Number(this.cache.pragma("freelist_count", { simple: true })) > 0) {
+      if (!(await this.pause(budget))) return false;
+      this.cache.pragma(`incremental_vacuum(${INCREMENTAL_VACUUM_PAGES})`);
+      this.cache.pragma("wal_checkpoint(TRUNCATE)");
+    }
+    if (this.physicalBytes() > this.maxPhysicalBytes) this.reset();
+    return true;
   }
 
   private livePageBytes(): number {
@@ -577,154 +983,6 @@ export class ConversationSearchCache {
         return totalBytes;
       }
     }, 0);
-  }
-
-  private compactIfNeeded(): void {
-    if (this.cachePath === ":memory:" || this.physicalBytes() <= this.maxPhysicalBytes) return;
-    // Deletes enforce the live-page cap. VACUUM is reserved for the uncommon
-    // moment when freed pages or a large WAL keep the disposable file family
-    // above its physical ceiling; it is never part of the normal search path.
-    this.cache.pragma("wal_checkpoint(TRUNCATE)");
-    this.cache.exec("VACUUM");
-    this.cache.pragma("wal_checkpoint(TRUNCATE)");
-    if (this.physicalBytes() > this.maxPhysicalBytes) {
-      // Contentless FTS can retain tombstone/index pages after every hot body
-      // has been evicted. It is cheaper and more honest to reset the disposable
-      // cache than to let those unreachable pages defeat the advertised cap.
-      this.cache.exec(`
-        DROP TABLE IF EXISTS search_fts;
-        DROP TABLE IF EXISTS hot_bodies;
-        DROP TABLE IF EXISTS search_checkpoints;
-      `);
-      this.cache.pragma("wal_checkpoint(TRUNCATE)");
-      this.cache.exec("VACUUM");
-      this.initialize();
-      this.cache.pragma("wal_checkpoint(TRUNCATE)");
-    }
-  }
-
-  stats(): { bodyBytes: number; livePageBytes: number; physicalBytes: number } {
-    const bodyBytes = Number((this.cache.prepare(
-      "SELECT COALESCE(SUM(body_bytes), 0) AS bytes FROM hot_bodies",
-    ).get() as { bytes: number }).bytes);
-    return { bodyBytes, livePageBytes: this.livePageBytes(), physicalBytes: this.physicalBytes() };
-  }
-
-  private ftsShortlist(needle: string): Set<string> | null {
-    if (!rawLiteralCanShortlist(needle)) return null;
-    try {
-      const escaped = `"${needle.replaceAll('"', '""')}"`;
-      const rows = this.cache.prepare(
-        `SELECT h.block_id FROM search_fts f JOIN hot_bodies h ON h.rowid = f.rowid
-         WHERE search_fts MATCH ?`,
-      ).all(escaped) as Array<{ block_id: string }>;
-      return new Set(rows.map((row) => row.block_id));
-    } catch {
-      // Punctuation and tokenizer edge cases deliberately fall back to the
-      // exact source-verified scan below.
-      return null;
-    }
-  }
-
-  async search(input: {
-    conversationIds: readonly string[];
-    needle: string;
-    blockType?: string | null;
-    limit: number;
-  }): Promise<{ matches: ConversationSearchMatch[]; metrics: ConversationSearchMetrics }> {
-    const started = performance.now();
-    const needleLower = input.needle.toLowerCase();
-    const metrics: ConversationSearchMetrics = {
-      hot_conversations: 0,
-      cold_conversations: 0,
-      hot_blocks: 0,
-      cold_blocks: 0,
-      uncached_oversize_blocks: 0,
-      fts_shortlist: 0,
-      cold_shortlist: 0,
-      exact_verified_blocks: 0,
-      max_cold_parse_concurrency: 0,
-      elapsed_ms: 0,
-    };
-    const shortlist = this.ftsShortlist(input.needle);
-    metrics.fts_shortlist = shortlist?.size ?? 0;
-    const sources = this.source.describe(input.conversationIds);
-    const redactionEpoch = this.source.redactionEpoch();
-    let activeCold = 0;
-    const matches: ConversationSearchMatch[] = [];
-    // Probe native files in modest batches (the same approach used by editor
-    // search): cheap fixed-string search rules out most cold files, then only
-    // candidate conversations pay the parser cost. Exact masked block matching
-    // remains the authority, and unsupported needles simply skip the probe.
-    for (let windowStart = 0;
-      windowStart < sources.length && matches.length < input.limit;
-      windowStart += COLD_PROBE_BATCH_SIZE) {
-      const window = sources.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE)
-        .map((item) => ({
-          item,
-          key: this.key(item.sourceVersionId, redactionEpoch),
-          cached: null as CachedBodyRow[] | null,
-        }));
-      for (const prepared of window) {
-        prepared.cached = this.cachedBlocks(prepared.item.conversationId, prepared.key);
-        if (prepared.cached) {
-          metrics.hot_conversations += 1;
-          metrics.hot_blocks += prepared.cached.length;
-        }
-      }
-      const coldIds = window.filter((prepared) => prepared.cached === null)
-        .map((prepared) => prepared.item.conversationId);
-      const coldShortlist = this.source.shortlistMaskedBlocks
-        ? await this.source.shortlistMaskedBlocks(coldIds, input.needle)
-        : null;
-      metrics.cold_shortlist += coldShortlist?.size ?? 0;
-
-      for (let batchStart = 0;
-        batchStart < window.length && matches.length < input.limit;
-        batchStart += this.maxConcurrentColdParses) {
-        const batch = window.slice(batchStart, batchStart + this.maxConcurrentColdParses);
-        const bodies = await mapConcurrent(batch, this.maxConcurrentColdParses, async (prepared) => {
-          const { item, key, cached } = prepared;
-          if (cached) {
-            return shortlist && !cached.some((block) => shortlist.has(block.block_id)) ? [] : cached;
-          }
-          if (coldShortlist && !coldShortlist.has(item.conversationId)) return [];
-          activeCold += 1;
-          metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, activeCold);
-          try {
-            const blocks = await this.source.readMaskedBlocks(item.conversationId);
-            metrics.cold_conversations += 1;
-            metrics.cold_blocks += blocks.length;
-            metrics.uncached_oversize_blocks += this.replaceConversation(item.conversationId, key, blocks);
-            return blocks.map((block) => ({
-              block_id: block.id,
-              conversation_id: block.conversationId,
-              block_type: block.type,
-              role: block.role,
-              position: block.position,
-              body: block.content,
-            }));
-          } finally {
-            activeCold -= 1;
-          }
-        });
-
-        for (const blocks of bodies) {
-          for (const block of blocks) {
-            if (input.blockType && block.block_type !== input.blockType) continue;
-            metrics.exact_verified_blocks += 1;
-            const snippet = snippetFor(block.body, needleLower);
-            if (snippet !== null) {
-              matches.push({ conversation_id: block.conversation_id, block_id: block.block_id, snippet });
-              break;
-            }
-          }
-          if (matches.length >= input.limit) break;
-        }
-      }
-    }
-    metrics.elapsed_ms = Math.round((performance.now() - started) * 100) / 100;
-    return { matches, metrics };
   }
 }
 
