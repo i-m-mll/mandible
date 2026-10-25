@@ -17,7 +17,30 @@ macOS `sample` shows Bun's JS frames as unsymbolized `???` addresses, so it can
 only separate a stall by its native leaf: a synchronous child process
 (`kevent64` under a JS frame), SQLite, or pure CPU. Function names come from
 Bun's own sampling profiler (`--cpu-prof`), which needs a daemon started with
-the flag. Never restart production for this; use a preview.
+the flag.
+
+A preview runs the same route code, so it reproduces stalls caused by route
+or timer work. It cannot reproduce a stall that comes from main-instance work
+or from the live ledger's cache state:
+
+- A preview's effects can't exceed its role's ceiling. Shared maintenance
+  (auth startup recovery, the startup work scan, ingestion) runs only on the
+  main instance.
+- A preview's ledger copy was just written, so it is fully in the OS file
+  cache.
+
+Measure those on production. `bun scripts/local-runtime.mjs restart` restarts
+only the backend; the gateway and the app stay up and reconnect. To profile
+one production process:
+
+```sh
+launchctl setenv BUN_OPTIONS "--cpu-prof --cpu-prof-dir=$PROF"
+bun scripts/local-runtime.mjs restart &   # unset as soon as the new pid appears:
+launchctl unsetenv BUN_OPTIONS
+# measure, then stop that pid yourself so launchd's 20 s exit timeout
+# cannot SIGKILL it before the profile is written; KeepAlive relaunches it clean
+kill -TERM <pid>
+```
 
 Measure only when the machine is quiet: check `uptime` and require the 1-minute
 load average to be below the core count (`sysctl -n hw.ncpu`). On a saturated
