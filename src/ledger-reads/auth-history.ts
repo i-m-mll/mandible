@@ -123,4 +123,3 @@ export function authHistory(db: Db, params: { limit: number; type?: string }) {
     acceptance: { applies: acceptanceIds.has(row.id), latest: acceptances.get(row.id) ?? null } satisfies CandidateAcceptanceRead,
   }));
 }
-
