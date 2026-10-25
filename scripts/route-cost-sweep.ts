@@ -606,7 +606,7 @@ export function readFixtures(dbPath: string) {
   const session = lazy((db) => one<{ id: string; pid: number | null }>(db, "session", `
       SELECT s.id, s.pid FROM sessions s LEFT JOIN sessions c ON c.parent_id = s.id
       GROUP BY s.id ORDER BY count(c.id) DESC, s.updated_at DESC LIMIT 1`));
-  const pidSession = lazy((db) => one<{ pid: number }>(db, "session pid", "SELECT pid FROM sessions WHERE pid IS NOT NULL ORDER BY updated_at DESC LIMIT 1"));
+  const pidSession = lazy((db) => one<{ pid: number }>(db, "session pid", "SELECT pid FROM sessions WHERE pid IS NOT NULL AND status = 'active' ORDER BY updated_at DESC LIMIT 1"));
   const providerSession = lazy((db) => one<{ session_id: string }>(db, "provider session", `
       SELECT session_id FROM conversations ORDER BY started_at DESC LIMIT 1`));
   const provider = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM providers ORDER BY updated_at DESC LIMIT 1"));
