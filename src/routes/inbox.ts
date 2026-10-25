@@ -285,28 +285,28 @@ const BULK_ACK_ROWS_PER_COMMIT = 8;
  * per event-loop turn. Setting `acknowledged_by` rewrites the whole row,
  * including its diff summary and output in overflow pages, so a backlog of a
  * thousand requests commits tens of megabytes that no index can avoid. Each
- * row is re-checked as it is written, so a request acknowledged or returned
- * to pending while the pass waits is left alone.
+ * row's resolution is re-checked as it is written, so a request acknowledged
+ * or retried while the pass waits is left alone.
  */
 async function acknowledgeResolvedAuthRequests(db: Db, ackValue: string): Promise<void> {
-  const ids = (db.prepare(
-    `SELECT id FROM auth_requests WHERE status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
-  ).all() as Array<{ id: string }>).map((row) => row.id);
+  const resolutions = db.prepare(
+    `SELECT id, resolved_at FROM auth_requests WHERE status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+  ).all() as Array<{ id: string; resolved_at: number | null }>;
   const acknowledge = db.prepare(
     `UPDATE auth_requests SET acknowledged_by = ?
-      WHERE id = ? AND status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
+      WHERE id = ? AND resolved_at IS ? AND status IN ${RESOLVED_STATUSES} AND acknowledged_by IS NULL`,
   );
-  const commit = db.transaction((batch: string[]) => {
-    for (const id of batch) acknowledge.run(ackValue, id);
+  const commit = db.transaction((batch: typeof resolutions) => {
+    for (const row of batch) acknowledge.run(ackValue, row.id, row.resolved_at);
   });
   let next = 0;
-  while (next < ids.length) {
+  while (next < resolutions.length) {
     const deadline = performance.now() + BULK_ACK_TURN_BUDGET_MS;
     do {
-      commit(ids.slice(next, next + BULK_ACK_ROWS_PER_COMMIT));
+      commit(resolutions.slice(next, next + BULK_ACK_ROWS_PER_COMMIT));
       next += BULK_ACK_ROWS_PER_COMMIT;
-    } while (next < ids.length && performance.now() < deadline);
-    if (next < ids.length) await new Promise<void>((resolve) => setImmediate(resolve));
+    } while (next < resolutions.length && performance.now() < deadline);
+    if (next < resolutions.length) await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
@@ -783,16 +783,19 @@ export function registerInboxRoutes(
       sendJson(res, 403, { error: ack.error });
       return;
     }
-    db.prepare(
-      "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
-    ).run(ack.value);
-    await acknowledgeResolvedAuthRequests(db, ack.value);
-    db.prepare(
-      `UPDATE managed_task_occurrences
-          SET acknowledged_by = ?, acknowledged_at = ?
-        WHERE acknowledged_at IS NULL`,
-    ).run(ack.value, Date.now());
-    broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
+    try {
+      db.prepare(
+        "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
+      ).run(ack.value);
+      await acknowledgeResolvedAuthRequests(db, ack.value);
+      db.prepare(
+        `UPDATE managed_task_occurrences
+            SET acknowledged_by = ?, acknowledged_at = ?
+          WHERE acknowledged_at IS NULL`,
+      ).run(ack.value, Date.now());
+    } finally {
+      broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
+    }
     sendJson(res, 200, { ok: true });
   }, { operation: { id: "post:/api/inbox/ack-all", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "deny" });
 
