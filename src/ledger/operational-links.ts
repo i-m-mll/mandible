@@ -1,3 +1,4 @@
+import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
@@ -296,6 +297,14 @@ export function syncAuthRequestLedgerLinks(
     actor?: LedgerActorInput;
   },
 ): OperationalLinkResult[] {
+  return Array.from(authRequestLedgerLinks(db, input));
+}
+
+function* authRequestLedgerLinks(
+  db: Db,
+  input: Parameters<typeof syncAuthRequestLedgerLinks>[1],
+  guard: () => void = () => {},
+): Generator<OperationalLinkResult> {
   const refs = new Map<string, "references" | "resolves">();
   const actionIssueClosures = authRequestActionIssueCloseRefs(db, input.auth_request_id);
   for (const ref of input.issue_references ?? []) refs.set(ref, "references");
@@ -305,9 +314,9 @@ export function syncAuthRequestLedgerLinks(
   for (const ref of actionIssueClosures) refs.set(ref, "resolves");
   for (const ref of extractMergeResultIssueRefs(input.merge_output)) refs.set(ref, "resolves");
 
-  const results: OperationalLinkResult[] = [];
   for (const [ref, linkType] of refs) {
-    results.push(linkAuthRequestToLedgerIssue(db, {
+    guard();
+    yield linkAuthRequestToLedgerIssue(db, {
       auth_request_id: input.auth_request_id,
       issue_ref: ref,
       repo_ref: input.repo_ref,
@@ -315,12 +324,11 @@ export function syncAuthRequestLedgerLinks(
       metadata: { source_fields: sourceFieldsForAuthRef(ref, { ...input, action_issue_closures: actionIssueClosures }) },
       recordEvent: input.recordEvent,
       actor: input.actor,
-    }));
+    });
   }
-  return results;
 }
 
-export function applyAuthRequestLedgerCompletion(
+function* authRequestLedgerCompletion(
   db: Db,
   input: {
     auth_request_id: string;
@@ -346,48 +354,88 @@ export function applyAuthRequestLedgerCompletion(
     /** Canonical target selected by the guarded deferred action executor. */
     closure_issue_ids?: string[];
   },
-): OperationalLinkResult[] {
+  guard: () => void = () => {},
+): Generator<OperationalLinkResult | null> {
   const actor = authFinalizationActor(db, input);
-  const results = syncAuthRequestLedgerLinks(db, { ...input, recordEvent: true, actor });
-  if (!ledgerOperationalLinksAvailable(db)) return results;
+  if (input.closure_issue_ids) {
+    for (const ref of input.issue_closures ?? []) {
+      guard();
+      yield linkAuthRequestToLedgerIssue(db, {
+        auth_request_id: input.auth_request_id, issue_ref: ref, repo_ref: input.repo_ref,
+        link_type: "resolves", recordEvent: true, actor,
+        metadata: { source_fields: sourceFieldsForAuthRef(ref, { ...input, action_issue_closures: authRequestActionIssueCloseRefs(db, input.auth_request_id, ref) }) },
+      });
+    }
+  } else {
+    yield* authRequestLedgerLinks(db, { ...input, recordEvent: true, actor }, guard);
+  }
+  guard();
+  if (!ledgerOperationalLinksAvailable(db)) return;
 
   const store = new LedgerStore(db);
   const mergeResult = parseMergeResult(input.merge_output);
   const mergeSha = mergeResult?.merge_sha ?? null;
   const completedAt = authRequestCompletedAt(db, input.auth_request_id);
-  const linked = db.prepare(
+  const linked = input.closure_issue_ids ? [] : db.prepare(
     `SELECT issue_id, link_type FROM ledger_auth_issue_links
      WHERE auth_request_id = ? AND link_type IN ('resolves', 'fixed_by')`,
   ).all(input.auth_request_id) as Array<{ issue_id: string; link_type: string }>;
-  const closureTargets = new Set(authClosureTargets(db, input, linked.map((row) => row.issue_id)));
+  const closureTargets = new Set<string>();
+  for (const target of authClosureTargets(db, input, linked.map((row) => row.issue_id), guard)) {
+    if (target) closureTargets.add(target);
+    yield null;
+  }
   const uniqueIssueIds = Array.from(new Set(input.closure_issue_ids ?? linked.map((row) => row.issue_id)));
   for (const issueId of uniqueIssueIds) {
-    const issue = store.getIssue(issueId);
-    if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) {
-      continue;
-    }
-    store.recordEvent({
-      entity_type: "auth_request",
-      entity_id: input.auth_request_id,
-      event_type: "auth_request.completed",
-      actor_type: "system",
-      attribution: actor.attribution,
-      source: "auth_queue",
-      project_id: issue.project_id,
-      payload: {
-        auth_request_id: input.auth_request_id,
-        issue_id: issueId,
-        approval_source: input.approval_source ?? null,
-        approval_lease_id: input.approval_lease_id ?? null,
-        approved_by_user_id: input.approved_by_user_id ?? null,
-        execution_evidence_id: input.execution_evidence_id ?? null,
-      },
-    });
-    if (!input.withhold_issue_closure && closureTargets.has(issueId)) {
-      closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt);
-    }
+    guard();
+    db.transaction(() => {
+      const issue = store.getIssue(issueId);
+      if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) return;
+      store.recordEvent({
+        entity_type: "auth_request",
+        entity_id: input.auth_request_id,
+        event_type: "auth_request.completed",
+        actor_type: "system",
+        attribution: actor.attribution,
+        source: "auth_queue",
+        project_id: issue.project_id,
+        payload: {
+          auth_request_id: input.auth_request_id,
+          issue_id: issueId,
+          approval_source: input.approval_source ?? null,
+          approval_lease_id: input.approval_lease_id ?? null,
+          approved_by_user_id: input.approved_by_user_id ?? null,
+          execution_evidence_id: input.execution_evidence_id ?? null,
+        },
+      });
+      if (!input.withhold_issue_closure && closureTargets.has(issueId)) {
+        closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt);
+      }
+    }).immediate();
+    yield null;
   }
+}
+
+export async function applyAuthRequestLedgerCompletion(
+  db: Db,
+  input: Parameters<typeof authRequestLedgerCompletion>[1],
+  guard: () => void = () => {},
+): Promise<OperationalLinkResult[]> {
+  const results: OperationalLinkResult[] = [];
+  await forEachInEventLoopSlices(authRequestLedgerCompletion(db, input, guard), (result) => {
+    if (result) results.push(result);
+  });
   return results;
+}
+
+/** A guarded action completes only its canonical target, inside the action's transaction. */
+export function applyAuthRequestLedgerClosure(
+  db: Db,
+  input: Parameters<typeof authRequestLedgerCompletion>[1] & { closure_issue_ids: [string] },
+): void {
+  for (const _ of authRequestLedgerCompletion(db, input)) {
+    // The surrounding action transaction must not yield between its writes and outcome.
+  }
 }
 
 /**
@@ -400,7 +448,7 @@ export function applyAuthRequestLedgerCompletion(
  * for something that happened once. Issues already closed are skipped, so the
  * call is idempotent.
  */
-export function applyWithheldAuthRequestClosures(
+export async function applyWithheldAuthRequestClosures(
   db: Db,
   input: {
     auth_request_id: string;
@@ -412,7 +460,8 @@ export function applyWithheldAuthRequestClosures(
     execution_evidence_id?: string | null;
     resolution?: LedgerIssueResolution;
   },
-): string[] {
+  guard: () => void = () => {},
+): Promise<string[]> {
   if (!ledgerOperationalLinksAvailable(db)) return [];
   const actor = authFinalizationActor(db, input);
   const mergeSha = parseMergeResult(input.merge_output)?.merge_sha ?? null;
@@ -423,33 +472,45 @@ export function applyWithheldAuthRequestClosures(
   ).all(input.auth_request_id) as Array<{ issue_id: string }>;
 
   const closed: string[] = [];
-  for (const issueId of authClosureTargets(db, input, linked.map((row) => row.issue_id))) {
-    if (new LedgerStore(db).getIssue(issueId).status !== "open") continue;
-    if (closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt)) closed.push(issueId);
-  }
+  await forEachInEventLoopSlices(authClosureTargets(db, input, linked.map((row) => row.issue_id), guard), (issueId) => {
+    if (!issueId) return;
+    guard();
+    db.transaction(() => {
+      if (new LedgerStore(db).getIssue(issueId).status !== "open") return;
+      if (closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt)) closed.push(issueId);
+    }).immediate();
+  });
   return closed;
 }
 
 // Persisted action targets belong exclusively to their individual guards, in
 // every state. Legacy request-wide completion must never bypass those guards.
-function authClosureTargets(
+function* authClosureTargets(
   db: Db,
   input: { auth_request_id: string; repo_ref?: string | null; closure_issue_ids?: string[] },
   linkedIds: string[],
-): string[] {
-  if (input.closure_issue_ids) return Array.from(new Set(input.closure_issue_ids));
+  guard: () => void,
+): Generator<string | null> {
+  if (input.closure_issue_ids) {
+    yield* new Set(input.closure_issue_ids);
+    return;
+  }
   const owned = new Set<string>();
   if (tableExists(db, "auth_request_actions")) {
     const actions = db.prepare(
       "SELECT target_issue_ref FROM auth_request_actions WHERE auth_request_id = ? AND kind = 'issue_close'",
     ).all(input.auth_request_id) as Array<{ target_issue_ref: string }>;
     for (const action of actions) {
+      guard();
       const target = resolveOperationalIssueRef(db, action.target_issue_ref, input.repo_ref);
       if (!target.ok) throw new Error(`Cannot resolve action-owned closure target '${action.target_issue_ref}'`);
       owned.add(target.issue_id);
+      yield null;
     }
   }
-  return Array.from(new Set(linkedIds)).filter((id) => !owned.has(id));
+  for (const id of new Set(linkedIds)) {
+    if (!owned.has(id)) yield id;
+  }
 }
 
 function closeAuthRequestIssue(
@@ -880,15 +941,15 @@ function sourceFieldsForAuthRef(
   return fields;
 }
 
-function authRequestActionIssueCloseRefs(db: Db, authRequestId: string): string[] {
+function authRequestActionIssueCloseRefs(db: Db, authRequestId: string, issueRef?: string): string[] {
   if (!tableExists(db, "auth_request_actions")) return [];
   const rows = db.prepare(
     `SELECT target_issue_ref
      FROM auth_request_actions
      WHERE auth_request_id = ?
        AND kind = 'issue_close'
-       AND state IN ('staged', 'applied')`,
-  ).all(authRequestId) as Array<{ target_issue_ref: string }>;
+       AND state IN ('staged', 'applied')${issueRef == null ? "" : " AND target_issue_ref = ?"}`,
+  ).all(authRequestId, ...(issueRef == null ? [] : [issueRef])) as Array<{ target_issue_ref: string }>;
   return rows.map((row) => row.target_issue_ref).filter((ref) => ref.trim());
 }
 

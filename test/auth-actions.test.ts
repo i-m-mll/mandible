@@ -11,6 +11,7 @@ import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AUTH_REQUEST_ACTION_KINDS } from "../src/contracts.js";
 import type { Db } from "../src/db.js";
+import { longestEventLoopBlockMs } from "./helpers/event-loop-blocking.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -327,6 +328,50 @@ describe("auth request action execution", () => {
       expect(queue.listActions(request.id)).toEqual(actions);
       expect(statuses()).toEqual(["closed", "open", "closed", "open", "open", "closed"]);
     } finally { (await queue?.dispose()); db.close(); }
+  });
+
+  it("releases many closures without blocking the event loop or replaying actions", async () => {
+    const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "bulk-close", "bulk-close");
+      const targets = [issue, ...Array.from({ length: 79 }, (_, index) => createSharedLedgerIssue(db, {
+        project_id: issue.project_id, title: `Closure ${index}`, kind: "feature",
+      }))];
+      queue = new AuthQueue({ db, now: () => 40_000, backgroundMaintenance: false });
+      let withheld = true;
+      (queue as any).convergenceWithholdsClosures = () => withheld;
+      const request = await submitActionMerge(queue, {
+        type: "merge", command: "mandible auth merge feature/bulk-close --into main",
+        title: "Release bulk closures", cwd: repoRoot, repo: path.basename(repoRoot),
+        actions: targets.map((target) => ({
+          kind: "issue_close", target_issue_ref: target.short_id,
+          payload: { reason_comment: "Delivered" },
+        })),
+      });
+      await approvePausedFixtureRequest(queue, request.id);
+      await completeFixturePublication(queue, request.id);
+      await queue.drainFinalizers();
+      expect(queue.listActions(request.id).every((action) => action.state === "staged")).toBe(true);
+      withheld = false;
+      const current = (await queue.getRequest(request.id))!;
+      const longest = await longestEventLoopBlockMs(() => (queue as any).releaseWithheldClosures(current));
+      console.info(`Bulk closure longest turn: ${longest.toFixed(1)} ms`);
+      expect(longest).toBeLessThan(100);
+      const actions = queue.listActions(request.id);
+      expect(actions).toHaveLength(targets.length);
+      expect(actions.every((action) => action.state === "applied")).toBe(true);
+      await (queue as any).releaseWithheldClosures(current);
+      expect(queue.listActions(request.id)).toEqual(actions);
+      const store = new LedgerStore(db);
+      for (const target of targets) {
+        expect(store.getIssue(target.id)).toMatchObject({ status: "closed", resolution: "delivered" });
+        expect(db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").all(target.id))
+          .toEqual([{ body: "Delivered" }]);
+        expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'")
+          .get(target.id)).toEqual({ count: 1 });
+      }
+    } finally { await queue?.dispose(); db.close(); }
   });
 
   it("creates resolves operational links for staged issue_close actions", async () => {

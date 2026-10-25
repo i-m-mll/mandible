@@ -157,7 +157,7 @@ describe("ledger operational links", () => {
     ).run("auth_multi");
 
     (await recordAuthRequestMergeSucceededFact(db, "auth_multi"));
-    applyAuthRequestLedgerCompletion(db, {
+    await applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_multi",
       repo_ref: project.checkout.root,
       issue_closures: ["first11", "second2"],
@@ -315,7 +315,7 @@ describe("ledger operational links", () => {
     ).toEqual({ count: 1 });
   });
 
-  it("closes only explicitly resolving auth links when an auth request completes", () => {
+  it("closes only explicitly resolving auth links when an auth request completes", async () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done123", "Resolved issue");
     const referencedIssue = createIssue(project.project.id, "note123", "Referenced issue");
@@ -337,7 +337,7 @@ describe("ledger operational links", () => {
       link_type: "references",
     });
 
-    const results = applyAuthRequestLedgerCompletion(db, {
+    const results = await applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_2",
       repo_ref: project.checkout.root,
       issue_closures: ["done123"],
@@ -391,7 +391,7 @@ describe("ledger operational links", () => {
     expect(completedEvent!.occurred_at).toBeLessThanOrEqual(timelineEvents[0].occurred_at);
   });
 
-  it("ignores retired automatic-closure metadata", () => {
+  it("ignores retired automatic-closure metadata", async () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done789", "Trailer issue");
     insertAuthRequest({
@@ -399,7 +399,7 @@ describe("ledger operational links", () => {
       repo: project.checkout.root,
     });
 
-    applyAuthRequestLedgerCompletion(db, {
+    await applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_3",
       repo_ref: project.checkout.root,
       merge_output: 'MANDIBLE_MERGE_RESULT {"merge_sha":"fed456abc1237890","declared_issues":[],"auto_close_issues":["done789"]}',
@@ -430,7 +430,7 @@ describe("ledger operational links", () => {
       issues: ["oldbug1"],
     });
 
-    applyAuthRequestLedgerCompletion(db, {
+    await applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_replay",
       repo_ref: project.checkout.root,
       issues: ["oldbug1"],
@@ -455,7 +455,7 @@ describe("ledger operational links", () => {
 
     expect(reopenedAt).toBeGreaterThan(resolvedAt);
 
-    applyAuthRequestLedgerCompletion(db, {
+    await applyAuthRequestLedgerCompletion(db, {
       auth_request_id: "auth_replay",
       repo_ref: project.checkout.root,
       issues: ["oldbug1"],
