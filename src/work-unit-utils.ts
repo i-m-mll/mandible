@@ -12,8 +12,8 @@ import {
 } from "./session-liveness.js";
 import type { WorkUnit } from "./types.js";
 
-import type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
-export type { WorkUnitLiveness, WorkUnitWithLiveness } from "./contracts.js";
+import type { WorkUnitLiveness, WorkUnitView } from "./contracts.js";
+export type { WorkUnitLiveness, WorkUnitView, WorkUnitWithLiveness } from "./contracts.js";
 
 export type WorkUnitSessionResolver = (db: Db, id: string) => SessionAliasResolution | null;
 
@@ -243,13 +243,16 @@ export function workUnitLiveness(
 }
 
 /**
- * Liveness overlay for work units, derived at query time and never stored
- * (bug 8a281b3).
+ * Work units as the work-unit routes return them, with the liveness overlay on
+ * those still in progress, derived at query time and never stored (bug 8a281b3).
  */
-export function enrichWithLiveness(
+export function workUnitViews(
   workUnits: readonly WorkUnit[],
   sessionManager: SessionManager,
-): WorkUnitWithLiveness[] {
-  const liveness = workUnitLiveness(getDb(), workUnits, sessionManager);
-  return workUnits.map((workUnit) => ({ ...workUnit, liveness: liveness(workUnit) }));
+): WorkUnitView[] {
+  const inProgress = workUnits.filter((workUnit) => workUnit.state === "open" || workUnit.state === "committed");
+  const liveness = workUnitLiveness(getDb(), inProgress, sessionManager);
+  return workUnits.map((workUnit): WorkUnitView => workUnit.state === "open" || workUnit.state === "committed"
+    ? { ...workUnit, state: workUnit.state, liveness: liveness(workUnit) }
+    : { ...workUnit, state: workUnit.state });
 }

@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
-  it("lists every unit's liveness with a fixed number of queries, matching each unit's own read", async () => {
+  it("lists in-progress units' liveness with a fixed number of queries, matching each unit's own read", async () => {
     db.prepare("INSERT INTO sessions (id, app, status, last_active, branch, conversation_id) VALUES (?, ?, ?, ?, ?, ?)")
       .run("sess-live", "claude", "active", "2026-10-01T00:00:00Z", "feature/live-branch", "conv-live");
     db.prepare("INSERT INTO sessions (id, app, status, last_active, conversation_id) VALUES (?, ?, ?, ?, ?)")
@@ -67,7 +67,7 @@ describe("work unit routes", () => {
     const seed = (from: number, to: number) => {
       for (let i = from; i < to; i++) {
         const identity = identities[i % identities.length]!;
-        insert.run(`wu-${String(i).padStart(3, "0")}`, identity.branch ?? `feature/unit-${i}`, i % 2 ? "resolved" : "open",
+        insert.run(`wu-${String(i).padStart(3, "0")}`, identity.branch ?? `feature/unit-${i}`, ["open", "committed", "resolved", "abandoned"][i % 4],
           identity.assigned_session_id ?? null, identity.provider_session_id ?? null, identity.worker_provider_session_id ?? null, i);
       }
     };
@@ -77,7 +77,7 @@ describe("work unit routes", () => {
       const queries = prepare.mock.calls.length;
       prepare.mockRestore();
       expect(response.status).toBe(200);
-      return { queries, units: (response.body as { work_units: Array<{ id: string; liveness: { state: string } }> }).work_units };
+      return { queries, units: (response.body as { work_units: Array<{ id: string; state: string; liveness?: { state: string } }> }).work_units };
     };
 
     seed(0, identities.length);
@@ -86,7 +86,9 @@ describe("work unit routes", () => {
     const many = await listed();
     expect(many.units).toHaveLength(10 * identities.length);
     expect(many.queries).toBe(few.queries);
-    expect(new Set(many.units.map((unit) => unit.liveness.state))).toEqual(new Set(["live", "stopped"]));
+    const inProgress = many.units.filter((unit) => unit.state === "open" || unit.state === "committed");
+    expect(new Set(inProgress.map((unit) => unit.liveness?.state))).toEqual(new Set(["live", "stopped"]));
+    expect(many.units.filter((unit) => "liveness" in unit)).toEqual(inProgress);
     for (const unit of many.units) {
       const own = await router.invoke({ method: "GET", url: `/api/work-units/${unit.id}` });
       expect(unit, unit.id).toEqual(own.body);
