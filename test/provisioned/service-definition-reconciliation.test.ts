@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import Database from '../../src/sqlite.js';
 import { renderLaunchAgent } from '../../scripts/local-runtime.mjs';
-import { serviceInstallationContext, inspectServiceDefinitions } from '../../scripts/service-definitions.mjs';
+import { serviceInstallationContext, inspectServiceDefinitions, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { pinnedCaddyBinary } from '../../scripts/pinned-caddy.mjs';
 
 const freePort = () => new Promise<number>((resolve, reject) => {
@@ -82,7 +82,7 @@ it('real restart reconciles both jobs, preserves a gateway-only backend, and lea
     fs.mkdirSync(logDir, { recursive: true });
     for (const definition of definitions) {
       const record = definition.record;
-      const environment = { ...record.EnvironmentVariables, PATH: '/old/bin:/usr/bin:/bin' };
+      const environment = { ...record.EnvironmentVariables, PATH: '/old/bin:/usr/bin:/bin', ...(definition.service === 'backend' ? { NODE_OPTIONS: '--max-old-space-size=768' } : {}) };
       fs.writeFileSync(definition.file, renderLaunchAgent({ label: record.Label, programArguments: record.ProgramArguments, environment,
         workingDirectory: record.WorkingDirectory, stdoutPath: record.StandardOutPath, stderrPath: record.StandardErrorPath }), { mode: 0o600 });
     }
@@ -93,9 +93,32 @@ it('real restart reconciles both jobs, preserves a gateway-only backend, and lea
     await until(async () => { try { return (await fetch(`http://127.0.0.1:${backendPort}/api/health`)).ok; } catch { return false; } });
     const before = await (await fetch(`http://127.0.0.1:${backendPort}/api/health`)).json() as { startup_epoch: string };
     const oldPid = control(['print', `${context.domain}/${context.backendLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1];
+    // Disk can already contain desired bytes while launchd retains an older
+    // definition. Capture must use launchd for prior state and migration.
+    for (const definition of definitions) {
+      fs.writeFileSync(definition.file, definition.service === 'backend'
+        ? definition.contents.replace('<key>PATH</key>', '<key>NODE_OPTIONS</key><string>--max-old-space-size=900</string><key>PATH</key>')
+        : definition.contents);
+    }
+    const drift = await inspectServiceDefinitions(context);
+    expect(drift.ok).toBe(true);
+    expect(matchingServiceDefinitions(drift).ok).toBe(false);
+    const captured = run([controller, 'handoff-snapshot', '--root', root]);
+    expect(captured.status, captured.stderr).toBe(0);
+    const binding = JSON.parse(captured.stdout);
+    expect(binding.priorBackend.definition.EnvironmentVariables.NODE_OPTIONS).toBe('--max-old-space-size=768');
+    expect(binding.priorBackend.definition.EnvironmentVariables.PATH).toBe('/old/bin:/usr/bin:/bin');
+    expect(binding.priorGateway.definition.EnvironmentVariables.PATH).toBe('/old/bin:/usr/bin:/bin');
+    expect(Buffer.from(binding.priorBackend.installed[0].bytesBase64, 'base64').toString()).toContain('--max-old-space-size=900');
+    expect(binding.serviceConfiguration.configuration.environment.NODE_OPTIONS).toBe('--max-old-space-size=768');
+    expect(binding.serviceConfiguration.configuration.toolDirectories).toContain('/old/bin');
+    expect(binding.daemonLog).toBe(binding.priorBackend.definition.StandardErrorPath);
+    expect(binding.priorBackend.launchMode).toBe('manual');
+    expect(fs.existsSync(path.join(context.runtimeDir, 'service-config.json'))).toBe(false);
     const restarted = run([controller, 'restart']);
     expect(restarted.status, restarted.stderr).toBe(0);
-    expect((await inspectServiceDefinitions(context)).ok).toBe(true);
+    expect(matchingServiceDefinitions(await inspectServiceDefinitions(context)).ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(context.runtimeDir, 'service-config.json'), 'utf8')).environment.NODE_OPTIONS).toBe('--max-old-space-size=768');
     const after = await (await fetch(`http://127.0.0.1:${backendPort}/api/health`)).json() as { startup_epoch: string };
     expect(after.startup_epoch).not.toBe(before.startup_epoch);
     expect(control(['print', `${context.domain}/${context.backendLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1]).not.toBe(oldPid);
@@ -105,13 +128,44 @@ it('real restart reconciles both jobs, preserves a gateway-only backend, and lea
     // Gateway drift alone must reload that job without restarting the backend.
     const gatewayBefore = control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1];
     fs.writeFileSync(gatewayFile, fs.readFileSync(gatewayFile, 'utf8').replace('<key>PATH</key><string>', '<key>PATH</key><string>/changed:'));
-    expect((await inspectServiceDefinitions(context)).ok).toBe(false);
+    expect(matchingServiceDefinitions(await inspectServiceDefinitions(context)).ok).toBe(false);
     const started = run([controller, 'start']);
     expect(started.status, started.stderr).toBe(0);
-    expect((await inspectServiceDefinitions(context)).ok).toBe(true);
+    expect(matchingServiceDefinitions(await inspectServiceDefinitions(context)).ok).toBe(true);
     expect((await (await fetch(`http://127.0.0.1:${backendPort}/api/health`)).json() as { startup_epoch: string }).startup_epoch).toBe(after.startup_epoch);
     await until(() => !!control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1]);
     expect(control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1]).not.toBe(gatewayBefore);
+
+    // Loaded ownership allows regeneration and consolidation of generated files.
+    const duplicateBackend = path.join(context.serviceDir, `${context.backendLabel}.plist`);
+    fs.mkdirSync(context.serviceDir, { recursive: true });
+    fs.copyFileSync(backendFile, duplicateBackend);
+    fs.unlinkSync(gatewayFile);
+    expect((await inspectServiceDefinitions(context)).ok).toBe(true);
+    const regenerated = run([controller, 'start']);
+    expect(regenerated.status, regenerated.stderr).toBe(0);
+    expect(fs.existsSync(duplicateBackend)).toBe(false);
+    expect(fs.existsSync(gatewayFile)).toBe(true);
+    expect(matchingServiceDefinitions(await inspectServiceDefinitions(context)).ok).toBe(true);
+
+    // An owned plist does not prove that a loaded job with the same label is
+    // ours. Preserve both the foreign process and all installed bytes.
+    const foreignFile = path.join(scratch, 'foreign.plist');
+    fs.writeFileSync(foreignFile, renderLaunchAgent({ label: context.gatewayLabel, programArguments: ['/bin/sleep', '600'],
+      workingDirectory: scratch, environment: { HOME: context.accountHome }, stdoutPath: path.join(scratch, 'foreign.log'), stderrPath: path.join(scratch, 'foreign.log') }));
+    expect(control(['bootout', `${context.domain}/${context.gatewayLabel}`]).status).toBe(0);
+    expect(control(['bootstrap', context.domain, foreignFile]).status).toBe(0);
+    await until(() => /\bpid = (\d+)/.test(control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout));
+    const foreignPid = control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1];
+    const installedBytes = [backendFile, gatewayFile].map(file => fs.readFileSync(file, 'utf8'));
+    const conflict = await inspectServiceDefinitions(context);
+    expect(conflict).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'ownership_conflict' } });
+    const refused = run([controller, 'start']);
+    expect(refused.status).not.toBe(0);
+    expect([backendFile, gatewayFile].map(file => fs.readFileSync(file, 'utf8'))).toEqual(installedBytes);
+    expect(control(['print', `${context.domain}/${context.gatewayLabel}`]).stdout.match(/\bpid = (\d+)/)?.[1]).toBe(foreignPid);
+    expect(control(['bootout', `${context.domain}/${context.gatewayLabel}`]).status).toBe(0);
+    expect(control(['bootstrap', context.domain, gatewayFile]).status).toBe(0);
 
     // Inject only the unavailable bootstrap domain; unload and publication still
     // use real launchd, and the real bootstrap must return the failure.
@@ -126,7 +180,7 @@ it('real restart reconciles both jobs, preserves a gateway-only backend, and lea
     expect(failed.stderr).toContain('replacement is installed; loaded=false');
     expect(fs.readFileSync(backendFile, 'utf8')).toContain('replacement.pid');
     expect(control(['print', `${context.domain}/${context.backendLabel}`]).status).not.toBe(0);
-    expect((await inspectServiceDefinitions(context)).ok).toBe(true);
+    expect(matchingServiceDefinitions(await inspectServiceDefinitions(context)).ok).toBe(true);
   } finally {
     control(['bootout', `${context.domain}/${context.backendLabel}`]);
     control(['bootout', `${context.domain}/${context.gatewayLabel}`]);

@@ -14,7 +14,7 @@ import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs"
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
-import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync } from "./service-definitions.mjs";
+import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
@@ -226,13 +226,18 @@ function processStart(pid) {
 
 function handoffService(label, inspection) {
   if (!inspection.ok) throw new Error(inspection.refusal.message);
-  const installed = inspection.observations.find(observation => observation.label === label);
-  const argv = installed.definition.ProgramArguments;
-  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: installed.job.loaded, definition: installed.definition };
+  const observation = inspection.observations.find(item => item.label === label);
+  const definition = observation.loadedDefinition ?? observation.installed[0]?.record;
+  if (!definition) throw new Error(`No prior definition is available for ${label}.`);
+  return { installed: observation.installed, argv: definition.ProgramArguments, loaded: observation.job.loaded, definition };
 }
 
 export function captureRuntimeHandoff(root) {
-  const production = readProductionRecord();
+  const serviceInspection = inspectServiceDefinitionsSync(INSTALLATION);
+  const backend = handoffService(BACKEND_LABEL, serviceInspection);
+  const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
+  const production = { root: backend.definition.EnvironmentVariables.MANDIBLE_PRODUCTION_ROOT };
+  if (!path.isAbsolute(production.root ?? '')) throw new Error('Loaded backend does not identify its production checkout.');
   const destination = fs.realpathSync(root);
   const sourceRoot = fs.realpathSync(production.root);
   const main = readMainInstance(root);
@@ -250,17 +255,15 @@ export function captureRuntimeHandoff(root) {
     source = { root: sourceRoot, commonGitDir, head: git(sourceRoot, ['rev-parse', 'HEAD']), buildRevision, compiledDigest: compiledBuildDigest(sourceRoot), dependencies: { root: fs.realpathSync(path.join(sourceRoot, 'node_modules')), digest: runtimeDependenciesDigest(sourceRoot) },
       files: Object.fromEntries(['bin/mandible'].map(name => [name, createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, name))).digest('hex')])) };
   }
-  const serviceInspection = inspectServiceDefinitionsSync(INSTALLATION);
-  const backend = handoffService(BACKEND_LABEL, serviceInspection);
-  const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
   if (source) source.runtime = { path: backend.argv[0], sha256: createHash('sha256').update(fs.readFileSync(backend.argv[0])).digest('hex') };
-  const job = inspectJob(BACKEND_LABEL);
+  const job = serviceInspection.observations.find(item => item.service === 'backend').job;
   const startedAt = processStart(job.pid);
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
   return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
-    daemonLog: locateLaunchAgent(BACKEND_LABEL).record.StandardErrorPath,
-    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
+    daemonLog: backend.definition.StandardErrorPath,
+    serviceConfiguration: readServiceConfiguration(INSTALLATION, job.environment, sourceRoot),
+    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: launchModeFromAgent(backend.definition) }, priorGateway: gateway };
 }
 
 function assertHandoffInstallation(binding) {
@@ -269,10 +272,10 @@ function assertHandoffInstallation(binding) {
   if (processStart(binding.oldProcess.pid) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
 }
 
-async function unloadExactHandoffService(label, expectedArguments) {
+async function unloadExactHandoffService(label, expectedArguments, expectedDefinition) {
   const previous = inspectJob(label);
   if (!previous.loaded) return;
-  if (JSON.stringify(previous.argv) !== JSON.stringify(expectedArguments)) throw new Error(`Service ${label} changed before unloading; preserving it.`);
+  if (JSON.stringify(previous.argv) !== JSON.stringify(expectedArguments) || expectedDefinition && !loadedServiceMatches(expectedDefinition, previous)) throw new Error(`Service ${label} changed before unloading; preserving it.`);
   const startedAt = processStart(previous.pid);
   // bootout returns once launchd has stopped the job: a running daemon's graceful
   // shutdown takes up to 5 s, and launchd kills a job still running after its
@@ -283,7 +286,7 @@ async function unloadExactHandoffService(label, expectedArguments) {
   while (true) {
     const remaining = inspectJob(label);
     if (!remaining.loaded && (!previous.pid || !startedAt || processStart(previous.pid) !== startedAt)) return;
-    if (remaining.loaded && JSON.stringify(remaining.argv) !== JSON.stringify(expectedArguments)) throw new Error(`Service ${label} changed while unloading; preserving it.`);
+    if (remaining.loaded && (JSON.stringify(remaining.argv) !== JSON.stringify(expectedArguments) || expectedDefinition && !loadedServiceMatches(expectedDefinition, remaining))) throw new Error(`Service ${label} changed while unloading; preserving it.`);
     if (Date.now() >= deadline) throw new Error(`Exact service ${label} or its old process is still present after successful bootout.`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }
@@ -291,6 +294,21 @@ async function unloadExactHandoffService(label, expectedArguments) {
 
 export async function removeHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
+  assertLifecycleMutation(true);
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  for (const observation of inspection.observations) {
+    const prior = observation.service === 'backend' ? binding.priorBackend : binding.priorGateway;
+    if (observation.job.loaded && (JSON.stringify(observation.job.argv) !== JSON.stringify(prior.argv)
+      || prior.definition && !loadedServiceMatches(prior.definition, observation.job))) throw new Error(`Service ${observation.label} changed during handoff; preserving it.`);
+  }
+  if (binding.serviceConfiguration) {
+    const captured = binding.serviceConfiguration;
+    if (captured.file !== path.join(RUNTIME_DIR, 'service-config.json')) throw new Error('Captured service configuration belongs to another installation.');
+    const current = readServiceConfiguration(INSTALLATION);
+    if (!captured.migrated && current.migrated || !current.migrated && JSON.stringify(current.configuration) !== JSON.stringify(captured.configuration)) throw new Error('Service configuration changed after capture; preserving it.');
+    publishServiceConfiguration(captured.file, captured.configuration);
+  }
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
     // unloaded before its source/dependencies change under the old interpreter.
@@ -305,7 +323,7 @@ export async function removeHandoffDefinitions(binding) {
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
       if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
     }
-    await unloadExactHandoffService(label, prior.argv);
+    await unloadExactHandoffService(label, prior.argv, prior.definition);
   }
 }
 
@@ -313,13 +331,13 @@ export async function startHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
   if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
   for (const label of [BACKEND_LABEL, GATEWAY_LABEL]) {
-    const installed = locateLaunchAgent(label);
+    const observation = observeOwnedService(label === BACKEND_LABEL ? 'backend' : 'gateway');
+    const installed = observation.installed.length === 1 ? observation.installed[0] : null;
     if (!installed) throw new Error(`Candidate service ${label} is missing.`);
     const job = inspectJob(label);
-    const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
-    if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
+    if (job.loaded && !loadedServiceMatches(installed.record, job)) {
       if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL || binding.priorGateway.definition && !loadedServiceMatches(binding.priorGateway.definition, job)) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
-      await unloadExactHandoffService(label, binding.priorGateway.argv);
+      await unloadExactHandoffService(label, binding.priorGateway.argv, binding.priorGateway.definition);
     }
     ensureEnabledAndLoaded(label);
     if (!loadedServiceMatches(installed.record, inspectJob(label))) throw new Error(`Candidate service ${label} differs from its installed definition.`);
@@ -418,7 +436,7 @@ function readLogTail(file, limit = 1024 * 1024) {
 
 export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
-  const serviceInspection = inspectServiceDefinitionsSync(INSTALLATION);
+  const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
@@ -565,13 +583,19 @@ function privatePlistPath(label) {
 }
 
 function locateLaunchAgent(label) {
-  const files = [standardPlistPath(label), privatePlistPath(label)].filter((file) => fs.existsSync(file));
-  if (files.length > 1) throw new Error(`Multiple Mandible LaunchAgents use label ${label}; preserving both and refusing to guess.`);
-  if (files.length === 0) return null;
-  const file = files[0];
-  const record = parsePlist(file);
-  if (record.Label !== label) throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it.`);
-  return { file, record };
+  const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
+  const files = [standardPlistPath(label), privatePlistPath(label)].filter(file => fs.existsSync(file));
+  if (files.length === 1) {
+    const record = parsePlist(files[0]);
+    if (!ownsServiceDefinition(INSTALLATION, service, record)) throw new Error(`Unowned installed service ${label}; preserving it.`);
+    return { file: files[0], record };
+  }
+  const observation = observeOwnedService(service);
+  const record = observation.loadedDefinition ?? observation.installed[0]?.record;
+  if (!record) return null;
+  const preferred = service === 'backend' && launchModeFromAgent(record) === 'manual' ? privatePlistPath(label) : standardPlistPath(label);
+  const installed = observation.installed.find(item => item.file === preferred) ?? observation.installed[0];
+  return { file: installed?.file ?? null, record };
 }
 
 function archiveLaunchAgent(file, label, bytes) {
@@ -595,7 +619,7 @@ function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false
     if (existing === contents) return false;
     const managedMarker = "<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>";
     const existingRecord = parsePlist(file);
-    assertOwnedLaunchAgent(file, existingRecord, existing.includes(managedMarker), label, recognizesLegacy);
+    assertOwnedLaunchAgent(file, existingRecord, label, recognizesLegacy);
     if (!existing.includes(managedMarker)) archiveLaunchAgent(file, label, fs.readFileSync(file));
   }
   const temporary = `${file}.${process.pid}.tmp`;
@@ -605,28 +629,24 @@ function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false
   return true;
 }
 
-function assertOwnedLaunchAgent(file, record, managed, label, recognizesLegacy) {
+function assertOwnedLaunchAgent(file, record, label, recognizesLegacy) {
   if (record.Label !== label) {
     throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it and reporting an ownership conflict.`);
   }
-  if (!managed && !recognizesLegacy(record)) {
+  if (!recognizesLegacy(record)) {
     throw new Error(`A launchd configuration already exists at ${file} and is not managed by Mandible; preserving it.`);
   }
 }
 
 function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
-  const existing = locateLaunchAgent(label);
-  if (!existing || existing.file === file) {
-    return writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
+  const { installed } = observeOwnedService(service);
+  for (const existing of installed.filter(item => item.file !== file)) {
+    archiveLaunchAgent(existing.file, label, Buffer.from(existing.bytesBase64, 'base64'));
   }
-
-  const bytes = fs.readFileSync(existing.file);
-  const managedMarker = bytes.toString("utf8").includes("<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>");
-  assertOwnedLaunchAgent(existing.file, existing.record, managedMarker, label, recognizesLegacy);
-  archiveLaunchAgent(existing.file, label, bytes);
-  writeOwnedPlist(file, contents, { label, recognizesLegacy });
-  fs.unlinkSync(existing.file);
-  return true;
+  const changed = writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  for (const existing of installed.filter(item => item.file !== file)) fs.unlinkSync(existing.file);
+  return changed || installed.some(item => item.file !== file);
 }
 
 function parsePlist(file) {
@@ -726,19 +746,13 @@ function assertLifecycleMutation(allowHandoff = false) {
 }
 
 async function unloadOwnedDefinition(label, job) {
-  await unloadExactHandoffService(label, job.argv);
+  await unloadExactHandoffService(label, job.argv, loadedServiceDefinition(label, job));
 }
 
-function observeOwnedService(service, label) {
-  const installed = locateLaunchAgent(label);
-  const job = inspectJob(label);
-  if (installed && !ownsServiceDefinition(INSTALLATION, service, installed.record)) throw new Error(`Unowned installed service ${label}; preserving it.`);
-  const sameArguments = installed && JSON.stringify(job.argv) === JSON.stringify(installed.record.ProgramArguments);
-  const knownCaddy = service === 'gateway' && job.argv?.[0]?.startsWith(path.join(HOME, 'runtime/caddy/'))
-    && job.argv[1] === 'run' && job.argv[2] === '--config' && job.argv[3] === GATEWAY_CONFIG;
-  if (job.loaded && (!installed || service === 'backend' && !ownsServiceDefinition(INSTALLATION, service, { ...installed.record, ProgramArguments: job.argv })
-    || service === 'gateway' && !sameArguments && !knownCaddy)) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
-  return { installed, job };
+function observeOwnedService(service) {
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { allowAbsent: true });
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  return inspection.observations.find(observation => observation.service === service);
 }
 
 export async function reconcileServiceDefinitions(production, main, launchMode, { services = ['backend', 'gateway'], running = [], restart = [], handoff = false, configuration, loadService = ensureEnabledAndLoaded } = {}) {
@@ -746,9 +760,11 @@ export async function reconcileServiceDefinitions(production, main, launchMode, 
   const desired = prepareServicePlists(production, main, launchMode, { configuration });
   const runnersChanged = services.includes('backend') && runnerChanged(production.root);
   // Observe and validate both services before the first write or bootout.
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { allowAbsent: true, desired: Object.fromEntries(desired.definitions.map(item => [item.service, item.record])) });
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
   const observed = desired.definitions.map(definition => {
-    const { installed, job } = observeOwnedService(definition.service, definition.label);
-    const changed = !installed || installed.file !== definition.file || fs.readFileSync(installed.file, 'utf8') !== definition.contents
+    const { installed, job } = inspection.observations.find(item => item.service === definition.service);
+    const changed = installed.length !== 1 || installed[0].file !== definition.file || !Buffer.from(installed[0].bytesBase64, 'base64').equals(Buffer.from(definition.contents))
       || job.loaded && !loadedServiceMatches(definition.record, job) || definition.service === 'backend' && runnersChanged;
     return { ...definition, installed, job, changed };
   });
@@ -875,7 +891,7 @@ async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
 }
 
 function assertInstalledDefinitions() {
-  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
+  const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
   if (!inspection.ok) throw new Error(inspection.refusal.message);
 }
 
@@ -1049,7 +1065,7 @@ async function main() {
   if (launchModeArg && !["manual", "on_demand"].includes(launchModeArg)) {
     throw new Error(`Unsupported launch mode: ${launchModeArg}`);
   }
-  const launchMode = launchModeArg ?? installedLaunchMode();
+  const launchMode = launchModeArg ?? (directHandoff ? journal.binding.priorBackend.launchMode : installedLaunchMode());
   if (args.includes('--service-config') && !['install', 'configure-launch-mode'].includes(command)) throw new Error('--service-config is accepted only by install and configure-launch-mode.');
   const configuration = explicitServiceConfiguration(args);
   if (command === "status") {
@@ -1084,7 +1100,7 @@ async function main() {
     if (!configuration) readServiceConfiguration(INSTALLATION, legacyBackendEnvironment());
     const production = await initializeMainRegistration(root);
     const mainInstance = readMainInstance(root);
-    const effectiveLaunchMode = launchModeArg ? launchMode : installedLaunchMode();
+    const effectiveLaunchMode = launchMode;
     const installScript = path.join(production.root, "scripts", "local-front-door.mjs");
     const result = spawnSync(runtimeBinary(root), [installScript, "install"], {
       cwd: production.root, env: { ...process.env, HOME: HOME_DIR, MANDIBLE_HOME: HOME },

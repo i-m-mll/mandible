@@ -13,7 +13,7 @@ import { AuthQueue } from '../../src/auth-queue.js';
 import { AuthHookManager } from '../../src/auth-hooks.js';
 import { renderLaunchAgent } from '../../scripts/local-runtime.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
-import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerProject, createMigratedDb, git, recordPassingCandidateAcceptance, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
+import { AUTH_MERGE_REVIEW, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerProject, createMigratedDb, git, recordPassingCandidateAcceptance, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { publishTestCandidate } from '../helpers/auth-delivery-fixtures.js';
 import { sqliteRuntimePaths } from '../../src/sqlite-runtime.js';
 
@@ -50,7 +50,7 @@ it('arms one independent helper under the deployed interpreter and survives help
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', 'exit 75', 'builtin-mandible-rebuild');
     const hooks = new AuthHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
-    const request = (await queue.submit({ type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' }));
+    const request = (await queue.submit({ ...AUTH_MERGE_REVIEW, type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' }));
     recordPassingCandidateAcceptance(db, request.id);
     await queue.approveWithOperatorProof(request.id, operator);
     const published = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
@@ -67,7 +67,7 @@ it('arms one independent helper under the deployed interpreter and survives help
     const marker = path.join(scratch, 'old-started');
     const backendFile = path.join(services, `${backend}.plist`);
     fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [deployed, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
-    fs.writeFileSync(path.join(services, `${gateway}.plist`), renderLaunchAgent({ label: gateway, programArguments: ['/usr/bin/true', 'fixture'], workingDirectory: runtimeDir, environment: { HOME: userHome }, stdoutPath: path.join(scratch, 'gateway.log'), stderrPath: path.join(scratch, 'gateway.log') }));
+    fs.writeFileSync(path.join(services, `${gateway}.plist`), renderLaunchAgent({ label: gateway, programArguments: [path.join(home, 'runtime/caddy/fixture/caddy'), 'run', '--config', path.join(runtimeDir, 'Caddyfile'), '--adapter', 'caddyfile'], workingDirectory: runtimeDir, environment: { HOME: userHome }, stdoutPath: path.join(scratch, 'gateway.log'), stderrPath: path.join(scratch, 'gateway.log') }));
     expect(control(['bootstrap', domain, backendFile]).status).toBe(0); await wait(() => fs.existsSync(marker));
     const sqliteFiles = sqliteRuntimePaths();
     const env = { ...process.env, HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_RUNTIME: process.execPath,
