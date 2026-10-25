@@ -30,8 +30,9 @@ export const DEFAULT_SEARCH_CACHE_LIMITS = Object.freeze({
   maxPhysicalBytes: 256 * 1024 * 1024,
 });
 
-/** Bumping this discards existing cache files on open; they are disposable. */
-const CACHE_SCHEMA_VERSION = 2;
+/** v3 discards entries that may have been corrupted by pre-lock concurrent writers. */
+const CACHE_SCHEMA_VERSION = 3;
+const CACHE_APPLICATION_ID = 0x4d435343; // MCSC: Mandible conversation search cache
 const SQLITE_AUTO_VACUUM_INCREMENTAL = 2;
 const COLD_PROBE_BATCH_SIZE = 64;
 const SEARCH_TURN_MS = 10;
@@ -153,8 +154,7 @@ interface CacheKey {
   redactionEpoch: string;
 }
 
-interface Checkpoint {
-  sourceVersionId: string;
+interface Checkpoint extends CacheKey {
   blockCount: number;
 }
 
@@ -428,6 +428,7 @@ class TurnBudget {
 export class ConversationSearchCache {
   readonly cachePath: string;
   private cache!: SqliteDatabase;
+  private writerLock: SqliteDatabase | null = null;
   private readonly maxConcurrentColdParses: number;
   private readonly maxBodyBytes: number;
   private readonly maxCacheBytes: number;
@@ -448,7 +449,11 @@ export class ConversationSearchCache {
     private readonly source: ConversationSearchSourceAdapter,
     options: ConversationSearchCacheOptions = {},
   ) {
-    this.cachePath = options.cachePath ?? defaultConversationSearchCachePath();
+    const cachePath = options.cachePath ?? defaultConversationSearchCachePath();
+    if (cachePath !== ":memory:") fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    this.cachePath = cachePath === ":memory:" ? cachePath : fs.existsSync(cachePath)
+      ? fs.realpathSync(cachePath)
+      : path.join(fs.realpathSync(path.dirname(cachePath)), path.basename(cachePath));
     this.maxConcurrentColdParses = Math.max(1, options.maxConcurrentColdParses ?? DEFAULT_SEARCH_CACHE_LIMITS.maxConcurrentColdParses);
     this.maxBodyBytes = Math.max(1, options.maxBodyBytes ?? DEFAULT_SEARCH_CACHE_LIMITS.maxBodyBytes);
     this.maxCacheBytes = Math.max(this.maxBodyBytes, options.maxCacheBytes ?? DEFAULT_SEARCH_CACHE_LIMITS.maxCacheBytes);
@@ -456,13 +461,26 @@ export class ConversationSearchCache {
       64 * 1024,
       options.maxPhysicalBytes ?? DEFAULT_SEARCH_CACHE_LIMITS.maxPhysicalBytes,
     );
-    this.open();
+    this.acquireWriterLock();
+    try {
+      this.open();
+    } catch (error) {
+      this.writerLock?.close();
+      this.writerLock = null;
+      throw error;
+    }
     this.scheduleMaintenance();
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
-    this.cache.close();
+    try {
+      this.cache.close();
+    } finally {
+      this.writerLock?.close();
+      this.writerLock = null;
+    }
   }
 
   /** Resolves once no background maintenance is pending. */
@@ -470,61 +488,112 @@ export class ConversationSearchCache {
     while (this.maintenance) await this.maintenance;
   }
 
+  /**
+   * The daemon is the sole production writer. A separate SQLite connection holds
+   * an OS-backed lock for its lifetime, including cache resets. It releases on
+   * process death; never unlink the lock file (that would split its identity).
+   * Previews and route sweeps each use their own cache path.
+   */
+  private acquireWriterLock(): void {
+    if (this.cachePath === ":memory:") return;
+    const lock = new SqliteDatabase(`${this.cachePath}.writer-lock`, { timeout: 0 });
+    try {
+      lock.exec("BEGIN EXCLUSIVE");
+      this.writerLock = lock;
+    } catch (error) {
+      lock.close();
+      throw new Error(`Conversation search cache already has a writer: ${this.cachePath}`, { cause: error });
+    }
+  }
+
+  /** Recognize unmarked caches from before application_id was introduced. */
+  private isLegacyCache(cache: SqliteDatabase): boolean {
+    const tables = cache.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    const names = tables.map((row) => row.name).join(",");
+    if (names !== "hot_bodies,search_checkpoints,search_fts,search_fts_config,search_fts_data,search_fts_docsize,search_fts_idx") return false;
+    const columns = (table: string) => (cache.pragma(`table_info(${table})`) as Array<{ name: string }>)
+      .map((column) => column.name).join(",");
+    const checkpoints = "conversation_id,source_version_id,parser_version,normalization_version,tokenizer_version,redaction_epoch,block_count,";
+    const v1 = columns("search_checkpoints") === `${checkpoints}updated_at`
+      && columns("hot_bodies") === "rowid,block_id,conversation_id,source_version_id,parser_version,normalization_version,tokenizer_version,redaction_epoch,block_type,role,position,body,body_bytes,accessed_at";
+    const v2 = columns("search_checkpoints") === `${checkpoints}complete,accessed_at`
+      && columns("hot_bodies") === "rowid,conversation_id,block_id,block_type,role,position,body_bytes,body";
+    const fts = cache.prepare("SELECT sql FROM sqlite_schema WHERE name = 'search_fts'")
+      .get() as { sql: string };
+    return (v1 || v2) && /USING fts5\(body, content='', (?:contentless_delete=1, )?tokenize='trigram'\)/i.test(fts.sql);
+  }
+
   private open(): void {
     if (this.cachePath !== ":memory:") fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-    let cache = new SqliteDatabase(this.cachePath);
-    const compatible = Number(cache.pragma("user_version", { simple: true })) === CACHE_SCHEMA_VERSION
-      && Number(cache.pragma("auto_vacuum", { simple: true })) === SQLITE_AUTO_VACUUM_INCREMENTAL;
-    if (!compatible) {
-      cache.close();
-      this.removeFiles();
-      cache = new SqliteDatabase(this.cachePath);
-      cache.pragma(`auto_vacuum = ${SQLITE_AUTO_VACUUM_INCREMENTAL}`);
+    const fresh = this.cachePath === ":memory:" || !fs.existsSync(this.cachePath);
+    let cache = new SqliteDatabase(this.cachePath, { readonly: !fresh });
+    try {
+      const applicationId = Number(cache.pragma("application_id", { simple: true }));
+      if (!fresh && applicationId !== CACHE_APPLICATION_ID
+        && !(applicationId === 0 && this.isLegacyCache(cache))) {
+        throw new Error(`Refusing to replace a database that is not a conversation search cache: ${this.cachePath}`);
+      }
+      const compatible = Number(cache.pragma("user_version", { simple: true })) === CACHE_SCHEMA_VERSION
+        && Number(cache.pragma("auto_vacuum", { simple: true })) === SQLITE_AUTO_VACUUM_INCREMENTAL;
+      if (!compatible) {
+        cache.close();
+        this.removeFiles();
+        cache = new SqliteDatabase(this.cachePath);
+        cache.pragma(`auto_vacuum = ${SQLITE_AUTO_VACUUM_INCREMENTAL}`);
+      } else if (!fresh) {
+        cache.close();
+        cache = new SqliteDatabase(this.cachePath);
+      }
+      cache.pragma("journal_mode = WAL");
+      cache.pragma("synchronous = NORMAL");
+      cache.pragma(`journal_size_limit = ${8 * 1024 * 1024}`);
+      cache.exec(`
+        CREATE TABLE IF NOT EXISTS search_checkpoints (
+          conversation_id TEXT PRIMARY KEY,
+          source_version_id TEXT NOT NULL,
+          parser_version TEXT NOT NULL,
+          normalization_version TEXT NOT NULL,
+          tokenizer_version TEXT NOT NULL,
+          redaction_epoch TEXT NOT NULL,
+          block_count INTEGER NOT NULL,
+          complete INTEGER NOT NULL,
+          accessed_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS hot_bodies (
+          rowid INTEGER PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          block_id TEXT NOT NULL,
+          block_type TEXT NOT NULL,
+          role TEXT NOT NULL,
+          position INTEGER NOT NULL,
+          body_bytes INTEGER NOT NULL,
+          -- Last, so size scans never read a body's overflow pages.
+          body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hot_bodies_conversation ON hot_bodies(conversation_id, position);
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram');
+      `);
+      // FTS5's own merging runs inside whichever commit trips it and can take
+      // hundreds of milliseconds on a large index. Maintenance merges instead,
+      // a few pages per turn, and the crisis threshold is set out of reach.
+      cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('automerge', 0)").run();
+      cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('crisismerge', 2000)").run();
+      cache.pragma(`application_id = ${CACHE_APPLICATION_ID}`);
+      cache.pragma(`user_version = ${CACHE_SCHEMA_VERSION}`);
+      this.cache = cache;
+      this.residents.clear();
+      this.residentBytes = 0;
+      const rows = cache.prepare(
+        `SELECT c.conversation_id, c.accessed_at, SUM(h.body_bytes) AS bytes
+         FROM search_checkpoints c JOIN hot_bodies h ON h.conversation_id = c.conversation_id
+         GROUP BY c.conversation_id`,
+      ).all() as Array<{ conversation_id: string; accessed_at: number; bytes: number }>;
+      for (const row of rows) this.adjustResident(row.conversation_id, row.bytes, row.accessed_at);
+    } catch (error) {
+      if (cache.open) cache.close();
+      throw error;
     }
-    cache.pragma("journal_mode = WAL");
-    cache.pragma("synchronous = NORMAL");
-    cache.pragma(`journal_size_limit = ${8 * 1024 * 1024}`);
-    cache.exec(`
-      CREATE TABLE IF NOT EXISTS search_checkpoints (
-        conversation_id TEXT PRIMARY KEY,
-        source_version_id TEXT NOT NULL,
-        parser_version TEXT NOT NULL,
-        normalization_version TEXT NOT NULL,
-        tokenizer_version TEXT NOT NULL,
-        redaction_epoch TEXT NOT NULL,
-        block_count INTEGER NOT NULL,
-        complete INTEGER NOT NULL,
-        accessed_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS hot_bodies (
-        rowid INTEGER PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        block_id TEXT NOT NULL,
-        block_type TEXT NOT NULL,
-        role TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        body_bytes INTEGER NOT NULL,
-        -- Last, so size scans never read a body's overflow pages.
-        body TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS hot_bodies_conversation ON hot_bodies(conversation_id, position);
-      CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram');
-    `);
-    // FTS5's own merging runs inside whichever commit trips it and can take
-    // hundreds of milliseconds on a large index. Maintenance merges instead,
-    // a few pages per turn, and the crisis threshold is set out of reach.
-    cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('automerge', 0)").run();
-    cache.prepare("INSERT INTO search_fts(search_fts, rank) VALUES ('crisismerge', 2000)").run();
-    cache.pragma(`user_version = ${CACHE_SCHEMA_VERSION}`);
-    this.cache = cache;
-    this.residents.clear();
-    this.residentBytes = 0;
-    const rows = cache.prepare(
-      `SELECT c.conversation_id, c.accessed_at, SUM(h.body_bytes) AS bytes
-       FROM search_checkpoints c JOIN hot_bodies h ON h.conversation_id = c.conversation_id
-       GROUP BY c.conversation_id`,
-    ).all() as Array<{ conversation_id: string; accessed_at: number; bytes: number }>;
-    for (const row of rows) this.adjustResident(row.conversation_id, row.bytes, row.accessed_at);
   }
 
   private adjustResident(conversationId: string, deltaBytes: number, accessedAt?: number): void {
@@ -569,16 +638,21 @@ export class ConversationSearchCache {
       redactionEpoch,
     ) as Array<{ conversation_id: string; source_version_id: string; block_count: number }>;
     return new Map(rows.map((row) => [row.conversation_id, {
-      sourceVersionId: row.source_version_id,
+      ...this.key(row.source_version_id, redactionEpoch),
       blockCount: row.block_count,
     }]));
   }
 
-  private hotBodies(conversationId: string): CachedBodyRow[] {
+  private hotBodies(conversationId: string, key: Checkpoint): CachedBodyRow[] {
     return this.cache.prepare(
-      `SELECT block_id, conversation_id, block_type, role, position, body
-       FROM hot_bodies WHERE conversation_id = ? ORDER BY position ASC`,
-    ).all(conversationId) as CachedBodyRow[];
+      `SELECT h.block_id, h.conversation_id, h.block_type, h.role, h.position, h.body
+       FROM hot_bodies h JOIN search_checkpoints c ON c.conversation_id = h.conversation_id
+       WHERE c.conversation_id = ? AND c.complete = 1
+         AND c.source_version_id = ? AND c.parser_version = ? AND c.normalization_version = ?
+         AND c.tokenizer_version = ? AND c.redaction_epoch = ?
+       ORDER BY h.position ASC`,
+    ).all(conversationId, key.sourceVersionId, key.parserVersion,
+      key.normalizationVersion, key.tokenizerVersion, key.redactionEpoch) as CachedBodyRow[];
   }
 
   private ftsShortlist(needle: string): { blocks: number; conversations: Set<string> } | null {
@@ -662,9 +736,9 @@ export class ConversationSearchCache {
           const batch = pending.slice(batchStart, batchStart + this.maxConcurrentColdParses);
           const bodies = await mapConcurrent(batch, this.maxConcurrentColdParses, async ({ item, hot }) => {
             if (hot) {
-              const rows = this.hotBodies(item.conversationId);
+              const rows = this.hotBodies(item.conversationId, hot);
               // A maintenance turn may have started replacing this entry since
-              // the checkpoints were read; only a complete read is trusted.
+              // the checkpoints were read; only the validated full key is trusted.
               if (rows.length === hot.blockCount) {
                 this.recordAccess(item.conversationId);
                 return rows;
