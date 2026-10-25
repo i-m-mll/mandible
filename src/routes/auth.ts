@@ -672,7 +672,8 @@ export function registerAuthRoutes(
         ? Math.min(limitRaw, 200)
         : 50;
     const rows = await reader.run("auth_history", { limit, type: typeFilter });
-    const blocker = rows.some(row => row.selfUpdates) ? await authQueue.publicationObservation(rows.some(row => row.acceptance.applies)) : null;
+    const inspectOwnership = rows.some(row => row.selfUpdates && row.acceptance.applies);
+    const blocker = rows.some(row => row.selfUpdates) ? await authQueue.publicationObservation(inspectOwnership) : null;
     res.json({
       requests: rows.map(({ request, selfUpdates, acceptance }) => ({
         ...request,

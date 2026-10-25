@@ -14,7 +14,7 @@ export type ServiceKind = 'backend' | 'gateway';
 export interface ServiceDefinitionRefusal {
   service: ServiceKind; label: string;
   category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch';
-  fields: string[]; message: string; repairCommand?: string;
+  fields: string[]; message: string;
 }
 export interface InstalledServiceDefinition { file: string; bytesBase64: string; sha256: string; record: ServiceDefinition }
 export interface ServiceObservation {
@@ -25,7 +25,7 @@ export interface ServiceObservation {
 export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' };
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
-export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>>; allowAbsent?: boolean }
+export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>> }
 export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string }): ServiceInstallationContext;
 export function parseLoadedService(detail: string): LoadedService;
 export function differingServiceFields(record: ServiceDefinition, job: LoadedService): string[];
@@ -33,8 +33,8 @@ export function loadedServiceMatches(record: ServiceDefinition, job: LoadedServi
 export function loadedServiceDefinition(label: string, job: LoadedService): ServiceDefinition;
 export function ownsServiceDefinition(context: ServiceInstallationContext, service: ServiceKind, record: ServiceDefinition): boolean;
 export function assessServiceObservation(context: ServiceInstallationContext, service: ServiceKind, installed: InstalledServiceDefinition[], job: LoadedService,
-  options?: { desired?: ServiceDefinition; allowAbsent?: boolean }): { ok: true; observation: ServiceObservation } | { ok: false; refusal: ServiceOwnershipRefusal };
-/** Admission is ownership-only: drift, owned duplicates, and a missing plist with an owned loaded job are ready. */
+  options?: { desired?: ServiceDefinition }): { ok: true; observation: ServiceObservation } | { ok: false; refusal: ServiceOwnershipRefusal };
+/** Admission is ownership-only: drift, owned duplicates, and absent services are ready. */
 export function serviceOwnershipReady(inspection: ServiceDefinitionInspection): inspection is { ok: true; observations: ServiceObservation[] };
 /** Controller postcondition: one installed managed definition, equal to launchd whenever loaded. */
 export function matchingServiceDefinitions(inspection: ServiceDefinitionInspection): ServiceDefinitionInspection;

@@ -1293,15 +1293,8 @@ function AuthRequestDetail({
 
         {publicationBlocker && (
           <div className="auth-failure" role="status">
-            <strong>{publicationBlocker.code === 'runtime_handoff_lock' ? 'Runtime handoff blocks approval' : 'Service definition blocks approval'}</strong>
+            <strong>{publicationBlocker.code === 'runtime_handoff_lock' ? 'Runtime handoff blocks approval' : 'Service ownership blocks approval'}</strong>
             <p className="auth-failure__summary">{publicationBlocker.message}</p>
-            {publicationBlocker.code === 'service_definition' && (
-              <>
-                <p>{publicationBlocker.refusal.service} · {publicationBlocker.refusal.label} · {publicationBlocker.refusal.category.replaceAll('_', ' ')}</p>
-                {publicationBlocker.refusal.fields.length > 0 && <p>Differing fields: {publicationBlocker.refusal.fields.join(', ')}</p>}
-                <p>Repair: <code>{publicationBlocker.refusal.repairCommand}</code></p>
-              </>
-            )}
           </div>
         )}
         {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
