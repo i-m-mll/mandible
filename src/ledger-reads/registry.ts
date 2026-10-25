@@ -1,3 +1,4 @@
+import { readSnapshot } from "./snapshot.js";
 import { conversationSidebar, conversationSearch, conversationList } from "./conversation-queries.js";
 import { issueSummaries } from "./issues.js";
 import { authHistory } from "./auth-history.js";
@@ -50,12 +51,12 @@ export type LedgerReadParams<K extends LedgerReadKind> = Parameters<typeof reads
 export type LedgerReadResult<K extends LedgerReadKind> = Awaited<ReturnType<typeof reads[K]>>;
 
 /**
- * Each synchronous ledger read sees one snapshot. Async conversation queries
- * reconcile source files across awaits and never hold a SQLite transaction open.
- * A reader thread's statements otherwise interleave with commits on the main connection, so a read that checks access in a later
- * statement than the one that fetched rows could judge them against newer state.
- * Deferred never takes the write lock, so the inline reader is safe on the main
- * connection too.
+ * Every synchronous read phase runs in one deferred snapshot. Conversation queries
+ * use the same helper for each phase before or after an await; no transaction may
+ * remain open across an await. Statements that must agree (counts and pages,
+ * access checks and rows) share a phase. A query without awaits has one phase.
+ * Reader statements otherwise interleave with commits on the main connection.
+ * Deferred never takes the write lock, so inline reads are safe there too.
  */
 export function runLedgerRead<K extends LedgerReadKind>(db: Db, kind: K, params: LedgerReadParams<K>): LedgerReadResult<K> | Promise<LedgerReadResult<K>> {
   if (isConversationRead(kind)) {
@@ -63,7 +64,7 @@ export function runLedgerRead<K extends LedgerReadKind>(db: Db, kind: K, params:
     return read(db, params);
   }
   const read = reads[kind] as (db: Db, params: LedgerReadParams<K>) => LedgerReadResult<K>;
-  return db.transaction(() => read(db, params)).deferred();
+  return readSnapshot(db, () => read(db, params));
 }
 
 export type LedgerReadRequest = {
