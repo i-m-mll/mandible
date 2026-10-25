@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 /**
  * Issue cc8fe29 — an execution that exits non-zero is `failed`, never
  * `completed`. The daemon records it with its reason, the API and CLI present
@@ -43,7 +44,7 @@ describe("failed auth execution", () => {
     setDb(db);
     cleanups.push(() => queue.dispose());
     const router = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const read = async (url: string) => {
       const response = await router.invoke({ method: "GET", url });
       expect(response.status).toBe(200);
@@ -114,8 +115,8 @@ describe("failed auth execution", () => {
     setDb(db);
     cleanups.push(() => queue.dispose());
     const router = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-    registerInboxRoutes(router as never, undefined, queue);
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerInboxRoutes(router as never, undefined, queue, undefined, inlineLedgerReader());
     const undelivered = async () => {
       const response = await router.invoke({ method: "GET", url: "/api/inbox/undelivered?target_session_id=owner-session" });
       expect(response.status).toBe(200);

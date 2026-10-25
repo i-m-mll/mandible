@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,7 +32,7 @@ it("denies the production approval route over file RPC before request lookup", a
   const queue = new AuthQueue({ db, backgroundMaintenance: false });
   try {
     const router = new Router();
-    registerAuthRoutes(router, queue, {} as never, {} as never);
+    registerAuthRoutes(router, queue, {} as never, {} as never, inlineLedgerReader(() => queue.db));
     const transport = new FileRpcTransport({ router, dir: tempDir });
     fs.writeFileSync(path.join(tempDir, "denied.request.json"), JSON.stringify({
       id: "denied",

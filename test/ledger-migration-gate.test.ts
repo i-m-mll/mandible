@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -187,7 +188,7 @@ describe("ledger issue projection", () => {
 
     const summaries = listLedgerIssueSummaries(db, workScanner);
     const server = new TestIssueServer();
-    registerIssueRoutes(server, workScanner as never);
+    registerIssueRoutes(server, workScanner as never, undefined, inlineLedgerReader());
     const byKey = await server.invoke("GET", "/api/issues", { query: { repo: "feedbax" } });
     const byLegacy = await server.invoke("GET", "/api/issues", { query: { repo: "20-widgets-widgets" } });
 
@@ -237,7 +238,7 @@ describe("ledger relationship routes", () => {
     db.prepare("UPDATE ledger_issues SET short_id = ? WHERE id = ?")
       .run(shortTarget.short_id, collidingSourceTarget.id);
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([sourceRepo, targetRepo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([sourceRepo, targetRepo]) as never, undefined, inlineLedgerReader());
     const targetRefs = [
       `${targetProject.project_key}/${shortTarget.short_id}`,
       `${targetProject.project_key}/${fullTarget.id}`,
@@ -288,7 +289,7 @@ describe("ledger issue routes", () => {
     const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Closed writable" });
     store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const response = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
       params: { issueId: "abc123" },
@@ -355,7 +356,7 @@ describe("ledger issue routes", () => {
       )`,
     ).run(repoInfo.id, now, now, now + 60_000);
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
       params: { issueId: "umb123" },
@@ -428,7 +429,7 @@ describe("ledger issue routes", () => {
     store.addIssueBranch(child.id, "feature/deep", "primary", SYSTEM_ACTOR);
 
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
       params: { issueId: "umbdeep" },
@@ -495,7 +496,7 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "adoptb", external_id: "adoptb", is_primary: true }],
     });
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const adopted = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-adopt", {
       params: { issueId: "umbadopt" },
@@ -570,7 +571,7 @@ describe("ledger issue routes", () => {
     const beforeEdges = store.listRelationshipEdges({ source_issue_id: umbrella.id }).map((edge) => edge.id);
 
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const response = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh", {
       params: { issueId: "umbmani" },
@@ -652,7 +653,7 @@ describe("ledger issue routes", () => {
     });
 
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
     const refreshed = await server.invoke(
       "POST",
       "/api/ledger/issues/:issueId/umbrella-manifest-refresh",
@@ -731,7 +732,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
 
     const response = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh", {
       params: { issueId: "umbzero" },
@@ -754,7 +755,7 @@ describe("ledger issue routes", () => {
   it("warns by default on likely escaped Markdown and preserves the body exactly", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
     createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
     const escapedBody = "Created through API.\\n\\nDetails:\\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
@@ -792,7 +793,7 @@ describe("ledger issue routes", () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
     const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never, undefined, inlineLedgerReader());
     setMarkdownBodyEscapePolicy("reject");
 
     const rejectedIssue = await server.invoke("POST", "/api/issues/:repoId", {

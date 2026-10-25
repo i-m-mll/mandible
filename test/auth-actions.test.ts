@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, createNoopHookManager, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 
@@ -549,7 +550,7 @@ describe("auth request action routes", () => {
       const refs = seedBriefingPromotion(db);
       const router = new Router();
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-promotion-session",
@@ -601,7 +602,7 @@ describe("auth request action routes", () => {
       const refs = seedBriefingPromotion(db);
       const router = new Router();
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-promotion-drift-session",
@@ -641,7 +642,7 @@ describe("auth request action routes", () => {
     try {
       const router = new Router();
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-route-session",
@@ -699,7 +700,7 @@ describe("auth request action routes", () => {
     try {
       const router = new Router();
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo route",
         title: "Route veto",
@@ -741,7 +742,7 @@ describe("auth request action routes", () => {
     try {
       const router = new Router();
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-invalid-session",

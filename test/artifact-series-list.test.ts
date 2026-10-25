@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +28,7 @@ afterEach(() => {
 
 function createRouter(): Router {
   const router = new Router();
-  registerProviderRoutes(router);
+  registerProviderRoutes(router, inlineLedgerReader());
   return router;
 }
 

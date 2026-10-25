@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +17,7 @@ async function setup() {
  let checkout:string|null=root;
  const scanner={getRepos:()=>[{id:'mandible',root,name:'Mandible'}],getRepoById:()=>({id:'mandible',root,name:'Mandible'}),getBranches:()=>checkout?[{branch:'feature/exact',worktree_path:checkout}]:[]};
  const control={getSnapshot:vi.fn(()=>({ok:true,value:{revision:0,ownership:{kind:'none',generation:0}}})),resume:vi.fn(async()=>({ok:true,value:{ownership:{kind:'mandible',generation:1}}})),stop:vi.fn(async()=>({ok:true,value:undefined})),ownsController:vi.fn(async()=>true)};
- registerIssueRoutes(router,scanner as never,{conversationControl:control as never,sessionAliasResolver:()=>({provider:'codex',provider_session_id:'native'}) as never});
+ registerIssueRoutes(router,scanner as never,{conversationControl:control as never,sessionAliasResolver:()=>({provider:'codex',provider_session_id:'native'}) as never}, inlineLedgerReader());
  const created=await router.invoke({method:'POST',url:'/api/issues/mandible',body:{title:'Exact resume',body:'Resume existing assignment',project:'mandible',kind:'maintenance'}});
  expect(created.status).toBe(200);const issue=(created.body as {id:string}).id;
  db.prepare("INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,state,assigned_session_id,provider,custody_generation,created_at) VALUES ('unit',?,?,'mandible','feature/exact','committed','assigned','codex',2,1)").run(issue,issue);

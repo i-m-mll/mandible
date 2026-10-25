@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
@@ -36,7 +37,7 @@ function setup(): { db: Db; queue: AuthQueue; router: Router } {
     }),
   });
   const router = new Router();
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
   return { db, queue, router };
 }
 

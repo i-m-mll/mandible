@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
@@ -38,7 +39,7 @@ describe("copied auth preview isolation", () => {
       hookManager: { grantRetry: vi.fn(), runPending: vi.fn(), selfUpdatesRuntime: () => false, runtimeHandoffLock: () => null } as unknown as AuthHookManager,
     });
     const router = new Router();
-    registerAuthRoutes(router, preview, {} as AuthAutoApproveManager, {} as AuthClearanceManager);
+    registerAuthRoutes(router, preview, {} as AuthAutoApproveManager, {} as AuthClearanceManager, inlineLedgerReader(() => preview.db));
     const fakeBin = trackTempPath(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-bin-")));
     const commandLog = path.join(fakeBin, "commands.log");
     fs.writeFileSync(path.join(fakeBin, "git"), `#!/bin/sh\necho git >> '${commandLog}'\nexit 91\n`, { mode: 0o755 });

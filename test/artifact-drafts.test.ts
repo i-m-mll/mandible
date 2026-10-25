@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -128,7 +129,7 @@ describe("artifact drafts", () => {
   it("exposes draft save, read, publish, and delete through provider routes", () => {
     const v1 = managedVersion("hello\n", 1000);
     const routes = new TestRoutes();
-    registerProviderRoutes(routes);
+    registerProviderRoutes(routes, inlineLedgerReader());
 
     const saved = routes.handle("POST", "/api/artifacts/drafts", {
       body: {

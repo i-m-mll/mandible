@@ -1,8 +1,8 @@
-import { inlineLedgerReader, type LedgerReader } from "../ledger-reads/index.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
 import { firstQueryValue, parseQueryParams } from "../graph/spec.js";
 import type { RouteRegistrar } from "../server.js";
 
-export function registerGraphRoutes(app: RouteRegistrar, reader: LedgerReader = inlineLedgerReader()): void {
+export function registerGraphRoutes(app: RouteRegistrar, reader: LedgerReader): void {
   app.get("/api/graph", async (req, res) => {
     const query = req.query as Record<string, string | string[] | undefined>;
     const params = parseQueryParams(query);

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -26,7 +27,7 @@ beforeEach(() => {
     routes.set(`${method} ${route}`, handler);
   };
   registerBriefingRoutes({ get: add("GET"), post: add("POST"), put: add("PUT"),
-    patch: add("PATCH"), delete: add("DELETE") } as RouteRegistrar, db);
+    patch: add("PATCH"), delete: add("DELETE") } as RouteRegistrar, db, inlineLedgerReader(() => db));
 });
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 

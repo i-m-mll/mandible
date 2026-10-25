@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 /**
  * Issue 5b2cdbf — `mandible issue parent-role assume` used to accept any
  * non-empty string as a session id, write it down, and report success. Because
@@ -132,7 +133,7 @@ beforeEach(async () => {
       status: taskId === DESKTOP_TASK ? "live" : taskId === OUTAGE_TASK ? "unavailable" : "not_live",
     }),
   });
-  registerIssueRoutes(router, fakeScanner, { sessionAliasResolver });
+  registerIssueRoutes(router, fakeScanner, { sessionAliasResolver }, inlineLedgerReader());
   registerSessionRoutes(router, new SessionRegistry(db), fakeScanner);
 
   const created = await router.invoke({

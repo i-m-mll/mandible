@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 
@@ -66,7 +67,7 @@ describe('copied-preview Briefing publication boundary', () => {
         db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
-      registerBriefingRoutes(preview, privateDb);
+      registerBriefingRoutes(preview, privateDb, inlineLedgerReader(() => privateDb));
       expect(privateDb.prepare(
         'SELECT COUNT(*) AS count FROM briefing_members WHERE briefing_id = ? AND user_id = ?',
       ).get(briefingId, operatorId)).toEqual({ count: 0 });

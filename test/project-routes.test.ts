@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
@@ -80,7 +81,7 @@ describe("project routes", () => {
 
 describe("issue route project rejection", () => {
   beforeEach(() => {
-    registerIssueRoutes(router as never, fakeScanner);
+    registerIssueRoutes(router as never, fakeScanner, undefined, inlineLedgerReader());
   });
 
   it("rejects unknown repo ref with error mentioning registered and a suggestions array", async () => {
@@ -207,7 +208,7 @@ describe("canonical project_key round-trip", () => {
     const actor = { actor_type: "system" as const, author_display: "System", attribution: systemAction() };
     store.setIssueStatus(issue.id, "closed", "delivered", actor);
     store.setLabel(issue.id, "merged", true, "mandible", actor);
-    registerIssueRoutes(router, fakeScanner);
+    registerIssueRoutes(router, fakeScanner, undefined, inlineLedgerReader());
     const ids = (body: unknown) => (body as Array<{ issues: Array<{ id: string }> }>).flatMap(repo => repo.issues.map(item => item.id));
     const closed = await router.invoke({ method: "GET", url: "/api/issues?status=closed" });
     expect(closed.status).toBe(200);
@@ -234,7 +235,7 @@ describe("issue search route", () => {
     const commented = issue(beta, "Unrelated", "nothing here");
     store.addComment(commented.id, { body: "a zebrafish shows up here too", ...author });
     issue(beta, "Other", "no match");
-    registerIssueRoutes(router, fakeScanner);
+    registerIssueRoutes(router, fakeScanner, undefined, inlineLedgerReader());
     const search = async (query: string) => {
       const res = await router.invoke({ method: "GET", url: `/api/issues/search?${query}` });
       expect(res.status).toBe(200);

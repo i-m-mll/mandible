@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,7 +69,7 @@ describe("operator bootstrap ledger boundary", () => {
     const logger = vi.fn();
     const bootstrap = new Router({ logger });
     registerUserRoutes(bootstrap);
-    registerIssueRoutes(bootstrap, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never);
+    registerIssueRoutes(bootstrap, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never, undefined, inlineLedgerReader());
 
     const written = await bootstrap.invoke({
       method: "POST",
