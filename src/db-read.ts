@@ -134,9 +134,10 @@ export function runReadOnlyQuery(
     return readAuthorizer(action, first, second);
   });
   try {
-    const statement = ledger.db.prepareSingle(sql).arrays();
+    const statement = ledger.db.prepareSingle(sql);
     const columns = statement.columns().map(column => column.name);
     if (columns.length === 0) throw new Error("Only row-returning queries are accepted");
+    statement.arrays();
     const rows: unknown[][] = [];
     let truncated = false;
     const cap = limit > 0 ? limit : Number.POSITIVE_INFINITY;

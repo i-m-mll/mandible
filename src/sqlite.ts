@@ -69,70 +69,36 @@ function rowForApplication(row: any): any {
   for (const key in row) converted[key] = valueForApplication(row[key]);
   return converted;
 }
-/**
- * One compiled statement. It is reusable between executions; while an iterator
- * is stepping it, it belongs to that iterator alone.
- */
-class PreparedSql {
-  iterating = false;
-  returnArrays = false;
-  constructor(readonly native: NativeStatement, readonly bindings: SqliteBindings) {
+export class SqliteStatement<Params = unknown> {
+  declare readonly parameterType?: Params;
+  private readonly bindings: SqliteBindings;
+  constructor(private readonly native: NativeStatement) {
+    this.bindings = new SqliteBindings(native.sourceSQL);
     native.setReadBigInts(true);
     native.setAllowBareNamedParameters(false);
     native.setAllowUnknownNamedParameters(false);
   }
-}
-
-export class SqliteStatement<Params = unknown> {
-  declare readonly parameterType?: Params;
-  constructor(
-    private readonly prepared: PreparedSql,
-    private readonly recompile: () => PreparedSql,
-    private readonly returnArrays = false,
-  ) {}
-  /** The shared statement, or a private copy while an iterator holds the shared one. */
-  private claim(): PreparedSql {
-    const prepared = this.prepared.iterating ? this.recompile() : this.prepared;
-    if (prepared.returnArrays !== this.returnArrays) {
-      prepared.native.setReturnArrays(this.returnArrays);
-      prepared.returnArrays = this.returnArrays;
-    }
-    return prepared;
-  }
-  get(...values: any[]): any {
-    const { native, bindings } = this.claim();
-    return sqliteCall(() => rowForApplication(native.get(...bindings.resolve(values))));
-  }
-  all(...values: any[]): any[] {
-    const { native, bindings } = this.claim();
-    return sqliteCall(() => native.all(...bindings.resolve(values)).map(rowForApplication));
-  }
+  get(...values: any[]): any { return sqliteCall(() => rowForApplication(this.native.get(...this.bindings.resolve(values)))); }
+  all(...values: any[]): any[] { return sqliteCall(() => this.native.all(...this.bindings.resolve(values)).map(rowForApplication)); }
   run(...values: any[]) {
-    const { native, bindings } = this.claim();
     return sqliteCall(() => {
-      const result = native.run(...bindings.resolve(values));
+      const result = this.native.run(...this.bindings.resolve(values));
       return { changes: Number(result.changes), lastInsertRowid: valueForApplication(result.lastInsertRowid) as number | bigint };
     });
   }
   *iterate(...values: any[]): Iterable<any> {
-    const prepared = this.claim();
-    const iterator = sqliteCall(() => prepared.native.iterate(...prepared.bindings.resolve(values))[Symbol.iterator]());
-    prepared.iterating = true;
+    const iterator = sqliteCall(() => this.native.iterate(...this.bindings.resolve(values))[Symbol.iterator]());
     try {
       for (;;) {
         const item = sqliteCall(() => iterator.next());
         if (item.done) return;
         yield rowForApplication(item.value);
       }
-    } finally {
-      prepared.iterating = false;
-      iterator.return?.();
-    }
+    } finally { iterator.return?.(); }
   }
-  get expandedSQL() { return this.prepared.native.expandedSQL; }
-  columns() { return sqliteCall(() => this.prepared.native.columns()); }
-  /** The same statement returning rows as arrays; this one is unchanged. */
-  arrays(): SqliteStatement<Params> { return new SqliteStatement(this.prepared, this.recompile, true); }
+  get expandedSQL() { return this.native.expandedSQL; }
+  columns() { return sqliteCall(() => this.native.columns()); }
+  arrays(): this { this.native.setReturnArrays(true); return this; }
 }
 
 type Transaction<Args extends any[], Value> = ((...args: Args) => Value) & {
@@ -143,13 +109,9 @@ type Transaction<Args extends any[], Value> = ((...args: Args) => Value) & {
 export interface SqliteOpenOptions { readonly?: boolean; fileMustExist?: boolean; timeout?: number }
 configureSqliteRuntime(DatabaseSync);
 
-/** Distinct SQL texts kept compiled per connection, least recently prepared evicted first. */
-export const STATEMENT_CACHE_CAPACITY = 512;
-
 export default class SqliteDatabase {
   private readonly native: NativeDatabase;
   private savepoint = 0;
-  private readonly statements = new Map<string, PreparedSql>();
   readonly name: string;
   readonly readonly: boolean;
   constructor(filename: string = ":memory:", options: SqliteOpenOptions = {}) {
@@ -164,31 +126,15 @@ export default class SqliteDatabase {
   }
   static fromSnapshot(bytes: Uint8Array): SqliteDatabase {
     const db = new SqliteDatabase();
-    try { sqliteCall(() => db.native.deserialize(bytes)); db.statements.clear(); return db; }
+    try { sqliteCall(() => db.native.deserialize(bytes)); return db; }
     catch (error) { db.close(); throw error; }
   }
   serialize(): Buffer { return sqliteCall(() => Buffer.from(this.native.serialize())); }
   get inTransaction() { return this.native.isTransaction; }
   get open() { return this.native.isOpen; }
-  close() { this.statements.clear(); return sqliteCall(() => this.native.close()); }
+  close() { return sqliteCall(() => this.native.close()); }
   exec(sql: string): this { sqliteCall(() => this.native.exec(sql)); return this; }
-  /**
-   * Repeated SQL text reuses one compiled statement. A statement an iterator is
-   * still stepping is never shared: the cache moves on to a fresh one.
-   */
-  prepare(sql: string): SqliteStatement {
-    let prepared = this.statements.get(sql);
-    if (prepared) this.statements.delete(sql);
-    if (!prepared || prepared.iterating) prepared = this.compile(sql);
-    this.statements.set(sql, prepared);
-    if (this.statements.size > STATEMENT_CACHE_CAPACITY) this.statements.delete(this.statements.keys().next().value!);
-    const { bindings } = prepared;
-    return new SqliteStatement(prepared, () => this.compile(sql, bindings));
-  }
-  private compile(sql: string, bindings?: SqliteBindings): PreparedSql {
-    const native = sqliteCall(() => this.native.prepare(sql));
-    return new PreparedSql(native, bindings ?? new SqliteBindings(native.sourceSQL));
-  }
+  prepare(sql: string): SqliteStatement { return new SqliteStatement(sqliteCall(() => this.native.prepare(sql))); }
   pragma(sql: string, options: { simple?: boolean } = {}): any {
     const statement = this.prepare(`PRAGMA ${sql}`);
     if (options.simple) { const row = statement.arrays().get(); return row?.[0]; }
@@ -197,24 +143,19 @@ export default class SqliteDatabase {
   function(name: string, options: { deterministic?: boolean }, fn: (...values: any[]) => any): this {
     sqliteCall(() => this.native.function(name, options, fn)); return this;
   }
-  /** Statements compiled under the previous authorizer are dropped, never reused under this one. */
-  setAuthorizer(authorizer: SqliteAuthorizer | null) { this.statements.clear(); sqliteCall(() => this.native.setAuthorizer(authorizer)); }
+  setAuthorizer(authorizer: SqliteAuthorizer | null) { sqliteCall(() => this.native.setAuthorizer(authorizer)); }
   prepareSingle(sql: string): SqliteStatement {
     const native = sqliteCall(() => this.native.prepare(sql));
     const tail = sql.slice(native.sourceSQL.length);
     if (tail.trim()) {
       const extra = sqliteCall(() => this.native.prepare(tail));
       try { extra.columns(); } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ERR_INVALID_STATE") return this.uncached(native);
+        if (error instanceof Error && "code" in error && error.code === "ERR_INVALID_STATE") return new SqliteStatement(native);
         throw error;
       }
       throw new Error("Only one SQL statement is accepted");
     }
-    return this.uncached(native);
-  }
-  private uncached(native: NativeStatement): SqliteStatement {
-    const prepared = new PreparedSql(native, new SqliteBindings(native.sourceSQL));
-    return new SqliteStatement(prepared, () => this.compile(native.sourceSQL, prepared.bindings));
+    return new SqliteStatement(native);
   }
   /**
    * Calling the returned function directly takes the write lock at BEGIN on a writable connection.
