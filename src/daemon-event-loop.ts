@@ -6,6 +6,7 @@ export { EVENT_LOOP_STALL_BUDGET_MS } from "./runtime-health-contract.js";
 
 const WARNING_THRESHOLD_MS = 100;
 const WARNING_CLEAR_MS = 50;
+const TURN_RESOLUTION_MS = 5;
 /**
  * A cheap read answers in milliseconds, so any single turn that holds the loop
  * longer than this is a visible stall for every client. A lone multi-second
@@ -29,6 +30,8 @@ export class EventLoopLagDiagnostics {
   private sequence = 0;
   private intervalStartedAt: number;
   private last: EventLoopLagSnapshot;
+  private turnTimer: ReturnType<typeof setInterval> | null = null;
+  private turnMaxMs = 0;
 
   constructor(logger: Logger, resolutionMs = 20, now = Date.now()) {
     this.logger = logger;
@@ -75,8 +78,32 @@ export class EventLoopLagDiagnostics {
     return { ...this.last };
   }
 
+  /**
+   * The longest the loop was blocked since the previous call, in ms. The first
+   * call starts a 5 ms drift timer and returns 0. It is not a second
+   * monitorEventLoopDelay: Bun backs every such monitor with one shared
+   * histogram, so resetting another one would reset the health window. Used by
+   * scripts/route-cost-sweep.ts to charge each request its own blocking time.
+   */
+  readTurnMs(): number {
+    if (!this.turnTimer) {
+      let last = performance.now();
+      this.turnTimer = setInterval(() => {
+        const now = performance.now();
+        this.turnMaxMs = Math.max(this.turnMaxMs, now - last - TURN_RESOLUTION_MS);
+        last = now;
+      }, TURN_RESOLUTION_MS);
+      this.turnTimer.unref();
+      return 0;
+    }
+    const maxMs = Math.round(this.turnMaxMs * 10) / 10;
+    this.turnMaxMs = 0;
+    return maxMs;
+  }
+
   close(): void {
     this.histogram.disable();
+    if (this.turnTimer) clearInterval(this.turnTimer);
   }
 }
 

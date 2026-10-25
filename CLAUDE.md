@@ -177,6 +177,13 @@ foreign-key errors, and event-loop stalls or starvation. Any unexplained
 occurrence fails the gate. Run this once after the candidate stabilizes, and
 rerun it only when a later change can affect the result.
 
+`scripts/candidate-acceptance.mjs` runs the route-cost sweep
+(`bun run route-cost-sweep`) as the first step of that gate. The sweep drives
+every route in the router's operation catalog against a snapshot of the live
+ledger and fails when any handler blocks the event loop for
+`HANDLER_TURN_BUDGET_MS` or longer (src/runtime-health-contract.ts), on a cold
+or a warm call. See [daemon stall profiling](docs/daemon-stall-profiling.md#route-cost-sweep).
+
 ## Agent interaction tiers
 
 Mandible interacts with agents at four tiers of integration:

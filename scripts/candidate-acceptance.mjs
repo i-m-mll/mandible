@@ -27,6 +27,23 @@ function command(binary, args, options = {}) {
 
 import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
 
+/** The acceptance record of a route-cost sweep report; null when the sweep printed none. */
+export function routeCostCheck(text) {
+  if (!text.trim()) return null;
+  const report = JSON.parse(text);
+  const route = entry => `${entry.method} ${entry.path}`;
+  return {
+    load: report.load,
+    threshold_ms: report.threshold_ms,
+    counts: report.counts,
+    offenders: report.offenders.map(entry => ({ route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
+    excepted: report.excepted.map(entry => ({ route: route(entry), issue: entry.issue, first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
+    exception_problems: report.exception_problems,
+    unclassified: report.unclassified.map(route),
+    failed_requests: report.failed_requests.map(entry => `${entry.url} (pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
+  };
+}
+
 export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
@@ -189,7 +206,7 @@ async function main() {
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' })) });
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' })) });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
@@ -210,6 +227,15 @@ async function main() {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
     await runSupervisedCommand(runtime, ['run', 'build'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 180000 });
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
+    // Every route handler must stay within HANDLER_TURN_BUDGET_MS on a snapshot
+    // of the live ledger. It runs before the native build so a slow handler
+    // fails the candidate early.
+    const routeCostFile = path.join(run, 'route-cost.json');
+    const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
+    const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
+    const sweepFailure = await runSupervisedCommand(runtime, ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json'], { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
+    result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
+    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').slice(-5).join(' | ')}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);

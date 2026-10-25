@@ -898,6 +898,7 @@ export interface ServerOptions {
   isWarm?: () => boolean;
   getMemoryDiagnostics?: () => DaemonMemorySnapshot;
   getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
+  readEventLoopTurnMs?: () => number;
   instance?: InstanceInfo;
   fileRpcDir?: string;
   localSocketPath?: string;
@@ -963,6 +964,13 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
     };
     res.json(payload);
   }, { operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  const readEventLoopTurnMs = options.readEventLoopTurnMs;
+  if (readEventLoopTurnMs) {
+    router.post("/api/diagnostics/event-loop-turn", (_req, res) => {
+      res.json({ max_turn_ms: readEventLoopTurnMs() });
+    }, { operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }
 
   router.post("/api/events/subscribe", (_req, res) => {
     res.status(400).json({ error: "stream_transport_required" });
