@@ -16,6 +16,7 @@ import { evictFileCache } from "./evict-file-cache.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
+import { resolveLedgerDbPath } from "../src/db-read.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
 import { DEFAULT_TIMELINE_VIEW_STATE } from "../ui/src/types/timeline.ts";
 import {
@@ -37,7 +38,7 @@ trials. Fails when the same call kind reaches --threshold-ms in every trial
 without a BUDGET_EXCEPTIONS entry, when a route is
 unclassified, or when a request does not succeed.
 
-  --source-db <path>    Ledger to snapshot (default ~/.mandible/mandible.db)
+  --source-db <path>    Ledger to snapshot (default: the installation ledger, MANDIBLE_DB or MANDIBLE_HOME/mandible.db)
   --work-root <path>    Parent directory for this sweep's private working files
   --threshold-ms <n>    Fail at or above this turn (default HANDLER_TURN_BUDGET_MS)
   --passes <n>          Requests per variant; the first is cold (default 2)
@@ -92,7 +93,7 @@ if (!(thresholdMs > 0) || !Number.isInteger(passes) || passes < 1) {
   process.exit(2);
 }
 const only = opts.only ? new RegExp(opts.only) : null;
-const sourceDb = path.resolve(opts["source-db"] ?? path.join(os.homedir(), ".mandible", "mandible.db"));
+const sourceDb = path.resolve(opts["source-db"] ?? resolveLedgerDbPath());
 
 function log(message: string) {
   console.error(`route-cost-sweep: ${message}`);
