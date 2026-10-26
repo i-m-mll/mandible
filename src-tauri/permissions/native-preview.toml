@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-native-presentation"
+description = "Allows the selected preview to query native window presentation."
+commands.allow = ["native_window_capabilities"]

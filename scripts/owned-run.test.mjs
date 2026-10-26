@@ -4,6 +4,46 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, withOwnedRunLock } from './owned-run.mjs';
+import { spawn } from 'node:child_process';
+import { processIdentity, stopNativePreview, cleanupNativePreview } from './native-preview.mjs';
+
+test('native cleanup signals only its owned executable and preserves the selected daemon and compact launch receipt', async () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-native-owner-')));
+  const root = path.join(base, 'native'); fs.mkdirSync(root);
+  const executable = path.join(root, 'native-shell');
+  fs.copyFileSync('/bin/sleep', executable);
+  const daemon = spawn('/bin/sleep', ['120'], { stdio: 'ignore' });
+  const native = spawn(executable, ['120'], { stdio: 'ignore' });
+  try {
+    await Promise.all([daemon, native].map(child => new Promise((resolve, reject) => {
+      child.once('spawn', resolve); child.once('error', reject);
+    })));
+    const profile = path.join(root, 'profile'); fs.mkdirSync(profile);
+    fs.writeFileSync(path.join(profile, 'cookies'), 'private native browser state');
+    const metadata = path.join(root, 'metadata.json');
+    const ownership = createOwnedRun({ root, instanceId: 'preview-fixture', project: 'fixture', workUnit: 'fixture',
+      outputs: [{ path: 'profile', kind: 'interactive' }, { path: 'native-shell', kind: 'generated' }] });
+    const receipt = { schema: 'mandible-native-preview@1', ownership, executable, profile, pid: native.pid,
+      processIdentity: processIdentity(native.pid), origin: 'https://preview-fixture.mandible.localhost:19421' };
+    saveOwnedMetadata(metadata, { ...receipt, pid: daemon.pid });
+    await assert.rejects(stopNativePreview(metadata), /identity changed/);
+    assert.ok(processIdentity(daemon.pid)); assert.ok(processIdentity(native.pid));
+    saveOwnedMetadata(metadata, receipt);
+    await assert.rejects(cleanupNativePreview(metadata), /Stop/);
+    await stopNativePreview(metadata);
+    assert.equal(processIdentity(native.pid), null);
+    assert.ok(processIdentity(daemon.pid));
+    const cleaned = await cleanupNativePreview(metadata);
+    assert.equal(fs.existsSync(root), false);
+    assert.equal(JSON.parse(fs.readFileSync(cleaned.receipt)).nativePreview.executable, executable);
+    assert.ok(processIdentity(daemon.pid));
+  } finally {
+    for (const child of [daemon, native]) if (child.exitCode === null && child.signalCode === null) child.kill();
+    await Promise.all([daemon, native].map(child => child.exitCode !== null || child.signalCode !== null ? undefined
+      : new Promise(resolve => child.once('exit', resolve))));
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
 
 const idle = { inspect: () => ({ idle: true }) };
 function fixture(disposable = false) {
