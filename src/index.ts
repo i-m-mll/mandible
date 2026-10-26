@@ -103,7 +103,8 @@ import { attachDashboardBadgePublisher, readDashboardBadgeCounts } from "./dashb
 import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
 import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
-import { defaultCodexThreadArchiver } from "./codex-thread-archive.js";
+import { ChildRetentionScheduler } from "./conversations/retention.js";
+import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-native-archive.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
@@ -694,9 +695,16 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
 
   // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
-  const workUnitReconciler = new WorkUnitReconciler(logger, { archiver: defaultCodexThreadArchiver });
+  const workUnitReconciler = new WorkUnitReconciler(logger);
+  const childRetention = new ChildRetentionScheduler(db, logger, {
+    effectsAllowed: operationalMutationsAllowed,
+    executionOutboxDirectory: executionOutboxDir(socketPath),
+    pendingNativeQueue: id => defaultCodexNativeArchiveAdapter.queue(id),
+  });
+  const detachChildRetention = sse.observeEvents(event => childRetention.observe(event));
   if (operationalMutationsAllowed) {
     workUnitReconciler.start();
+    childRetention.start();
   }
 
   // Start scheduled metadata backups
@@ -760,6 +768,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     daemonLogCopyForward.stop();
     await daemonLogRetention.stop();
     await workUnitReconciler.stop();
+    detachChildRetention();
+    await childRetention.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
     executionOutbox.stop();
