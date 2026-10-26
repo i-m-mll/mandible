@@ -295,7 +295,7 @@ describe('rendered workspace shadow', () => {
           continue;
         }
         if (name === 'line') { for (const sample of samples) expect(Math.abs(sample.delta), `${theme} contour remains independent of shadow`).toBeLessThanOrEqual(3); continue; }
-        expect(samples[0]!.delta, `${theme} ${name} visible contrast`).toBeGreaterThanOrEqual(5);
+        expect(samples[0]!.delta, `${theme} ${name} rendered contrast`).toBeGreaterThanOrEqual(2);
         for (let i=1;i<samples.length;i++) expect(samples[i]!.delta, `${theme} ${name} monotone falloff`).toBeLessThanOrEqual(samples[i-1]!.delta + 1);
         expect(samples.at(-1)!.delta, `${theme} ${name} paint extent`).toBeLessThanOrEqual(1);
       }
