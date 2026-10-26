@@ -30,8 +30,11 @@ describe("Bun SQLite boundary", () => {
         throw new Error("outer rollback");
       })()).toThrow("outer rollback");
       expect(published).toEqual(["outer", "nested"]);
-      expect(() => db.transaction(() => db.afterCommit(() => { throw new Error("publish failed"); }))())
-        .toThrow("publish failed");
+      expect(() => db.transaction(() => {
+        db.afterCommit(() => { throw new Error("publish failed"); });
+        db.afterCommit(() => published.push("after-failed-notification"));
+      })()).toThrow("publish failed");
+      expect(published.at(-1)).toBe("after-failed-notification");
       expect(db.inTransaction).toBe(false);
     } finally { db.close(); }
   });
