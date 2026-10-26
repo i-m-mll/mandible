@@ -2,3 +2,8 @@ export function previewBaseDir(override?: string | null): string;
 export function previewPaths(branch: string): { root: string; metadata: string };
 export function withPreviewLifecycle<T>(branch: string, operation: () => Promise<T>): Promise<T>;
 export function previewWorktreeCustodyReason(branch: string, worktree: string | null): Promise<string | null>;
+export type PreviewRunHandle = { root: string; runId: string; revision?: number };
+export function withPreviewRun<T>(handle: PreviewRunHandle, operation: (metadata: any, save: () => void) => T | Promise<T>): Promise<T>;
+export function acquirePreviewConsumer(handle: PreviewRunHandle, child: any): Promise<any>;
+export function publishPreviewConsumer(reservation: any, identity: any): Promise<any>;
+export function releasePreviewConsumer(reservation: any): Promise<any>;

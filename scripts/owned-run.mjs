@@ -2,32 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { withLifecycleLock } from './lifecycle-lock.mjs';
+export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
 
 export async function withOwnedRunLock(root, operation) {
-  const base = path.dirname(path.resolve(root));
-  fs.mkdirSync(base, { recursive: true });
-  const lock = path.join(base, `.${path.basename(root)}.lock`);
-  try { fs.mkdirSync(lock); } catch (error) {
-    if (error.code === 'EEXIST') throw new Error(`Preview lifecycle is locked: ${lock}; inspect its owner before recovery`);
-    throw error;
-  }
-  try {
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
-    return await operation();
-  } finally { fs.rmSync(lock, { recursive: true }); }
+  return withLifecycleLock(root, operation);
 }
 
-export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false }) {
+export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false, runId = randomUUID() }) {
   if (!project || !workUnit || !instanceId) throw new Error('Owned run requires canonical project, work-unit and instance identities');
+  if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid owned run ID');
   const stat = fs.lstatSync(root);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Owned run root must be a canonical directory');
   for (const output of outputs) contained(root, output.path);
   const paths = outputs.map(output => output.path);
   if (new Set(paths).size !== paths.length || paths.some(a => paths.some(b => a !== b && a.startsWith(`${b}${path.sep}`)))) throw new Error('Owned outputs must not overlap');
   return {
-    schema: OWNED_RUN_SCHEMA, runId: randomUUID(), revision: 1,
+    schema: OWNED_RUN_SCHEMA, runId, revision: 1,
     root: fs.realpathSync(root), rootIdentity: { dev: stat.dev, ino: stat.ino },
     instanceId, project, workUnit, state: 'creating', disposable,
     outputs: outputs.map(output => ({ ...output, disposition: 'pending' })),
@@ -79,11 +72,26 @@ function contained(root, relative, allowLeafLink = false) {
   return resolved;
 }
 
-function identityMatches(root, run) {
+export function ownedRunIdentityMatches(root, run) {
   const stat = fs.lstatSync(root);
   return run.schema === OWNED_RUN_SCHEMA && run.root === fs.realpathSync(root)
     && !stat.isSymbolicLink() && fs.realpathSync(root) === run.root
     && stat.dev === run.rootIdentity?.dev && stat.ino === run.rootIdentity?.ino;
+}
+
+const identityMatches = ownedRunIdentityMatches;
+
+export function ownedRunHandle(metadata) {
+  return { root: metadata.ownership.root, runId: metadata.ownership.runId };
+}
+
+export function ownedRunReceipt(handle) {
+  if (!handle?.runId || !/^[a-zA-Z0-9-]+$/.test(handle.runId)) throw new Error('Exact owned run handle required');
+  const file = path.join(path.dirname(path.resolve(handle.root)), '.receipts', `${handle.runId}.json`);
+  if (!fs.existsSync(file)) return null;
+  const receipt = readOwnedMetadata(file);
+  if (receipt.runId !== handle.runId || receipt.root !== path.resolve(handle.root)) throw new Error('Compact receipt identity changed');
+  return { ...receipt, receipt: file };
 }
 
 function inventory(root, relative, hashBytes = true) {
@@ -162,6 +170,8 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   const receiptDir = receiptDirectory(root);
   const receipt = path.join(receiptDir, `${run.runId}.json`);
   const result = { schema: OWNED_RUN_SCHEMA, runId: run.runId, instanceId: run.instanceId,
+    root: run.root, rootIdentity: run.rootIdentity, branch: metadata.branch, worktree: metadata.worktree,
+    lifecycle: run.lifecycle, consumers: run.consumers, acquisition: run.acquisition, source: run.source,
     project: run.project, workUnit: run.workUnit, outcome, converged, disposition: disposition ?? 'disposable-fixture',
     destination: destination ? path.resolve(destination) : null, transferReference: transferReference ?? null, summary, finalizedAt: new Date().toISOString(),
     cleanup: 'pending', manifestDigest: outputDigest(outputs), apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
