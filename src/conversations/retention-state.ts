@@ -55,9 +55,9 @@ export function projectChildRetentionActivity(db: Db, conversationId: string,
   blocks: readonly Pick<ConversationBlock, "type" | "role" | "timestamp" | "position" | "metadata">[]): void {
   const child = getRetainedChild(db, conversationId);
   if (!child) return;
-  const previous = db.prepare(`SELECT last_activity_at, last_input_at, last_terminal_at, activity_state,
+  const previous = db.prepare(`SELECT role,last_activity_at, last_input_at, last_terminal_at, activity_state,
     activity_generation FROM conversation_retention_state WHERE conversation_id = ?`).get(conversationId) as {
-    last_activity_at: number | null; last_input_at: number | null; last_terminal_at: number | null;
+    role: string; last_activity_at: number | null; last_input_at: number | null; last_terminal_at: number | null;
     activity_state: string; activity_generation: number;
   } | undefined;
   let activity = previous?.last_activity_at ?? 0;
@@ -80,7 +80,7 @@ export function projectChildRetentionActivity(db: Db, conversationId: string,
       state = terminalEvent ? "settled" : "active";
     }
   }
-  const changed = activity !== (previous?.last_activity_at ?? 0)
+  const changed = child.role !== previous?.role || activity !== (previous?.last_activity_at ?? 0)
     || input !== (previous?.last_input_at ?? 0) || terminal !== (previous?.last_terminal_at ?? 0) || state !== previous?.activity_state;
   const source = db.prepare("SELECT current_version_id FROM conversation_sources WHERE conversation_id = ? LIMIT 1")
     .get(conversationId) as { current_version_id: string | null } | undefined;

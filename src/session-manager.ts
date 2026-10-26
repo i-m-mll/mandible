@@ -7,7 +7,6 @@ import { getDb, type Db } from "./db.js";
 import { isClaudeCommand, describeAnthropicBilling } from "./claude-lane-policy.js";
 import type { SessionRegistry } from "./registry.js";
 import type { ClientAuthenticator } from "./client-auth/authenticator.js";
-import type { CodexThreadArchiver } from "./codex-thread-archive.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { getOperator } from "./users/store.js";
@@ -180,7 +179,7 @@ function rowToSession(
 export class SessionManager {
   private readonly sessions = new Map<string, TerminalBackend>();
   private readOnly = false;
-  constructor(_db: unknown, private readonly logger: Logger, _registry?: SessionRegistry, _archiver?: CodexThreadArchiver, _auth?: ClientAuthenticator) {}
+  constructor(_db: unknown, private readonly logger: Logger, _registry?: SessionRegistry, _auth?: ClientAuthenticator) {}
 
   init({ readOnly = false }: { readOnly?: boolean } = {}): void {
     this.readOnly = readOnly;

@@ -92,6 +92,8 @@ export interface FreshConversationResult {
 export type ExactIngest = (path: string) => Promise<TargetedIngestResult>;
 
 export interface ExactConversationFreshnessOptions {
+  /** Prove the indexed version with bounded extent/identity/tail reads; schedule stale work and defer. */
+  indexedOnly?: boolean;
   timeoutMs?: number;
   ingest?: ExactIngest;
   /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
@@ -500,7 +502,7 @@ export async function ensureExactConversationFresh(
   if (!pinned.sourceId) {
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
   }
-  if (options.waitForFresh === false) {
+  if (options.waitForFresh === false || options.indexedOnly) {
     const epochs = db.prepare(`
       SELECT parser_format, parser_version, normalization_version, redaction_epoch
         FROM conversation_sources WHERE id = ?
@@ -529,7 +531,7 @@ export async function ensureExactConversationFresh(
     if (sourceNeedsRefresh && pinned.sourcePath) {
       try {
         if ((options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath, pinned.sourceId, pinned.conversationId)) {
-          if (!parserEpochOutdated) {
+          if (!parserEpochOutdated && !options.indexedOnly) {
             // Let the selected source reader prove its requested page against
             // the sealed indexed prefix. This keeps an active append from
             // blocking historical pages; the reader still rejects a rewrite,
