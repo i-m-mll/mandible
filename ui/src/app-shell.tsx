@@ -21,6 +21,8 @@ export type AppRightSidebarLayout = {
   maxWidth: number;
 };
 
+export const APP_FRAME_CONTROLS_OFFSET = 12;
+
 export const APP_RAIL_WIDTHS = { icons: 44.8, both: 208 } as const;
 
 export const APP_RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 300;
@@ -360,7 +362,7 @@ export function resolveAppFrameGeometry({ viewportWidth, railWidth, viewSidebarW
 }): { viewSidebarWidth: number | null; rightSidebarLayout: AppRightSidebarLayout } {
   // Center the browser's 34px logo slot over the rail; native reserves its glyph inset.
   // Include the three 34px controls, 2px gaps and 8px trailing padding.
-  const minimumNavigationWidth = nativeControlsReservation > 0 ? nativeControlsReservation + 144 : (railWidth - 34) / 2 + 34 + 116;
+  const minimumNavigationWidth = (nativeControlsReservation > 0 ? nativeControlsReservation + 144 : (railWidth - 34) / 2 + 34 + 116) + APP_FRAME_CONTROLS_OFFSET;
   const minimumLeft = Math.max(122, minimumNavigationWidth - railWidth);
   const rightSidebarLayout = resolveAppRightSidebarLayout(rightSidebar, viewportWidth, viewportWidth - railWidth - Math.max(0, minimumLeft - 122));
   return {

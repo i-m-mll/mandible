@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  APP_FRAME_CONTROLS_OFFSET,
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
@@ -43,6 +44,17 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
+      const edgeTarget = node => { const r=rect(node); return document.elementFromPoint(r.left+0.5,(r.top+r.bottom)/2); };
+      const edgeClick = node => { const target=edgeTarget(node); if (!node.contains(target)) throw new Error('Control edge is unreachable: '+node.getAttribute('aria-label')); target.closest('button').click(); };
+      const paint = node => {
+        const hit=rect(node); const glyph=rect(node.querySelector('svg')); const decoration=getComputedStyle(node,'::before');
+        return {kind:node.classList.contains('app-frame__history-button')?'history':node.classList.contains('detail-pane-menu-trigger')?'menu':'toggle',hit,glyph,
+          decoration:{width:parseFloat(decoration.width),height:parseFloat(decoration.height),background:decoration.backgroundColor,pointerEvents:decoration.pointerEvents},
+          buttonBackground:getComputedStyle(node).backgroundColor,edgeReachable:node.contains(edgeTarget(node))};
+      };
+      const historyActions={back:0,forward:0};
+      window.history.back=()=>historyActions.back++;
+      window.history.forward=()=>historyActions.forward++;
       const waitForRunOptions = async () => {
         for (let attempt=0; attempt<50; attempt+=1) {
           const composer=document.querySelector('.conv-compose');
@@ -69,10 +81,11 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
         let menuInteraction=null;
         const menuTrigger=document.querySelector('.app-frame__bar .detail-pane-menu-trigger');
         if(menuTrigger){
-          menuTrigger.click(); await wait();
+          edgeClick(menuTrigger); await wait();
           const menu=document.querySelector('[role=menu]'); const menuBounds=rect(menu);
+          const expandedPaint=paint(menuTrigger);
           const item=menu.querySelector('button'); item.focus(); item.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); await wait();
-          menuInteraction={menuBounds,anchor:rect(menuTrigger),closed:!document.querySelector('[role=menu]'),focused:document.activeElement===menuTrigger};
+          menuInteraction={menuBounds,anchor:rect(menuTrigger),expandedPaint,closed:!document.querySelector('[role=menu]'),focused:document.activeElement===menuTrigger};
         }
         const frameStates=[];
         const frameGeometry=()=>{
@@ -103,6 +116,10 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           window.dispatchEvent(new CustomEvent('fixture-native-reservation',{detail:88})); await wait(); const after=frameGeometry();
           fullscreen={before,during,after,retained:back===document.querySelector('[aria-label=Back]')&&logo===document.querySelector('.app-header__logo')};
         }
+        const controls=Array.from(document.querySelectorAll('.app-frame__bar .app-frame__button,.app-frame__bar .app-right-sidebar-toggle,.app-frame__bar .detail-pane-menu-trigger'));
+        edgeClick(document.querySelector('[aria-label=Back]'));
+        edgeClick(document.querySelector('[aria-label=Forward]'));
+        for (const toggle of controls.filter(node=>node.hasAttribute('aria-pressed'))) { edgeClick(toggle); await wait(); edgeClick(toggle); await wait(); }
         const body=document.querySelector('.app-right-sidebar__body');
         const header=document.querySelector('.app-frame__bar');
         const reopenedLayout={right:!sidebar.hidden,view:root.querySelector('.app-frame').classList.contains('app-frame--left-open'),mainWidth:rect(document.querySelector('main')).width,
@@ -158,7 +175,9 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
         const jumpControl=jump?{hit:rect(jump),visual:{width:parseFloat(jumpVisual.width),height:parseFloat(jumpVisual.height)},icon:rect(jumpIcon),label:jump.getAttribute('aria-label'),title:jump.getAttribute('title')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
-        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,
+        const controlPaint=controls.map(node=>{node.focus({preventScroll:true});return paint(node);});
+        document.querySelector('[aria-label=Back]').focus({preventScroll:true});
+        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,controlPaint,historyActions,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(document.querySelector('.app-frame__bar')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,jumpControl,preservedScrollTop,
@@ -202,6 +221,17 @@ describe('production app right sidebar geometry and interaction', () => {
   ];
   it.each(cases)('preserves the $surface sidebar at $width px in $theme', ({ surface, width, theme, native, fullRail, scale }) => {
     const result = renderCase(surface, width, theme, native, fullRail, scale);
+    expect(result.historyActions).toEqual({ back: 1, forward: 1 });
+    for (const control of result.controlPaint as Array<{ kind: string; hit: {width:number;height:number}; glyph:{width:number;height:number}; decoration:{width:number;height:number;background:string;pointerEvents:string}; buttonBackground:string;edgeReachable:boolean }>) {
+      expect(control.edgeReachable).toBe(true);
+      expect(control.decoration.pointerEvents).toBe('none');
+      expect(control.buttonBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(control.decoration.background).not.toBe('rgba(0, 0, 0, 0)');
+      expect(control.hit.width).toBe(control.kind === 'menu' ? 24 : 34);
+      expect(control.hit.height).toBe(control.hit.width);
+      expect(control.decoration.width).toBeCloseTo((control.hit.width + control.glyph.width) / 2, 2);
+      expect(control.decoration.height).toBeCloseTo((control.hit.height + control.glyph.height) / 2, 2);
+    }
     expect(result.autoCollapsed).toEqual({
       right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
       rightDisplay: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH ? 'none' : 'grid',
@@ -285,7 +315,7 @@ describe('production app right sidebar geometry and interaction', () => {
         const logoCenter = (state.logo.left + state.logo.right) / 2;
         const backCenter = (state.buttons[0].left + state.buttons[0].right) / 2;
         const historySpacing = state.buttons[1].left - state.buttons[0].left;
-        expect(backCenter - logoCenter).toBeCloseTo(historySpacing, 2);
+        expect(backCenter - logoCenter).toBeCloseTo(historySpacing + APP_FRAME_CONTROLS_OFFSET, 2);
         expect((state.logo.top + state.logo.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 1);
         if (native && state.reservation > 0) expect(state.logo.left).toBeCloseTo(state.reservation, 1);
         else expect((state.logo.left + state.logo.right) / 2).toBeCloseTo((state.rail.left + state.rail.right) / 2, 1);
@@ -306,7 +336,7 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(Math.abs(fullscreenLogoCenter - railItemCenter)).toBeLessThanOrEqual(1);
         expect(fullscreenLogoCenter).toBeCloseTo((fullscreen.during.rail.left + fullscreen.during.rail.right) / 2, 1);
         const backCenter = (fullscreen.during.buttons[0].left + fullscreen.during.buttons[0].right) / 2;
-        expect(backCenter - fullscreenLogoCenter).toBeCloseTo(fullscreen.during.buttons[1].left - fullscreen.during.buttons[0].left, 2);
+        expect(backCenter - fullscreenLogoCenter).toBeCloseTo(fullscreen.during.buttons[1].left - fullscreen.during.buttons[0].left + APP_FRAME_CONTROLS_OFFSET, 2);
         expect(fullscreen.during.backReachable).toBe(true);
         expect(fullscreen.after.logo).toEqual(fullscreen.before.logo);
         expect(fullscreen.during.railButton).toEqual(fullscreen.before.railButton);

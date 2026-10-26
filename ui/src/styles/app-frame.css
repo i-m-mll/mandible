@@ -33,6 +33,7 @@
 .app-frame--main-header.app-frame--left-open .app-frame__navigation { width: var(--app-frame-left-width); }
 .app-frame__native-controls { display: none; }
 .app-frame__logo { display: flex; align-items: center; justify-content: center; flex: none; width: var(--app-header-control-size); height: var(--app-header-control-size); margin-inline-start: calc((var(--app-rail-width) - var(--app-header-control-size)) / 2); color: var(--text-muted); }
+.app-frame__logo + .app-frame__button { margin-inline-start: var(--app-frame-controls-offset); }
 .app-frame__button {
   display: inline-flex;
   align-items: center;
@@ -47,8 +48,36 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.app-frame__button:is(:hover, :focus-visible) { background: var(--neutral-alpha-06); color: var(--text-primary); }
+.app-frame__button:is(:hover, :focus-visible) { color: var(--text-primary); }
 .app-frame__button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger) {
+  --app-frame-icon-hit-size: var(--app-header-control-size);
+  --app-frame-icon-glyph-size: var(--app-header-control-icon-size);
+  --app-frame-icon-hover-color: var(--neutral-alpha-06);
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+.app-frame > .app-frame__bar .app-frame__history-button { --app-frame-icon-glyph-size: 17px; }
+.app-frame > .app-frame__bar .detail-pane-menu-trigger {
+  --app-frame-icon-hit-size: 24px;
+  --app-frame-icon-hover-color: var(--neutral-alpha-08);
+}
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger)::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: calc((var(--app-frame-icon-hit-size) + var(--app-frame-icon-glyph-size)) / 2);
+  height: calc((var(--app-frame-icon-hit-size) + var(--app-frame-icon-glyph-size)) / 2);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+}
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger):is(:hover, :focus-visible, [aria-pressed='true'], [aria-expanded='true'])::before {
+  background: var(--app-frame-icon-hover-color);
+}
 .app-frame__main-header { position: relative; flex: 1 1 0; min-width: 0; height: 100%; }
 .app-frame__main-header .detail-pane-header { background: transparent; width: 100%; }
 .app-frame__main-header .detail-pane-header--compact .detail-pane-header__title { font-size: 13px; }
@@ -65,8 +94,21 @@
 .app-frame--right-open .app-frame__right::before {
   content: ''; position: absolute; width: 1px; height: 50%; top: 25%; left: 0; background: var(--border-muted); pointer-events: none;
 }
-.app-frame > .app-rail { grid-column: 1; grid-row: 2; border-right: 0; padding-top: 12px; background: transparent; }
+.app-frame > .app-rail { grid-column: 1; grid-row: 2; border-right: 0; padding-top: var(--app-frame-controls-offset); background: transparent; }
 .app-frame > .app-layout { grid-column: 2; grid-row: 2; border-top-left-radius: var(--radius-chat-surface); }
+.app-frame::before {
+  content: '';
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  border-top: 1px solid var(--border-muted);
+  border-left: 1px solid var(--border-muted);
+  border-top-left-radius: var(--radius-chat-surface);
+  z-index: calc(var(--z-app-subdivision) + 1);
+  pointer-events: none;
+}
 /* The three disjoint layers share one distance-from-edge profile, including
  * the corner tangents. Paint lives above opaque workspace children. */
 .app-frame::after {

@@ -27,7 +27,7 @@ import { ActivityGroup, ActivityRow } from '../components/message-blocks/Activit
 import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
-import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
+import { ArrowIcon } from '../components/icons/ArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
 import type {
   ConversationNavigationCommand,
@@ -1586,7 +1586,7 @@ export function ChatSurface({
             aria-busy={jumpingToLatest ? 'true' : 'false'}
             title="Jump to latest"
           >
-            <VerticalArrowIcon direction="down" />
+            <ArrowIcon direction="down" />
           </button>
           {jumpingToLatest && (
             <span className="sr-only" role="status" aria-live="polite">Loading latest…</span>
