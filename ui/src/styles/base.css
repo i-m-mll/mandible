@@ -341,11 +341,11 @@ a {
   appearance: none;
   position: relative;
   min-width: 0;
-  min-height: 38px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 4px 5px;
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
@@ -404,7 +404,6 @@ a {
 .app-rail__item--active {
   color: var(--text-primary);
   background: var(--neutral-alpha-08);
-  border-color: var(--neutral-alpha-10);
 }
 
 .app-rail__tooltip {
@@ -486,13 +485,13 @@ a {
 }
 
 .app-shell--rail-icons .app-rail__item {
-  width: 40px;
+  width: 32px;
   justify-content: center;
   padding-inline: 0;
 }
 
 .app-shell--rail-icons .app-rail__reorder-toggle {
-  flex: 0 0 40px;
+  flex: 0 0 32px;
 }
 
 
