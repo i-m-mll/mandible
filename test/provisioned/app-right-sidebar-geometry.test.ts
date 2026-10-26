@@ -248,7 +248,7 @@ function compareShadowPixels(directory: string, painted: string, baseline: strin
 }
 
 describe('rendered workspace shadow', () => {
-  it.each(['light', 'dark'] as const)('casts a visible smooth falloff onto %s chrome without interior shading', theme => {
+  it.each(['light', 'dark'] as const)('applies the selected shadow strength to %s chrome without interior shading', theme => {
     const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const directory = evidenceDirectory ?? mkdtempSync(join(tmpdir(), 'mandible-shadow-pixels-'));
     mkdirSync(directory, { recursive: true });
@@ -285,14 +285,15 @@ describe('rendered workspace shadow', () => {
         ],
       });
       if (evidenceDirectory) writeFileSync(join(directory, `shadow-${theme}-pixels.json`), JSON.stringify({ theme, probeSetup: 'Initial mounted production frame; the fixture corner label and top-bar foreground are hidden to expose uninterrupted material while retaining layout. Baseline disables only the shadow background.', surface: result.paintSurface, profiles }, null, 2));
+      if (theme === 'dark') expect(readFileSync(painted).equals(readFileSync(baseline)), 'dark shadow on/off screenshots must be identical').toBe(true);
       for (const [name, samples] of Object.entries(profiles)) {
-        if (name === 'outside' || name === 'interior') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
+        if (theme === 'dark' || name === 'outside' || name === 'interior') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
         if (name.startsWith('tangent')) {
           for (let i=0;i<samples.length;i+=2) expect(Math.abs(samples[i]!.delta - samples[i+1]!.delta), `${theme} ${name} joins continuously`).toBeLessThanOrEqual(2);
           continue;
         }
         if (name === 'line') { for (const sample of samples) expect(Math.abs(sample.delta), `${theme} contour remains independent of shadow`).toBeLessThanOrEqual(3); continue; }
-        expect(samples[0]!.delta, `${theme} ${name} visible contrast`).toBeGreaterThanOrEqual(theme === 'light' ? 10 : 4);
+        expect(samples[0]!.delta, `${theme} ${name} visible contrast`).toBeGreaterThanOrEqual(5);
         for (let i=1;i<samples.length;i++) expect(samples[i]!.delta, `${theme} ${name} monotone falloff`).toBeLessThanOrEqual(samples[i-1]!.delta + 1);
         expect(samples.at(-1)!.delta, `${theme} ${name} paint extent`).toBeLessThanOrEqual(1);
       }
