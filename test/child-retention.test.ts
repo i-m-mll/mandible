@@ -17,6 +17,7 @@ import { getRetainedChild } from "../src/conversations/retention-policy.js";
 import { SessionExecutionStore } from "../src/session-execution.js";
 import { systemAction } from "../src/identity/resolver.js";
 import type { ParseResult } from "../src/parsers/types.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
 
 const HOUR = 3600000;
 const epoch = Date.parse("2026-01-01T00:00:00Z");
@@ -90,14 +91,16 @@ describe("indexed child retention", () => {
     const native = vi.fn(async () => ({ status: "archived" as const }));
     const service = scheduler({ ensureFresh: fresh, nativeArchive: native });
     await service.runDue(); expect(fresh).not.toHaveBeenCalled();
-    move(epoch + 2000 + 3 * HOUR); await service.runDue();
+    clock = epoch + 2000 + 3 * HOUR;
+    await vi.advanceTimersByTimeAsync(HOUR + 2000);
     expect(archived(codex.id)).toBe(true); expect(archived(claude.id)).toBe(false);
     expect(fresh.mock.calls.map(call => call[1])).toEqual([codex.id]);
     expect(native).toHaveBeenCalledWith(codex.nativeId);
     reconcileIngestedChildRetention(db, codex.id, codex.file, [{ type: "user_message", role: "user", position: 100,
       timestamp: new Date(clock + 1000).toISOString(), metadata: { source_event_type: "user" } }]);
     expect(archived(codex.id)).toBe(false);
-    expect(state(codex.id)).toMatchObject({ last_input_at: clock + 1000, activity_state: "active", due_at: clock + 1000 + 3 * HOUR });
+    expect(state(codex.id)).toMatchObject({ last_input_at: clock + 1000, activity_state: "active", due_at: clock + 1000 + 3 * HOUR,
+      last_native_outcome: null });
   });
 
   it("defers active or unknown execution and unavailable freshness without consulting native history", async () => {
@@ -133,7 +136,17 @@ describe("indexed child retention", () => {
     const first = scheduler({ ensureFresh: fresh, nativeArchive: async () => ({ status: "deferred", reason: "desktop_writer_owned" }) });
     await first.runDue(); expect(archived(chat.id)).toBe(true); expect(state(chat.id).native_pending).toBe(1);
     await first.stop();
-    const native = vi.fn(async () => ({ status: "archived" as const }));
+    let interruptWithInput = false;
+    const native = vi.fn(async () => {
+      if (interruptWithInput) {
+        await Promise.resolve();
+        const applied = new SessionExecutionStore(db).apply({ provider: "codex", provider_session_id: chat.nativeId,
+          source: "codex_hook", event: "UserPromptSubmit", turn_id: "resumed", state: { kind: "working" }, observed_at: clock });
+        second.observe({ type: DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED, timestamp: new Date(clock).toISOString(),
+          data: { provider: "codex", provider_session_id: chat.nativeId, observation: applied.observation } });
+      }
+      return { status: "archived" as const };
+    });
     const second = scheduler({ ensureFresh: fresh, nativeArchive: native });
     move(clock + 60000); await second.runDue();
     expect(native).toHaveBeenCalledTimes(1); expect(state(chat.id).native_pending).toBe(0);
@@ -144,8 +157,9 @@ describe("indexed child retention", () => {
     const settings = readChildRetentionSettings(db); settings.enabled = false; writeChildRetentionSettings(db, settings, clock);
     move(clock + 100 * HOUR); await second.runDue(); expect(native).toHaveBeenCalledTimes(1);
     expect(archived(chat.id)).toBe(false);
-    settings.enabled = true; writeChildRetentionSettings(db, settings, clock);
-    await second.runDue(); expect(archived(chat.id)).toBe(true); expect(native).toHaveBeenCalledTimes(2);
+    settings.enabled = true; writeChildRetentionSettings(db, settings, clock); interruptWithInput = true;
+    await second.runDue(); expect(archived(chat.id)).toBe(false); expect(native).toHaveBeenCalledTimes(2);
+    expect(state(chat.id)).toMatchObject({ native_pending: 0, last_native_outcome: null, restored_at: clock, due_at: clock + 3 * HOUR });
   });
 
   it("keeps native descendants outside the archive effect and preserves local cleanup when queue knowledge is unavailable", async () => {

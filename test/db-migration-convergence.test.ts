@@ -42,7 +42,7 @@ import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
-import { authRequestSnapshot, authSnapshotDigest, AUTH_SNAPSHOT_SHAPE_V212 } from "../src/auth-request-snapshot.js";
+import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1055,7 +1055,7 @@ describe("v212 failed execution state", () => {
       insert.run("merged-request", "Merged", 0, "merged", null);
       for (const id of ["failed-request", "merged-request"]) {
         appendAuthLifecycleEvent(db, { requestId: id, eventType: "completed", priorStatus: "executing", nextStatus: "completed", occurredAt: 2,
-          snapshotShape: AUTH_SNAPSHOT_SHAPE_V212 });
+          historyShape: "v212" });
       }
       // Delivery and acknowledgement change the row without a lifecycle revision.
       db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1', updated_at = 6 WHERE id = 'failed-request'").run();

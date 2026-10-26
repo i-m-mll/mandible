@@ -1,5 +1,5 @@
 import { currentRequestOrigin, requestOriginForRequest } from "./request-origin.js";
-import { authRequestSnapshot, authSnapshotDigest, type AuthSnapshotShape } from "./auth-request-snapshot.js";
+import { authRequestSnapshot, authSnapshotDigest, AUTH_SNAPSHOT_SHAPE_V212 } from "./auth-request-snapshot.js";
 import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
@@ -9,6 +9,13 @@ import type {
   AuthRequestLifecycleEventType,
   AuthRequestStatus,
 } from "./types.js";
+
+const AUTH_LIFECYCLE_HISTORY_COLUMNS_V212 = [
+  "id", "auth_request_id", "revision", "event_type", "prior_status", "next_status",
+  "snapshot_json", "snapshot_sha256", "prior_snapshot_json", "prior_snapshot_sha256",
+  "actor_user_id", "evidence_method", "evidence_id", "credential_id", "reason", "related_request_id",
+  "custody_work_unit_id", "custody_generation", "authority_path", "occurred_at",
+] as const;
 
 export function appendAuthLifecycleEvent(
   db: Db,
@@ -21,11 +28,11 @@ export function appendAuthLifecycleEvent(
     reason?: string | null;
     relatedRequestId?: string | null;
     priorSnapshot?: string | null;
-    snapshotShape?: AuthSnapshotShape;
+    historyShape?: "v212" | "current";
     occurredAt: number;
   },
 ): AuthRequestLifecycleEvent {
-  const snapshot = authRequestSnapshot(db, input.requestId, input.snapshotShape);
+  const snapshot = authRequestSnapshot(db, input.requestId, input.historyShape === "v212" ? AUTH_SNAPSHOT_SHAPE_V212 : undefined);
   const revision = Number((db.prepare(
     "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?",
   ).get(input.requestId) as { revision: number }).revision);
@@ -55,17 +62,11 @@ export function appendAuthLifecycleEvent(
     authority_path: input.actor?.authority_path ?? (input.actor ? "custodian" : "system"),
     occurred_at: input.occurredAt,
   };
-  db.prepare(`INSERT INTO auth_request_lifecycle_events (
-    request_origin_json, id, auth_request_id, revision, event_type, prior_status, next_status,
-    snapshot_json, snapshot_sha256, prior_snapshot_json, prior_snapshot_sha256,
-    actor_user_id, evidence_method, evidence_id, credential_id, reason,
-    related_request_id, custody_work_unit_id, custody_generation, authority_path, occurred_at
-  ) VALUES (
-    @request_origin_json, @id, @auth_request_id, @revision, @event_type, @prior_status, @next_status,
-    @snapshot_json, @snapshot_sha256, @prior_snapshot_json, @prior_snapshot_sha256,
-    @actor_user_id, @evidence_method, @evidence_id, @credential_id, @reason,
-    @related_request_id, @custody_work_unit_id, @custody_generation, @authority_path, @occurred_at
-  )`).run((({ request_origin: _, ...stored }) => stored)(event));
+  const columns = input.historyShape === "v212" ? AUTH_LIFECYCLE_HISTORY_COLUMNS_V212
+    : ["request_origin_json" as const, ...AUTH_LIFECYCLE_HISTORY_COLUMNS_V212];
+  db.prepare(`INSERT INTO auth_request_lifecycle_events (${columns.join(",")})
+    VALUES (${columns.map(column => `@${column}`).join(",")})`)
+    .run(Object.fromEntries(columns.map(column => [column, event[column]])));
   return event;
 }
 
@@ -79,7 +80,8 @@ function rowCustody(db: Db, requestId: string): { work_unit_id: string; custody_
 export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestLifecycleEvent[] {
   return db.prepare(
     "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision",
-  ).all(requestId).map((row: AuthRequestLifecycleEvent) => ({ ...row, request_origin: row.request_origin_json ? JSON.parse(row.request_origin_json) : null })) as AuthRequestLifecycleEvent[];
+  ).all(requestId).map((row: AuthRequestLifecycleEvent) => ({ ...row, request_origin_json: row.request_origin_json ?? null,
+    request_origin: row.request_origin_json ? JSON.parse(row.request_origin_json) : null })) as AuthRequestLifecycleEvent[];
 }
 
 /**
