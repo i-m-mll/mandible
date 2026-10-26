@@ -1,5 +1,5 @@
 // @provisioned chromium
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -15,11 +15,12 @@ import { runChromium } from '../helpers/chromium';
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
 
+const logoImage = `url("data:image/svg+xml;base64,${Buffer.from(readFileSync(resolve('ui/header-logo.svg'))).toString('base64')}")`;
 const styles = [
   'ui/src/styles/tokens.css', 'ui/src/styles/base.css', 'ui/src/styles/app-frame.css', 'ui/src/styles/icon-tab-list.css', 'ui/src/styles/conversations.css',
   'ui/src/styles/session-overview.css', 'ui/src/styles/console.css',
   'ui/src/styles/detail-pane-shell.css', 'ui/src/styles/graph.css', 'ui/src/styles/timeline.css',
-].map((path) => readFileSync(resolve(path), 'utf8')).join('\n');
+].map((path) => readFileSync(resolve(path), 'utf8')).join('\n') + `\n.app-header__logo { mask-image: ${logoImage}; -webkit-mask-image: ${logoImage}; }`;
 
 function bundleFixture(directory: string): string {
   const output = join(directory, 'fixture.js');
@@ -35,7 +36,7 @@ function bundleFixture(directory: string): string {
 
 let fixtureBundle: string | undefined;
 
-function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false): Result {
+function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1): Result {
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
@@ -79,7 +80,11 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           const right=document.querySelector('.app-frame__right'); const left=document.querySelector('.view-sidebar');
           const buttons=Array.from(document.querySelectorAll('.app-frame__navigation button,.app-frame__main-header .detail-pane-menu-trigger,.app-frame__right .app-right-sidebar-toggle'),rect);
           const glyphs=Array.from(bar.querySelectorAll('svg,.detail-pane-header__title,.detail-pane-header__supporting-metadata'),rect);
-          return {leftOpen:Boolean(left),rightOpen:!sidebar.hidden,leftSeam:left?rect(left).right:null,main:rect(main),right:rect(right),dock:rect(sidebar),bar:rect(bar),buttons,glyphs};
+          const logo=document.querySelector('.app-header__logo'); const rail=document.querySelector('.app-rail');
+          const railButton=rail.querySelector('.app-rail__item'); const workspace=document.querySelector('.app-layout');
+          const back=document.querySelector('[aria-label=Back]');
+          const hit=node=>{const r=rect(node);return node.contains(document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2));};
+          return {logo:rect(logo),rail:rect(rail),railButton:rect(railButton),workspace:rect(workspace),backReachable:hit(back),railReachable:hit(railButton),reservation:parseFloat(getComputedStyle(root).getPropertyValue('--app-native-controls-reservation')),leftOpen:Boolean(left),rightOpen:!sidebar.hidden,leftSeam:left?rect(left).right:null,main:rect(main),right:rect(right),dock:rect(sidebar),bar:rect(bar),buttons,glyphs};
         };
         if(root.classList.contains('native-fixture--chat')){
           frameStates.push(frameGeometry());
@@ -89,6 +94,14 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           leftToggle.click(); await wait(); frameStates.push(frameGeometry());
           toggles()[0].click(); await wait();
           const leftResize=document.querySelector('.view-sidebar [role=separator]'); leftResize.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); frameStates.push(frameGeometry());
+        }
+        let fullscreen=null;
+        if ('${native}' === 'true' && root.classList.contains('native-fixture--chat')) {
+          const back=document.querySelector('[aria-label=Back]'); const logo=document.querySelector('.app-header__logo');
+          const before=frameGeometry();
+          window.dispatchEvent(new CustomEvent('fixture-native-reservation',{detail:0})); await wait(); const during=frameGeometry();
+          window.dispatchEvent(new CustomEvent('fixture-native-reservation',{detail:88})); await wait(); const after=frameGeometry();
+          fullscreen={before,during,after,retained:back===document.querySelector('[aria-label=Back]')&&logo===document.querySelector('.app-header__logo')};
         }
         const body=document.querySelector('.app-right-sidebar__body');
         const header=document.querySelector('.app-frame__bar');
@@ -145,7 +158,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
         const jumpControl=jump?{hit:rect(jump),visual:{width:parseFloat(jumpVisual.width),height:parseFloat(jumpVisual.height)},icon:rect(jumpIcon),label:jump.getAttribute('aria-label'),title:jump.getAttribute('title')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
-        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,menuInteraction,
+        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(document.querySelector('.app-frame__bar')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,jumpControl,preservedScrollTop,
@@ -154,22 +167,28 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
     const html = `<!doctype html><html data-theme="${theme}" data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
+    const evidenceName = `${surface}-${width}-${theme}-${native ? 'native' : 'browser'}-${fullRail ? 'expanded' : 'icons'}-${scale}`;
+    if (evidenceDirectory) mkdirSync(evidenceDirectory, { recursive: true });
+    const screenshotArgs = evidenceDirectory ? [`--screenshot=${join(evidenceDirectory, evidenceName + '.png')}`] : [];
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
-    const rendered = runChromium(['--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
+    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));
     const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
     if (!encoded || encoded === 'ready') throw new Error(`Chromium did not emit sidebar results (title=${encoded ?? 'none'}): ${rendered.stderr}\n${rendered.stdout.slice(-3000)}`);
-    return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Result;
+    const result = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Result;
+    if (evidenceDirectory) writeFileSync(join(evidenceDirectory, evidenceName + '.json'), JSON.stringify(result, null, 2));
+    return result;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
 describe('production app right sidebar geometry and interaction', () => {
-  const cases: Array<{ surface: Surface; width: number; theme: 'light' | 'dark'; native?: boolean; fullRail?: boolean }> = [
+  const cases: Array<{ surface: Surface; width: number; theme: 'light' | 'dark'; native?: boolean; fullRail?: boolean; scale?: number }> = [
     { surface: 'chat', width: 1280, theme: 'light' },
     { surface: 'chat', width: 962, theme: 'dark' },
     { surface: 'chat', width: 600, theme: 'light' },
@@ -179,9 +198,10 @@ describe('production app right sidebar geometry and interaction', () => {
     { surface: 'chat', width: 600, theme: 'dark', fullRail: true },
     { surface: 'chat', width: 600, theme: 'dark', native: true },
     { surface: 'chat', width: 1280, theme: 'light', native: true, fullRail: true },
+    { surface: 'chat', width: 1280, theme: 'dark', fullRail: true, scale: 1.25 },
   ];
-  it.each(cases)('preserves the $surface sidebar at $width px in $theme', ({ surface, width, theme, native, fullRail }) => {
-    const result = renderCase(surface, width, theme, native, fullRail);
+  it.each(cases)('preserves the $surface sidebar at $width px in $theme', ({ surface, width, theme, native, fullRail, scale }) => {
+    const result = renderCase(surface, width, theme, native, fullRail, scale);
     expect(result.autoCollapsed).toEqual({
       right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
       rightDisplay: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH ? 'none' : 'grid',
@@ -249,12 +269,22 @@ describe('production app right sidebar geometry and interaction', () => {
         mainBackground: string;
       };
       expect(result.closed).toMatchObject({ inHeader: true, rightmost: true });
-      expect(geometry.header.bottom).toBe(geometry.body.top);
+      expect(geometry.header.bottom).toBeCloseTo(geometry.body.top, 2);
       expect(result.menuInteraction).toMatchObject({ closed: true, focused: true });
       const menu = result.menuInteraction as { menuBounds: Rect; anchor: Rect };
       expect(menu.menuBounds.top).toBeGreaterThanOrEqual(menu.anchor.bottom);
-      type FrameGeometry = { leftOpen: boolean; rightOpen: boolean; leftSeam: number | null; main: Rect; right: Rect; dock: Rect; bar: Rect; buttons: Rect[]; glyphs: Rect[] };
+      type FrameGeometry = { logo: Rect; rail: Rect; railButton: Rect; workspace: Rect; backReachable: boolean; railReachable: boolean; reservation: number; leftOpen: boolean; rightOpen: boolean; leftSeam: number | null; main: Rect; right: Rect; dock: Rect; bar: Rect; buttons: Rect[]; glyphs: Rect[] };
       for (const state of result.frameStates as FrameGeometry[]) {
+        expect(state.backReachable).toBe(true);
+        expect(state.railReachable).toBe(true);
+        expect(state.rail.top).toBeCloseTo(state.bar.bottom, 2);
+        expect(state.workspace.top).toBeCloseTo(state.bar.bottom, 2);
+        expect(state.workspace.left).toBeCloseTo(state.rail.right, 1);
+        expect(state.railButton.top).toBeGreaterThan(state.bar.bottom);
+        expect(state.logo.right).toBeLessThan(state.buttons[0].left);
+        expect((state.logo.top + state.logo.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 1);
+        if (native) expect(state.logo.left).toBeCloseTo(state.reservation || (34 - 22) / 2, 1);
+        else expect((state.logo.left + state.logo.right) / 2).toBeCloseTo((state.rail.left + state.rail.right) / 2, 1);
         if (state.leftOpen) expect(state.main.left).toBeCloseTo(state.leftSeam!, 0);
         else expect(state.main.left - state.buttons[2].right).toBeLessThan(state.buttons[0].right - state.buttons[0].left);
         if (state.rightOpen) expect(state.right.left).toBeCloseTo(state.dock.left, 0);
@@ -263,7 +293,15 @@ describe('production app right sidebar geometry and interaction', () => {
         for (const glyph of state.glyphs) expect((glyph.top + glyph.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
         for (const button of state.buttons) expect((button.top + button.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
       }
-      expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
+      if (result.fullscreen) {
+        const fullscreen = result.fullscreen as { before: FrameGeometry; during: FrameGeometry; after: FrameGeometry; retained: boolean };
+        expect(fullscreen.retained).toBe(true);
+        expect(fullscreen.during.logo.left).toBeLessThan(fullscreen.before.logo.left);
+        expect(fullscreen.after.logo).toEqual(fullscreen.before.logo);
+        expect(fullscreen.during.railButton).toEqual(fullscreen.before.railButton);
+        expect(fullscreen.during.workspace).toEqual(fullscreen.before.workspace);
+      }
+      expect(geometry.body.bottom).toBeCloseTo(geometry.overlayControl.bottom, 2);
       expect(geometry.overlayControl.top).toBeLessThan(geometry.body.bottom);
       expect(geometry.overlayControl.left).toBeCloseTo(geometry.body.left, 0);
       expect(geometry.overlayControl.right).toBeCloseTo(geometry.body.right, 0);
@@ -284,7 +322,7 @@ describe('production app right sidebar geometry and interaction', () => {
       const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
       expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
       expect(transcriptMaxScroll).toBeGreaterThan(0);
-      expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
+      expect(Math.abs(geometry.transcriptScrollState.scrollTop - transcriptMaxScroll)).toBeLessThanOrEqual(1);
       expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
       expect(geometry.transcriptOuterState.scrollTop).toBe(0);
       if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
