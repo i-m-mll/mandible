@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 import fs from "node:fs";
-import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "./owned-run.mjs";
-import { previewPaths, previewBaseDir } from "./preview-custody.mjs";
+import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, ownedRunIdentityMatches, ownedRunHandle, ownedRunReceipt, processIdentity } from "./owned-run.mjs";
+import { previewPaths, previewBaseDir, verifyPreviewConsumerStopped } from "./preview-custody.mjs";
+import { previewRegistration, reconcilePreviewRegistration } from './preview-registration.mjs';
+import { probeJson } from './local-runtime.mjs';
+import https from 'node:https';
+import { localCaPaths } from './local-ca-trust.mjs';
+import { trackedSourceDigest } from './build-revision.mjs';
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -31,28 +36,16 @@ const LEGACY_PREVIEW_LABEL_PATTERN = /^bio\.mll\.mandible\.preview\./;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 const LOCAL_SESSION_CUTOVER_SCHEMA = "mandible-local-session-cutover@1";
 const LOCAL_SESSION_CUTOVER_STATES = new Set(["preparing", "prepared", "activating", "migration", "completing", "normal_pending", "rolling_back", "complete", "rolled_back", "recovery_failed"]);
-const LEGACY_PREVIEW_CONTRACT_DRIFT = new Set([
-  "MANDIBLE_INSTANCE_ID",
-  "MANDIBLE_INSTALLATION_ID",
-  "MANDIBLE_PUBLIC_ORIGIN",
-  "MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR",
-  "MANDIBLE_CONTEXT_VERIFICATION_KEY",
-  "MANDIBLE_ARTIFACT_DIR",
-  "MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR",
-  "MANDIBLE_USER_PREFERENCES_DIR",
-  "MANDIBLE_ALLOWED_EFFECTS",
-  "MANDIBLE_WRITABLE_ROOTS",
-]);
-
 if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url))) {
   await runCli();
 }
 
 async function runCli() {
-  const command = process.argv[2] === "finalize" ? "finalize" : process.argv[2] === "cleanup"
+  const lifecycleCommand = ['status', 'stop', 'teardown', 'refresh'].includes(process.argv[2]) ? process.argv[2] : null;
+  const command = lifecycleCommand ?? (process.argv[2] === "finalize" ? "finalize" : process.argv[2] === "cleanup"
     ? "cleanup"
     : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo"
-      : process.argv[2] === "seed-agents-review" ? "seed-agents-review" : "preview";
+      : process.argv[2] === "seed-agents-review" ? "seed-agents-review" : "preview");
   const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
 
   if (args.help) {
@@ -65,9 +58,15 @@ async function runCli() {
       throw new Error("seed-agents-review requires --artifact-version");
     }
     assertOrdinaryPreviewLifecycleAllowed();
-    const result = command === "finalize" ? await finalizePreview(args) : command === "cleanup"
+    let result = command === 'refresh' ? await refreshPreview(args) : command === 'status' ? await previewStatus(args) : command === 'stop' ? await stopPreview(args)
+      : command === 'teardown' || command === "finalize" ? await finalizePreview(args) : command === "cleanup"
       ? await cleanupPreviewCache(args)
       : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
+    if (args.native && result.ok && !args.dryRun) {
+      const { launchNativePreview } = await import('./native-preview.mjs');
+      const native = await launchNativePreview({ ...args, selected: result, project: result.ownership.project, workUnit: result.ownership.workUnit });
+      result = { ...result, native };
+    }
     printResult(result, args.json);
     if (result.ok === false) process.exitCode = 1;
   } catch (error) {
@@ -84,10 +83,8 @@ async function runCli() {
   }
 }
 
-async function main(options) {
+export async function main(options) {
   assertOrdinaryPreviewLifecycleAllowed();
-  const legacyLaunchdCleanup = inspectLegacyPreviewJobs();
-  if (legacyLaunchdCleanup.error || legacyLaunchdCleanup.labels.length) throw new Error("Registered preview service requires explicit retirement before launch; other instances are preserved");
   const selected = selectPreviewBranch(git(["rev-parse", "--show-toplevel"]).stdout.trim(), options).branch;
   const root = previewPaths(selected).root;
   const result = await withOwnedRunLock(root, async () => {
@@ -99,6 +96,9 @@ async function main(options) {
         const active = await previewConsumerReason(metadata, root);
         if (!active) {
           try {
+          if (metadata.ownership.lifecycle?.registration) await reconcileRegistration(metadata, metadata.ownership.lifecycle.registration, null, options.effects?.reloadGateway);
+            metadata.ownership.lifecycle.phase = 'retired';
+            saveOwnedMetadata(file, metadata);
             finalizeOwnedRun(file, { expectedRevision: metadata.ownership.revision, outcome: "failed", summary: String(error).slice(0, 2000) });
             const cleanup = cleanupOwnedRun(file, { apply: true });
             if (cleanup.action !== "delete-owned" || cleanup.remaining?.length) throw new Error(cleanup.reason);
@@ -108,7 +108,7 @@ async function main(options) {
       throw error;
     }
   });
-  return { ...result, legacyLaunchdCleanup };
+  return result;
 }
 
 /**
@@ -146,14 +146,12 @@ async function createOrReusePreview(options) {
 
   if (mode === "current-worktree") {
     worktree = repoRoot;
-    const existing = await healthyExistingPreview(branch, { worktree });
+    const existing = await healthyExistingPreview(branch, { worktree, verifyPublic: options.effects?.verifyPublic });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade && !existing.logIsolationUpgrade) {
-        throw legacyPreviewRetirementRequired(existing);
-      }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-      if (existing.userPreferencesIsolationUpgrade || existing.logIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.health?.startup_commit?.hash !== currentHead
+        || existing.ownership?.source?.source_digest !== trackedSourceDigest(worktree)) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
@@ -167,18 +165,16 @@ async function createOrReusePreview(options) {
   } else {
     const selectedWorktree = worktreeForBranch(repoRoot, branch);
     const existing = !options.forceNew
-      ? await healthyExistingPreview(branch, { worktree: selectedWorktree })
+      ? await healthyExistingPreview(branch, { worktree: selectedWorktree, verifyPublic: options.effects?.verifyPublic })
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade && !existing.logIsolationUpgrade) {
-        throw legacyPreviewRetirementRequired(existing);
-      }
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
-      if (existing.userPreferencesIsolationUpgrade || existing.logIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.health?.startup_commit?.hash !== currentHead
+        || existing.ownership?.source?.source_digest !== trackedSourceDigest(selectedWorktree)) {
         return refreshExistingPreview(existing, {
           branch,
           worktree: selectedWorktree,
@@ -195,9 +191,7 @@ async function createOrReusePreview(options) {
         message: "Preview metadata points to a healthy instance.",
       };
     }
-    worktree = options.dryRun
-      ? plannedWorktreePath(repoRoot, worktreeHostRoot, branch)
-      : ensureIntegrationWorktree(repoRoot, worktreeHostRoot, branch, protectedBranch, options);
+    worktree = plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
   }
 
   const preview = previewPaths(branch);
@@ -238,24 +232,13 @@ async function createOrReusePreview(options) {
     };
   }
 
-  fs.mkdirSync(preview.root, { recursive: true });
-  if (fs.existsSync(preview.metadata)) {
-    const active = await previewConsumerReason(priorMetadata ?? {}, preview.root);
-    if (active) throw new Error(`Existing preview has an active consumer but failed reuse validation: ${active}. No relaunch or cleanup occurred.`);
-    throw new Error(`Stopped preview material requires finalization before relaunch: ${preview.root}`);
+  const owner = resolvePreviewOwner(fs.existsSync(worktree) ? worktree : repoRoot,
+    fs.existsSync(worktree) ? branch : git(['branch', '--show-current'], { cwd: repoRoot }).stdout.trim(), options);
+  if (!fs.existsSync(sourceDb)) throw new Error(`Source database does not exist: ${sourceDb}`);
+  readInstallationId();
+  for (const prerequisite of [path.join(localSessionAuthorityDir(), 'sessions.db'), path.join(localSessionAuthorityDir(), 'Caddyfile'), path.join(mandibleHome(), 'runtime', 'caddy', '2.11.3', 'caddy')]) {
+    if (!fs.existsSync(prerequisite)) throw new Error(`Preview gateway prerequisite is missing: ${prerequisite}`);
   }
-  if (fs.readdirSync(preview.root).length) throw new Error(`Unclassified preview material prevents launch: ${preview.root}`);
-  const preStartCleanup = await cleanupPreviewCache({
-    apply: true,
-    previewBaseDir: options.previewBaseDir,
-    excludeRoot: preview.root,
-  });
-
-  if (!options.noBuild) {
-    ensureDependencies(worktree);
-    runBun(worktree, ["run", "--bun", "build"]);
-  }
-
   const port = options.port ?? (
     priorPort !== null && !await isPortOpen(priorPort)
       ? priorPort
@@ -266,18 +249,44 @@ async function createOrReusePreview(options) {
       `Refusing preview start: port ${port} is already occupied and no verified reusable preview owns it.`,
     );
   }
-  if (!fs.existsSync(sourceDb)) {
-    throw new Error(`Source database does not exist: ${sourceDb}`);
+
+  bunRuntime(repoRoot);
+  fs.mkdirSync(preview.root, { recursive: true });
+  if (fs.existsSync(preview.metadata)) {
+    const active = await previewConsumerReason(priorMetadata ?? {}, preview.root);
+    if (active) throw new Error(`Existing preview has an active consumer but failed reuse validation: ${active}. No relaunch or cleanup occurred.`);
+    throw new Error(`Stopped preview material requires finalization before relaunch: ${preview.root}`);
   }
+  if (fs.readdirSync(preview.root).length) throw new Error(`Unclassified preview material prevents launch: ${preview.root}`);
+  const preStartCleanup = { entries: [], reason: 'Other preview runs retain their own custody' };
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
   const allocation = assertPreviewAllocation(preview.root, sourceDb);
-  const owner = resolvePreviewOwner(worktree, branch, options);
   const ownership = createOwnedRun({ root: preview.root, instanceId: `preview-${createHash("sha256").update(preview.root).digest("hex").slice(0, 16)}`, ...owner,
     disposable: options.disposableFixture, outputs: previewOwnedOutputs(path.basename(dbCopy)).map(output => ({ ...output, kind: "generated" })) });
   ownership.allocation = allocation;
+  ownership.lifecycle = { phase: 'allocating', teardown: false };
+  ownership.consumers = [];
+  ownership.acquisition = { hostRoot: worktreeHostRoot, ownerBranch: git(['branch', '--show-current'], { cwd: fs.existsSync(worktree) ? worktree : repoRoot }).stdout.trim(),
+    worktree: { path: worktree, branch, base: protectedBranch, created: !fs.existsSync(worktree), state: 'pending' } };
   saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
-  const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree, allocation });
+  if (mode !== 'current-worktree') worktree = ensureIntegrationWorktree(repoRoot, worktreeHostRoot, branch, protectedBranch, options);
+  const worktreeStat = fs.lstatSync(worktree);
+  ownership.acquisition.worktree = { ...ownership.acquisition.worktree, path: worktree, state: 'acquired', identity: { dev: worktreeStat.dev, ino: worktreeStat.ino } };
+  ownership.revision++;
+  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
+  if (!options.noBuild) {
+    if (options.effects?.build) await options.effects.build(worktree);
+    else { ensureDependencies(worktree); runBun(worktree, ["run", "--bun", "build"]); }
+  }
+  const build = JSON.parse(fs.readFileSync(path.join(worktree, 'dist', 'build-revision.json'), 'utf8'));
+  const actualHead = git(['rev-parse', 'HEAD'], { cwd: worktree }).stdout.trim();
+  if (build.commit !== actualHead || build.source_digest !== trackedSourceDigest(worktree)) throw new Error('Preview build does not match selected candidate');
+  ownership.source = build;
+  ownership.lifecycle.phase = 'projecting';
+  ownership.revision++;
+  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
+  const projection = await (options.effects?.projectSnapshot ?? createProjectedSnapshot)({ sourceDb, dbCopy, worktree, allocation });
   sanitizePreviewDatabase(dbCopy);
   const agentsReview = options.artifactVersion
     ? await materializeProjectedAgentsReview({ worktree, previewRoot: preview.root, db: dbCopy, sourceDb,
@@ -289,6 +298,7 @@ async function createOrReusePreview(options) {
   const pidFile = path.join(preview.root, "mandible.pid");
   const runScript = path.join(preview.root, "run.sh");
   const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+  if (currentHead !== ownership.source.commit || trackedSourceDigest(worktree) !== ownership.source.source_digest) throw new Error('Candidate source changed during preview preparation');
   const userPreferencesSeed = seedPreviewUserPreferences({
     previewRoot: preview.root,
     sourceRoot: path.join(mandibleHome(), "settings", "users"),
@@ -308,15 +318,18 @@ async function createOrReusePreview(options) {
 
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
-  const priorRegistration = registerPreviewInstance(instanceEnv);
+  ownership.lifecycle = { ...ownership.lifecycle, phase: 'registering', registration: previewRegistration(instanceEnv), priorRegistration: null };
+  ownership.revision++;
+  const creating = { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, runScript, stdoutLog, stderrLog, ownership };
+  saveOwnedMetadata(preview.metadata, creating);
   let started = null;
   let health;
   try {
-    reloadLocalFrontDoor();
+    await reconcileRegistration(creating, null, ownership.lifecycle.registration, options.effects?.reloadGateway);
     ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
     ownership.state = "active";
     ownership.revision += 1;
-    saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
+    saveOwnedMetadata(preview.metadata, creating);
     started = await startPreviewProcess({
       runScript,
       worktree,
@@ -326,6 +339,7 @@ async function createOrReusePreview(options) {
       pidFile,
       stdoutLog,
       stderrLog,
+      metadata: creating,
     });
     health = await waitForPreviewReadiness(
       port,
@@ -338,13 +352,19 @@ async function createOrReusePreview(options) {
       HEALTH_TIMEOUT_MS,
       stderrLog,
     );
+    await (options.effects?.verifyPublic ?? verifyPublicPreview)(creating);
+    if (git(['rev-parse', 'HEAD'], { cwd: worktree }).stdout.trim() !== ownership.source.commit
+      || trackedSourceDigest(worktree) !== ownership.source.source_digest) throw new Error('Candidate source changed during preview launch');
+    ownership.lifecycle.phase = 'ready';
+    ownership.revision++;
   } catch (error) {
     const recoveryFailures = [];
     if (started) {
-      try { await stopPreviewProcess(pidFile); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
+      try { await stopPreviewProcess(creating); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
     }
-    try { restorePreviewRegistration(instanceEnv, priorRegistration); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
-    try { reloadLocalFrontDoor(); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
+    ownership.lifecycle.phase = 'failed'; ownership.lifecycle.failure = String(error);
+    saveOwnedMetadata(preview.metadata, creating);
+    try { await reconcileRegistration(creating, ownership.lifecycle.registration, null, options.effects?.reloadGateway); ownership.lifecycle.phase = 'retired'; saveOwnedMetadata(preview.metadata, creating); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
     if (recoveryFailures.length > 0) {
       throw new AggregateError([error, ...recoveryFailures], "Preview startup and registration rollback both failed.");
     }
@@ -683,7 +703,7 @@ export async function cleanupPreviewCache(options) {
 }
 
 function parseArgs(argv, commandName) {
-  if (commandName === "finalize") return parseFinalizeArgs(argv);
+  if (["finalize", 'teardown', 'stop', 'status', 'refresh'].includes(commandName)) return parseFinalizeArgs(argv);
   if (commandName === "cleanup") {
     return parseCleanupArgs(argv);
   }
@@ -714,6 +734,8 @@ function parseArgs(argv, commandName) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
+      case '--native': options.native = true; break;
+      case '--new-instance': options.newInstance = true; break;
       case "--disposable-fixture": options.disposableFixture = true; break;
       case "--owner-project": options.ownerProject = requireValue(argv, ++index, arg); break;
       case "--owner-work-unit": options.ownerWorkUnit = requireValue(argv, ++index, arg); break;
@@ -760,7 +782,7 @@ function parseArgs(argv, commandName) {
 
 function parseFinalizeArgs(argv) {
   const options = { help: false, json: false, converged: false };
-  const fields = { "--root": "root", "--revision": "revision", "--outcome": "outcome", "--disposition": "disposition", "--destination": "destination", "--summary": "summary", "--review-by": "reviewBy", "--transfer-reference": "transferReference" };
+  const fields = { '--run-id': 'runId', "--root": "root", "--revision": "revision", "--outcome": "outcome", "--disposition": "disposition", "--destination": "destination", "--summary": "summary", "--review-by": "reviewBy", "--transfer-reference": "transferReference" };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--help" || argv[i] === "-h") options.help = true;
     else if (argv[i] === "--json") options.json = true;
@@ -773,15 +795,27 @@ function parseFinalizeArgs(argv) {
 
 export async function finalizePreview(options) {
   if (!options.root) throw new Error("finalize requires --root");
+  if (options.revision === undefined) throw new Error('teardown requires --revision');
   const root = path.resolve(expandHome(options.root));
   if (canonicalPath(root) !== root || !isPathWithin(previewBaseDir(), root) || root === previewBaseDir()) throw new Error("Finalization root must be an exact owned preview child");
-  return withOwnedRunLock(root, async () => {
+  const result = await withOwnedRunLock(root, async () => {
     const file = path.join(root, "metadata.json");
-    const metadata = readJsonFile(file);
-    if (!metadata?.ownership) throw new Error("Legacy/unowned preview requires manual disposition; no ownership inferred");
+    const selected = selectedPreviewRun(options, root);
+    if (selected.receipt) return { ok: selected.cleanup === 'completed', status: selected.cleanup === 'completed' ? 'cleaned' : 'cleanup-pending', ...selected };
+    const metadata = selected;
+    if (!metadata.ownership.lifecycle) throw new Error('Legacy owned preview lacks runtime custody; inspect and retire its registration explicitly');
+    if (options.outcome !== 'investigating' && metadata.ownership.state !== 'terminal') {
+      if (!['accepted', 'assessed', 'failed', 'abandoned'].includes(options.outcome) || !options.summary?.trim()
+        || options.outcome === 'accepted' && !options.converged) throw new Error('Teardown requires a terminal outcome, summary and accepted convergence');
+      if (!options.disposition && !metadata.ownership.disposable) throw new Error('Teardown requires explicit interactive data disposition');
+      metadata.ownership.lifecycle.teardown = true;
+      metadata.ownership.lifecycle.phase = 'stopping';
+      persistPreview(metadata);
+      await retirePreviewRuntime(metadata, { cleanupChildren: true, options });
+    }
     const active = await previewConsumerReason(metadata, root);
     if (active) throw new Error(active);
-    const finalized = finalizeOwnedRun(file, { expectedRevision: Number(options.revision), outcome: options.outcome,
+    const finalized = metadata.ownership.state === 'terminal' ? metadata : finalizeOwnedRun(file, { expectedRevision: metadata.ownership.revision, outcome: options.outcome,
       converged: options.converged, disposition: options.disposition, destination: options.destination, summary: options.summary, reviewBy: options.reviewBy, transferReference: options.transferReference });
     const activeAfterDisposition = await previewConsumerReason(finalized, root);
     const cleanup = activeAfterDisposition ? { action: "skip-active", reason: activeAfterDisposition, remaining: finalized.ownership.cleanup.remaining }
@@ -790,6 +824,124 @@ export async function finalizePreview(options) {
     return { ok: complete || options.outcome === "investigating", status: options.outcome === "investigating" ? "investigating" : complete ? "cleaned" : "cleanup-pending", ...cleanup,
       outcome: options.outcome, converged: options.converged, runId: finalized.ownership.runId };
   });
+  if (result.status === 'cleaned' && result.receipt) return finishPreviewWorktree(result);
+  return result;
+}
+
+async function finishPreviewWorktree(result) {
+  const receipt = JSON.parse(fs.readFileSync(result.receipt, 'utf8'));
+  const acquired = receipt.acquisition?.worktree;
+  let worktree = { ...acquired, retained: true, reason: 'Borrowed candidate worktree remains with its owner' };
+  if (acquired?.created) {
+    try {
+      if (receipt.lifecycle?.phase !== 'retired' || receipt.consumers?.some(child => child.state !== 'released')) throw new Error('Runtime retirement or attached consumers remain');
+      if (!fs.existsSync(acquired.path)) worktree = { ...acquired, retained: false, reason: 'Owned worktree already removed' };
+      else {
+        const stat = fs.lstatSync(acquired.path);
+        if (!acquired.identity || stat.isSymbolicLink() || stat.dev !== acquired.identity.dev || stat.ino !== acquired.identity.ino) throw new Error('Owned worktree directory identity changed');
+        if (git(['branch', '--show-current'], { cwd: acquired.path }).stdout.trim() !== acquired.branch) throw new Error('Owned worktree branch changed');
+        if (git(['status', '--porcelain', '--untracked-files=all'], { cwd: acquired.path }).stdout.trim()) throw new Error('Owned worktree has modified or untracked files');
+        if (git(['merge-base', '--is-ancestor', 'HEAD', acquired.base], { cwd: acquired.path, allowFailure: true }).status !== 0) throw new Error('Owned worktree has unique unmerged commits');
+        const findUnits = branch => {
+          const found = JSON.parse(run('mandible', ['work-unit', 'find', '--repo', receipt.project, '--branch', branch], { cwd: receipt.acquisition.hostRoot }).stdout);
+          return Array.isArray(found) ? found : found.work_units ?? (found.id ? [found] : []);
+        };
+        const units = findUnits(receipt.acquisition.ownerBranch);
+        const owner = units.find(unit => unit.id === receipt.workUnit);
+        if (!owner || owner.state !== 'resolved') throw new Error('Owning delivery work unit is unresolved or cannot be verified');
+        if (findUnits(acquired.branch).some(unit => !['resolved', 'abandoned'].includes(unit.state))) throw new Error('Owned worktree has unresolved delivery work');
+        for (const entry of fs.readdirSync(previewBaseDir(), { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+          const other = readJsonFile(path.join(previewBaseDir(), entry.name, 'metadata.json'));
+          if (other?.worktree && canonicalPath(other.worktree) === canonicalPath(acquired.path)) throw new Error('Another preview retains this worktree');
+        }
+        const removed = run('wt', ['rm', acquired.branch], { cwd: receipt.acquisition.hostRoot, allowFailure: true });
+        if (removed.status !== 0 || fs.existsSync(acquired.path)) throw new Error(`wt retained owned worktree: ${removed.stderr?.trim() || removed.stdout?.trim()}`);
+        worktree = { ...acquired, retained: false, reason: 'Owned clean merged worktree removed by wt' };
+      }
+    } catch (error) { worktree.reason = error.message; }
+  }
+  receipt.worktreeDisposition = worktree;
+  saveOwnedMetadata(result.receipt, receipt);
+  return { ...result, worktree };
+}
+
+function selectedPreviewRun(options, root) {
+  if (!options.runId) throw new Error('Exact --run-id is required; use the setup run handle');
+  const file = path.join(root, 'metadata.json');
+  if (!fs.existsSync(file)) {
+    const receipt = ownedRunReceipt({ root, runId: options.runId });
+    if (!receipt) throw new Error('Owned preview run or retained receipt not found');
+    return receipt;
+  }
+  const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!ownedRunIdentityMatches(root, metadata.ownership) || metadata.ownership.runId !== options.runId) {
+    const receipt = ownedRunReceipt({ root, runId: options.runId });
+    if (receipt?.cleanup === 'completed') return receipt;
+    throw new Error('Preview run identity changed');
+  }
+  if (options.revision !== undefined && metadata.ownership.revision !== Number(options.revision)) throw new Error('Owned run metadata revision changed');
+  return metadata;
+}
+
+export async function previewStatus(options) {
+  if (!options.root) throw new Error('status requires --root and --run-id');
+  const root = path.resolve(expandHome(options.root));
+  return withOwnedRunLock(root, () => {
+    const selected = selectedPreviewRun(options, root);
+    return { ok: true, status: selected.receipt ? selected.cleanup : selected.ownership.lifecycle?.phase,
+      handle: { root, runId: options.runId }, ...selected };
+  });
+}
+
+function persistPreview(metadata) {
+  metadata.ownership.revision++;
+  saveOwnedMetadata(path.join(metadata.previewRoot, 'metadata.json'), metadata);
+}
+
+export async function stopPreview(options) {
+  if (!options.root || options.revision === undefined) throw new Error('stop requires --root, --run-id and --revision');
+  const root = path.resolve(expandHome(options.root));
+  return withOwnedRunLock(root, async () => {
+    const metadata = selectedPreviewRun(options, root);
+    if (metadata.receipt) return { ok: metadata.cleanup === 'completed', status: 'cleaned', ...metadata };
+    metadata.ownership.lifecycle.phase = 'stopping';
+    persistPreview(metadata);
+    await retirePreviewRuntime(metadata, { cleanupChildren: false });
+    return { ...metadata, ok: true, status: 'stopped', handle: ownedRunHandle(metadata) };
+  });
+}
+
+async function retirePreviewRuntime(metadata, { cleanupChildren = false, options = {} } = {}) {
+  const run = metadata.ownership;
+  for (const consumer of run.consumers ?? []) {
+    if (consumer.state === 'released') continue;
+    const childReceipt = ownedRunReceipt({ root: consumer.root, runId: consumer.runId });
+    if (childReceipt?.cleanup === 'completed') { consumer.state = 'released'; consumer.receipt = childReceipt.receipt; persistPreview(metadata); continue; }
+    if (!fs.existsSync(consumer.metadataFile)) throw new Error(`Pending native consumer ${consumer.consumerId} requires acquisition recovery`);
+    const child = JSON.parse(fs.readFileSync(consumer.metadataFile, 'utf8'));
+    if (child.ownership?.runId !== consumer.runId || !ownedRunIdentityMatches(consumer.root, child.ownership)
+      || child.ownership.rootIdentity.dev !== consumer.rootIdentity.dev || child.ownership.rootIdentity.ino !== consumer.rootIdentity.ino) throw new Error('Attached native consumer identity changed');
+    const adapter = await import('./native-preview.mjs');
+    await adapter.stopNativePreview(consumer.metadataFile, { parentLockHeld: true });
+    if (cleanupChildren) {
+      await adapter.cleanupNativePreview(consumer.metadataFile, { parentLockHeld: true, disposition: options.disposition, outcome: options.outcome, summary: options.summary });
+      const retired = ownedRunReceipt({ root: consumer.root, runId: consumer.runId });
+      if (retired?.cleanup !== 'completed') throw new Error('Native child cleanup remains pending');
+      consumer.state = 'released'; consumer.receipt = retired.receipt;
+    }
+    persistPreview(metadata);
+  }
+  await stopPreviewProcess(metadata);
+  run.lifecycle.phase = 'retiring';
+  persistPreview(metadata);
+  if (run.lifecycle.registration) await reconcileRegistration(metadata, run.lifecycle.registration, null, options.effects?.reloadGateway);
+  run.lifecycle.phase = 'retired';
+  run.lifecycle.retiredAt = new Date().toISOString();
+  run.lifecycle.worktree = { ...run.acquisition?.worktree, retained: true,
+    reason: run.acquisition?.worktree?.created ? 'Owning delivery work unit must be resolved before wt removal' : 'Borrowed candidate worktree remains with its owner' };
+  run.state = 'stopped';
+  persistPreview(metadata);
 }
 
 function resolvePreviewOwner(worktree, branch, options) {
@@ -892,8 +1044,8 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
-  if (commandName === "finalize") {
-    console.log("Usage: bun scripts/iab-preview.mjs finalize --root <preview-root> --revision <n> --outcome accepted|assessed|failed|abandoned|investigating --summary <text> [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nStop the exact preview first. Accepted delivery requires convergence. Ordinary interactive material requires exact verified transfer or explicit discard. Cleanup retries never repeat transfer or publication.");
+  if (['status', 'stop', 'refresh', 'teardown', 'finalize'].includes(commandName)) {
+    console.log(`Usage: bun scripts/iab-preview.mjs ${commandName} --root <preview-root> --run-id <id> [--revision <n>] [--outcome accepted|assessed|failed|abandoned|investigating --summary <text>] [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nLive mutations require the current revision. Stop retains interactive data. Teardown/finalize stops exact consumers, retires the public route and removes disposed bytes. Completed teardown retries resolve the retained exact run receipt.`);
     return;
   }
   if (commandName === "seed-agents-review") {
@@ -947,6 +1099,8 @@ Options:
   --port PORT      Use an explicit preview port.
   --force-new      Do not preview the current worktree; create a new default integration branch/instance.
   --no-build       Skip frozen dependency installation and Bun build.
+  --native         Build and open the matching isolated native application.
+  --new-instance   Explicitly acquire another native consumer.
   --disposable-fixture  Explicitly declare automated fixture mutations disposable.
   --owner-project <id>  Canonical owning project.
   --owner-work-unit <id>  Exact delivery work unit.
@@ -1022,7 +1176,7 @@ function ensureIntegrationWorktree(repoRoot, worktreeHostRoot, branch, base, opt
   if (existing) return existing;
 
   if (!commandExists("wt")) throw new Error("Mandible previews require the configured wt worktree tool");
-  run("wt", ["new", branch, base], { cwd: worktreeHostRoot });
+  run("wt", ["new", branch, base, '--no-issue', '--skip-setup'], { cwd: worktreeHostRoot });
 
   const created = worktreeForBranch(repoRoot, branch);
   if (!created) {
@@ -1091,24 +1245,17 @@ export async function healthyExistingPreview(branch, expected = {}) {
   const readiness = await readPreviewReadiness(metadata.port);
   if (!readiness.ok) return refuseLivePreviewReuse(metadata, preview.root, readiness.reason);
   const { health } = readiness;
+  if (!metadata.ownership || !ownedRunIdentityMatches(preview.root, metadata.ownership)
+    || metadata.ownership.lifecycle?.teardown || metadata.ownership.lifecycle?.phase !== 'ready') return refuseLivePreviewReuse(metadata, preview.root, 'owned run lifecycle is not ready');
+  const launch = metadata.ownership.lifecycle.launch;
+  const identity = launch?.pid ? processIdentity(launch.pid) : null;
+  if (!identity || identity.slice(0, 24) !== launch.startedAt || readPidFile(metadata.pidFile) !== launch.pid
+    || !identity.includes(launch.runtime) || !identity.includes('src/index.ts')) throw new Error('Ready preview process identity does not match owned launch');
+  await (expected.verifyPublic ?? verifyPublicPreview)(metadata);
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
   const drift = previewInstanceEnvDrift(metadata, preview.root);
-  const logIsolationUpgrade = metadata.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined && drift.includes("MANDIBLE_STDOUT_LOG_PATH")
-    && hasExpectedPreviewPolicy(health) && drift.every(key => key === "MANDIBLE_STDOUT_LOG_PATH");
-  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) {
-    const userPreferencesIsolationUpgrade = isUserPreferencesIsolationUpgrade(metadata, health, preview.root, drift);
-    if (!userPreferencesIsolationUpgrade && !logIsolationUpgrade
-        && !isExactLegacyPreview(metadata, health, preview.root, drift)
-        && !isLegacyPreviewListener(health)) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
-    return {
-      ...metadata,
-      health,
-      legacyContractDrift: drift,
-      userPreferencesIsolationUpgrade,
-      logIsolationUpgrade,
-    };
-  }
+  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
 
   return {
     ...metadata,
@@ -1123,163 +1270,67 @@ async function refuseLivePreviewReuse(metadata, root, reason) {
   return null;
 }
 
-function isLegacyPreviewListener(health) {
-  return health?.ready === true && health?.warm === true &&
-    health?.instance?.role === "preview" && health?.instance?.operational_mutations === "reject";
-}
-
-function isExactLegacyPreview(metadata, health, previewRoot, drift) {
-  const currentDb = readSymlinkTarget(path.join(previewRoot, "current.db"));
-  return health?.ready === true &&
-    health?.warm === true &&
-    health?.instance?.role === "preview" &&
-    health?.instance?.operational_mutations === "reject" &&
-    health?.instance?.db_path_source === "iab-preview-copy" &&
-    canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(metadata.db ?? "") &&
-    canonicalPath(health?.instance?.source_db_path ?? "") === canonicalPath(metadata.sourceDb ?? "") &&
-    Boolean(currentDb) &&
-    canonicalPath(currentDb) === canonicalPath(metadata.db ?? "") &&
-    Boolean(metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR) &&
-    fs.existsSync(metadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR) &&
-    drift.length > 0 &&
-    drift.every((key) => LEGACY_PREVIEW_CONTRACT_DRIFT.has(key) && metadata.instanceEnv?.[key] === undefined);
-}
-
-function isUserPreferencesIsolationUpgrade(metadata, health, previewRoot, drift) {
-  const allowedDrift = ["MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_USER_PREFERENCES_DIR", ...(metadata.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined ? ["MANDIBLE_STDOUT_LOG_PATH"] : [])];
-  if ([...drift].sort().join(",") !== [...allowedDrift].sort().join(",")) return false;
-  if (metadata.instanceEnv?.MANDIBLE_ALLOWED_EFFECTS !== JSON.stringify(["ledger:read", "ledger:write", "files:preview"])) {
-    return false;
-  }
-  if (metadata.instanceEnv?.MANDIBLE_USER_PREFERENCES_DIR !== undefined) return false;
-  if (health?.instance?.allowed_effects?.join(",") !== "ledger:read,ledger:write,files:preview") return false;
-  if (health?.ready !== true || health?.warm !== true || health?.instance?.role !== "preview"
-      || health?.instance?.db_path_source !== "iab-preview-copy") return false;
-  if (health.instance.instance_id !== metadata.instanceEnv?.MANDIBLE_INSTANCE_ID
-      || health.instance.installation_id !== metadata.instanceEnv?.MANDIBLE_INSTALLATION_ID
-      || health.instance.public_origin !== metadata.instanceEnv?.MANDIBLE_PUBLIC_ORIGIN) return false;
-  const currentDb = readSymlinkTarget(path.join(previewRoot, "current.db"));
-  if (!currentDb || !metadata.db || !metadata.sourceDb || !health.instance.db_path || !health.instance.source_db_path) return false;
-  try {
-    const root = canonicalPath(previewRoot);
-    const db = canonicalPath(metadata.db);
-    const sourceDb = canonicalPath(metadata.sourceDb);
-    if (db !== canonicalPath(currentDb)
-        || db !== canonicalPath(health.instance.db_path)
-        || sourceDb !== canonicalPath(health.instance.source_db_path)
-        || db === sourceDb
-        || !isPathWithin(root, db)
-        || isPathWithin(root, sourceDb)) return false;
-  } catch {
-    return false;
-  }
-  return true;
-}
-
-function legacyPreviewRetirementRequired(existing) {
-  return new Error(
-    `Preview port ${existing.port} is a verified legacy public listener and cannot be replaced independently. ` +
-    "Inspect and retire that listener through its recorded lifecycle before an ordinary preview launch. " +
-    "The launcher will not stop it or allocate a second browser origin.",
-  );
+export async function refreshPreview(options) {
+  if (!options.root || options.revision === undefined) throw new Error("refresh requires --root, --run-id and --revision");
+  const root = path.resolve(expandHome(options.root));
+  return withOwnedRunLock(root, async () => {
+    const existing = selectedPreviewRun(options, root);
+    if (existing.receipt || existing.ownership.lifecycle.teardown) throw new Error("Retired preview cannot refresh; finish its teardown");
+    return refreshExistingPreview(existing, { branch: existing.branch, worktree: existing.worktree, mode: existing.mode,
+      currentHead: git(["rev-parse", "HEAD"], { cwd: existing.worktree }).stdout.trim(), options });
+  });
 }
 
 async function refreshExistingPreview(existing, details) {
   const preview = previewPaths(details.branch);
+  if (!existing.ownership || !ownedRunIdentityMatches(preview.root, existing.ownership)) throw new Error("Refresh requires exact owned run custody");
+  for (const consumer of existing.ownership.consumers ?? []) {
+    if (consumer.state !== 'released') await withOwnedRunLock(consumer.root, () => verifyPreviewConsumerStopped(consumer));
+  }
   const validated = validateRefreshContract(existing, preview, details);
-
-  ensureDependencies(details.worktree);
-  runBun(details.worktree, ["run", "--bun", "build"]);
-
-  const briefingDemo = await materializeProjectedBriefingDemo({
-    worktree: details.worktree,
-    previewRoot: preview.root,
-    db: validated.dbCopy,
-    sourceDb: validated.sourceDb,
-  });
-  const userPreferencesSeed = seedPreviewUserPreferences({
-    previewRoot: preview.root,
-    sourceRoot: path.join(mandibleHome(), "settings", "users"),
-  });
-
-  writeRunScript(validated.runScript, {
-    worktree: details.worktree,
-    port: validated.port,
-    dbCopy: validated.dbCopy,
-    sourceDb: validated.sourceDb,
-    pidFile: validated.pidFile,
-    nodePath: bunRuntime(details.worktree),
-    stdoutLog: validated.stdoutLog,
-    stderrLog: validated.stderrLog,
-    generation: details.currentHead,
-  });
-
-  const stopped = await stopPreviewProcess(validated.pidFile);
-  registerPreviewInstance(validated.instanceEnv);
-  reloadLocalFrontDoor();
-  const structureCache = await seedProjectedConversationStructureCache({
-    sourceCache: sourceConversationStructureCachePath(),
-    targetCache: validated.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB,
-    projectedDb: validated.dbCopy,
-    preserveExisting: true,
-  });
-  const started = await startPreviewProcess({
-    runScript: validated.runScript,
-    worktree: details.worktree,
-    port: validated.port,
-    dbCopy: validated.dbCopy,
-    sourceDb: validated.sourceDb,
-    pidFile: validated.pidFile,
-    stdoutLog: validated.stdoutLog,
-    stderrLog: validated.stderrLog,
-  });
-  const restartLifecycle = { ...started, stopped };
-
-  const health = await waitForPreviewReadiness(
-    validated.port,
-    {
-      head: details.currentHead,
-      dbCopy: validated.dbCopy,
-      sourceDb: validated.sourceDb,
-      previewRoot: preview.root,
-    },
-    HEALTH_TIMEOUT_MS,
-    validated.stderrLog,
-  );
-  const refreshed = {
-    ...existing,
-    ...(existing.ownership ? { ownership: { ...existing.ownership, revision: existing.ownership.revision + 1 } } : {}),
-    ok: true,
-    status: "refreshed",
-    mode: details.mode,
-    message: `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
-    branch: details.branch,
-    worktree: details.worktree,
-    port: validated.port,
-    db: validated.dbCopy,
-    sourceDb: validated.sourceDb,
-    previewRoot: preview.root,
-    pidFile: validated.pidFile,
-    stdoutLog: validated.stdoutLog,
-    stderrLog: validated.stderrLog,
-    runScript: validated.runScript,
-    instanceEnv: validated.instanceEnv,
-    projection: { ...existing.projection, structureCache },
-    userPreferencesSeed,
-    structureCache,
-    briefingDemo,
-    restartLifecycle,
-    health,
-    refreshedAt: new Date().toISOString(),
-    previousStartupCommit: existing.health.startup_commit,
-  };
-  delete refreshed.legacyContractDrift;
-  delete refreshed.userPreferencesIsolationUpgrade;
-  delete refreshed.logIsolationUpgrade;
-  delete refreshed.freshUrl;
-  delete refreshed.browserEnrollment;
-  saveOwnedMetadata(preview.metadata, refreshed);
-  return await withBrowserReadyUrl(refreshed, { pairBrowser: details.options.pairBrowser });
+  const run = existing.ownership;
+  if (run.lifecycle.teardown) throw new Error("Teardown intent prevents refresh");
+  const previous = ['failed-stopped', 'retired'].includes(run.lifecycle.phase) ? null : run.lifecycle.registration;
+  run.lifecycle.phase = "building";
+  persistPreview(existing);
+  if (details.options.effects?.build) await details.options.effects.build(details.worktree);
+  else { ensureDependencies(details.worktree); runBun(details.worktree, ["run", "--bun", "build"]); }
+  const source = JSON.parse(fs.readFileSync(path.join(details.worktree, "dist", "build-revision.json"), "utf8"));
+  if (source.commit !== details.currentHead || source.source_digest !== trackedSourceDigest(details.worktree)) throw new Error("Source changed during refresh build");
+  const registration = previewRegistration(validated.instanceEnv);
+  run.lifecycle.refresh = { previous, desired: registration, source };
+  run.lifecycle.phase = "refresh-stopping";
+  persistPreview(existing);
+  await stopPreviewProcess(existing);
+  existing.instanceEnv = validated.instanceEnv;
+  run.source = source;
+  run.lifecycle.registration = registration;
+  run.lifecycle.phase = "refresh-registering";
+  persistPreview(existing);
+  try {
+    await reconcileRegistration(existing, previous, registration, details.options.effects?.reloadGateway);
+    writeRunScript(validated.runScript, { ...validated, worktree: details.worktree, nodePath: bunRuntime(details.worktree), generation: details.currentHead });
+    const started = await startPreviewProcess({ ...validated, worktree: details.worktree, metadata: existing });
+    const health = await waitForPreviewReadiness(validated.port, { head: details.currentHead, dbCopy: validated.dbCopy,
+      sourceDb: validated.sourceDb, previewRoot: preview.root }, HEALTH_TIMEOUT_MS, validated.stderrLog);
+    await (details.options.effects?.verifyPublic ?? verifyPublicPreview)(existing);
+    if (git(['rev-parse', 'HEAD'], { cwd: details.worktree }).stdout.trim() !== source.commit
+      || trackedSourceDigest(details.worktree) !== source.source_digest) throw new Error('Candidate source changed during refresh launch');
+    existing.health = health;
+    existing.status = "refreshed"; existing.ok = true;
+    existing.restartLifecycle = started;
+    existing.refreshedAt = new Date().toISOString();
+    run.lifecycle.phase = "ready"; run.state = "active";
+    persistPreview(existing);
+    return withBrowserReadyUrl(existing, { pairBrowser: details.options.pairBrowser });
+  } catch (error) {
+    run.lifecycle.phase = "refresh-failed"; run.lifecycle.failure = String(error);
+    persistPreview(existing);
+    const failures = [error];
+    try { await stopPreviewProcess(existing); } catch (failure) { failures.push(failure); }
+    try { await reconcileRegistration(existing, registration, null, details.options.effects?.reloadGateway); run.lifecycle.phase = "failed-stopped"; persistPreview(existing); } catch (failure) { failures.push(failure); }
+    throw new AggregateError(failures, "Refresh failed; interactive preview material retained for exact retry or teardown");
+  }
 }
 
 function validatePreviewIdentity(metadata, preview, branch, expectedWorktree) {
@@ -1334,10 +1385,7 @@ function validateRefreshContract(existing, preview, details) {
   }
 
   const drift = previewInstanceEnvDrift(existing, preview.root);
-  const safePreferenceUpgrade = existing.userPreferencesIsolationUpgrade === true
-    && isUserPreferencesIsolationUpgrade(existing, existing.health, preview.root, drift);
-  const safeLogUpgrade = existing.logIsolationUpgrade === true && drift.length === 1 && drift[0] === "MANDIBLE_STDOUT_LOG_PATH" && existing.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined;
-  if (drift.length > 0 && !safePreferenceUpgrade && !safeLogUpgrade) {
+  if (drift.length > 0) {
     throw new Error(
       `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
     );
@@ -1366,6 +1414,7 @@ export async function withBrowserReadyUrl(preview, options = {}) {
   if (!origin) throw new Error("Preview metadata has no registered public origin.");
   const clean = {
     ...preview,
+    ...(preview.ownership ? { handle: ownedRunHandle(preview), receipt: path.join(path.dirname(preview.ownership.root), '.receipts', `${preview.ownership.runId}.json`) } : {}),
     freshUrl: `${origin}/?fresh=${Date.now()}#/timeline`,
     browserEnrollment: "cookie-or-pairing",
   };
@@ -1381,15 +1430,16 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
   if (!metadata) return { ...result, action: "skip", reason: "missing or unreadable metadata; manual inspection required" };
   const active = await previewConsumerReason(metadata, dirPath);
   if (active) return { ...result, action: "skip-active", reason: active };
+  if (metadata.ownership?.lifecycle?.phase !== 'retired') return { ...result, action: 'skip', reason: 'Owned runtime/gateway retirement is pending or unrecorded; use exact teardown' };
   return { ...result, ...cleanupOwnedRun(metadataPath, { apply }) };
 }
 
 async function previewConsumerReason(metadata, root) {
+  if (metadata.ownership?.consumers?.some(child => child.state !== 'released')) return 'attached or pending native/build consumer requires explicit cleanup';
   const pids = [metadata.pidFile, path.join(root, "mandible.pid")].filter(Boolean).map(readPidFile);
   if (pids.some(pid => pid && isProcessAlive(pid))) return "recorded pid is live; identity or ownership may be shared";
   if (metadata.port && await isPortOpen(metadata.port)) return "recorded port has a consumer; health is not deletion authority";
-  const jobs = inspectLegacyPreviewJobs();
-  if (jobs.error || jobs.labels.length) return "registered preview service may respawn; explicitly retire it before cleanup";
+  if (metadata.launchLabel) return 'recorded respawn authority requires explicit exact retirement';
   return null;
 }
 
@@ -1566,44 +1616,50 @@ async function startPreviewProcess(details) {
   // pins the full instance env and its own log redirection. Executing it —
   // rather than re-deriving the same spawn inline — keeps one launch contract
   // and leaves a human-runnable artifact for reproducing a preview by hand.
-  const child = spawn("/bin/zsh", [details.runScript], {
+  const child = spawn("/bin/zsh", ['-c', 'IFS= read -r gate || exit 1; [ "$gate" = ready ] || exit 1; exec /bin/zsh "$1"', 'preview-launch', details.runScript], {
     cwd: details.worktree,
     detached: true,
     env: sanitizedLauncherEnv(),
-    stdio: "ignore",
+    stdio: ['pipe', 'ignore', 'ignore'],
   });
   child.unref();
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  const identity = processIdentity(child.pid);
+  if (!identity) throw new Error('Preview launcher exited before acquisition could be recorded');
+  if (!details.metadata?.ownership) throw new Error('Preview launch requires durable run metadata');
+  details.metadata.ownership.lifecycle.launch = { pid: child.pid, identity, startedAt: identity.slice(0, 24),
+    runScript: details.runScript, runtime: bunRuntime(details.worktree), worktree: details.worktree };
+  try { persistPreview(details.metadata); }
+  catch (error) { child.stdin.destroy(); throw error; }
+  child.stdin.end('ready\n');
   return { mechanism: "detached-child", launcherPid: child.pid ?? null };
 }
 
-/**
- * Stop the running preview daemon and start a replacement child process.
- *
- * There is no supervisor to hand this to any more, and that removes the whole
- * class of failure the old launchd `kickstart` path was written to work around:
- * no registration to lose, no race between deregistration and re-submission,
- * and no way for a replacement to be resurrected behind the launcher's back.
- */
-async function restartPreviewProcess(details) {
-  const stopped = await stopPreviewProcess(details.pidFile);
-  const started = await startPreviewProcess(details);
-  return { ...started, stopped };
-}
-
-/**
- * Terminate whatever the preview's pid file points at and wait for it to go.
- *
- * SIGTERM is sufficient precisely because nothing supervises a preview any
- * more. Under launchd it was not: KeepAlive respawned three of nine terminated
- * preview daemons within fourteen seconds, which made a successful-looking kill
- * actively misleading. SIGKILL remains as a bounded escalation for a daemon
- * that will not exit on its own.
- */
-async function stopPreviewProcess(pidFile, timeoutMs = 10_000) {
-  const pid = readPidFile(pidFile);
-  if (pid === null || !isProcessAlive(pid)) {
-    return { pid, outcome: pid === null ? "no-pid-file" : "already-stopped" };
+/** Stop only the recorded process lifetime and selected instance. */
+export async function stopPreviewProcess(metadata, timeoutMs = 10_000) {
+  const launch = metadata.ownership?.lifecycle?.launch;
+  const filePid = metadata.pidFile ? readPidFile(metadata.pidFile) : null;
+  if (filePid && filePid !== launch?.pid && isProcessAlive(filePid)) throw new Error('Preview pid file identity changed; refusing to signal');
+  const pid = launch?.pid;
+  if (!pid || processIdentity(pid) === null) {
+    if (metadata.port && await isPortOpen(metadata.port)) throw new Error('Stopped preview backend port has a conflicting consumer');
+    return { pid: pid ?? null, outcome: 'already-stopped' };
   }
+  const verify = async () => {
+    const identity = processIdentity(pid);
+    if (!identity) return false;
+    if (identity.slice(0, 24) !== launch.startedAt
+      || !(identity.includes(launch.runScript) || identity.includes(launch.runtime) && identity.includes('src/index.ts'))) throw new Error('Preview process identity changed; refusing to signal');
+    const cwd = run('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']).stdout.split('\n').find(line => line.startsWith('n'))?.slice(1);
+    if (!cwd || canonicalPath(cwd) !== canonicalPath(launch.worktree)) throw new Error('Preview process launch context changed');
+    if (metadata.port && await isPortOpen(metadata.port)) {
+      const health = await readHealth(metadata.port);
+      if (health?.instance?.instance_id !== metadata.instanceEnv?.MANDIBLE_INSTANCE_ID
+        || health?.instance?.backend_generation !== metadata.instanceEnv?.MANDIBLE_BACKEND_GENERATION) throw new Error('Preview listener belongs to a different instance or generation');
+    }
+    return true;
+  };
+  if (!await verify()) return { pid, outcome: 'already-stopped' };
 
   try {
     process.kill(pid, "SIGTERM");
@@ -1619,6 +1675,7 @@ async function stopPreviewProcess(pidFile, timeoutMs = 10_000) {
   }
 
   try {
+    if (!await verify()) return { pid, outcome: 'terminated' };
     process.kill(pid, "SIGKILL");
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
@@ -1871,84 +1928,48 @@ function readInstallationId() {
   return value;
 }
 
-function registerPreviewInstance(env) {
-  const databasePath = path.join(localSessionAuthorityDir(), "sessions.db");
-  if (!fs.existsSync(databasePath)) throw new Error("Local session authority is not initialized.");
-  const db = new SqliteDatabase(databasePath);
-  try {
-    const existing = db.prepare("SELECT * FROM instance_registrations WHERE instance_id = ?")
-      .get(env.MANDIBLE_INSTANCE_ID);
-    if (existing && (existing.installation_id !== env.MANDIBLE_INSTALLATION_ID
-        || existing.role !== "preview" || existing.public_origin !== env.MANDIBLE_PUBLIC_ORIGIN)) {
-      throw new Error(`Conflicting preview registration for ${env.MANDIBLE_INSTANCE_ID}.`);
-    }
-    db.prepare(`
-      INSERT INTO instance_registrations (
-        instance_id, installation_id, role, public_origin, backend_origin,
-        backend_generation, effect_ceiling_json, writable_roots_json, updated_at
-      ) VALUES (?, ?, 'preview', ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(instance_id) DO UPDATE SET
-        backend_origin=excluded.backend_origin,
-        backend_generation=excluded.backend_generation,
-        effect_ceiling_json=excluded.effect_ceiling_json,
-        writable_roots_json=excluded.writable_roots_json,
-        updated_at=excluded.updated_at
-    `).run(
-      env.MANDIBLE_INSTANCE_ID,
-      env.MANDIBLE_INSTALLATION_ID,
-      env.MANDIBLE_PUBLIC_ORIGIN,
-      `http://127.0.0.1:${env.MANDIBLE_PORT}`,
-      env.MANDIBLE_BACKEND_GENERATION,
-      env.MANDIBLE_ALLOWED_EFFECTS,
-      env.MANDIBLE_WRITABLE_ROOTS,
-      Date.now(),
-    );
-    return existing ?? null;
-  } finally {
-    db.close();
-  }
+async function reconcileRegistration(metadata, expected, desired, reload = reloadLocalFrontDoor) {
+  return reconcilePreviewRegistration({ home: mandibleHome(), runId: metadata.ownership.runId, expected, desired,
+    reload: token => reload(token) });
 }
 
-function restorePreviewRegistration(env, existing) {
-  const db = new SqliteDatabase(path.join(localSessionAuthorityDir(), "sessions.db"));
-  try {
-    db.transaction(() => {
-      if (!existing) {
-        db.prepare("DELETE FROM instance_registrations WHERE instance_id = ?").run(env.MANDIBLE_INSTANCE_ID);
-        return;
-      }
-      db.prepare(`UPDATE instance_registrations SET
-        installation_id=?, role=?, public_origin=?, backend_origin=?, backend_generation=?,
-        effect_ceiling_json=?, writable_roots_json=?, updated_at=?
-        WHERE instance_id=?`).run(
-        existing.installation_id,
-        existing.role,
-        existing.public_origin,
-        existing.backend_origin,
-        existing.backend_generation,
-        existing.effect_ceiling_json,
-        existing.writable_roots_json,
-        existing.updated_at,
-        existing.instance_id,
-      );
-    })();
-  } finally { db.close(); }
+export function reloadLocalFrontDoor(token) {
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-runtime.mjs");
+  const result = spawnSync(process.execPath, [script, "reload-gateway"], {
+    encoding: "utf8", timeout: 20_000,
+    env: { ...process.env, ...(token ? { MANDIBLE_GATEWAY_LOCK_TOKEN: token } : {}) },
+  });
+  if (result.error || result.status !== 0) throw new Error(`Gateway reconciliation failed: ${result.error?.message ?? result.stderr.trim()}`);
+  return result.stdout.trim();
 }
 
-export function reloadLocalFrontDoor() {
-  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-front-door.mjs");
-  const configured = spawnSync(process.execPath, [script, "configure"], { encoding: "utf8" });
-  if (configured.status !== 0) {
-    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()} Open the installed desktop setup action with mandible://connections/setup, or run bun scripts/local-ca-trust.mjs setup locally. No gateway reload occurred.`);
-  }
-  const binary = path.join(mandibleHome(), "runtime", "caddy", "2.11.3", "caddy");
-  if (!fs.existsSync(binary)) {
-    throw new Error("The pinned local HTTPS front door is not installed. Run `bun run --bun local-front-door -- install`, open mandible://connections/setup for the explicit native CA action, then start it.");
-  }
-  const reloaded = spawnSync(binary, ["reload", "--config", path.join(localSessionAuthorityDir(), "Caddyfile"), "--adapter", "caddyfile"], { encoding: "utf8" });
-  if (reloaded.status !== 0) {
-    throw new Error("The local HTTPS front door is not running; start `bun run --bun local-front-door -- run` before launching a preview.");
-  }
+async function verifyPublicPreview(metadata) {
+  const ca = fs.readFileSync(localCaPaths(mandibleHome()).rootCert);
+  const origin = metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN;
+  const response = await probeJson(new URL("/api/health", origin).href, { ca, timeoutMs: 5000 });
+  const health = response.document;
+  if (!response.ok || health?.instance?.instance_id !== metadata.instanceEnv.MANDIBLE_INSTANCE_ID
+      || health?.instance?.backend_generation !== metadata.instanceEnv.MANDIBLE_BACKEND_GENERATION
+      || health?.startup_commit?.hash !== metadata.instanceEnv.MANDIBLE_BACKEND_GENERATION
+      || !health?.ready || !health?.warm) throw new Error("Public HTTPS preview route does not match selected ready generation");
+  const shell = await readPublicBody(new URL("/", origin), ca);
+  if (!APPLICATION_SHELL_MARKER_RE.test(shell)) throw new Error("Public preview application shell is missing");
+  const assets = referencedPrimaryAssets(shell, metadata.port);
+  for (const asset of assets) await readPublicBody(new URL(asset.path, origin), ca);
+}
+
+function readPublicBody(url, ca) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, { ca }, response => {
+      let bytes = 0; const chunks = [];
+      if (response.statusCode !== 200) { response.resume(); reject(new Error(`Public preview asset returned ${response.statusCode}`)); return; }
+      response.on("data", chunk => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) request.destroy(new Error("Public asset exceeds probe limit")); else chunks.push(chunk); });
+      response.on("end", () => bytes ? resolve(Buffer.concat(chunks).toString("utf8")) : reject(new Error("Public preview asset is empty")));
+      response.on("error", reject);
+    });
+    request.setTimeout(5000, () => request.destroy(new Error("Public preview probe timed out")));
+    request.on("error", reject);
+  });
 }
 
 export function sanitizePreviewDatabase(databasePath) {
@@ -2292,6 +2313,7 @@ function run(command, commandArgs, options = {}) {
     cwd: options.cwd,
     env: options.env ?? process.env,
     encoding: "utf8",
+    timeout: options.timeout ?? 60_000,
     stdio: options.inherit ? "inherit" : "pipe",
   });
 
@@ -2319,6 +2341,7 @@ function git(commandArgs, options = {}) {
 function commandExists(command) {
   return spawnSync("sh", ["-lc", `command -v ${shellQuote(command)} >/dev/null 2>&1`], {
     stdio: "ignore",
+    timeout: 5000,
   }).status === 0;
 }
 

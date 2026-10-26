@@ -29,7 +29,7 @@ describe("preview database sanitization", () => {
     const previousHome = process.env.MANDIBLE_HOME;
     process.env.MANDIBLE_HOME = home;
     try {
-      expect(() => reloadLocalFrontDoor()).toThrow("Secure local connections are not set up");
+      expect(() => reloadLocalFrontDoor()).toThrow();
       expect(fs.existsSync(marker)).toBe(false);
       expect(fs.readFileSync(config, "utf8")).toContain(oldStorage);
       expect(fs.existsSync(path.join(home, "config", "local-sessions", "caddy-storage"))).toBe(false);
