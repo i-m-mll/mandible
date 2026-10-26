@@ -2,7 +2,10 @@ import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sse from "../src/sse.js";
+import { setConversationArchiveState } from "../src/conversations/metadata.js";
+import { systemAction } from "../src/identity/resolver.js";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setDb, type Db } from "../src/db.js";
@@ -31,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -170,5 +174,24 @@ describe("conversation metadata routes", () => {
     expect(restored.body).toEqual({ id: reservationId, archived_at: null });
     expect(db.prepare("SELECT conversation_id FROM conversation_archive_states WHERE conversation_id = ?").get(reservationId))
       .toBeUndefined();
+    const notify = vi.spyOn(sse, "broadcast");
+    const actor = { actor_type: "system" as const, attribution: systemAction() };
+    const historyBefore = db.prepare("SELECT count(*) AS n FROM ledger_events").get() as { n: number };
+    db.transaction(() => {
+      expect(setConversationArchiveState(db, { conversation_id: reservationId, archived: true, cause: "retention" }, actor)?.changed).toBe(true);
+      expect(setConversationArchiveState(db, { conversation_id: reservationId, archived: true, cause: "retention" }, actor)?.changed).toBe(false);
+      expect(notify).not.toHaveBeenCalled();
+    })();
+    expect(notify.mock.calls.filter(call => call[0] === "conversation:updated")).toEqual([
+      ["conversation:updated", { id: reservationId, updates: ["archived_at"] }],
+    ]);
+    expect(() => db.transaction(() => {
+      setConversationArchiveState(db, { conversation_id: reservationId, archived: false, cause: "resolved-worker" }, actor);
+      throw new Error("archive rollback");
+    })()).toThrow("archive rollback");
+    expect(db.prepare("SELECT archived_at FROM conversation_archive_states WHERE conversation_id=?").get(reservationId)).toBeTruthy();
+    expect(db.prepare("SELECT count(*) AS n FROM ledger_events").get()).toEqual({ n: historyBefore.n + 1 });
+    expect(JSON.parse((db.prepare("SELECT payload_json FROM ledger_events ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string }).payload_json))
+      .toMatchObject({ cause: "retention", conversation_id: reservationId, changed_fields: ["archived_at"] });
   });
 });
