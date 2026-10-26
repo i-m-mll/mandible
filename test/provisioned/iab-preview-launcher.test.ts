@@ -18,6 +18,7 @@ import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
 import { sealedRetiredDemoPacket } from "../helpers/sealed-retired-demo.js";
 import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
+import { getCanonicalArtifactVersion } from '../../src/provider-artifacts.js';
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../../scripts/owned-run.mjs";
@@ -440,7 +441,7 @@ function seedSealedRetiredDemo(
   db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)")
     .run(briefingId, reviewer.id, RICH_BRIEFING_DEMO.roundOneTimestamp);
   const packet = sealedRetiredDemoPacket({ briefingId, publisherId: publisher.id, reviewerId: reviewer.id,
-    versions: artifacts.map(artifact => artifact.version), sources });
+    versions: artifacts.map(artifact => getCanonicalArtifactVersion(db, artifact.version.id)!), sources });
   db.prepare(
     `INSERT INTO briefing_legacy_custody
       (id, briefing_id, source_profile, disposition, reason, packet_json, packet_digest, created_at)
