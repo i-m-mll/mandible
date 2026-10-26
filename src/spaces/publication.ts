@@ -1,4 +1,5 @@
 import { mutateSpaceRecord } from "./mutation-history.js";
+import { currentRequestOrigin } from "../request-origin.js";
 import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
 import crypto from 'node:crypto';
 import * as z from 'zod';
@@ -76,6 +77,7 @@ async function run(cwd: string, command: string, args: string[]): Promise<string
     const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
     delete env.MANDIBLE_MANAGED_CLIENT;
     projectManagedProviderIdentity(env, 'shell');
+    env.MANDIBLE_REQUEST_ORIGIN = JSON.stringify(currentRequestOrigin());
     const execution = await executeFile(command,args,{ cwd, encoding:'utf8', env, timeout:120_000,maxBuffer:4*1024*1024 });
     return execution.stdout.trim();
   } catch (failure) { throw new ExportError('git_failed',`${command} failed: ${String(failure)}`); }

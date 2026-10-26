@@ -18,6 +18,16 @@ unknown origin. The daemon never supplies its launch environment as a caller's
 identity. HTTP, local socket, file-RPC, and internal router dispatch use the same
 context. A request without origin clears any enclosing request context.
 
+An explicit `request_origin` transport field takes precedence over native
+ambient capture. The CLI forwards `MANDIBLE_REQUEST_ORIGIN` JSON through
+`X-Mandible-Request-Origin` on HTTP/local socket requests and `request_origin`
+on file-RPC requests. This channel supplies metadata only: it does not enter
+agent enrollment, managed-client detection, credential selection or attribution.
+An explicit null or malformed envelope produces unknown origin without falling
+back to ambient identity. Omitting the field preserves native ambient capture.
+Child processes overwrite inherited `MANDIBLE_REQUEST_ORIGIN` with their saved
+initiating envelope, including the literal `null` when origin is unknown.
+
 `src/request-origin.ts` owns the contract. `currentRequestOrigin()` reads the
 current optional envelope. `withRequestOriginMetadata(metadata)` replaces the
 reserved `request_origin` metadata field; caller payloads cannot supply it.
@@ -72,14 +82,18 @@ migration does not identify a historical author from the current request.
 Conversation archive state remains `conversation_archive_states`, including
 accepted spawn reservations. Archive does not delete transcript content. The
 existing metadata route emits `conversation:updated` with `archived_at` after
-commit. Provider transcript ingestion, index reconciliation, FTS/cache updates,
+commit. `setConversationArchiveState` in `src/conversations/metadata.ts` shares
+this boundary with PATCH and accepts an exact canonical/reservation ID,
+`archived`, and a `manual`, `retention`, `resolved-worker`, or `observed-provider`
+cause. Its event retains the archive action and cause even after unarchive.
+No-op actions leave the marker, history and notifications unchanged.
+Provider transcript ingestion, index reconciliation, FTS/cache updates,
 telemetry, local view preferences and filesystem-only document exports do not
 create authored-content history.
 
 Publication subprocesses clear inherited daemon provider markers. A claimed
 request origin is not projected as a subprocess's agent enrollment identity.
-Until an independent metadata transport is provided, native origin for downstream
-CLI requests remains unknown; direct publication mutations retain their request
-origin.
+Their initiating envelope travels through the independent metadata-only channel;
+existing explicit credentials retain authority over downstream CLI writes.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

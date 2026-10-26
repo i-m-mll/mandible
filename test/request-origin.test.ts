@@ -1,12 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { Router } from "../src/server.js";
-import { currentRequestOrigin, requestOriginJson, withRequestOrigin, withRequestOriginMetadata } from "../src/request-origin.js";
+import { currentRequestOrigin, requestOriginForRequest, requestOriginJson, withRequestOrigin, withRequestOriginMetadata } from "../src/request-origin.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { createUser } from "../src/users/store.js";
 import { systemAction } from "../src/identity/resolver.js";
 
 describe("request origin dispatch", () => {
+  it("distinguishes an explicit origin envelope from legacy ambient capture and explicit unknown", () => {
+    const ambient = { provider: "codex", provider_session_id: "executing-session" };
+    const initiating = { provider: "claude", provider_session_id: "initiating-session" };
+    expect(requestOriginForRequest({ ambient_identity: ambient })).toEqual(ambient);
+    expect(requestOriginForRequest({ ambient_identity: ambient, request_origin: initiating })).toEqual(initiating);
+    for (const request_origin of [null, undefined, "malformed", { provider: "invalid", provider_session_id: "claim" }]) {
+      expect(requestOriginForRequest({ ambient_identity: ambient, request_origin })).toBeNull();
+    }
+  });
+
   it("records global mutations atomically and publishes recorded origin only after commit", () => {
     const db = migratedMemoryDb();
     try {
