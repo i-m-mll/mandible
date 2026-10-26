@@ -2732,7 +2732,16 @@ type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promi
 type DesktopWindowTheme = 'light' | 'dark' | null;
 type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void> };
 
+export type NativeHost = {
+  kind: 'tauri';
+  platform: string;
+  framePresentation: 'macos-overlay' | 'system';
+};
+
+export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };
+
 type TauriGlobalWindow = Window & {
+  __MANDIBLE_NATIVE_HOST__?: NativeHost;
   __TAURI__?: {
     core?: { invoke?: TauriInvoke };
     event?: { listen: (event: string, handler: () => void) => Promise<() => void> };
@@ -2750,7 +2759,7 @@ function tauriGlobalWindow(): TauriGlobalWindow | null {
 
 function hasTauriRuntime(): boolean {
   const tauriWindow = tauriGlobalWindow();
-  return Boolean(tauriWindow && (tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__));
+  return Boolean(tauriWindow && (tauriWindow.__MANDIBLE_NATIVE_HOST__ || tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__));
 }
 
 /**
@@ -2763,6 +2772,13 @@ function tauriInvoke(): TauriInvoke | null {
   const tauriWindow = tauriGlobalWindow();
   const invoke = tauriWindow?.__TAURI__?.core?.invoke ?? tauriWindow?.__TAURI_INTERNALS__?.invoke;
   return typeof invoke === 'function' ? invoke : null;
+}
+
+export function getWindowHost(): WindowHost {
+  const host = tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__;
+  if (host) return host;
+  if (hasTauriRuntime()) throw new Error('The Tauri host identity was not initialized by the native shell.');
+  return { kind: 'browser', framePresentation: 'system' };
 }
 
 export function isDesktopShell(): boolean {

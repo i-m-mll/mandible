@@ -1,4 +1,5 @@
 import { AppFrame } from './app-frame';
+import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
@@ -16,8 +17,6 @@ import {
   getConsoleSessions,
   getDashboardBadges,
   getAppThemePreference,
-  getNativeWindowCapabilities,
-  listenNativeFrameChanges,
   isDesktopShell,
   observeNativeFrame,
   setDesktopWindowTheme,
@@ -764,7 +763,7 @@ function App(): JSX.Element {
   ));
   const responsiveSidebarStateRef = useRef<ResponsiveSidebarThresholdState>(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
-  const [nativeControlsReservation, setNativeControlsReservation] = useState(0);
+  const nativeControlsReservation = useNativeWindowPresentation();
   const [frameHeaderHost, setFrameHeaderHost] = useState<HTMLDivElement | null>(null);
   const [frameHeaderOwners, setFrameHeaderOwners] = useState(0);
   const registerFrameHeader = useCallback(() => {
@@ -1090,36 +1089,6 @@ function App(): JSX.Element {
       document.removeEventListener('visibilitychange', visible);
     };
   }, [frameHeaderHost, nativeControlsReservation]);
-
-  useEffect(() => {
-    let disposed = false;
-    let removeListener: (() => void) | undefined;
-    const refresh = () => getNativeWindowCapabilities()
-      .then(({ liquidGlassRegular, framePresentation, topBarHeight, trafficLightReservation }) => {
-        if (disposed) return;
-        document.documentElement.dataset.framePresentation = framePresentation;
-        setNativeControlsReservation(trafficLightReservation);
-        if (topBarHeight) document.documentElement.style.setProperty('--app-frame-header-height', `${topBarHeight}px`);
-        document.documentElement.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
-        if (liquidGlassRegular) document.documentElement.dataset.nativeGlass = 'regular';
-      });
-    listenNativeFrameChanges(() => {
-      void refresh().catch(error => console.error('Failed to refresh native window capabilities:', error));
-    }).then(cleanup => {
-      if (disposed) { cleanup(); return; }
-      removeListener = cleanup;
-      return refresh();
-    }).catch(error => console.error('Failed to initialize native window capabilities:', error));
-
-    return () => {
-      disposed = true;
-      removeListener?.();
-      document.documentElement.removeAttribute('data-native-glass');
-      document.documentElement.removeAttribute('data-frame-presentation');
-      document.documentElement.style.removeProperty('--app-frame-header-height');
-      document.documentElement.style.removeProperty('--app-native-controls-reservation');
-    };
-  }, []);
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
   // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),

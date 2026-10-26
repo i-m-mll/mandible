@@ -159,7 +159,7 @@ fn capability(config: &NativePreview) -> String {
     serde_json::json!({
         "identifier": "native-preview", "windows": ["main"], "local": false,
         "remote": { "urls": [config.origin] },
-        "permissions": ["allow-native-presentation", "core:window:allow-set-theme", "core:window:allow-start-dragging"]
+        "permissions": ["allow-native-presentation", "core:event:allow-listen", "core:event:allow-unlisten", "core:window:allow-set-theme", "core:window:allow-start-dragging"]
     }).to_string()
 }
 
@@ -255,6 +255,8 @@ mod tests {
         };
         for command in [
             "native_window_capabilities",
+            "plugin:event|listen",
+            "plugin:event|unlisten",
             "plugin:window|start_dragging",
             "plugin:window|set_theme",
         ] {
@@ -266,6 +268,8 @@ mod tests {
             );
         }
         for command in [
+            "plugin:event|emit",
+            "plugin:event|emit_to",
             "daemon_status",
             "daemon_start",
             "daemon_restart",

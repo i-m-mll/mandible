@@ -66,11 +66,7 @@ async fn native_window_capabilities(
         .applied;
     Ok(NativeWindowCapabilities {
         liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
-        frame_presentation: if cfg!(target_os = "macos") {
-            "macos-overlay"
-        } else {
-            "system"
-        },
+        frame_presentation: native_frame::presentation(),
         top_bar_height: native_frame::HEADER_HEIGHT,
         traffic_light_reservation: if observed.as_ref().is_some_and(|frame| frame.fullscreen) {
             0.0
@@ -841,6 +837,11 @@ pub fn run() {
     }
     let mut app = builder
         .manage(launch_context)
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("native-host")
+                .js_init_script(native_frame::host_initialization_script())
+                .build(),
+        )
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("native-preview-navigation")
                 .on_navigation(|webview, url| {
