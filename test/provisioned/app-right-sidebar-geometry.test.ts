@@ -82,6 +82,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
         const root=document.querySelector('.native-fixture');
         if (${Boolean(paint.screenshotPath)}) {
           document.querySelector('[data-paint-probe-content]').style.visibility='hidden';
+          for (const child of document.querySelector('.app-frame__bar').children) child.style.visibility='hidden';
           await waitForRunOptions();
           document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',paintSurface:getPaintSurface()}));
           return;
@@ -247,7 +248,7 @@ function compareShadowPixels(directory: string, painted: string, baseline: strin
 }
 
 describe('rendered workspace shadow', () => {
-  it.each(['light', 'dark'] as const)('paints a visible smooth falloff over opaque %s workspace surfaces', theme => {
+  it.each(['light', 'dark'] as const)('casts a visible smooth falloff onto %s chrome without interior shading', theme => {
     const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const directory = evidenceDirectory ?? mkdtempSync(join(tmpdir(), 'mandible-shadow-pixels-'));
     mkdirSync(directory, { recursive: true });
@@ -261,22 +262,35 @@ describe('rendered workspace shadow', () => {
       const { workspace, main, dock, radius } = surface;
       const distances = [2, 4, 8, 12, 16, 20];
       const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
-        sidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top + distance })),
-        main: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top + distance })),
-        dock: distances.map(distance => ({ distance, x: (dock.left + dock.right) / 2, y: workspace.top + distance })),
-        left: distances.map(distance => ({ distance, x: workspace.left + distance, y: workspace.top + 100 })),
-        corner: [2, 4, 8, 12, 16, 18].map(distance => ({ distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 })),
+        topSidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top - distance })),
+        topMain: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top - distance })),
+        topDock: distances.map(distance => ({ distance, x: (dock.left + dock.right) / 2, y: workspace.top - distance })),
+        left: distances.map(distance => ({ distance, x: workspace.left - distance, y: workspace.top + 100 })),
+        corner: distances.map(distance => ({ distance, x: workspace.left + radius - (radius + distance) / Math.SQRT2, y: workspace.top + radius - (radius + distance) / Math.SQRT2 })),
+        tangentTop: [2, 8, 16].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left + radius + offset, y: workspace.top - distance }))),
+        tangentLeft: [2, 8, 16].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left - distance, y: workspace.top + radius + offset }))),
+        interior: distances.flatMap(distance => [
+          { distance, x: workspace.left + 96, y: workspace.top + distance },
+          { distance, x: (main.left + main.right) / 2, y: workspace.top + distance },
+          { distance, x: (dock.left + dock.right) / 2, y: workspace.top + distance },
+          { distance, x: workspace.left + distance, y: workspace.top + 100 },
+          { distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 },
+        ]),
         line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
         outside: [
-          { distance: 0, x: workspace.left - 6, y: workspace.top + 100 },
-          { distance: 0, x: workspace.left + 96, y: workspace.top - 10 },
+          { distance: 0, x: workspace.left - 20, y: workspace.top + 100 },
+          { distance: 0, x: workspace.left + 96, y: workspace.top - 20 },
           { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
           { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
         ],
       });
-      if (evidenceDirectory) writeFileSync(join(directory, `shadow-${theme}-pixels.json`), JSON.stringify({ theme, probeSetup: 'Initial mounted production frame; only the fixture corner label is hidden to expose uninterrupted opaque material. Baseline disables only the shadow background.', surface: result.paintSurface, profiles }, null, 2));
+      if (evidenceDirectory) writeFileSync(join(directory, `shadow-${theme}-pixels.json`), JSON.stringify({ theme, probeSetup: 'Initial mounted production frame; the fixture corner label and top-bar foreground are hidden to expose uninterrupted material while retaining layout. Baseline disables only the shadow background.', surface: result.paintSurface, profiles }, null, 2));
       for (const [name, samples] of Object.entries(profiles)) {
-        if (name === 'outside') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
+        if (name === 'outside' || name === 'interior') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
+        if (name.startsWith('tangent')) {
+          for (let i=0;i<samples.length;i+=2) expect(Math.abs(samples[i]!.delta - samples[i+1]!.delta), `${theme} ${name} joins continuously`).toBeLessThanOrEqual(2);
+          continue;
+        }
         if (name === 'line') { for (const sample of samples) expect(Math.abs(sample.delta), `${theme} contour remains independent of shadow`).toBeLessThanOrEqual(3); continue; }
         expect(samples[0]!.delta, `${theme} ${name} visible contrast`).toBeGreaterThanOrEqual(theme === 'light' ? 10 : 4);
         for (let i=1;i<samples.length;i++) expect(samples[i]!.delta, `${theme} ${name} monotone falloff`).toBeLessThanOrEqual(samples[i-1]!.delta + 1);
