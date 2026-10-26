@@ -1,0 +1,79 @@
+.app-frame {
+  display: grid;
+  grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
+  grid-template-rows: var(--app-header-height) auto minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  --app-frame-left-width: var(--app-view-sidebar-width);
+}
+.app-frame__bar {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--app-header-height);
+  background: var(--surface-chrome);
+  user-select: none;
+  z-index: 60;
+}
+.app-frame__navigation {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: max-content;
+  gap: 2px;
+  padding-inline: 8px;
+  height: 100%;
+}
+.app-frame--main-header.app-frame--left-open .app-frame__navigation { width: var(--app-frame-left-width); }
+.app-frame__native-controls { display: none; }
+.app-frame__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--app-header-control-size);
+  height: var(--app-header-control-size);
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.app-frame__button:is(:hover, :focus-visible) { background: var(--neutral-alpha-06); color: var(--text-primary); }
+.app-frame__button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.app-frame__main-header { position: relative; flex: 1 1 0; min-width: 0; height: 100%; }
+.app-frame__main-header .detail-pane-header { background: transparent; width: 100%; }
+.app-frame__main-header .detail-pane-header__title-block { flex-direction: row; align-items: center; gap: 8px; min-width: 0; }
+.app-frame__main-header .detail-pane-header__supporting-metadata { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-frame__main-header .detail-pane-header__compact-metadata { min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.app-frame__main-header .detail-pane-header__actions { flex-shrink: 1; min-width: 0; }
+.app-frame__right { position: relative; display: flex; align-items: center; flex: none; min-width: 0; height: 100%; padding-inline: 8px; gap: 8px; }
+.app-frame--right-open .app-frame__right { width: var(--app-right-sidebar-width); }
+.app-frame__right .app-right-sidebar-toggle { margin: 0 0 0 auto; }
+.app-frame__right .app-right-sidebar__header { border: 0; background: transparent; padding: 0; min-width: 0; overflow: hidden; }
+.app-frame--main-header .app-frame__main-header::before,
+.app-frame--main-header .app-frame__right::before,
+.app-frame--right-open .app-frame__right::before {
+  content: ''; position: absolute; width: 1px; height: 50%; top: 25%; left: 0; background: var(--border-muted); pointer-events: none;
+}
+.app-frame__notice { grid-column: 2; grid-row: 2; min-width: 0; z-index: 62; }
+.app-frame__notice:empty { display: none; }
+.app-frame > .app-rail { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border-muted); padding-top: 12px; }
+.app-frame > .app-layout { grid-column: 2; grid-row: 3; }
+:root[data-frame-presentation='macos-overlay'] .app-frame { --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width)); }
+:root[data-frame-presentation='macos-overlay'] .app-frame__bar { grid-column: 1 / -1; }
+:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: var(--app-native-controls-reservation, 88px); flex: none; height: 100%; }
+:root[data-frame-presentation='macos-overlay'] .app-frame > .app-rail { grid-row: 3; border-right: 0; }
+:root[data-frame-presentation='macos-overlay'] .app-frame > .app-layout { border-top-left-radius: var(--radius-chat-surface); }
+:root[data-native-glass='regular'] .app-frame__bar,
+:root[data-native-glass='regular'] .app-frame > .app-rail { background: var(--surface-glass-tint); }
+
+.app-frame__header-content { height: 100%; min-width: 0; }
+
+:root[data-frame-presentation='macos-overlay'] .app-frame__notice { grid-column: 1 / -1; }
+
+:root[data-frame-presentation='macos-overlay'] .app-shell__splash-notice { padding-top: var(--app-header-height); }

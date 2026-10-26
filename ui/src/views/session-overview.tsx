@@ -1,3 +1,4 @@
+import { FrameHeaderPortal, useFrameHeaderHost } from '../components/shared/FrameHeader';
 import { formatSessionExecution } from "../../../src/session-execution-format";
 import { acquireSharedSse } from "../sse-shared";
 // Session Overview: one page per agent session, for every provider. The page
@@ -496,11 +497,12 @@ export function SessionOverviewView({
     />
   ) : !embedded ? <DetailPaneHeader variant="compact" title="Session Overview" /> : null;
 
+  const frameHeaderHost = useFrameHeaderHost(!embedded && !session);
   const errorMessage = state.kind === 'error' ? state.message : (result.ref === selectedRef ? result.error : null) ?? pickerError;
 
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
-      {sharedHeader}
+      {frameHeaderHost ? <FrameHeaderPortal host={frameHeaderHost}>{sharedHeader}</FrameHeaderPortal> : sharedHeader}
       {managedConversation ? <ManagedConversationFacts {...managedConversation} /> : null}
       <AppOperationalNoticeOutlet registerAsMain={!embedded} />
       {errorMessage ? (

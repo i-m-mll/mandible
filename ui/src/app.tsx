@@ -1,3 +1,4 @@
+import { AppFrame } from './app-frame';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
@@ -91,14 +92,11 @@ import {
 import {
   AppShellProvider,
   AppRightSidebarSurface,
-  AppRightSidebarToggleButton,
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
-  ViewSidebarIcon,
   WIDE_RESPONSIVE_SIDEBAR_STATE,
   responsiveSidebarThresholdTransition,
-  resolveAppRightSidebarLayout,
+  resolveAppFrameGeometry,
   type AppRightSidebarDescriptor,
-  type AppRightSidebarLayout,
   type AppShellContextValue,
   type ResponsiveSidebarThresholdState,
 } from './app-shell';
@@ -143,7 +141,6 @@ import {
   InboxIcon,
   AuthIcon,
   ArtifactsIcon,
-  SettingsIcon,
   GraphIcon,
   TimelineIcon,
   LogsIcon,
@@ -614,7 +611,6 @@ function MandibleHeaderLogo(): JSX.Element {
       className="app-header__logo"
       style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
       aria-hidden="true"
-      data-tauri-drag-region
     />
   );
 }
@@ -750,7 +746,6 @@ function App(): JSX.Element {
   // this page lifetime (never localStorage), so concurrent tabs cannot share
   // either identity or optional chrome state.
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
-  const leftShadowEnabled = false;
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
@@ -765,7 +760,13 @@ function App(): JSX.Element {
   ));
   const responsiveSidebarStateRef = useRef<ResponsiveSidebarThresholdState>(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
-  const rightSidebarFocusTransferRef = useRef(false);
+  const [nativeControlsReservation, setNativeControlsReservation] = useState(0);
+  const [frameHeaderHost, setFrameHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [frameHeaderOwners, setFrameHeaderOwners] = useState(0);
+  const registerFrameHeader = useCallback(() => {
+    setFrameHeaderOwners(count => count + 1);
+    return () => setFrameHeaderOwners(count => count - 1);
+  }, []);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
   // Current shared-SSE connection state, updated from onState, so the fallback
@@ -847,14 +848,18 @@ function App(): JSX.Element {
         rightNarrow: true,
       };
     }
-    rightSidebarFocusTransferRef.current = true;
     rightSidebar.onOpenChange(open);
   }, [rightSidebar, viewportWidth]);
 
   const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
-  const viewSidebarWidth = viewSidebarGeometry
+  const persistedViewSidebarWidth = viewSidebarGeometry
     ? viewSidebarWidths[route.tab as keyof ViewSidebarWidths] ?? viewSidebarGeometry.defaultWidth
     : null;
+  const frameRailWidth = state.settings.header_display_mode === 'both' ? 208 : 56;
+  const { viewSidebarWidth, rightSidebarLayout } = resolveAppFrameGeometry({
+    viewportWidth, railWidth: frameRailWidth, viewSidebarWidth: persistedViewSidebarWidth,
+    rightSidebar, rightSidebarOpen: route.tab !== 'settings' && rightSidebar.open, nativeControlsReservation,
+  });
   const setViewSidebarWidth = useCallback((width: number | null) => {
     if (width === null || !viewSidebarGeometry) return;
     const tab = route.tab as keyof ViewSidebarWidths;
@@ -876,8 +881,10 @@ function App(): JSX.Element {
     viewSidebarWidth,
     active: true,
     noticeHost,
+    frameHeaderHost,
+    registerFrameHeader,
     registerMainNoticeHost,
-  }), [noticeHost, registerMainNoticeHost, registerInitialRouteLoad, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+  }), [frameHeaderHost, registerFrameHeader, noticeHost, registerMainNoticeHost, registerInitialRouteLoad, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -1051,18 +1058,15 @@ function App(): JSX.Element {
     settingsReturnHashRef.current = window.location.hash || `#/${route.tab}`;
   }, [route]);
 
-  // Add tauri-window class to body when running inside Tauri so CSS can
-  // apply the extra top padding needed for the hidden title bar traffic lights.
-  useEffect(() => {
-    if (typeof window !== 'undefined' && '__TAURI__' in window) {
-      document.body.classList.add('tauri-window');
-    }
-  }, []);
-
   useEffect(() => {
     let disposed = false;
     getNativeWindowCapabilities()
-      .then(({ liquidGlassRegular }) => {
+      .then(({ liquidGlassRegular, framePresentation, topBarHeight, trafficLightReservation }) => {
+        if (disposed) return;
+        document.documentElement.dataset.framePresentation = framePresentation;
+        setNativeControlsReservation(trafficLightReservation);
+        if (topBarHeight) document.documentElement.style.setProperty('--app-header-height', `${topBarHeight}px`);
+        if (trafficLightReservation) document.documentElement.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
         if (!disposed && liquidGlassRegular) {
           document.documentElement.dataset.nativeGlass = 'regular';
         }
@@ -1074,6 +1078,9 @@ function App(): JSX.Element {
     return () => {
       disposed = true;
       document.documentElement.removeAttribute('data-native-glass');
+      document.documentElement.removeAttribute('data-frame-presentation');
+      document.documentElement.style.removeProperty('--app-header-height');
+      document.documentElement.style.removeProperty('--app-native-controls-reservation');
     };
   }, []);
 
@@ -2644,23 +2651,11 @@ function App(): JSX.Element {
     );
   };
 
-  const currentRouteTitle = (
-    [...primaryNavItems, ...remainingUpperNavItems, logsNavItem, sessionOverviewNavItem, {
-      tab: 'settings' as const,
-      href: '#/settings',
-      label: 'Settings',
-      title: 'Settings',
-      icon: SettingsIcon,
-    }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
-  );
   const rightSidebarAvailable = route.tab !== 'settings';
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
-  const rightSidebarLayout = useMemo<AppRightSidebarLayout>(() => (
-    resolveAppRightSidebarLayout(rightSidebar!, viewportWidth)
-  ), [rightSidebar, viewportWidth]);
   useLayoutEffect(() => {
     const reconcile = () => {
       const width = window.innerWidth;
@@ -2680,7 +2675,6 @@ function App(): JSX.Element {
       window.removeEventListener('resize', reconcile);
     };
   }, [hideViewSidebar, registeredRightSidebar, setRightSidebarOpen, viewSidebarAvailable]);
-  const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
   const appThemeMode = normalizeAppThemeMode(effectiveSettings.app_theme);
   const nextAppThemeMode = appThemeMode === 'system' ? 'light' : appThemeMode === 'light' ? 'dark' : 'system';
   const appThemeLabel = appThemeMode === 'system' ? 'System' : appThemeMode === 'light' ? 'Light' : 'Dark';
@@ -2690,19 +2684,6 @@ function App(): JSX.Element {
     : appThemeMode === 'light'
       ? <LightThemeIcon size={18} />
       : <DarkThemeIcon size={18} />;
-  useLayoutEffect(() => {
-    if (!rightSidebarFocusTransferRef.current) return;
-    rightSidebarFocusTransferRef.current = false;
-    // The open and closed controls trade the same ref in one commit. Focus on
-    // the next task after Preact has finished both ref detach and attach work.
-    const timer = window.setTimeout(() => {
-      const toggle = document.querySelector<HTMLButtonElement>(
-        '.app-right-sidebar-toggle[aria-controls="app-right-sidebar"]',
-      );
-      toggle?.focus({ preventScroll: true });
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [rightSidebarOpen]);
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
     if (startupDestinationPending || !accessEverReady || !visitedTabs.has(tab)) return null;
     const active = route.tab === tab;
@@ -2728,13 +2709,14 @@ function App(): JSX.Element {
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
   const renderAppShell = (children: ComponentChildren): JSX.Element => (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+        '--app-right-sidebar-width': `${rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0}px`,
         ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
-      <PreviewCopyNotice instance={instanceInfo} />
+      {splashActive ? <div className="app-shell__splash-notice" data-tauri-drag-region><PreviewCopyNotice instance={instanceInfo} /></div> : null}
       <div className="app-shell__workspace">{children}</div>
     </div>
   );
@@ -2800,32 +2782,20 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <header
-        className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
-        data-app-surface="chrome"
-        data-tauri-drag-region
-      >
-        <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'} data-tauri-drag-region>
-          <span className="app-header__mark" aria-hidden="true" data-tauri-drag-region>
-            <MandibleHeaderLogo />
-          </span>
-          {viewSidebarOpen ? (
-            <div className="app-header__text" data-tauri-drag-region>
-              <div className="app-header__brand" data-tauri-drag-region>
-                <span className="app-header__brand-text" data-tauri-drag-region>Mandible</span>
-              </div>
-              <div className="app-header__route" aria-live="polite" data-tauri-drag-region>{currentRouteTitle}</div>
-            </div>
-          ) : null}
-        </div>
-      </header>
       <AppShellProvider value={appShellContext}>
-        <div
-          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab} app-layout--right-sidebar-available${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open app-layout--right-sidebar-docked' : ''}`}
-          style={rightSidebarOpen && rightSidebar ? {
-            '--app-right-sidebar-width': `${rightSidebarLayout.effectiveWidth}px`,
-          } as JSX.CSSProperties : undefined}
-        >
+        <AppFrame
+          layoutClassName={`app-layout--route-${route.tab}`}
+          headerHostRef={setFrameHeaderHost}
+          hasMainHeader={frameHeaderOwners > 0}
+          viewSidebarAvailable={viewSidebarAvailable}
+          viewSidebarOpen={viewSidebarOpen}
+          onViewSidebarToggle={viewSidebarHidden ? showViewSidebar : hideViewSidebar}
+          rightSidebar={rightSidebarAvailable ? rightSidebar : null}
+          rightSidebarOpen={rightSidebarOpen}
+          onRightSidebarOpenChange={setRightSidebarOpen}
+          rightToggleRef={rightSidebarToggleRef}
+          notice={<PreviewCopyNotice instance={instanceInfo} />}
+          rail={(
           <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
               <nav
                 ref={railNavRef}
@@ -2851,35 +2821,8 @@ function App(): JSX.Element {
                 <span id="app-rail-reorder-status" className="sr-only" role="status" aria-live="polite">
                   {railAnnouncement}
                 </span>
-                {agentPageBinding !== null ? (
-                  <button
-                    type="button"
-                    className="app-rail__left-shadow-toggle"
-                    aria-hidden="true"
-                    tabIndex={-1}
-                    disabled
-                  />
-                ) : null}
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
-                {viewSidebarAvailable ? (
-                  <div className="app-rail__sidebar-controls">
-                    <button
-                      type="button"
-                      className={`app-rail__item app-rail__sidebar-toggle${viewSidebarHidden ? '' : ' app-rail__sidebar-toggle--active'}`}
-                      onClick={viewSidebarHidden ? showViewSidebar : hideViewSidebar}
-                      aria-label={viewSidebarToggleLabel}
-                      aria-pressed={!viewSidebarHidden}
-                      title={viewSidebarToggleLabel}
-                    >
-                      <span className="app-rail__icon">
-                        <ViewSidebarIcon open={!viewSidebarHidden} size={18} />
-                      </span>
-                      {railDisplayMode === 'both' && <span className="app-rail__label">Sidebar</span>}
-                      {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{viewSidebarToggleLabel}</span>}
-                    </button>
-                  </div>
-                ) : null}
                 <button
                   type="button"
                   className="app-rail__item app-rail__theme-toggle"
@@ -2904,10 +2847,12 @@ function App(): JSX.Element {
                   href: '#/settings',
                   label: 'Settings',
                   title: 'Settings',
-                  icon: SettingsIcon,
+                  icon: MandibleHeaderLogo,
                 })}
               </nav>
           </aside>
+          )}
+        >
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
@@ -2950,15 +2895,6 @@ function App(): JSX.Element {
           >
             {railOrderLoadError ?? 'Loading navigation preferences…'}
           </DetailPaneNotice>
-        ) : null}
-        {rightSidebarAvailable && !rightSidebarOpen ? (
-          <AppRightSidebarToggleButton
-            descriptor={rightSidebar!}
-            buttonRef={rightSidebarToggleRef}
-            open={false}
-            onOpenChange={setRightSidebarOpen}
-            className="app-content__right-sidebar-toggle"
-          />
         ) : null}
         {renderTabPanel('auth', (() => {
           const tabRoute = routeForTab('auth', route, tabRouteSnapshots);
@@ -3149,13 +3085,13 @@ function App(): JSX.Element {
           {rightSidebar ? (
             <AppRightSidebarSurface
               descriptor={rightSidebar}
-              toggleRef={rightSidebarToggleRef}
+              closeFocusRef={rightSidebarToggleRef}
               onOpenChange={setRightSidebarOpen}
               layout={rightSidebarLayout}
               open={rightSidebarOpen}
             />
           ) : null}
-        </div>
+        </AppFrame>
       </AppShellProvider>
       {agentationVisible && <AgentationPreview />}
     </>

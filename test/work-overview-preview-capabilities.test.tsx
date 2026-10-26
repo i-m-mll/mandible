@@ -72,7 +72,7 @@ it('keeps copied project metadata writable while gating host Git operations', as
   }));
 
   const onRescan = vi.fn();
-  render(h(WorkOverviewView, {
+  const props = {
     repos: [copiedRepo],
     branchesByRepo: {
       'copied-repo': [{ name: 'feature/copied', status: 'clean' }],
@@ -80,7 +80,8 @@ it('keeps copied project metadata writable while gating host Git operations', as
     onRescan,
     instance: copiedPreview,
     params: { compare: 'base..feature' },
-  }));
+  };
+  const view = render(h(WorkOverviewView, props));
 
   await screen.findByText('Commit history is unavailable in this copied preview.');
   await screen.findByText('Live branch audit is unavailable in this copied preview.');
@@ -102,6 +103,11 @@ it('keeps copied project metadata writable while gating host Git operations', as
   fireEvent.input(screen.getByRole('textbox', { name: 'Name' }), {
     target: { value: 'Renamed copied repo' },
   });
+  view.rerender(h(WorkOverviewView, { ...props, params: { ...props.params, sidebar: 'hidden' } }));
+  expect(screen.queryByRole('complementary', { name: 'Projects' })).toBeNull();
+  expect((screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Renamed copied repo');
+  view.rerender(h(WorkOverviewView, props));
+  expect(screen.getByRole('complementary', { name: 'Projects' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(requests).toContainEqual({ path: '/api/work/repos/copied-repo', method: 'PUT' }));
 

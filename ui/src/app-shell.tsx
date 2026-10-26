@@ -1,4 +1,4 @@
-import { createContext, type ComponentChildren, type Ref } from 'preact';
+import { createContext, type ComponentChildren, type Ref, type RefObject } from 'preact';
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { createCoalescedRefresh, type CoalescedRefresh, type RefreshRun } from './lib/coalesced-refresh';
 import { IconTabList } from './components/shared/IconTabList';
@@ -10,8 +10,6 @@ type AppRightSidebarCommon = {
   width: number;
   minWidth?: number;
   maxWidth?: number;
-  /** The owning view renders the closed-state toggle in its canonical header. */
-  togglePlacement?: 'app-overlay' | 'detail-header';
   onOpenChange(open: boolean): void;
   onWidthChange(width: number): void;
 };
@@ -92,6 +90,8 @@ export type AppShellContextValue = {
   setViewSidebarWidth(width: number | null): void;
   viewSidebarWidth?: number | null;
   active: boolean;
+  frameHeaderHost?: HTMLElement | null;
+  registerFrameHeader?(): () => void;
   /** The sole app-owned location for operational notices. */
   noticeHost?: HTMLElement | null;
   /** Register an active main detail pane as the operational notice outlet. */
@@ -115,6 +115,7 @@ export function AppShellProvider({ value, children }: { value: AppShellContextVa
   const parent = useContext(AppShellContext);
   return <AppShellContext.Provider value={{
     ...value,
+    frameHeaderHost: value.frameHeaderHost === undefined ? parent.frameHeaderHost : value.frameHeaderHost,
     noticeHost: value.noticeHost === undefined ? parent.noticeHost : value.noticeHost,
     registerMainNoticeHost: value.registerMainNoticeHost ?? parent.registerMainNoticeHost,
   }}>{children}</AppShellContext.Provider>;
@@ -334,13 +335,35 @@ export function appRightSidebarWidthBounds(
 export function resolveAppRightSidebarLayout(
   descriptor: Pick<AppRightSidebarCommon, 'width' | 'minWidth' | 'maxWidth'>,
   viewportWidth: number,
+  availableWidth = viewportWidth,
 ): AppRightSidebarLayout {
-  const bounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, viewportWidth);
+  const requestedBounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, viewportWidth);
+  const max = Math.max(120, Math.min(requestedBounds.max, availableWidth - 202));
+  const bounds = { min: Math.min(requestedBounds.min, max), max };
   return {
     presentation: 'dock',
     effectiveWidth: Math.max(bounds.min, Math.min(bounds.max, descriptor.width)),
     minWidth: bounds.min,
     maxWidth: bounds.max,
+  };
+}
+
+export function resolveAppFrameGeometry({ viewportWidth, railWidth, viewSidebarWidth, rightSidebar, rightSidebarOpen, nativeControlsReservation = 0 }: {
+  viewportWidth: number;
+  railWidth: number;
+  viewSidebarWidth: number | null;
+  rightSidebar: Pick<AppRightSidebarCommon, 'width' | 'minWidth' | 'maxWidth'>;
+  rightSidebarOpen: boolean;
+  nativeControlsReservation?: number;
+}): { viewSidebarWidth: number | null; rightSidebarLayout: AppRightSidebarLayout } {
+  const minimumLeft = Math.max(122, nativeControlsReservation ? nativeControlsReservation + 124 - railWidth : 0);
+  const rightSidebarLayout = resolveAppRightSidebarLayout(rightSidebar, viewportWidth, viewportWidth - railWidth - Math.max(0, minimumLeft - 122));
+  return {
+    rightSidebarLayout,
+    viewSidebarWidth: viewSidebarWidth === null ? null : Math.min(viewSidebarWidth, Math.max(
+      minimumLeft,
+      viewportWidth - railWidth - (rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0) - 80,
+    )),
   };
 }
 
@@ -374,17 +397,39 @@ export function AppRightSidebarToggleButton({
   );
 }
 
+export function AppRightSidebarHeaderControls({ descriptor }: { descriptor: AppRightSidebarDescriptor }): JSX.Element {
+  return <div className="app-right-sidebar__header">
+        {descriptor.kind === 'panel' ? (
+          descriptor.icon ? (
+            <span className="app-right-sidebar__panel-icon" aria-hidden="true" title={descriptor.title}>
+              {descriptor.icon}
+            </span>
+          ) : <h2>{descriptor.title}</h2>
+        ) : (
+          <IconTabList
+            ariaLabel={descriptor.ariaLabel}
+            tabs={descriptor.tabs}
+            activeTab={descriptor.activeTab}
+            onActiveTabChange={descriptor.onActiveTabChange}
+            idPrefix="app-right-sidebar"
+            className="app-right-sidebar__tabs"
+          />
+        )}
+
+  </div>;
+}
+
 export function AppRightSidebarSurface({
   descriptor,
-  toggleRef,
+  closeFocusRef,
   onOpenChange,
   layout,
   open = true,
 }: {
   descriptor: AppRightSidebarDescriptor;
-  toggleRef?: Ref<HTMLButtonElement>;
   onOpenChange(open: boolean): void;
   layout?: AppRightSidebarLayout;
+  closeFocusRef?: RefObject<HTMLButtonElement>;
   open?: boolean;
 }): JSX.Element {
   const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -430,6 +475,7 @@ export function AppRightSidebarSurface({
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return;
         event.preventDefault();
+        closeFocusRef?.current?.focus({ preventScroll: true });
         onOpenChange(false);
       }}
     >
@@ -448,33 +494,6 @@ export function AppRightSidebarSurface({
         onPointerCancel={stopResize}
         onKeyDown={resizeByKeyboard}
       />
-      <header className="app-right-sidebar__header">
-        {descriptor.kind === 'panel' ? (
-          descriptor.icon ? (
-            <span className="app-right-sidebar__panel-icon" aria-hidden="true" title={descriptor.title}>
-              {descriptor.icon}
-            </span>
-          ) : <h2>{descriptor.title}</h2>
-        ) : (
-          <IconTabList
-            ariaLabel={descriptor.ariaLabel}
-            tabs={descriptor.tabs}
-            activeTab={descriptor.activeTab}
-            onActiveTabChange={descriptor.onActiveTabChange}
-            idPrefix="app-right-sidebar"
-            className="app-right-sidebar__tabs"
-          />
-        )}
-        {open ? (
-          <AppRightSidebarToggleButton
-            descriptor={descriptor}
-            buttonRef={toggleRef}
-            open
-            onOpenChange={onOpenChange}
-            className="app-right-sidebar__toggle"
-          />
-        ) : null}
-      </header>
       <div className="app-right-sidebar__body">
         {descriptor.kind === 'panel' ? descriptor.content : descriptor.tabs.map((tab) => (
           <div key={tab.id} id={`app-right-sidebar-panel-${tab.id}`} role="tabpanel" aria-labelledby={`app-right-sidebar-tab-${tab.id}`} hidden={descriptor.activeTab !== tab.id}>

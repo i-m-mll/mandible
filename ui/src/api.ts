@@ -2769,12 +2769,15 @@ export function isDesktopShell(): boolean {
 }
 
 export type NativeWindowCapabilities = {
+  framePresentation: 'macos-overlay' | 'system';
+  topBarHeight: number;
+  trafficLightReservation: number;
   liquidGlassRegular: boolean;
 };
 
 export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabilities> {
   if (!hasTauriRuntime()) {
-    return { liquidGlassRegular: false };
+    return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 48, trafficLightReservation: 0 };
   }
   return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
 }
