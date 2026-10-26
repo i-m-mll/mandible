@@ -1137,7 +1137,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       if (proposalValues.length > 0 && groupValues.length === 0) {
         throw new BriefingStoreError("proposal display context requires group");
       }
-      const projection = readBriefing(db, req.params.briefingId, {
+      const briefingId = resolveBriefingId(db, req.params.briefingId, viewer);
+      const projection = readBriefing(db, briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
         ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
         ...(groupValues[0] ? { displayGroup: {
