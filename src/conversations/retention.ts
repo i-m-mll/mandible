@@ -8,9 +8,9 @@ import { scheduleExactPathReparse } from "../ingestion.js";
 import { setConversationArchiveState } from "./metadata.js";
 import { defaultCodexNativeArchiveAdapter, type CodexNativeArchiveOutcome } from "../conversation-control/codex-native-archive.js";
 import { getRetainedChild, getRetainedChildByProvider, type RetainedChild } from "./retention-policy.js";
-import { notifyRetentionChanged, observeRetentionChanges, readChildRetentionSettings, rearmChildRetention } from "./retention-state.js";
+import { notifyRetentionChanged, observeRetentionChanges, readChildRetentionSettings, rearmChildRetention, restoreChildRetention } from "./retention-state.js";
 import type { Logger, SSEEvent } from "../types.js";
-import { DOMAIN_EVENTS } from "../contracts.js";
+import { DOMAIN_EVENTS, type SessionExecutionObservation } from "../contracts.js";
 import { broadcast } from "../sse.js";
 import { systemAction } from "../identity/resolver.js";
 
@@ -107,12 +107,28 @@ export class ChildRetentionScheduler {
       const provider = data.provider === "claude" ? "claude_code" : data.provider === "codex" ? "codex" : null;
       if (provider && typeof data.provider_session_id === "string") {
         const child = getRetainedChildByProvider(this.db, provider, data.provider_session_id);
-        if (child) rearmChildRetention(this.db, child.conversationId);
+        if (child) {
+          const observation = data.observation as SessionExecutionObservation;
+          if (observation.state.kind === "working" || observation.event === "SessionStart") this.invalidateInput(child, observation.observed_at);
+          else rearmChildRetention(this.db, child.conversationId);
+        }
       }
     }
     if (event.type === DOMAIN_EVENTS.CONVERSATION_CONTROL_UPDATED && typeof data.conversation_id === "string") {
-      rearmChildRetention(this.db, data.conversation_id);
+      const turn = data.turn as { kind: string; since?: number } | undefined;
+      const child = getRetainedChild(this.db, data.conversation_id);
+      if (child && turn?.kind === "queued" && typeof turn.since === "number") this.invalidateInput(child, turn.since);
+      else rearmChildRetention(this.db, data.conversation_id);
     }
+  }
+
+  private invalidateInput(child: RetainedChild, occurredAt: number): void {
+    if ((this.row(child.conversationId)?.restored_at ?? 0) >= occurredAt) return;
+    this.db.transaction(() => {
+      setConversationArchiveState(this.db, { conversation_id: child.conversationId, archived: false, cause: "observed-provider" },
+        { actor_type: "system", actor_id: "child-retention-input", attribution: systemAction() });
+      restoreChildRetention(this.db, child.conversationId, occurredAt);
+    })();
   }
 
   runDue(): Promise<void> {

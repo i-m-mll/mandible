@@ -90,16 +90,16 @@ export function projectChildRetentionActivity(db: Db, conversationId: string,
     last_input_at=excluded.last_input_at,last_terminal_at=excluded.last_terminal_at,activity_state=excluded.activity_state,
     activity_generation=excluded.activity_generation,source_version_id=excluded.source_version_id,
     native_pending=CASE WHEN ? THEN 0 ELSE native_pending END,
+    last_native_outcome=CASE WHEN ? THEN NULL ELSE last_native_outcome END,
     attempts=CASE WHEN ? THEN 0 ELSE attempts END`).run(conversationId, child.role, activity || null, input || null,
     terminal || null, state, (previous?.activity_generation ?? 0) + (changed ? 1 : 0), source?.current_version_id ?? null,
-    changed ? 1 : 0, changed ? 1 : 0);
+    changed ? 1 : 0, changed ? 1 : 0, changed ? 1 : 0);
   if (changed || !previous) rearmChildRetention(db, conversationId);
 }
 
 export function restoreChildRetention(db: Db, conversationId: string, now = Date.now()): void {
   const child = getRetainedChild(db, conversationId);
-  if (!child) return;
-  db.prepare(`INSERT INTO conversation_retention_state(conversation_id,role) VALUES (?,?) ON CONFLICT DO NOTHING`)
+  if (child) db.prepare(`INSERT INTO conversation_retention_state(conversation_id,role) VALUES (?,?) ON CONFLICT DO NOTHING`)
     .run(conversationId, child.role);
   db.prepare(`UPDATE conversation_retention_state SET restored_at=?, activity_generation=activity_generation+1,
     native_pending=0,attempts=0,trigger=NULL,due_at=NULL,last_native_outcome=NULL,provider_archived=1 WHERE conversation_id=?`).run(now, conversationId);

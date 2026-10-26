@@ -1821,6 +1821,7 @@ async function relocateMovedCodexSource(
     if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
     const stat = await logicalSourceStat(candidate);
     await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
+    reconcileIngestedChildRetention(db, match.id, candidate, parsed.blocks);
     // A bulk archive moves many rollouts at once. The durable source alias is
     // the record of each move; reconcile summarizes its relocations per pass.
     logger("debug", "ingestion_source_relocated", {
