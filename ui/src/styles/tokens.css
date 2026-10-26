@@ -335,7 +335,7 @@
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
-  --app-boundary-shadow-peak-alpha: 0.06;
+  --app-boundary-shadow-peak-alpha: 0.03;
   --app-boundary-line-color: #eaeaeb;
   --app-divider: #D7D7D8;
   --app-divider-emphasis: #C6C6C7;
