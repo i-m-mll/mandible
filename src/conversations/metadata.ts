@@ -4,6 +4,7 @@ import type { LedgerActorInput } from "../ledger/types.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import { broadcast } from "../sse.js";
+import { restoreChildRetention } from "./retention-state.js";
 
 export type ConversationArchiveCause = "manual" | "retention" | "resolved-worker" | "observed-provider";
 export interface ConversationMetadataResult {
@@ -75,6 +76,7 @@ export function updateConversationMetadata(db: Db, id: string, body: Record<stri
         changedFields.push("archived_at");
       } else if (!body.archived && previousArchive) {
         db.prepare("DELETE FROM conversation_archive_states WHERE conversation_id = ?").run(id);
+        if ((options.archiveCause ?? "manual") === "manual") restoreChildRetention(db, id);
         changedFields.push("archived_at");
       }
     }
@@ -112,7 +114,10 @@ export function updateConversationMetadata(db: Db, id: string, body: Record<stri
     return { updated, archivedAt: updated.archived_at ?? null, changedFields };
   });
   if (!result) return null;
-  if (result.changedFields.length) db.afterCommit(() => broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id, updates: result.changedFields }));
+  if (result.changedFields.length) db.afterCommit(() => broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
+    id, updates: result.changedFields,
+    ...(result.changedFields.includes("archived_at") ? { archived_at: result.archivedAt } : {}),
+  }));
   return { ...result, changed: result.changedFields.length > 0 };
 }
 
