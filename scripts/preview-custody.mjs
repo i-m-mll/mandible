@@ -66,6 +66,7 @@ export function verifyPreviewConsumerStopped(consumer) {
     || child.ownership.rootIdentity.dev !== consumer.rootIdentity.dev || child.ownership.rootIdentity.ino !== consumer.rootIdentity.ino) throw new Error('Native consumer root identity changed');
   if (child.pid && processIdentity(child.pid) !== null) throw new Error('Native consumer still has a live process');
   if (child.buildProcess?.pid && processIdentity(child.buildProcess.pid) !== null) throw new Error('Native consumer still has a live build process');
+  if (child.buildProcess?.remaining?.some(entry => processIdentity(entry.pid) !== null)) throw new Error('Native consumer still has live build descendants');
   if (child.status !== 'stopped') {
     if (!['visible', 'loading', 'failed', 'launched', 'launching'].includes(child.status)) throw new Error('Native consumer must be reconciled stopped before backend refresh or reacquisition');
     child.status = 'stopped'; child.stoppedAt = new Date().toISOString(); child.ownership.revision++;
@@ -90,6 +91,7 @@ export function reacquirePreviewConsumer(handle, child) {
     previous.state = 'pending'; previous.generation = child.expectedGeneration; previous.source = child.expectedSource;
     previous.attemptId = child.attemptId;
     receipt.attemptId = child.attemptId; receipt.status = 'preparing'; receipt.ownership.revision++;
+    receipt.reservation = { ...previous };
     saveOwnedMetadata(child.metadataFile, receipt);
     save();
     return previous;
