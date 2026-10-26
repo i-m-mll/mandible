@@ -11,6 +11,8 @@ import type { RouteRegistrar } from "../server.js";
 import type { InstanceRole } from "../types.js";
 import { readBody, sendJson } from "./http.js";
 import { notifyProtectionInputsChanged } from "../protection-inputs.js";
+import { CHILD_RETENTION_SETTINGS_SCHEMA, CHILD_RETENTION_SETTINGS_KEY } from "../conversations/retention-contract.js";
+import { readChildRetentionSettings, writeChildRetentionSettings } from "../conversations/retention-state.js";
 
 const INSTRUCTION_TARGETS_KEY = "instructions.targets";
 const INSTRUCTION_POST_EXPORT_KEY = "instructions.post_export";
@@ -248,6 +250,16 @@ function clientAuthSettingForbidden(): { error: string; code: string; hint: stri
 export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: InstanceRole = "main"): void {
   const db = getDb();
 
+  server.get("/api/settings/child-retention", (_req, res) => {
+    sendJson(res, 200, readChildRetentionSettings(db));
+  }, { operation: { id: "get:/api/settings/child-retention", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  server.put("/api/settings/child-retention", globalCapabilityRoute("change_settings", (req, res) => {
+    const parsed = CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(readBody(req));
+    if (!parsed.success) { sendJson(res, 400, { error: "Invalid child retention settings", details: parsed.error.issues }); return; }
+    writeChildRetentionSettings(db, parsed.data);
+    sendJson(res, 200, parsed.data);
+  }), { operation: { id: "put:/api/settings/child-retention", effects: ["ledger:write"], requestSchema: CHILD_RETENTION_SETTINGS_SCHEMA, reportingCategory: "settings" }, fileRpc: "deny" });
+
   // GET /api/settings — returns all settings as { key: value } object.
   // Issue 708dc4c / finding 4 — `client_auth.*` keys are hidden from the generic
   // settings surface. The pepper lives on disk (never in settings); the mode is
@@ -388,6 +400,15 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
     const body = readBody<{ value?: unknown }>(req);
     if (typeof body.value !== "string") {
       sendJson(res, 400, { error: "Missing or invalid value (must be string)" });
+      return;
+    }
+    if (key === CHILD_RETENTION_SETTINGS_KEY) {
+      let value: unknown;
+      try { value = JSON.parse(body.value); } catch { sendJson(res, 400, { error: "Invalid child retention settings" }); return; }
+      const parsed = CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(value);
+      if (!parsed.success) { sendJson(res, 400, { error: "Invalid child retention settings" }); return; }
+      writeChildRetentionSettings(db, parsed.data);
+      sendJson(res, 200, { ok: true, key, value: JSON.stringify(parsed.data) });
       return;
     }
     const now = Date.now();
