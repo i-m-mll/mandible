@@ -15,12 +15,14 @@ describe('run-scoped schema fixtures', () => {
     const seedBefore = readSchemaSeed();
     const first = createMigratedDbWithSeeds({
       operator: { slug: 'human' }, agent: { slug: 'agent', sessionEnv: 'seed-session' },
-      now: 1, setGlobal: true, pragmas: ['foreign_keys = OFF'],
+      now: 1, setGlobal: true,
     });
     databases.push(first.db);
     expect(getDb()).toBe(first.db);
     expect(first.seeds.operator?.slug).toBe('human');
     expect(first.seeds.agent?.kind).toBe('agent');
+    expect(first.db.inTransaction).toBe(false);
+    first.db.pragma('foreign_keys = OFF');
     first.db.exec('CREATE TABLE private_mutation(value TEXT); INSERT INTO private_mutation VALUES (\'first\')');
     expect(first.db.pragma('foreign_keys', { simple: true })).toBe(0);
 

@@ -1,3 +1,4 @@
+import { withRequestOrigin } from "../src/request-origin.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -482,13 +483,21 @@ it("publishes a committed work-unit link through the actual SseManager", () => {
   const published = vi.spyOn(manager, "broadcast"); // Call through to validation.
   setSseManager(manager);
   try {
-    expect(linkWorkUnitToLedgerIssue(db, {
+    const link = () => linkWorkUnitToLedgerIssue(db, {
       work_unit_id: "sse-linked-work", issue_ref: issue.id, repo_ref: project.project.id,
-    })).toMatchObject({ ok: true, issue_id: issue.id });
+    });
+    expect(() => db.transaction(() => { link(); throw new Error("abort link"); })()).toThrow("abort link");
+    expect(db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get("sse-linked-work"))
+      .toEqual({ ledger_issue_id: null });
+    expect(published).not.toHaveBeenCalled();
+    const origin = { provider: "codex", provider_session_id: "native-link-caller" };
+    expect(withRequestOrigin(origin, link)).toMatchObject({ ok: true, issue_id: issue.id });
+    expect(link()).toMatchObject({ ok: true, issue_id: issue.id });
     expect(db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get("sse-linked-work"))
       .toEqual({ ledger_issue_id: issue.id });
     const events = new LedgerStore(db).listEvents({ entity_type: "work_unit", entity_id: "sse-linked-work" });
     expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].payload_json).request_origin).toEqual(origin);
     expect(published.mock.calls.map(([event]) => event.type)).toEqual([
       ledgerSseTypeForEvent("work_unit.issue_linked"), LEDGER_EVENT_CREATED,
     ]);
