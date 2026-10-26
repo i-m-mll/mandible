@@ -1,3 +1,6 @@
+import { requestOriginFromRow } from "../ledger/origin-read.js";
+import { mutateBriefing } from "./mutation-history.js";
+import { requestOriginJson } from "../request-origin.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.js";
@@ -382,11 +385,12 @@ export function previewBriefingGroupReviewCandidate(
 
 export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBundleViewer): BriefingGroup {
   const id = resolveGroupId(db, groupRef);
-  const group = db.prepare("SELECT id, key, name, current_bundle_id, archived_at, created_at, updated_at FROM briefing_groups WHERE id = ?")
+  const group = db.prepare("SELECT id, key, name, current_bundle_id, archived_at, created_at, updated_at, request_origin_json FROM briefing_groups WHERE id = ?")
     .get(id) as Omit<BriefingGroup, "current" | "updates"> & { current_bundle_id: string | null };
   const { current_bundle_id: currentBundleId, ...projection } = group;
   return {
     ...projection,
+    request_origin: requestOriginFromRow(projection),
     current: currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer),
     updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer)),
     destinations: (db.prepare(`SELECT owner.logical_artifact_id, owner.group_id,
@@ -423,15 +427,17 @@ function readBriefingGroupHistory(
   viewer: BriefingBundleViewer,
 ): BriefingGroupDisposition[] {
   if (!tableExists(db, "briefing_group_dispositions")) return [];
-  const rows = db.prepare(`SELECT id, kind, prior_base_bundle_id, proposal_bundle_id,
+  const rows = db.prepare(`SELECT request_origin_json, id, kind, prior_base_bundle_id, proposal_bundle_id,
       resulting_base_bundle_id, auth_request_id, merge_head_sha, created_at
     FROM briefing_group_dispositions WHERE group_id = ? ORDER BY created_at DESC, id DESC`)
     .all(groupId) as Array<{
+      request_origin_json: string | null;
       id: string; kind: "promoted" | "dismissed"; prior_base_bundle_id: string | null;
       proposal_bundle_id: string; resulting_base_bundle_id: string | null;
       auth_request_id: string | null; merge_head_sha: string | null; created_at: number;
     }>;
   const mergeBound = rows.map((row): BriefingGroupDisposition => ({
+    request_origin: requestOriginFromRow(row),
     id: row.id,
     kind: row.kind,
     prior_base: row.prior_base_bundle_id === null ? null : readBriefingBundle(db, row.prior_base_bundle_id, viewer),
@@ -454,11 +460,12 @@ function readBriefingGroupHistory(
     created_at: row.created_at,
   }));
   if (!tableExists(db, "briefing_group_review_dispositions")) return mergeBound;
-  const reviewed = db.prepare(`SELECT id, decision, expected_base_bundle_id, proposal_bundle_id,
+  const reviewed = db.prepare(`SELECT request_origin_json, id, decision, expected_base_bundle_id, proposal_bundle_id,
       composition_run_id, resulting_base_bundle_id, binding_digest, manifest_json, actor_user_id,
       evidence_method, credential_id, item_count, destination_change_count,
       base_layout_digest, proposal_layout_digest, created_at
     FROM briefing_group_review_dispositions WHERE group_id = ?`).all(groupId) as Array<{
+      request_origin_json: string | null;
       id: string; decision: "accepted" | "rejected"; expected_base_bundle_id: string;
       proposal_bundle_id: string; composition_run_id: string | null; resulting_base_bundle_id: string;
       binding_digest: string; manifest_json: string; actor_user_id: string; evidence_method: string;
@@ -508,6 +515,7 @@ function readBriefingGroupHistory(
         "briefing_review_receipt_corrupt");
     }
     return {
+      request_origin: requestOriginFromRow(row),
       id: row.id,
       kind: row.decision,
       prior_base: readBriefingBundle(db, row.expected_base_bundle_id, viewer),
@@ -582,6 +590,7 @@ export function bindBriefingDestinationOwner(
   now = Date.now(),
 ): { group: BriefingGroup; changed: boolean } {
   const groupId = resolveGroupId(db, input.groupRef);
+  return mutateBriefing(db, "briefing_group", groupId, () => {
   const artifact = resolveArtifactIdentity(db, input.logicalArtifactRef, "strict-read");
   if (artifact.status !== "resolved" || artifact.target_type !== "artifact" || !artifact.target_id) {
     throw new BriefingStoreError("Destination ownership requires one exact logical Artifact ref", 404,
@@ -623,6 +632,7 @@ export function bindBriefingDestinationOwner(
     return true;
   }).immediate();
   return { group: readBriefingGroup(db, groupId, viewer), changed };
+  });
 }
 
 export function validateBriefingGroupPromotionCandidate(
@@ -770,11 +780,11 @@ export function promoteBriefingGroupProposal(
     survivors.forEach((bundleId, position) => reposition.run(position, groupId, bundleId));
     db.prepare("UPDATE briefing_groups SET current_bundle_id = ?, updated_at = ? WHERE id = ?")
       .run(proposalBundleId, now, groupId);
-    db.prepare(`INSERT INTO briefing_group_dispositions (
+    db.prepare(`INSERT INTO briefing_group_dispositions (request_origin_json,
       id, group_id, kind, prior_base_bundle_id, proposal_bundle_id, resulting_base_bundle_id,
       auth_request_id, merge_head_sha, created_at
-    ) VALUES (?, ?, 'promoted', ?, ?, ?, ?, ?, ?)`)
-      .run(dispositionId, groupId, expectedBaseBundleId, proposalBundleId, proposalBundleId,
+    ) VALUES (?, ?, ?, 'promoted', ?, ?, ?, ?, ?, ?)`)
+      .run(requestOriginJson(), dispositionId, groupId, expectedBaseBundleId, proposalBundleId, proposalBundleId,
         authRequestId, mergeHeadSha, now);
     return { dispositionId, changed: true };
   }).immediate();
@@ -877,11 +887,11 @@ export function dispositionBriefingGroupProposalByHumanReview(
     } else {
       db.prepare("UPDATE briefing_groups SET updated_at = ? WHERE id = ?").run(now, groupId);
     }
-    db.prepare(`INSERT INTO briefing_group_review_dispositions (
+    db.prepare(`INSERT INTO briefing_group_review_dispositions (request_origin_json,
       id, group_id, decision, expected_base_bundle_id, proposal_bundle_id, composition_run_id,
       resulting_base_bundle_id, base_layout_digest, proposal_layout_digest, binding_digest, manifest_json,
       item_count, destination_change_count, actor_user_id, evidence_method, credential_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(),
       dispositionId, groupId, input.decision, expectedBaseBundleId, proposalBundleId,
       candidate.composition_run_id, resultingBaseBundleId, candidate.base_layout_digest,
       candidate.proposal_layout_digest, bindingDigest, manifestJson, candidate.items.length,
@@ -1003,12 +1013,12 @@ export function createBriefingGroup(
       override: input.placementOverride, now });
     assertActiveGroupKeyAvailable(db, key);
     db.prepare(`INSERT INTO briefing_groups
-      (id, key, name, current_bundle_id, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)`)
-      .run(groupId, key, name, currentBundleId, now, now);
+      (request_origin_json, id, key, name, current_bundle_id, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`)
+      .run(requestOriginJson(), groupId, key, name, currentBundleId, now, now);
     const insert = db.prepare(
-      "INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO briefing_group_updates (request_origin_json, group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
     );
-    bundleIds.forEach((bundleId, position) => insert.run(groupId, bundleId, position, now));
+    bundleIds.forEach((bundleId, position) => insert.run(requestOriginJson(), groupId, bundleId, position, now));
   }).immediate();
   return readBriefingGroup(db, groupId, input.viewer);
 }
@@ -1019,6 +1029,7 @@ export function configureBriefingGroup(
   viewer: BriefingBundleViewer, now = Date.now(),
 ): { group: BriefingGroup; changed: boolean } {
   const groupId = resolveGroupId(db, groupRef);
+  return mutateBriefing(db, "briefing_group", groupId, () => {
   const bundleIds = resolveDistinctBundles(db, input.bundleRefs);
   const currentBundleId = input.currentBundleRef === null ? null : resolveBundleId(db, input.currentBundleRef);
   if (currentBundleId !== null && bundleIds.includes(currentBundleId)) {
@@ -1043,22 +1054,23 @@ export function configureBriefingGroup(
       briefingIds: briefingIdsForBundles(db, allBundleIds), override: input.placementOverride, now });
     const dismissed = previousUpdates.filter((bundleId) => !bundleIds.includes(bundleId)
       && bundleId !== currentBundleId);
-    const recordDismissal = db.prepare(`INSERT INTO briefing_group_dispositions (
+    const recordDismissal = db.prepare(`INSERT INTO briefing_group_dispositions (request_origin_json,
       id, group_id, kind, prior_base_bundle_id, proposal_bundle_id, resulting_base_bundle_id,
       auth_request_id, merge_head_sha, created_at
-    ) VALUES (?, ?, 'dismissed', ?, ?, NULL, NULL, NULL, ?)`);
-    dismissed.forEach((bundleId) => recordDismissal.run(randomUUID(), groupId,
+    ) VALUES (?, ?, ?, 'dismissed', ?, ?, NULL, NULL, NULL, ?)`);
+    dismissed.forEach((bundleId) => recordDismissal.run(requestOriginJson(), randomUUID(), groupId,
       current.current_bundle_id, bundleId, now));
     db.prepare("DELETE FROM briefing_group_updates WHERE group_id = ?").run(groupId);
     db.prepare("UPDATE briefing_groups SET current_bundle_id = ?, updated_at = ? WHERE id = ?")
       .run(currentBundleId, now, groupId);
     const insert = db.prepare(
-      "INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO briefing_group_updates (request_origin_json, group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
     );
-    bundleIds.forEach((bundleId, position) => insert.run(groupId, bundleId, position, now));
+    bundleIds.forEach((bundleId, position) => insert.run(requestOriginJson(), groupId, bundleId, position, now));
     return true;
   }).immediate();
   return { group: readBriefingGroup(db, groupId, viewer), changed };
+  });
 }
 
 export function addBriefingGroupUpdate(
@@ -1066,6 +1078,7 @@ export function addBriefingGroupUpdate(
   placementOverride?: PlacementOverride,
 ): { group: BriefingGroup; added: boolean } {
   const groupId = resolveGroupId(db, groupRef);
+  return mutateBriefing(db, "briefing_group", groupId, () => {
   const bundleId = resolveBundleId(db, bundleRef);
   const added = db.transaction(() => {
     if (db.prepare("SELECT 1 FROM briefing_group_updates WHERE bundle_id = ? AND group_id = ?")
@@ -1078,18 +1091,20 @@ export function addBriefingGroupUpdate(
     const row = db.prepare(
       "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM briefing_group_updates WHERE group_id = ?",
     ).get(groupId) as { position: number };
-    db.prepare("INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)")
-      .run(groupId, bundleId, row.position, now);
+    db.prepare("INSERT INTO briefing_group_updates (request_origin_json, group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(requestOriginJson(), groupId, bundleId, row.position, now);
     db.prepare("UPDATE briefing_groups SET updated_at = ? WHERE id = ?").run(now, groupId);
     return true;
   }).immediate();
   return { group: readBriefingGroup(db, groupId, viewer), added };
+  });
 }
 
 export function setBriefingGroupArchived(
   db: Db, groupRef: string, archived: boolean, viewer: BriefingBundleViewer, now = Date.now(),
 ): { group: BriefingGroup; changed: boolean } {
   const groupId = resolveGroupId(db, groupRef);
+  return mutateBriefing(db, "briefing_group", groupId, () => {
   const changed = db.transaction(() => {
     const row = db.prepare("SELECT current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
       .get(groupId) as { current_bundle_id: string | null; archived_at: number | null };
@@ -1110,6 +1125,7 @@ export function setBriefingGroupArchived(
     return true;
   }).immediate();
   return { group: readBriefingGroup(db, groupId, viewer), changed };
+  });
 }
 
 export function updateBriefingGroupName(
@@ -1117,9 +1133,11 @@ export function updateBriefingGroupName(
 ): { group: BriefingGroup; changed: boolean } {
   if (typeof name !== "string" || !name.trim()) throw new BriefingStoreError("name must be a nonblank string");
   const groupId = resolveGroupId(db, groupRef);
+  return mutateBriefing(db, "briefing_group", groupId, () => {
   const normalized = name.trim();
   const current = db.prepare("SELECT name FROM briefing_groups WHERE id = ?").get(groupId) as { name: string };
   const changed = current.name !== normalized;
   if (changed) db.prepare("UPDATE briefing_groups SET name = ? WHERE id = ?").run(normalized, groupId);
   return { group: readBriefingGroup(db, groupId, viewer), changed };
+  });
 }

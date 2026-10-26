@@ -1,3 +1,4 @@
+import { mutateWorkUnit } from "./work-unit-history.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -1252,12 +1253,12 @@ export class SessionRegistry {
           .get(link.issue_id) as { id: string } | undefined;
 
         if (wu) {
-          this.db
+          mutateWorkUnit(this.db, wu.id, () => this.db
             .prepare(
               `UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
                WHERE id = ? AND (continuation_at IS NULL OR continuation_at < ?)`
             )
-            .run(session.continuation, session.id, now, wu.id, now);
+            .run(session.continuation, session.id, now, wu.id, now));
         }
       }
     } catch {

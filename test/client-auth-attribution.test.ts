@@ -24,6 +24,10 @@ import {
   setupOperator,
 } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
+import { withRequestOrigin } from "../src/request-origin.js";
+import { systemAction } from "../src/identity/resolver.js";
 
 describe("client-auth durable attribution", () => {
   let tempDir: string;
@@ -109,6 +113,56 @@ describe("client-auth durable attribution", () => {
       expect(row).toEqual({ author_user_id: agent.id, evidence_method: "api_token" });
     },
   );
+
+  it("persists native origins independently of one bearer author across issue writes and rollback", async () => {
+    const store = new LedgerStore(db);
+    const before = readLedgerChangeFeed(db, { project_id: projectId, project_key: "mandible" });
+    const origins = [
+      { provider: "codex", provider_session_id: "native-codex-1" },
+      { provider: "codex", provider_session_id: "native-codex-2" },
+      { provider: "claude", provider_session_id: "native-claude-1" },
+      null,
+    ];
+    const issueIds: string[] = [];
+    for (const [index, origin] of origins.entries()) {
+      const response = await router.invoke({ method: "POST", url: "/api/issues/mandible",
+        transport: index % 2 ? "file-rpc" : "http", credential: operatorToken,
+        ambient_identity: origin, body: { title: `Native origin ${index}`, kind: "feature", body: "Initial", project: projectId } });
+      expect(response.status).toBe(200);
+      const issue = db.prepare("SELECT * FROM ledger_issues WHERE title = ?").get(`Native origin ${index}`)!;
+      issueIds.push(issue.id);
+      expect(issue.author_user_id).toBe(operatorId);
+      expect(issue.evidence_method).toBe("api_token");
+      const event = store.listEvents({ entity_type: "issue", entity_id: issue.id }).find(event => event.event_type === "issue.created")!;
+      expect(JSON.parse(event.payload_json).request_origin).toEqual(origin);
+      const revisions = await router.invoke({ method: "GET", url: `/api/ledger/issues/${issue.id}/body/revisions`, credential: operatorToken, transport: "http" });
+      expect(revisions.status).toBe(200);
+      expect((revisions.body as any).revisions[0].request_origin).toEqual(origin);
+    }
+    const commentResponse = await router.invoke({ method: "POST", url: `/api/ledger/issues/${issueIds[0]}/comments`,
+      credential: operatorToken, transport: "http", ambient_identity: origins[2],
+      body: { body: `Related work [issue:${issueIds[1].slice(0, 7)}]` } });
+    expect(commentResponse.status).toBe(200);
+    const nativeComment = db.prepare('SELECT * FROM ledger_comments WHERE issue_id = ?').get(issueIds[0])!;
+    expect(store.listBodyRevisions({ entity_type: "comment_body", entity_id: nativeComment.id })[0].request_origin).toEqual(origins[2]);
+    const updated = await router.invoke({ method: "PATCH", url: `/api/ledger/issues/${issueIds[0]}`,
+      credential: operatorToken, transport: "file-rpc", ambient_identity: origins[1], body: { body: "Changed native contribution" } });
+    expect(updated.status).toBe(200);
+    expect(store.listBodyRevisions({ entity_type: "issue_body", entity_id: issueIds[0] }).at(-1)?.request_origin).toEqual(origins[1]);
+    const feed = readLedgerChangeFeed(db, { project_id: projectId, project_key: "mandible", cursor: before.next_cursor as string });
+    expect((feed.changes as Array<{ event_type: string; request_origin: unknown }>).filter(change => change.event_type === "issue.created").map(change => change.request_origin)).toEqual(origins);
+    expect((feed.changes as Array<{ event_type: string; request_origin: unknown }>).filter(change => change.event_type === "relationship.upserted"))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ request_origin: origins[2] })]));
+    const counts = () => db.prepare("SELECT (SELECT count(*) FROM ledger_events) AS events, (SELECT count(*) FROM ledger_body_revisions) AS revisions, (SELECT count(*) FROM ledger_comments) AS comments").get();
+    const prior = counts();
+    expect(() => withRequestOrigin(origins[0], () => db.transaction(() => {
+      store.addComment(issueIds[0], { body: "Rolled back", actor_type: "system", author_display: "System", attribution: systemAction() });
+      throw new Error("abort write");
+    })())).toThrow("abort write");
+    expect(counts()).toEqual(prior);
+    const comment = store.addComment(issueIds[0], { body: "Outside any request", actor_type: "system", author_display: "System", attribution: systemAction() });
+    expect(store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id })[0].request_origin).toBeNull();
+  });
 
   it("rejects a tokenless HTTP ledger write with no ambient signal", async () => {
     const response = await router.invoke({

@@ -68,7 +68,10 @@ export const AUTH_SNAPSHOT_SHAPE_V212: AuthSnapshotShape = Object.freeze({
   ]),
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V212;
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
+  request: AUTH_SNAPSHOT_SHAPE_V212.request,
+  actions: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V212.actions, "request_origin_json"]),
+});
 
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.
@@ -88,7 +91,9 @@ export function authRequestSnapshot(db: Db, requestId: string, shape: AuthSnapsh
     `SELECT ${shape.actions.join(", ")} FROM auth_request_actions WHERE auth_request_id = ? ORDER BY ordinal, id`,
   ).all(requestId).map((action) => {
     const record = action as Record<string, unknown>;
-    return { ...record, payload: parseJsonColumn(record.payload) };
+    const { request_origin_json, ...rest } = record;
+    return { ...rest, payload: parseJsonColumn(record.payload),
+      ...(request_origin_json == null ? {} : { request_origin_json }) };
   });
   const publication = authPublicationSnapshot(db, requestId);
   return JSON.stringify({ request, actions, ...(publication ? { publication } : {}) });

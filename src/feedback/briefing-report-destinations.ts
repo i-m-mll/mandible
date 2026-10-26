@@ -1,3 +1,4 @@
+import { requestOriginJson } from "../request-origin.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.js";
@@ -40,8 +41,8 @@ function successorBundle(db: Db, oldId: string | null, next: LayoutMember[], now
   const name = oldId === null ? "Published reports" : (db.prepare("SELECT name FROM briefing_bundles WHERE id = ?")
     .get(oldId) as { name: string }).name;
   const id = randomUUID();
-  db.prepare("INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-    .run(id, name, now, now);
+  db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run(requestOriginJson(), id, name, now, now);
   const insert = db.prepare(`INSERT INTO briefing_bundle_members
     (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -177,9 +178,9 @@ export function placeBriefingReport(
       source_group_id: source ? expectedOwnerId : null, source_base_bundle_id: sourceBaseId,
       route_changed: route?.changed ?? false, receipt_id: randomUUID() };
     db.prepare(`INSERT INTO briefing_destination_mutations
-      (id, operation_key, operation_kind, request_digest, logical_artifact_id, project_id,
+      (request_origin_json, id, operation_key, operation_kind, request_digest, logical_artifact_id, project_id,
        actor_user_id, credential_id, before_json, after_json, created_at)
-      VALUES (?, ?, 'place', ?, ?, ?, ?, ?, ?, ?, ?)`).run(result.receipt_id, input.operationKey,
+      VALUES (?, ?, ?, 'place', ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), result.receipt_id, input.operationKey,
       digest, logicalArtifactId, actor.projectId, actor.userId, actor.credentialId,
       canonicalJson(before), canonicalJson(result), now);
     return result;

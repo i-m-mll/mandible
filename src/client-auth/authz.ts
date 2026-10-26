@@ -119,10 +119,8 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
   if (ambient?.provider && (!identity || identity.method === "local_socket")) {
     // resolveProviderSessionAttributionResult only resolves to an agent-kind
     // owner (enforced in the resolver), so a forged provider header cannot
-    // impersonate a human. ambient.provider_session_id is intentionally NOT
-    // persisted here: the ledger attribution columns have no session-id field,
-    // and adding one is a schema change out of scope for this fix. Deferred —
-    // storing the raw session id for audit value would need a new column.
+    // impersonate a human. Native provenance is captured independently by the
+    // request-origin context, including when bearer authority wins above.
     const resolution = resolveProviderSessionAttributionResult(db, ambient.provider);
     if (resolution.status === "resolved"
         && (!identity || resolution.attribution.user_id === identity.user_id)) {

@@ -20,6 +20,7 @@ import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
+import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -120,6 +121,7 @@ export interface UnattributedWriteRecord {
  * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
+  resolveManagedOrigin?(identity: LocalManagedIdentity): import("./request-origin.js").ManagedRequestOrigin;
   localBrowserIdentity?(): ResolvedClientIdentity | null;
   localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean, localManaged?: LocalManagedIdentity | null): ResolvedClientIdentity | null;
   localSocketBootstrapAllowed?(): boolean;
@@ -739,7 +741,8 @@ export class Router implements RouteRegistrar {
       };
 
       try {
-        await route.handler(request, response);
+        const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
+        await withRequestOrigin(origin, () => route.handler(request, response));
       } catch (error) {
         if (error instanceof OperatorNotConfiguredError) {
           response.status(409).json({

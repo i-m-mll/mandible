@@ -1,3 +1,4 @@
+import { mutateWorkUnit } from "../work-unit-history.js";
 import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
@@ -133,10 +134,10 @@ export function linkWorkUnitToLedgerIssue(
     ...(input.metadata ?? {}),
   };
   db.transaction(() => {
-    db.prepare("UPDATE work_units SET ledger_issue_id = ? WHERE id = ?").run(
+    mutateWorkUnit(db, input.work_unit_id, () => db.prepare("UPDATE work_units SET ledger_issue_id = ? WHERE id = ?").run(
       resolved.issue_id,
       input.work_unit_id,
-    );
+    ));
     db.prepare(
       `INSERT INTO ledger_work_unit_issue_links (
         work_unit_id, issue_id, link_type, source, created_at, last_seen_at, metadata_json
