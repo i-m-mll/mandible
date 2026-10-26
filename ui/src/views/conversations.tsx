@@ -312,6 +312,7 @@ export function ChatDetailFrame({
     <DetailPaneShell
       as="section"
       variant="compact"
+      headerPlacement="frame"
       className={`conv-detail chat-detail-frame chat-detail-frame--${state}${className ? ` ${className}` : ''}`}
       headerClassName="conv-detail__shell-header"
       headerRef={headerRef}
@@ -1972,7 +1973,6 @@ export function ConversationDetail({
     width: rightSidebarState.width,
     minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
     maxWidth: 720,
-    togglePlacement: 'detail-header' as const,
     onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
     onWidthChange: (width: number) => updateRightSidebarState({ width }),
     activeTab: currentRightSidebarViewState.tab,

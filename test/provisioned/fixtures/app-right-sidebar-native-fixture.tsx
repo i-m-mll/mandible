@@ -1,14 +1,20 @@
-import { render, type Ref } from 'preact';
+import { useAnchoredMenu } from '../../../ui/src/hooks/useAnchoredMenu';
+import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailPaneMenuTrigger';
+import { render } from 'preact';
+import { useCallback } from 'preact/hooks';
+import { AppFrame } from '../../../ui/src/app-frame';
+import { ViewSidebar } from '../../../ui/src/components/ViewSidebar';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { ApiError } from '../../../ui/src/api';
 import {
   AppRightSidebarSurface,
-  AppRightSidebarToggleButton,
+  APP_RAIL_WIDTHS,
+  AppShellProvider,
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
   WIDE_RESPONSIVE_SIDEBAR_STATE,
   responsiveSidebarThresholdTransition,
-  resolveAppRightSidebarLayout,
+  resolveAppFrameGeometry,
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
@@ -85,21 +91,20 @@ function NativeTranscript(): JSX.Element {
   );
 }
 
-function ChatMain({ descriptor, toggleRef, setOpen }: {
-  descriptor: AppRightSidebarDescriptor;
-  toggleRef: Ref<HTMLButtonElement>;
-  setOpen(open: boolean): void;
-}): JSX.Element {
+function ChatMain({ descriptor }: { descriptor: AppRightSidebarDescriptor }): JSX.Element {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useAnchoredMenu({ open: menuOpen, anchorRef, menuRef, onDismiss: () => setMenuOpen(false) });
   return (
     <ChatDetailFrame
       state="conversation"
       header={(
         <DetailPaneHeader
           variant="compact"
-          title="Native Chat"
-          actions={!descriptor.open ? (
-            <AppRightSidebarToggleButton descriptor={descriptor} buttonRef={toggleRef} open={false} onOpenChange={setOpen} />
-          ) : undefined}
+          title="A long conversation title that must yield space to the adjacent menu and persistent frame controls"
+          supportingMetadata={<span>Workspace</span>}
+          menu={<><DetailPaneMenuTrigger buttonRef={anchorRef} label="Conversation actions" expanded={menuOpen} onClick={() => setMenuOpen(open => !open)} />{menuOpen ? <div className="app-anchored-menu" ref={menuRef} role="menu" popover="manual" style={menuStyle}><button role="menuitem">Inspect conversation</button></div> : null}</>}
           actionsLabel="Chat sidebar"
         />
       )}
@@ -118,22 +123,11 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const [viewSidebarOpen, setViewSidebarOpen] = useState(true);
   const responsiveState = useRef(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const toggleRef = useRef<HTMLButtonElement>(null);
-  const transferFocus = useRef(false);
-  const setOpen = (open: boolean) => {
-    transferFocus.current = true;
-    updateStored({ open });
-  };
-  useLayoutEffect(() => {
-    if (!transferFocus.current) return;
-    transferFocus.current = false;
-    const timer = window.setTimeout(() => {
-      const toggle = document.querySelector<HTMLButtonElement>(
-        '.app-right-sidebar-toggle[aria-controls="app-right-sidebar"]',
-      );
-      toggle?.focus();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [stored.open]);
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const [headerOwners, setHeaderOwners] = useState(0);
+  const registerFrameHeader = useCallback(() => { setHeaderOwners(n => n + 1); return () => setHeaderOwners(n => n - 1); }, []);
+  const [leftWidth, setLeftWidth] = useState(280);
+  const setOpen = (open: boolean) => updateStored({ open });
   useLayoutEffect(() => {
     const reconcile = () => {
       const transition = responsiveSidebarThresholdTransition(responsiveState.current, window.innerWidth);
@@ -149,7 +143,6 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
     if (surface === 'chat') return {
       id: scope, ariaLabel: 'Chat sidebar', kind: 'tabs', open: stored.open, width: stored.width,
       minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH, maxWidth: 720,
-      togglePlacement: 'detail-header',
       onOpenChange: setOpen, onWidthChange: (width) => updateStored({ width }), activeTab: tab,
       onActiveTabChange: setTab,
       tabs: [
@@ -180,23 +173,25 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
-  const layout = resolveAppRightSidebarLayout(descriptor, window.innerWidth);
+  const railMode = new URLSearchParams(location.search).has('fullRail') ? 'both' : 'icons';
+  const railWidth = APP_RAIL_WIDTHS[railMode];
+  const nativeControlsReservation = document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0;
+  const { rightSidebarLayout: layout, viewSidebarWidth: effectiveLeft } = resolveAppFrameGeometry({ viewportWidth: window.innerWidth, railWidth, viewSidebarWidth: leftWidth, rightSidebar: descriptor, rightSidebarOpen: stored.open, nativeControlsReservation });
   return (
-    <div className={`app-shell native-fixture native-fixture--${surface}`}>
-      <div className={`app-layout app-layout--route-${surface}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${stored.open ? ' app-layout--right-sidebar-open app-layout--right-sidebar-docked' : ''}`} style={{ '--app-right-sidebar-width': `${layout.effectiveWidth}px` }}>
-        <aside className="app-rail">
-          <button type="button" data-view-sidebar-toggle aria-pressed={viewSidebarOpen} onClick={() => setViewSidebarOpen((open) => !open)}>View sidebar</button>
-        </aside>
+    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
+      <AppShellProvider value={{ active: true, rightSidebar: descriptor, frameHeaderHost: host, registerFrameHeader, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: setLeftWidth, viewSidebarWidth: effectiveLeft }}>
+      <AppFrame headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail" />}>
         <main className={`app-content app-content--${surface}`}>
-          {surface === 'chat' ? <ChatMain descriptor={descriptor} toggleRef={toggleRef} setOpen={setOpen} /> : <div className="native-main">{surface} main</div>}
-          {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision((value) => value + 1)}>Stream update {streamRevision}</button> : null}
+          <div className="fixture-split">
+          <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div>Left content</div></ViewSidebar>
+          {surface === 'chat' ? <ChatMain descriptor={descriptor} /> : <div className="native-main">{surface} main</div>}
+          </div>
+          {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision(value => value + 1)}>Stream update {streamRevision}</button> : null}
           {surface === 'chat' ? <div data-title-errors data-deterministic-retry={String(deterministic.retryable)} data-transient-retry={String(transient.retryable)}>{deterministic.message}|{transient.message}</div> : null}
         </main>
-        <AppRightSidebarSurface descriptor={descriptor} toggleRef={toggleRef} onOpenChange={setOpen} layout={layout} open={stored.open} />
-        {!stored.open && surface !== 'chat' ? (
-          <AppRightSidebarToggleButton descriptor={descriptor} buttonRef={toggleRef} open={false} onOpenChange={setOpen} className="app-content__right-sidebar-toggle" />
-        ) : null}
-      </div>
+        <AppRightSidebarSurface closeFocusRef={toggleRef} descriptor={descriptor} onOpenChange={setOpen} layout={layout} open={stored.open} />
+      </AppFrame>
+      </AppShellProvider>
     </div>
   );
 }

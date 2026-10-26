@@ -1,37 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  CHAT_DETAIL_PREVIEW_MIN_WIDTH,
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   WIDE_RESPONSIVE_SIDEBAR_STATE,
   responsiveSidebarThresholdTransition,
-  resolveAppRightSidebarLayout,
 } from '../ui/src/app-shell';
 
-const chatSidebar = {
-  width: 420,
-  minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
-  maxWidth: 720,
-};
-
 describe('app right-sidebar layout', () => {
-  it('always uses the ordinary docked grid without a main-width constraint', () => {
-    expect(resolveAppRightSidebarLayout(chatSidebar, 1280)).toEqual({
-      presentation: 'dock',
-      effectiveWidth: 420,
-      minWidth: 360,
-      maxWidth: 720,
-    });
-    expect(resolveAppRightSidebarLayout(chatSidebar, 600)).toEqual({
-      presentation: 'dock',
-      effectiveWidth: 360,
-      minWidth: 360,
-      maxWidth: 360,
-    });
-    expect(chatSidebar.width).toBe(420);
-  });
-
   it('closes the right sidebar once on threshold entry', () => {
     const entered = responsiveSidebarThresholdTransition(
       WIDE_RESPONSIVE_SIDEBAR_STATE,

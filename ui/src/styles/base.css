@@ -95,18 +95,12 @@ a {
   cursor: default;
 }
 
+
 .app-shell {
-  --app-left-chrome-height: var(--app-header-height);
-  --app-left-boundary-width: 0px;
   --app-rail-inline-padding: 12px;
-  --app-rail-width: 208px;
+  --app-rail-item-gap: 6px;
   --app-view-sidebar-persisted-width: 0px;
-  /* Persisted/resizable values are content widths. Shadow paint is additive
-   * and never changes stored route state or reserves structural width. */
   --app-view-sidebar-width: var(--app-view-sidebar-persisted-width);
-  --app-view-sidebar-outer-width: calc(var(--app-view-sidebar-width) + var(--app-shadow-gutter-width));
-  --app-rail-outer-width: calc(var(--app-rail-width) + var(--app-shadow-gutter-width));
-  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width));
   height: 100vh;
   overflow: hidden;
   display: flex;
@@ -114,53 +108,13 @@ a {
   position: relative;
   background: var(--surface-chrome);
 }
-
-.app-shell--left-shadow {
-  --app-left-boundary-width: var(--app-boundary-shadow-paint-width);
-}
-
-.app-shell--rail-icons {
-  --app-rail-width: 56px;
-}
-
-.app-shell--view-sidebar-open {
-  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
-}
-
-.app-shell:has(.app-layout--route-work) {
-  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-width) + 340px + var(--app-shadow-gutter-width));
-}
-
-.tauri-window .app-shell {
-  /* Overlay controls end at y=27 with the configured 22px inset. A 30.75px
-     inset halves the prior 26.5px gap to the centered 28px logo and preserves
-     the 48px content row below it. */
-  --app-titlebar-inset: 30.75px;
-  --app-left-chrome-height: calc(var(--app-titlebar-inset) + var(--app-header-height));
-}
-
-.app-header {
-  position: absolute;
-  inset: 0 auto auto 0;
-  width: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width));
-  height: var(--app-header-height);
-  min-height: var(--app-header-height);
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  padding: 0;
-  background: var(--surface-header);
-  border-right: none;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  z-index: 60;
-}
-
-.tauri-window .app-header {
-  height: var(--app-left-chrome-height);
-  min-height: var(--app-left-chrome-height);
-  padding-top: var(--app-titlebar-inset);
-  -webkit-user-select: none;
-  user-select: none;
+.app-header__logo {
+  width: 22px;
+  height: 22px;
+  display: block;
+  background-color: currentColor;
+  -webkit-mask: var(--app-header-logo-image) center / contain no-repeat;
+  mask: var(--app-header-logo-image) center / contain no-repeat;
 }
 
 .app-right-sidebar-toggle {
@@ -197,233 +151,31 @@ a {
   outline-offset: -2px;
 }
 
-.app-content > .app-content__right-sidebar-toggle {
-  position: absolute;
-  z-index: 8;
-  top: 7px;
-  right: var(--app-header-inline-inset);
-}
-
-/* A shared detail header owns the collapsed toggle when one is present; the
- * app-level control remains the universal fallback for headerless states. */
-.app-content:has(> .app-tab-panel:not([hidden]) .detail-pane-header .app-right-sidebar-toggle)
-  > .app-content__right-sidebar-toggle {
-  display: none;
-}
-
 .app-right-sidebar__empty {
   margin: 0;
   padding: var(--space-4);
   color: var(--text-muted);
 }
 
-.app-shell--view-sidebar-open .app-header {
-  width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
-}
-
-
-/* One workspace boundary owns the complete chrome/main edge. It is independent
- * of header, ViewSidebar, detail, and right-sidebar dimensions, so its divider and
- * falloff remain continuous for the whole workspace without affecting layout. */
-.app-shell__workspace::after {
-  --app-boundary-shadow-direction: to right;
-  --app-boundary-accent: var(--app-divider);
-  --app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent));
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width));
-  z-index: var(--z-app-subdivision);
-  width: calc(var(--app-boundary-shadow-paint-width) + 1px);
-  background-color: transparent;
-  background-image:
-    var(--app-boundary-divider-paint),
-    var(--shadow-app-subdivision-paint);
-  background-position: right, left;
-  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%;
-  background-repeat: no-repeat;
-  pointer-events: none;
-}
-
-/* Shadow paint is shared by both directional shell edges. Divider paint is a
- * separate right-edge capability and is never inherited by the left edge. */
-:where(.app-shell__workspace)::after,
-:where(.app-shell--left-shadow)::before {
-  --shadow-app-subdivision-paint: linear-gradient(var(--app-boundary-shadow-direction), var(--app-boundary-shadow-gradient-stops));
-}
-
-/*
- * The optional user-controlled edge is the same full-height shell primitive
- * with its direction reversed. Its paint width becomes a boundary column,
- * never a second gutter or a layer over chrome content.
- */
-.app-shell--left-shadow::before {
-  --app-boundary-shadow-direction: to left;
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  z-index: var(--z-app-subdivision);
-  width: var(--app-boundary-shadow-paint-width);
-  background-image: var(--shadow-app-subdivision-paint);
-  pointer-events: none;
-}
-
-.app-header__identity {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  width: 100%;
-  display: grid;
-  grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
-  align-items: center;
-}
-
-.app-shell--view-sidebar-open .app-header__identity {
-  width: calc(100% - var(--app-shadow-gutter-width));
-}
-
-.app-shell--left-shadow .app-header__identity {
-  width: calc(100% - var(--app-left-boundary-width) - var(--app-shadow-gutter-width));
-  margin-left: var(--app-left-boundary-width);
-}
-
-.app-header--sidebar-hidden {
-  justify-content: flex-start;
-  padding-inline: 0;
-}
-
-.app-header--sidebar-hidden .app-header__identity {
-  display: flex;
-  justify-content: center;
-  width: var(--app-rail-width);
-}
-
-.app-header__text {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: baseline;
-  padding-left: 14px;
-}
-
-.app-header__brand {
-  min-width: 0;
-  display: inline-flex;
-  align-items: baseline;
-  justify-self: start;
-  gap: 10px;
-  color: #747474;
-}
-
-.app-header__mark {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  align-self: center;
-  margin-left: 14px;
-  color: var(--text-muted);
-}
-
-.app-header--sidebar-hidden .app-header__mark {
-  margin-left: 0;
-}
-
-.app-header__logo {
-  width: 100%;
-  height: 100%;
-  display: block;
-  background-color: currentColor;
-  -webkit-mask: var(--app-header-logo-image) center / contain no-repeat;
-  mask: var(--app-header-logo-image) center / contain no-repeat;
-}
-
-.app-header__brand-text {
-  color: inherit;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-:root[data-theme='light'] .app-header__brand {
-  color: #A8A9A9;
-}
-
-.app-header__route {
-  grid-column: 2;
-  justify-self: stretch;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-header-title);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: center;
-}
-
 .app-layout {
-  flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width)) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--app-right-sidebar-width, 0px);
   grid-template-rows: minmax(0, 1fr);
   position: relative;
   overflow: hidden;
-  background: var(--surface-chrome);
-}
-
-.app-layout--view-sidebar-open {
-  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-width)) minmax(0, 1fr);
-}
-
-.app-layout--view-sidebar-open::before {
-  content: '';
-  position: absolute;
-  top: var(--app-left-chrome-height);
-  bottom: 0;
-  left: calc(var(--app-left-boundary-width) + var(--app-rail-width));
-  z-index: var(--z-app-subdivision);
-  width: 1px;
-  pointer-events: none;
-  background: var(--border-muted);
-}
-
-.app-shell__workspace:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
-  --app-boundary-accent: var(--app-divider-emphasis);
-}
-
-.app-layout--rail-icons {
-  overflow: visible;
-}
-
-.app-layout--view-sidebar-open .app-rail {
-  box-shadow: none;
-}
-
-.app-layout:not(.app-layout--view-sidebar-open) .app-rail {
-  box-shadow: none;
-}
-
-.app-layout--right-sidebar-docked {
-  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
-}
-
-.app-layout--view-sidebar-open.app-layout--right-sidebar-docked {
-  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
+  background: var(--surface-main);
 }
 
 .app-right-sidebar {
-  grid-column: 3;
+  grid-column: 2;
   grid-row: 1;
   position: relative;
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: var(--app-header-height) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid var(--border-muted);
   background: var(--surface-main);
@@ -447,29 +199,6 @@ a {
 .app-right-sidebar__resize:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
-}
-
-.app-right-sidebar__header {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-inline: var(--app-header-inline-inset);
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  background: var(--surface-header);
-}
-
-.app-right-sidebar__toggle {
-  margin-left: auto;
-}
-
-.app-right-sidebar__header h2 {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .app-right-sidebar__panel-icon {
@@ -517,40 +246,14 @@ a {
   height: 100%;
 }
 
-@media (max-width: 800px) {
-  .app-header__text {
-    padding-inline: 10px;
-  }
-
-  .app-header__text {
-    gap: 10px;
-  }
-
-  .app-header__mark {
-    margin-left: 10px;
-  }
-
-  .app-header--sidebar-hidden .app-header__mark {
-    margin-left: 0;
-  }
-
-}
-
-@media (max-width: 700px) {
-  .app-shell {
-    --app-view-sidebar-width: calc(100vw - var(--app-left-boundary-width) - var(--app-rail-width));
-  }
-}
-
 .app-rail {
   --app-rail-inline-padding: 12px;
-  grid-row: 1 / -1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: calc(var(--app-left-chrome-height) + 18px) var(--app-rail-inline-padding) 18px;
+  padding: 12px var(--app-rail-inline-padding) 18px;
   background: var(--surface-rail);
   border-right: none;
   box-shadow: none;
@@ -558,7 +261,6 @@ a {
    * its shared footer hairline remains available to boundary paint. */
   overflow: visible;
   width: var(--app-rail-width);
-  margin-left: var(--app-left-boundary-width);
 }
 
 .app-rail__nav {
@@ -572,51 +274,10 @@ a {
   position: relative;
 }
 
-.app-rail__left-shadow-toggle {
-  position: absolute;
-  left: 50%;
-  bottom: -4px;
-  z-index: 1;
-  width: 10px;
-  height: 10px;
-  padding: 0;
-  border: 1px solid var(--text-muted);
-  border-radius: 50%;
-  background: transparent;
-  transform: translateX(-50%);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.app-rail__left-shadow-toggle[aria-pressed='true'] {
-  background: var(--text-muted);
-}
-
-.app-rail__left-shadow-toggle:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.app-rail__sidebar-controls {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.app-rail__sidebar-toggle {
-  width: 100%;
-  background: transparent;
-  cursor: pointer;
-}
-
-.app-rail__sidebar-toggle--active {
-  color: var(--text-primary);
-}
-
 .app-rail__group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--app-rail-item-gap);
 }
 
 .app-rail__experimental {
@@ -632,7 +293,7 @@ a {
   color: var(--text-chrome-muted);
 }
 
-.app-layout--rail-icons .app-rail__experimental-header {
+.app-shell--rail-icons .app-rail__experimental-header {
   justify-content: center;
   padding-inline: 0;
 }
@@ -642,7 +303,7 @@ a {
   align-self: stretch;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--app-rail-item-gap);
   padding-top: 12px;
   padding-inline: var(--app-rail-inline-padding);
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
@@ -650,23 +311,17 @@ a {
   position: relative;
 }
 
-.app-shell--left-shadow .app-rail__footer {
-  /* The semantic footer surface, including its existing neutral-alpha top
-   * hairline, reaches under the shared paint strip. Footer contents retain
-   * their rail-relative inset and the boundary paint modulates the line. */
-  padding-left: calc(var(--app-left-boundary-width) + var(--app-rail-inline-padding));
-  margin-left: calc(-1 * (var(--app-left-boundary-width) + var(--app-rail-inline-padding)));
-}
+
 
 .app-rail__item {
   appearance: none;
   position: relative;
   min-width: 0;
-  min-height: 38px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 4px 5px;
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
@@ -725,7 +380,6 @@ a {
 .app-rail__item--active {
   color: var(--text-primary);
   background: var(--neutral-alpha-08);
-  border-color: var(--neutral-alpha-10);
 }
 
 .app-rail__tooltip {
@@ -794,7 +448,7 @@ a {
   color: var(--accent-yellow);
 }
 
-.app-layout--rail-icons .app-rail {
+.app-shell--rail-icons .app-rail {
   --app-rail-inline-padding: 6px;
   align-items: center;
   padding-inline: var(--app-rail-inline-padding);
@@ -802,26 +456,27 @@ a {
   z-index: 30;
 }
 
-.app-layout--rail-icons .app-rail__nav {
+.app-shell--rail-icons .app-rail__nav {
   overflow: visible;
+  padding-right: 0;
 }
 
-.app-layout--rail-icons .app-rail__item {
-  width: 40px;
+.app-shell--rail-icons .app-rail__footer {
+  align-items: center;
+}
+
+.app-shell--rail-icons .app-rail__item {
+  width: 32px;
   justify-content: center;
   padding-inline: 0;
 }
 
-.app-layout--rail-icons .app-rail__reorder-toggle {
-  flex: 0 0 40px;
+.app-shell--rail-icons .app-rail__reorder-toggle {
+  flex: 0 0 32px;
 }
 
-.app-layout--rail-icons .app-rail__sidebar-controls {
-  align-items: center;
-  width: 100%;
-}
 
-.app-layout--rail-icons .app-rail__badge {
+.app-shell--rail-icons .app-rail__badge {
   position: absolute;
   top: 2px;
   right: 1px;
@@ -831,13 +486,13 @@ a {
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .app-layout--rail-icons .app-rail__badge {
+:root[data-theme='light'] .app-shell--rail-icons .app-rail__badge {
   background: rgba(11, 99, 206, 0.88);
   color: #fff;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
 }
 
-:root[data-theme='light'] .app-layout--rail-icons .app-rail__badge.tab-badge--auth {
+:root[data-theme='light'] .app-shell--rail-icons .app-rail__badge.tab-badge--auth {
   background: rgba(154, 91, 0, 0.88);
   color: #fff;
 }
@@ -1137,10 +792,7 @@ a {
   background: var(--surface-sidebar);
 }
 
-.app-layout--view-sidebar-open .view-sidebar {
-  padding-top: var(--app-left-chrome-height);
-  margin-right: var(--app-shadow-gutter-width);
-}
+
 
 /* Headerless direct-content variant (issues/graph): the frame is the single
    scroll owner. Headerless views may instead opt into `.view-sidebar__body`
@@ -1184,14 +836,12 @@ a {
  * `.issues-tree__resize-handle` only won by being defined later, which broke
  * when the rule moved earlier in the refactor (issue e29a8c5).
  *
- * The 0-width line sits at the effective chrome edge. Its 10px clickable/hover
- * strip is centered on the physical divider; the rest of the visible shadow
- * body remains inert.
+ * The 0-width line places its hit strip on the physical sidebar divider.
  */
 .view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
   top: 0;
-  right: calc(-1 * var(--app-shadow-gutter-width));
+  right: 0;
   bottom: 0;
   width: 0;
   cursor: col-resize;
@@ -1203,76 +853,11 @@ a {
   width: 10px;
 }
 
-.app-layout--view-sidebar-open .view-sidebar__resize-handle.sidebar-drag-handle {
-  top: var(--app-left-chrome-height);
-}
-
-.app-layout--view-sidebar-open .auth-sidebar,
-.app-layout--view-sidebar-open .inbox-sidebar,
-.app-layout--view-sidebar-open .artifacts-sidebar,
-.app-layout--view-sidebar-open .chat-history-sidebar,
-.app-layout--view-sidebar-open .view-sidebar,
-.app-layout--route-work .work-sidebar {
-  position: relative;
-  z-index: 2;
-  border-right: 0;
-  box-shadow: none;
-}
-
-/* The shared frame must not trap its outboard resize handle below positioned
- * main-view descendants (Timeline reaches z-index 9). The frame stays below
- * the app-shell paint owner while the handle participates in the surrounding
- * content stacking context at its own divider-only z-index. */
-.app-layout--view-sidebar-open .view-sidebar {
-  z-index: auto;
-}
-
-.app-layout--view-sidebar-open .view-sidebar.spaces-tree {
-  box-shadow: none;
-}
-
-/* Native Regular glass is enabled only after Tauri confirms that the native
-   effect and transparent window backing were both configured. The left app
-   header, rail, and sidebar tint that material with the active chrome theme;
-   the main workspace stays opaque beside the visible sidebar. */
-:root[data-native-glass='regular'] {
-  background: var(--surface-glass-regular);
-}
-
+.view-sidebar { border-right: 1px solid var(--border-muted); }
+:root[data-native-glass='regular'] { background: var(--surface-glass-regular); }
 :root[data-native-glass='regular'] body,
 :root[data-native-glass='regular'] #app,
-:root[data-native-glass='regular'] .app-shell,
-:root[data-native-glass='regular'] .app-layout {
-  background: var(--surface-glass-regular);
-}
-
-:root[data-native-glass='regular'] .app-header {
-  background: var(--surface-glass-tint);
-  border-bottom-color: var(--app-divider);
-}
-
-:root[data-native-glass='regular'] .app-rail,
-:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar {
-  background: linear-gradient(
-    to bottom,
-    var(--surface-glass-regular) 0 var(--app-left-chrome-height),
-    var(--surface-glass-tint) var(--app-left-chrome-height) 100%
-  );
-}
-
-:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__header,
-:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__body,
-:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__footer {
-  background: transparent;
-}
-
-:root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar {
-  background: linear-gradient(
-    to right,
-    var(--surface-glass-regular) 0 var(--app-view-sidebar-outer-width),
-    var(--surface-main) var(--app-view-sidebar-outer-width) 100%
-  );
-}
+:root[data-native-glass='regular'] .app-shell { background: var(--surface-glass-regular); }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .app-toast {

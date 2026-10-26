@@ -2732,9 +2732,19 @@ type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promi
 type DesktopWindowTheme = 'light' | 'dark' | null;
 type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void> };
 
+export type NativeHost = {
+  kind: 'tauri';
+  platform: string;
+  framePresentation: 'macos-overlay' | 'system';
+};
+
+export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };
+
 type TauriGlobalWindow = Window & {
+  __MANDIBLE_NATIVE_HOST__?: NativeHost;
   __TAURI__?: {
     core?: { invoke?: TauriInvoke };
+    event?: { listen: (event: string, handler: () => void) => Promise<() => void> };
     window?: { getCurrentWindow?: () => TauriDesktopWindow };
   };
   __TAURI_INTERNALS__?: { invoke?: TauriInvoke };
@@ -2749,7 +2759,7 @@ function tauriGlobalWindow(): TauriGlobalWindow | null {
 
 function hasTauriRuntime(): boolean {
   const tauriWindow = tauriGlobalWindow();
-  return Boolean(tauriWindow && (tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__));
+  return Boolean(tauriWindow && (tauriWindow.__MANDIBLE_NATIVE_HOST__ || tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__));
 }
 
 /**
@@ -2764,19 +2774,63 @@ function tauriInvoke(): TauriInvoke | null {
   return typeof invoke === 'function' ? invoke : null;
 }
 
+export function getWindowHost(): WindowHost {
+  const host = tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__;
+  if (host) return host;
+  if (hasTauriRuntime()) throw new Error('The Tauri host identity was not initialized by the native shell.');
+  return { kind: 'browser', framePresentation: 'system' };
+}
+
 export function isDesktopShell(): boolean {
   return hasTauriRuntime();
 }
 
 export type NativeWindowCapabilities = {
+  framePresentation: 'macos-overlay' | 'system';
+  topBarHeight: number;
+  trafficLightReservation: number;
+  trafficLightBounds?: { left: number; top: number; width: number; height: number } | null;
+  nativeFrame?: Record<string, unknown> | null;
   liquidGlassRegular: boolean;
 };
 
 export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabilities> {
   if (!hasTauriRuntime()) {
-    return { liquidGlassRegular: false };
+    return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 42, trafficLightReservation: 0 };
   }
   return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
+}
+
+export async function listenNativeFrameChanges(refresh: () => void): Promise<() => void> {
+  if (!hasTauriRuntime()) return () => {};
+  const events = tauriGlobalWindow()?.__TAURI__?.event;
+  if (!events) throw new Error('The Tauri event API is not available in this desktop runtime.');
+  return events.listen('native-frame-changed', refresh);
+}
+
+export async function observeNativeFrame(reason: 'first-frame' | 'resize' | 'visible' | 'manual'): Promise<NativeWindowCapabilities | null> {
+  if (!hasTauriRuntime()) return null;
+  const header = document.querySelector<HTMLElement>('.app-frame__bar');
+  if (!header || header.getClientRects().length === 0) return null;
+  const rect = (element: Element) => {
+    const { left, top, width, height } = element.getBoundingClientRect();
+    return { left, top, width, height };
+  };
+  const back = header.querySelector('button[aria-label="Back"] svg');
+  const viewport = window.visualViewport;
+  const glyphs = Array.from(header.querySelectorAll('button svg, .detail-pane-header__title, .detail-pane-header__supporting-metadata'))
+    .filter(element => element.getClientRects().length > 0 && !element.closest('.app-anchored-menu'))
+    .map(element => ({
+      name: element.closest('button')?.getAttribute('aria-label') ?? (element.classList.contains('detail-pane-header__title') ? 'title' : 'metadata'),
+      rect: rect(element),
+    })).filter(glyph => glyph.rect.width > 0 && glyph.rect.height > 0);
+  return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities', { domFrame: {
+    reason, header: rect(header), backIcon: back ? rect(back) : null, glyphs,
+    viewport: {
+      width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio,
+      visualScale: viewport?.scale ?? 1, offsetLeft: viewport?.offsetLeft ?? 0, offsetTop: viewport?.offsetTop ?? 0,
+    },
+  } });
 }
 
 export async function setDesktopWindowTheme(theme: DesktopWindowTheme): Promise<void> {

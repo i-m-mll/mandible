@@ -382,13 +382,6 @@
   border-bottom: 1px solid var(--neutral-alpha-08);
 }
 
-/* Reserve the collapsed app-sidebar control in the ruler only.  The surface
- * keeps its exact time width, and event rows below remain completely intact. */
-.app-layout--route-timeline.app-layout--right-sidebar-available:not(.app-layout--right-sidebar-open)
-  .timeline-axis__viewport {
-  margin-right: 44px;
-}
-
 .timeline-axis__surface {
   min-height: 42px;
 }

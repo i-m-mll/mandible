@@ -1,7 +1,7 @@
+import { useIsFrameHeader } from './FrameHeader';
 import type { ComponentChildren } from 'preact';
 import { shortIdentityRef } from '../../identity-refs';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
-import { AppRightSidebarToggleButton, useAppShell } from '../../app-shell';
 import type { DetailPanePresentation } from './DetailPaneShell';
 
 export type DetailPaneHeaderVariant = 'standard' | 'compact' | 'versioned';
@@ -137,32 +137,20 @@ export function DetailPaneHeader({
   secondaryMetadata,
   className,
 }: DetailPaneHeaderProps): JSX.Element {
-  const { active, rightSidebar, setRightSidebarOpen } = useAppShell();
-  const automaticRightSidebarAction = presentation === 'main'
-    && active
-    && rightSidebar
-    && !rightSidebar.open
-    ? (
-        <AppRightSidebarToggleButton
-          descriptor={rightSidebar}
-          open={false}
-          onOpenChange={setRightSidebarOpen ?? rightSidebar.onOpenChange}
-        />
-      )
-    : null;
-  const rightSidebarAction = automaticRightSidebarAction;
+  const frameHeader = useIsFrameHeader();
   if (variant === 'compact') {
     return (
       <div
         className={classNames('detail-pane-header', 'detail-pane-header--compact', className)}
+        data-tauri-drag-region={frameHeader || undefined}
         data-detail-pane-header-variant="compact"
         data-detail-pane-presentation={presentation}
       >
-        <div className="detail-pane-header__main">
-          <div className="detail-pane-header__title-row">
+        <div className="detail-pane-header__main" data-tauri-drag-region={frameHeader || undefined}>
+          <div className="detail-pane-header__title-row" data-tauri-drag-region={frameHeader || undefined}>
             {supportingMetadata !== undefined && supportingMetadata !== null ? (
               <div className="detail-pane-header__title-block">
-                <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+                <h2 id={titleId} className="detail-pane-header__title" data-tauri-drag-region={frameHeader || undefined} title={titleTooltip}>
                   {title}
                 </h2>
                 <div className="detail-pane-header__supporting-metadata">{supportingMetadata}</div>
@@ -193,14 +181,13 @@ export function DetailPaneHeader({
               )}
             </div>
           )}
-          {(actions !== undefined && actions !== null) || rightSidebarAction ? (
+          {(actions !== undefined && actions !== null) ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
-              {rightSidebarAction}
             </div>
           ) : null}
         </div>
@@ -220,10 +207,10 @@ export function DetailPaneHeader({
       data-detail-pane-presentation={presentation}
     >
       <div className="detail-pane-header__main">
-        {(identity || (toplineState !== undefined && toplineState !== null) || selector || rightSidebarAction) && (
+        {(identity || (toplineState !== undefined && toplineState !== null) || selector) && (
           <div className="detail-pane-header__topline">
             {identity && renderIdentity(identity)}
-            {((toplineState !== undefined && toplineState !== null) || selector || rightSidebarAction) && (
+            {((toplineState !== undefined && toplineState !== null) || selector) && (
               <div className="detail-pane-header__topline-controls">
                 {toplineState !== undefined && toplineState !== null && (
                   <div
@@ -252,7 +239,6 @@ export function DetailPaneHeader({
                     />
                   </div>
                 )}
-                {rightSidebarAction}
               </div>
             )}
           </div>

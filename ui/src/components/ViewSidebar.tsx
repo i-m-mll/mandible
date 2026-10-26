@@ -122,7 +122,7 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
     <Frame
       ref={props.containerRef as Ref<HTMLDivElement> & Ref<HTMLElement>}
       className={cls}
-      data-app-surface="chrome"
+      data-app-surface="sidebar"
       aria-label={props.ariaLabel}
       style={style}
     >

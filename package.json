@@ -38,6 +38,7 @@
     "test:coverage": "bun --no-install scripts/run-vitest.js run --coverage",
     "tauri": "tauri dev",
     "tauri:build": "tauri build",
+    "native-preview": "bun scripts/native-preview.mjs",
     "fleet": "bun --no-install scripts/mandible-fleet.mjs",
     "candidate-acceptance": "bun --no-install scripts/candidate-acceptance.mjs"
   },

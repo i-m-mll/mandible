@@ -29,7 +29,7 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 import { browserSessionFetch } from '../client-auth-token';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
+import { isViewSidebarHidden, parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
 import { useViewActive } from '../app-shell';
 import { WORK_SCAN_SKIP_WINDOW_MS } from '../../../src/contracts';
 
@@ -784,6 +784,7 @@ export function WorkOverviewView({
   instance,
   params = {},
 }: WorkOverviewProps): JSX.Element {
+  const sidebarHidden = isViewSidebarHidden({ tab: 'work', params });
   // The shared operation check stays closed until instance metadata is known.
   const capabilityReason = !instance
     ? 'Waiting for instance capabilities.'
@@ -1396,8 +1397,9 @@ export function WorkOverviewView({
           {pushState.message}
         </div>
       )}
-      <div className="work-shell">
+      <div className={`work-shell${sidebarHidden ? ' work-shell--sidebar-hidden' : ''}`}>
         <ViewSidebar
+          hidden={sidebarHidden}
           storageKey="sidebar-width:work"
           defaultWidth={340}
           minWidth={280}
@@ -1630,6 +1632,7 @@ export function WorkOverviewView({
                 key={repoId}
                 as="div"
                 variant="compact"
+                headerPlacement="frame"
                 className={`work-detail-panel${isExcluded ? ' repo-card--excluded' : ''}`}
                 bodyClassName="work-detail__body"
                 header={(
