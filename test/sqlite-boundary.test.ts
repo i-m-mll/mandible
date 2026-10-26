@@ -11,6 +11,31 @@ function temporaryDatabase(run: (filename: string) => void | Promise<void>) {
 }
 
 describe("Bun SQLite boundary", () => {
+  it("publishes only committed nested effects and keeps notification errors outside rollback", () => {
+    const db = new SqliteDatabase();
+    const published: string[] = [];
+    try {
+      db.transaction(() => {
+        db.afterCommit(() => { expect(db.inTransaction).toBe(false); published.push("outer"); });
+        db.transaction(() => db.afterCommit(() => published.push("nested")))();
+        expect(() => db.transaction(() => {
+          db.afterCommit(() => published.push("rolled-back"));
+          throw new Error("rollback");
+        })()).toThrow("rollback");
+        expect(published).toEqual([]);
+      })();
+      expect(published).toEqual(["outer", "nested"]);
+      expect(() => db.transaction(() => {
+        db.transaction(() => db.afterCommit(() => published.push("discarded")))();
+        throw new Error("outer rollback");
+      })()).toThrow("outer rollback");
+      expect(published).toEqual(["outer", "nested"]);
+      expect(() => db.transaction(() => db.afterCommit(() => { throw new Error("publish failed"); }))())
+        .toThrow("publish failed");
+      expect(db.inTransaction).toBe(false);
+    } finally { db.close(); }
+  });
+
   it("preserves bindings, blobs, safe integers and exact large integers", () => {
     const db = new SqliteDatabase();
     try {
