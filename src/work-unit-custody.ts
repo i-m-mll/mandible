@@ -1,3 +1,5 @@
+import { mutateWorkUnit } from "./work-unit-history.js";
+import { requestOriginJson } from "./request-origin.js";
 import type { SessionExecutionObservation } from "./contracts.js";
 import { formatExecutionEvidence } from "./session-execution-format.js";
 // Issue 72b00f8 — one custody rule for work units, shared by the custody routes,
@@ -282,20 +284,20 @@ export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): Wo
   const prior = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
   const next = describeCustodyHolder(db, input.new_user_id, input.new_credential_id);
   db.transaction(() => {
-    const changed = db.prepare(`UPDATE work_units
+    const changed = mutateWorkUnit(db, unit.id, () => db.prepare(`UPDATE work_units
       SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?,
         provider = ?, provider_session_id = ?, assigned_session_id = NULL, worker_provider_session_id = NULL
       WHERE id = ? AND custody_generation = ? AND owner_user_id IS ? AND owner_credential_id IS ?`)
       .run(input.new_user_id, input.new_credential_id, nextGeneration,
         input.new_session.provider, input.new_session.provider_session_id,
-        unit.id, input.expected_generation, unit.owner_user_id, unit.owner_credential_id);
+        unit.id, input.expected_generation, unit.owner_user_id, unit.owner_credential_id));
     if (changed.changes !== 1) throw new CustodyGenerationConflict();
     db.prepare(`INSERT INTO work_unit_custody_events
-      (id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+      (request_origin_json, id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
        prior_generation, new_generation, authority_path, parent_role_checkpoint_id,
        operator_evidence_method, reason, occurred_at, auth_request_id, prior_holder_liveness_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(randomUUID(), unit.id, unit.owner_user_id, unit.owner_credential_id,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(requestOriginJson(), randomUUID(), unit.id, unit.owner_user_id, unit.owner_credential_id,
         input.new_user_id, input.new_credential_id, input.expected_generation, nextGeneration,
         input.authority_path, input.parent_role_checkpoint_id ?? null, input.operator_evidence_method ?? null,
         input.reason, now, input.auth_request_id ?? null,

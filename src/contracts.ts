@@ -477,6 +477,7 @@ export type AuthRequestActionInput = {
 };
 
 export type AuthRequestAction = AuthRequestActionInput & {
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   auth_request_id: string;
   ordinal: number;
@@ -1583,6 +1584,8 @@ export type BriefingBundleLayoutInputEntry =
   | { kind: "briefing"; briefing_ref: string }
   | { kind: "subgroup"; name: string; briefing_refs: string[] };
 export type BriefingBundle = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   name: string;
   created_at: number;
@@ -1592,6 +1595,8 @@ export type BriefingBundle = {
   layout: BriefingBundleLayoutEntry[];
 };
 export type BriefingGroup = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   key: string;
   name: string;
@@ -1661,6 +1666,8 @@ export type BriefingGroupReviewCandidate = {
   items: BriefingGroupReviewItem[];
 };
 export type BriefingGroupDisposition = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   kind: "promoted" | "dismissed" | "accepted" | "rejected";
   prior_base: BriefingBundle | null;

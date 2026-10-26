@@ -998,27 +998,27 @@ export class LedgerStore {
   prepareEventRecorder(input: LedgerActorInput): (event: Omit<RecordLedgerEventInput, keyof LedgerActorInput>) => LedgerEvent {
     const actor = this.resolveActor(input);
     return (input) => {
-    const now = input.occurred_at ?? Date.now();
-    const source = input.source ?? "system";
+      const now = input.occurred_at ?? Date.now();
+      const source = input.source ?? "system";
 
-    const event = this.db.transaction(() => this.insertEvent({
-      entity_type: input.entity_type,
-      entity_id: input.entity_id,
-      event_type: input.event_type,
-      actor_id: actor.actor_id,
-      actor_type: actor.actor_type,
-      actor_user_id: actor.actor_user_id,
-      evidence_method: actor.evidence_method,
-      evidence_id: actor.evidence_id,
-      source,
-      payload: input.payload ?? {},
-      project_id: input.project_id,
-      occurred_at: now,
-    }))();
-    if (input.notify !== false) {
-      emitLedgerEvents([{ event, payload: input.payload ?? { entity_id: input.entity_id } }], this.broadcaster);
-    }
-    return event;
+      const event = this.db.transaction(() => this.insertEvent({
+        entity_type: input.entity_type,
+        entity_id: input.entity_id,
+        event_type: input.event_type,
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
+        source,
+        payload: input.payload ?? {},
+        project_id: input.project_id,
+        occurred_at: now,
+      }))();
+      if (input.notify !== false) {
+        emitLedgerEvents([{ event, payload: input.payload ?? { entity_id: input.entity_id } }], this.broadcaster);
+      }
+      return event;
     };
   }
 

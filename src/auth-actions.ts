@@ -1,3 +1,4 @@
+import { currentRequestOrigin, requestOriginJson } from "./request-origin.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
@@ -85,14 +86,15 @@ export function insertAuthRequestActions(
   if (actions.length === 0) return [];
   const insert = db.prepare(
     `INSERT INTO auth_request_actions (
-      id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+      request_origin_json, id, auth_request_id, ordinal, kind, target_issue_ref, payload,
       state, target_digest, staged_at, updated_at, applied_at, outcome_detail
-    ) VALUES (?, ?, ?, ?, ?, ?, 'staged', ?, ?, ?, NULL, NULL)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?, ?, NULL, NULL)`,
   );
   const staged: AuthRequestAction[] = [];
   for (const [index, action] of actions.entries()) {
     const normalized = validateAuthActionForRequest(db, request, normalizeAuthActionInput(action));
     const row: AuthRequestAction = {
+      request_origin: currentRequestOrigin(),
       id: randomUUID(),
       auth_request_id: request.id,
       ordinal: index + 1,
@@ -107,7 +109,7 @@ export function insertAuthRequestActions(
       outcome_detail: null,
     };
     insert.run(
-      row.id,
+      requestOriginJson(), row.id,
       row.auth_request_id,
       row.ordinal,
       row.kind,
@@ -405,6 +407,7 @@ function mapAuthActionRow(row: Record<string, unknown>): AuthRequestAction {
     );
   }
   return {
+    request_origin: typeof row.request_origin_json === "string" ? JSON.parse(row.request_origin_json) : null,
     id: String(row.id),
     auth_request_id: String(row.auth_request_id),
     ordinal: Number(row.ordinal ?? 0),

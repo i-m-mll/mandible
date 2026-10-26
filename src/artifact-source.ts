@@ -1,3 +1,4 @@
+import { requestOriginJson } from "./request-origin.js";
 import { artifactAccessProjectIds } from './permissions/resources.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -116,9 +117,9 @@ export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, n
       if (!state.reconciliation_reason && state.source && sourceKey(state.source) === sourceKey(plan.source)) return { ok: true, value: state };
       db.prepare('UPDATE artifact_source SET source_json=?, revision=revision+1, reconciliation_reason=NULL, updated_at=? WHERE artifact_id=?')
         .run(sourceKey(plan.source), now, plan.artifact_id);
-      db.prepare(`INSERT INTO artifact_source_move VALUES (?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), plan.artifact_id,
+      db.prepare(`INSERT INTO artifact_source_move (id,artifact_id,previous_source_json,source_json,previous_revision,revision,actor,created_at,request_origin_json) VALUES (?,?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), plan.artifact_id,
         plan.previous_source ? sourceKey(plan.previous_source) : null, sourceKey(plan.source), plan.expected_revision,
-        plan.expected_revision + 1, plan.actor, now);
+        plan.expected_revision + 1, plan.actor, now, requestOriginJson());
       return { ok: true, value: getArtifactCurrentSource(db, plan.artifact_id)! };
     }).immediate();
   } catch (error) { return artifactFailure('storage_error', String(error)); }

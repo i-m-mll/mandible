@@ -1,3 +1,4 @@
+import { withRequestOrigin } from "../src/request-origin.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, createNoopHookManager, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
@@ -344,14 +345,15 @@ describe("auth request action execution", () => {
       hooks.listRuns = () => [];
       hooks.listRequestIdsWithRunnableHooks = () => [];
       queue = new AuthQueue({ db, hookManager: hooks, now: () => 40_000, backgroundMaintenance: false });
-      const request = await submitActionMerge(queue, {
+      const origin = { provider: "codex", provider_session_id: "queued-closure-origin" };
+      const request = await withRequestOrigin(origin, () => submitActionMerge(queue!, {
         type: "merge", command: "mandible auth merge feature/bulk-close --into main",
         title: "Release bulk closures", cwd: repoRoot, repo: path.basename(repoRoot),
         actions: targets.map((target) => ({
           kind: "issue_close", target_issue_ref: target.short_id,
           payload: { reason_comment: "Delivered" },
         })),
-      });
+      }));
       await approvePausedFixtureRequest(queue, request.id);
       await completeFixturePublication(queue, request.id);
       await queue.drainFinalizers();
@@ -389,6 +391,8 @@ describe("auth request action execution", () => {
       expect(queue.listActions(request.id)).toEqual(actions);
       const store = new LedgerStore(db);
       for (const target of targets) {
+        const event = db.prepare("SELECT payload_json FROM ledger_events WHERE entity_id=? AND event_type='issue.closed'").get(target.id) as { payload_json: string };
+        expect(JSON.parse(event.payload_json).request_origin).toEqual(origin);
         expect(store.getIssue(target.id)).toMatchObject({ status: "closed", resolution: "delivered" });
         expect(db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").all(target.id))
           .toEqual([{ body: "Delivered" }]);
