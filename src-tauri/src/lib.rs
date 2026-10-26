@@ -31,8 +31,22 @@ use canonical_origin::PRODUCTION_ORIGIN;
 #[derive(Default)]
 struct NativeWindowCapabilityState {
     liquid_glass_regular: Arc<AtomicBool>,
-    traffic_light_reservation: AtomicU64,
-    top_bar_height: AtomicU64,
+    traffic_lights: Mutex<Option<NativeTrafficLightLayout>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeTrafficLightBounds {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct NativeTrafficLightLayout {
+    bounds: NativeTrafficLightBounds,
+    reservation: f64,
 }
 
 #[derive(Serialize)]
@@ -42,12 +56,17 @@ struct NativeWindowCapabilities {
     frame_presentation: &'static str,
     top_bar_height: f64,
     traffic_light_reservation: f64,
+    traffic_light_bounds: Option<NativeTrafficLightBounds>,
 }
 
 #[command]
 fn native_window_capabilities(
     state: tauri::State<'_, NativeWindowCapabilityState>,
 ) -> NativeWindowCapabilities {
+    let layout = *state
+        .traffic_lights
+        .lock()
+        .expect("native frame geometry lock poisoned");
     NativeWindowCapabilities {
         liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
         frame_presentation: if cfg!(target_os = "macos") {
@@ -55,40 +74,164 @@ fn native_window_capabilities(
         } else {
             "system"
         },
-        top_bar_height: if cfg!(target_os = "macos") {
-            f64::from_bits(state.top_bar_height.load(Ordering::Acquire))
-        } else {
-            FRAME_TOP_BAR_HEIGHT
-        },
-        traffic_light_reservation: f64::from_bits(
-            state.traffic_light_reservation.load(Ordering::Acquire),
-        ),
+        top_bar_height: FRAME_TOP_BAR_HEIGHT,
+        traffic_light_reservation: layout.map_or(0.0, |layout| layout.reservation),
+        traffic_light_bounds: layout.map(|layout| layout.bounds),
     }
 }
 
 const FRAME_TOP_BAR_HEIGHT: f64 = 42.0;
 
 #[cfg(target_os = "macos")]
-fn overlay_frame_geometry(
+fn position_native_controls(
     window: &tauri::WebviewWindow,
-    inset_x: f64,
-    inset_y: f64,
-) -> Result<(f64, f64), Box<dyn std::error::Error>> {
-    use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+) -> Result<(), Box<dyn std::error::Error>> {
+    use objc2_app_kit::{NSView, NSWindow, NSWindowButton, NSWindowStyleMask};
     let native = unsafe { &*(window.ns_window()? as *const NSWindow) };
-    let close = native
-        .standardWindowButton(NSWindowButton::CloseButton)
-        .ok_or("Missing native close button")?;
-    let zoom = native
-        .standardWindowButton(NSWindowButton::ZoomButton)
-        .ok_or("Missing native zoom button")?;
-    let close_rect = NSView::frame(&close);
-    let zoom_rect = NSView::frame(&zoom);
-    // Tao's y inset controls the titlebar container height, retaining the button's origin.
-    let top_bar_height = 2.0 * (inset_y - close_rect.origin.y + close_rect.size.height / 2.0);
-    let reservation =
-        inset_x + zoom_rect.origin.x - close_rect.origin.x + zoom_rect.size.width + 16.0;
-    Ok((top_bar_height, reservation))
+    if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        return Ok(());
+    }
+    let content = native.contentView().ok_or("Missing native content view")?;
+    let buttons = [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ]
+    .into_iter()
+    .map(|kind| {
+        native
+            .standardWindowButton(kind)
+            .ok_or("Missing native window button")
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    // This is the same titlebar container used by pinned Tao's inset implementation.
+    let titlebar = unsafe { buttons[0].superview().and_then(|view| view.superview()) }
+        .ok_or("Missing native titlebar container")?;
+    let titlebar_parent =
+        unsafe { titlebar.superview() }.ok_or("Missing native titlebar parent")?;
+    let mut titlebar_frame = NSView::frame(&titlebar);
+    titlebar_frame.size.height = FRAME_TOP_BAR_HEIGHT;
+    titlebar_frame.origin.y = if titlebar_parent.isFlipped() {
+        0.0
+    } else {
+        titlebar_parent.bounds().size.height - FRAME_TOP_BAR_HEIGHT
+    };
+    titlebar.setFrame(titlebar_frame);
+    let frames = buttons
+        .iter()
+        .map(|button| button.convertRect_toView(button.bounds(), Some(&content)))
+        .collect::<Vec<_>>();
+    let height = frames
+        .iter()
+        .map(|rect| rect.size.height)
+        .fold(0.0_f64, f64::max);
+    let left = frames
+        .iter()
+        .map(|rect| rect.origin.x)
+        .fold(f64::INFINITY, f64::min);
+    let padding = (FRAME_TOP_BAR_HEIGHT - height) / 2.0;
+    assert!(
+        padding >= 0.0,
+        "native controls exceed the fixed frame height"
+    );
+    for (button, mut rect) in buttons.iter().zip(frames) {
+        rect.origin.x += padding - left;
+        rect.origin.y = if content.isFlipped() {
+            (FRAME_TOP_BAR_HEIGHT - rect.size.height) / 2.0
+        } else {
+            content.bounds().size.height - (FRAME_TOP_BAR_HEIGHT + rect.size.height) / 2.0
+        };
+        let parent = unsafe { button.superview() }.ok_or("Missing native button parent")?;
+        let frame = parent.convertRect_fromView(rect, Some(&content));
+        button.setFrameOrigin(frame.origin);
+    }
+    let applied = buttons
+        .iter()
+        .map(|button| {
+            let rect = button.convertRect_toView(button.bounds(), Some(&content));
+            NativeTrafficLightBounds {
+                left: rect.origin.x,
+                top: if content.isFlipped() {
+                    rect.origin.y
+                } else {
+                    content.bounds().size.height - rect.origin.y - rect.size.height
+                },
+                width: rect.size.width,
+                height: rect.size.height,
+            }
+        })
+        .collect::<Vec<_>>();
+    let left = applied
+        .iter()
+        .map(|rect| rect.left)
+        .fold(f64::INFINITY, f64::min);
+    let top = applied
+        .iter()
+        .map(|rect| rect.top)
+        .fold(f64::INFINITY, f64::min);
+    let right = applied
+        .iter()
+        .map(|rect| rect.left + rect.width)
+        .fold(0.0_f64, f64::max);
+    let bottom = applied
+        .iter()
+        .map(|rect| rect.top + rect.height)
+        .fold(0.0_f64, f64::max);
+    let bounds = NativeTrafficLightBounds {
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+    };
+    let layout = NativeTrafficLightLayout {
+        bounds,
+        reservation: right + left * 1.5,
+    };
+    let capabilities = window.state::<NativeWindowCapabilityState>();
+    let mut previous = capabilities
+        .traffic_lights
+        .lock()
+        .expect("native frame geometry lock poisoned");
+    if previous.as_ref() != Some(&layout) {
+        eprintln!(
+            "native-frame {}",
+            serde_json::json!({
+                "headerHeight": NSView::frame(&titlebar).size.height,
+                "buttons": applied,
+                "group": bounds,
+                "topClearance": top,
+                "bottomClearance": FRAME_TOP_BAR_HEIGHT - bottom,
+                "leftClearance": left,
+                "backIconReservation": layout.reservation,
+                "reservedRightGap": layout.reservation - right,
+            })
+        );
+    }
+    *previous = Some(layout);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_native_controls(
+    window: &tauri::WebviewWindow,
+) -> Result<(), Box<dyn std::error::Error>> {
+    position_native_controls(window)?;
+    let frame_window = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            let target = frame_window.clone();
+            frame_window
+                .run_on_main_thread(move || {
+                    position_native_controls(&target)
+                        .expect("native frame positioning failed after layout");
+                })
+                .expect("native frame layout dispatch failed");
+        }
+    });
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -897,25 +1040,7 @@ pub fn run() {
                 let _ = window.set_background_color(Some(dark));
                 #[cfg(target_os = "macos")]
                 {
-                    let position = app
-                        .config()
-                        .app
-                        .windows
-                        .iter()
-                        .find(|config| config.label == "main")
-                        .and_then(|config| config.traffic_light_position.as_ref())
-                        .ok_or(
-                            "The macOS overlay frame requires a configured traffic-light position",
-                        )?;
-                    let (height, reservation) =
-                        overlay_frame_geometry(&window, position.x, position.y)?;
-                    let capabilities = app.state::<NativeWindowCapabilityState>();
-                    capabilities
-                        .top_bar_height
-                        .store(height.to_bits(), Ordering::Release);
-                    capabilities
-                        .traffic_light_reservation
-                        .store(reservation.to_bits(), Ordering::Release);
+                    configure_native_controls(&window)?;
                     configure_regular_liquid_glass(
                         window,
                         app.state::<NativeWindowCapabilityState>()
