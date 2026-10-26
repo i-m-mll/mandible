@@ -2,7 +2,12 @@
 set -eu
 
 mode=${1:-runtime}
-case "$mode" in runtime|--bun-only|--archive) ;; *) echo "Usage: bun-runtime.sh [--bun-only|--archive]" >&2; exit 1 ;; esac
+case "$mode" in
+  --exec) shift ;;
+  runtime|--bun-only|--archive) ;;
+  *) echo "Usage: bun-runtime.sh [--bun-only|--archive|--exec <bun arguments...>]" >&2; exit 1 ;;
+esac
+scratch=
 
 selector_dir=${0%/*}
 [ "$selector_dir" != "$0" ] || selector_dir=.
@@ -58,10 +63,22 @@ check_binary() {
 check_archive() { [ "$(hash "$1")" = "$archive_sha" ]; }
 verify() { [ -x "$1" ] && receipted "$1" "$binary_sha $revision" check_binary; }
 emit_runtime() {
+  selected_runtime=$1
+  shift
   if [ "$mode" != --bun-only ]; then
-    "$1" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
+    "$selected_runtime" --no-install "$root/scripts/sqlite-runtime-install.mjs" >/dev/null
   fi
-  printf '%s\n' "$1"
+  if [ "$mode" = --exec ]; then
+    MANDIBLE_RUNTIME=$selected_runtime
+    PATH="${selected_runtime%/*}${PATH:+:$PATH}"
+    export MANDIBLE_RUNTIME PATH
+    if [ -n "$scratch" ]; then
+      rm -rf "$scratch"
+      trap - EXIT HUP INT TERM
+    fi
+    exec "$selected_runtime" "$@"
+  fi
+  printf '%s\n' "$selected_runtime"
 }
 if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
   if ! verify "$MANDIBLE_RUNTIME"; then
@@ -69,7 +86,7 @@ if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
     exit 1
   fi
   if [ "$mode" != --archive ]; then
-    emit_runtime "$MANDIBLE_RUNTIME"
+    emit_runtime "$MANDIBLE_RUNTIME" "$@"
     exit 0
   fi
 fi
@@ -93,7 +110,7 @@ fi
 if [ -e "$runtime" ]; then
   verify "$runtime" || { echo "Pinned Bun cache is corrupt: $runtime; preserve it and supply a verified runtime archive" >&2; exit 1; }
   if [ "$mode" != --archive ]; then
-    emit_runtime "$runtime"
+    emit_runtime "$runtime" "$@"
     exit 0
   elif [ -f "$archive_cache" ]; then
     printf '%s\n' "$archive_cache"
@@ -126,4 +143,4 @@ fi
 if ! ln "$scratch/unpacked/$asset/bun" "$runtime" 2>/dev/null; then
   verify "$runtime" || { echo "Pinned Bun runtime publication failed" >&2; exit 1; }
 fi
-if [ "$mode" = --archive ]; then printf '%s\n' "$archive_cache"; else emit_runtime "$runtime"; fi
+if [ "$mode" = --archive ]; then printf '%s\n' "$archive_cache"; else emit_runtime "$runtime" "$@"; fi

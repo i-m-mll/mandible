@@ -28,9 +28,9 @@ unowned material causes an actionable refusal when it prevents new allocation.
 Inspect the exact run, stop it while retaining data, or refresh its candidate:
 
 ```sh
-bun scripts/iab-preview.mjs status --root /absolute/preview/root --run-id <run-id> --json
-bun scripts/iab-preview.mjs stop --root /absolute/preview/root --run-id <run-id> --revision 3 --json
-bun scripts/iab-preview.mjs refresh --root /absolute/preview/root --run-id <run-id> --revision 5 --json
+bun run iab-preview -- status --root /absolute/preview/root --run-id <run-id> --json
+bun run iab-preview -- stop --root /absolute/preview/root --run-id <run-id> --revision 3 --json
+bun run iab-preview -- refresh --root /absolute/preview/root --run-id <run-id> --revision 5 --json
 ```
 
 Live mutations require the revision returned by status. Stop validates the
@@ -42,7 +42,7 @@ Stop does not dispose of copied ledger or native profile data.
 Resolve owning work and tear down the exact run:
 
 ```sh
-bun scripts/iab-preview.mjs teardown --root /absolute/preview/root --run-id <run-id> \
+bun run iab-preview -- teardown --root /absolute/preview/root --run-id <run-id> \
   --revision 3 --outcome accepted --converged \
   --disposition transferred --destination /absolute/accepted/material \
   --transfer-reference artifact-version:accepted-version \
@@ -62,7 +62,7 @@ An investigation names its need and delivery work-unit owner and has a review
 deadline within seven days:
 
 ```sh
-bun scripts/iab-preview.mjs finalize --root /absolute/preview/root --run-id <run-id> \
+bun run iab-preview -- finalize --root /absolute/preview/root --run-id <run-id> \
   --revision 3 --outcome investigating --review-by 2026-10-06T18:00:00Z \
   --summary 'Reproduce the failed interaction' --json
 ```
@@ -104,7 +104,7 @@ owner. Newly acquired worktrees remain retained while the delivery work unit
 is unresolved; subsequent worktree disposition uses `wt`.
 
 ```sh
-bun scripts/iab-preview.mjs cleanup --apply --json
+bun run iab-preview -- cleanup --apply --json
 ```
 
 A pass examines at most 64 cache entries and yields between entries. Root-level
