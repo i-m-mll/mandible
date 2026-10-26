@@ -25,19 +25,21 @@ export function mutateLedgerRecord<T>(db: Db, input: {
   const store = new LedgerStore(db);
   let event: ReturnType<LedgerStore["recordEvent"]> | undefined;
   const result = db.transaction(() => {
+    const record = store.prepareEventRecorder({
+      ...actors.getStore(),
+      attribution: input.attribution === undefined ? actors.getStore()?.attribution ?? null : input.attribution,
+      ...(input.actor_type ? { actor_type: input.actor_type } : {}),
+      ...(input.actor_id !== undefined ? { actor_id: input.actor_id } : {}),
+    });
     const before = input.snapshot();
     const result = mutate();
     const after = input.snapshot();
     const fields = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])]
       .filter(key => JSON.stringify(before?.[key] ?? null) !== JSON.stringify(after?.[key] ?? null));
-    if (fields.length) event = store.recordEvent({
+    if (fields.length) event = record({
       entity_type: input.entity_type, entity_id: input.entity_id,
       event_type: `${input.entity_type}.${before ? after ? "updated" : "deleted" : "created"}`,
       project_id: input.project_id, source: input.source ?? "mandible",
-      ...actors.getStore(),
-      attribution: input.attribution === undefined ? actors.getStore()?.attribution ?? null : input.attribution,
-      ...(input.actor_type ? { actor_type: input.actor_type } : {}),
-      ...(input.actor_id !== undefined ? { actor_id: input.actor_id } : {}),
       notify: false,
       payload: { ...input.payload, changed_fields: fields },
     });
