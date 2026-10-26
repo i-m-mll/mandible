@@ -2777,7 +2777,7 @@ export type NativeWindowCapabilities = {
 
 export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabilities> {
   if (!hasTauriRuntime()) {
-    return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 48, trafficLightReservation: 0 };
+    return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 42, trafficLightReservation: 0 };
   }
   return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
 }

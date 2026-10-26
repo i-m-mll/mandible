@@ -1065,7 +1065,7 @@ function App(): JSX.Element {
         if (disposed) return;
         document.documentElement.dataset.framePresentation = framePresentation;
         setNativeControlsReservation(trafficLightReservation);
-        if (topBarHeight) document.documentElement.style.setProperty('--app-header-height', `${topBarHeight}px`);
+        if (topBarHeight) document.documentElement.style.setProperty('--app-frame-header-height', `${topBarHeight}px`);
         if (trafficLightReservation) document.documentElement.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
         if (!disposed && liquidGlassRegular) {
           document.documentElement.dataset.nativeGlass = 'regular';
@@ -1079,7 +1079,7 @@ function App(): JSX.Element {
       disposed = true;
       document.documentElement.removeAttribute('data-native-glass');
       document.documentElement.removeAttribute('data-frame-presentation');
-      document.documentElement.style.removeProperty('--app-header-height');
+      document.documentElement.style.removeProperty('--app-frame-header-height');
       document.documentElement.style.removeProperty('--app-native-controls-reservation');
     };
   }, []);

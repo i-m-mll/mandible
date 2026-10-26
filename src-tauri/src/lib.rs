@@ -66,7 +66,7 @@ fn native_window_capabilities(
     }
 }
 
-const FRAME_TOP_BAR_HEIGHT: f64 = 48.0;
+const FRAME_TOP_BAR_HEIGHT: f64 = 42.0;
 
 #[cfg(target_os = "macos")]
 fn overlay_frame_geometry(
