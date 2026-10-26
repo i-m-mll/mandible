@@ -18,7 +18,7 @@ import {
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
-import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
+import { ArrowIcon } from '../../../ui/src/components/icons/ArrowIcon';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
@@ -83,7 +83,7 @@ function NativeTranscript(): JSX.Element {
             <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
           </div>
           <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest">
-            <VerticalArrowIcon direction="down" />
+            <ArrowIcon direction="down" />
           </button>
         </div>
       </div>

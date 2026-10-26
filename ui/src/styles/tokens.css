@@ -91,7 +91,7 @@
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
   --app-boundary-shadow-paint-width: 17px;
-  --app-boundary-shadow-intensity-scale: 0.35;
+  --app-boundary-shadow-intensity-scale: 0.70;
   --app-boundary-shadow-sample-24: rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale)));
   --app-boundary-shadow-sample-59: rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale)));
   --app-boundary-shadow-color: rgba(0, 0, 0, calc(0.0375 * var(--app-boundary-shadow-intensity-scale)));
