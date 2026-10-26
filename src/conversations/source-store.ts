@@ -849,6 +849,24 @@ export class ConversationSourceStore {
          ORDER BY position
       `).all(input.conversationId) as LegacyBlockRow[];
     const structuralMode = input.structuralMode ?? "replace";
+    const providerKeyOccurrences = new Map<string, number>();
+    const structuralBlocks = blocks.flatMap((block) => {
+      const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
+      const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
+      const recordOrdinal = wholeGeminiSource ? 0 : numericMetadata(metadata, "source_record_ordinal");
+      const range = wholeGeminiSource
+        ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
+        : recordOrdinal === null
+          ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
+          : snapshot.records[recordOrdinal];
+      if (!range) return [];
+      const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
+      const base = providerBlockKey(block, metadata, range, subBlockOrdinal);
+      const occurrence = providerKeyOccurrences.get(base) ?? 0;
+      providerKeyOccurrences.set(base, occurrence + 1);
+      const providerKey = occurrence === 0 ? base : `${base}:occurrence:${occurrence}`;
+      return [{ block, range, subBlockOrdinal, providerKey }];
+    });
     const codexModelPositions = new Set(
       input.provider === "codex"
         ? blocks.filter((block) => {
@@ -1003,15 +1021,18 @@ export class ConversationSourceStore {
           : [],
       );
       const pendingParents: Array<{ blockId: string; parentPosition: number | null }> = [];
-      const providerKeyOccurrences = new Map<string, number>();
       const findAlias = this.db.prepare(
         "SELECT block_id FROM conversation_block_aliases WHERE alias = ?",
       );
-      const findProviderKey = this.db.prepare(`
-        SELECT id FROM conversation_structural_blocks
-         WHERE conversation_id = ? AND provider_key = ?
-         ORDER BY created_at LIMIT 1
-      `);
+      const providerOwners = new Map((this.db.prepare(`
+        SELECT id, provider_key FROM conversation_structural_blocks WHERE conversation_id = ?
+      `).all(input.conversationId) as Array<{ id: string; provider_key: string }>)
+        .map((row) => [row.provider_key, row.id]));
+      const reservedIds = new Set(structuralBlocks.flatMap(({ providerKey }) => {
+        const owner = providerOwners.get(providerKey);
+        return owner ? [owner] : [];
+      }));
+      const claimedIds = new Set(positionToId.values());
       const upsertStructuralBlock = this.db.prepare(`
         INSERT INTO conversation_structural_blocks (
           id, conversation_id, source_version_id, status, provider_key, position,
@@ -1043,37 +1064,19 @@ export class ConversationSourceStore {
       const setParent = this.db.prepare(
         "UPDATE conversation_structural_blocks SET parent_block_id = ? WHERE id = ?",
       );
-      for (const block of blocks) {
-        const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
-        // Gemini's legacy JSON and JSONL parser normalizes the whole session at
-        // once and does not expose per-message record ordinals. Its files are
-        // bounded, so seal the complete provider file as one exact record.
-        const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
-        const recordOrdinal = wholeGeminiSource
-          ? 0
-          : numericMetadata(metadata, "source_record_ordinal");
-        const range = wholeGeminiSource
-          ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
-          : recordOrdinal === null
-          ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
-          : snapshot.records[recordOrdinal];
-        if (!range) continue;
-        const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
-        const providerKeyBase = providerBlockKey(block, metadata, range, subBlockOrdinal);
-        const providerKeyOccurrence = providerKeyOccurrences.get(providerKeyBase) ?? 0;
-        providerKeyOccurrences.set(providerKeyBase, providerKeyOccurrence + 1);
-        const providerKey = providerKeyOccurrence === 0
-          ? providerKeyBase
-          : `${providerKeyBase}:occurrence:${providerKeyOccurrence}`;
+      for (const { block, range, subBlockOrdinal, providerKey } of structuralBlocks) {
         const aliasRow = findAlias.get(block.id) as { block_id: string } | undefined;
-        const keyRow = findProviderKey.get(input.conversationId, providerKey) as { id: string } | undefined;
-        // The provider key is the stable parser identity. A legacy block alias
-        // can point at an older placeholder structural row while a partial
-        // prior index already owns this key; reusing the alias row would try
-        // to assign the same unique key twice. Reuse the key owner and move
-        // the legacy alias to it instead.
-        const blockId = keyRow?.id ?? aliasRow?.block_id
-          ?? stableId("cblk", input.conversationId, providerKey);
+        // Historical aliases may share a surrogate after parser positions shift.
+        // Reserve every proven provider owner before assigning any alias so an
+        // earlier block cannot overwrite a later record's identity.
+        const aliasId = aliasRow && !reservedIds.has(aliasRow.block_id) && !claimedIds.has(aliasRow.block_id)
+          ? aliasRow.block_id : undefined;
+        const ownerId = providerOwners.get(providerKey);
+        let blockId = ownerId ?? aliasId ?? stableId("cblk", input.conversationId, providerKey);
+        for (let occurrence = 1; !ownerId && (reservedIds.has(blockId) || claimedIds.has(blockId)); occurrence += 1) {
+          blockId = stableId("cblk", input.conversationId, providerKey, String(occurrence));
+        }
+        claimedIds.add(blockId);
         positionToId.set(block.position, blockId);
         const parentPosition = block.parent_id !== null && /^\d+$/.test(block.parent_id)
           ? Number(block.parent_id)
