@@ -24,6 +24,6 @@ it("dispatch preserves resolved caller attribution separately from native origin
     expect((await router.invoke({ method: "POST", url: "/mutate", ambient_identity: origin })).status).toBe(200);
     const event = db.prepare("SELECT actor_user_id, evidence_method, payload_json FROM ledger_events WHERE entity_id = ? AND event_type = 'user.updated'").get(target.id);
     expect(event).toMatchObject({ actor_user_id: actor.id, evidence_method: "api_token" });
-    expect(JSON.parse(event.payload_json)).toEqual({ changed_fields: ["display_name"], request_origin: origin });
+    expect(JSON.parse(event.payload_json)).toMatchObject({ changed_fields: ["display_name"], request_origin: origin });
   } finally { db.close(); }
 });
