@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { ChromeShadowSettings } from '../components/settings/ChromeShadowSettings';
+import type { ChromeShadowPreviewController } from '../hooks/useChromeShadowPreview';
 import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults';
 import { ChildRetentionSettings } from '../components/settings/ChildRetentionSettings';
 import { SettingsToggle as Toggle } from '../components/settings/SettingsToggle';
@@ -76,6 +78,7 @@ import {
 } from './settings-behavior';
 
 export type SettingsViewProps = {
+  chromeShadowPreview?: ChromeShadowPreviewController | null;
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
   loadError?: string | null;
@@ -134,6 +137,7 @@ type SettingsSectionDefinition = {
   id: string;
   title: string;
   desktopOnly?: boolean;
+  previewOnly?: boolean;
 };
 
 const SETTINGS_SECTIONS = {
@@ -150,6 +154,7 @@ const SETTINGS_SECTIONS = {
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
+  chromeShadow: { id: 'settings-chrome-shadow', title: 'Chrome shadow · Preview', previewOnly: true },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
   signing: { id: 'settings-signing', title: 'Signing keys' },
@@ -1640,7 +1645,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState(0);
   const desktopShell = isDesktopShell();
-  const visibleSections = SETTINGS_SECTION_LIST.filter((section) => !section.desktopOnly || desktopShell);
+  const chromeShadowPreview = instance?.role === 'preview' ? props.chromeShadowPreview : null;
+  const shadowPreviewVisible = Boolean(chromeShadowPreview);
+  const visibleSections = SETTINGS_SECTION_LIST.filter((section) => (!section.desktopOnly || desktopShell) && (!section.previewOnly || shadowPreviewVisible));
 
   useEffect(() => {
     if (typeof settings.protected_branches === 'string' && !initialized.current) {
@@ -1760,7 +1767,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       subtree: true,
     });
     return () => observer.disconnect();
-  }, [searchQuery, desktopShell]);
+  }, [searchQuery, desktopShell, shadowPreviewVisible]);
 
   useEffect(() => {
     const root = viewRef.current;
@@ -1792,7 +1799,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       root.removeEventListener('scroll', scheduleUpdate);
       window.removeEventListener('resize', scheduleUpdate);
     };
-  }, [desktopShell, searchMatches]);
+  }, [desktopShell, searchMatches, shadowPreviewVisible]);
 
   return (
     <div className="settings-view" ref={viewRef}>
@@ -2288,6 +2295,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           <SettingsFeedback feedback={feedback} />
         </div>
       </SettingsSectionShell>
+
+      {chromeShadowPreview ? <SettingsSectionShell section={SETTINGS_SECTIONS.chromeShadow}>
+        <SettingsSectionHeader section={SETTINGS_SECTIONS.chromeShadow} description="Changes apply immediately in this browser. Copy the values when you are ready." />
+        <ChromeShadowSettings controller={chromeShadowPreview} />
+      </SettingsSectionShell> : null}
 
       <SettingsSectionShell section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader

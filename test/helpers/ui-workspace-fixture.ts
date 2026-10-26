@@ -10,6 +10,7 @@ import { h } from 'preact';
 import { clearPersistedDetailCache } from '../../ui/src/detail-cache';
 import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { PRODUCTION_EFFECTS } from '../../src/security/effect-policy.js';
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../../src/conversations/retention-contract';
 
 import { clearApiGetCache, type InstanceInfo } from '../../ui/src/api';
 
@@ -424,6 +425,9 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
   const putCalls = vi.fn();
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === '/api/settings/child-retention') {
+      return new Response(JSON.stringify(DEFAULT_CHILD_RETENTION_SETTINGS), { headers: { 'content-type': 'application/json' } });
+    }
     if (url === '/api/settings' && init?.method !== 'PUT') {
       return new Response(JSON.stringify({}), {
         headers: { 'content-type': 'application/json' },

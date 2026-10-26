@@ -1,4 +1,7 @@
 .app-frame {
+  --app-boundary-shadow-paint-width: var(--app-shadow-dark-width);
+  --app-boundary-shadow-gradient-stops: var(--app-shadow-dark-linear);
+  --app-boundary-shadow-radial-stops: var(--app-shadow-dark-radial);
   display: grid;
   isolation: isolate;
   grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
@@ -110,6 +113,11 @@
   z-index: calc(var(--z-app-subdivision) + 1);
   pointer-events: none;
 }
+[data-theme='light'] .app-frame {
+  --app-boundary-shadow-paint-width: var(--app-shadow-light-width);
+  --app-boundary-shadow-gradient-stops: var(--app-shadow-light-linear);
+  --app-boundary-shadow-radial-stops: var(--app-shadow-light-radial);
+}
 /* Isolation keeps the negative shadow above the frame material and below
  * normal content. The disjoint layers meet at the rounded edge's tangents. */
 .app-frame::after {
@@ -127,12 +135,7 @@
   background-image:
     linear-gradient(to bottom, var(--app-boundary-shadow-gradient-stops)),
     linear-gradient(to right, var(--app-boundary-shadow-gradient-stops)),
-    radial-gradient(circle at right bottom,
-      transparent var(--radius-chat-surface),
-      var(--app-boundary-shadow-color) var(--radius-chat-surface),
-      var(--app-boundary-shadow-sample-59) calc(var(--app-boundary-shadow-outer-radius) - var(--app-boundary-shadow-stop-59)),
-      var(--app-boundary-shadow-sample-24) calc(var(--app-boundary-shadow-outer-radius) - var(--app-boundary-shadow-stop-24)),
-      transparent var(--app-boundary-shadow-outer-radius));
+    radial-gradient(circle at right bottom, var(--app-boundary-shadow-radial-stops));
   background-size:
     calc(100% - var(--app-boundary-shadow-outer-radius)) var(--app-boundary-shadow-paint-width),
     var(--app-boundary-shadow-paint-width) calc(100% - var(--app-boundary-shadow-outer-radius)),

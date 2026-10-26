@@ -13,6 +13,7 @@ import {
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
 import { runChromium } from '../helpers/chromium';
+import type { ChromeShadowParameters } from '../../ui/src/chrome-shadow';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
@@ -38,7 +39,7 @@ function bundleFixture(directory: string): string {
 
 let fixtureBundle: string | undefined;
 
-function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string } = {}): Result {
+function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string; shadow?: ChromeShadowParameters } = {}): Result {
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
@@ -208,7 +209,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
     const screenshotArgs = screenshotPath ? [`--screenshot=${screenshotPath}`] : [];
     const path = join(directory, 'fixture.html');
     writeFileSync(path, paint.disableShadow ? html.replace('</head>', '<style>.app-frame::after{background-image:none}</style></head>') : html);
-    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
+    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}${paint.shadow ? '&shadow=' + encodeURIComponent(JSON.stringify(paint.shadow)) : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));
@@ -248,6 +249,40 @@ function compareShadowPixels(directory: string, painted: string, baseline: strin
 }
 
 describe('rendered workspace shadow', () => {
+  it.each([{ widthPx: 5, profile: 0 }, { widthPx: 5, profile: 1 }, { widthPx: 16, profile: 1 }])('renders profile $profile at width $widthPx outward with an unchanged interior', parameters => {
+    const directory = mkdtempSync(join(tmpdir(), 'mandible-shadow-profile-'));
+    try {
+      const shadow = { ...parameters, maxDarkness: 0.4 };
+      const painted = join(directory, 'painted.png');
+      const baseline = join(directory, 'baseline.png');
+      const result = renderCase('chat', 1280, 'light', false, false, 1, { shadow, screenshotPath: painted });
+      renderCase('chat', 1280, 'light', false, false, 1, { shadow, disableShadow: true, screenshotPath: baseline });
+      const { workspace, radius } = result.paintSurface as { workspace: { left: number; top: number }; radius: number };
+      const distances = parameters.profile === 0 ? [0.5, 1.5, 4.5, 6] : [1.5, parameters.widthPx / 2, parameters.widthPx - 0.5, parameters.widthPx + 1];
+      const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
+        top: distances.map(distance => ({ distance, x: workspace.left + 100, y: workspace.top - distance })),
+        left: distances.map(distance => ({ distance, x: workspace.left - distance, y: workspace.top + 100 })),
+        corner: distances.map(distance => ({ distance, x: workspace.left + radius - (radius + distance) * 3 / Math.sqrt(13), y: workspace.top + radius - (radius + distance) * 2 / Math.sqrt(13) })),
+        interior: [2, 5, 10].flatMap(distance => [
+          { distance, x: workspace.left + 100, y: workspace.top + distance },
+          { distance, x: workspace.left + distance, y: workspace.top + 100 },
+          { distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 },
+        ]),
+      });
+      for (const name of ['top', 'left', 'corner']) {
+        const samples = profiles[name]!;
+        expect(samples[0]!.delta, name + ' contact paint').toBeGreaterThan(10);
+        expect(samples.at(-1)!.delta, name + ' extent').toBe(0);
+        if (parameters.profile === 0) expect(samples[1]!.delta, name + ' hard contact edge').toBe(0);
+        else {
+          expect(samples[1]!.delta, name + ' linear falloff').toBeGreaterThan(20);
+          expect(samples[1]!.delta).toBeLessThan(samples[0]!.delta);
+        }
+      }
+      for (const sample of profiles.interior!) expect(sample.delta).toBe(0);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it.each(['light', 'dark'] as const)('applies the selected shadow strength to %s chrome without interior shading', theme => {
     const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const directory = evidenceDirectory ?? mkdtempSync(join(tmpdir(), 'mandible-shadow-pixels-'));

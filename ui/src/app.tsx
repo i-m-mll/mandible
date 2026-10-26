@@ -1,4 +1,6 @@
 import { AppFrame } from './app-frame';
+import { useChromeShadowPreview } from './hooks/useChromeShadowPreview';
+import type { ChromeShadowTheme } from './chrome-shadow';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
@@ -417,11 +419,11 @@ function setLastSeenStartupEpoch(epoch: string): void {
   }
 }
 
-function updateRootAppTheme(settings: Record<string, string>): () => void {
+function updateRootAppTheme(settings: Record<string, string>, previewTheme?: ChromeShadowTheme, onResolved?: (theme: ChromeShadowTheme) => void): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
   }
-  const mode = normalizeAppThemeMode(settings.app_theme);
+  const mode = previewTheme ?? normalizeAppThemeMode(settings.app_theme);
   void setDesktopWindowTheme(mode === 'system' ? null : mode).catch((error) => {
     console.error('Failed to update native window theme:', error);
   });
@@ -435,6 +437,7 @@ function updateRootAppTheme(settings: Record<string, string>): () => void {
     const terminalTheme = resolveTerminalTheme(resolvedTheme, terminalThemeId);
     document.documentElement.dataset.themeMode = mode;
     document.documentElement.dataset.theme = resolvedTheme;
+    onResolved?.(resolvedTheme);
     document.documentElement.dataset.terminalTheme = terminalThemeId;
     document.documentElement.style.setProperty('--terminal-bg', terminalTheme.background);
     document.documentElement.style.setProperty('--terminal-fg', terminalTheme.foreground);
@@ -884,7 +887,9 @@ function App(): JSX.Element {
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
   ), [hostAppTheme, state.settings]);
 
-  useEffect(() => updateRootAppTheme(effectiveSettings), [effectiveSettings]);
+  const [resolvedTheme, setResolvedTheme] = useState<ChromeShadowTheme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  const chromeShadowPreview = useChromeShadowPreview(instanceInfo, resolvedTheme);
+  useEffect(() => updateRootAppTheme(effectiveSettings, chromeShadowPreview.themeOverride, setResolvedTheme), [effectiveSettings, chromeShadowPreview.themeOverride]);
 
   useEffect(() => {
     let active = true;
@@ -2782,6 +2787,7 @@ function App(): JSX.Element {
       )}
       <AppShellProvider value={appShellContext}>
         <AppFrame
+          chromeShadows={chromeShadowPreview.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}
@@ -3000,6 +3006,7 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
+            chromeShadowPreview={chromeShadowPreview.controller}
             settings={effectiveSettings}
             onSave={handleSettingsSave}
             loadError={state.settingsLoadError}
