@@ -258,17 +258,19 @@ describe('rendered workspace shadow', () => {
       const result = renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { screenshotPath: painted });
       renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { disableShadow: true, screenshotPath: baseline });
       type Rect = { left: number; right: number; top: number; bottom: number };
-      const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number };
+      const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number; shadow: { width: string; height: string } };
       const { workspace, main, dock, radius } = surface;
-      const distances = [2, 4, 8, 12, 16, 20];
+      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(8, 1);
+      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(8, 1);
+      const distances = [1.5, 2.5, 4, 5.5, 7, 9];
       const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
         topSidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top - distance })),
         topMain: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top - distance })),
         topDock: distances.map(distance => ({ distance, x: (dock.left + dock.right) / 2, y: workspace.top - distance })),
         left: distances.map(distance => ({ distance, x: workspace.left - distance, y: workspace.top + 100 })),
         corner: distances.map(distance => ({ distance, x: workspace.left + radius - (radius + distance) / Math.SQRT2, y: workspace.top + radius - (radius + distance) / Math.SQRT2 })),
-        tangentTop: [2, 8, 16].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left + radius + offset, y: workspace.top - distance }))),
-        tangentLeft: [2, 8, 16].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left - distance, y: workspace.top + radius + offset }))),
+        tangentTop: [1.5, 4, 7].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left + radius + offset, y: workspace.top - distance }))),
+        tangentLeft: [1.5, 4, 7].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left - distance, y: workspace.top + radius + offset }))),
         interior: distances.flatMap(distance => [
           { distance, x: workspace.left + 96, y: workspace.top + distance },
           { distance, x: (main.left + main.right) / 2, y: workspace.top + distance },
@@ -278,8 +280,8 @@ describe('rendered workspace shadow', () => {
         ]),
         line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
         outside: [
-          { distance: 0, x: workspace.left - 20, y: workspace.top + 100 },
-          { distance: 0, x: workspace.left + 96, y: workspace.top - 20 },
+          { distance: 0, x: workspace.left - 9, y: workspace.top + 100 },
+          { distance: 0, x: workspace.left + 96, y: workspace.top - 9 },
           { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
           { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
         ],
