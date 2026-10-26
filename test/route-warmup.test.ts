@@ -7,6 +7,7 @@ import { App } from '../ui/src/app';
 import { bindOperationCatalog, clearApiGetCache, type InstanceInfo } from '../ui/src/api';
 import { clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail, ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
 import { queryClient } from '../ui/src/query/client';
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 
 // Route chunks load from the module cache, so idle-time work settles within event-loop turns.
 const viewModules = import.meta.glob('../ui/src/views/**/*.tsx');
@@ -208,6 +209,7 @@ class Harness {
   }
 
   private respond(url: URL, body: unknown): unknown {
+    if (url.pathname === '/api/settings/child-retention') return DEFAULT_CHILD_RETENTION_SETTINGS;
     if (url.pathname === '/api/settings') return {};
     if (url.pathname.startsWith('/api/user-settings/')) {
       return { version: 1, key: url.pathname.split('/').pop(), value: null, revision: 0 };
