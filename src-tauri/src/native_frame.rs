@@ -61,10 +61,22 @@ pub struct Observation {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use objc2_app_kit::{NSView, NSWindow, NSWindowButton, NSWindowStyleMask};
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSView, NSWindow, NSWindowButton, NSWindowDidUpdateNotification, NSWindowStyleMask,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue};
     use objc2_web_kit::WKWebView;
+    use std::cell::RefCell;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
+    use tauri::Manager;
+
+    thread_local! {
+        static UPDATE_OBSERVER: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
 
     fn on_webview<T: Send + 'static>(
         window: &tauri::WebviewWindow,
@@ -155,6 +167,7 @@ mod macos {
     fn position(
         window: &tauri::WebviewWindow,
         state: Arc<Mutex<FrameState>>,
+        event: &'static str,
     ) -> Result<(), String> {
         let dom = state
             .lock()
@@ -185,13 +198,15 @@ mod macos {
                 "native controls exceed the frame header height"
             );
             let window_frame = native.frame();
+            let tolerance = 0.5 / native.backingScaleFactor();
+            let mut changed = false;
             for (kind, rect) in [
                 NSWindowButton::CloseButton,
                 NSWindowButton::MiniaturizeButton,
                 NSWindowButton::ZoomButton,
             ]
             .into_iter()
-            .zip(existing)
+            .zip(existing.iter().copied())
             {
                 let button = native
                     .standardWindowButton(kind)
@@ -202,6 +217,10 @@ mod macos {
                     .ok_or("Native button parent has no window")?;
                 let left = header.left + padding + rect.left - group.left;
                 let top = header.top + (header.height - rect.height) / 2.0;
+                if (rect.left - left).abs() <= tolerance && (rect.top - top).abs() <= tolerance {
+                    continue;
+                }
+                changed = true;
                 let mut screen = button.bounds();
                 screen.origin.x = window_frame.origin.x + left;
                 screen.origin.y =
@@ -212,6 +231,12 @@ mod macos {
                 button.setFrameOrigin(local.origin);
             }
             let bounds = union(&buttons(native)?);
+            if changed {
+                eprintln!(
+                    "native-frame-reconciled {}",
+                    serde_json::json!({ "event": event, "before": existing, "after": buttons(native)?, "header": header })
+                );
+            }
             let left_padding = bounds.left - header.left;
             Ok(Some(AppliedFrame {
                 bounds,
@@ -241,21 +266,88 @@ mod macos {
         window: &tauri::WebviewWindow,
         state: Arc<Mutex<FrameState>>,
     ) -> Result<(), String> {
-        position(window, state.clone())?;
+        position(window, state.clone(), "startup")?;
+        let active = Arc::new(AtomicBool::new(true));
+        let pending = Arc::new(AtomicBool::new(false));
+        let target = window.clone();
+        let update_state = state.clone();
+        let observer_active = active.clone();
+        on_webview(window, move |native, _| {
+            let callback_active = observer_active.clone();
+            let callback = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+                if !callback_active.load(Ordering::Acquire) || pending.swap(true, Ordering::AcqRel)
+                {
+                    return;
+                }
+                let target = target.clone();
+                let state = update_state.clone();
+                let active = callback_active.clone();
+                let pending = pending.clone();
+                let operation = RcBlock::new(move || {
+                    if active.load(Ordering::Acquire) {
+                        position(&target, state.clone(), "NSWindowDidUpdateNotification")
+                            .expect("native frame update reconciliation failed");
+                    }
+                    pending.store(false, Ordering::Release);
+                });
+                unsafe {
+                    NSOperationQueue::mainQueue().addOperationWithBlock(&operation);
+                }
+            });
+            let center = NSNotificationCenter::defaultCenter();
+            let observer = unsafe {
+                center.addObserverForName_object_queue_usingBlock(
+                    Some(NSWindowDidUpdateNotification),
+                    Some(native),
+                    None,
+                    &callback,
+                )
+            };
+            // AppKit observer custody stays on its main thread until the main window is destroyed.
+            let cleanup: Box<dyn FnOnce()> = Box::new(move || {
+                observer_active.store(false, Ordering::Release);
+                unsafe {
+                    center.removeObserver((&*observer).as_ref());
+                }
+            });
+            UPDATE_OBSERVER.with(|slot| {
+                if let Some(previous) = slot.replace(Some(cleanup)) {
+                    previous();
+                }
+            });
+            Ok(())
+        })?;
         let target = window.clone();
         window.on_window_event(move |event| {
-            if matches!(
-                event,
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
-            ) {
-                let task_window = target.clone();
-                let state = state.clone();
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                active.store(false, Ordering::Release);
                 target
-                    .run_on_main_thread(move || {
-                        position(&task_window, state).expect("native frame layout failed")
+                    .app_handle()
+                    .run_on_main_thread(|| {
+                        UPDATE_OBSERVER.with(|slot| {
+                            if let Some(cleanup) = slot.take() {
+                                cleanup();
+                            }
+                        })
                     })
-                    .expect("native frame layout dispatch failed");
+                    .expect("native observer cleanup dispatch failed");
+                return;
             }
+            let event = match event {
+                tauri::WindowEvent::Resized(_) => "Resized",
+                tauri::WindowEvent::ScaleFactorChanged { .. } => "ScaleFactorChanged",
+                _ => return,
+            };
+            let task_window = target.clone();
+            let state = state.clone();
+            let active = active.clone();
+            target
+                .run_on_main_thread(move || {
+                    if active.load(Ordering::Acquire) {
+                        position(&task_window, state, event).expect("native frame layout failed");
+                    }
+                })
+                .expect("native frame layout dispatch failed");
         });
         Ok(())
     }
