@@ -3,6 +3,22 @@ use std::sync::{Arc, Mutex};
 
 pub const HEADER_HEIGHT: f64 = 42.0;
 
+pub fn presentation() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos-overlay"
+    } else {
+        "system"
+    }
+}
+
+pub fn host_initialization_script() -> String {
+    let host = serde_json::json!({
+        "kind": "tauri", "platform": std::env::consts::OS,
+        "framePresentation": presentation(),
+    });
+    format!("Object.defineProperty(window, '__MANDIBLE_NATIVE_HOST__', {{ value: Object.freeze({host}) }});")
+}
+
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rect {
@@ -184,15 +200,12 @@ mod macos {
             webview.layoutSubtreeIfNeeded();
             let web = frame(native, webview)?;
             let scale = scale(webview, dom.as_ref());
-            let header = dom.as_ref().map_or(
-                Rect {
-                    left: web.left,
-                    top: web.top,
-                    width: web.width,
-                    height: HEADER_HEIGHT * scale,
-                },
-                |dom| map_css(dom.header, web, dom, scale),
-            );
+            let header = Rect {
+                left: web.left,
+                top: web.top,
+                width: web.width,
+                height: HEADER_HEIGHT * scale,
+            };
             let existing = buttons(native)?;
             let group = union(&existing);
             let padding = (header.height - group.height) / 2.0;
