@@ -1,3 +1,4 @@
+import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import { requestOriginJson } from "./request-origin.js";
 import type { SessionExecutionObservation } from "./contracts.js";
@@ -38,6 +39,7 @@ import { PRODUCTION_EFFECTS } from "./security/effect-policy.js";
 import {
   computeWorkUnitLiveness,
   mapWorkUnitRow,
+  workUnitSessionIds,
   type WorkUnitSessionResolver,
 } from "./work-unit-utils.js";
 
@@ -56,6 +58,7 @@ export type HolderLivenessState = LivenessState;
  */
 export interface HolderLiveness {
   state: HolderLivenessState;
+  responsibility_retained?: boolean;
   session_id: string | null;
   status: string | null;
   last_activity: number | null;
@@ -73,6 +76,7 @@ export function classifyHolderLiveness(
   const liveness = computeWorkUnitLiveness(db, unit, sessionManager, resolver);
   const execution = liveness.agent_session_id ? resolver(db, liveness.agent_session_id)?.execution ?? null : null;
   const observed = {
+    responsibility_retained: hasArchivedResponsibility(db, unit),
     execution,
     session_id: liveness.agent_session_id,
     status: liveness.agent_status,
@@ -82,13 +86,16 @@ export function classifyHolderLiveness(
   for (const id of sessionIdentities(unit)) {
     const resolution = resolver(db, id);
     if (!resolution || resolution.liveness !== "stopped") continue;
-    if (unit.provider && resolution.provider && resolution.provider !== unit.provider) continue;
+    const provider = unit.worker_provider === "claude_code" ? "claude" : unit.worker_provider
+      ?? (unit.assigned_session_id ? null : unit.provider);
+    if (provider && resolution.provider && resolution.provider !== provider) continue;
     const status = resolution.mandible_status ?? resolution.console_status;
     // The shared rule also calls a bare transcript stopped; only a recorded
     // session or a completed Codex lock scan is evidence of a stop here.
     if (!status && resolution.provider !== "codex") continue;
     return {
       state: "stopped",
+      responsibility_retained: observed.responsibility_retained,
       execution: resolution.execution ?? null,
       session_id: resolution.mandible_session_id ?? resolution.console_session_id ?? id,
       status,
@@ -120,8 +127,7 @@ function parseTime(value: string | null): number | null {
 }
 
 function sessionIdentities(unit: WorkUnit): string[] {
-  return Array.from(new Set([unit.assigned_session_id, unit.worker_provider_session_id, unit.provider_session_id]
-    .filter((value): value is string => Boolean(value))));
+  return workUnitSessionIds(unit);
 }
 
 /**
@@ -195,7 +201,7 @@ export function livenessLabel(liveness: HolderLiveness): string {
   const meaning = liveness.state === "live" ? "is live"
     : liveness.state === "stopped" ? "has stopped"
     : "has unknown liveness";
-  return `${meaning} (${session}${status}${last})${formatExecutionEvidence(liveness.execution)}`;
+  return `${meaning}${liveness.responsibility_retained ? "; visibility archive preserves its unresolved responsibility" : ""} (${session}${status}${last})${formatExecutionEvidence(liveness.execution)}`;
 }
 
 function shellQuote(value: string): string {
@@ -286,7 +292,7 @@ export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): Wo
   db.transaction(() => {
     const changed = mutateWorkUnit(db, unit.id, () => db.prepare(`UPDATE work_units
       SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?,
-        provider = ?, provider_session_id = ?, assigned_session_id = NULL, worker_provider_session_id = NULL
+        provider = ?, provider_session_id = ?, assigned_session_id = NULL, worker_provider = NULL, worker_provider_session_id = NULL
       WHERE id = ? AND custody_generation = ? AND owner_user_id IS ? AND owner_credential_id IS ?`)
       .run(input.new_user_id, input.new_credential_id, nextGeneration,
         input.new_session.provider, input.new_session.provider_session_id,

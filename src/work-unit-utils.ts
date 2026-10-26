@@ -30,6 +30,7 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     assigned_session_id: normalizeWorkUnitSessionId(row.assigned_session_id),
     provider: typeof row.provider === "string" && row.provider.trim() ? row.provider : null,
     provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
+    worker_provider: typeof row.worker_provider === "string" ? row.worker_provider : null,
     worker_provider_session_id: normalizeWorkUnitSessionId(row.worker_provider_session_id),
     continuation: typeof row.continuation === "string" ? row.continuation : null,
     continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
@@ -53,11 +54,10 @@ export function normalizeWorkUnitSessionId(value: unknown): string | null {
 
 /** The session identities a work unit names, strongest claim first. */
 export function workUnitSessionIds(workUnit: WorkUnit): string[] {
-  return Array.from(new Set([
-    workUnit.assigned_session_id,
-    workUnit.worker_provider_session_id,
-    workUnit.provider_session_id,
-  ].filter((value): value is string => Boolean(value))));
+  const assigned = [workUnit.assigned_session_id, workUnit.worker_provider_session_id]
+    .filter((value): value is string => Boolean(value));
+  return [...new Set(assigned.length ? assigned : [workUnit.provider_session_id]
+    .filter((value): value is string => Boolean(value)))];
 }
 
 interface BranchSession { id: string; status: string; last_active: string | null }
@@ -134,7 +134,9 @@ function livenessFromSources(
   for (const id of identityCandidates) {
     const resolution = sources.resolveSession(db, id);
     if (!resolution) continue;
-    if (workUnit.provider && resolution.provider && resolution.provider !== workUnit.provider) continue;
+    const provider = workUnit.worker_provider === "claude_code" ? "claude" : workUnit.worker_provider
+      ?? (workUnit.assigned_session_id ? null : workUnit.provider);
+    if (provider && resolution.provider && resolution.provider !== provider) continue;
     if (resolution.liveness !== "live") {
       if (!notLive || (resolution.liveness === "unknown" && notLive.resolution.liveness === "stopped")) {
         notLive = { id, resolution };
