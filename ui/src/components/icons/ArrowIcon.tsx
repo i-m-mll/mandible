@@ -7,18 +7,22 @@ const ARROW_PATHS = {
   right: { head: 'm12 6 6 6-6 6', shaft: 'M18 12H6' },
 } as const;
 
+const HISTORY_ARROW_PATHS = {
+  left: { head: 'm11 6-6 6 6 6', shaft: 'M5 12h14' },
+  right: { head: 'm13 6 6 6-6 6', shaft: 'M19 12H5' },
+} as const;
+
 export type ArrowIconProps = {
-  direction: keyof typeof ARROW_PATHS;
   size?: number;
   strokeWidth?: number;
-};
+} & (
+  | { direction: keyof typeof ARROW_PATHS; proportions?: 'standard' }
+  | { direction: keyof typeof HISTORY_ARROW_PATHS; proportions: 'history' }
+);
 
-export function ArrowIcon({
-  direction,
-  size = 16,
-  strokeWidth = 2,
-}: ArrowIconProps): JSX.Element {
-  const paths = ARROW_PATHS[direction];
+export function ArrowIcon(props: ArrowIconProps): JSX.Element {
+  const { size = 16, strokeWidth = 2 } = props;
+  const paths = props.proportions === 'history' ? HISTORY_ARROW_PATHS[props.direction] : ARROW_PATHS[props.direction];
 
   return (
     <svg

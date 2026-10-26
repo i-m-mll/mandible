@@ -91,10 +91,11 @@
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
   --app-boundary-shadow-paint-width: 17px;
-  --app-boundary-shadow-intensity-scale: 0.70;
-  --app-boundary-shadow-sample-24: rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale)));
-  --app-boundary-shadow-sample-59: rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale)));
-  --app-boundary-shadow-color: rgba(0, 0, 0, calc(0.0375 * var(--app-boundary-shadow-intensity-scale)));
+  --app-boundary-shadow-peak-alpha: 0.50;
+  --app-boundary-shadow-sample-24: rgba(0, 0, 0, calc(0.144 * var(--app-boundary-shadow-peak-alpha)));
+  --app-boundary-shadow-sample-59: rgba(0, 0, 0, calc(0.416 * var(--app-boundary-shadow-peak-alpha)));
+  --app-boundary-shadow-color: rgba(0, 0, 0, var(--app-boundary-shadow-peak-alpha));
+  --app-boundary-line-color: #272727;
   --app-boundary-shadow-stop-24: calc(var(--app-boundary-shadow-paint-width) * 0.24);
   --app-boundary-shadow-stop-59: calc(var(--app-boundary-shadow-paint-width) * 0.59);
   --app-boundary-shadow-gradient-stops: transparent 0px, var(--app-boundary-shadow-sample-24) var(--app-boundary-shadow-stop-24), var(--app-boundary-shadow-sample-59) var(--app-boundary-shadow-stop-59), var(--app-boundary-shadow-color) var(--app-boundary-shadow-paint-width);
@@ -334,6 +335,8 @@
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
+  --app-boundary-shadow-peak-alpha: 0.12;
+  --app-boundary-line-color: #eaeaeb;
   --app-divider: #D7D7D8;
   --app-divider-emphasis: #C6C6C7;
 

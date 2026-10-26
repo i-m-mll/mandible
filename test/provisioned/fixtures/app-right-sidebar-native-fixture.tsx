@@ -188,7 +188,7 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
       <AppFrame nativeControlsReservation={nativeControlsReservation} headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail"><nav className="app-rail__nav" aria-label="Main navigation"><a className="app-rail__item" href="#/chat" aria-label="Chats"><TestIcon kind="chat" />{railMode === 'both' ? <span>Chats</span> : null}</a></nav></aside>}>
         <main className={`app-content app-content--${surface}`}>
           <div className="fixture-split">
-          <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div>Left content</div></ViewSidebar>
+          <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div data-paint-probe-content>Left content</div></ViewSidebar>
           {surface === 'chat' ? <ChatMain descriptor={descriptor} /> : <div className="native-main">{surface} main</div>}
           </div>
           {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision(value => value + 1)}>Stream update {streamRevision}</button> : null}
