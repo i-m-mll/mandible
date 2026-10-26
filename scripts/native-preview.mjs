@@ -135,7 +135,8 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
         }
         return { ...current, reused: true };
       }
-      if (current.buildProcess && !current.buildProcess.finishedAt && processIdentity(current.buildProcess.pid) !== null) throw new Error('Native build is still running');
+      if ((current.buildProcess && !current.buildProcess.finishedAt && processIdentity(current.buildProcess.pid) !== null)
+        || current.buildProcess?.remaining?.some(child => processIdentity(child.pid) !== null)) throw new Error('Native build is still running');
       current.status = 'stopped'; current.stoppedAt ??= new Date().toISOString();
       saveOwnedMetadata(consumer.metadataFile, current);
       return { resume: true, receipt: current, consumer };
@@ -275,7 +276,8 @@ export async function cleanupNativePreview(file, options = {}) {
   let reservation;
   const result = await nativeOperation(file, options, receipt => {
     if (receipt.pid && processIdentity(receipt.pid) !== null) throw new Error('Stop the native preview before cleanup');
-    if (receipt.buildProcess && !receipt.buildProcess.finishedAt && processIdentity(receipt.buildProcess.pid) !== null) throw new Error('Stop the native build before cleanup');
+    if ((receipt.buildProcess && !receipt.buildProcess.finishedAt && processIdentity(receipt.buildProcess.pid) !== null)
+      || receipt.buildProcess?.remaining?.some(child => processIdentity(child.pid) !== null)) throw new Error('Stop the native build before cleanup');
     reservation = receipt.reservation;
     if (receipt.ownership.state !== 'terminal') {
       const finalized = finalizeOwnedRun(file, { expectedRevision: receipt.ownership.revision,

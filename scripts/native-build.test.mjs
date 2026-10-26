@@ -11,7 +11,7 @@ import { trackedSourceDigest } from './build-revision.mjs';
 import { createOwnedRun, saveOwnedMetadata, processIdentity } from './owned-run.mjs';
 import { nativeProcessGroupMembers } from './native-process-group.mjs';
 import { stopNativePreview, cleanupNativePreview, failNativePreviewAttempt } from './native-preview.mjs';
-import { acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer } from './preview-custody.mjs';
+import { acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer, verifyPreviewConsumerStopped } from './preview-custody.mjs';
 
 function fixture() {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-build-contract-')));
@@ -115,8 +115,9 @@ test('pending native build is retained through stop and blocks attachment after 
 });
 
 
-test('stopped native run reacquires the refreshed candidate while preserving profile and warm target', async () => {
+test('stopped native run blocks remaining descendants then reacquires with profile and warm target preserved', async () => {
   const f = fixture();
+  let descendant;
   try {
     const parentRoot = path.join(f.base, 'backend'); fs.mkdirSync(parentRoot);
     const ownership = createOwnedRun({ root: parentRoot, instanceId: 'fixture', project: 'fixture', workUnit: 'fixture', outputs: [] });
@@ -137,6 +138,18 @@ test('stopped native run reacquires the refreshed candidate while preserving pro
     const warm = path.join(staged.env.CARGO_TARGET_DIR, 'warm'); fs.writeFileSync(warm, 'compiled dependency');
     const stale = path.join(staged.crate, 'removed-source.rs'); fs.writeFileSync(stale, 'stale');
     const profileFile = path.join(f.receipt.profile, 'cookies'); fs.writeFileSync(profileFile, 'keep user state');
+    const executable = path.join(staged.env.CARGO_TARGET_DIR, 'native-descendant'); fs.copyFileSync('/bin/sleep', executable);
+    descendant = spawn(executable, ['120'], { stdio: 'ignore' });
+    await new Promise((resolve, reject) => { descendant.once('spawn', resolve); descendant.once('error', reject); });
+    const leader = spawn('/usr/bin/true', [], { stdio: 'ignore' });
+    await new Promise(resolve => leader.once('exit', resolve));
+    const identity = processIdentity(descendant.pid);
+    f.receipt.buildProcess = { pid: leader.pid, remaining: [{ pid: descendant.pid, identity, birth: identity.slice(0, 24) }] };
+    f.save();
+    assert.throws(() => verifyPreviewConsumerStopped(reservation), /live.*descendant/);
+    await assert.rejects(cleanupNativePreview(f.file, { disposition: 'discard' }), /Stop the native build/);
+    await stopNativePreview(f.file);
+    assert.equal(processIdentity(descendant.pid), null);
     const refreshed = JSON.parse(fs.readFileSync(parentFile));
     const candidate = { commit: 'c'.repeat(40), source_digest: 'd'.repeat(64) };
     refreshed.ownership.source = candidate; refreshed.instanceEnv.MANDIBLE_BACKEND_GENERATION = candidate.commit;
@@ -155,7 +168,10 @@ test('stopped native run reacquires the refreshed candidate while preserving pro
     f.receipt.reservation = reacquired; f.receipt.attemptId = reacquired.attemptId; f.save();
     await cleanupNativePreview(f.file, { disposition: 'discard' });
     assert.equal(JSON.parse(fs.readFileSync(parentFile)).ownership.consumers[0].state, 'released');
-  } finally { f.dispose(); }
+  } finally {
+    if (descendant && descendant.exitCode === null && descendant.signalCode === null) descendant.kill();
+    f.dispose();
+  }
 });
 
 
