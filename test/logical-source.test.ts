@@ -199,4 +199,4 @@ it("streams a 211MB cold rollout once for concurrent readers and seeks warm tail
   await warm.close();
   expect((await readLogicalSourcePrefix(source, header.length)).toString()).toBe(header.toString());
   console.info("logical-source performance", { logicalLength, decoded, peakRssDelta: peakRss - initialRss, eventLoopTurns: turns });
-}, 30_000);
+});
