@@ -20,6 +20,7 @@ import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
+import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -739,7 +740,7 @@ export class Router implements RouteRegistrar {
       };
 
       try {
-        await route.handler(request, response);
+        await withRequestOrigin(requestOriginForRequest(request), () => route.handler(request, response));
       } catch (error) {
         if (error instanceof OperatorNotConfiguredError) {
           response.status(409).json({
