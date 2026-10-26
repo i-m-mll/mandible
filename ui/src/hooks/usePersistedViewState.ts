@@ -98,9 +98,12 @@ export function usePersistedViewState<T>(
   normalize: PersistedViewStateNormalizer<T>,
   defaults: T,
   initialValue?: T,
+  onPersistenceResult?: (saved: boolean) => void,
 ): [T, Dispatch<StateUpdater<T>>] {
   const normalizeRef = useRef(normalize);
   const defaultsRef = useRef(defaults);
+  const persistenceResultRef = useRef(onPersistenceResult);
+  persistenceResultRef.current = onPersistenceResult;
   normalizeRef.current = normalize;
   defaultsRef.current = defaults;
 
@@ -138,7 +141,8 @@ export function usePersistedViewState<T>(
       const value = typeof next === 'function'
         ? (next as (previous: T) => T)(base)
         : next;
-      writePersistedViewState(storageKey, value);
+      const saved = writePersistedViewState(storageKey, value);
+      persistenceResultRef.current?.(saved);
       return { storageKey, value };
     });
   }, [storageKey]);

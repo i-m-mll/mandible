@@ -1,11 +1,13 @@
 import type { ComponentChildren, Ref } from 'preact';
+import { chromeShadowFrameStyles, type ChromeShadowThemes } from './chrome-shadow';
 import { ArrowIcon } from './components/icons/ArrowIcon';
 import { APP_FRAME_CONTROLS_OFFSET, AppRightSidebarHeaderControls, AppRightSidebarToggleButton, ViewSidebarIcon, type AppRightSidebarDescriptor } from './app-shell';
 import './styles/app-frame.css';
 
 const HISTORY_ARROW_SIZE = 18;
 
-export function AppFrame({ nativeControlsReservation, rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
+export function AppFrame({ chromeShadows, nativeControlsReservation, rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
+  chromeShadows?: Readonly<ChromeShadowThemes>;
   nativeControlsReservation: number;
   rail: ComponentChildren;
   layoutClassName?: string;
@@ -21,7 +23,7 @@ export function AppFrame({ nativeControlsReservation, rail, layoutClassName = ''
   rightToggleRef?: Ref<HTMLButtonElement>;
 }): JSX.Element {
   const leftLabel = viewSidebarOpen ? 'Hide view sidebar' : 'Show view sidebar';
-  return <div style={{ '--app-frame-controls-offset': `${APP_FRAME_CONTROLS_OFFSET}px`, '--app-frame-history-icon-size': `${HISTORY_ARROW_SIZE}px` } as JSX.CSSProperties} className={`app-frame${hasMainHeader ? ' app-frame--main-header' : ''}${viewSidebarOpen ? ' app-frame--left-open' : ''}${rightSidebarOpen ? ' app-frame--right-open' : ''}`}>
+  return <div style={{ ...chromeShadowFrameStyles(chromeShadows), '--app-frame-controls-offset': `${APP_FRAME_CONTROLS_OFFSET}px`, '--app-frame-history-icon-size': `${HISTORY_ARROW_SIZE}px` } as JSX.CSSProperties} className={`app-frame${hasMainHeader ? ' app-frame--main-header' : ''}${viewSidebarOpen ? ' app-frame--left-open' : ''}${rightSidebarOpen ? ' app-frame--right-open' : ''}`}>
     <header className="app-frame__bar" aria-label="Application controls" data-app-surface="chrome" data-tauri-drag-region>
       <div className="app-frame__navigation" data-tauri-drag-region>
         {nativeControlsReservation > 0 ? <span className="app-frame__native-controls" aria-hidden="true" data-tauri-drag-region /> : null}
