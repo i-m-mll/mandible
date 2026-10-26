@@ -19,10 +19,10 @@ db.pragma("cache_size = -8192");
 db.pragma(`temp_store = ${SQLITE_COLD_START_TUNING.tempStore}`);
 setDb(db);
 
-port.on("message", (request: LedgerReadRequest) => {
+port.on("message", async (request: LedgerReadRequest) => {
   let response: LedgerReadResponse;
   try {
-    response = { id: request.id, ok: true, value: runLedgerRead(db, request.kind, request.params) };
+    response = { id: request.id, ok: true, value: await runLedgerRead(db, request.kind, request.params) };
   } catch (error) {
     response = { id: request.id, ok: false, message: error instanceof Error ? error.message : String(error) };
   }

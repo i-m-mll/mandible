@@ -1,10 +1,10 @@
-import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
 import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
+import type { RuntimeHandoffJournal } from "../src/auth-hooks.js";
 import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
 import { mintApiToken } from "../src/client-auth/tokens.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
@@ -14,6 +14,7 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
+import { assessRuntimeLogs } from "../scripts/runtime-log-assessment.mjs";
 import { waitUntil } from "./helpers/wait-until.js";
 
 let repo: string;
@@ -57,6 +58,12 @@ function protectedState() {
     files: fs.readFileSync(path.join(repo, "shared.txt"), "utf8"), merge: fs.existsSync(path.join(repo, ".git", "MERGE_HEAD")) };
 }
 
+/** Approve, then wait until the execution reaches its executor: only a running execution posts a result. */
+async function approveToExecutor(id: string) {
+  await queue.approveWithOperatorProof(id, operatorId);
+  await waitUntil(() => (db.prepare("SELECT last_executed_at FROM auth_requests WHERE id = ?").get(id) as { last_executed_at: number | null }).last_executed_at, "the approved execution to reach its executor");
+}
+
 describe("protected delivery evidence", () => {
   beforeEach(prepareMergeFixture);
   it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
@@ -66,7 +73,7 @@ describe("protected delivery evidence", () => {
     let journal: RuntimeHandoffJournal | null = null;
     let receiptValid = false;
     let acknowledgements = 0;
-    const hooks = new AuthHookManager(db, { handoffClient: {
+    const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: async (home) => home === installationHome ? journal : null,
       readRuntimeHandoffPhase: async (home) => home === installationHome ? journal?.phase : undefined,
       verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
@@ -76,7 +83,7 @@ describe("protected delivery evidence", () => {
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, "handoff-close");
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
@@ -116,11 +123,11 @@ describe("protected delivery evidence", () => {
 
   it("runs frozen native post-hooks once with original arguments and refuses changed hook bytes", async () => {
     (await queue.dispose());
-    const hooks = new AuthHookManager(db);
+    const hooks = createInstalledServiceHookManager(db);
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     for (const name of ["post-commit", "post-merge"]) fs.writeFileSync(path.join(repo, ".git", "hooks", name), `#!/bin/sh\nprintf '${name}:%s:%s:%s\\n' "$#" "\${1-}" "$(git rev-parse ORIG_HEAD)" >> .git/native-audit\n`, { mode: 0o755 });
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 0, publication.output));
     await hooks.runPending((await queue.getRequest(request.id))!);
@@ -139,11 +146,11 @@ describe("protected delivery evidence", () => {
 
   it("reconstructs only the frozen signed first-upgrade candidate and refuses binding or checkout drift", async () => {
     (await queue.dispose());
-    const hooks = new AuthHookManager(db);
+    const hooks = createInstalledServiceHookManager(db);
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     const run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
@@ -195,7 +202,7 @@ describe("protected delivery evidence", () => {
     const project = createLedgerProject(db, repo);
     const issue = createLedgerIssue(db, project.project.id, "closure-proof");
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const before = protectedState();
     const result = (await queue.setResult(request.id, 0, "ok"));
     expect(result.exit_code).not.toBe(0);
@@ -321,7 +328,7 @@ describe('runtime convergence recovery', () => {
     });
     const recheck = vi.fn(() => {});
     const persist = vi.fn((current: RuntimeHandoffJournal) => { Object.assign(journal!, current); });
-    const hooks = new AuthHookManager(db, { handoffClient: {
+    const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: () => journal,
       readRuntimeHandoffPhase: () => journal?.phase,
       verifyRuntimeHandoffReceipt: async () => {},
@@ -341,7 +348,7 @@ describe('runtime convergence recovery', () => {
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, 'builtin-mandible-rebuild');
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, 'recover-close');
     const request = (await submitMerge([issue.id]));
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveToExecutor(request.id);
     const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 0, publication.output));
     await (queue as any).finalizerQueue.drain();
@@ -354,6 +361,154 @@ describe('runtime convergence recovery', () => {
     const actor = { user_id: operatorId, credential_id: credential.id, evidence_method: 'api_token' as const, authority_path: 'operator_recovery' as const };
     return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };
   }
+
+  function automaticRecovery(f: Awaited<ReturnType<typeof recoveryFixture>>) {
+    const owner = { file: '/private/active.json', journalPath: '/private/journal.json',
+      bindingDigest: f.journal.bindingDigest, requestId: f.request.id, executionId: f.run.id,
+      phase: 'failed', error: 'retained failure' };
+    vi.spyOn(f.hooks, 'runtimeHandoffLock').mockImplementation(() => f.journal.phase === 'acknowledged' ? null : { ...owner, phase: f.journal.phase });
+    const evidence = vi.fn(async () => 'healthy-generation-1');
+    Object.assign((f.hooks as any).handoffClient, { runtimeRecoveryEvidenceKey: evidence });
+    return { owner, evidence };
+  }
+
+  it('automatically verifies the exact healthy failed owner and wakes deferred acceptance without another hook attempt', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const refresh = vi.spyOn(queue, 'refreshPendingCandidates').mockResolvedValue();
+    const head = git(repo, ['rev-parse', 'main']);
+    const attempts = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.journal.recovery?.actor).toMatchObject({ kind: 'daemon_reconciliation', pid: process.pid });
+    expect(f.journal.recovery?.actor).not.toHaveProperty('user_id');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: attempts.attempts, attempt_history: attempts.attempt_history });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.ack).toHaveBeenCalledOnce();
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(git(repo, ['rev-parse', 'main'])).toBe(head);
+  });
+
+  it('bounds automatic observation and retries only changed healthy evidence', async () => {
+    const f = await recoveryFixture();
+    const { evidence } = automaticRecovery(f);
+    let rejectObservation!: (error: Error) => void;
+    f.observation.mockImplementationOnce(() => new Promise((_, reject) => { rejectObservation = reject; }));
+    const first = f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    await waitUntil(() => f.observation.mock.calls.length === 1, 'automatic recovery observation');
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(evidence).toHaveBeenCalledOnce();
+    rejectObservation(new Error('retained unhealthy window'));
+    await first;
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.journal.phase).toBe('failed');
+    evidence.mockResolvedValue('healthy-generation-2');
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.observation).toHaveBeenCalledTimes(2);
+    expect(f.journal.phase).toBe('acknowledged');
+  });
+
+  it('retries an unchanged generation after a failed health window and bounded backoff', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      f.observation.mockRejectedValueOnce(new Error('transient health window failure'));
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledOnce();
+      clock.mockReturnValue(now + 30_000);
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledOnce();
+      clock.mockReturnValue(now + 5 * 60_000);
+      await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+      expect(f.observation).toHaveBeenCalledTimes(2);
+      expect(f.journal.phase).toBe('acknowledged');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('automatically recovers after a failed observation without poisoning the same daemon log', async () => {
+    const f = await recoveryFixture();
+    const { evidence } = automaticRecovery(f);
+    const lines: string[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: any) => { lines.push(String(chunk)); return true; });
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockRejectedValueOnce(new Error('transient health window failure'));
+    try {
+      await queue.resumeHookConvergence();
+      expect(f.journal.phase).toBe('failed');
+      expect(lines.join('')).toContain('auth_runtime_handoff_reconcile_stuck');
+      expect(db.prepare("SELECT resolved_at FROM operational_incidents WHERE task = ?").get(`runtime-handoff-reconcile/${f.request.id}`)).toMatchObject({ resolved_at: null });
+      f.observation.mockImplementation(async (journal, actor) => {
+        expect(assessRuntimeLogs(lines.join('')).failures).toEqual([]);
+        return observe(journal, actor);
+      });
+      evidence.mockResolvedValue('healthy-generation-2');
+      await queue.resumeHookConvergence();
+      expect(f.journal.phase).toBe('acknowledged');
+      expect(f.observation).toHaveBeenCalledTimes(2);
+      expect(f.ack).toHaveBeenCalledOnce();
+    } finally { stderr.mockRestore(); }
+  });
+
+  it('never observes a historical failed handoff while another execution owns the lock', async () => {
+    const f = await recoveryFixture();
+    const { owner, evidence } = automaticRecovery(f);
+    owner.executionId = 'another-execution';
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(evidence).not.toHaveBeenCalled();
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(f.journal.phase).toBe('failed');
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('preserves a changed owner during automatic observation', async () => {
+    const f = await recoveryFixture();
+    const { owner } = automaticRecovery(f);
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockImplementationOnce(async (journal, actor) => {
+      const result = await observe(journal, actor);
+      owner.bindingDigest = 'c'.repeat(64);
+      return result;
+    });
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('failed');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('failed');
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a changed publication generation during automatic observation', async () => {
+    const f = await recoveryFixture();
+    automaticRecovery(f);
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockImplementationOnce(async (journal, actor) => {
+      const result = await observe(journal, actor);
+      git(repo, ['commit', '--allow-empty', '-m', 'different generation']);
+      return result;
+    });
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
+    expect(f.journal.phase).toBe('failed');
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it('resumes interrupted automatic acknowledgment without another observation, merge or build', async () => {
+    const f = await recoveryFixture(true);
+    automaticRecovery(f);
+    const head = git(repo, ['rev-parse', 'main']);
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('complete');
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.observation).toHaveBeenCalledOnce();
+    expect(f.ack).toHaveBeenCalledTimes(2);
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: f.run.attempts });
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(git(repo, ['rev-parse', 'main'])).toBe(head);
+  });
 
   it('accepts the hook before exposing completion, preserves terminal history and replays interrupted acknowledgment once', async () => {
     const f = await recoveryFixture(true);

@@ -325,6 +325,17 @@
         ]
       }
     },
+    "auth.retry-convergence": {
+      "route": ["auth", "retry-convergence"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--hook"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
     "auth.handoff.status": {
       "route": ["auth", "handoff", "status"],
       "grammar": {

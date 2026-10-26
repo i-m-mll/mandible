@@ -45,7 +45,7 @@ function declaredResource(file) {
 }
 
 /** macOS lockf, launchd and native descriptor inspection. */
-const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "runtime-handoff-full.test.ts", "sqlite-close-lifetime.test.ts"]);
+const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "service-definition-reconciliation.test.ts", "runtime-handoff-full.test.ts", "sqlite-close-lifetime.test.ts"]);
 
 function suiteFiles() {
   return readdirSync(path.join(root, SUITE_DIR))

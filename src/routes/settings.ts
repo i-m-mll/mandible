@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { getDb } from "../db.js";
+import { isProtectedIdentitySettingKey } from "../settings-key-policy.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import type { InstanceRole } from "../types.js";
@@ -235,20 +236,6 @@ const DEPRECATED_REAPER_SETTINGS = new Set([
   "reaper_dry_run",
   "reaper_cleanup_orphan_mcps",
 ]);
-
-// Issue 708dc4c / finding 4 — client-auth settings are not managed through the
-// generic settings API. Reads are hidden and writes/reads of a specific key 403.
-const PROTECTED_SETTING_KEYS = new Set([
-  "client_auth",
-  "console_operator_session_id",
-  "console_pinned_sessions",
-  "user.operator_id",
-]);
-
-function isProtectedIdentitySettingKey(key: string): boolean {
-  const normalized = key.trim().toLowerCase();
-  return PROTECTED_SETTING_KEYS.has(normalized) || normalized.startsWith("client_auth.");
-}
 
 function clientAuthSettingForbidden(): { error: string; code: string; hint: string } {
   return {

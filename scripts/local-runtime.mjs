@@ -14,27 +14,31 @@ import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs"
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
-import { runtimeEnvironment } from "./runtime-environment.mjs";
+import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
+import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
+export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
-const DEFAULT_HOME = path.join(os.homedir(), ".mandible");
+const ACCOUNT_HOME = os.userInfo().homedir;
+const DEFAULT_HOME = path.join(ACCOUNT_HOME, ".mandible");
 const configuredHome = process.env.MANDIBLE_HOME?.trim() || DEFAULT_HOME;
-const expandedHome = configuredHome === "~" ? os.homedir()
-  : configuredHome.startsWith("~/") ? path.join(os.homedir(), configuredHome.slice(2))
+const expandedHome = configuredHome === "~" ? ACCOUNT_HOME
+  : configuredHome.startsWith("~/") ? path.join(ACCOUNT_HOME, configuredHome.slice(2))
     : configuredHome;
 const HOME = path.resolve(expandedHome);
 const HOME_DIR = path.dirname(HOME);
 const RUNTIME_DIR = path.join(HOME, "config", "local-sessions");
 const AUTHORITY_DB = path.join(RUNTIME_DIR, "sessions.db");
 const INSTALLATION_AUTHORITY = path.join(HOME, "config", "client-auth", "authority-id");
-const SERVICE_DIR = path.join(os.homedir(), "Library", "LaunchAgents");
-const PRIVATE_SERVICE_DIR = path.join(RUNTIME_DIR, "launch-agents");
+
 const GATEWAY_CONFIG = path.join(RUNTIME_DIR, "Caddyfile");
 const LOG_DIR = path.join(HOME_DIR, ".cache", "mandible");
 const DOMAIN = `gui/${process.getuid?.() ?? 0}`;
-const IS_DEFAULT_INSTALL = HOME === DEFAULT_HOME;
-const INSTALL_SUFFIX = IS_DEFAULT_INSTALL ? "" : `.${createHash("sha256").update(HOME).digest("hex").slice(0, 8)}`;
-const BACKEND_LABEL = `bio.mll.mandible.local-session-production${INSTALL_SUFFIX}`;
-const GATEWAY_LABEL = `bio.mll.mandible.local-front-door${INSTALL_SUFFIX}`;
+const INSTALLATION = serviceInstallationContext({ home: HOME,
+  ...(HOME !== DEFAULT_HOME && process.env.MANDIBLE_SERVICE_ACCOUNT_HOME ? { accountHome: process.env.MANDIBLE_SERVICE_ACCOUNT_HOME } : {}) });
+const SERVICE_DIR = INSTALLATION.serviceDir;
+const PRIVATE_SERVICE_DIR = INSTALLATION.privateServiceDir;
+const BACKEND_LABEL = INSTALLATION.backendLabel;
+const GATEWAY_LABEL = INSTALLATION.gatewayLabel;
 const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
@@ -203,29 +207,10 @@ function runLaunchctl(args, timeout = 2500) {
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-export function parseLoadedService(detail) {
-  const argumentsText = detail.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
-  const environmentText = detail.match(/\n\s*environment = \{\n([\s\S]*?)\n\s*\}/)?.[1];
-  const environment = Object.fromEntries((environmentText?.split('\n') ?? []).flatMap(line => {
-    const match = line.trim().match(/^([^ ]+) => (.*)$/);
-    return match && !['OSLogRateLimit', 'XPC_SERVICE_NAME'].includes(match[1]) ? [[match[1], match[2]]] : [];
-  }));
-  const field = name => detail.split('\n').map(line => line.trim()).find(line => line.startsWith(`${name} = `))?.slice(name.length + 3);
-  return { argv: argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [], environment,
-    workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path') };
-}
-
-export function loadedServiceMatches(record, job) {
-  const normalized = environment => JSON.stringify(Object.entries(environment ?? {}).sort(([a], [b]) => a.localeCompare(b)));
-  return JSON.stringify(record.ProgramArguments) === JSON.stringify(job.argv)
-    && normalized(record.EnvironmentVariables) === normalized(job.environment)
-    && record.WorkingDirectory === job.workingDirectory
-    && record.StandardOutPath === job.stdoutPath && record.StandardErrorPath === job.stderrPath;
-}
-
 function inspectJob(label) {
   const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
   const loaded = result.status === 0;
+  if (!loaded && !/Could not find service|service not found/i.test(result.stderr)) throw new Error(`Cannot inspect launchd service ${label}: ${result.stderr}`);
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
   const runs = loaded ? Number(result.stdout.match(/\bruns = (\d+)/)?.[1] ?? 0) : 0;
   const lastExit = loaded ? result.stdout.match(/\blast exit code = ([^\n]+)/)?.[1]?.trim() ?? null : null;
@@ -235,22 +220,25 @@ function inspectJob(label) {
 function processStart(pid) {
   if (!pid) return null;
   const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
+  if (result.error || result.status !== 0 && result.stderr?.trim()) throw new Error(`Cannot inspect process ${pid}: ${result.error?.message || result.stderr.trim()}`);
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
-function handoffService(label) {
-  const installed = locateLaunchAgent(label);
-  if (!installed) throw new Error(`Owned service ${label} is missing.`);
-  const job = inspectJob(label);
-  const argv = installed.record.ProgramArguments;
-  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && !loadedServiceMatches(installed.record, job))) {
-    throw new Error(`Loaded arguments, environment, working directory or logs differ from the owned service definition for ${label}.`);
-  }
-  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded, definition: installed.record };
+function handoffService(label, inspection) {
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  const observation = inspection.observations.find(item => item.label === label);
+  const installed = observation.installed[0];
+  const definition = observation.loadedDefinition ?? installed?.record ?? null;
+  return { file: installed?.file ?? null, sha256: installed?.sha256 ?? null,
+    installed: observation.installed, argv: definition?.ProgramArguments ?? [], loaded: observation.job.loaded, definition };
 }
 
 export function captureRuntimeHandoff(root) {
-  const production = readProductionRecord();
+  const serviceInspection = runtimeHandoffReadiness(inspectServiceDefinitionsSync(INSTALLATION));
+  const backend = handoffService(BACKEND_LABEL, serviceInspection);
+  const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
+  const production = { root: backend.definition.EnvironmentVariables.MANDIBLE_PRODUCTION_ROOT };
+  if (!path.isAbsolute(production.root ?? '')) throw new Error('Loaded backend does not identify its production checkout.');
   const destination = fs.realpathSync(root);
   const sourceRoot = fs.realpathSync(production.root);
   const main = readMainInstance(root);
@@ -268,16 +256,15 @@ export function captureRuntimeHandoff(root) {
     source = { root: sourceRoot, commonGitDir, head: git(sourceRoot, ['rev-parse', 'HEAD']), buildRevision, compiledDigest: compiledBuildDigest(sourceRoot), dependencies: { root: fs.realpathSync(path.join(sourceRoot, 'node_modules')), digest: runtimeDependenciesDigest(sourceRoot) },
       files: Object.fromEntries(['bin/mandible'].map(name => [name, createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, name))).digest('hex')])) };
   }
-  const backend = handoffService(BACKEND_LABEL);
-  const gateway = handoffService(GATEWAY_LABEL);
   if (source) source.runtime = { path: backend.argv[0], sha256: createHash('sha256').update(fs.readFileSync(backend.argv[0])).digest('hex') };
-  const job = inspectJob(BACKEND_LABEL);
+  const job = serviceInspection.observations.find(item => item.service === 'backend').job;
   const startedAt = processStart(job.pid);
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
   return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
-    daemonLog: locateLaunchAgent(BACKEND_LABEL).record.StandardErrorPath,
-    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
+    daemonLog: backend.definition.StandardErrorPath,
+    serviceConfiguration: readServiceConfiguration(INSTALLATION, job.environment, sourceRoot),
+    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: launchModeFromAgent(backend.definition) }, priorGateway: gateway };
 }
 
 function assertHandoffInstallation(binding) {
@@ -286,21 +273,43 @@ function assertHandoffInstallation(binding) {
   if (processStart(binding.oldProcess.pid) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
 }
 
-async function unloadExactHandoffService(label, expectedArguments) {
-  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
+async function unloadExactHandoffService(label, expectedArguments, expectedDefinition) {
+  const previous = inspectJob(label);
+  if (!previous.loaded) return;
+  if (JSON.stringify(previous.argv) !== JSON.stringify(expectedArguments) || expectedDefinition && !loadedServiceMatches(expectedDefinition, previous)) throw new Error(`Service ${label} changed before unloading; preserving it.`);
+  const startedAt = processStart(previous.pid);
+  // bootout returns once launchd has stopped the job: a running daemon's graceful
+  // shutdown takes up to 5 s, and launchd kills a job still running after its
+  // default 20 s exit timeout.
+  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`], 25_000);
   if (result.status !== 0) throw new Error(`Could not unload exact service ${label} (launchctl exit ${result.status}): stdout=${JSON.stringify(result.stdout.trim())}; stderr=${JSON.stringify(result.stderr.trim())}`);
   const deadline = Date.now() + 5000;
   while (true) {
     const remaining = inspectJob(label);
-    if (!remaining.loaded) return;
-    if (JSON.stringify(remaining.argv) !== JSON.stringify(expectedArguments)) throw new Error(`Service ${label} changed while unloading; preserving it.`);
-    if (Date.now() >= deadline) throw new Error(`Exact service ${label} is still loaded after successful bootout.`);
+    if (!remaining.loaded && (!previous.pid || !startedAt || processStart(previous.pid) !== startedAt)) return;
+    if (remaining.loaded && (JSON.stringify(remaining.argv) !== JSON.stringify(expectedArguments) || expectedDefinition && !loadedServiceMatches(expectedDefinition, remaining))) throw new Error(`Service ${label} changed while unloading; preserving it.`);
+    if (Date.now() >= deadline) throw new Error(`Exact service ${label} or its old process is still present after successful bootout.`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
 
 export async function removeHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
+  assertLifecycleMutation(true);
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  for (const observation of inspection.observations) {
+    const prior = observation.service === 'backend' ? binding.priorBackend : binding.priorGateway;
+    if (observation.job.loaded && (JSON.stringify(observation.job.argv) !== JSON.stringify(prior.argv)
+      || prior.definition && !loadedServiceMatches(prior.definition, observation.job))) throw new Error(`Service ${observation.label} changed during handoff; preserving it.`);
+  }
+  if (binding.serviceConfiguration) {
+    const captured = binding.serviceConfiguration;
+    if (captured.file !== path.join(RUNTIME_DIR, 'service-config.json')) throw new Error('Captured service configuration belongs to another installation.');
+    const current = readServiceConfiguration(INSTALLATION);
+    if (!captured.migrated && current.migrated || !current.migrated && JSON.stringify(current.configuration) !== JSON.stringify(captured.configuration)) throw new Error('Service configuration changed after capture; preserving it.');
+    publishServiceConfiguration(captured.file, captured.configuration);
+  }
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
     // unloaded before its source/dependencies change under the old interpreter.
@@ -315,7 +324,7 @@ export async function removeHandoffDefinitions(binding) {
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
       if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
     }
-    await unloadExactHandoffService(label, prior.argv);
+    await unloadExactHandoffService(label, prior.argv, prior.definition);
   }
 }
 
@@ -323,15 +332,16 @@ export async function startHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
   if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
   for (const label of [BACKEND_LABEL, GATEWAY_LABEL]) {
-    const installed = locateLaunchAgent(label);
+    const observation = observeOwnedService(label === BACKEND_LABEL ? 'backend' : 'gateway');
+    const installed = observation.installed.length === 1 ? observation.installed[0] : null;
     if (!installed) throw new Error(`Candidate service ${label} is missing.`);
     const job = inspectJob(label);
-    const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
-    if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
+    if (job.loaded && !loadedServiceMatches(installed.record, job)) {
       if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL || binding.priorGateway.definition && !loadedServiceMatches(binding.priorGateway.definition, job)) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
-      await unloadExactHandoffService(label, binding.priorGateway.argv);
+      await unloadExactHandoffService(label, binding.priorGateway.argv, binding.priorGateway.definition);
     }
     ensureEnabledAndLoaded(label);
+    if (!loadedServiceMatches(installed.record, inspectJob(label))) throw new Error(`Candidate service ${label} differs from its installed definition.`);
     const started = runLaunchctl(['kickstart', `${DOMAIN}/${label}`]);
     if (started.status !== 0) throw new Error(`Could not start candidate service ${label}: ${started.stderr.trim()}`);
   }
@@ -427,8 +437,9 @@ function readLogTail(file, limit = 1024 * 1024) {
 
 export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
-  const backend = handoffService(BACKEND_LABEL);
-  const gateway = handoffService(GATEWAY_LABEL);
+  const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
+  const backend = handoffService(BACKEND_LABEL, serviceInspection);
+  const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
   const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
   const { inspection: status, error, exited } = awaitReady
@@ -560,8 +571,8 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
   ].join('\n');
 }
 
-function runtimeBinary() {
-  return process.execPath;
+function runtimeBinary(root) {
+  return installationRuntime(root, INSTALLATION);
 }
 
 function standardPlistPath(label) {
@@ -573,21 +584,19 @@ function privatePlistPath(label) {
 }
 
 function locateLaunchAgent(label) {
-  const files = [standardPlistPath(label), privatePlistPath(label)].filter((file) => fs.existsSync(file));
-  if (files.length > 1) throw new Error(`Multiple Mandible LaunchAgents use label ${label}; preserving both and refusing to guess.`);
-  if (files.length === 0) return null;
-  const file = files[0];
-  const record = parsePlist(file);
-  if (record.Label !== label) throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it.`);
-  return { file, record };
-}
-
-function targetPlistPath(label, launchMode) {
-  // KeepAlive implies RunAtLoad, so manual jobs stay outside the login-scanned directory until Start.
-  if (label === BACKEND_LABEL) {
-    return launchMode === "manual" ? privatePlistPath(label) : standardPlistPath(label);
+  const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
+  const files = [standardPlistPath(label), privatePlistPath(label)].filter(file => fs.existsSync(file));
+  if (files.length === 1) {
+    const record = parsePlist(files[0]);
+    if (!ownsServiceDefinition(INSTALLATION, service, record)) throw new Error(`Unowned installed service ${label}; preserving it.`);
+    return { file: files[0], record };
   }
-  return fs.existsSync(GATEWAY_CONFIG) ? standardPlistPath(label) : privatePlistPath(label);
+  const observation = observeOwnedService(service);
+  const record = observation.loadedDefinition ?? observation.installed[0]?.record;
+  if (!record) return null;
+  const preferred = service === 'backend' && launchModeFromAgent(record) === 'manual' ? privatePlistPath(label) : standardPlistPath(label);
+  const installed = observation.installed.find(item => item.file === preferred) ?? observation.installed[0];
+  return { file: installed?.file ?? null, record };
 }
 
 function archiveLaunchAgent(file, label, bytes) {
@@ -611,7 +620,7 @@ function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false
     if (existing === contents) return false;
     const managedMarker = "<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>";
     const existingRecord = parsePlist(file);
-    assertOwnedLaunchAgent(file, existingRecord, existing.includes(managedMarker), label, recognizesLegacy);
+    assertOwnedLaunchAgent(file, existingRecord, label, recognizesLegacy);
     if (!existing.includes(managedMarker)) archiveLaunchAgent(file, label, fs.readFileSync(file));
   }
   const temporary = `${file}.${process.pid}.tmp`;
@@ -621,28 +630,24 @@ function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false
   return true;
 }
 
-function assertOwnedLaunchAgent(file, record, managed, label, recognizesLegacy) {
+function assertOwnedLaunchAgent(file, record, label, recognizesLegacy) {
   if (record.Label !== label) {
     throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it and reporting an ownership conflict.`);
   }
-  if (!managed && !recognizesLegacy(record)) {
+  if (!recognizesLegacy(record)) {
     throw new Error(`A launchd configuration already exists at ${file} and is not managed by Mandible; preserving it.`);
   }
 }
 
 function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
-  const existing = locateLaunchAgent(label);
-  if (!existing || existing.file === file) {
-    return writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
+  const { installed } = observeOwnedService(service);
+  for (const existing of installed.filter(item => item.file !== file)) {
+    archiveLaunchAgent(existing.file, label, Buffer.from(existing.bytesBase64, 'base64'));
   }
-
-  const bytes = fs.readFileSync(existing.file);
-  const managedMarker = bytes.toString("utf8").includes("<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>");
-  assertOwnedLaunchAgent(existing.file, existing.record, managedMarker, label, recognizesLegacy);
-  archiveLaunchAgent(existing.file, label, bytes);
-  writeOwnedPlist(file, contents, { label, recognizesLegacy });
-  fs.unlinkSync(existing.file);
-  return true;
+  const changed = writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  for (const existing of installed.filter(item => item.file !== file)) fs.unlinkSync(existing.file);
+  return changed || installed.some(item => item.file !== file);
 }
 
 function parsePlist(file) {
@@ -672,18 +677,6 @@ function prepareRunner(root) {
   }
 }
 
-const PRESERVED_BACKEND_ENVIRONMENT = new Set([
-  "MANDIBLE_DB", "MANDIBLE_LAUNCH_MODE", "MANDIBLE_PID_FILE", "MANDIBLE_STDERR_LOG_PATH", "MANDIBLE_SQLITE_LIBRARY", "MANDIBLE_SQLITE_LIBRARY_ARCHIVE", "MANDIBLE_SECURITY_BIN", "NODE_OPTIONS", "PATH",
-]);
-
-function existingBackendEnvironment() {
-  const existing = locateLaunchAgent(BACKEND_LABEL);
-  if (!existing) return {};
-  const { record } = existing;
-  const env = record.EnvironmentVariables ?? {};
-  return Object.fromEntries(Object.entries(env).filter(([key]) => PRESERVED_BACKEND_ENVIRONMENT.has(key)));
-}
-
 export function launchModeFromAgent(record) {
   const configured = record.EnvironmentVariables?.MANDIBLE_LAUNCH_MODE;
   if (configured === "manual" || configured === "on_demand") return configured;
@@ -695,72 +688,118 @@ function installedLaunchMode() {
   return installed ? launchModeFromAgent(installed.record) : "on_demand";
 }
 
-function prepareServicePlists(production, main, launchMode) {
-  const runtime = runtimeBinary();
-  const pathValue = runtimeEnvironment({ runtime, root: production.root }).PATH;
-  const backendEnvironment = {
-    ...existingBackendEnvironment(),
-    // Preserve the CLI's documented credential-tool test seam for isolated
-    // native Keychains. This is a tool path, never a bearer or approval flag.
-    ...Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE', 'MANDIBLE_SECURITY_BIN'].filter(key => process.env[key]).map(key => [key, process.env[key]])),
-    HOME: os.homedir(),
-    MANDIBLE_HOME: HOME,
-    MANDIBLE_PRODUCTION_ROOT: production.root,
-    MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: RUNTIME_DIR,
-    MANDIBLE_CLIENT_AUTH_DIR: path.join(HOME, "config", "client-auth"),
-    MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(RUNTIME_DIR, "context-verification-key.pem"),
-    MANDIBLE_LAUNCH_MODE: launchMode,
-    MANDIBLE_PORT: String(Number(main.backendUrl.port) || DEFAULT_BACKEND_PORT),
-    MANDIBLE_STDERR_LOG_PATH: path.join(LOG_DIR, "production-stderr.log"),
-    MANDIBLE_BASE: PRODUCTION_ORIGIN,
-    PATH: pathValue,
-    GIT_OPTIONAL_LOCKS: "0",
-  };
-  const gatewayEnvironment = { HOME: os.homedir(), MANDIBLE_HOME: HOME, PATH: pathValue, GIT_OPTIONAL_LOCKS: "0" };
-  const backendFile = targetPlistPath(BACKEND_LABEL, launchMode);
-  const gatewayFile = targetPlistPath(GATEWAY_LABEL, launchMode);
-  const oldBackendRunner = path.join(RUNTIME_DIR, "production-runner.mjs");
-  const oldGatewayRunner = path.join(production.root, "scripts", "local-front-door.mjs");
-  const backendContents = renderLaunchAgent({
-    label: BACKEND_LABEL,
-    programArguments: [runtime, path.join(RUNTIME_DIR, "production-runner.mjs"), "run"],
-    workingDirectory: RUNTIME_DIR,
-    environment: backendEnvironment,
-    stdoutPath: path.join(LOG_DIR, "production-stdout.log"),
-    stderrPath: path.join(LOG_DIR, "production-stderr.log"),
-  });
-  const gatewayContents = renderLaunchAgent({
-    label: GATEWAY_LABEL,
-    programArguments: [pinnedCaddyBinary(HOME), "run", "--config", path.join(RUNTIME_DIR, "Caddyfile"), "--adapter", "caddyfile"],
-    workingDirectory: RUNTIME_DIR,
-    environment: gatewayEnvironment,
-    stdoutPath: path.join(LOG_DIR, "local-front-door-stdout.log"),
-    stderrPath: path.join(LOG_DIR, "local-front-door-stderr.log"),
-  });
-  return {
-    backendChanged: writeServicePlist(BACKEND_LABEL, backendFile, backendContents, {
-      recognizesLegacy: (record) => {
-        const args = record.ProgramArguments ?? [];
-        return args.length === 3 && path.resolve(args[1]) === oldBackendRunner && args[2] === "run";
-      },
-    }),
-    gatewayChanged: writeServicePlist(GATEWAY_LABEL, gatewayFile, gatewayContents, {
-      recognizesLegacy: (record) => {
-        const args = record.ProgramArguments ?? [];
-        return args.length === 3 && path.resolve(args[1]) === oldGatewayRunner
-          && args[2] === "serve" && record.EnvironmentVariables?.MANDIBLE_RUNTIME_SUPERVISED === "1";
-      },
-    }),
-  };
+/** The running job's environment is authoritative for migration; the plist on disk only when unloaded. */
+function legacyBackendEnvironment() {
+  const job = inspectJob(BACKEND_LABEL);
+  return job.loaded ? job.environment : locateLaunchAgent(BACKEND_LABEL)?.record.EnvironmentVariables ?? {};
 }
 
-function ensureInstalled(production, main, launchMode) {
-  const beforeBackend = inspectJob(BACKEND_LABEL);
-  const beforeGateway = inspectJob(GATEWAY_LABEL);
-  prepareRunner(production.root);
-  const changed = prepareServicePlists(production, main, launchMode);
+export function prepareServicePlists(production, main, launchMode, { context = INSTALLATION, configuration } = {}) {
+  const runtime = installationRuntime(production.root, context);
+  const config = configuration ? { file: path.join(context.runtimeDir, 'service-config.json'), migrated: false, configuration: validateServiceConfiguration(configuration) }
+    : readServiceConfiguration(context, context === INSTALLATION ? legacyBackendEnvironment() : {}, production.root);
+  const pathValue = servicePath(runtime, production.root, context, config.configuration);
+  const logDir = path.join(path.dirname(context.home), '.cache/mandible');
+  const backendEnvironment = {
+    HOME: context.accountHome,
+    ...(context.home !== DEFAULT_HOME && context.accountHome !== ACCOUNT_HOME ? { MANDIBLE_SERVICE_ACCOUNT_HOME: context.accountHome } : {}),
+    MANDIBLE_HOME: context.home,
+    MANDIBLE_PRODUCTION_ROOT: production.root,
+    MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: context.runtimeDir,
+    MANDIBLE_CLIENT_AUTH_DIR: path.join(context.home, 'config/client-auth'),
+    MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(context.runtimeDir, 'context-verification-key.pem'),
+    MANDIBLE_LAUNCH_MODE: launchMode,
+    MANDIBLE_PORT: String(Number(main.backendUrl.port) || DEFAULT_BACKEND_PORT),
+    MANDIBLE_STDERR_LOG_PATH: path.join(logDir, 'production-stderr.log'),
+    MANDIBLE_BASE: PRODUCTION_ORIGIN,
+    PATH: pathValue,
+    GIT_OPTIONAL_LOCKS: '0',
+    ...config.configuration.environment,
+  };
+  const make = (service, arguments_, environment, stdout, stderr) => {
+    const label = context[`${service}Label`];
+    const directory = service === 'backend' ? launchMode === 'manual' ? context.privateServiceDir : context.serviceDir
+      : fs.existsSync(path.join(context.runtimeDir, 'Caddyfile')) ? context.serviceDir : context.privateServiceDir;
+    const record = { Label: label, ProgramArguments: arguments_, EnvironmentVariables: environment, WorkingDirectory: context.runtimeDir,
+      KeepAlive: true, StandardOutPath: stdout, StandardErrorPath: stderr, Comment: 'Mandible runtime agent mandible-launch-agent@1' };
+    return { service, label, file: path.join(directory, `${label}.plist`), record,
+      contents: renderLaunchAgent({ label, programArguments: arguments_, environment, workingDirectory: context.runtimeDir, stdoutPath: stdout, stderrPath: stderr }) };
+  };
+  return { config, definitions: [
+    make('backend', [runtime, path.join(context.runtimeDir, 'production-runner.mjs'), 'run'], backendEnvironment, path.join(logDir, 'production-stdout.log'), backendEnvironment.MANDIBLE_STDERR_LOG_PATH),
+    make('gateway', [pinnedCaddyBinary(context.home), 'run', '--config', path.join(context.runtimeDir, 'Caddyfile'), '--adapter', 'caddyfile'],
+      { HOME: context.accountHome, MANDIBLE_HOME: context.home, PATH: pathValue, GIT_OPTIONAL_LOCKS: '0' }, path.join(logDir, 'local-front-door-stdout.log'), path.join(logDir, 'local-front-door-stderr.log')),
+  ] };
+}
+
+function runnerChanged(root) {
+  return [['local-session-production-runner.mjs', 'production-runner.mjs'], ['canonical-origin.mjs', 'canonical-origin.mjs'], ['build-revision.mjs', 'build-revision.mjs']]
+    .some(([source, target]) => !fs.existsSync(path.join(RUNTIME_DIR, target)) || !fs.readFileSync(path.join(root, 'scripts', source)).equals(fs.readFileSync(path.join(RUNTIME_DIR, target))));
+}
+
+function assertLifecycleMutation(allowHandoff = false) {
+  const file = path.join(RUNTIME_DIR, 'handoff-active.json');
+  if (!fs.existsSync(file)) return;
+  const active = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
+  const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
+  if (!allowHandoff || active.journal !== journalPath || active.bindingDigest !== journal?.bindingDigest || journal?.binding.home !== HOME) throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
+}
+
+async function unloadOwnedDefinition(label, job) {
+  await unloadExactHandoffService(label, job.argv, loadedServiceDefinition(label, job));
+}
+
+function observeOwnedService(service) {
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  return inspection.observations.find(observation => observation.service === service);
+}
+
+export async function reconcileServiceDefinitions(production, main, launchMode, { services = ['backend', 'gateway'], running = [], restart = [], handoff = false, configuration, loadService = ensureEnabledAndLoaded } = {}) {
+  assertLifecycleMutation(handoff);
+  const desired = prepareServicePlists(production, main, launchMode, { configuration });
+  const runnersChanged = services.includes('backend') && runnerChanged(production.root);
+  // Observe and validate both services before the first write or bootout.
+  const inspection = inspectServiceDefinitionsSync(INSTALLATION, { desired: Object.fromEntries(desired.definitions.map(item => [item.service, item.record])) });
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  const observed = desired.definitions.map(definition => {
+    const { installed, job } = inspection.observations.find(item => item.service === definition.service);
+    const changed = installed.length !== 1 || installed[0].file !== definition.file || !Buffer.from(installed[0].bytesBase64, 'base64').equals(Buffer.from(definition.contents))
+      || job.loaded && !loadedServiceMatches(definition.record, job) || definition.service === 'backend' && runnersChanged;
+    return { ...definition, installed, job, changed };
+  });
+  for (const definition of observed.filter(definition => services.includes(definition.service))) {
+    if (definition.job.loaded && definition.changed) await unloadOwnedDefinition(definition.label, definition.job);
+  }
+  assertLifecycleMutation(handoff);
   fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
-  return { wasBackendLoaded: beforeBackend.loaded, wasGatewayLoaded: beforeGateway.loaded, ...changed };
+  if (services.includes('backend')) prepareRunner(production.root);
+  for (const definition of observed.filter(definition => services.includes(definition.service))) {
+    writeServicePlist(definition.label, definition.file, definition.contents, { recognizesLegacy: record => ownsServiceDefinition(INSTALLATION, definition.service, record) });
+    if (running.includes(definition.service) || definition.job.loaded && !handoff) {
+      try {
+        await loadService(definition.label);
+        if (restart.includes(definition.service) && definition.job.loaded && !definition.changed) restartOwnedJob(definition.label);
+        const until = Date.now() + 2500;
+        let job = inspectJob(definition.label);
+        while (!job.loaded && Date.now() < until) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          job = inspectJob(definition.label);
+        }
+        if (!job.loaded || !loadedServiceMatches(definition.record, job)) {
+          if (job.loaded && JSON.stringify(job.argv) === JSON.stringify(definition.record.ProgramArguments)) await unloadOwnedDefinition(definition.label, job);
+          throw new Error('Loaded definition does not match its installed replacement.');
+        }
+      } catch (error) {
+        const current = inspectJob(definition.label);
+        if (definition.changed && current.loaded && loadedServiceMatches(definition.record, current)) await unloadOwnedDefinition(definition.label, current);
+        throw new Error(`Service ${definition.label} replacement is installed; loaded=${inspectJob(definition.label).loaded}. ${error.message}`);
+      }
+    }
+  }
+  if (services.includes('backend') && (desired.config.migrated || configuration)) publishServiceConfiguration(desired.config.file, desired.config.configuration);
+  return { wasBackendLoaded: observed[0].job.loaded, wasGatewayLoaded: observed[1].job.loaded, backendChanged: observed[0].changed, gatewayChanged: observed[1].changed };
 }
 
 function ensureEnabledAndLoaded(label) {
@@ -771,22 +810,17 @@ function ensureEnabledAndLoaded(label) {
   const installed = locateLaunchAgent(label);
   if (!installed) throw new Error(`Mandible service ${label} has no installed LaunchAgent.`);
   const loaded = runLaunchctl(["bootstrap", DOMAIN, installed.file]);
-  if (loaded.status !== 0 && !inspectJob(label).loaded) {
+  if (loaded.status !== 0) {
     throw new Error(`Could not start Mandible service ${label}: ${(loaded.stderr || loaded.stdout).trim()}`);
   }
   return true;
 }
 
-function stopOwnedJob(label) {
-  const disabled = runLaunchctl(["disable", `${DOMAIN}/${label}`]);
+async function stopOwnedJob(label) {
+  const current = inspectJob(label);
+  const disabled = runLaunchctl(['disable', `${DOMAIN}/${label}`]);
   if (disabled.status !== 0) throw new Error(`Could not disable Mandible service ${label}: ${disabled.stderr.trim()}`);
-  if (inspectJob(label).loaded) {
-    const result = runLaunchctl(["bootout", `${DOMAIN}/${label}`]);
-    if (result.status !== 0 && inspectJob(label).loaded) {
-      throw new Error(`Could not stop Mandible service ${label}: ${result.stderr.trim()}`);
-    }
-  }
-  if (inspectJob(label).loaded) throw new Error(`Mandible service ${label} remained loaded after Stop.`);
+  if (current.loaded) await unloadExactHandoffService(label, current.argv);
 }
 
 function ensureGatewayBinary() {
@@ -797,7 +831,7 @@ function ensureGatewayBinary() {
 
 function configureGateway(root) {
   const script = path.join(root, "scripts", "local-front-door.mjs");
-  const result = spawnSync(runtimeBinary(), [script, "configure"], {
+  const result = spawnSync(runtimeBinary(root), [script, "configure"], {
     cwd: root,
     env: { ...process.env, HOME: HOME_DIR, MANDIBLE_HOME: HOME, GIT_OPTIONAL_LOCKS: "0" },
     encoding: "utf8", timeout: 12_000, maxBuffer: 2 * 1024 * 1024,
@@ -840,39 +874,26 @@ function prepareGateway(production) {
   configureGateway(production.root);
 }
 
-async function startRuntime({ launchMode = "on_demand" } = {}) {
+async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
   let current = await inspectRuntime({ launchMode });
-  if (current.status.state === "port_conflict") return current.status;
+  if (current.status.state === 'port_conflict') throw new Error(current.status.detail);
   const registration = await initializeMainRegistration(current.production.root);
   current = await inspectRuntime({ launchMode });
-  if (current.status.state === "port_conflict") return current.status;
-  ensureInstalled(current.production, current.main, launchMode);
-  if (registration.legacyEffectsMigrated) {
-    if (!current.backendJob.loaded && current.backendPortOpen) {
-      throw new Error("The production effect ceiling was updated, but the healthy backend is not owned by Mandible's LaunchAgent; restart it explicitly to apply the update.");
-    }
-    if (current.backendJob.loaded) restartOwnedJob(BACKEND_LABEL);
-  }
-  current = await inspectRuntime({ launchMode });
-  if (current.status.state === "port_conflict") return current.status;
-  if (!current.backend.ok) {
-    if (current.backendPortOpen && !current.backendJob.loaded) return current.status;
-    if (!current.backendJob.loaded) ensureEnabledAndLoaded(BACKEND_LABEL);
-  }
-  if (!current.gatewayJob.loaded && !current.gateway.ok && !current.trusted.error) {
-    if (current.gatewayPortOpen) return current.status;
-    prepareGateway(current.production);
-    ensureInstalled(current.production, current.main, launchMode);
-    ensureEnabledAndLoaded(GATEWAY_LABEL);
-  }
-  const ready = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, (candidate) => !registration.legacyEffectsMigrated
+  if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
+  if (!current.trusted.error) prepareGateway(current.production);
+  await reconcileServiceDefinitions(current.production, current.main, launchMode, {
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: registration.legacyEffectsMigrated ? ['backend'] : [],
+  });
+  const ready = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => !registration.legacyEffectsMigrated
     || sameEffectList(candidate.backend.document?.instance?.allowed_effects, candidate.main.effectCeiling));
-  if (ready.status.state === "port_conflict") return ready.status;
-  if (registration.legacyEffectsMigrated
-    && !sameEffectList(ready.backend.document?.instance?.allowed_effects, ready.main.effectCeiling)) {
-    throw new Error("The production service restarted, but its active effect ceiling does not match the registered production ceiling.");
-  }
+  if (registration.legacyEffectsMigrated && !sameEffectList(ready.backend.document?.instance?.allowed_effects, ready.main.effectCeiling)) throw new Error('The active production effect ceiling differs from its registration.');
+  assertInstalledDefinitions();
   return ready.status;
+}
+
+function assertInstalledDefinitions() {
+  const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
 }
 
 function registeredPreviewCount(root) {
@@ -884,11 +905,13 @@ function registeredPreviewCount(root) {
 
 async function stopRuntime({ launchMode = "on_demand" } = {}) {
   const current = await inspectRuntime({ launchMode });
-  ensureInstalled(current.production, current.main, launchMode);
+  assertLifecycleMutation();
+  observeOwnedService('backend', BACKEND_LABEL);
+  observeOwnedService('gateway', GATEWAY_LABEL);
   const owned = await inspectRuntime({ launchMode });
   const previews = registeredPreviewCount(current.production.root);
-  if (owned.backendJob.loaded) stopOwnedJob(BACKEND_LABEL);
-  if (previews === 0 && owned.gatewayJob.loaded) stopOwnedJob(GATEWAY_LABEL);
+  if (owned.backendJob.loaded) await stopOwnedJob(BACKEND_LABEL);
+  if (previews === 0 && owned.gatewayJob.loaded) await stopOwnedJob(GATEWAY_LABEL);
   const stopped = await waitForRuntime(3000, launchMode);
   if (stopped.status.healthy) throw new Error("Stop was requested, but the production backend is still responding.");
   if (previews > 0 && owned.gatewayJob.loaded
@@ -901,50 +924,34 @@ async function stopRuntime({ launchMode = "on_demand" } = {}) {
   return stopped.status;
 }
 
-async function restartRuntime({ launchMode = "on_demand" } = {}) {
+async function restartRuntime({ launchMode = installedLaunchMode() } = {}) {
   let current = await inspectRuntime({ launchMode });
-  if (current.status.state === "port_conflict") return current.status;
+  if (current.status.state === 'port_conflict') throw new Error(current.status.detail);
   await initializeMainRegistration(current.production.root);
   current = await inspectRuntime({ launchMode });
-  if (current.status.state === "port_conflict") return current.status;
   const beforeEpoch = current.backend.document?.startup_epoch;
-  ensureInstalled(current.production, current.main, launchMode);
-  current = await inspectRuntime({ launchMode });
-  if (current.backendJob.loaded) restartOwnedJob(BACKEND_LABEL);
-  else if (current.backend.ok) throw new Error("The production backend is healthy but is not owned by Mandible's launchd service; preserving the running process.");
-  else restartOwnedJob(BACKEND_LABEL);
-  if (!current.gatewayJob.loaded && !current.gateway.ok && !current.trusted.error) {
-    prepareGateway(current.production);
-    ensureInstalled(current.production, current.main, launchMode);
-    if (!current.gatewayPortOpen) ensureEnabledAndLoaded(GATEWAY_LABEL);
-  }
-  current = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode);
-  if (current.backend.ok && beforeEpoch && current.backend.document?.startup_epoch === beforeEpoch) {
-    throw new Error("Mandible restarted its backend service, but the startup marker did not change. The old process may still be responding; it was preserved.");
-  }
+  if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
+  if (!current.trusted.error) prepareGateway(current.production);
+  await reconcileServiceDefinitions(current.production, current.main, launchMode, {
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: ['backend'],
+  });
+  current = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => candidate.backend.document?.startup_epoch !== beforeEpoch);
+  if (!current.backend.ok || !current.backend.document?.startup_epoch || beforeEpoch && current.backend.document.startup_epoch === beforeEpoch) throw new Error('Restart did not confirm a ready backend with a new startup epoch.');
+  assertInstalledDefinitions();
   return current.status;
 }
 
-async function reloadGatewayRuntime({ launchMode = "on_demand", ifConfigured = false } = {}) {
+async function reloadGatewayRuntime({ launchMode = installedLaunchMode(), ifConfigured = false } = {}) {
   const initial = await inspectRuntime({ launchMode });
-  const configPath = path.join(RUNTIME_DIR, "Caddyfile");
-  if (ifConfigured && !fs.existsSync(configPath)) return { skipped: "local HTTPS gateway is not configured" };
-  if (initial.status.state === "port_conflict") throw new Error(initial.status.detail ?? "A required Mandible port is owned by another process.");
+  if (ifConfigured && !fs.existsSync(GATEWAY_CONFIG)) return { skipped: 'local HTTPS gateway is not configured' };
+  if (initial.status.state === 'port_conflict') throw new Error(initial.status.detail);
   if (initial.trusted.error) throw new Error(initial.trusted.error);
-  if (!initial.backend.ok) throw new Error("The production daemon is not ready; the shared gateway was not changed.");
-  ensureInstalled(initial.production, initial.main, launchMode);
+  if (!initial.backend.ok) throw new Error('The production daemon is not ready; the shared gateway was not changed.');
+  assertLifecycleMutation();
   prepareGateway(initial.production);
-  ensureInstalled(initial.production, initial.main, launchMode);
-  const current = await inspectRuntime({ launchMode });
-  if (current.gatewayJob.loaded) {
-    try { reloadCaddy(pinnedCaddyBinary(HOME)); }
-    catch { restartOwnedJob(GATEWAY_LABEL); }
-  } else if (current.gateway.ok) {
-    throw new Error("The dashboard gateway answers requests but is not owned by Mandible's launchd service; preserving the running process.");
-  } else {
-    if (current.gatewayPortOpen) throw new Error("The HTTPS dashboard port is owned by an unrecognized process; preserving it.");
-    ensureEnabledAndLoaded(GATEWAY_LABEL);
-  }
+  const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'] });
+  if (!reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
+  assertInstalledDefinitions();
   return (await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode)).status;
 }
 
@@ -985,9 +992,9 @@ export function reconcileMainRegistration(authority, instance, backendOrigin) {
 
 async function initializeMainRegistration(root) {
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
-    const result = spawnSync(runtimeBinary(), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
+    const result = spawnSync(runtimeBinary(root), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
       cwd: root,
-      env: { ...process.env, HOME: os.homedir(), MANDIBLE_HOME: HOME },
+      env: { ...process.env, HOME: ACCOUNT_HOME, MANDIBLE_HOME: HOME },
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
@@ -1023,6 +1030,13 @@ async function initializeMainRegistration(root) {
   return { root, environment: {}, legacyEffectsMigrated };
 }
 
+function explicitServiceConfiguration(args) {
+  const index = args.indexOf('--service-config');
+  if (index < 0) return undefined;
+  if (!args[index + 1]) throw new Error('--service-config requires a JSON file.');
+  return validateServiceConfiguration(JSON.parse(fs.readFileSync(args[index + 1], 'utf8')));
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
@@ -1052,11 +1066,17 @@ async function main() {
   if (launchModeArg && !["manual", "on_demand"].includes(launchModeArg)) {
     throw new Error(`Unsupported launch mode: ${launchModeArg}`);
   }
-  const launchMode = launchModeArg ?? "on_demand";
+  const launchMode = launchModeArg ?? (directHandoff ? journal.binding.priorBackend.launchMode : installedLaunchMode());
+  if (args.includes('--service-config') && !['install', 'configure-launch-mode'].includes(command)) throw new Error('--service-config is accepted only by install and configure-launch-mode.');
+  const configuration = explicitServiceConfiguration(args);
   if (command === "status") {
     const { status } = await inspectRuntime({ launchMode });
     process.stdout.write(`${JSON.stringify(status)}\n`);
     return;
+  }
+  if (['start', 'restart', 'stop', 'reload-gateway', 'configure-launch-mode', 'install'].includes(command)) {
+    observeOwnedService('backend', BACKEND_LABEL);
+    observeOwnedService('gateway', GATEWAY_LABEL);
   }
   let status;
   if (command === "start") status = await startRuntime({ launchMode });
@@ -1066,7 +1086,8 @@ async function main() {
   else if (command === "configure-launch-mode") {
     const production = readProductionRecord();
     const mainInstance = readMainInstance(production.root);
-    ensureInstalled(production, mainInstance, launchMode);
+    await reconcileServiceDefinitions(production, mainInstance, launchMode, { configuration });
+    assertInstalledDefinitions();
     status = (await inspectRuntime({ launchMode })).status;
   }
   else if (command === "install") {
@@ -1076,26 +1097,28 @@ async function main() {
     if (!fs.existsSync(path.join(root, "package.json")) || !fs.existsSync(path.join(root, "dist", "index.js"))) {
       throw new Error(`A built Mandible checkout is required to install local services: ${root}`);
     }
+    runtimeBinary(root);
+    if (!configuration) readServiceConfiguration(INSTALLATION, legacyBackendEnvironment());
     const production = await initializeMainRegistration(root);
     const mainInstance = readMainInstance(root);
-    const effectiveLaunchMode = launchModeArg ? launchMode : installedLaunchMode();
+    const effectiveLaunchMode = launchMode;
     const installScript = path.join(production.root, "scripts", "local-front-door.mjs");
-    const result = spawnSync(runtimeBinary(), [installScript, "install"], {
+    const result = spawnSync(runtimeBinary(root), [installScript, "install"], {
       cwd: production.root, env: { ...process.env, HOME: HOME_DIR, MANDIBLE_HOME: HOME },
       encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
     });
     if (result.error || result.status !== 0) throw new Error(`Gateway installation failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
-    const installed = ensureInstalled(production, mainInstance, effectiveLaunchMode);
+    const installed = await reconcileServiceDefinitions(production, mainInstance, effectiveLaunchMode, { handoff: directHandoff, configuration, restart: production.legacyEffectsMigrated && !directHandoff ? ['backend'] : [] });
+    assertInstalledDefinitions();
     if (production.legacyEffectsMigrated && !directHandoff) {
-      if (installed.wasBackendLoaded) restartOwnedJob(BACKEND_LABEL);
-      else if (await portOpen(mainInstance.backendUrl)) {
+      if (!installed.wasBackendLoaded && await portOpen(mainInstance.backendUrl)) {
         throw new Error("The production effect ceiling was updated, but the healthy backend is not owned by Mandible's LaunchAgent; restart it explicitly to apply the update.");
       }
     }
     process.stdout.write(`${JSON.stringify({ installed: true, launch_mode: effectiveLaunchMode, ...installed })}\n`);
     return;
   } else {
-    throw new Error("Usage: local-runtime.mjs status|install [--root <checkout>]|configure-launch-mode|start|stop|restart|reload-gateway [--launch-mode=manual|on_demand]");
+    throw new Error("Usage: local-runtime.mjs status|install [--root <checkout>] [--service-config <json>]|configure-launch-mode [--service-config <json>]|start|stop|restart|reload-gateway [--launch-mode=manual|on_demand]");
   }
   process.stdout.write(`${JSON.stringify(status)}\n`);
 }

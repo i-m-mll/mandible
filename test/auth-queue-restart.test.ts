@@ -1,4 +1,4 @@
-import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -9,13 +9,13 @@ import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-q
 import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager } from "../src/auth-hooks.js";
+import type { AuthHookManager } from "../src/auth-hooks.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import type { SseEvent } from "../src/types.js";
 import { commitOnBranch, createAuthCheckRepo, createMigratedDb, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 
 function admittedRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun?: () => void | Promise<void>): AuthHookManager {
-  const hooks = new AuthHookManager(db);
+  const hooks = createInstalledServiceHookManager(db);
   db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(`printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, '*', 'builtin-mandible-rebuild');
   vi.spyOn(hooks, 'admittedDrainIdentity').mockImplementation(async requestId => hooks.getRun(requestId, 'builtin-mandible-rebuild')?.exit_code === 75 ? 'private-current-admission' : null);
   const execute = hooks.executeHooks.bind(hooks);
@@ -36,7 +36,7 @@ describe("auth queue", () => {
         const head = git(repo, ["rev-parse", "feature/docs"]);
         const review = await collectAuthMergeReview(repo, { base_sha: base, head_sha: head, merge_base_sha: base });
         if (!review.ok) throw new Error(review.error.message);
-        const hooks = new AuthHookManager(db);
+        const hooks = createInstalledServiceHookManager(db);
         db.prepare("UPDATE auth_hooks SET command = 'printf unexpected-rebuild' WHERE id = 'builtin-mandible-rebuild'").run();
         const other = hooks.create({ repo_pattern: "mandible", auth_type: "merge", command: "printf documentation-hook", label: "Other hook" });
         const events: SseEvent[] = [];

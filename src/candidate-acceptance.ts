@@ -20,6 +20,8 @@ import { getUserHome } from "./platform-paths.js";
 
 const execFileAsync = promisify(execFile);
 
+export const CANDIDATE_ACCEPTANCE_INTERRUPTED = "Interrupted by a daemon restart.";
+
 export type CandidateAcceptanceStatus = "running" | "passed" | "failed";
 
 export interface CandidateAcceptanceCandidate {
@@ -125,12 +127,13 @@ export class CandidateAcceptanceRuns {
     private readonly executor: CandidateAcceptanceExecutor,
     private readonly now: () => number,
     private readonly changed: (requestId: string) => void,
+    private readonly handoffLocked: () => boolean,
   ) {}
 
   /** Fail the rows a previous daemon left running; a restart interrupted them. */
   start(): void {
     this.db.prepare("UPDATE auth_candidate_acceptances SET status = 'failed', finished_at = ?, error = ? WHERE status = 'running'")
-      .run(this.now(), "Interrupted by a daemon restart.");
+      .run(this.now(), CANDIDATE_ACCEPTANCE_INTERRUPTED);
   }
 
   /** Whether a run of exactly this pin is waiting or running for the request. */
@@ -146,6 +149,15 @@ export class CandidateAcceptanceRuns {
   enqueue(requestId: string, candidate: CandidateAcceptanceCandidate, input: () => Omit<CandidateAcceptanceInput, "signal">): void {
     this.abort(requestId, "Replaced by a run of a newer candidate.");
     this.waiting.set(requestId, { candidate, input });
+    this.schedule(requestId);
+  }
+
+  /** Resume runs deferred by a handoff once the installation is available. */
+  resume(): void {
+    for (const requestId of this.waiting.keys()) this.schedule(requestId);
+  }
+
+  private schedule(requestId: string): void {
     this.chain = this.chain.then(() => this.next(requestId)).catch((error: unknown) => {
       getDaemonLogger()("error", "auth_candidate_acceptance_crashed", { subsystem: "auth", auth_request_id: requestId, error: String(error) });
     });
@@ -177,6 +189,7 @@ export class CandidateAcceptanceRuns {
   private async next(requestId: string): Promise<void> {
     const job = this.waiting.get(requestId);
     if (!job || this.stopped) return;
+    if (this.handoffLocked()) return;
     this.waiting.delete(requestId);
     const { candidate } = job;
     const recordId = randomUUID();
@@ -187,7 +200,10 @@ export class CandidateAcceptanceRuns {
     const controller = new AbortController();
     this.active = { requestId, pinSha: candidate.pin_sha, recordId, controller };
     this.changed(requestId);
-    const outcome = await Promise.resolve().then(() => this.executor({ ...job.input(), signal: controller.signal }))
+    const outcome = await Promise.resolve().then(async () => {
+      if (controller.signal.aborted) return { status: "failed" as const, result: null, error: "Acceptance stopped." };
+      return this.executor({ ...job.input(), signal: controller.signal });
+    })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;
     this.finish(requestId, recordId, outcome);

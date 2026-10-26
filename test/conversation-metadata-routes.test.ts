@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,7 +38,7 @@ afterEach(() => {
 describe("conversation metadata routes", () => {
   it("resolves Chat canonical, short and session aliases without choosing an ambiguous conversation", async () => {
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const canonical = "abcdef01-0000-4000-8000-000000000001";
     db.prepare("UPDATE conversations SET id = ?, session_id = ? WHERE id = 'conv-1'").run(canonical, "provider-session-1");
     db.prepare(`INSERT INTO sessions (id, app, status, conversation_id, created_at)
@@ -67,7 +68,7 @@ describe("conversation metadata routes", () => {
 
   it("returns parsed tags, filters exactly, and atomically applies canonical metadata updates", async () => {
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     const listed = await router.invoke({ method: "GET", url: "/api/conversations?tag=keep" });
     expect(listed.status).toBe(200);
@@ -131,7 +132,7 @@ describe("conversation metadata routes", () => {
       placement: { kind: "projectless" },
     })).toMatchObject({ ok: true });
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     for (const id of ["conv-1", reservationId]) {
       const archived = await router.invoke({

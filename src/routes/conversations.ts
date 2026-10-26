@@ -1,9 +1,10 @@
-import { MAX_ORDERED_SIDEBAR_IDS } from "../host-user-preferences.js";
+import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
+import { parseSinceQuery, sourceFromQuery } from "../conversations/search-query.js";
+import type { LedgerReader } from "../ledger-reads/index.js";
+import type { ConversationRow } from "../ledger-reads/conversations.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
-import { resolveConversationId } from '../conversations/identity.js';
 // API routes for the chat log / conversation system.
 
-import { createHash } from "node:crypto";
 import { getDb } from "../db.js";
 import { entityRefs, resolveSessionRef } from "../entity-refs.js";
 import { sessionAliasIds } from "../session-liveness.js";
@@ -17,20 +18,13 @@ import {
 } from "../client-auth/authz.js";
 import {
   backfillCredentialLeakScan,
-  maskUnverifiedCandidates,
   remediationFor,
   scanBlocksForCredentialLeaks,
 } from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
-import { getConversationSearchCache } from "../conversations/search-cache.js";
-import {
-  ConversationSidebarCursorError,
-  buildConversationSidebar,
-  type ConversationSidebarProject,
-  type ConversationSidebarRow,
-  type ConversationSidebarSort,
-} from "../conversations/sidebar-projection.js";
+
+
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
@@ -47,8 +41,6 @@ import {
   type ExactConversationFreshnessOptions,
 } from "../conversations/freshness.js";
 import type { ResponseLike } from "../server.js";
-import type { ConversationExternalNavigation } from "../contracts.js";
-import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
 import { childrenOfConversationSql, listLineageGaps } from "../conversation-lineage.js";
 import type { SessionRegistry } from "../registry.js";
 import {
@@ -58,35 +50,6 @@ import {
 } from "../conversation-external-navigation.js";
 
 // --- Row mapping helpers ---
-
-interface ConversationRow {
-  id: string;
-  source: string;
-  source_path: string;
-  source_hash: string;
-  source_mtime: number;
-  title: string;
-  summary: string | null;
-  started_at: string;
-  ended_at: string | null;
-  block_count: number;
-  session_id: string;
-  project_path: string | null;
-  cwd: string | null;
-  branch: string | null;
-  model: string | null;
-  cli_version: string | null;
-  starred: number;
-  archived_at?: number | null;
-  tags: string;
-  notes: string | null;
-  parent_conversation_id: string | null;
-  is_sidechain: number;
-  agent_id: string | null;
-  children_count?: number;
-  created_at: string;
-  updated_at: string;
-}
 
 interface BlockRow {
   id: string;
@@ -101,183 +64,6 @@ interface BlockRow {
   metadata_json: string;
   dag_uuid: string | null;
   dag_parent_uuid: string | null;
-}
-
-function mapConversation(row: ConversationRow, externalNavigation?: ConversationExternalNavigation) {
-  let tags: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(row.tags);
-    if (Array.isArray(parsed)) tags = parsed.filter((tag): tag is string => typeof tag === "string");
-  } catch {
-    // The schema validates storage. Keep corrupt external fixtures readable.
-  }
-  return {
-    id: row.id,
-    source: row.source,
-    source_path: row.source_path,
-    source_hash: row.source_hash,
-    source_mtime: row.source_mtime,
-    title: row.title,
-    summary: row.summary,
-    started_at: row.started_at,
-    ended_at: row.ended_at,
-    block_count: row.block_count,
-    session_id: row.session_id,
-    identity_aliases: (getDb().prepare('SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ? ORDER BY alias_id')
-      .all(row.id) as { alias_id: string }[]).map((alias) => alias.alias_id),
-    project_path: row.project_path,
-    cwd: row.cwd,
-    branch: row.branch,
-    model: row.model,
-    cli_version: row.cli_version,
-    notes: row.notes,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    tags,
-    starred: row.starred === 1,
-    archived_at: row.archived_at ?? null,
-    parent_conversation_id: row.parent_conversation_id ?? null,
-    is_sidechain: row.is_sidechain === 1,
-    agent_id: row.agent_id ?? null,
-    children_count: row.children_count ?? 0,
-    ...(externalNavigation ? { external_navigation: externalNavigation } : {}),
-  };
-}
-
-function maskSourceBackedConversationRow(row: ConversationRow): ConversationRow {
-  return {
-    ...row,
-    title: maskUnverifiedCandidates(row.title).text,
-    summary: row.summary == null ? null : maskUnverifiedCandidates(row.summary).text,
-    notes: row.notes == null ? null : maskUnverifiedCandidates(row.notes).text,
-  };
-}
-
-function mapSearchConversation(row: ConversationRow) {
-  return mapConversation(maskSourceBackedConversationRow(row));
-}
-
-type ProjectedConversationRow = ConversationRow & {
-  canonical_project_id?: string | null;
-  canonical_project_key?: string | null;
-  canonical_placement_explicit?: number;
-  spawn?: ConversationSpawnReceipt;
-  spawn_schema_version?: string | null;
-  spawn_request_json?: string | null;
-  spawn_state?: string | null;
-  spawn_attempt_count?: number | null;
-  spawn_native_session_id?: string | null;
-  spawn_provider_session_id?: string | null;
-  spawn_provider_receipt_json?: string | null;
-  spawn_error_json?: string | null;
-  spawn_created_at?: number | null;
-  spawn_updated_at?: number | null;
-};
-
-function projectedSpawn(row: ProjectedConversationRow): ConversationSpawnReceipt | undefined {
-  if (!row.spawn_schema_version || !row.spawn_request_json || !row.spawn_state
-      || row.spawn_attempt_count == null || row.spawn_created_at == null || row.spawn_updated_at == null) {
-    return undefined;
-  }
-  return {
-    schema: row.spawn_schema_version as ConversationSpawnReceipt["schema"],
-    reservation_id: row.id,
-    request: JSON.parse(row.spawn_request_json),
-    state: row.spawn_state as ConversationSpawnReceipt["state"],
-    attempt_count: row.spawn_attempt_count,
-    native_session_id: row.spawn_native_session_id ?? null,
-    provider_session_id: row.spawn_provider_session_id ?? null,
-    provider_receipt: row.spawn_provider_receipt_json ? JSON.parse(row.spawn_provider_receipt_json) : null,
-    error: row.spawn_error_json ? JSON.parse(row.spawn_error_json) : null,
-    created_at: row.spawn_created_at,
-    updated_at: row.spawn_updated_at,
-  };
-}
-
-function mapSidebarConversation(
-  row: ProjectedConversationRow,
-  fullTextSearch: boolean,
-) {
-  const spawn = row.spawn ?? projectedSpawn(row);
-  return {
-    ...(fullTextSearch
-      ? mapSearchConversation(row)
-      : mapConversation(row)),
-    canonical_project_id: row.canonical_project_id ?? null,
-    canonical_project_key: row.canonical_project_key ?? null,
-    ...(spawn ? { spawn } : {}),
-  };
-}
-
-const SIDEBAR_CONVERSATION_FROM = `FROM conversations c
-      LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
-      LEFT JOIN conversation_spawn_requests s ON s.id = COALESCE(
-        (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = c.id ORDER BY alias_id LIMIT 1), c.id
-      ) AND s.schema_version = 'mandible-conversation-spawn-request@3'
-      LEFT JOIN ledger_projects p ON p.id = s.project_id`;
-
-function hydrateSidebarConversations(
-  db: ReturnType<typeof getDb>,
-  ids: readonly string[],
-): Map<string, ProjectedConversationRow> {
-  if (ids.length === 0) return new Map();
-  const rows = db.prepare(`SELECT c.*,
-        s.schema_version AS spawn_schema_version, s.request_json AS spawn_request_json,
-        s.state AS spawn_state, s.attempt_count AS spawn_attempt_count,
-        s.native_session_id AS spawn_native_session_id,
-        s.provider_session_id AS spawn_provider_session_id,
-        s.provider_receipt_json AS spawn_provider_receipt_json,
-        s.error_json AS spawn_error_json, s.created_at AS spawn_created_at,
-        s.updated_at AS spawn_updated_at
-      ${SIDEBAR_CONVERSATION_FROM}
-      WHERE c.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as ProjectedConversationRow[];
-  return new Map(rows.map((row) => [row.id, row]));
-}
-
-const MAX_SIDEBAR_PROJECTS = 500;
-const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
-
-function parseSidebarIds(raw: string | undefined, name: string): string[] {
-  const maxIds = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS : MAX_SIDEBAR_PROJECTS;
-  const maxLength = name === "pinned_ids" ? MAX_ORDERED_SIDEBAR_IDS * 65 : MAX_SIDEBAR_PROJECT_IDS_LENGTH;
-  if (raw === undefined || raw === "") return [];
-  if (raw.length > maxLength) {
-    throw new Error(`${name} exceeds ${maxLength} characters`);
-  }
-  const values = raw.split(",").map((value) => value.trim());
-  if (values.some((value) => !value)) throw new Error(`${name} contains an empty id`);
-  const ids = [...new Set(values)];
-  if (ids.length > maxIds) {
-    throw new Error(`${name} accepts at most ${maxIds} ids`);
-  }
-  return ids;
-}
-
-function parseSidebarProjectIds(raw: string | undefined): string[] {
-  return parseSidebarIds(raw, "project_ids");
-}
-
-function loadSidebarProjects(db: ReturnType<typeof getDb>): ConversationSidebarProject[] {
-  const projects = db.prepare(
-    `SELECT id, project_key, display_name
-     FROM ledger_projects
-     ORDER BY id`,
-  ).all() as Array<{ id: string; project_key: string; display_name: string }>;
-  const roots = db.prepare(
-    `SELECT project_id, root
-     FROM ledger_project_checkouts
-     ORDER BY project_id, root`,
-  ).all() as Array<{ project_id: string; root: string }>;
-  const rootsByProject = new Map<string, string[]>();
-  for (const checkout of roots) {
-    const existing = rootsByProject.get(checkout.project_id) ?? [];
-    existing.push(checkout.root);
-    rootsByProject.set(checkout.project_id, existing);
-  }
-  return projects.map((project) => ({
-    ...project,
-    checkout_roots: rootsByProject.get(project.id) ?? [],
-  }));
 }
 
 function canonicalizeTags(value: unknown, field: string): string[] {
@@ -464,26 +250,6 @@ export function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
   return true;
 }
 
-function parseSinceQuery(value: string | undefined): string | null {
-  if (!value) return null;
-  if (/^\d+d$/.test(value)) {
-    const days = Number(value.slice(0, -1));
-    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  }
-  return value;
-}
-
-function sourceFromQuery(value: string | undefined): string | null {
-  if (!value || value === "all") return null;
-  return value === "claude" ? "claude_code" : value;
-}
-
-function blockTypeFromRole(value: string | undefined): string | null {
-  if (value === "user") return "user_message";
-  if (value === "assistant") return "assistant_message";
-  return null;
-}
-
 /** A BlockRow after decompression — content is guaranteed to be a string. */
 type DecompressedBlock = Omit<BlockRow, "content"> & { content: string };
 
@@ -595,6 +361,7 @@ function exportToJson(
 
 export function registerConversationRoutes(
   server: RouteRegistrar,
+  reader: LedgerReader,
   sessionRegistry?: SessionRegistry,
   sourceFreshness: Pick<ExactConversationFreshnessOptions, "ingest" | "scheduleReparse"> = {},
 ): void {
@@ -897,231 +664,9 @@ export function registerConversationRoutes(
 
   // GET /api/conversations/sidebar — all matching pins and independently paged Projects and Chats.
   server.get("/api/conversations/sidebar", async (req, res) => {
-    const query = req.query ?? {};
-    const lifecycle = query.lifecycle || "active";
-    if (lifecycle !== "active" && lifecycle !== "archived") {
-      sendJson(res, 400, { error: "lifecycle must be active or archived" });
-      return;
-    }
-    let requestedProjectIds: string[];
-    let clientPinnedIds: string[];
-    const clientPinsAuthoritative = Object.prototype.hasOwnProperty.call(query, "pinned_ids");
-    try {
-      requestedProjectIds = parseSidebarProjectIds(query.project_ids);
-      clientPinnedIds = [...new Set(parseSidebarIds(query.pinned_ids, "pinned_ids").map((id) => resolveConversationId(db, id)))];
-    } catch (error) {
-      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
-    const projects = loadSidebarProjects(db);
-    const knownProjectIds = new Set(projects.map((project) => project.id));
-    const unknownProjectIds = requestedProjectIds.filter((id) => !knownProjectIds.has(id));
-    if (unknownProjectIds.length > 0) {
-      sendJson(res, 400, { error: "Unknown canonical project id", project_ids: unknownProjectIds });
-      return;
-    }
-    const parsedLimit = parseInt(query.limit || "20", 10);
-    const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 20));
-    const groupKey = query.group_key || undefined;
-    const cursor = query.cursor || undefined;
-    if (cursor && !groupKey) {
-      sendJson(res, 400, { error: "group_key is required with cursor" });
-      return;
-    }
-
-    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
-    const params: unknown[] = [];
-    conditions.push(lifecycle === "archived" ? "a.conversation_id IS NOT NULL" : "a.conversation_id IS NULL");
-    if (query.source) {
-      conditions.push("c.source = ?");
-      params.push(query.source);
-    }
-    if (query.starred === "true" || query.starred === "1") {
-      conditions.push("c.starred = 1");
-    } else if (query.starred === "false" || query.starred === "0") {
-      conditions.push("c.starred = 0");
-    }
-
-    const searchNeedle = (query.search ?? "").trim();
-    const fullTextSearch = query.full_text === "true" || query.full_text === "1";
-    if (searchNeedle && !fullTextSearch) {
-      conditions.push("c.title LIKE ?");
-      params.push(`%${searchNeedle}%`);
-    }
-    const minBlocks = parseInt(query.min_blocks || "", 10);
-    if (Number.isFinite(minBlocks) && minBlocks > 0) {
-      conditions.push(`(c.block_count >= ? OR EXISTS (
-        SELECT 1 FROM conversation_spawn_requests visible_spawn
-        WHERE visible_spawn.id = c.id
-          AND visible_spawn.schema_version = 'mandible-conversation-spawn-request@3'
-      ))`);
-      params.push(minBlocks);
-    }
-    const excludeSubagents = query.exclude_subagents === "true" || query.exclude_subagents === "1";
-    if (excludeSubagents) {
-      conditions.push("c.parent_conversation_id IS NULL");
-      conditions.push("(c.project_path IS NULL OR c.project_path != 'subagents')");
-      conditions.push("LOWER(c.source_path) NOT LIKE '%/subagents/%'");
-      conditions.push("LOWER(c.title) NOT LIKE 'you are a subagent%'");
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const sort: ConversationSidebarSort = query.sort === "block_count" ? "block_count" : "started_at";
-    const querySignature = createHash("sha256").update(JSON.stringify({
-      source: query.source || null,
-      starred: query.starred || null,
-      search: searchNeedle,
-      full_text: fullTextSearch,
-      min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
-      exclude_subagents: excludeSubagents,
-      project_ids: [...requestedProjectIds].sort(),
-      pinned_ids: clientPinsAuthoritative ? clientPinnedIds : null,
-      lifecycle,
-      sort,
-    })).digest("base64url");
-
-    let rows = db.prepare(`SELECT c.id, c.source, c.project_path, c.cwd, c.starred, c.started_at, c.block_count,
-        s.project_id AS canonical_project_id,
-        CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS canonical_placement_explicit,
-        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key
-      ${SIDEBAR_CONVERSATION_FROM}
-      ${where}`).all(...params) as Array<ConversationSidebarRow | ProjectedConversationRow>;
-    const pendingSpawns = new Map<string, ProjectedConversationRow>();
-    if (!query.starred && !(Number.isFinite(minBlocks) && minBlocks > 0)) {
-      const spawnRows = db.prepare(`SELECT s.*, a.archived_at FROM conversation_spawn_requests s
-        LEFT JOIN conversation_archive_states a ON a.conversation_id = s.id
-        WHERE s.schema_version = 'mandible-conversation-spawn-request@3'
-          AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id = s.id)
-        ORDER BY s.created_at DESC, s.id`).all() as Array<{
-          id: string; provider: string; project_id: string | null; checkout_id: string | null;
-          request_json: string; state: string; attempt_count: number; native_session_id: string | null;
-          provider_session_id: string | null; provider_receipt_json: string | null; error_json: string | null;
-          schema_version: string; created_at: number; updated_at: number; archived_at: number | null;
-        }>;
-      for (const spawn of spawnRows) {
-        if ((lifecycle === "archived") !== (spawn.archived_at != null)) continue;
-        const source = spawn.provider === "codex" ? "codex" : "claude_code";
-        const title = spawn.provider === "codex" ? "New Codex chat" : "New Claude chat";
-        if (query.source && query.source !== source) continue;
-        if (searchNeedle && !title.toLowerCase().includes(searchNeedle.toLowerCase())) continue;
-        const receipt = {
-          schema: "mandible-conversation-spawn-receipt@3",
-          reservation_id: spawn.id,
-          request: JSON.parse(spawn.request_json),
-          state: spawn.state,
-          attempt_count: spawn.attempt_count,
-          native_session_id: spawn.native_session_id,
-          provider_session_id: spawn.provider_session_id,
-          provider_receipt: spawn.provider_receipt_json ? JSON.parse(spawn.provider_receipt_json) : null,
-          error: spawn.error_json ? JSON.parse(spawn.error_json) : null,
-          created_at: spawn.created_at,
-          updated_at: spawn.updated_at,
-        } as ConversationSpawnReceipt;
-        const pending: ProjectedConversationRow = {
-          id: spawn.id,
-          source,
-          source_path: `mandible://chat/${spawn.id}`,
-          source_hash: "",
-          source_mtime: spawn.updated_at,
-          title,
-          summary: null,
-          started_at: new Date(spawn.created_at).toISOString(),
-          ended_at: spawn.state === "failed" || spawn.state === "cancelled" ? new Date(spawn.updated_at).toISOString() : null,
-          block_count: 0,
-          session_id: spawn.provider_session_id ?? spawn.id,
-          project_path: null,
-          cwd: null,
-          branch: null,
-          model: null,
-          cli_version: null,
-          starred: 0,
-          archived_at: spawn.archived_at,
-          tags: "[]",
-          notes: null,
-          parent_conversation_id: null,
-          is_sidechain: 0,
-          agent_id: null,
-          created_at: new Date(spawn.created_at).toISOString(),
-          updated_at: new Date(spawn.updated_at).toISOString(),
-          canonical_project_id: spawn.project_id,
-          canonical_project_key: spawn.project_id ? projects.find((project) => project.id === spawn.project_id)?.project_key ?? null : null,
-          canonical_placement_explicit: 1,
-          spawn: receipt,
-        };
-        pendingSpawns.set(pending.id, pending);
-        rows.push(pending);
-      }
-    }
-    const searchTargets = new Map<string, string>();
-    if (searchNeedle && fullTextSearch && rows.length > 0) {
-      const searched = await getConversationSearchCache(db).search({
-        conversationIds: rows.map((row) => row.id),
-        needle: searchNeedle,
-        limit: rows.length,
-      });
-      for (const match of searched.matches) searchTargets.set(match.conversation_id, match.block_id);
-      const matching = new Set(searched.matches.map((match) => match.conversation_id));
-      rows = rows.filter((row) => matching.has(row.id));
-    }
-    try {
-      const groups = buildConversationSidebar({
-        rows,
-        sort,
-        querySignature,
-        limit,
-        groupKey,
-        cursor,
-        projects,
-        requestedProjectIds,
-        ...(clientPinsAuthoritative ? { pinnedIds: clientPinnedIds } : {}),
-      });
-      if (groupKey && groups.length === 0) {
-        sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
-        return;
-      }
-      const pageRows = groups.flatMap((group) => group.rows);
-      const hydrated = hydrateSidebarConversations(
-        db,
-        pageRows.filter((row) => !pendingSpawns.has(row.id)).map((row) => row.id),
-      );
-      const fullRow = (row: ConversationSidebarRow): ProjectedConversationRow | null => {
-        const full = pendingSpawns.get(row.id) ?? hydrated.get(row.id);
-        return full
-          ? { ...full, canonical_project_id: row.canonical_project_id, canonical_project_key: row.canonical_project_key }
-          : null;
-      };
-      const pages = groups.map((group) => ({
-        group,
-        rows: group.rows.map(fullRow).filter((row): row is ProjectedConversationRow => row !== null),
-      }));
-      const externalNavigation = projectConversationExternalNavigation(db, pages.flatMap((page) => page.rows));
-      sendJson(res, 200, {
-        groups: pages.map(({ group, rows: pageConversations }) => ({
-          key: group.key,
-          kind: group.kind,
-          label: group.label,
-          ...(group.project_id ? { project_id: group.project_id } : {}),
-          ...(group.project_key ? { project_key: group.project_key } : {}),
-          total: group.total,
-          conversations: pageConversations.map((row) => ({
-            ...mapSidebarConversation(row, fullTextSearch),
-            ...(searchTargets.has(row.id)
-              ? { search_target: { block: searchTargets.get(row.id)! } }
-              : {}),
-            ...(externalNavigation.has(row.id)
-              ? { external_navigation: externalNavigation.get(row.id) }
-              : {}),
-          })),
-          next_cursor: group.next_cursor,
-        })),
-        limit,
-      });
-    } catch (error) {
-      if (error instanceof ConversationSidebarCursorError) {
-        sendJson(res, 400, { error: error.message });
-        return;
-      }
-      throw error;
-    }
+    const result = await reader.run("conversation_sidebar", { query: req.query ?? {} });
+    if (res.jsonText) res.status(result.status).jsonText!(result.json);
+    else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations/sidebar", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // --- Parameterized routes ---
@@ -1132,263 +677,16 @@ export function registerConversationRoutes(
   //   ?group=true — same as exclude_subagents but also includes children_count on parents
   //   ?parent_id=<id> — list only children of a specific parent conversation
   server.get("/api/conversations", async (req, res) => {
-    const query = req.query ?? {};
-    const page = Math.max(1, parseInt(query.page || "1", 10) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(query.limit || "50", 10) || 50));
-    const queryOffset = parseInt(query.offset || "", 10);
-    const offset = Number.isFinite(queryOffset) && queryOffset >= 0
-      ? queryOffset
-      : (page - 1) * limit;
-
-    const groupMode = query.group === "true" || query.group === "1";
-    const excludeSubagents = groupMode || query.exclude_subagents === "true" || query.exclude_subagents === "1";
-    const parentIdFilter = query.parent_id ? resolveConversationId(db, query.parent_id) : null;
-
-    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)'];
-    const params: unknown[] = [];
-
-    // Filter by source
-    if (query.source) {
-      conditions.push("c.source = ?");
-      params.push(query.source);
-    }
-
-    // Filter by starred
-    if (query.starred === "true" || query.starred === "1") {
-      conditions.push("c.starred = 1");
-    } else if (query.starred === "false" || query.starred === "0") {
-      conditions.push("c.starred = 0");
-    }
-
-    if (query.tag) {
-      conditions.push("EXISTS (SELECT 1 FROM json_each(c.tags) WHERE json_each.value = ?)");
-      params.push(query.tag);
-    }
-
-    const searchNeedle = (query.search ?? "").trim();
-    const fullTextSearch = query.full_text === "true" || query.full_text === "1";
-
-    // Title mode remains the cheap metadata filter. Full mode resolves exact
-    // source-verified content matches below, through the disposable cache.
-    if (searchNeedle && !fullTextSearch) {
-      conditions.push("c.title LIKE ?");
-      params.push(`%${searchNeedle}%`);
-    }
-
-    const minBlocks = parseInt(query.min_blocks || "", 10);
-    if (Number.isFinite(minBlocks) && minBlocks > 0) {
-      conditions.push("c.block_count >= ?");
-      params.push(minBlocks);
-    }
-
-    if (query.session_id) {
-      conditions.push("c.session_id = ?");
-      params.push(query.session_id);
-    }
-
-    const since = parseSinceQuery(query.since);
-    if (since) {
-      conditions.push("c.started_at >= ?");
-      params.push(since);
-    }
-
-    // Filter by branch
-    if (query.branch) {
-      conditions.push("c.branch = ?");
-      params.push(query.branch);
-    }
-
-    // Filter by model
-    if (query.model) {
-      conditions.push("c.model LIKE ?");
-      params.push(`%${query.model}%`);
-    }
-
-    // Sub-agent filtering — Bug: d0759d1
-    if (parentIdFilter) {
-      // List children of a specific parent
-      conditions.push(childrenOfConversationSql("c"));
-      params.push(parentIdFilter);
-    } else if (excludeSubagents) {
-      // Hide sub-agent conversations from the main list
-      conditions.push("c.parent_conversation_id IS NULL");
-      conditions.push("(c.project_path IS NULL OR c.project_path != 'subagents')");
-      conditions.push("LOWER(c.source_path) NOT LIKE '%/subagents/%'");
-      conditions.push("LOWER(c.title) NOT LIKE 'you are a subagent%'");
-    }
-
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-    // Sort
-    const sortField = query.sort || "started_at";
-    const sortOrder = query.order === "asc" ? "ASC" : "DESC";
-    const allowedSorts = new Set(["started_at", "ended_at", "title", "block_count", "created_at", "updated_at", "source"]);
-    const safeSortField = allowedSorts.has(sortField) ? sortField : "started_at";
-
-    if (searchNeedle && fullTextSearch) {
-      const eligible = db.prepare(
-        `SELECT c.id FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder}`,
-      ).all(...params) as Array<{ id: string }>;
-      const searched = await getConversationSearchCache(db).search({
-        conversationIds: eligible.map((row) => row.id),
-        needle: searchNeedle,
-        limit: eligible.length,
-      });
-      const ids = searched.matches.map((match) => match.conversation_id);
-      const pageIds = ids.slice(offset, offset + limit);
-      const selectCols = groupMode
-        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
-        : `c.*`;
-      const rows = pageIds.length === 0
-        ? []
-        : db.prepare(
-          `SELECT ${selectCols} FROM conversations c
-           WHERE c.id IN (${pageIds.map(() => "?").join(",")})
-           ORDER BY c.${safeSortField} ${sortOrder}`,
-        ).all(...pageIds) as ConversationRow[];
-      const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
-      rows.sort((left, right) => (pageOrder.get(left.id) ?? 0) - (pageOrder.get(right.id) ?? 0));
-      sendJson(res, 200, {
-        conversations: rows.map((row) => mapSearchConversation(row)),
-        total: ids.length,
-        page,
-        limit,
-        pages: Math.ceil(ids.length / limit),
-        search_metrics: searched.metrics,
-      });
-      return;
-    }
-
-    // Count total
-    const countRow = db
-      .prepare(`SELECT COUNT(*) as total FROM conversations c ${where}`)
-      .get(...params) as { total: number };
-
-    // Fetch page — include children_count via subquery when grouping
-    const selectCols = groupMode
-      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
-      : `c.*`;
-
-    const rows = db
-      .prepare(
-        `SELECT ${selectCols} FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder} LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as ConversationRow[];
-
-    const externalNavigation = projectConversationExternalNavigation(db, rows);
-    sendJson(res, 200, {
-      conversations: rows.map((row) => mapConversation(row, externalNavigation.get(row.id))),
-      total: countRow.total,
-      page,
-      limit,
-      pages: Math.ceil(countRow.total / limit),
-    });
+    const result = await reader.run("conversation_list", { query: req.query ?? {} });
+    if (res.jsonText) res.status(result.status).jsonText!(result.json);
+    else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/conversations/search — Search the normalized conversation index.
   server.get("/api/conversations/search", async (req, res) => {
-    const query = req.query ?? {};
-    const needle = (query.q || query.query || "").trim().toLowerCase();
-    if (!needle) {
-      sendJson(res, 400, { error: "Missing search query" });
-      return;
-    }
-
-    const limit = Math.min(100, Math.max(1, parseInt(query.limit || "20", 10) || 20));
-    const source = sourceFromQuery(query.source || query.provider);
-    const since = parseSinceQuery(query.since);
-    const titleOnly = query.title === "true" || query.title === "1";
-    const blockType = blockTypeFromRole(query.role);
-
-    const convConditions: string[] = ["1=1"];
-    const convParams: unknown[] = [];
-    if (source) {
-      convConditions.push("source = ?");
-      convParams.push(source);
-    }
-    if (since) {
-      convConditions.push("started_at >= ?");
-      convParams.push(since);
-    }
-
-    const selectConversations = (columns: string, conditions: string[], params: unknown[]) => db
-      .prepare(
-        `SELECT ${columns},
-           (SELECT archived_at FROM conversation_archive_states archive
-             WHERE archive.conversation_id = conversations.id) AS archived_at
-         FROM conversations WHERE ${conditions.join(" AND ")} ORDER BY started_at DESC`,
-      )
-      .all(...params) as ConversationRow[];
-
-    const results: Array<{
-      conversation: ReturnType<typeof mapSearchConversation>;
-      block: Omit<ReturnType<typeof mapBlock>, "content"> & { content: string } | null;
-      snippet: string;
-    }> = [];
-
-    const makeSnippet = (text: string): string | null => {
-      const index = text.toLowerCase().indexOf(needle);
-      if (index < 0) return null;
-      const start = Math.max(0, index - 80);
-      const end = Math.min(text.length, index + needle.length + 80);
-      const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
-      return `${start > 0 ? "..." : ""}${snippet}${end < text.length ? "..." : ""}`;
-    };
-
-    if (titleOnly) {
-      for (const conversation of selectConversations("conversations.*", convConditions, convParams)) {
-        if (results.length >= limit) break;
-        const snippet = makeSnippet(maskUnverifiedCandidates(conversation.title || "").text);
-        if (snippet) {
-          results.push({ conversation: mapSearchConversation(conversation), block: null, snippet });
-        }
-      }
-      sendJson(res, 200, { results, total: results.length, limit });
-      return;
-    }
-
-    const eligible = db
-      .prepare(`SELECT id FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`)
-      .all(...convParams) as Array<{ id: string }>;
-    const searched = await getConversationSearchCache(db).search({
-      conversationIds: eligible.map((conversation) => conversation.id),
-      needle,
-      blockType,
-      limit,
-    });
-    const matchedIds = [...new Set(searched.matches.map((match) => match.conversation_id))];
-    const conversationsById = new Map(
-      (matchedIds.length === 0
-        ? []
-        : selectConversations(
-          "conversations.*",
-          ["conversations.id IN (SELECT value FROM json_each(?))"],
-          [JSON.stringify(matchedIds)],
-        )).map((conversation) => [conversation.id, conversation]),
-    );
-    for (const match of searched.matches) {
-      const conversation = conversationsById.get(match.conversation_id);
-      if (!conversation) continue;
-      const read = await sourceReader.readBlock(match.block_id);
-      if (read.status !== "source" && read.status !== "legacy") continue;
-      const block = read.value;
-      results.push({
-        conversation: mapSearchConversation(conversation),
-        // Search responses carry only structural block metadata plus the
-        // verified masked snippet. Returning the complete durable body here
-        // would duplicate the detail route and could bypass the cache's
-        // fail-closed masking boundary for legacy fixtures.
-        block: { ...block, content: "" },
-        snippet: match.snippet,
-      });
-    }
-
-    sendJson(res, 200, {
-      results,
-      total: results.length,
-      limit,
-      search_metrics: searched.metrics,
-    });
+    const result = await reader.run("conversation_search", { query: req.query ?? {} });
+    if (res.jsonText) res.status(result.status).jsonText!(result.json);
+    else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Exact, server-projected external focus. The destination is re-derived at

@@ -1,5 +1,5 @@
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
-import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createInstalledServiceHookManager, createServiceDefinitionInspector, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 // Issue a09b4d2 — a runtime handoff lock blocks publication while preserving
 // queue admission and the review work that can safely happen before release.
@@ -10,7 +10,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
@@ -19,6 +18,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
+import * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
@@ -36,6 +36,7 @@ let projectId: string;
 let credentialId: string;
 let issue: ReturnType<typeof createLedgerIssue>;
 let runs: AcceptanceRun[];
+let inspector: ReturnType<typeof createServiceDefinitionInspector>;
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
 function holdHandoffLock(phase = "failed") {
@@ -90,6 +91,7 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
 }
 
 beforeEach(() => {
+  inspector = createServiceDefinitionInspector();
   repo = createAuthCheckRepo();
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
@@ -106,11 +108,12 @@ beforeEach(() => {
   credentialId = addCredential(db, operatorId, { type: "api_token", fingerprint: `self-update-${randomUUID()}` }).id;
   issue = createLedgerIssue(db, projectId, "5e1f0d0", "Self-update");
   runs = [];
-  queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false,
+  queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
     executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   (await queue.dispose());
   db.close();
@@ -131,7 +134,7 @@ describe("runtime handoff lock gate", () => {
     });
 
     const original = await submit();
-    expect(queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
+    expect(await queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
     expect(runs).toHaveLength(0);
 
     git(repo, ["checkout", "feature/self-update"]);
@@ -168,6 +171,145 @@ describe("runtime handoff lock gate", () => {
 });
 
 describe("candidate acceptance gate", () => {
+  it("reports an absent backend before approval without invalidating candidate acceptance", async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    const context = serviceDefinitions.serviceInstallationContext({ home });
+    const absent = serviceDefinitions.assessServiceObservation(context, "backend", [], { loaded: false, pid: null });
+    if (!absent.ok) throw new Error(absent.refusal.message);
+    inspector.mockResolvedValue({ ok: true, observations: [absent.observation] });
+    const message = "The production backend is not running, so its update cannot start yet.";
+    expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toEqual({ code: "missing_definition", message });
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(message);
+    expect((await queue.getRequest(request.id))!.status).toBe("pending");
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+  });
+
+  it("keeps acceptance valid and approves queued execution despite owned drift", async () => {
+    const context = serviceDefinitions.serviceInstallationContext({ home });
+    const record: serviceDefinitions.ServiceDefinition = {
+      Label: context.backendLabel, ProgramArguments: ["/runtime/bun", `${context.runtimeDir}/production-runner.mjs`, "run"],
+      EnvironmentVariables: { MANDIBLE_HOME: home, PATH: "/installed/tools" }, WorkingDirectory: context.runtimeDir,
+      StandardOutPath: "/logs/backend.out", StandardErrorPath: "/logs/backend.err", KeepAlive: true,
+    };
+    const observation = serviceDefinitions.assessServiceObservation(context, "backend", [{ file: "/fixture/backend.plist", record, bytesBase64: "", sha256: "fixture" }], {
+      loaded: true, pid: 42, program: record.ProgramArguments[0], argv: record.ProgramArguments,
+      environment: { ...record.EnvironmentVariables, PATH: "/loaded/tools" }, workingDirectory: record.WorkingDirectory,
+      stdoutPath: record.StandardOutPath, stderrPath: record.StandardErrorPath, keepAlive: true,
+    });
+    if (!observation.ok) throw new Error(observation.refusal.message);
+    expect(observation.observation.differences[0]!.fields).toContain("EnvironmentVariables");
+    const drift = { ok: true as const, observations: [observation.observation] };
+    inspector.mockResolvedValue(drift);
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+    expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toBeNull();
+    await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
+    expect(runs).toHaveLength(1);
+
+    const execution = queue as unknown as {
+      reserveRepoAdmission(request: unknown, install: (key: string) => void): Promise<void>;
+      executionChains: Map<string, Promise<void>>;
+      executor: ReturnType<typeof vi.fn>;
+    };
+    execution.executor = vi.fn(async () => new Promise(() => {}));
+    let release!: () => void;
+    const busy = new Promise<void>(resolve => { release = resolve; });
+    await execution.reserveRepoAdmission((await queue.getRequest(request.id))!, key => { execution.executionChains.set(key, busy); });
+    await queue.approveWithOperatorProof(request.id, operatorId);
+    expect((await queue.getRequest(request.id))!.status).toBe("executing");
+    expect(execution.executor).not.toHaveBeenCalled();
+    // The state is observed again when this request reaches its execution turn.
+    release();
+    await waitUntilPasses(() => expect(execution.executor).toHaveBeenCalledTimes(1));
+    expect((await queue.getRequest(request.id))!.last_executed_at).not.toBeNull();
+  });
+
+  it.each(["ownership_conflict", "unreadable_state"] as const)("reports %s before approval and queued execution without mutation", async (category) => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    const sibling = await submit("feature/other");
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    const refusal: serviceDefinitions.ServiceOwnershipRefusal = {
+      service: "backend", label: "private-backend", category, fields: [],
+      message: category === "ownership_conflict" ? "Loaded service private-backend belongs to another installation; preserving it." : "Cannot read launchd state for private-backend.",
+    };
+    inspector.mockResolvedValue({ ok: false, refusal });
+    // Production ownership never changes the verdict of an isolated candidate run.
+    runs[1]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(sibling.id)).toMatchObject({ state: "passed" });
+    await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
+    expect(runs).toHaveLength(2);
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+
+    setDb(db);
+    const router = authenticatedTestRouter(getOperator(db)!);
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+    for (const url of [`/api/auth/request/${request.id}`, "/api/auth/queue", "/api/auth/history"]) {
+      inspector.mockClear();
+      if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'failed', resolved_at = 1").run();
+      const response = await router.invoke({ method: "GET", url });
+      if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'pending', resolved_at = NULL").run();
+      expect(response.status).toBe(200);
+      const body = response.body as { requests?: Array<{ publication_blocker: unknown }>; publication_blocker?: unknown };
+      const blocker = { code: category, message: refusal.message };
+      if (body.requests) expect(body.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: request.id, publication_blocker: blocker }),
+        expect.objectContaining({ id: sibling.id, publication_blocker: blocker }),
+      ]));
+      else expect(body.publication_blocker).toEqual(blocker);
+      expect(inspector).toHaveBeenCalledTimes(1);
+    }
+    const protectedHead = git(repo, ["rev-parse", "main"]);
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(refusal.message);
+    expect((await queue.getRequest(request.id))!.status).toBe("pending");
+
+    inspector.mockResolvedValue(await createServiceDefinitionInspector()());
+    db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
+    const execution = queue as unknown as {
+      reserveRepoAdmission(request: unknown, install: (key: string) => void): Promise<void>;
+      executionChains: Map<string, Promise<void>>;
+      executeInBackground(request: unknown): Promise<void>;
+      inFlight: Map<string, Promise<void>>;
+      executor: ReturnType<typeof vi.fn>;
+    };
+    execution.executor = vi.fn(async () => new Promise(() => {}));
+    let release!: () => void;
+    const busy = new Promise<void>(resolve => { release = resolve; });
+    const current = (await queue.getRequest(request.id))!;
+    await execution.reserveRepoAdmission(current, key => { execution.executionChains.set(key, busy); });
+    await execution.executeInBackground(current);
+    await waitUntilPasses(() => expect(execution.inFlight.has(request.id)).toBe(true));
+    inspector.mockResolvedValue({ ok: false, refusal });
+    release();
+    await waitUntilPasses(async () => expect((await queue.getRequest(request.id))!.status).toBe("pending"));
+    expect((await queue.getRequest(request.id))!.last_executed_at).toBeNull();
+    expect(execution.executor).not.toHaveBeenCalled();
+    expect(git(repo, ["rev-parse", "main"])).toBe(protectedHead);
+  });
+
+  it("retains a valid isolated pass when a handoff lock appears during acceptance", async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    const lock = holdHandoffLock("complete");
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
+    fs.unlinkSync(lock.lockPath);
+    await queue.refreshPendingCandidates();
+    expect(runs).toHaveLength(1);
+    expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toBeNull();
+  });
+
   it("skips documentation-only changes on submission, startup, manual runs, summaries, and approval", async () => {
     commitOnBranch(repo, "feature/docs", { "README.md": "# Mandible\n", "docs/images/screenshot.png": "image" });
     const request = await submit("feature/docs", { change_report: await reviewedChanges("feature/docs") });
@@ -308,7 +450,7 @@ describe("candidate acceptance gate", () => {
     const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     (await queue.dispose());
-    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
     expect(db.prepare("SELECT status, error FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at, rowid").all(request.id))
@@ -324,7 +466,7 @@ describe("rebuild failure", () => {
     const restart = vi.fn();
     db.prepare("UPDATE auth_hooks SET repo_pattern = '*', command = ? WHERE id = 'builtin-mandible-rebuild'")
       .run("printf 'Another handoff owns this installation; preserving it.\\n' >&2; exit 1");
-    queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false, restartFn: restart,
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false, restartFn: restart,
       broadcast: (event) => { events.push(event); },
       restartAvailability: { markRebuildStarted: (id = "") => id, markShutdownStarted: () => true, markRebuildFailed: (id) => { failed.push(id); return true; } },
       executor: async (options) => publishFixtureExecution(queue, options) });

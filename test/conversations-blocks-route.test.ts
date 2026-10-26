@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,7 +83,7 @@ describe("conversation blocks route pagination", () => {
   it("caps large limits, accepts explicit offsets, and reports truncation metadata", async () => {
     insertConversationWithBlocks(600);
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     const first = await router.invoke({
       method: "GET",
@@ -129,7 +130,7 @@ describe("indexed conversation position window", () => {
     db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = 'conv-indexed' AND type = 'user_message' AND position > 1").run();
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed" });
 
     expect(response.status).toBe(200);
@@ -174,7 +175,7 @@ describe("indexed conversation position window", () => {
     });
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const response = await router.invoke({
       method: "GET",
       url: "/api/conversations/conv-projected?target=initial",
@@ -188,7 +189,7 @@ describe("indexed conversation position window", () => {
   it("resolves stable logical turn ids and rejects unknown or non-boundary anchors", async () => {
     insertIndexedConversation(10_000);
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     const turn = await router.invoke({
       method: "GET",

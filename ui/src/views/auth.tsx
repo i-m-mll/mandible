@@ -56,6 +56,7 @@ import {
   type AuthDependencyProjection,
   type AuthExecutionAttempt,
   type CandidateAcceptanceProjection,
+  type AuthPublicationBlocker,
   type ProtectedBaseAudit,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
@@ -161,6 +162,7 @@ export type AuthRequest = {
   merge_signature?: MergeSignatureClaim;
   // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
   candidate_acceptance?: CandidateAcceptanceProjection | null;
+  publication_blocker?: AuthPublicationBlocker | null;
   // Issue 117ba80 — protected-base commits that are neither Mandible merges nor operator-signed.
   base_audit?: ProtectedBaseAudit | null;
   action_count?: number;
@@ -924,6 +926,7 @@ function AuthRequestDetail({
     ? getConvergence(request)
     : null;
   const statusClass = getStatusClass(request);
+  const publicationBlocker = request.publication_blocker ?? null;
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
   const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
   const baseAudit = status === 'pending' ? request.base_audit ?? null : null;
@@ -1288,6 +1291,12 @@ function AuthRequestDetail({
           </section>
         )}
 
+        {publicationBlocker && (
+          <div className="auth-failure" role="status">
+            <strong>{publicationBlocker.code === 'runtime_handoff_lock' ? 'Runtime handoff blocks approval' : 'Service ownership blocks approval'}</strong>
+            <p className="auth-failure__summary">{publicationBlocker.message}</p>
+          </div>
+        )}
         {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
           <div className={`auth-failure${acceptance.state === 'failed' ? '' : ' auth-failure--expired'}`}>
             <div className="auth-failure__header">
@@ -2905,7 +2914,7 @@ export function AuthQueueView({
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
     const rejectAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/reject`);
     const retryAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/retry`);
-    const approvalAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/approve`);
+    const approvalAllowed = !request.publication_blocker && daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/approve`);
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -2980,7 +2989,7 @@ export function AuthQueueView({
           disabled={actionDisabled || !approvalAllowed || dependencyBlocked}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
-            : !approvalAllowed ? 'Approval is unavailable in this instance.' : undefined}
+            : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : undefined)}
         >
           {actionDisabled ? 'Verify signing key…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>

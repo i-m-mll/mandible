@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import * as childProcess from 'node:child_process';
+import * as supervisor from '../scripts/process-group-supervisor.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
@@ -15,8 +17,17 @@ import { rotateStderrLogSegments } from '../src/daemon-log.ts';
 import { resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+vi.mock('../scripts/process-group-supervisor.mjs', async original => {
+  const actual = await original<typeof import('../scripts/process-group-supervisor.mjs')>();
+  return { ...actual, runSupervisedCommand: vi.fn(actual.runSupervisedCommand) };
+});
+
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.mocked(childProcess.spawnSync).mockReset(); vi.mocked(supervisor.runSupervisedCommand).mockReset(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-handoff-binding-')); roots.push(home);
   const binding = { home, requestId: 'test-request-owner', executionId: 'test-execution-owner', root: home, runtime: { path: process.execPath, sha256: createHash('sha256').update(fs.readFileSync(process.execPath)).digest('hex') } };
@@ -130,7 +141,7 @@ it('records health log events without failing, while error rows stay fatal', () 
   expect(assessRuntimeLogs([stall, error].join('\n')).failures).toEqual([error]);
 });
 
-function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number) => string[]) {
+function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number) => string[], processStart?: string) {
   const { home, dir, binding } = fixture();
   const repo = createAuthCheckRepo(); roots.push(repo);
   const nativeApp = path.join(home, 'Mandible.app');
@@ -144,7 +155,7 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
   const revision = JSON.stringify({ commit: git(repo, ['rev-parse', 'HEAD']) });
   for (const file of [path.join(repo, 'dist/build-revision.json'), path.join(resources, 'build-revision.json')]) fs.writeFileSync(file, revision);
   for (const file of [path.join(repo, 'dist/index.js'), executable, backend, gateway]) fs.writeFileSync(file, file);
-  const processStartedAt = execFileSync('/bin/ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+  const processStartedAt = processStart ?? execFileSync('/bin/ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
   const fakeStart = Date.now();
   const log = path.join(home, 'daemon.log');
   fs.writeFileSync(log, logLines(processStartedAt, fakeStart).join('\n') + '\n');
@@ -203,6 +214,52 @@ it('runs real recovery observation through complete log and journal evidence', a
     { actor: { user_id: 'agent' }, failedPhase: 'failed', failure: legacyFailure, code: 'recovery_observation_failed' },
     { code: 'log_assessment_failed', evidence: { failures: [expect.stringContaining('ingestion_worker_error')] } },
   ]);
+});
+
+it.each(['running', 'running-unreplaced', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const)('requires the desktop before accepting recovery: %s', async state => {
+  const processStart = new Date(Date.now() - 2000).toISOString();
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)], processStart);
+  const binding = { ...f.failed.binding, desktopWasRunning: true };
+  const failed = { ...f.failed, binding, bindingDigest: bindingDigest(binding), stages: state === 'running-unreplaced' ? {} : { desktopRelaunch: { completedAt: 1 } } };
+  const dir = handoffDirectory(binding.home, binding.requestId, binding.executionId);
+  fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(failed));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: failed.bindingDigest }));
+  let running = state === 'running' || state === 'running-unreplaced';
+  const spawnSync = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
+  vi.mocked(childProcess.spawnSync).mockImplementation(((binary: string, args: string[], options: any) => {
+    if (binary === '/bin/ps' && args.includes(String(process.pid))) return { status: 0, stdout: processStart };
+    if (binary === '/usr/bin/pgrep') return { status: running ? 0 : 1, stdout: running ? '987654\n' : '' };
+    if (binary === '/bin/ps' && args.includes('987654')) return { status: 0, stdout: `${binding.nativeApp}/Contents/MacOS/mandible-app` };
+    return spawnSync(binary, args, options);
+  }) as typeof spawnSync);
+  const relaunch = vi.mocked(supervisor.runSupervisedCommand).mockImplementation(async () => {
+    if (state === 'relaunch-fails') throw new Error('fixture relaunch failed');
+    running = state !== 'exits-after-relaunch';
+  });
+  let time = f.fakeStart;
+  let probes = 0;
+  const observe = () => observeFailedRuntimeHandoff(failed, { kind: 'daemon_reconciliation' }, {
+    observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+    probe: async () => {
+      expect(running).toBe(true);
+      return ++probes === 1 ? f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)) : f.evidence(diagnostics(2, f.fakeStart - 10, f.fakeStart + 10));
+    },
+  });
+  if (state === 'relaunch-fails' || state === 'exits-after-relaunch') {
+    await expect(observe()).rejects.toThrow(state === 'relaunch-fails' ? 'Installed desktop could not be relaunched' : 'Installed desktop did not remain running');
+    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.phase).toBe('failed');
+    expect(readRuntimeRecoveryAttempts(binding.home, binding.requestId, binding.executionId)).toHaveLength(1);
+  } else {
+    const recovered = await observe();
+    expect(recovered.recovery.receipt).toBeDefined();
+    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.stages.desktopRelaunch.completedAt).toEqual(state === 'running' ? 1 : expect.any(Number));
+    // Receipt verification is the acknowledgment gate, including after acceptance.
+    const complete = { ...recovered, phase: 'complete', receipt: recovered.recovery.receipt };
+    running = false;
+    await expect(verifyRuntimeHandoffReceipt(complete, { probe: false })).rejects.toThrow('Installed desktop did not remain running');
+  }
+  expect(relaunch).toHaveBeenCalledTimes(state === 'running' ? 0 : 1);
+  if (state !== 'running') expect(relaunch).toHaveBeenCalledWith('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', binding.nativeApp, 'mandible-app', '0'], expect.objectContaining({ cwd: binding.root, timeout: 15000 }));
 });
 
 it('records a refused recovery without overwriting a concurrently accepted receipt', async () => {

@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,7 +51,7 @@ describe("conversation browse and fork routes", () => {
 
     const prepareSpy = vi.spyOn(db, "prepare");
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-fork/forks" });
 
     expect(response.status).toBe(200);
@@ -69,7 +70,7 @@ describe("conversation browse and fork routes", () => {
   it("keeps transcript browsing passive", async () => {
     insertConversation("conv-browse");
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const before = db.prepare("SELECT COUNT(*) AS count FROM conversation_control_state").get() as { count: number };
     const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-browse" });
     const after = db.prepare("SELECT COUNT(*) AS count FROM conversation_control_state").get() as { count: number };

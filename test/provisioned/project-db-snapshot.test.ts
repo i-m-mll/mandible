@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../../src/ledger-reads/index.js";
 // @vitest-environment node
 
 import fs from "node:fs";
@@ -456,7 +457,7 @@ describe("project-db-snapshot", () => {
     const { Router } = await import("../../src/server.js");
     const { registerConversationRoutes } = await import("../../src/routes/conversations.js");
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?limit=10" });
     expect(sidebar.body).toEqual(expect.objectContaining({
       groups: expect.arrayContaining([expect.objectContaining({

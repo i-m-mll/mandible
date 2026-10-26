@@ -1,3 +1,5 @@
+import { readSnapshot } from "./snapshot.js";
+import { conversationSidebar, conversationSearch, conversationList } from "./conversation-queries.js";
 import { issueSummaries } from "./issues.js";
 import { authHistory } from "./auth-history.js";
 import { artifactSeries } from "./artifacts.js";
@@ -33,20 +35,36 @@ export const ledgerReads = {
   diagnostics_delay: diagnosticsDelay,
 };
 
-export type LedgerReadKind = keyof typeof ledgerReads;
-export type LedgerReadParams<K extends LedgerReadKind> = Parameters<typeof ledgerReads[K]>[1];
-export type LedgerReadResult<K extends LedgerReadKind> = ReturnType<typeof ledgerReads[K]>;
+/** Async source reads own their cache connection on one dedicated worker. */
+export const conversationReads = {
+  conversation_list: conversationList,
+  conversation_sidebar: conversationSidebar,
+  conversation_search: conversationSearch,
+};
+const reads = { ...ledgerReads, ...conversationReads };
+export function isConversationRead(kind: LedgerReadKind): kind is keyof typeof conversationReads {
+  return Object.hasOwn(conversationReads, kind);
+}
+
+export type LedgerReadKind = keyof typeof reads;
+export type LedgerReadParams<K extends LedgerReadKind> = Parameters<typeof reads[K]>[1];
+export type LedgerReadResult<K extends LedgerReadKind> = Awaited<ReturnType<typeof reads[K]>>;
 
 /**
- * Each read sees one snapshot. A reader thread's statements otherwise interleave
- * with commits on the main connection, so a read that checks access in a later
- * statement than the one that fetched rows could judge them against newer state.
- * Deferred never takes the write lock, so the inline reader is safe on the main
- * connection too.
+ * Every synchronous read phase runs in one deferred snapshot. Conversation queries
+ * use the same helper for each phase before or after an await; no transaction may
+ * remain open across an await. Statements that must agree (counts and pages,
+ * access checks and rows) share a phase. A query without awaits has one phase.
+ * Reader statements otherwise interleave with commits on the main connection.
+ * Deferred never takes the write lock, so inline reads are safe there too.
  */
-export function runLedgerRead<K extends LedgerReadKind>(db: Db, kind: K, params: LedgerReadParams<K>): LedgerReadResult<K> {
-  const read = ledgerReads[kind] as (db: Db, params: LedgerReadParams<K>) => LedgerReadResult<K>;
-  return db.transaction(() => read(db, params)).deferred();
+export function runLedgerRead<K extends LedgerReadKind>(db: Db, kind: K, params: LedgerReadParams<K>): LedgerReadResult<K> | Promise<LedgerReadResult<K>> {
+  if (isConversationRead(kind)) {
+    const read = conversationReads[kind] as (db: Db, params: LedgerReadParams<K>) => Promise<LedgerReadResult<K>>;
+    return read(db, params);
+  }
+  const read = reads[kind] as (db: Db, params: LedgerReadParams<K>) => LedgerReadResult<K>;
+  return readSnapshot(db, () => read(db, params));
 }
 
 export type LedgerReadRequest = {

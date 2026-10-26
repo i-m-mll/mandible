@@ -15,6 +15,8 @@ import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, 
 import { readBuildRevision } from './build-revision.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
+import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
 export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
@@ -51,6 +53,18 @@ export function routeCostCheck(text) {
     unclassified: report.unclassified.map(route),
     failed_requests: report.failed_requests.map(entry => `${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
   };
+}
+
+/** The sweep's reasons for failing, in the order a reader acts on them. */
+export function routeCostVerdict(check) {
+  const reasons = [
+    ...check.offenders.map(entry => `${entry.route} blocked the loop ${entry.first_call_turn_ms} ms on first call, ${entry.warm_turn_ms} ms warm`),
+    ...check.failed_requests.slice(0, 3).map(entry => `request failed: ${entry}`),
+    ...(check.failed_requests.length > 3 ? [`${check.failed_requests.length - 3} more failed requests`] : []),
+    ...check.unclassified.map(route => `${route} is unclassified`),
+    ...check.exception_problems.map(entry => `exception for ${entry.route} (${entry.issue}): ${entry.problem}`),
+  ];
+  return reasons.length > 0 ? reasons.join('; ') : 'the report names no failure; see route-cost.log';
 }
 
 export function createAcceptanceHome(home) {
@@ -204,6 +218,13 @@ async function main() {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
   const candidate = command('git', ['rev-parse', 'HEAD']);
   if (command('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
+  const lock = readRuntimeHandoffLock(path.resolve(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible')));
+  const initialBlocker = lock ? { code: 'runtime_handoff_lock', message: runtimeHandoffLockRefusal(lock) } : null;
+  if (initialBlocker) {
+    process.stdout.write(`${JSON.stringify({ status: 'failed', candidate, publication_blocker: initialBlocker, error: initialBlocker.message })}\n`);
+    process.exitCode = 1;
+    return;
+  }
   const runtime = command('/bin/sh', [path.join(root, 'scripts', 'bun-runtime.sh')]);
   const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');
@@ -244,7 +265,9 @@ async function main() {
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
     result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
-    if (sweepFailure) throw new Error(`Route-cost sweep failed (${sweepFailure.message}); see checks.route_cost and route-cost.log: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').slice(-5).join(' | ')}`);
+    if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
+      ? routeCostVerdict(result.checks.route_cost)
+      : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);

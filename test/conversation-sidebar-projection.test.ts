@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -103,7 +104,7 @@ describe("conversation sidebar projection", () => {
     });
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const groups = groupsOf(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?project_ids=${alpha.id}`,
@@ -126,7 +127,7 @@ describe("conversation sidebar projection", () => {
     insertConversation({ id: "prefix-only", cwd: "/workspace/repository" });
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const groups = groupsOf(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?project_ids=${nested.id}`,
@@ -160,7 +161,7 @@ describe("conversation sidebar projection", () => {
     db.exec("DROP TABLE work_repos");
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const initial = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?limit=2" });
 
     expect(initial.status).toBe(200);
@@ -234,7 +235,7 @@ describe("conversation sidebar projection", () => {
       cwd: "/Users/me/Main/repo-a",
     });
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     const initialDate = groupsOf(await router.invoke({
       method: "GET",
@@ -280,7 +281,7 @@ describe("conversation sidebar projection", () => {
       .run("session-ordinary-unstarred");
 
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const groups = groupsOf(await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=10",
@@ -309,7 +310,7 @@ describe("conversation sidebar projection", () => {
     insertConversation({ id: "chat-1" });
     insertConversation({ id: "chat-2" });
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const initial = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?limit=1" });
     const cursor = groupsOf(initial)[0].next_cursor!;
 
@@ -336,7 +337,7 @@ describe("conversation sidebar projection", () => {
   it("rejects unknown, non-canonical, empty, and over-bounded project id requests", async () => {
     const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
 
     expect(await router.invoke({
       method: "GET",
@@ -360,7 +361,7 @@ it("returns every matching pin in saved order beyond the normal page cap", async
     insertConversation({ id: 'filtered-pin', title: 'other title' });
     const order = [...ids].reverse();
     const router = new Router();
-    registerConversationRoutes(router);
+    registerConversationRoutes(router, inlineLedgerReader());
     const first = groupsOf(await router.invoke({ method: 'GET',
       url: `/api/conversations/sidebar?limit=1&search=matching&pinned_ids=${['filtered-pin', ...order].join(',')}`,
     })).find(group => group.kind === 'pinned')!;

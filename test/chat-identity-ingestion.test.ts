@@ -1,3 +1,4 @@
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,7 +96,7 @@ it('repairs an exact historical pair without rekeying transcript material and pr
   const { token } = auth.mintApiToken(operator.id);
   const router = new Router({ clientAuth: auth });
   registerConversationControlRoutes(router, new ConversationControlService(db), { db });
-  registerConversationRoutes(router);
+  registerConversationRoutes(router, inlineLedgerReader());
   const oldRoute = await router.invoke({ method: 'GET', url: `/api/conversations/${shellId}` });
   expect(oldRoute.body).toMatchObject({ conversation: { id: canonical.id, starred: true }, total: 1 });
   for (const ref of [canonical.id, shellId, shellId.slice(0, 12)]) {

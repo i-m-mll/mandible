@@ -3,8 +3,6 @@ import { authDependencies } from "../auth-dependency.js";
 import { isAuthMergeCommand } from "../auth-context.js";
 import { authRequestChangesBuildInputs } from "../runtime-build-scope.js";
 import { latestCandidateAcceptances, type CandidateAcceptanceRead } from "../candidate-acceptance.js";
-import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
-import type { AuthPublicationBlocker } from "../contracts.js";
 import type { Db } from "../db.js";
 import type { AuthRequestSummary, AuthConvergence } from "../types.js";
 import { mapRow, parseChangeReport } from "../auth-request-row.js";
@@ -113,17 +111,15 @@ export function authHistory(db: Db, params: { limit: number; type?: string }) {
     // Match AuthQueue.convergenceForRequest when durable hook rows cannot be read.
     convergence = new Map(requests.map(row => [row.id, { state: "none", hooks: [] }]));
   }
-  const lock = selfUpdates.length > 0 ? hooks.runtimeHandoffLock() : null;
-  const blocker: AuthPublicationBlocker | null = lock ? { code: "runtime_handoff_lock", message: runtimeHandoffLockRefusal(lock) } : null;
   return requests.map(row => ({
     request: {
       ...row,
       dependency: row.depends_on_id ? dependencies.get(row.depends_on_id)! : null,
       convergence: convergence.get(row.id)!,
-      publication_blocker: isAuthMergeCommand(row) && selfUpdatingRepos.has(row.repo ?? "") ? blocker : null,
       execution_attempts: listAuthExecutionAttempts(db, row.id),
       ...authAttributionReadFields(resolver, row),
     },
+    selfUpdates: isAuthMergeCommand(row) && selfUpdatingRepos.has(row.repo ?? ""),
     acceptance: { applies: acceptanceIds.has(row.id), latest: acceptances.get(row.id) ?? null } satisfies CandidateAcceptanceRead,
   }));
 }
