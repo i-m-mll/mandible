@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { withOwnedRunLock, OWNED_RUN_SCHEMA } from './owned-run.mjs';
+import { withOwnedRunLock, validateOwnedRunFinalization } from './owned-run.mjs';
 
 export function previewBaseDir(override = null) {
   const selected = override ?? process.env.MANDIBLE_PREVIEW_BASE_DIR ?? path.join(os.homedir(), '.cache', 'mandible', 'previews');
@@ -32,23 +32,11 @@ export async function previewWorktreeCustodyReason(branch, worktree) {
   if (metadata.branch !== branch || !metadata.worktree
       || (worktree && canonical(metadata.worktree) !== canonical(worktree))) return null;
   const owner = metadata.ownership;
-  if (!owner || owner.state !== 'terminal' || !owner.receipt || !fs.existsSync(owner.receipt)
-      || (owner.outcome === 'accepted' && !owner.converged)
-      || !owner.outputs?.every(output => output.disposition === 'disposable')) {
-    return 'preview has unresolved owned-run custody; finalize its lifecycle before removing its worktree';
-  }
-  const stat = fs.lstatSync(root);
-  if (owner.schema !== OWNED_RUN_SCHEMA || owner.root !== canonical(root)
-      || stat.dev !== owner.rootIdentity?.dev || stat.ino !== owner.rootIdentity?.ino) {
-    return 'preview owned-run identity cannot be verified';
-  }
-  const expectedReceipt = path.join(path.dirname(path.resolve(root)), '.receipts', `${owner.runId}.json`);
-  let receipt;
-  try { receipt = JSON.parse(fs.readFileSync(owner.receipt, 'utf8')); }
+  let finalization;
+  try { finalization = validateOwnedRunFinalization(root, owner); }
   catch { return 'preview finalization receipt cannot be verified'; }
-  if (path.resolve(owner.receipt) !== expectedReceipt || receipt.runId !== owner.runId || receipt.outcome !== owner.outcome) {
-    return 'preview finalization receipt does not match its owner';
-  }
+  if (!finalization.ok) return finalization.reason;
+  if (!owner.outputs.every(output => output.disposition === 'disposable')) return 'preview has unresolved owned outputs';
   for (const file of new Set([metadata.pidFile, path.join(root, 'mandible.pid')].filter(Boolean))) {
     let pid;
     try { pid = Number(fs.readFileSync(file, 'utf8').trim()); } catch { continue; }

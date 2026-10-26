@@ -503,8 +503,14 @@ describe.sequential("trash custody", () => {
     await expect(trashBranch(db, request)).rejects.toMatchObject({ code: "preview_worktree_owned" });
     expect(fs.existsSync(featureWorktree)).toBe(true);
     expect(await listTrashEntries(db)).toEqual([]);
-    finalizeOwnedRun(metadata, { expectedRevision: ownership.revision, outcome: "assessed", summary: "Preview review complete",
+    const finalized = finalizeOwnedRun(metadata, { expectedRevision: ownership.revision, outcome: "assessed", summary: "Preview review complete",
       inspect: () => ({ idle: true }) });
+    const receiptFile = finalized.ownership.receipt;
+    const receiptBytes = fs.readFileSync(receiptFile, "utf8");
+    fs.writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receiptBytes), manifestDigest: "changed" }));
+    await expect(trashBranch(db, request)).rejects.toMatchObject({ code: "preview_worktree_owned" });
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    fs.writeFileSync(receiptFile, receiptBytes);
     expect((await trashBranch(db, request)).result).toBe("removed");
     expect(fs.existsSync(featureWorktree)).toBe(false);
   });

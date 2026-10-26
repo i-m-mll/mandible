@@ -104,6 +104,20 @@ function outputDigest(outputs) {
   return createHash('sha256').update(JSON.stringify(outputs)).digest('hex');
 }
 
+export function validateOwnedRunFinalization(root, run) {
+  if (!run || !identityMatches(root, run)) return { ok: false, reason: 'missing or invalid ownership; manual inspection required' };
+  if (run.state !== 'terminal' || !run.receipt || !fs.existsSync(run.receipt)
+      || (run.outcome === 'accepted' && !run.converged)) return { ok: false, reason: 'cleanup blocked: unresolved preview material' };
+  if (path.resolve(run.receipt) !== path.join(path.dirname(path.resolve(root)), '.receipts', `${run.runId}.json`)) {
+    return { ok: false, reason: 'compact outcome path is outside owner receipts' };
+  }
+  const receipt = readOwnedMetadata(run.receipt);
+  if (receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) {
+    return { ok: false, reason: 'compact outcome does not match owner' };
+  }
+  return { ok: true, receipt };
+}
+
 function verifyTransfer(root, manifest, destination) {
   if (!destination || fs.realpathSync(destination) === fs.realpathSync(root) || fs.realpathSync(destination).startsWith(`${fs.realpathSync(root)}${path.sep}`)) throw new Error('Transfer destination must be outside the cleanup root');
   for (const file of manifest.filter(file => file.kind !== 'directory')) {
@@ -177,11 +191,9 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
     run.state = 'terminal'; run.outcome = 'failed'; run.revision += 1;
     saveOwnedMetadata(metadataFile, metadata);
   }
-  if (run.state !== 'terminal' || !run.receipt || !fs.existsSync(run.receipt)
-      || (run.outcome === 'accepted' && !run.converged)) return blocked('cleanup blocked: unresolved preview material');
-  if (path.resolve(run.receipt) !== path.join(path.dirname(path.resolve(root)), '.receipts', `${run.runId}.json`)) return blocked('compact outcome path is outside owner receipts');
-  const receipt = readOwnedMetadata(run.receipt);
-  if (receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) return blocked('compact outcome does not match owner');
+  const finalization = validateOwnedRunFinalization(root, run);
+  if (!finalization.ok) return blocked(finalization.reason);
+  const { receipt } = finalization;
   const consumers = inspect(root);
   if (!consumers.idle) return blocked(consumers.reason);
   if (receipt.disposition === 'transferred') {
