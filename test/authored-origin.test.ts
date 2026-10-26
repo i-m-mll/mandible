@@ -24,7 +24,7 @@ let db: Db;
 beforeEach(() => { db = migratedMemoryDb(); setDb(db); });
 afterEach(() => { vi.restoreAllMocks(); db.close(); });
 function history() {
-  return (db.prepare("SELECT entity_type,entity_id,event_type,actor_type,actor_user_id,payload_json FROM ledger_events ORDER BY rowid").all() as Array<Record<string, string>>)
+  return (db.prepare("SELECT entity_type,entity_id,event_type,actor_type,actor_user_id,payload_json FROM ledger_events WHERE entity_type IN ('space','space_item','space_occurrence','space_edge','space_block','conversation_metadata') ORDER BY rowid").all() as Array<Record<string, string>>)
     .map(({ payload_json, ...row }) => ({ ...row, payload: JSON.parse(payload_json) }));
 }
 
