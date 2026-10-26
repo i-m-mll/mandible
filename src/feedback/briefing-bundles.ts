@@ -1,3 +1,6 @@
+import { requestOriginFromRow } from "../ledger/origin-read.js";
+import { mutateBriefing } from "./mutation-history.js";
+import { requestOriginJson } from "../request-origin.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -66,15 +69,15 @@ function projectLayout(rows: readonly LayoutRow[]): { layout: BriefingBundleLayo
 
 export function readBriefingBundle(db: Db, bundleRef: string, viewer: BriefingBundleViewer): BriefingBundle {
   const id = resolveBundleId(db, bundleRef);
-  const bundle = db.prepare("SELECT id, name, created_at, updated_at FROM briefing_bundles WHERE id = ?")
+  const bundle = db.prepare("SELECT id, name, created_at, updated_at, request_origin_json FROM briefing_bundles WHERE id = ?")
     .get(id) as Omit<BriefingBundle, "layout" | "members">;
-  return { ...bundle, ...projectLayout(layoutRows(db, id, viewer)) };
+  return { ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(layoutRows(db, id, viewer)) };
 }
 
 export function listBriefingBundles(db: Db, viewer: BriefingBundleViewer): BriefingBundle[] {
-  const bundles = db.prepare("SELECT id, name, created_at, updated_at FROM briefing_bundles ORDER BY created_at, id")
+  const bundles = db.prepare("SELECT id, name, created_at, updated_at, request_origin_json FROM briefing_bundles ORDER BY created_at, id")
     .all() as Array<Omit<BriefingBundle, "layout" | "members">>;
-  return bundles.map((bundle) => ({ ...bundle, ...projectLayout(layoutRows(db, bundle.id, viewer)) }));
+  return bundles.map((bundle) => ({ ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(layoutRows(db, bundle.id, viewer)) }));
 }
 
 export type DeletedBriefingBundle = { bundle_id: string; name: string; deleted: true };
@@ -85,6 +88,7 @@ export type DeletedBriefingBundle = { bundle_id: string; name: string; deleted: 
  */
 export function deleteEmptyBriefingBundle(db: Db, bundleRef: string): DeletedBriefingBundle {
   const bundleId = resolveBundleId(db, bundleRef);
+  return mutateBriefing(db, "briefing_bundle", bundleId, () => {
   return db.transaction(() => {
     const bundle = db.prepare("SELECT name FROM briefing_bundles WHERE id = ?").get(bundleId) as { name: string };
     if (db.prepare("SELECT 1 FROM briefing_bundle_members WHERE bundle_id = ? LIMIT 1").get(bundleId)) {
@@ -122,6 +126,7 @@ export function deleteEmptyBriefingBundle(db: Db, bundleRef: string): DeletedBri
     if (result.changes !== 1) throw new BriefingStoreError("Briefing bundle not found", 404, "not_found");
     return { bundle_id: bundleId, name: bundle.name, deleted: true as const };
   }).immediate();
+  });
 }
 
 type ResolvedLayoutEntry =
@@ -227,8 +232,8 @@ export function createBriefingBundle(
     enforceActivePlacement(db, { operation: "bundle_create", target: { kind: "bundle", id: bundleId },
       briefingIds: layout.flatMap((entry) => entry.kind === "briefing" ? [entry.briefingId] : entry.briefingIds),
       override: input.placementOverride, now });
-    db.prepare("INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-      .run(bundleId, name, now, now);
+    db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(requestOriginJson(), bundleId, name, now, now);
     writeLayout(db, bundleId, layout, now);
   }).immediate();
   return readBriefingBundle(db, bundleId, input.viewer);
@@ -240,10 +245,12 @@ export function updateBriefingBundleName(
   if (typeof name !== "string" || !name.trim()) throw new BriefingStoreError("name must be a nonblank string");
   const normalized = name.trim();
   const bundleId = resolveBundleId(db, bundleRef);
+  return mutateBriefing(db, "briefing_bundle", bundleId, () => {
   const current = db.prepare("SELECT name FROM briefing_bundles WHERE id = ?").get(bundleId) as { name: string };
   const changed = current.name !== normalized;
   if (changed) db.prepare("UPDATE briefing_bundles SET name = ? WHERE id = ?").run(normalized, bundleId);
   return { bundle: readBriefingBundle(db, bundleId, viewer), changed };
+  });
 }
 
 export function replaceBriefingBundleLayout(
@@ -254,6 +261,7 @@ export function replaceBriefingBundleLayout(
     throw new BriefingStoreError("provide exactly one of briefing_refs or layout");
   }
   const bundleId = resolveBundleId(db, bundleRef);
+  return mutateBriefing(db, "briefing_bundle", bundleId, () => {
   const layout = input.layout === undefined ? flatLayout(db, input.briefingRefs ?? [], viewer) : resolveLayout(db, input.layout, viewer);
   const changed = db.transaction(() => {
     if (JSON.stringify(currentResolvedLayout(db, bundleId)) === JSON.stringify(layout)) return false;
@@ -267,6 +275,7 @@ export function replaceBriefingBundleLayout(
     return true;
   }).immediate();
   return { bundle: readBriefingBundle(db, bundleId, viewer), changed };
+  });
 }
 
 export function replaceBriefingBundleMembers(
@@ -280,6 +289,7 @@ export function addBriefingBundleMember(
   placementOverride?: PlacementOverride,
 ): { bundle: BriefingBundle; added: boolean } {
   const bundleId = resolveBundleId(db, bundleRef);
+  return mutateBriefing(db, "briefing_bundle", bundleId, () => {
   const briefingId = resolveBriefingId(db, briefingRef, viewer);
   const added = db.transaction(() => {
     if (db.prepare("SELECT 1 FROM briefing_bundle_members WHERE bundle_id = ? AND briefing_id = ?").get(bundleId, briefingId)) return false;
@@ -295,4 +305,5 @@ export function addBriefingBundleMember(
     return true;
   }).immediate();
   return { bundle: readBriefingBundle(db, bundleId, viewer), added };
+  });
 }

@@ -1,3 +1,4 @@
+import { mutateWorkUnit } from "./work-unit-history.js";
 import fs from "node:fs";
 import path from "node:path";
 import { getDb, type Db } from "./db.js";
@@ -159,7 +160,7 @@ export class WorkUnitReconciler {
     const cleared = db.transaction(() => {
       let count = 0;
       for (const row of dead) {
-        count += Number(clearStmt.run(row.id, row.assigned_session_id).changes);
+        count += Number(mutateWorkUnit(db, row.id, () => clearStmt.run(row.id, row.assigned_session_id)).changes);
       }
       return count;
     })();
@@ -283,11 +284,11 @@ export class WorkUnitReconciler {
         }
         if (authRequest.status === "matched") {
           if (authRequest.completed) {
-            resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+            mutateWorkUnit(db, row.id, () => resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id));
           }
           continue;
         }
-        count += Number(abandonStmt.run(row.id).changes);
+        count += Number(mutateWorkUnit(db, row.id, () => abandonStmt.run(row.id)).changes);
       }
       return count;
     })();
@@ -413,7 +414,7 @@ export class WorkUnitReconciler {
         if (workUnitDecisionState(db, row.id) !== state || JSON.stringify(readBranches(row.branch)) !== JSON.stringify(branches)) continue;
         const keys = identity.keysForRef(row.repo_id);
         const ahead = branches.some(branch => branch.repo_root === row.repo_id || [...identity.keysForRef(branch.repo_root)].some(key => keys.has(key)));
-        if (ahead) count += Number(db.prepare("UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ? AND state = 'open'").run(this.now(), row.id).changes);
+        if (ahead) count += Number(mutateWorkUnit(db, row.id, () => db.prepare("UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ? AND state = 'open'").run(this.now(), row.id)).changes);
       }
       return count;
     })();

@@ -1,3 +1,5 @@
+import { mutateArtifactRecord } from "./artifact-mutation-history.js";
+import { withRequestOriginMetadata } from "./request-origin.js";
 import { artifactDescriptiveMetadata as descriptiveArtifactMetadata } from './artifact-metadata.js';
 import { fileURLToPath } from "node:url";
 import { artifactFailure, artifactSourceLineage, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
@@ -1547,7 +1549,7 @@ export function registerArtifactLink(
       : requestedTargetId && requestedTargetType === "artifact_blob"
         ? requestedTargetId
         : canonicalBlob.id;
-  db.prepare(
+  mutateArtifactRecord(db, "artifact_links", id, () => db.prepare(
     // NOTE: blob_id and target_id are intentionally NOT in the ON CONFLICT DO
     // UPDATE SET. A re-submission MUST NOT silently retarget an existing link
     // — for living links the latest-at-creation fallback stays pinned to its
@@ -1580,7 +1582,7 @@ export function registerArtifactLink(
     repo_id: asString(input.repo_id) ?? null,
     provider_id: asString(input.provider_id) ?? null,
     source: asString(input.source) ?? "artifact_registry",
-    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
+    metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
     link_kind: linkKind,
     series_ref: seriesRef,
     target_type: targetType,
@@ -1588,7 +1590,7 @@ export function registerArtifactLink(
     fallback_version_id: linkKind === "living" ? canonicalVersion?.id ?? null : null,
     created_at: now,
     updated_at: now,
-  });
+  }));
   return getArtifactLink(db, id);
 }
 
@@ -4449,7 +4451,7 @@ function upsertCanonicalArtifactBlob(db: Db, artifact: ArtifactRecord, now = Dat
     storage_uri:artifact.custody_mode === 'managed' ? artifact.uri : null,
     media_type:artifact.media_type,role:artifact.role,size_bytes:artifact.size_bytes,
     provider_id:artifact.provider_id,manifest_id:artifact.manifest_id,
-    metadata_json:jsonStringify(descriptiveArtifactMetadata(artifact.metadata)),created_at:artifact.created_at || now});
+    metadata_json:jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(artifact.metadata))),created_at:artifact.created_at || now});
   return getArtifactBlob(db,blobId)!;
 }
 
@@ -4514,7 +4516,7 @@ export function associateProjectArtifact(
     target.targetId,
     role,
   ]);
-  db.prepare(
+  mutateArtifactRecord(db, "project_artifact_associations", id, () => db.prepare(
     `INSERT INTO project_artifact_associations (
       id, project_id, target_type, target_id, association_kind, role, title,
       description, rank, status, source, source_ref_type, source_ref_id,
@@ -4553,10 +4555,10 @@ export function associateProjectArtifact(
     source: input.source ?? "agent_explicit",
     source_ref_type: input.source_ref_type ?? null,
     source_ref_id: input.source_ref_id ?? null,
-    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
+    metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
     created_at: now,
     updated_at: now,
-  });
+  }));
   const association = db
     .prepare("SELECT * FROM project_artifact_associations WHERE project_id = ? AND target_type = ? AND target_id = ? AND role = ?")
     .get(projectId, target.targetType, target.targetId, role) as Record<string, unknown>;
@@ -4776,7 +4778,7 @@ export function ensureArtifactSeries(db: Db, input: EnsureArtifactSeriesInput, n
   const id = `artifact:${crypto.randomBytes(32).toString('hex')}`;
   db.transaction(() => {
     db.prepare(`INSERT INTO artifact (id,identity_key,source_kind,title,logical_name,version_count,metadata_json,created_at,updated_at)
-      VALUES (?,?,'managed',?,?,0,?,?,?)`).run(id,input.series_key,input.title ?? null,input.logical_name ?? null,jsonStringify(input.metadata ?? {}),now,now);
+      VALUES (?,?,'managed',?,?,0,?,?,?)`).run(id,input.series_key,input.title ?? null,input.logical_name ?? null,jsonStringify(withRequestOriginMetadata(input.metadata ?? {})),now,now);
     db.prepare('INSERT INTO artifact_source VALUES (?,?,1,NULL,?)').run(id,sourceKey({kind:'managed',key:input.series_key}),now);
   }).immediate();
   return getArtifactSeries(db, id)!;
@@ -4819,7 +4821,7 @@ function artifactVersionEvidence(input: VersionEvidenceInput): string {
   return stableJsonStringify({
     hash: input.content_hash, project: input.source_project_id ?? null, commit: input.commit_sha ?? null,
     path: input.repo_path ?? null, observed: input.commit_sha ? null : input.observed_path ?? null,
-    custody: input.custody_mode ?? null, label: input.label ?? null, note: input.note ?? null, metadata: input.metadata ?? {},
+    custody: input.custody_mode ?? null, label: input.label ?? null, note: input.note ?? null, metadata: Object.fromEntries(Object.entries(input.metadata ?? {}).filter(([key]) => key !== "request_origin")),
   });
 }
 function artifactEvidenceVersionId(seriesId: string, input: Omit<AppendArtifactVersionInput, 'logical_artifact_id' | 'blob_id'>): string {
@@ -4922,7 +4924,7 @@ export function appendArtifactVersion(
       custody_mode: input.custody_mode ?? "managed",
       label: input.label ?? null,
       note: input.note ?? null,
-      metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
+      metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
       created_at: now,
     });
     const created = result.changes > 0;
@@ -5255,7 +5257,7 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         db.prepare(`INSERT INTO artifact (id,identity_key,source_kind,title,source_project_id,
           logical_name,version_count,metadata_json,created_at,updated_at)
           VALUES (?,?,?,?,?,?,0,?,?,?)`).run(logicalId, identityKey, plan.source_kind, input.title ?? null,
-            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})), now, now);
+            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))), now, now);
         db.prepare('INSERT INTO artifact_source VALUES (?,?,1,NULL,?)').run(logicalId, sourceKey(plan.source), now);
       }
       const linked = plan.custody_mode === 'git';
@@ -5403,7 +5405,7 @@ export function saveArtifactDraft(
   if (typeof input.content !== "string") throw new Error("draft content must be a string");
   const context = resolveCanonicalDraftContext(db, ref, input.base_version_id);
   const id = artifactDraftId(context.seriesId);
-  db.prepare(
+  mutateArtifactRecord(db, "artifact_drafts", context.logical.id, () => db.prepare(
     `INSERT INTO artifact_drafts (
       id, artifact_id, version_id, content, media_type, label, note,
       metadata_json, created_at, updated_at
@@ -5427,10 +5429,10 @@ export function saveArtifactDraft(
     media_type: input.media_type ?? null,
     label: input.label ?? null,
     note: input.note ?? null,
-    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
+    metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
     created_at: now,
     updated_at: now,
-  });
+  }));
   return getArtifactDraft(db, context.logical.id) as ArtifactDraftRecord;
 }
 
@@ -5438,8 +5440,8 @@ export function deleteArtifactDraft(db: Db, ref: string): { deleted: boolean } {
   if (!artifactDraftTablesExist(db)) return { deleted: false };
   const canonicalArtifactId = canonicalDraftArtifactId(db, ref);
   if (!canonicalArtifactId) return { deleted: false };
-  const result = db.prepare("DELETE FROM artifact_drafts WHERE artifact_id = ?")
-    .run(canonicalArtifactId);
+  const result = mutateArtifactRecord(db, "artifact_drafts", canonicalArtifactId, () => db.prepare("DELETE FROM artifact_drafts WHERE artifact_id = ?")
+    .run(canonicalArtifactId));
   return { deleted: result.changes > 0 };
 }
 
