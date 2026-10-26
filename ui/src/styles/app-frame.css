@@ -6,12 +6,12 @@
   min-height: 0;
   min-width: 0;
   --app-frame-navigation-gap: 2px;
-  --app-frame-left-width: var(--app-view-sidebar-width);
+  --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
   background: var(--surface-chrome);
 }
 .app-frame > .app-frame__bar {
   --app-header-height: var(--app-frame-header-height);
-  grid-column: 2;
+  grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
@@ -27,11 +27,12 @@
   flex: 0 0 auto;
   min-width: max-content;
   gap: var(--app-frame-navigation-gap);
-  padding-inline: 8px;
+  padding-inline: 0 8px;
   height: 100%;
 }
 .app-frame--main-header.app-frame--left-open .app-frame__navigation { width: var(--app-frame-left-width); }
 .app-frame__native-controls { display: none; }
+.app-frame__logo { display: flex; align-items: center; justify-content: center; flex: none; width: var(--app-rail-width); height: var(--app-header-control-size); color: var(--text-muted); }
 .app-frame__button {
   display: inline-flex;
   align-items: center;
@@ -64,14 +65,37 @@
 .app-frame--right-open .app-frame__right::before {
   content: ''; position: absolute; width: 1px; height: 50%; top: 25%; left: 0; background: var(--border-muted); pointer-events: none;
 }
-.app-frame > .app-rail { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border-muted); padding-top: 12px; background: transparent; }
-.app-frame > .app-layout { grid-column: 2; grid-row: 2; }
-:root[data-frame-presentation='macos-overlay'] .app-frame { --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width)); }
-:root[data-frame-presentation='macos-overlay'] .app-frame__bar { grid-column: 1 / -1; }
-:root[data-frame-presentation='macos-overlay'] .app-frame__navigation { padding-inline-start: 0; }
-:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: calc(var(--app-native-controls-reservation, 88px) - var(--app-header-control-icon-inline-inset) - var(--app-frame-navigation-gap)); flex: none; height: 100%; }
-:root[data-frame-presentation='macos-overlay'] .app-frame > .app-rail { grid-row: 2; border-right: 0; }
-:root[data-frame-presentation='macos-overlay'] .app-frame > .app-layout { border-top-left-radius: var(--radius-chat-surface); }
+.app-frame > .app-rail { grid-column: 1; grid-row: 2; border-right: 0; padding-top: 12px; background: transparent; }
+.app-frame > .app-layout { grid-column: 2; grid-row: 2; border-top-left-radius: var(--radius-chat-surface); }
+/* The three disjoint layers share one distance-from-edge profile, including
+ * the corner tangents. Paint lives above opaque workspace children. */
+.app-frame::after {
+  --app-boundary-shadow-inner-radius: calc(var(--radius-chat-surface) - var(--app-boundary-shadow-paint-width));
+  content: '';
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  border-top-left-radius: var(--radius-chat-surface);
+  z-index: var(--z-app-subdivision);
+  pointer-events: none;
+  background-image:
+    linear-gradient(to top, var(--app-boundary-shadow-gradient-stops)),
+    linear-gradient(to left, var(--app-boundary-shadow-gradient-stops)),
+    radial-gradient(circle at right bottom,
+      transparent var(--app-boundary-shadow-inner-radius),
+      var(--app-boundary-shadow-sample-24) calc(var(--app-boundary-shadow-inner-radius) + var(--app-boundary-shadow-stop-24)),
+      var(--app-boundary-shadow-sample-59) calc(var(--app-boundary-shadow-inner-radius) + var(--app-boundary-shadow-stop-59)),
+      var(--app-boundary-shadow-color) var(--radius-chat-surface));
+  background-size:
+    calc(100% - var(--radius-chat-surface)) var(--app-boundary-shadow-paint-width),
+    var(--app-boundary-shadow-paint-width) calc(100% - var(--radius-chat-surface)),
+    var(--radius-chat-surface) var(--radius-chat-surface);
+  background-position: right top, left bottom, left top;
+  background-repeat: no-repeat;
+}
+:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: calc(var(--app-native-controls-reservation, 88px) - calc((var(--app-header-control-size) - var(--app-header-logo-size)) / 2) - var(--app-frame-navigation-gap)); flex: none; height: 100%; }
+:root[data-frame-presentation='macos-overlay'] .app-frame__logo { width: var(--app-header-control-size); }
 :root[data-native-glass='regular'] .app-frame { background: var(--surface-glass-tint); }
 
 .app-frame__header-content { height: 100%; min-width: 0; }

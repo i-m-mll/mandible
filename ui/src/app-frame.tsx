@@ -22,6 +22,7 @@ export function AppFrame({ nativeControlsReservation, rail, layoutClassName = ''
     <header className="app-frame__bar" aria-label="Application controls" data-app-surface="chrome" data-tauri-drag-region>
       <div className="app-frame__navigation" data-tauri-drag-region>
         {nativeControlsReservation > 0 ? <span className="app-frame__native-controls" aria-hidden="true" data-tauri-drag-region /> : null}
+        <span className="app-frame__logo" aria-hidden="true" data-tauri-drag-region><span className="app-header__logo" style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties} /></span>
         <button type="button" className="app-frame__button" aria-label="Back" title="Back" onClick={() => window.history.back()}><HistoryArrow /></button>
         <button type="button" className="app-frame__button" aria-label="Forward" title="Forward" onClick={() => window.history.forward()}><HistoryArrow forward /></button>
         {viewSidebarAvailable ? <button type="button" className="app-frame__button" aria-label={leftLabel} title={leftLabel} aria-pressed={viewSidebarOpen} onClick={onViewSidebarToggle}><ViewSidebarIcon open={viewSidebarOpen} /></button> : null}

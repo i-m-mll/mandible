@@ -175,12 +175,17 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
   const railMode = new URLSearchParams(location.search).has('fullRail') ? 'both' : 'icons';
   const railWidth = APP_RAIL_WIDTHS[railMode];
-  const nativeControlsReservation = document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0;
+  const [nativeControlsReservation, setNativeControlsReservation] = useState(document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0);
+  useLayoutEffect(() => {
+    const changeReservation = (event: Event) => setNativeControlsReservation((event as CustomEvent<number>).detail);
+    window.addEventListener('fixture-native-reservation', changeReservation);
+    return () => window.removeEventListener('fixture-native-reservation', changeReservation);
+  }, []);
   const { rightSidebarLayout: layout, viewSidebarWidth: effectiveLeft } = resolveAppFrameGeometry({ viewportWidth: window.innerWidth, railWidth, viewSidebarWidth: leftWidth, rightSidebar: descriptor, rightSidebarOpen: stored.open, nativeControlsReservation });
   return (
-    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
+    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-native-controls-reservation': `${nativeControlsReservation}px`, '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
       <AppShellProvider value={{ active: true, rightSidebar: descriptor, frameHeaderHost: host, registerFrameHeader, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: setLeftWidth, viewSidebarWidth: effectiveLeft }}>
-      <AppFrame headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail" />}>
+      <AppFrame nativeControlsReservation={nativeControlsReservation} headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail"><nav className="app-rail__nav" aria-label="Main navigation"><a className="app-rail__item" href="#/chat" aria-label="Chats"><TestIcon kind="chat" />{railMode === 'both' ? <span>Chats</span> : null}</a></nav></aside>}>
         <main className={`app-content app-content--${surface}`}>
           <div className="fixture-split">
           <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div>Left content</div></ViewSidebar>

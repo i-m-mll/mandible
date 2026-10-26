@@ -152,6 +152,7 @@ import {
   DarkThemeIcon,
   LightThemeIcon,
   SystemThemeIcon,
+  SettingsIcon,
 } from './components/icons/TabIcons';
 import {
   adoptAgentSessionFragment,
@@ -605,16 +606,6 @@ function RebuildingSplash({
         ) : null}
       </div>
     </div>
-  );
-}
-
-function MandibleHeaderLogo(): JSX.Element {
-  return (
-    <span
-      className="app-header__logo"
-      style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
-      aria-hidden="true"
-    />
   );
 }
 
@@ -2854,7 +2845,7 @@ function App(): JSX.Element {
                   href: '#/settings',
                   label: 'Settings',
                   title: 'Settings',
-                  icon: MandibleHeaderLogo,
+                  icon: SettingsIcon,
                 })}
               </nav>
           </aside>
