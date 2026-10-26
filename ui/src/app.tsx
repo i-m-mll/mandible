@@ -91,6 +91,7 @@ import {
 } from './routing';
 import {
   AppShellProvider,
+  APP_RAIL_WIDTHS,
   AppRightSidebarSurface,
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   WIDE_RESPONSIVE_SIDEBAR_STATE,
@@ -855,7 +856,7 @@ function App(): JSX.Element {
   const persistedViewSidebarWidth = viewSidebarGeometry
     ? viewSidebarWidths[route.tab as keyof ViewSidebarWidths] ?? viewSidebarGeometry.defaultWidth
     : null;
-  const frameRailWidth = state.settings.header_display_mode === 'both' ? 208 : 56;
+  const frameRailWidth = APP_RAIL_WIDTHS[state.settings.header_display_mode === 'both' ? 'both' : 'icons'];
   const { viewSidebarWidth, rightSidebarLayout } = resolveAppFrameGeometry({
     viewportWidth, railWidth: frameRailWidth, viewSidebarWidth: persistedViewSidebarWidth,
     rightSidebar, rightSidebarOpen: route.tab !== 'settings' && rightSidebar.open, nativeControlsReservation,
@@ -2711,6 +2712,7 @@ function App(): JSX.Element {
     <div
       className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
       style={{
+        '--app-rail-width': `${frameRailWidth}px`,
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
         '--app-right-sidebar-width': `${rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0}px`,
         ...typographyCssVariables(typography),
