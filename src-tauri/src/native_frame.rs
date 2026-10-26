@@ -80,21 +80,24 @@ pub struct Observation {
 mod macos {
     use super::*;
     use block2::RcBlock;
+    use objc2::{rc::Retained, MainThreadMarker, Message};
     use objc2_app_kit::{
         NSView, NSWindow, NSWindowButton, NSWindowDidEnterFullScreenNotification,
         NSWindowDidExitFullScreenNotification, NSWindowDidUpdateNotification, NSWindowStyleMask,
     };
     use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue};
     use objc2_web_kit::WKWebView;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
     use std::ptr::NonNull;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::sync_channel;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tauri::{Emitter, Manager};
 
     thread_local! {
-        static UPDATE_OBSERVER: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static INSTALLED_FRAME: RefCell<Option<InstalledFrame>> = RefCell::new(None);
     }
 
     fn on_webview<T: Send + 'static>(
@@ -183,23 +186,97 @@ mod macos {
         }
     }
 
-    fn position(
-        window: &tauri::WebviewWindow,
+    #[derive(Default, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Diagnostics {
+        entries: BTreeMap<&'static str, u64>,
+        nested_entries: u64,
+        corrections: u64,
+        mutations: u64,
+        state_notifications_queued: u64,
+        max_incoming_center_error: f64,
+        max_incoming_left_error: f64,
+        max_completed_center_error: f64,
+        max_completed_left_error: f64,
+        first_correction: Option<serde_json::Value>,
+        first_exception: Option<serde_json::Value>,
+    }
+
+    struct NativeFrame {
+        native: Retained<NSWindow>,
+        webview: Retained<WKWebView>,
+        window: tauri::WebviewWindow,
         state: Arc<Mutex<FrameState>>,
-        event: &'static str,
-    ) -> Result<(), String> {
-        let dom = state
-            .lock()
-            .expect("native frame lock poisoned")
-            .dom
-            .clone();
-        let (fullscreen, applied) = on_webview(window, move |native, webview| {
-            if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        active: Arc<AtomicBool>,
+        updating: Cell<bool>,
+        diagnostics: RefCell<Diagnostics>,
+        started: Instant,
+    }
+
+    struct InstalledFrame {
+        controller: Rc<NativeFrame>,
+        cleanup: Box<dyn FnOnce()>,
+    }
+
+    struct UpdateGuard<'a>(&'a Cell<bool>);
+    impl Drop for UpdateGuard<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+
+    impl NativeFrame {
+        fn reconcile(&self, event: &'static str) -> Result<(), String> {
+            MainThreadMarker::new().expect("native frame update must run on the main thread");
+            *self
+                .diagnostics
+                .borrow_mut()
+                .entries
+                .entry(event)
+                .or_default() += 1;
+            if !self.active.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if self.updating.replace(true) {
+                self.diagnostics.borrow_mut().nested_entries += 1;
+                return Ok(());
+            }
+            let _guard = UpdateGuard(&self.updating);
+            let result = self.layout(event);
+            match result {
+                Ok((fullscreen, applied)) => self.publish(fullscreen, applied),
+                Err(error) => {
+                    let mut diagnostics = self.diagnostics.borrow_mut();
+                    if diagnostics.first_exception.is_none() {
+                        let sample = serde_json::json!({
+                            "phase": event, "monotonicMicros": self.started.elapsed().as_micros(), "error": error,
+                        });
+                        eprintln!("native-frame-exception {}", sample);
+                        diagnostics.first_exception = Some(sample);
+                    }
+                    Err(error)
+                }
+            }
+        }
+
+        fn layout(&self, event: &'static str) -> Result<(bool, Option<AppliedFrame>), String> {
+            self.native.layoutIfNeeded();
+            if self
+                .native
+                .styleMask()
+                .contains(NSWindowStyleMask::FullScreen)
+            {
                 return Ok((true, None));
             }
-            webview.layoutSubtreeIfNeeded();
-            let web = frame(native, webview)?;
-            let scale = scale(webview, dom.as_ref());
+            let dom = self
+                .state
+                .lock()
+                .expect("native frame lock poisoned")
+                .dom
+                .clone();
+            let native = &self.native;
+            let web = frame(native, &self.webview)?;
+            let scale = scale(&self.webview, dom.as_ref());
             let header = Rect {
                 left: web.left,
                 top: web.top,
@@ -215,15 +292,33 @@ mod macos {
             );
             let window_frame = native.frame();
             let tolerance = 0.5 / native.backingScaleFactor();
-            let mut changed = false;
-            for (kind, rect) in [
+            let desired: Vec<_> = existing
+                .iter()
+                .map(|rect| {
+                    (
+                        header.left + padding + rect.left - group.left,
+                        header.top + (header.height - rect.height) / 2.0,
+                    )
+                })
+                .collect();
+            let incoming_center_error = existing
+                .iter()
+                .map(|rect| (rect.top + rect.height / 2.0 - header.top - header.height / 2.0).abs())
+                .fold(0.0, f64::max);
+            let incoming_left_error = (group.left - header.left - padding).abs();
+            let mut mutations = 0;
+            for ((kind, rect), &(left, top)) in [
                 NSWindowButton::CloseButton,
                 NSWindowButton::MiniaturizeButton,
                 NSWindowButton::ZoomButton,
             ]
             .into_iter()
-            .zip(existing.iter().copied())
+            .zip(existing.iter())
+            .zip(desired.iter())
             {
+                if (rect.left - left).abs() <= tolerance && (rect.top - top).abs() <= tolerance {
+                    continue;
+                }
                 let button = native
                     .standardWindowButton(kind)
                     .ok_or("Missing native window button")?;
@@ -231,12 +326,6 @@ mod macos {
                 let owner = parent
                     .window()
                     .ok_or("Native button parent has no window")?;
-                let left = header.left + padding + rect.left - group.left;
-                let top = header.top + (header.height - rect.height) / 2.0;
-                if (rect.left - left).abs() <= tolerance && (rect.top - top).abs() <= tolerance {
-                    continue;
-                }
-                changed = true;
                 let mut screen = button.bounds();
                 screen.origin.x = window_frame.origin.x + left;
                 screen.origin.y =
@@ -245,13 +334,53 @@ mod macos {
                 screen.size.height = rect.height;
                 let local = parent.convertRect_fromView(owner.convertRectFromScreen(screen), None);
                 button.setFrameOrigin(local.origin);
+                mutations += 1;
             }
-            let bounds = union(&buttons(native)?);
-            if changed {
-                eprintln!(
-                    "native-frame-reconciled {}",
-                    serde_json::json!({ "event": event, "before": existing, "after": buttons(native)?, "header": header })
-                );
+            let actual = buttons(native)?;
+            let bounds = union(&actual);
+            let center_error = actual
+                .iter()
+                .map(|rect| (rect.top + rect.height / 2.0 - header.top - header.height / 2.0).abs())
+                .fold(0.0, f64::max);
+            let left_error = actual
+                .iter()
+                .zip(desired.iter())
+                .map(|(rect, &(left, _))| (rect.left - left).abs())
+                .fold(0.0, f64::max);
+            {
+                let mut diagnostics = self.diagnostics.borrow_mut();
+                diagnostics.max_incoming_center_error = diagnostics
+                    .max_incoming_center_error
+                    .max(incoming_center_error);
+                diagnostics.max_incoming_left_error =
+                    diagnostics.max_incoming_left_error.max(incoming_left_error);
+                diagnostics.max_completed_center_error =
+                    diagnostics.max_completed_center_error.max(center_error);
+                diagnostics.max_completed_left_error =
+                    diagnostics.max_completed_left_error.max(left_error);
+                diagnostics.mutations += mutations;
+                if mutations > 0 {
+                    diagnostics.corrections += 1;
+                    if diagnostics.first_correction.is_none() {
+                        diagnostics.first_correction = Some(serde_json::json!({
+                            "phase": event, "stage": "completed-layout", "monotonicMicros": self.started.elapsed().as_micros(),
+                            "before": existing, "after": actual, "header": header,
+                        }));
+                    }
+                }
+            }
+            if center_error > tolerance || left_error > tolerance {
+                let mut diagnostics = self.diagnostics.borrow_mut();
+                if diagnostics.first_exception.is_none() {
+                    let sample = serde_json::json!({
+                        "phase": event, "stage": "completed-pass", "monotonicMicros": self.started.elapsed().as_micros(),
+                        "before": existing, "after": actual, "desiredOrigins": desired, "header": header,
+                        "centerError": center_error, "leftError": left_error, "tolerance": tolerance,
+                    });
+                    eprintln!("native-frame-exception {}", sample);
+                    diagnostics.first_exception = Some(sample);
+                }
+                return Err(format!("native frame verification failed before display: center error {center_error}, left error {left_error}, tolerance {tolerance}"));
             }
             let left_padding = bounds.left - header.left;
             Ok((
@@ -263,44 +392,59 @@ mod macos {
                         / scale,
                 }),
             ))
-        })?;
-        let mut state = state.lock().expect("native frame lock poisoned");
-        let mut changed = state.fullscreen != Some(fullscreen);
-        state.fullscreen = Some(fullscreen);
-        if let Some(applied) = applied {
-            if state
-                .applied
-                .map(|previous| (previous.bounds, previous.reservation))
-                != Some((applied.bounds, applied.reservation))
-            {
-                changed = true;
-                eprintln!(
-                    "native-frame-applied {}",
-                    serde_json::to_string(&applied).expect("native geometry is finite")
-                );
+        }
+
+        fn publish(&self, fullscreen: bool, applied: Option<AppliedFrame>) -> Result<(), String> {
+            let mut state = self.state.lock().expect("native frame lock poisoned");
+            let mut changed = state.fullscreen != Some(fullscreen);
+            state.fullscreen = Some(fullscreen);
+            if let Some(applied) = applied {
+                changed |= state
+                    .applied
+                    .map(|previous| (previous.bounds, previous.reservation))
+                    != Some((applied.bounds, applied.reservation));
+                state.applied = Some(applied);
             }
-            state.applied = Some(applied);
+            drop(state);
+            if changed {
+                self.diagnostics.borrow_mut().state_notifications_queued += 1;
+                let window = self.window.clone();
+                let active = self.active.clone();
+                // Only web notification is deferred; native layout has been verified before returning.
+                let notification = RcBlock::new(move || {
+                    if active.load(Ordering::Acquire) {
+                        window
+                            .emit("native-frame-changed", ())
+                            .expect("native frame notification failed");
+                    }
+                });
+                unsafe {
+                    NSOperationQueue::mainQueue().addOperationWithBlock(&notification);
+                }
+            }
+            Ok(())
         }
-        drop(state);
-        if changed {
-            window
-                .emit("native-frame-changed", ())
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
     }
 
     pub fn install(
         window: &tauri::WebviewWindow,
         state: Arc<Mutex<FrameState>>,
     ) -> Result<(), String> {
-        position(window, state.clone(), "startup")?;
         let active = Arc::new(AtomicBool::new(true));
-        let pending = Arc::new(AtomicBool::new(false));
         let target = window.clone();
-        let update_state = state.clone();
-        let observer_active = active.clone();
-        on_webview(window, move |native, _| {
+        let controller_active = active.clone();
+        on_webview(window, move |native, webview| {
+            let controller = Rc::new(NativeFrame {
+                native: native.retain(),
+                webview: webview.retain(),
+                window: target,
+                state,
+                active: controller_active,
+                updating: Cell::new(false),
+                diagnostics: RefCell::new(Diagnostics::default()),
+                started: Instant::now(),
+            });
+            controller.reconcile("startup")?;
             let center = NSNotificationCenter::defaultCenter();
             let mut observers = Vec::new();
             for (name, event) in [
@@ -317,30 +461,11 @@ mod macos {
                     "NSWindowDidExitFullScreenNotification",
                 ),
             ] {
-                let callback_active = observer_active.clone();
-                let target = target.clone();
-                let update_state = update_state.clone();
-                let pending = pending.clone();
+                let controller = controller.clone();
                 let callback = RcBlock::new(move |_notification: NonNull<NSNotification>| {
-                    if !callback_active.load(Ordering::Acquire)
-                        || pending.swap(true, Ordering::AcqRel)
-                    {
-                        return;
-                    }
-                    let target = target.clone();
-                    let state = update_state.clone();
-                    let active = callback_active.clone();
-                    let pending = pending.clone();
-                    let operation = RcBlock::new(move || {
-                        if active.load(Ordering::Acquire) {
-                            position(&target, state.clone(), event)
-                                .expect("native frame update reconciliation failed");
-                        }
-                        pending.store(false, Ordering::Release);
-                    });
-                    unsafe {
-                        NSOperationQueue::mainQueue().addOperationWithBlock(&operation);
-                    }
+                    controller
+                        .reconcile(event)
+                        .expect("native frame synchronous reconciliation failed");
                 });
                 let observer = unsafe {
                     center.addObserverForName_object_queue_usingBlock(
@@ -352,20 +477,29 @@ mod macos {
                 };
                 observers.push(observer);
             }
-            // AppKit observer custody stays on its main thread until the main window is destroyed.
-            let cleanup: Box<dyn FnOnce()> = Box::new(move || {
-                observer_active.store(false, Ordering::Release);
+            let cleanup_controller = controller.clone();
+            let cleanup = Box::new(move || {
+                cleanup_controller.active.store(false, Ordering::Release);
                 unsafe {
                     for observer in observers {
                         center.removeObserver((&*observer).as_ref());
                     }
                 }
+                eprintln!(
+                    "native-frame-diagnostics {}",
+                    serde_json::to_string(&*cleanup_controller.diagnostics.borrow())
+                        .expect("finite native diagnostics")
+                );
             });
-            UPDATE_OBSERVER.with(|slot| {
-                if let Some(previous) = slot.replace(Some(cleanup)) {
-                    previous();
-                }
+            let previous = INSTALLED_FRAME.with(|slot| {
+                slot.replace(Some(InstalledFrame {
+                    controller,
+                    cleanup,
+                }))
             });
+            if let Some(previous) = previous {
+                (previous.cleanup)();
+            }
             Ok(())
         })?;
         let target = window.clone();
@@ -375,30 +509,13 @@ mod macos {
                 target
                     .app_handle()
                     .run_on_main_thread(|| {
-                        UPDATE_OBSERVER.with(|slot| {
-                            if let Some(cleanup) = slot.take() {
-                                cleanup();
-                            }
-                        })
+                        let previous = INSTALLED_FRAME.with(|slot| slot.take());
+                        if let Some(previous) = previous {
+                            (previous.cleanup)();
+                        }
                     })
                     .expect("native observer cleanup dispatch failed");
-                return;
             }
-            let event = match event {
-                tauri::WindowEvent::Resized(_) => "Resized",
-                tauri::WindowEvent::ScaleFactorChanged { .. } => "ScaleFactorChanged",
-                _ => return,
-            };
-            let task_window = target.clone();
-            let state = state.clone();
-            let active = active.clone();
-            target
-                .run_on_main_thread(move || {
-                    if active.load(Ordering::Acquire) {
-                        position(&task_window, state, event).expect("native frame layout failed");
-                    }
-                })
-                .expect("native frame layout dispatch failed");
         });
         Ok(())
     }
@@ -428,6 +545,9 @@ mod macos {
             });
             let window = native.frame();
             let fullscreen = native.styleMask().contains(NSWindowStyleMask::FullScreen);
+            let diagnostics = INSTALLED_FRAME.with(|slot| slot.borrow().as_ref().map(|installed| {
+                serde_json::to_value(&*installed.controller.diagnostics.borrow()).expect("finite native diagnostics")
+            }));
             let snapshot = serde_json::json!({
                 "coordinateSpace": "window-logical-points-top-left", "reason": input.as_ref().map(|dom| &dom.reason),
                 "window": {"left": 0.0, "top": 0.0, "width": window.size.width, "height": window.size.height},
@@ -435,7 +555,7 @@ mod macos {
                 "header": header, "backIcon": back, "glyphs": glyphs,
                 "pageZoom": unsafe { webview.pageZoom() }, "backingScale": native.backingScaleFactor(),
                 "cssToLogicalScale": scale, "dom": input, "lastApplied": applied,
-                "fullscreen": fullscreen,
+                "fullscreen": fullscreen, "diagnostics": diagnostics,
                 "topClearance": header.map(|header| bounds.top - header.top),
                 "bottomClearance": header.map(|header| header.top + header.height - bounds.top - bounds.height),
                 "leftClearance": header.map(|header| bounds.left - header.left),
