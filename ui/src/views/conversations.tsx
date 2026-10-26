@@ -2497,6 +2497,20 @@ export function ConversationDetail({
     </div>
   ) : undefined;
 
+  const nativeArchivePending = conversation.source === 'codex'
+    && (conversation.retention_native_status === 'pending' || conversation.retention_native_status === 'deferred');
+  const nativeArchiveFailed = conversation.source === 'codex' && conversation.retention_native_status === 'failed';
+  const archiveMessage = conversation.source === 'codex'
+    && (conversation.retention_native_status === 'archived' || conversation.retention_native_status === 'already_archived')
+    ? 'Archived in Mandible and Codex.'
+    : nativeArchiveFailed
+      ? 'Archived in Mandible. Codex archiving could not be confirmed.'
+      : nativeArchivePending
+        ? conversation.retention_native_reason === 'desktop_writer_owned'
+          ? 'Archived in Mandible; still visible in Codex. Codex archiving is pending.'
+          : 'Archived in Mandible. Codex archiving is pending.'
+        : 'Archived in Mandible.';
+
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
@@ -2799,7 +2813,7 @@ export function ConversationDetail({
       onDropCapture={handleFileDrop}
       notice={<>
         {archiveError ? <DetailPaneNotice severity="error" density="compact">{archiveError}</DetailPaneNotice> : null}
-        {conversation.archived_at ? <DetailPaneNotice severity="info" density="compact" actions={<button type="button" className="btn btn--ghost btn--sm" disabled={archiveBusy} onClick={() => { void handleArchive(); }}>Restore</button>}>Archived in Mandible.</DetailPaneNotice> : null}
+        {conversation.archived_at ? <DetailPaneNotice severity={nativeArchiveFailed ? 'warning' : 'info'} density="compact" actions={<button type="button" className="btn btn--ghost btn--sm" disabled={archiveBusy} onClick={() => { void handleArchive(); }}>Restore</button>}>{archiveMessage}</DetailPaneNotice> : null}
         {controlFailureNotice}
         {creationNotice}
         {controlLoadNotice}
