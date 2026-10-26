@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -37,13 +38,19 @@ function bundleFixture(directory: string): string {
 
 let fixtureBundle: string | undefined;
 
-function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1): Result {
+function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string } = {}): Result {
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
+      const getPaintSurface=()=>{
+        const frame=document.querySelector('.app-frame'); const shadow=getComputedStyle(frame,'::after'); const dock=document.querySelector('.app-right-sidebar');
+        return {workspace:rect(document.querySelector('.app-layout')),main:rect(document.querySelector('.chat-detail-frame')||document.querySelector('main')),dock:rect(dock),radius:parseFloat(getComputedStyle(document.querySelector('.app-layout')).borderTopLeftRadius),
+          frameBackground:getComputedStyle(frame).backgroundColor,barBackground:getComputedStyle(document.querySelector('.app-frame__bar')).backgroundColor,railBackground:getComputedStyle(document.querySelector('.app-rail')).backgroundColor,
+          shadow:{width:shadow.width,height:shadow.height,zIndex:shadow.zIndex,pointerEvents:shadow.pointerEvents,backgroundImage:shadow.backgroundImage,backgroundSize:shadow.backgroundSize},dockZIndex:getComputedStyle(dock).zIndex};
+      };
       const edgeTarget = node => { const r=rect(node); return document.elementFromPoint(r.left+0.5,(r.top+r.bottom)/2); };
       const edgeClick = node => { const target=edgeTarget(node); if (!node.contains(target)) throw new Error('Control edge is unreachable: '+node.getAttribute('aria-label')); target.closest('button').click(); };
       const paint = node => {
@@ -73,6 +80,12 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
       (async () => {
         await wait(); await wait();
         const root=document.querySelector('.native-fixture');
+        if (${Boolean(paint.screenshotPath)}) {
+          document.querySelector('[data-paint-probe-content]').style.visibility='hidden';
+          await waitForRunOptions();
+          document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',paintSurface:getPaintSurface()}));
+          return;
+        }
         const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
         const sidebar=document.querySelector('.app-right-sidebar');
         const autoCollapsed={right:sidebar.hidden,rightDisplay:getComputedStyle(sidebar).display,view:!root.querySelector('.app-frame').classList.contains('app-frame--left-open')};
@@ -177,7 +190,8 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
         const titleErrors=document.querySelector('[data-title-errors]');
         const controlPaint=controls.map(node=>{node.focus({preventScroll:true});return paint(node);});
         document.querySelector('[aria-label=Back]').focus({preventScroll:true});
-        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,controlPaint,historyActions,
+        const paintSurface=getPaintSurface();
+        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,controlPaint,historyActions,paintSurface,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(document.querySelector('.app-frame__bar')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,jumpControl,preservedScrollTop,
@@ -186,12 +200,13 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
     const html = `<!doctype html><html data-theme="${theme}" data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
-    const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
+    const evidenceDirectory = paint.screenshotPath ? undefined : process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const evidenceName = `${surface}-${width}-${theme}-${native ? 'native' : 'browser'}-${fullRail ? 'expanded' : 'icons'}-${scale}`;
     if (evidenceDirectory) mkdirSync(evidenceDirectory, { recursive: true });
-    const screenshotArgs = evidenceDirectory ? [`--screenshot=${join(evidenceDirectory, evidenceName + '.png')}`] : [];
+    const screenshotPath = paint.screenshotPath ?? (evidenceDirectory ? join(evidenceDirectory, evidenceName + '.png') : null);
+    const screenshotArgs = screenshotPath ? [`--screenshot=${screenshotPath}`] : [];
     const path = join(directory, 'fixture.html');
-    writeFileSync(path, html);
+    writeFileSync(path, paint.disableShadow ? html.replace('</head>', '<style>.app-frame::after{background-image:none}</style></head>') : html);
     const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
@@ -205,6 +220,73 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+type PixelProbe = { distance: number; x: number; y: number };
+type PixelSample = { distance: number; baseline: number[]; painted: number[]; delta: number };
+
+function compareShadowPixels(directory: string, painted: string, baseline: string, viewportWidth: number, probes: Record<string, PixelProbe[]>): Record<string, PixelSample[]> {
+  const page = join(directory, 'compare.html');
+  writeFileSync(page, `<!doctype html><script>
+    const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=reject;image.src=src;});
+    Promise.all(${JSON.stringify([painted, baseline].map(path => pathToFileURL(path).href))}.map(load)).then(images=>{
+      const contexts=images.map(image=>{const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);return context;});
+      const scale=images[0].width/${viewportWidth};
+      const pixel=(context,point)=>Array.from(context.getImageData(Math.floor(point.x*scale),Math.floor(point.y*scale),1,1).data).slice(0,3);
+      const profiles=Object.fromEntries(Object.entries(${JSON.stringify(probes)}).map(([name,points])=>[name,points.map(point=>{
+        const painted=pixel(contexts[0],point),baseline=pixel(contexts[1],point);
+        return {distance:point.distance,painted,baseline,delta:baseline.reduce((sum,value,i)=>sum+value-painted[i],0)/3};
+      })]));
+      document.title=btoa(JSON.stringify(profiles));
+    }).catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
+  </script>`);
+  const rendered = runChromium(['--allow-file-access-from-files', '--virtual-time-budget=1000', '--dump-dom', pathToFileURL(page).href], { encoding: 'utf8', maxBuffer: 20_000_000 });
+  if (rendered.status !== 0) throw new Error(`Shadow pixel comparison failed: ${rendered.stderr}`);
+  const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
+  if (!encoded || encoded.startsWith('fixture-error:')) throw new Error(`Shadow pixel comparison did not complete: ${encoded ?? rendered.stderr}`);
+  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Record<string, PixelSample[]>;
+}
+
+describe('rendered workspace shadow', () => {
+  it.each(['light', 'dark'] as const)('paints a visible smooth falloff over opaque %s workspace surfaces', theme => {
+    const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
+    const directory = evidenceDirectory ?? mkdtempSync(join(tmpdir(), 'mandible-shadow-pixels-'));
+    mkdirSync(directory, { recursive: true });
+    try {
+      const painted = join(directory, `shadow-${theme}-on.png`);
+      const baseline = join(directory, `shadow-${theme}-off.png`);
+      const result = renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { screenshotPath: painted });
+      renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { disableShadow: true, screenshotPath: baseline });
+      type Rect = { left: number; right: number; top: number; bottom: number };
+      const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number };
+      const { workspace, main, dock, radius } = surface;
+      const distances = [2, 4, 8, 12, 16, 20];
+      const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
+        sidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top + distance })),
+        main: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top + distance })),
+        dock: distances.map(distance => ({ distance, x: (dock.left + dock.right) / 2, y: workspace.top + distance })),
+        left: distances.map(distance => ({ distance, x: workspace.left + distance, y: workspace.top + 100 })),
+        corner: [2, 4, 8, 12, 16, 18].map(distance => ({ distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 })),
+        line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
+        outside: [
+          { distance: 0, x: workspace.left - 6, y: workspace.top + 100 },
+          { distance: 0, x: workspace.left + 96, y: workspace.top - 10 },
+          { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
+          { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
+        ],
+      });
+      if (evidenceDirectory) writeFileSync(join(directory, `shadow-${theme}-pixels.json`), JSON.stringify({ theme, probeSetup: 'Initial mounted production frame; only the fixture corner label is hidden to expose uninterrupted opaque material. Baseline disables only the shadow background.', surface: result.paintSurface, profiles }, null, 2));
+      for (const [name, samples] of Object.entries(profiles)) {
+        if (name === 'outside') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
+        if (name === 'line') { for (const sample of samples) expect(Math.abs(sample.delta), `${theme} contour remains independent of shadow`).toBeLessThanOrEqual(3); continue; }
+        expect(samples[0]!.delta, `${theme} ${name} visible contrast`).toBeGreaterThanOrEqual(theme === 'light' ? 10 : 4);
+        for (let i=1;i<samples.length;i++) expect(samples[i]!.delta, `${theme} ${name} monotone falloff`).toBeLessThanOrEqual(samples[i-1]!.delta + 1);
+        expect(samples.at(-1)!.delta, `${theme} ${name} paint extent`).toBeLessThanOrEqual(1);
+      }
+    } finally {
+      if (!evidenceDirectory) rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('production app right sidebar geometry and interaction', () => {
   const cases: Array<{ surface: Surface; width: number; theme: 'light' | 'dark'; native?: boolean; fullRail?: boolean; scale?: number }> = [

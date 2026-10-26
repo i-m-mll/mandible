@@ -58,7 +58,7 @@
   isolation: isolate;
   background: transparent;
 }
-.app-frame > .app-frame__bar .app-frame__history-button { --app-frame-icon-glyph-size: 17px; }
+.app-frame > .app-frame__bar .app-frame__history-button { --app-frame-icon-glyph-size: var(--app-frame-history-icon-size); }
 .app-frame > .app-frame__bar .detail-pane-menu-trigger {
   --app-frame-icon-hit-size: 24px;
   --app-frame-icon-hover-color: var(--neutral-alpha-08);
@@ -103,8 +103,8 @@
   min-width: 0;
   min-height: 0;
   box-sizing: border-box;
-  border-top: 1px solid var(--border-muted);
-  border-left: 1px solid var(--border-muted);
+  border-top: 1px solid var(--app-boundary-line-color);
+  border-left: 1px solid var(--app-boundary-line-color);
   border-top-left-radius: var(--radius-chat-surface);
   z-index: calc(var(--z-app-subdivision) + 1);
   pointer-events: none;
