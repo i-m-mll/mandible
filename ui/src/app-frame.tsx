@@ -2,10 +2,9 @@ import type { ComponentChildren, Ref } from 'preact';
 import { AppRightSidebarHeaderControls, AppRightSidebarToggleButton, ViewSidebarIcon, type AppRightSidebarDescriptor } from './app-shell';
 import './styles/app-frame.css';
 
-export function AppFrame({ rail, notice, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
+export function AppFrame({ rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
   rail: ComponentChildren;
   layoutClassName?: string;
-  notice?: ComponentChildren;
   children: ComponentChildren;
   headerHostRef: Ref<HTMLDivElement>;
   hasMainHeader: boolean;
@@ -32,7 +31,6 @@ export function AppFrame({ rail, notice, layoutClassName = '', children, headerH
         <AppRightSidebarToggleButton descriptor={rightSidebar} buttonRef={rightToggleRef} open={rightSidebarOpen} onOpenChange={onRightSidebarOpenChange} />
       </div> : null}
     </header>
-    <div className="app-frame__notice">{notice}</div>
     {rail}
     <div className={`app-layout ${layoutClassName}`}>{children}</div>
   </div>;

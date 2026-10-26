@@ -21,7 +21,7 @@
   min-width: 0;
   min-height: 2.4rem;
   padding: 0.55rem 1rem;
-  border-bottom: 1px solid var(--status-warning-border);
+  border-top: 1px solid var(--status-warning-border);
   background: var(--status-warning-bg);
   color: var(--status-warning-fg);
   font-size: 0.8125rem;
@@ -47,7 +47,7 @@
 
 .preview-copy-banner__tooltip {
   position: absolute;
-  top: calc(100% + 4px);
+  bottom: calc(100% + 4px);
   left: 50%;
   transform: translateX(-50%);
   width: max-content;
