@@ -1,3 +1,4 @@
+import { reconcileWorkerAssignment } from "./work-unit-worker.js";
 import type { Db } from "./db.js";
 import { mutateLedgerRecord } from "./ledger/mutation-history.js";
 import type { LedgerAttributionInput } from "./ledger/types.js";
@@ -11,5 +12,9 @@ export function mutateWorkUnit<T>(db: Db, id: string, mutate: () => T,
   return mutateLedgerRecord(db, {
     entity_type: "work_unit", entity_id: id, project_id: issue?.project_id, attribution, source: "work_unit",
     snapshot: () => db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined ?? null,
-  }, mutate);
+  }, () => {
+    const result = mutate();
+    reconcileWorkerAssignment(db, unit, db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined);
+    return result;
+  });
 }
