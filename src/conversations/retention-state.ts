@@ -8,7 +8,7 @@ export function observeRetentionChanges(db: Db, listener: () => void): () => voi
   listeners.set(db, listener);
   return () => { listeners.delete(db); };
 }
-export function notifyRetentionChanged(db: Db): void { listeners.get(db)?.(); }
+export function notifyRetentionChanged(db: Db): void { db.afterCommit(() => listeners.get(db)?.()); }
 
 export function readChildRetentionSettings(db: Db): ChildRetentionSettings {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(CHILD_RETENTION_SETTINGS_KEY) as { value: string } | undefined;

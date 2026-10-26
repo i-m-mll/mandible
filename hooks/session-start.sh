@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # exact native ID before network work, so daemon downtime cannot lose it.
 if [[ -n "${CLAUDE_ENV_FILE:-}" ]]; then
   {
-    printf 'unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID\n'
+    printf 'unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID MANDIBLE_REQUEST_ORIGIN\n'
     printf 'export CLAUDE_CODE_SESSION_ID=%q\n' "$provider_session_id"
     [[ -z "$inherited_session_id" ]] || printf 'unset MANDIBLE_SESSION_ID\n'
   } >> "$CLAUDE_ENV_FILE"

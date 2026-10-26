@@ -11,7 +11,8 @@ import { createLocalSocketServer, createServer, Router } from '../src/server.js'
 import { localApiSocketPath, startLocalApiSocket } from '../src/local-api-socket.js';
 import { SseManager } from '../src/sse.js';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy.js';
-import { addBinding, createUser, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
+import { addBinding, createUser, getOperator, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
+import { projectManagedProviderIdentity } from '../src/backends/mandible-transport.js';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin.js';
 import { registerUserRoutes } from '../src/routes/users.js';
 import { registerSessionRoutes } from '../src/routes/sessions.js';
@@ -67,6 +68,42 @@ afterEach(async () => {
 });
 
 describe('owner-only local API socket', () => {
+  it('carries a subprocess origin as metadata while its explicit human credential remains authoritative', async () => {
+    const operator = getOperator(db)!;
+    const credential = auth.mintApiToken(operator.id).token;
+    const project = createLedgerProject(db, root, { workRepoId: 'child-origin-fixture' });
+    const issue = createLedgerIssue(db, { project_id: project.project.id });
+    const store = new LedgerStore(db);
+    router.post('/api/child-origin', (req, res) => {
+      res.json(store.addComment(issue.id, { body: 'Child transport', attribution: attributionForRequest(db, req) }));
+    }, { fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    const origin = { provider: 'claude', provider_session_id: 'initiating-native-session' };
+    const env: NodeJS.ProcessEnv = { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, MANDIBLE_TRANSPORT: 'http',
+      MANDIBLE_TOKEN: credential, MANDIBLE_REQUEST_ORIGIN: JSON.stringify(origin), MANDIBLE_MANAGED_CLIENT: '1',
+      CODEX_THREAD_ID: 'daemon-native-session', CLAUDE_SESSION_ID: 'inherited-native-session' };
+    projectManagedProviderIdentity(env, 'shell');
+    delete env.MANDIBLE_MANAGED_CLIENT;
+    env.MANDIBLE_REQUEST_ORIGIN = JSON.stringify(origin);
+    const usersBefore = db.prepare('SELECT count(*) AS n FROM users').get();
+    const child = spawn('bash', ['-c', 'source "$1"; api_send POST /api/child-origin "{}"', 'child-origin', path.resolve('cli/api.sh')], { env, timeout: 10_000 });
+    let output = '', error = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { error += chunk; });
+    expect(await new Promise(resolve => child.once('close', resolve)), error).toBe(0);
+    const revision = store.listBodyRevisions({ entity_type: 'comment_body', entity_id: JSON.parse(output).id })[0];
+    expect(revision).toMatchObject({ actor_user_id: operator.id, evidence_method: 'api_token', request_origin: origin });
+    expect(db.prepare('SELECT count(*) AS n FROM users').get()).toEqual(usersBefore);
+    expect(db.prepare('SELECT id FROM sessions').all()).toEqual([]);
+    expect((await request('GET', '/api/read', { 'X-Mandible-Request-Origin': JSON.stringify(origin) })).body)
+      .toMatchObject({ identity: { user_id: operator.id }, managed: false, localManaged: null, request_origin: origin });
+    for (const explicit of ['null', 'malformed']) {
+      expect((await request('GET', '/api/read', { Authorization: `Bearer ${credential}`,
+        'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'executing-session',
+        'X-Mandible-Request-Origin': explicit }, false)).body)
+        .toMatchObject({ identity: { user_id: operator.id }, request_origin: null });
+    }
+  });
+
   it('registers a managed wrapper session before a provider ID exists and retains its agent on later calls', async () => {
     const agent = createUser(db, { slug: 'wrapper-agent', kind: 'agent', display_name: 'Wrapper Agent' });
     addBinding(db, agent.id, { binding_type: 'app_name', value: 'codex' });
@@ -160,7 +197,8 @@ describe('owner-only local API socket', () => {
     const envFile = path.join(root, 'claude-env.sh');
     const runHook = async (hook: string, claudePid: number, conversation: string) => {
       const child = spawn('bash', [path.resolve(`hooks/${hook}.sh`)], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
-        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile } });
+        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile,
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
       let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
       child.stdin.end(JSON.stringify({ session_id: conversation, cwd: root }));
       expect(await new Promise((resolve) => child.once('close', resolve)), stderr).toBe(0);
@@ -189,7 +227,8 @@ describe('owner-only local API socket', () => {
     }, { fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const shell = spawn('bash', ['-c', 'source "$1"; source "$2"; api_send POST /api/origin-write "{}"', 'origin-cli', envFile, path.resolve('cli/api.sh')],
       { env: { ...process.env, MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_SESSION_ID: wrapped,
-        CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '' } });
+        CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '',
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
     let writeOutput = ''; let writeError = '';
     shell.stdout.on('data', chunk => { writeOutput += chunk; }); shell.stderr.on('data', chunk => { writeError += chunk; });
     expect(await new Promise(resolve => shell.once('close', resolve)), writeError).toBe(0);

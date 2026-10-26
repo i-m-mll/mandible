@@ -14,9 +14,13 @@ type ManagedIdentity = { app_name: string; session_id: string };
 export type ManagedRequestOrigin = { status: "resolved"; origin: RequestOrigin } | { status: "unknown" | "conflict" };
 
 export function requestOriginForRequest(
-  request: { ambient_identity?: unknown; local_managed_identity?: ManagedIdentity | null },
+  request: { request_origin?: unknown; ambient_identity?: unknown; local_managed_identity?: ManagedIdentity | null },
   resolveManaged?: (identity: ManagedIdentity) => ManagedRequestOrigin,
 ): RequestOrigin | null {
+  if (Object.hasOwn(request, "request_origin")) {
+    const explicit = normalizeAmbientProviderIdentity(request.request_origin);
+    return explicit ? Object.freeze(explicit) : null;
+  }
   const identity = normalizeAmbientProviderIdentity(request.ambient_identity);
   const resolution = request.local_managed_identity && resolveManaged
     ? resolveManaged(request.local_managed_identity) : null;
