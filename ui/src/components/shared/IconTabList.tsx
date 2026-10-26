@@ -14,6 +14,7 @@ export function IconTabList({
   onActiveTabChange,
   idPrefix,
   className = '',
+  presentation = 'content',
 }: {
   ariaLabel: string;
   tabs: readonly IconTab[];
@@ -21,9 +22,10 @@ export function IconTabList({
   onActiveTabChange(tab: string): void;
   idPrefix: string;
   className?: string;
+  presentation?: 'content' | 'frame';
 }): JSX.Element {
   return (
-    <div className={`icon-tab-list${className ? ` ${className}` : ''}`} role="tablist" aria-label={ariaLabel}>
+    <div className={`icon-tab-list${presentation === 'frame' ? ' icon-tab-list--frame' : ''}${className ? ` ${className}` : ''}`} role="tablist" aria-label={ariaLabel}>
       {tabs.map((tab, index) => (
         <button
           key={tab.id}

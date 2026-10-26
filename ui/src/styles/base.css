@@ -201,29 +201,6 @@ a {
   outline-offset: -2px;
 }
 
-.app-right-sidebar__header {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-inline: var(--app-header-inline-inset);
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  background: var(--surface-header);
-}
-
-.app-right-sidebar__toggle {
-  margin-left: auto;
-}
-
-.app-right-sidebar__header h2 {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .app-right-sidebar__panel-icon {
   display: inline-flex;
   align-items: center;

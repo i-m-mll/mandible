@@ -78,7 +78,8 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           const bar=document.querySelector('.app-frame__bar'); const main=document.querySelector('.app-frame__main-header');
           const right=document.querySelector('.app-frame__right'); const left=document.querySelector('.view-sidebar');
           const buttons=Array.from(document.querySelectorAll('.app-frame__navigation button,.app-frame__main-header .detail-pane-menu-trigger,.app-frame__right .app-right-sidebar-toggle'),rect);
-          return {leftOpen:Boolean(left),rightOpen:!sidebar.hidden,leftSeam:left?rect(left).right:null,main:rect(main),right:rect(right),dock:rect(sidebar),bar:rect(bar),buttons};
+          const glyphs=Array.from(bar.querySelectorAll('svg,.detail-pane-header__title,.detail-pane-header__supporting-metadata'),rect);
+          return {leftOpen:Boolean(left),rightOpen:!sidebar.hidden,leftSeam:left?rect(left).right:null,main:rect(main),right:rect(right),dock:rect(sidebar),bar:rect(bar),buttons,glyphs};
         };
         if(root.classList.contains('native-fixture--chat')){
           frameStates.push(frameGeometry());
@@ -252,13 +253,14 @@ describe('production app right sidebar geometry and interaction', () => {
       expect(result.menuInteraction).toMatchObject({ closed: true, focused: true });
       const menu = result.menuInteraction as { menuBounds: Rect; anchor: Rect };
       expect(menu.menuBounds.top).toBeGreaterThanOrEqual(menu.anchor.bottom);
-      type FrameGeometry = { leftOpen: boolean; rightOpen: boolean; leftSeam: number | null; main: Rect; right: Rect; dock: Rect; bar: Rect; buttons: Rect[] };
+      type FrameGeometry = { leftOpen: boolean; rightOpen: boolean; leftSeam: number | null; main: Rect; right: Rect; dock: Rect; bar: Rect; buttons: Rect[]; glyphs: Rect[] };
       for (const state of result.frameStates as FrameGeometry[]) {
         if (state.leftOpen) expect(state.main.left).toBeCloseTo(state.leftSeam!, 0);
         else expect(state.main.left - state.buttons[2].right).toBeLessThan(state.buttons[0].right - state.buttons[0].left);
         if (state.rightOpen) expect(state.right.left).toBeCloseTo(state.dock.left, 0);
         expect(state.buttons.at(-1)!.right).toBeLessThanOrEqual(state.bar.right);
         for (let i=1; i<state.buttons.length; i++) expect(state.buttons[i].left).toBeGreaterThanOrEqual(state.buttons[i-1].right);
+        for (const glyph of state.glyphs) expect((glyph.top + glyph.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
         for (const button of state.buttons) expect((button.top + button.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
       }
       expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);

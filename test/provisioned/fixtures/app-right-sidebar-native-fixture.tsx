@@ -103,6 +103,7 @@ function ChatMain({ descriptor }: { descriptor: AppRightSidebarDescriptor }): JS
         <DetailPaneHeader
           variant="compact"
           title="A long conversation title that must yield space to the adjacent menu and persistent frame controls"
+          supportingMetadata={<span>Workspace</span>}
           menu={<><DetailPaneMenuTrigger buttonRef={anchorRef} label="Conversation actions" expanded={menuOpen} onClick={() => setMenuOpen(open => !open)} />{menuOpen ? <div className="app-anchored-menu" ref={menuRef} role="menu" popover="manual" style={menuStyle}><button role="menuitem">Inspect conversation</button></div> : null}</>}
           actionsLabel="Chat sidebar"
         />
