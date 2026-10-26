@@ -1,3 +1,4 @@
+import { zstdCompressSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -95,6 +96,35 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it("preserves source versions, locators and block identities across raw/zstd transitions", async () => {
+    const db = migratedMemoryDb();
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    try {
+      const parsed = await parse(filePath);
+      insertConversation(db, "compressed", filePath, parsed);
+      const version = await record(db, "compressed", filePath);
+      const reader = new ConversationSourceReader(db, { legacyFallback: false });
+      const original = await reader.readAll("compressed");
+      expect(original.status).toBe("source");
+      const raw = fs.readFileSync(filePath);
+      fs.writeFileSync(`${filePath}.zst`, zstdCompressSync(raw));
+      fs.unlinkSync(filePath);
+      expect((await parse(filePath)).sourceSnapshot?.contentHash).toBe(parsed.sourceSnapshot?.contentHash);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      expect(await record(db, "compressed", filePath)).toBe(version);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      fs.writeFileSync(filePath, raw);
+      expect(await record(db, "compressed", filePath)).toBe(version);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      fs.unlinkSync(filePath);
+      fs.writeFileSync(`${filePath}.zst`, zstdCompressSync(Buffer.from(raw.toString().replace("duplicate-session", "different-session"))));
+      expect((await reader.readAll("compressed")).status).not.toBe("source");
+      fs.unlinkSync(`${filePath}.zst`);
+      expect((await reader.readAll("compressed")).status).not.toBe("source");
+    } finally { db.close(); }
+  });
+
   it("repairs shared historical aliases without merging distinct provider records", async () => {
     const db = migratedMemoryDb();
     try {

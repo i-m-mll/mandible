@@ -169,7 +169,7 @@ export interface Conversation {
   updated_at: string;
 }
 
-/** Source byte extent observed by one parser pass. */
+/** Logical JSONL extent; filesystem identity describes the selected physical representation. */
 interface ParserSourceSnapshotBase {
   byteLength: number;
   completeLineCount: number;

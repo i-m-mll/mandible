@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import * as fs from "node:fs";
+import { openLogicalSource } from "../conversations/logical-source.js";
 import * as readline from "node:readline";
 import { ConversationSourceChangedError } from "../conversations/source-observer.js";
 import type { ParserSourceSnapshot } from "./types.js";
@@ -27,7 +27,7 @@ function parseJsonlLine<T>(line: string, records: T[]): void {
  */
 export async function readJsonlFileRecords<T>(filePath: string): Promise<JsonlFileRecords<T>> {
   const records: T[] = [];
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY);
+  const handle = await openLogicalSource(filePath);
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) throw new Error("conversation source is not a regular file");
@@ -128,7 +128,7 @@ export async function findJsonlRecord<T>(
   match: (record: T) => boolean,
   maxBytes = 256 * 1024,
 ): Promise<T | null> {
-  const handle = await fs.promises.open(filePath, "r");
+  const handle = await openLogicalSource(filePath);
   try {
     const buffer = Buffer.allocUnsafe(maxBytes);
     const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);

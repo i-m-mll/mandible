@@ -1,3 +1,4 @@
+import { canonicalSourcePath, inspectSourceRepresentation, logicalSourceStat, logicalSourceExists, openLogicalSource } from "./conversations/logical-source.js";
 import { DOMAIN_EVENTS, type MandibleEventType } from "./contracts.js";
 import { isSqliteBusy } from "./sqlite.js";
 // Ingestion service: watches filesystem for conversation files and maintains
@@ -1045,7 +1046,7 @@ function trackActorPathFlight(paths: readonly string[], flight: Promise<void>): 
 
 async function pathNeedsFollowupAfterActor(filePath: string): Promise<boolean> {
   try {
-    const stat = await fs.promises.stat(filePath);
+    const stat = await logicalSourceStat(filePath);
     const indexed = getDb().prepare(`
       SELECT state.byte_offset, state.tail_hash, c.source_mtime
         FROM conversation_ingest_state state
@@ -1206,7 +1207,7 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
           | undefined;
         const candidate = normalizeTargetPath(exact?.rollout_path);
         const location = candidate ? locateCodexRollout(candidate) : null;
-        if (!exact || exact.id !== sessionRef || !candidate || path.resolve(location?.codexRoot ?? "") !== codexRoot || !fs.existsSync(candidate)) return null;
+        if (!exact || exact.id !== sessionRef || !candidate || path.resolve(location?.codexRoot ?? "") !== codexRoot || !await logicalSourceExists(candidate)) return null;
         return await loadCodexNativeSessionId(candidate) === sessionRef ? candidate : null;
       } finally {
         stateDb?.close();
@@ -1219,6 +1220,7 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
 }
 
 function debouncedIngest(filePath: string): void {
+  filePath = canonicalSourcePath(filePath);
   const runToken = ingestionRunToken;
   if (!isCurrentIngestionRun(runToken)) {
     return;
@@ -1442,7 +1444,7 @@ export async function convergeProjectedConversationTitlesForWorker(
   for (const candidate of candidates) {
     let stat: fs.Stats;
     try {
-      stat = await fs.promises.stat(candidate.source_path);
+      stat = await logicalSourceStat(candidate.source_path);
     } catch {
       result.skipped_missing_source += 1;
       continue;
@@ -1518,7 +1520,7 @@ function isCurrentIngestionRun(runToken: number): boolean {
 function makeWatchFileMatcher(baseDir: string, glob: string): (filePath: string) => boolean {
   const pattern = globToMatcher(glob);
   return (filePath: string) => {
-    const relative = path.relative(baseDir, filePath);
+    const relative = path.relative(baseDir, canonicalSourcePath(filePath));
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
       return false;
     }
@@ -1575,7 +1577,7 @@ async function hashFileTailAt(filePath: string, offset: number): Promise<string>
   }
   const length = Math.min(INGEST_TAIL_HASH_BYTES, offset);
   const buffer = Buffer.alloc(length);
-  const handle = await fs.promises.open(filePath, "r");
+  const handle = await openLogicalSource(filePath);
   try {
     await handle.read(buffer, 0, length, offset - length);
   } finally {
@@ -1614,7 +1616,7 @@ export async function consumeFileRangeForTest(
   if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes > INGEST_RANGE_READ_CHUNK_BYTES) {
     throw new RangeError(`file read chunks must be between 1 and ${INGEST_RANGE_READ_CHUNK_BYTES} bytes`);
   }
-  const handle = await (options.openFile ?? ((target) => fs.promises.open(target, "r")))(filePath);
+  const handle = await (options.openFile ?? ((target) => openLogicalSource(target)))(filePath);
   const buffer = Buffer.allocUnsafe(Math.min(chunkBytes, end - start));
   let position = start;
   try {
@@ -1679,12 +1681,17 @@ async function readTrailingPartialLine(filePath: string, size: number): Promise<
 
 export async function countCompleteLines(filePath: string): Promise<number> {
   let count = 0;
-  for await (const chunk of fs.createReadStream(filePath)) {
-    for (const byte of chunk as Buffer) {
-      if (byte === 0x0a) count += 1;
+  const logical = await openLogicalSource(filePath);
+  try {
+    for await (const chunk of logical.createReadStream({ autoClose: false })) {
+      for (const byte of chunk as Buffer) {
+        if (byte === 0x0a) count += 1;
+      }
     }
+    return count;
+  } finally {
+    await logical.close();
   }
-  return count;
 }
 
 function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestAppendState | null {
@@ -1758,9 +1765,9 @@ async function relocateMovedCodexSource(
   filePath: string,
 ): Promise<string | null> {
   if (!isCodexRolloutPath(filePath)) return null;
-  if (fs.existsSync(filePath)) return null;
+  if (await logicalSourceExists(filePath)) return null;
   for (const candidate of codexRelocationCandidates(filePath)) {
-    if (!fs.existsSync(candidate)) continue;
+    if (!await logicalSourceExists(candidate)) continue;
     const parser = getParserForFile(candidate);
     if (!parser || parser.source !== "codex") continue;
     let nativeSessionId: string | null;
@@ -1810,7 +1817,7 @@ async function relocateMovedCodexSource(
       continue;
     }
     if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
-    const stat = await fs.promises.stat(candidate);
+    const stat = await logicalSourceStat(candidate);
     await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
     // A bulk archive moves many rollouts at once. The durable source alias is
     // the record of each move; reconcile summarizes its relocations per pass.
@@ -1845,7 +1852,7 @@ async function removeConversationForMissingSource(
   // relocation, but watcher-driven ingestion still needs to index it on its
   // own identity instead of waiting for the next broad reconcile.
   for (const candidate of codexRelocationCandidates(filePath)) {
-    if (!fs.existsSync(candidate)) continue;
+    if (!await logicalSourceExists(candidate)) continue;
     await ingestFile(candidate);
   }
   return false;
@@ -2128,7 +2135,7 @@ export async function readAppendForTest(
   filePath: string,
   state: Pick<IngestAppendState, "byte_offset" | "line_count" | "tail_hash" | "partial_line">,
 ): Promise<AppendReadResult> {
-  return readAppend(filePath, await fs.promises.stat(filePath), {
+  return readAppend(filePath, await logicalSourceStat(filePath), {
     file_path: filePath,
     empty_source_mtime: null,
     empty_source_size: null,
@@ -2468,6 +2475,7 @@ type IngestFileOptions = {
 };
 
 async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
+  filePath = canonicalSourcePath(filePath);
   let passOptions = options;
   const pendingAppendProof: PendingAppendProof = {
     filesystemDevice: null,
@@ -2497,9 +2505,9 @@ async function ingestFilePass(
   }
 
   // Check if file still exists
-  let stat: fs.Stats;
+  let stat: Awaited<ReturnType<typeof logicalSourceStat>>;
   try {
-    stat = await fs.promises.stat(filePath);
+    stat = await logicalSourceStat(filePath);
   } catch {
     logger("debug", "ingestion_file_gone", { file: filePath });
     try {
@@ -2570,6 +2578,7 @@ async function ingestFilePass(
   let alreadyIngestedCount = 0;
   let structureCacheNeedsRebuild = false;
   let sourceEpochNeedsRebuild = false;
+  let sourceGenerationChanged = false;
   let appendCheckpointNeedsFullParse = false;
   if (existing) {
     const actualCount = existing.actual_count ?? 0;
@@ -2578,7 +2587,9 @@ async function ingestFilePass(
     const currentSource = db.prepare(`
       SELECT source.current_version_id, source.parser_format, source.parser_version,
              source.normalization_version, source.redaction_epoch,
-             version.byte_length AS source_byte_length
+             source.availability AS source_availability, version.availability AS version_availability,
+             version.byte_length AS source_byte_length, version.filesystem_device,
+             version.filesystem_inode, version.filesystem_ctime_ns
         FROM conversation_sources source
         JOIN conversation_source_versions version
           ON version.id = source.current_version_id AND version.source_id = source.id
@@ -2592,9 +2603,19 @@ async function ingestFilePass(
       normalization_version: string;
       redaction_epoch: number;
       source_byte_length: number;
+      source_availability: string;
+      version_availability: string;
+      filesystem_device: string | null;
+      filesystem_inode: string | null;
+      filesystem_ctime_ns: string | null;
     } | undefined;
+    sourceGenerationChanged = !currentSource
+      || currentSource.filesystem_device !== stat.physicalGeneration.device
+      || currentSource.filesystem_inode !== stat.physicalGeneration.inode
+      || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
     sourceEpochNeedsRebuild = !currentSource || (
-      currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+      currentSource.source_availability !== "available" || currentSource.version_availability !== "available"
+      || currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
       || currentSource.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
@@ -2662,6 +2683,7 @@ async function ingestFilePass(
     && !options.bypassSameMtimeUnchanged
     && !structureCacheNeedsRebuild
     && !sourceEpochNeedsRebuild
+    && !sourceGenerationChanged
     && !appendCheckpointNeedsFullParse
     && sameMtimeAsExisting
     && parser.source === "codex"
@@ -2713,6 +2735,7 @@ async function ingestFilePass(
     || structureCacheNeedsRebuild
     || sourceEpochNeedsRebuild
     || appendCheckpointNeedsFullParse
+    || (sourceGenerationChanged && appendState?.byte_offset === stat.size)
     || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file
@@ -2730,6 +2753,7 @@ async function ingestFilePass(
       && existing
       && alreadyIngestedCount > 0
       && parser.parseIncremental
+      && !(parser.source === "codex" && !fs.existsSync(filePath))
       && (parser.source !== "gemini" || filePath.endsWith(".jsonl"))
     ) {
       const append = await readAppend(filePath, stat, appendState);
@@ -3878,7 +3902,7 @@ async function ingestWorkflowArtifact(
 
     let stat: fs.Stats;
     try {
-      stat = await fs.promises.stat(filePath);
+      stat = await logicalSourceStat(filePath);
     } catch {
       deleteWorkflowIngestState(db, filePath);
       logger("debug", "workflow_ingestion_file_gone", { file: filePath });
@@ -3985,9 +4009,11 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     }>;
   const dbPaths = new Map<string, number>();
   const conversationPaths = new Set<string>();
+  const repeatedConversationPaths = new Set<string>();
   const codexSessionIds = new Map<string, Set<string>>();
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
+    if (conversationPaths.has(row.source_path)) repeatedConversationPaths.add(row.source_path);
     conversationPaths.add(row.source_path);
     if (row.source === "codex") {
       const ids = codexSessionIds.get(row.source_path) ?? new Set<string>();
@@ -4052,6 +4078,29 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       .map((row) => [row.file_path, row] as const),
   );
 
+  const sealedCodexSources = db.prepare(`
+    SELECT c.source_path, s.conversation_id, s.parser_format, s.parser_version,
+           s.normalization_version, s.redaction_epoch, v.byte_length, v.file_mtime_ms,
+           v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns
+      FROM conversations c JOIN conversation_sources s ON s.conversation_id = c.id
+      JOIN conversation_source_versions v ON v.id = s.current_version_id
+     WHERE c.source = 'codex' AND s.provider = 'codex' AND s.native_session_id = c.session_id
+       AND s.availability = 'available' AND v.availability = 'available'
+       AND v.generation = 'sealed_sha256'
+  `).all() as Array<{
+    source_path: string; conversation_id: string; parser_format: string; parser_version: string;
+    normalization_version: string; redaction_epoch: number; byte_length: number; file_mtime_ms: number;
+    filesystem_device: string | null; filesystem_inode: string | null; filesystem_ctime_ns: string | null;
+  }>;
+  const indexedPhysicalSources = new Map<string, typeof sealedCodexSources[number]>();
+  const repeatedPaths = new Set<string>();
+  for (const row of sealedCodexSources) {
+    if (indexedPhysicalSources.has(row.source_path)) repeatedPaths.add(row.source_path);
+    indexedPhysicalSources.set(row.source_path, row);
+  }
+  for (const repeated of repeatedPaths) indexedPhysicalSources.delete(repeated);
+  for (const repeated of repeatedConversationPaths) indexedPhysicalSources.delete(repeated);
+
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
@@ -4074,7 +4123,19 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
       // Check if file needs ingestion
       try {
-        const stat = await fs.promises.stat(filePath);
+        const indexed = indexedPhysicalSources.get(filePath);
+        if (indexed && indexed.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+            && indexed.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+            && indexed.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
+            && indexed.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+            && appendStates.get(filePath)?.byte_offset === indexed.byte_length) {
+          const physical = await inspectSourceRepresentation(filePath);
+          if (physical.physicalGeneration.device === indexed.filesystem_device
+              && physical.physicalGeneration.inode === indexed.filesystem_inode
+              && physical.physicalGeneration.ctimeNs === indexed.filesystem_ctime_ns
+              && physical.mtimeMs === indexed.file_mtime_ms) continue;
+        }
+        const stat = await logicalSourceStat(filePath);
         const dbMtime = dbPaths.get(filePath);
         const emptyState = emptyPaths.get(filePath);
 
@@ -4087,8 +4148,9 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         }
         const knownConversation = conversationPaths.has(filePath);
         const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
-        let needsIngest = !knownConversation || mtimeChanged;
-        if (knownConversation && !mtimeChanged) {
+        const codexNeedsVerification = codexSessionIds.has(filePath);
+        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification;
+        if (knownConversation && !mtimeChanged && !codexNeedsVerification) {
           const appendState = appendStates.get(filePath);
           if (appendState && appendState.byte_offset !== stat.size) {
             needsIngest = true;
@@ -4398,6 +4460,7 @@ function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
 async function* walkFiles(baseDir: string, glob: string): AsyncGenerator<string> {
   const pattern = globToMatcher(glob);
   let entryCount = 0;
+  const seen = new Set<string>();
 
   async function* walkDir(dir: string): AsyncGenerator<string> {
     let entries: fs.Dirent[];
@@ -4415,9 +4478,11 @@ async function* walkFiles(baseDir: string, glob: string): AsyncGenerator<string>
       if (entry.isDirectory()) {
         yield* walkDir(fullPath);
       } else if (entry.isFile()) {
-        const relative = path.relative(baseDir, fullPath);
-        if (pattern(relative)) {
-          yield fullPath;
+        const canonical = canonicalSourcePath(fullPath);
+        const relative = path.relative(baseDir, canonical);
+        if (pattern(relative) && !seen.has(canonical)) {
+          seen.add(canonical);
+          yield canonical;
         }
       }
     }
