@@ -139,6 +139,7 @@ describe("conversation metadata routes", () => {
         method: "PATCH",
         url: `/api/conversations/${id}`,
         credential: token,
+        ambient_identity: { provider: "codex", provider_session_id: "archive-author" },
         body: { archived: true },
       });
       expect(archived.status).toBe(200);
@@ -161,6 +162,11 @@ describe("conversation metadata routes", () => {
       credential: token,
       body: { archived: false },
     });
+    const archiveHistory = db.prepare("SELECT event_type,payload_json FROM ledger_events WHERE entity_type='conversation_metadata' AND entity_id=? ORDER BY rowid").all(reservationId) as Array<{event_type:string;payload_json:string}>;
+    expect(archiveHistory.map(row=>({event_type:row.event_type,origin:JSON.parse(row.payload_json).request_origin}))).toEqual([
+      {event_type:"conversation_metadata.created",origin:{provider:"codex",provider_session_id:"archive-author"}},
+      {event_type:"conversation_metadata.deleted",origin:null},
+    ]);
     expect(restored.body).toEqual({ id: reservationId, archived_at: null });
     expect(db.prepare("SELECT conversation_id FROM conversation_archive_states WHERE conversation_id = ?").get(reservationId))
       .toBeUndefined();

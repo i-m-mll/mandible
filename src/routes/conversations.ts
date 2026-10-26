@@ -1,3 +1,4 @@
+import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
 import { parseSinceQuery, sourceFromQuery } from "../conversations/search-query.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -13,6 +14,7 @@ import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
 import {
   ClientAuthzError,
+  attributionForRequest,
   operatorOnlyManagedSessionRoute,
   requireOperator,
 } from "../client-auth/authz.js";
@@ -1456,7 +1458,17 @@ export function registerConversationRoutes(
       }
       // The read-modify-write is one IMMEDIATE transaction so concurrent tag
       // or comment appends serialize instead of silently overwriting one another.
-      const result = db.transaction(() => {
+      const project = db.prepare("SELECT project_id FROM conversation_spawn_requests WHERE id=?").get(id) as { project_id: string | null } | undefined;
+      const result = mutateLedgerRecord(db, {
+        entity_type: "conversation_metadata", entity_id: id, project_id: project?.project_id,
+        actor_type: "mandible_user", attribution: attributionForRequest(db, req),
+        payload: { conversation_id: id },
+        snapshot: () => {
+          const metadata = db.prepare("SELECT starred,tags,notes FROM conversations WHERE id=?").get(id) as Record<string, unknown> | undefined;
+          const archive = db.prepare("SELECT archived_at FROM conversation_archive_states WHERE conversation_id=?").get(id) as { archived_at: number } | undefined;
+          return metadata || archive ? { ...metadata, archived_at: archive?.archived_at ?? null } : null;
+        },
+      }, () => {
         const current = db.prepare("SELECT * FROM conversations WHERE id = ?")
           .get(id) as ConversationRow | undefined;
         const spawn = db.prepare(`SELECT id FROM conversation_spawn_requests
@@ -1504,19 +1516,19 @@ export function registerConversationRoutes(
         }
         if (nextNotes !== current.notes) changedFields.push("notes");
 
-        db.prepare(`UPDATE conversations
+        if (changedFields.length) db.prepare(`UPDATE conversations
           SET starred = ?, tags = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
           .run(nextStarred, nextTags, nextNotes, id);
         const updated = db.prepare(`SELECT c.*, a.archived_at FROM conversations c
           LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id WHERE c.id = ?`)
           .get(id) as ConversationRow;
         return { updated, archivedAt: updated.archived_at ?? null, changedFields };
-      }).immediate();
+      });
       if (!result) {
         sendJson(res, 404, { error: "Conversation not found" });
         return;
       }
-      broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id, updates: result.changedFields });
+      if (result.changedFields.length) broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id, updates: result.changedFields });
       sendJson(res, 200, result.updated ? mapConversation(result.updated) : { id, archived_at: result.archivedAt });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });

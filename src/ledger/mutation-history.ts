@@ -41,7 +41,7 @@ export function mutateLedgerRecord<T>(db: Db, input: {
       event_type: `${input.entity_type}.${before ? after ? "updated" : "deleted" : "created"}`,
       project_id: input.project_id, source: input.source ?? "mandible",
       notify: false,
-      payload: { ...input.payload, changed_fields: fields },
+      payload: { ...input.payload, operation: before ? after ? "update" : "delete" : "create", changed_fields: fields },
     });
     return result;
   })();

@@ -53,4 +53,33 @@ belongs to another process. Managed launches project only an actual resumed
 native ID or the Claude SDK's reserved native UUID. No per-command session flag
 or manual issue/session link is needed.
 
+## Authored Spaces and conversation metadata
+
+| Canonical boundary | Origin history | Verification |
+| --- | --- | --- |
+| Space create/edit/delete; item membership and metadata | `ledger_events`: `space`, `space_item` | `test/authored-origin.test.ts` covers create/edit/delete, idempotent membership and unknown origin. |
+| Occurrence positioning, batches, edges and predicate seeding | `ledger_events`: `space_occurrence`, `space_edge`; shared storage helpers | Authored structure sequence and existing Spaces route tests cover actual changes and transactional batches. |
+| Block content/tree changes, detach and deletion | `ledger_events`: `space_block` | Authored structure sequence checks rollback, failed history insertion and notification after outer commit. |
+| Managed, Git and historical document import | Space/block events inside the import transaction | Publication tests verify imported origins and rollback without an orphan Space or history. |
+| Publication preparation, worktree/commit/version changes and auth binding | `ledger_events`: `space_publication`; destination checkout owns the project feed | Publication and auth-publication tests verify native origin, frozen content, partial progress and atomic binding. |
+| Conversation tags, notes, star and archive state | `ledger_events`: `conversation_metadata` | Metadata tests cover authenticated authority, distinct native sessions, no-op/failure and reservation archive/unarchive. |
+
+Events contain entity/owner identifiers, operation and changed field names. Bodies,
+titles, tags, notes, embedded snapshots and publication content are compared only
+in memory. Existing legacy document history retains its original provenance;
+migration does not identify a historical author from the current request.
+
+Conversation archive state remains `conversation_archive_states`, including
+accepted spawn reservations. Archive does not delete transcript content. The
+existing metadata route emits `conversation:updated` with `archived_at` after
+commit. Provider transcript ingestion, index reconciliation, FTS/cache updates,
+telemetry, local view preferences and filesystem-only document exports do not
+create authored-content history.
+
+Publication subprocesses clear inherited daemon provider markers. A claimed
+request origin is not projected as a subprocess's agent enrollment identity.
+Until an independent metadata transport is provided, native origin for downstream
+CLI requests remains unknown; direct publication mutations retain their request
+origin.
+
 Co-Authored-By: Codex (GPT) <codex@openai.com>
