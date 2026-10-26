@@ -17,5 +17,6 @@ export const CHILD_RETENTION_SCHEMA_SQL: readonly string[] = [
   )`,
   `CREATE INDEX idx_conversation_retention_due ON conversation_retention_state(due_at, conversation_id) WHERE due_at IS NOT NULL`,
   `ALTER TABLE work_units ADD COLUMN worker_provider TEXT CHECK(worker_provider IN ('codex','claude_code','gemini'))`,
+  `ALTER TABLE work_units ADD COLUMN retained_assignment_session_id TEXT`,
   `CREATE INDEX idx_work_units_worker_binding ON work_units(worker_provider, worker_provider_session_id, state) WHERE worker_provider_session_id IS NOT NULL`,
 ];
