@@ -2773,6 +2773,7 @@ export type NativeWindowCapabilities = {
   topBarHeight: number;
   trafficLightReservation: number;
   trafficLightBounds?: { left: number; top: number; width: number; height: number } | null;
+  nativeFrame?: Record<string, unknown> | null;
   liquidGlassRegular: boolean;
 };
 
@@ -2781,6 +2782,31 @@ export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabil
     return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 42, trafficLightReservation: 0 };
   }
   return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
+}
+
+export async function observeNativeFrame(reason: 'first-frame' | 'resize' | 'visible' | 'manual'): Promise<NativeWindowCapabilities | null> {
+  if (!hasTauriRuntime()) return null;
+  const header = document.querySelector<HTMLElement>('.app-frame__bar');
+  if (!header || header.getClientRects().length === 0) return null;
+  const rect = (element: Element) => {
+    const { left, top, width, height } = element.getBoundingClientRect();
+    return { left, top, width, height };
+  };
+  const back = header.querySelector('button[aria-label="Back"] svg');
+  const viewport = window.visualViewport;
+  const glyphs = Array.from(header.querySelectorAll('button svg, .detail-pane-header__title, .detail-pane-header__supporting-metadata'))
+    .filter(element => element.getClientRects().length > 0 && !element.closest('.app-anchored-menu'))
+    .map(element => ({
+      name: element.closest('button')?.getAttribute('aria-label') ?? (element.classList.contains('detail-pane-header__title') ? 'title' : 'metadata'),
+      rect: rect(element),
+    })).filter(glyph => glyph.rect.width > 0 && glyph.rect.height > 0);
+  return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities', { domFrame: {
+    reason, header: rect(header), backIcon: back ? rect(back) : null, glyphs,
+    viewport: {
+      width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio,
+      visualScale: viewport?.scale ?? 1, offsetLeft: viewport?.offsetLeft ?? 0, offsetTop: viewport?.offsetTop ?? 0,
+    },
+  } });
 }
 
 export async function setDesktopWindowTheme(theme: DesktopWindowTheme): Promise<void> {

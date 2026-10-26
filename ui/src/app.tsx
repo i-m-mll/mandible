@@ -17,6 +17,7 @@ import {
   getDashboardBadges,
   getAppThemePreference,
   getNativeWindowCapabilities,
+  observeNativeFrame,
   setDesktopWindowTheme,
   getInboxGlobal,
   getIssueRepos,
@@ -1058,6 +1059,35 @@ function App(): JSX.Element {
     }
     settingsReturnHashRef.current = window.location.hash || `#/${route.tab}`;
   }, [route]);
+
+  useEffect(() => {
+    if (!frameHeaderHost || nativeControlsReservation <= 0 || document.documentElement.dataset.framePresentation !== 'macos-overlay') return;
+    let first = 0;
+    let second = 0;
+    let disposed = false;
+    const schedule = (reason: 'first-frame' | 'resize' | 'visible') => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+      first = window.requestAnimationFrame(() => {
+        second = window.requestAnimationFrame(() => {
+          if (disposed || document.visibilityState === 'hidden') return;
+          void observeNativeFrame(reason).catch(error => console.error('Native frame observation failed:', error));
+        });
+      });
+    };
+    const resized = () => schedule('resize');
+    const visible = () => { if (document.visibilityState === 'visible') schedule('visible'); };
+    schedule('first-frame');
+    window.addEventListener('resize', resized);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      disposed = true;
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+      window.removeEventListener('resize', resized);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [frameHeaderHost, nativeControlsReservation]);
 
   useEffect(() => {
     let disposed = false;
