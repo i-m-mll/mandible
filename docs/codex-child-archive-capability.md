@@ -5,10 +5,11 @@ route for shared stored turn history, empty-queue reads, same-ID restoration
 and archival of the disposable fixture. It requires no caller-chat
 impersonation or direct owning-desktop IPC. An agent-context desktop bridge
 also successfully archived and restored a loaded-idle fixture. No adapter or
-automatic archive effect is enabled. Pending-input coverage across runtimes
-and an independent archive effect while the desktop holds the thread loaded
-remain unproved; a blanket standalone-transport blocker is not supported by
-these measurements.
+automatic archive effect is enabled. The existing CLI adapter failed on the
+desktop-loaded idle fixture. Pending-input coverage for a nonempty desktop
+queue and the bundled app-server's distinct archive effect on such a loaded
+thread remain unproved; a blanket standalone-transport blocker is not
+supported by these measurements.
 
 A fresh history, status and queue check followed by archive is the selected
 practical visibility workflow. Atomic conditional archival is not required.
@@ -172,9 +173,34 @@ and `codex unarchive` CLI commands. The existing app-server client itself
 currently has a typed unarchive request but no archive/turn-history/queue
 request entries; the read-only probe exercised the public methods directly.
 The native archive and restore requests succeeded for the fixture through that
-same client boundary. Whether an independent archive effect succeeds while
-the desktop keeps a thread loaded, and whether queue reads cover pending
-desktop input across runtimes, remain the specific unproved semantics.
+same client boundary.
+
+### Existing CLI adapter with a desktop-loaded idle fixture
+
+An expressly authorized test restored the same fixture through the owning
+desktop tool, then opened that fixture with the app's navigation tool. Opening
+it loaded it without input or a new turn. Owning `wait_threads` reported idle
+with the same prior interrupted turn; `lsof` confirmed desktop app-server PID
+68080 held the exact fixture writer-lock descriptor (FD 377).
+
+The exact existing `new CodexCliThreadArchiver().archive(threadId)` invocation
+failed. It executes PATH `codex` version 0.160.0; the returned error was
+`Command failed: codex archive ...` followed by `Error: failed to archive
+session`. This test establishes failure of that adapter under the measured
+condition, without establishing its internal cause.
+
+While that fixture remained desktop-loaded and idle, a new independent
+bundled app-server (PID 33780) successfully read `thread/queue/list`: empty
+data, nextCursor null, then closed with code 0. Loaded-thread empty-queue
+reads therefore work across this existing API boundary. Visibility of a
+nonempty desktop queue was not exercised.
+
+The supported owning desktop archive tool then archived the idle fixture for
+cleanup, and app focus returned to the worker chat. No model turn, new input
+or active-turn archive test was performed. The bundled 0.163.0-alpha.10.2
+app-server's `thread/archive` is a distinct effect/version from the failed
+0.160.0 CLI adapter; its effect on a desktop-loaded thread was not tested in
+this bounded run.
 
 ### Direct desktop bridge
 
