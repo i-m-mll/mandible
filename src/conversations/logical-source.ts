@@ -225,7 +225,7 @@ async function decode(
       },
     });
     const createZstdDecompress = (zlib as typeof zlib & { createZstdDecompress: () => Transform }).createZstdDecompress;
-    await pipeline(provider.createReadStream({ autoClose: false }), createZstdDecompress(), meter,
+    await pipeline(provider.createReadStream({ start: 0, end: Number(before.size) - 1, autoClose: false }), createZstdDecompress(), meter,
       new Writable({
         write(chunk: Buffer, _encoding, callback) {
           output.writeFile(chunk).then(() => callback(), callback);

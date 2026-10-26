@@ -98,12 +98,13 @@ it("shares a cold decode and disk budget between daemon and ingestion processes"
   expect(results.reduce((total, result) => total + Number(result.stdout.trim()), 0)).toBe(header.length);
 });
 
-it("acquires a readable source when another process evicts it between lookup and lease", async () => {
+it.each(["warm", "cold"])("acquires a readable %s source when another process evicts it before its lease", async (state) => {
   fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
   const options = { cacheRoot, reserveBytes: 0, cacheBytes: header.length, maxLogicalBytes: header.length };
-  const warm = await openLogicalSource(source, options);
-  await warm.close();
-  const payload = path.join(cacheRoot, fs.readdirSync(cacheRoot).find((name) => name.endsWith(".jsonl"))!);
+  if (state === "warm") {
+    const warm = await openLogicalSource(source, options);
+    await warm.close();
+  }
   let paused!: () => void;
   const pause = new Promise<void>((resolve) => { paused = resolve; });
   let resume!: () => void;
@@ -111,7 +112,9 @@ it("acquires a readable source when another process evicts it between lookup and
   let intercepted = false;
   const actualOpen = fs.promises.open.bind(fs.promises);
   vi.spyOn(fs.promises, "open").mockImplementation(async (...args) => {
-    if (!intercepted && args[0] === payload) { intercepted = true; paused(); await barrier; }
+    if (!intercepted && String(args[0]).startsWith(`${cacheRoot}${path.sep}`) && String(args[0]).endsWith(".jsonl")) {
+      intercepted = true; paused(); await barrier;
+    }
     return actualOpen(...args);
   });
   const pending = openLogicalSource(source, options);
