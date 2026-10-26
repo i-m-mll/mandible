@@ -1,3 +1,7 @@
+import { setConversationArchiveState } from "../src/conversations/metadata.js";
+import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
+import { resolveSessionAlias } from "../src/session-liveness.js";
+import { getWorkerAssignments } from "../src/work-unit-worker.js";
 import { registerHookRoutes } from "../src/routes/hooks.js";
 import { SessionExecutionStore, applyExecutionEnvelope } from "../src/session-execution.js";
 import http from "node:http";
@@ -511,7 +515,7 @@ describe("work unit routes", () => {
     ).get(claimBody.id)).toEqual({
       provider: "codex",
       provider_session_id: "thread-worker",
-      worker_provider_session_id: "thread-worker",
+      worker_provider_session_id: null,
     });
 
     const patch = await router.invoke({
@@ -531,68 +535,100 @@ describe("work unit routes", () => {
     ).toEqual({
       provider: "codex",
       provider_session_id: "thread-patch",
-      worker_provider_session_id: "thread-worker",
+      worker_provider_session_id: null,
     });
   });
 
-  it("binds explicit worker ownership when activate auto-creates the work unit", async () => {
-    const response = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/activate",
-      ambient_identity: { provider: "codex", provider_session_id: "thread-auto-worker" },
-      body: {
-        issue_id: "auto123",
-        repo_id: "mandible",
-        branch: "feature/auto123",
-        worker_owner: true,
-      },
-    });
-
-    expect(response.status).toBe(201);
-    const id = (response.body as { id: string }).id;
-    expect(db.prepare(
-      `SELECT state, provider, provider_session_id, worker_provider_session_id
-       FROM work_units WHERE id = ?`,
-    ).get(id)).toEqual({
-      state: "committed",
-      provider: "codex",
-      provider_session_id: "thread-auto-worker",
-      worker_provider_session_id: "thread-auto-worker",
-    });
+  it.each(["codex", "claude"] as const)("automatically binds the actual %s child worker and completes only its resolved assignments", async (provider) => {
+    const source = provider === "claude" ? "claude_code" : provider;
+    const agent = createUser(db, { slug: "automatic-owner", kind: "agent", display_name: "Owner" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "automatic-owner" });
+    const ownedRouter = new Router({ clientAuth: { authenticate: () => ({ user_id: agent.id, slug: agent.slug,
+      method: "api_token", source: "in_process", credential_id: credential.id, effect_ceiling: PRODUCTION_EFFECTS }),
+      mode: () => "strict", recordUnattributedWrite: () => undefined } });
+    registerWorkUnitRoutes(ownedRouter, {} as never);
+    const parent = "019a0000-0000-7000-8000-000000000001";
+    const worker = "019a0000-0000-7000-8000-000000000002";
+    const creator = "019a0000-0000-7000-8000-000000000003";
+    const insert = db.prepare(`INSERT INTO conversations
+      (id,source,session_id,source_path,source_hash,source_mtime,started_at,parent_source,parent_session_id,
+       parent_conversation_id,opening_lineage,opening_line) VALUES (?, ?, ?, ?, '', 1, '2026-10-01', ?, ?, ?, ?, ?)`);
+    insert.run("parent", source, parent, "/parent", null, null, null, "none", null);
+    insert.run("worker", source, worker, "/worker", source, parent, "parent", "child",
+      `[mandible child parent=${provider}:${parent} parent-role=coordinator role=worker]`);
+    insert.run("creator", source, creator, "/creator", source, parent, "parent", "child",
+      `[mandible child parent=${provider}:${parent} parent-role=coordinator role=coordinator]`);
+    db.prepare("INSERT INTO sessions (id,app,status,conversation_id) VALUES (?, ?, 'ended', ?)").run(worker, provider, worker);
+    const claim = await ownedRouter.invoke({ credential: "own", method: "POST", url: "/api/work-units/claim",
+      ambient_identity: { provider, provider_session_id: worker },
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/own-worker" } });
+    expect(claim.status).toBe(201);
+    const first = (claim.body as { id: string }).id;
+    const create = await ownedRouter.invoke({ credential: "own", method: "POST", url: "/api/work-units/activate",
+      ambient_identity: { provider, provider_session_id: creator },
+      body: { issue_id: "auto123", repo_id: "mandible", branch: "feature/dispatched" } });
+    const second = (create.body as { id: string }).id;
+    expect(db.prepare("SELECT worker_provider_session_id FROM work_units WHERE id = ?").get(second))
+      .toEqual({ worker_provider_session_id: null });
+    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${second}`,
+      ambient_identity: { provider, provider_session_id: creator },
+      body: { expected_generation: 1, assigned_session_id: worker } })).status).toBe(200);
+    expect(db.prepare("SELECT provider_session_id, worker_provider, worker_provider_session_id FROM work_units WHERE id = ?").get(second))
+      .toEqual({ provider_session_id: creator, worker_provider: source, worker_provider_session_id: worker });
+    const identity = { provider: source, provider_session_id: worker };
+    expect(getWorkerAssignments(db, identity).unresolvedUnitIds.sort()).toEqual([first, second].sort());
+    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${first}`, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
+    expect(getWorkerAssignments(db, identity).complete).toBe(false);
+    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${second}`, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
+    expect(getWorkerAssignments(db, identity).complete).toBe(true);
+    expect(new LedgerStore(db).getIssue((db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get(first) as { ledger_issue_id: string }).ledger_issue_id)?.status).toBe("open");
   });
 
-  it("rejects explicit worker ownership without ambient Codex identity", async () => {
-    const response = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/activate",
-      body: {
-        issue_id: "abc123",
-        repo_id: "mandible",
-        branch: "feature/abc123-demo",
-        worker_owner: true,
-      },
-    });
-
-    expect(response.status).toBe(400);
-    expect(response.body).toEqual({
-      error: "worker_owner requires an allowlisted ambient Codex provider identity",
-    });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 0 });
-
-    const nonCodex = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/activate",
-      ambient_identity: { provider: "claude", provider_session_id: "claude-coordinator" },
-      body: {
-        issue_id: "abc123",
-        repo_id: "mandible",
-        branch: "feature/abc123-demo",
-        worker_owner: true,
-      },
-    });
-    expect(nonCodex.status).toBe(400);
-    expect(nonCodex.body).toEqual(response.body);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 0 });
+  it("retains archived and restored responsibility after unload while ordinary dead assignments clear", async () => {
+    const agent = createUser(db, { slug: "resume-owner", kind: "agent", display_name: "Owner" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "resume-owner" });
+    const owned = new Router({ clientAuth: { authenticate: () => ({ user_id: agent.id, slug: agent.slug,
+      method: "api_token", source: "in_process", credential_id: credential.id, effect_ceiling: PRODUCTION_EFFECTS }),
+      mode: () => "strict", recordUnattributedWrite: () => undefined } });
+    registerWorkUnitRoutes(owned, {} as never);
+    db.prepare(`INSERT INTO conversations(id,source,session_id,source_path,source_hash,source_mtime,started_at)
+      VALUES ('retained-chat','claude_code','retained-native','/retained','',1,'2026-10-01')`).run();
+    const units: string[] = [];
+    for (const native of ["retained-native", "ordinary-native"]) {
+      db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES (?, 'claude', 'ended', ?)").run(native, native);
+      const claim = await owned.invoke({ method: "POST", url: "/api/work-units/claim", credential: "own",
+        ambient_identity: { provider: "claude", provider_session_id: native },
+        body: { issue_id: "abc123", repo_id: "mandible", branch: `feature/${native}`, assigned_session_id: native } });
+      expect(claim.status).toBe(201);
+      units.push((claim.body as { id: string }).id);
+    }
+    setConversationArchiveState(db, { conversation_id: "retained-chat", archived: true, cause: "manual" }, { attribution: systemAction() });
+    setConversationArchiveState(db, { conversation_id: "retained-chat", archived: false, cause: "manual" }, { attribution: systemAction() });
+    await new WorkUnitReconciler(() => undefined, { archiver: { archive: async () => undefined, unarchive: async () => undefined },
+      resolveSession: (database, id) => resolveSessionAlias(database, id) }).reconcile();
+    expect(db.prepare("SELECT assigned_session_id, owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(units[0]))
+      .toEqual({ assigned_session_id: "retained-native", owner_credential_id: credential.id, custody_generation: 1 });
+    expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = ?").get(units[1])).toEqual({ assigned_session_id: null });
+    const check = await owned.invoke({ method: "GET", credential: "own",
+      url: "/api/work-units/custody-check?repo_id=mandible&branch=feature/retained-native",
+      ambient_identity: { provider: "claude", provider_session_id: "different-native" } });
+    expect(check.body).toMatchObject({ outcome: "held", holder_liveness: { state: "stopped", responsibility_retained: true } });
+    const takeover = await owned.invoke({ method: "POST", url: `/api/work-units/${units[0]}/custody/assume`, credential: "own",
+      ambient_identity: { provider: "claude", provider_session_id: "different-native" },
+      body: { expected_generation: 1, reason: "Try taking over an unloaded holder" } });
+    expect(takeover.status).toBe(409);
+    const resumed = await owned.invoke({ method: "POST", url: "/api/work-units/activate", credential: "own",
+      ambient_identity: { provider: "claude", provider_session_id: "retained-native" },
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/retained-native" } });
+    expect(resumed.status).toBe(200);
+    expect(db.prepare("SELECT assigned_session_id, owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(units[0]))
+      .toEqual({ assigned_session_id: "retained-native", owner_credential_id: credential.id, custody_generation: 1 });
+    const reassigned = await owned.invoke({ method: "PATCH", url: `/api/work-units/${units[0]}`, credential: "own",
+      body: { expected_generation: 1, assigned_session_id: "ordinary-native" } });
+    expect(reassigned.status).toBe(200);
+    await new WorkUnitReconciler(() => undefined, { archiver: { archive: async () => undefined, unarchive: async () => undefined },
+      resolveSession: (database, id) => resolveSessionAlias(database, id) }).reconcile();
+    expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = ?").get(units[0])).toEqual({ assigned_session_id: null });
   });
 
   it("guards exact releases and authority-bearing updates without changing sibling assignments", async () => {
