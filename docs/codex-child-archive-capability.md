@@ -5,11 +5,12 @@ route for shared stored turn history, empty-queue reads, same-ID restoration
 and archival of the disposable fixture. It requires no caller-chat
 impersonation or direct owning-desktop IPC. An agent-context desktop bridge
 also successfully archived and restored a loaded-idle fixture. No adapter or
-automatic archive effect is enabled. The existing CLI adapter failed on the
-desktop-loaded idle fixture. Pending-input coverage for a nonempty desktop
-queue and the bundled app-server's distinct archive effect on such a loaded
-thread remain unproved; a blanket standalone-transport blocker is not
-supported by these measurements.
+automatic archive effect is enabled. Both the existing CLI adapter and the
+bundled independent app-server failed to archive the desktop-loaded idle
+fixture; the latter explicitly rejected its active writer. Pending-input
+coverage for a nonempty desktop queue remains unproved. Standalone reads and
+unloaded-thread effects work, but the measured cross-process archive effects
+cannot archive a thread while the desktop owns its writer.
 
 A fresh history, status and queue check followed by archive is the selected
 practical visibility workflow. Atomic conditional archival is not required.
@@ -197,10 +198,34 @@ nonempty desktop queue was not exercised.
 
 The supported owning desktop archive tool then archived the idle fixture for
 cleanup, and app focus returned to the worker chat. No model turn, new input
-or active-turn archive test was performed. The bundled 0.163.0-alpha.10.2
-app-server's `thread/archive` is a distinct effect/version from the failed
-0.160.0 CLI adapter; its effect on a desktop-loaded thread was not tested in
-this bounded run.
+or active-turn archive test was performed.
+
+### Bundled independent native archive with a desktop-loaded idle fixture
+
+A separately authorized, once-only test exercised the bundled
+0.163.0-alpha.10.2 app-server's distinct `thread/archive` effect. The same
+fixture was restored and opened without input. Immediately before the call,
+owning `wait_threads` reported idle with the unchanged prior turn
+`01a17935-d371-7e90-93e4-5bd82649228d`; desktop PID 68080 held its exact
+writer-lock descriptor (FD 76).
+
+The existing `CodexAppServerClient` spawned independent stdio server PID
+42269. Its `thread/archive({threadId})` request rejected with:
+
+> thread 01a17935-2e1a-77c0-b8ba-6f011db56615 already has an active writer
+
+The independent server closed with code 0. After rejection, owning status was
+still idle on the same unchanged turn; a read-only native probe returned
+`archived=0` and the original `sessions/2026/10/26` path. The supported
+owning desktop tool archived the idle fixture for cleanup, and app focus
+returned to the worker chat. No new turn or input was submitted.
+
+This establishes a concrete cross-process writer-ownership restriction on
+the independent native effect, even for a proven desktop-idle thread. It is
+separate from residual check-then-archive race policy and does not justify
+reclassifying writer ownership as active execution. A Mandible-local chat
+archive projection is a separate effect that can implement local visibility
+policy without claiming the rejected Codex-native operation succeeded.
 
 ### Direct desktop bridge
 
@@ -243,9 +268,11 @@ effect set.
 The existing independent API supplies a legitimate daemon boundary, without
 borrowing or inventing an agent executor identity. Its shared native history
 and execution-hook evidence support the practical workflow; direct owning IPC
-is not mandatory. Assessment of current-input coverage and loaded-thread
-archive behavior must distinguish demonstrated operations from the remaining
-unproved semantics above. Reconcile fresh
+is not mandatory. The measured loaded-writer restriction prevents the
+independent native effect from implementing desktop cleanup while the desktop
+owns the writer. Assessment of a legitimate owning-runtime effect or a
+Mandible-local visibility projection must preserve this distinction.
+Reconcile fresh
 continuous-activity history and current execution/queue evidence, then archive.
 Review the remaining input/effect race proportionately to this recoverable
 visibility operation. Verify a single-thread effect or the complete effect
