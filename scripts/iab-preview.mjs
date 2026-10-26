@@ -1045,11 +1045,11 @@ function requireValue(argv, index, flag) {
 
 function printUsage(commandName = "preview") {
   if (['status', 'stop', 'refresh', 'teardown', 'finalize'].includes(commandName)) {
-    console.log(`Usage: bun scripts/iab-preview.mjs ${commandName} --root <preview-root> --run-id <id> [--revision <n>] [--outcome accepted|assessed|failed|abandoned|investigating --summary <text>] [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nLive mutations require the current revision. Stop retains interactive data. Teardown/finalize stops exact consumers, retires the public route and removes disposed bytes. Completed teardown retries resolve the retained exact run receipt.`);
+    console.log(`Usage: bun run iab-preview -- ${commandName} --root <preview-root> --run-id <id> [--revision <n>] [--outcome accepted|assessed|failed|abandoned|investigating --summary <text>] [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nLive mutations require the current revision. Stop retains interactive data. Teardown/finalize stops exact consumers, retires the public route and removes disposed bytes. Completed teardown retries resolve the retained exact run receipt.`);
     return;
   }
   if (commandName === "seed-agents-review") {
-    console.log(`Usage: bun scripts/iab-preview.mjs seed-agents-review --artifact-version <exact-ref> [options]
+    console.log(`Usage: bun run iab-preview -- seed-agents-review --artifact-version <exact-ref> [options]
 
 Create a launcher-owned preview copy, bind one committed link-custody v3 review artifact,
 and only then start the preview daemon. The source database and artifact are never mutated.
@@ -1057,7 +1057,7 @@ and only then start the preview daemon. The source database and artifact are nev
     return;
   }
   if (commandName === "seed-briefing-demo") {
-    console.log(`Usage: bun scripts/iab-preview.mjs seed-briefing-demo [--json]
+    console.log(`Usage: bun run iab-preview -- seed-briefing-demo [--json]
 
 Seed the deterministic rich Briefing fixture into the current integration
 branch's launcher-owned preview copy after validating metadata custody.
@@ -1065,7 +1065,7 @@ branch's launcher-owned preview copy after validating metadata custody.
     return;
   }
   if (commandName === "cleanup") {
-    console.log(`Usage: bun scripts/iab-preview.mjs cleanup [options]
+    console.log(`Usage: bun run iab-preview -- cleanup [options]
 
 Clean stale Mandible IAB preview cache entries.
 
@@ -1083,7 +1083,7 @@ Use finalize to account for stopped preview material before cleanup.
     return;
   }
 
-  console.log(`Usage: bun scripts/iab-preview.mjs [options]
+  console.log(`Usage: bun run iab-preview -- [options]
 
 Create or reuse an isolated Mandible preview instance.
 

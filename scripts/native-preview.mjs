@@ -308,7 +308,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === script) {
     if (command === 'launch') result = await launchNativePreview({ ...args, workUnit: args['work-unit'], newInstance: args['new-instance'] === 'true', agentSession: args['agent-session'] ?? process.env.CODEX_THREAD_ID });
     else if (command === 'stop') result = await stopNativePreview(args.receipt);
     else if (command === 'cleanup') result = await cleanupNativePreview(args.receipt, { disposition: args.disposition });
-    else throw new Error('Usage: bun scripts/native-preview.mjs launch --branch <preview-branch> [--bundle <noninstalled.app>] --project <project-id> --work-unit <unit-id> [--agent-session <id>] | stop|cleanup --receipt <metadata.json>');
+    else throw new Error('Usage: bun run native-preview -- launch --branch <preview-branch> [--bundle <noninstalled.app>] --project <project-id> --work-unit <unit-id> [--agent-session <id>] | stop|cleanup --receipt <metadata.json>');
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(JSON.stringify({ ok: false, error: String(error) })); process.exitCode = 1; }
 }
