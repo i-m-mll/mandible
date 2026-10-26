@@ -1,3 +1,4 @@
+import { mutateSpaceRecord } from "../spaces/mutation-history.js";
 import crypto from "node:crypto";
 import type { Db } from "../db.js";
 import type { TimelineDiagnostic, TimelineIssuePredicate } from "../types.js";
@@ -174,20 +175,22 @@ export interface CreateSpaceInput {
 
 export function createSpace(db: Db, input: CreateSpaceInput, now = Date.now()): Space {
   const id = newId();
-  db.prepare(
-    `INSERT INTO spaces (id, project_id, title, default_renderer, description, metadata_json, created_at, updated_at)
-     VALUES (@id, @project_id, @title, @default_renderer, @description, @metadata_json, @created_at, @updated_at)`,
-  ).run({
-    id,
-    project_id: input.project_id ?? null,
-    title: input.title,
-    default_renderer: input.default_renderer ?? "canvas",
-    description: input.description ?? null,
-    metadata_json: serializeMetadata(input.metadata),
-    created_at: now,
-    updated_at: now,
-  });
-  return getSpace(db, id)!;
+  return mutateSpaceRecord(db, "spaces", id, id, () => {
+    db.prepare(
+      `INSERT INTO spaces (id, project_id, title, default_renderer, description, metadata_json, created_at, updated_at)
+       VALUES (@id, @project_id, @title, @default_renderer, @description, @metadata_json, @created_at, @updated_at)`,
+    ).run({
+      id,
+      project_id: input.project_id ?? null,
+      title: input.title,
+      default_renderer: input.default_renderer ?? "canvas",
+      description: input.description ?? null,
+      metadata_json: serializeMetadata(input.metadata),
+      created_at: now,
+      updated_at: now,
+    });
+    return getSpace(db, id)!;
+  }, input.project_id);
 }
 
 export function getSpace(db: Db, id: string): Space | null {
@@ -331,30 +334,34 @@ export function updateSpace(
   input: UpdateSpaceInput,
   now = Date.now(),
 ): Space | null {
-  const existing = getSpace(db, id);
-  if (!existing) return null;
-  db.prepare(
-    `UPDATE spaces
-        SET title = @title,
-            default_renderer = @default_renderer,
-            description = @description,
-            metadata_json = @metadata_json,
-            updated_at = @updated_at
-      WHERE id = @id`,
-  ).run({
-    id,
-    title: input.title ?? existing.title,
-    default_renderer: input.default_renderer ?? existing.default_renderer,
-    description: input.description === undefined ? existing.description : input.description,
-    metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
-    updated_at: now,
+  return mutateSpaceRecord(db, "spaces", id, id, () => {
+    const existing = getSpace(db, id);
+    if (!existing) return null;
+    db.prepare(
+      `UPDATE spaces
+          SET title = @title,
+              default_renderer = @default_renderer,
+              description = @description,
+              metadata_json = @metadata_json,
+              updated_at = @updated_at
+        WHERE id = @id`,
+    ).run({
+      id,
+      title: input.title ?? existing.title,
+      default_renderer: input.default_renderer ?? existing.default_renderer,
+      description: input.description === undefined ? existing.description : input.description,
+      metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
+      updated_at: now,
+    });
+    return getSpace(db, id);
   });
-  return getSpace(db, id);
 }
 
 export function deleteSpace(db: Db, id: string): boolean {
-  const result = db.prepare("DELETE FROM spaces WHERE id = ?").run(id);
-  return result.changes > 0;
+  return mutateSpaceRecord(db, "spaces", id, id, () => {
+    const result = db.prepare("DELETE FROM spaces WHERE id = ?").run(id);
+    return result.changes > 0;
+  });
 }
 
 // --- items ------------------------------------------------------------------
@@ -414,21 +421,23 @@ export function addSpaceItem(
     return { item: existing, created: false };
   }
   const id = newId();
-  db.prepare(
-    `INSERT INTO space_items (id, space_id, ref_type, ref_id, ref_uri, title, metadata_json, created_at, updated_at)
-     VALUES (@id, @space_id, @ref_type, @ref_id, @ref_uri, @title, @metadata_json, @created_at, @updated_at)`,
-  ).run({
-    id,
-    space_id: spaceId,
-    ref_type: input.ref_type,
-    ref_id: input.ref_id,
-    ref_uri: input.ref_uri ?? null,
-    title: input.title ?? null,
-    metadata_json: serializeMetadata(input.metadata),
-    created_at: now,
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_items", id, spaceId, () => {
+    db.prepare(
+      `INSERT INTO space_items (id, space_id, ref_type, ref_id, ref_uri, title, metadata_json, created_at, updated_at)
+       VALUES (@id, @space_id, @ref_type, @ref_id, @ref_uri, @title, @metadata_json, @created_at, @updated_at)`,
+    ).run({
+      id,
+      space_id: spaceId,
+      ref_type: input.ref_type,
+      ref_id: input.ref_id,
+      ref_uri: input.ref_uri ?? null,
+      title: input.title ?? null,
+      metadata_json: serializeMetadata(input.metadata),
+      created_at: now,
+      updated_at: now,
+    });
+    return { item: getSpaceItem(db, spaceId, id)!, created: true };
   });
-  return { item: getSpaceItem(db, spaceId, id)!, created: true };
 }
 
 export interface UpdateSpaceItemInput {
@@ -444,31 +453,35 @@ export function updateSpaceItem(
   input: UpdateSpaceItemInput,
   now = Date.now(),
 ): SpaceItem | null {
-  const existing = getSpaceItem(db, spaceId, itemId);
-  if (!existing) return null;
-  db.prepare(
-    `UPDATE space_items
-        SET ref_uri = @ref_uri,
-            title = @title,
-            metadata_json = @metadata_json,
-            updated_at = @updated_at
-      WHERE space_id = @space_id AND id = @id`,
-  ).run({
-    space_id: spaceId,
-    id: itemId,
-    ref_uri: input.ref_uri === undefined ? existing.ref_uri : input.ref_uri,
-    title: input.title === undefined ? existing.title : input.title,
-    metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_items", itemId, spaceId, () => {
+    const existing = getSpaceItem(db, spaceId, itemId);
+    if (!existing) return null;
+    db.prepare(
+      `UPDATE space_items
+          SET ref_uri = @ref_uri,
+              title = @title,
+              metadata_json = @metadata_json,
+              updated_at = @updated_at
+        WHERE space_id = @space_id AND id = @id`,
+    ).run({
+      space_id: spaceId,
+      id: itemId,
+      ref_uri: input.ref_uri === undefined ? existing.ref_uri : input.ref_uri,
+      title: input.title === undefined ? existing.title : input.title,
+      metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
+      updated_at: now,
+    });
+    return getSpaceItem(db, spaceId, itemId);
   });
-  return getSpaceItem(db, spaceId, itemId);
 }
 
 export function deleteSpaceItem(db: Db, spaceId: string, itemId: string): boolean {
-  const result = db.prepare(
-    "DELETE FROM space_items WHERE space_id = ? AND id = ?",
-  ).run(spaceId, itemId);
-  return result.changes > 0;
+  return mutateSpaceRecord(db, "space_items", itemId, spaceId, () => {
+    const result = db.prepare(
+      "DELETE FROM space_items WHERE space_id = ? AND id = ?",
+    ).run(spaceId, itemId);
+    return result.changes > 0;
+  });
 }
 
 // --- occurrences ------------------------------------------------------------
@@ -514,33 +527,35 @@ export function createSpaceOccurrence(
   now = Date.now(),
 ): SpaceOccurrence {
   const id = input.id ?? newId();
-  db.prepare(
-    `INSERT INTO space_occurrences (
-       id, space_id, item_id, renderer, parent_id, x, y, width, height,
-       z_index, sort_key, section_id, note, metadata_json, created_at, updated_at
-     ) VALUES (
-       @id, @space_id, @item_id, @renderer, @parent_id, @x, @y, @width, @height,
-       @z_index, @sort_key, @section_id, @note, @metadata_json, @created_at, @updated_at
-     )`,
-  ).run({
-    id,
-    space_id: spaceId,
-    item_id: input.item_id ?? null,
-    renderer: input.renderer ?? "canvas",
-    parent_id: input.parent_id ?? null,
-    x: input.x ?? null,
-    y: input.y ?? null,
-    width: input.width ?? null,
-    height: input.height ?? null,
-    z_index: input.z_index ?? null,
-    sort_key: input.sort_key ?? null,
-    section_id: input.section_id ?? null,
-    note: input.note ?? null,
-    metadata_json: serializeMetadata(input.metadata),
-    created_at: now,
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_occurrences", id, spaceId, () => {
+    db.prepare(
+      `INSERT INTO space_occurrences (
+         id, space_id, item_id, renderer, parent_id, x, y, width, height,
+         z_index, sort_key, section_id, note, metadata_json, created_at, updated_at
+       ) VALUES (
+         @id, @space_id, @item_id, @renderer, @parent_id, @x, @y, @width, @height,
+         @z_index, @sort_key, @section_id, @note, @metadata_json, @created_at, @updated_at
+       )`,
+    ).run({
+      id,
+      space_id: spaceId,
+      item_id: input.item_id ?? null,
+      renderer: input.renderer ?? "canvas",
+      parent_id: input.parent_id ?? null,
+      x: input.x ?? null,
+      y: input.y ?? null,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      z_index: input.z_index ?? null,
+      sort_key: input.sort_key ?? null,
+      section_id: input.section_id ?? null,
+      note: input.note ?? null,
+      metadata_json: serializeMetadata(input.metadata),
+      created_at: now,
+      updated_at: now,
+    });
+    return getSpaceOccurrence(db, spaceId, id)!;
   });
-  return getSpaceOccurrence(db, spaceId, id)!;
 }
 
 export interface UpdateOccurrenceInput {
@@ -565,46 +580,48 @@ function applyOccurrenceUpdate(
   input: UpdateOccurrenceInput,
   now: number,
 ): SpaceOccurrence | null {
-  const existing = getSpaceOccurrence(db, spaceId, occurrenceId);
-  if (!existing) return null;
-  const pick = <K extends keyof UpdateOccurrenceInput>(
-    key: K,
-    fallback: SpaceOccurrence[K & keyof SpaceOccurrence],
-  ) => (input[key] === undefined ? fallback : input[key]);
-  db.prepare(
-    `UPDATE space_occurrences
-        SET item_id = @item_id,
-            renderer = @renderer,
-            parent_id = @parent_id,
-            x = @x,
-            y = @y,
-            width = @width,
-            height = @height,
-            z_index = @z_index,
-            sort_key = @sort_key,
-            section_id = @section_id,
-            note = @note,
-            metadata_json = @metadata_json,
-            updated_at = @updated_at
-      WHERE space_id = @space_id AND id = @id`,
-  ).run({
-    space_id: spaceId,
-    id: occurrenceId,
-    item_id: pick("item_id", existing.item_id),
-    renderer: pick("renderer", existing.renderer),
-    parent_id: pick("parent_id", existing.parent_id),
-    x: pick("x", existing.x),
-    y: pick("y", existing.y),
-    width: pick("width", existing.width),
-    height: pick("height", existing.height),
-    z_index: pick("z_index", existing.z_index),
-    sort_key: pick("sort_key", existing.sort_key),
-    section_id: pick("section_id", existing.section_id),
-    note: pick("note", existing.note),
-    metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_occurrences", occurrenceId, spaceId, () => {
+    const existing = getSpaceOccurrence(db, spaceId, occurrenceId);
+    if (!existing) return null;
+    const pick = <K extends keyof UpdateOccurrenceInput>(
+      key: K,
+      fallback: SpaceOccurrence[K & keyof SpaceOccurrence],
+    ) => (input[key] === undefined ? fallback : input[key]);
+    db.prepare(
+      `UPDATE space_occurrences
+          SET item_id = @item_id,
+              renderer = @renderer,
+              parent_id = @parent_id,
+              x = @x,
+              y = @y,
+              width = @width,
+              height = @height,
+              z_index = @z_index,
+              sort_key = @sort_key,
+              section_id = @section_id,
+              note = @note,
+              metadata_json = @metadata_json,
+              updated_at = @updated_at
+        WHERE space_id = @space_id AND id = @id`,
+    ).run({
+      space_id: spaceId,
+      id: occurrenceId,
+      item_id: pick("item_id", existing.item_id),
+      renderer: pick("renderer", existing.renderer),
+      parent_id: pick("parent_id", existing.parent_id),
+      x: pick("x", existing.x),
+      y: pick("y", existing.y),
+      width: pick("width", existing.width),
+      height: pick("height", existing.height),
+      z_index: pick("z_index", existing.z_index),
+      sort_key: pick("sort_key", existing.sort_key),
+      section_id: pick("section_id", existing.section_id),
+      note: pick("note", existing.note),
+      metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
+      updated_at: now,
+    });
+    return getSpaceOccurrence(db, spaceId, occurrenceId);
   });
-  return getSpaceOccurrence(db, spaceId, occurrenceId);
 }
 
 export function updateSpaceOccurrence(
@@ -618,10 +635,12 @@ export function updateSpaceOccurrence(
 }
 
 export function deleteSpaceOccurrence(db: Db, spaceId: string, occurrenceId: string): boolean {
-  const result = db.prepare(
-    "DELETE FROM space_occurrences WHERE space_id = ? AND id = ?",
-  ).run(spaceId, occurrenceId);
-  return result.changes > 0;
+  return mutateSpaceRecord(db, "space_occurrences", occurrenceId, spaceId, () => {
+    const result = db.prepare(
+      "DELETE FROM space_occurrences WHERE space_id = ? AND id = ?",
+    ).run(spaceId, occurrenceId);
+    return result.changes > 0;
+  });
 }
 
 export interface BatchOccurrenceEntry extends UpdateOccurrenceInput {
@@ -700,21 +719,23 @@ export function createSpaceEdge(
   now = Date.now(),
 ): SpaceEdge {
   const id = newId();
-  db.prepare(
-    `INSERT INTO space_edges (id, space_id, source, target, label, style, metadata_json, created_at, updated_at)
-     VALUES (@id, @space_id, @source, @target, @label, @style, @metadata_json, @created_at, @updated_at)`,
-  ).run({
-    id,
-    space_id: spaceId,
-    source: input.source,
-    target: input.target,
-    label: input.label ?? null,
-    style: input.style ?? null,
-    metadata_json: serializeMetadata(input.metadata),
-    created_at: now,
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_edges", id, spaceId, () => {
+    db.prepare(
+      `INSERT INTO space_edges (id, space_id, source, target, label, style, metadata_json, created_at, updated_at)
+       VALUES (@id, @space_id, @source, @target, @label, @style, @metadata_json, @created_at, @updated_at)`,
+    ).run({
+      id,
+      space_id: spaceId,
+      source: input.source,
+      target: input.target,
+      label: input.label ?? null,
+      style: input.style ?? null,
+      metadata_json: serializeMetadata(input.metadata),
+      created_at: now,
+      updated_at: now,
+    });
+    return getSpaceEdge(db, spaceId, id)!;
   });
-  return getSpaceEdge(db, spaceId, id)!;
 }
 
 export interface UpdateEdgeInput {
@@ -732,35 +753,39 @@ export function updateSpaceEdge(
   input: UpdateEdgeInput,
   now = Date.now(),
 ): SpaceEdge | null {
-  const existing = getSpaceEdge(db, spaceId, edgeId);
-  if (!existing) return null;
-  db.prepare(
-    `UPDATE space_edges
-        SET source = @source,
-            target = @target,
-            label = @label,
-            style = @style,
-            metadata_json = @metadata_json,
-            updated_at = @updated_at
-      WHERE space_id = @space_id AND id = @id`,
-  ).run({
-    space_id: spaceId,
-    id: edgeId,
-    source: input.source ?? existing.source,
-    target: input.target ?? existing.target,
-    label: input.label === undefined ? existing.label : input.label,
-    style: input.style === undefined ? existing.style : input.style,
-    metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
-    updated_at: now,
+  return mutateSpaceRecord(db, "space_edges", edgeId, spaceId, () => {
+    const existing = getSpaceEdge(db, spaceId, edgeId);
+    if (!existing) return null;
+    db.prepare(
+      `UPDATE space_edges
+          SET source = @source,
+              target = @target,
+              label = @label,
+              style = @style,
+              metadata_json = @metadata_json,
+              updated_at = @updated_at
+        WHERE space_id = @space_id AND id = @id`,
+    ).run({
+      space_id: spaceId,
+      id: edgeId,
+      source: input.source ?? existing.source,
+      target: input.target ?? existing.target,
+      label: input.label === undefined ? existing.label : input.label,
+      style: input.style === undefined ? existing.style : input.style,
+      metadata_json: serializeMetadata(input.metadata ?? existing.metadata),
+      updated_at: now,
+    });
+    return getSpaceEdge(db, spaceId, edgeId);
   });
-  return getSpaceEdge(db, spaceId, edgeId);
 }
 
 export function deleteSpaceEdge(db: Db, spaceId: string, edgeId: string): boolean {
-  const result = db.prepare(
-    "DELETE FROM space_edges WHERE space_id = ? AND id = ?",
-  ).run(spaceId, edgeId);
-  return result.changes > 0;
+  return mutateSpaceRecord(db, "space_edges", edgeId, spaceId, () => {
+    const result = db.prepare(
+      "DELETE FROM space_edges WHERE space_id = ? AND id = ?",
+    ).run(spaceId, edgeId);
+    return result.changes > 0;
+  });
 }
 
 // --- seed-from-filter -------------------------------------------------------

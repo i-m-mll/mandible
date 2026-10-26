@@ -1112,10 +1112,18 @@ api_ambient_session_id() {
   esac
 }
 
+api_request_origin_json() {
+  [[ "${MANDIBLE_REQUEST_ORIGIN+x}" ]] || return 0
+  jq -cn --arg origin "$MANDIBLE_REQUEST_ORIGIN" 'try ($origin | fromjson) catch null'
+}
+
 api_curl_ambient_headers() {
   local provider session_id managed_app="${MANDIBLE_MANAGED_APP:-}" managed_session="${MANDIBLE_SESSION_ID:-}"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
+  local request_origin
+  request_origin=$(api_request_origin_json)
+  [[ -z "$request_origin" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Request-Origin: ${request_origin}"
   if api_managed_client_markers_present || [[ -n "$provider" ]]; then
     printf '%s\0%s\0' '-H' 'X-Mandible-Managed-Client: 1'
   fi
@@ -1664,7 +1672,7 @@ api_file_rpc_exchange() {
   local attach_field="${5:-}"
   local attach_src="${6:-}"
   local dir request_id request_tmp request_file response_file deadline late_deadline health_state outcome
-  local provider session_id body_tmp attach_name="" attach_tmp="" attach_file=""
+  local provider session_id request_origin body_tmp attach_name="" attach_tmp="" attach_file=""
 
   dir=$(api_file_rpc_dir)
   mkdir -p "$dir"
@@ -1678,6 +1686,7 @@ api_file_rpc_exchange() {
   api_track_temp "$response_file"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
+  request_origin=$(api_request_origin_json)
 
   # Stage large bytes as a sibling spool attachment so they never travel through
   # argv/JSON (issue 833e972). The daemon resolves the attachment to a
@@ -1714,10 +1723,12 @@ api_file_rpc_exchange() {
     --arg path "$request_path" \
     --arg provider "$provider" \
     --arg provider_session_id "$session_id" \
+    --arg request_origin "$request_origin" \
     --arg attach_field "$attach_field" \
     --arg attach_name "$attach_name" \
     --slurpfile body "$body_tmp" \
     '{id:$id, method:$method, path:$path}
+     + (if $request_origin != "" then {request_origin:($request_origin | fromjson)} else {} end)
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
      + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)

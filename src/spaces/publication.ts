@@ -1,3 +1,6 @@
+import { mutateSpaceRecord } from "./mutation-history.js";
+import { currentRequestOrigin } from "../request-origin.js";
+import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
 import crypto from 'node:crypto';
 import * as z from 'zod';
 import fs from 'node:fs';
@@ -52,24 +55,30 @@ function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: stri
   const relative = normalizeRepoRelativePath(input.path);
   if (relative === '.' || relative.startsWith('.git/') || relative === '.git') throw new ExportError('invalid_path','Invalid document destination');
   const expected = destinationState(checkout.root,relative);
-  const content = serializeSpaceDocument(db,space.id);
-  const snapshot = recordArtifactVersion(db, {
-    content, source_kind: 'managed', custody_mode: 'managed', repo_id: checkout.project_id,
-    series_key: `space-publication:${space.id}`, logical_name: space.title, media_type: 'text/markdown',
-    metadata: { space_id: space.id, source_revision: hash(content) },
-  });
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO space_publications (id,space_id,source_revision,snapshot_ref,content,repo_id,path,
-    expected_destination_sha256,expected_destination_mode,issue_id,message,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?)`)
-    .run(id,space.id,hash(content),snapshot.artifact_version.id,content,checkout.id,relative,expected.sha256,expected.mode,issue.issue_id,
-      input.message?.trim() || `Publish ${space.title}`,Date.now());
-  return getPublication(db,space.id,id);
+  return mutateSpaceRecord(db, "space_publications", id, space.id, () => {
+    const content = serializeSpaceDocument(db,space.id);
+    const snapshot = recordArtifactVersion(db, {
+      content, source_kind: 'managed', custody_mode: 'managed', repo_id: checkout.project_id,
+      series_key: `space-publication:${space.id}`, logical_name: space.title, media_type: 'text/markdown',
+      metadata: { space_id: space.id, source_revision: hash(content) },
+    });
+    db.prepare(`INSERT INTO space_publications (id,space_id,source_revision,snapshot_ref,content,repo_id,path,
+      expected_destination_sha256,expected_destination_mode,issue_id,message,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?)`)
+      .run(id,space.id,hash(content),snapshot.artifact_version.id,content,checkout.id,relative,expected.sha256,expected.mode,issue.issue_id,
+        input.message?.trim() || `Publish ${space.title}`,Date.now());
+    return getPublication(db,space.id,id);
+  }, checkout.project_id);
 }
 
 const executeFile = promisify(execFile);
 async function run(cwd: string, command: string, args: string[]): Promise<string> {
   try {
-    const execution = await executeFile(command,args,{ cwd, encoding:'utf8', env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}, timeout:120_000,maxBuffer:4*1024*1024 });
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+    delete env.MANDIBLE_MANAGED_CLIENT;
+    projectManagedProviderIdentity(env, 'shell');
+    env.MANDIBLE_REQUEST_ORIGIN = JSON.stringify(currentRequestOrigin());
+    const execution = await executeFile(command,args,{ cwd, encoding:'utf8', env, timeout:120_000,maxBuffer:4*1024*1024 });
     return execution.stdout.trim();
   } catch (failure) { throw new ExportError('git_failed',`${command} failed: ${String(failure)}`); }
 }
@@ -148,7 +157,8 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
     if (publication.state === 'prepared') {
       const branch = publication.branch ?? `feature/spaces-${id}`;
       const worktree = publication.worktree ?? await runner.createWorktree(checkout.root,branch,publication.issue_id);
-      db.prepare('UPDATE space_publications SET branch=?,worktree=? WHERE id=?').run(branch,worktree,id);
+      mutateSpaceRecord(db, "space_publications", id, spaceId, () =>
+        db.prepare('UPDATE space_publications SET branch=?,worktree=? WHERE id=?').run(branch,worktree,id));
       publication = getPublication(db,spaceId,id);
       const current = destinationHash(worktree,publication.path);
       if (current !== publication.expected_destination_sha256 && current !== publication.source_revision)
@@ -157,13 +167,16 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
       fs.mkdirSync(path.dirname(absolute),{recursive:true});
       fs.writeFileSync(absolute,publication.content,{encoding:'utf8',flag:current === null ? 'wx' : 'w'});
       const commit = await runner.commit(worktree,publication);
-      db.prepare("UPDATE space_publications SET commit_sha=?,state='committed' WHERE id=?").run(commit,id);
+      mutateSpaceRecord(db, "space_publications", id, spaceId, () =>
+        db.prepare("UPDATE space_publications SET commit_sha=?,state='committed' WHERE id=?").run(commit,id));
     }
     publication = getPublication(db,spaceId,id);
     if (!publication.version_ref) {
-      const produced = recordArtifactVersion(db,{ project:checkout.project_id,commit:publication.commit_sha!,
-        path:publication.path,source_kind:'tracked_repo',custody_mode:'git',metadata:{ source_snapshot:publication.snapshot_ref,space_id:spaceId } });
-      db.prepare('UPDATE space_publications SET version_ref=? WHERE id=?').run(produced.artifact_version.id,id);
+      mutateSpaceRecord(db, "space_publications", id, spaceId, () => {
+        const produced = recordArtifactVersion(db,{ project:checkout.project_id,commit:publication.commit_sha!,
+          path:publication.path,source_kind:'tracked_repo',custody_mode:'git',metadata:{ source_snapshot:publication.snapshot_ref,space_id:spaceId } });
+        db.prepare('UPDATE space_publications SET version_ref=? WHERE id=?').run(produced.artifact_version.id,id);
+      });
       publication = getPublication(db,spaceId,id);
     }
     const committed = artifactMaterializationTarget(resolveArtifactIdentity(db,publication.version_ref!,'strict-read'));
@@ -219,18 +232,22 @@ function importManagedDocumentValue(db: Db, input: { ref: string; projectId?: st
 }
 
 function importHistoryDocumentValue(db: Db, spaceId: string, id: string, title: string) {
-  const entry = documentHistoryEntry(db,spaceId,id), source = getSpace(db,spaceId);
-  if (!entry || !source) throw new ExportError('space_not_found','Historical document not found');
-  if (typeof entry.artifact_ref === 'string') return importManagedDocumentValue(db,{ref:entry.artifact_ref,title,projectId:source.project_id});
-  if (typeof entry.content !== 'string') throw new ExportError('invalid_publication','Historical content is unavailable; inspect its preserved checkout details');
-  const frozen=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',content:entry.content,
-    series_key:`space-history:${id}`,metadata:{history_id:id,space_id:spaceId}});
-  return importManagedDocumentValue(db,{ref:frozen.artifact_version.id,title,projectId:source.project_id});
+  return db.transaction(() => {
+    const entry = documentHistoryEntry(db,spaceId,id), source = getSpace(db,spaceId);
+    if (!entry || !source) throw new ExportError('space_not_found','Historical document not found');
+    if (typeof entry.artifact_ref === 'string') return importManagedDocumentValue(db,{ref:entry.artifact_ref,title,projectId:source.project_id});
+    if (typeof entry.content !== 'string') throw new ExportError('invalid_publication','Historical content is unavailable; inspect its preserved checkout details');
+    const frozen=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',content:entry.content,
+      series_key:`space-history:${id}`,metadata:{history_id:id,space_id:spaceId}});
+    return importManagedDocumentValue(db,{ref:frozen.artifact_version.id,title,projectId:source.project_id});
+  })();
 }
 function importGitDocumentValue(db: Db, input: { project: string; commit: string; path: string; title: string; projectId?: string | null }) {
-  const pinned=recordArtifactVersion(db,{ source_kind:'tracked_repo',custody_mode:'git',project:input.project,
-    commit:input.commit,path:normalizeRepoRelativePath(input.path) });
-  return importManagedDocumentValue(db,{ref:pinned.artifact_version.id,title:input.title,projectId:input.projectId});
+  return db.transaction(() => {
+    const pinned=recordArtifactVersion(db,{ source_kind:'tracked_repo',custody_mode:'git',project:input.project,
+      commit:input.commit,path:normalizeRepoRelativePath(input.path) });
+    return importManagedDocumentValue(db,{ref:pinned.artifact_version.id,title:input.title,projectId:input.projectId});
+  })();
 }
 
 export type PublicationResult<T> = { ok:true; value:T } | { ok:false; error:{code:ExportError['code'] | 'storage_failed';message:string} };
