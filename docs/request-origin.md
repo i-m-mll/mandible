@@ -27,6 +27,9 @@ An explicit null or malformed envelope produces unknown origin without falling
 back to ambient identity. Omitting the field preserves native ambient capture.
 Child processes overwrite inherited `MANDIBLE_REQUEST_ORIGIN` with their saved
 initiating envelope, including the literal `null` when origin is unknown.
+Actual managed-agent launches and Claude SessionStart clear inherited explicit
+origin, so a new agent captures its own native session. Claude also projects
+that reset into `CLAUDE_ENV_FILE` for subsequent Bash commands.
 
 `src/request-origin.ts` owns the contract. `currentRequestOrigin()` reads the
 current optional envelope. `withRequestOriginMetadata(metadata)` replaces the
@@ -87,6 +90,8 @@ this boundary with PATCH and accepts an exact canonical/reservation ID,
 `archived`, and a `manual`, `retention`, `resolved-worker`, or `observed-provider`
 cause. Its event retains the archive action and cause even after unarchive.
 No-op actions leave the marker, history and notifications unchanged.
+Manual unarchive resets pending native reconciliation and rearms child retention
+inside the same transaction; retention listeners wake only after commit.
 Provider transcript ingestion, index reconciliation, FTS/cache updates,
 telemetry, local view preferences and filesystem-only document exports do not
 create authored-content history.

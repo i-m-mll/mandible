@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sse from "../src/sse.js";
 import { setConversationArchiveState } from "../src/conversations/metadata.js";
 import { systemAction } from "../src/identity/resolver.js";
+import { observeRetentionChanges } from "../src/conversations/retention-state.js";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setDb, type Db } from "../src/db.js";
@@ -193,5 +194,25 @@ describe("conversation metadata routes", () => {
     expect(db.prepare("SELECT count(*) AS n FROM ledger_events").get()).toEqual({ n: historyBefore.n + 1 });
     expect(JSON.parse((db.prepare("SELECT payload_json FROM ledger_events ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string }).payload_json))
       .toMatchObject({ cause: "retention", conversation_id: reservationId, changed_fields: ["archived_at"] });
+    db.prepare("INSERT INTO conversation_retention_state(conversation_id,role,last_activity_at,activity_generation,native_pending,due_at) VALUES('conv-1','planner',1,4,1,1)").run();
+    const wake = vi.fn();
+    const stopObserving = observeRetentionChanges(db, wake);
+    try {
+      expect(() => db.transaction(() => {
+        setConversationArchiveState(db, { conversation_id: "conv-1", archived: false, cause: "manual" }, actor);
+        throw new Error("restore rollback");
+      })()).toThrow("restore rollback");
+      expect(wake).not.toHaveBeenCalled();
+      expect(db.prepare("SELECT native_pending,activity_generation FROM conversation_retention_state WHERE conversation_id='conv-1'").get())
+        .toEqual({ native_pending: 1, activity_generation: 4 });
+      db.transaction(() => {
+        setConversationArchiveState(db, { conversation_id: "conv-1", archived: false, cause: "manual" }, actor);
+        expect(wake).not.toHaveBeenCalled();
+      })();
+      expect(wake).toHaveBeenCalledTimes(1);
+      const restoredRetention = db.prepare("SELECT native_pending,activity_generation,restored_at,due_at FROM conversation_retention_state WHERE conversation_id='conv-1'").get() as { restored_at: number; due_at: number };
+      expect(restoredRetention).toMatchObject({ native_pending: 0, activity_generation: 5, restored_at: expect.any(Number) });
+      expect(restoredRetention.due_at).toBeGreaterThan(restoredRetention.restored_at);
+    } finally { stopObserving(); }
   });
 });

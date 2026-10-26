@@ -25,6 +25,7 @@ export function projectManagedProviderIdentity(
   providerSessionId?: string | null,
   localSessionId?: string | null,
 ): void {
+  delete env.MANDIBLE_REQUEST_ORIGIN;
   for (const key of PROVIDER_MARKERS) delete env[key];
   const executable = command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
   const app = executable.startsWith("codex") ? "codex"

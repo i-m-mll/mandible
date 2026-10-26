@@ -30,7 +30,7 @@ describe("agent client-auth provisioning", () => {
   });
 
   it("projects a fresh local alias and only the recorded native ID when resuming", () => {
-    const fresh: Record<string, string | undefined> = { CODEX_THREAD_ID: "parent-native", CLAUDE_SESSION_ID: "parent-claude", MANDIBLE_SESSION_ID: "parent-local" };
+    const fresh: Record<string, string | undefined> = { CODEX_THREAD_ID: "parent-native", CLAUDE_SESSION_ID: "parent-claude", MANDIBLE_SESSION_ID: "parent-local", MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"initiator"}' };
     projectManagedProviderIdentity(fresh, "codex", null, "child-local");
     expect(fresh).toEqual({ MANDIBLE_MANAGED_APP: "codex", MANDIBLE_SESSION_ID: "child-local" });
     projectManagedProviderIdentity(fresh, "codex", "child-native", "child-local");

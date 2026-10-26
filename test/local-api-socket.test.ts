@@ -83,6 +83,7 @@ describe('owner-only local API socket', () => {
       CODEX_THREAD_ID: 'daemon-native-session', CLAUDE_SESSION_ID: 'inherited-native-session' };
     projectManagedProviderIdentity(env, 'shell');
     delete env.MANDIBLE_MANAGED_CLIENT;
+    env.MANDIBLE_REQUEST_ORIGIN = JSON.stringify(origin);
     const usersBefore = db.prepare('SELECT count(*) AS n FROM users').get();
     const child = spawn('bash', ['-c', 'source "$1"; api_send POST /api/child-origin "{}"', 'child-origin', path.resolve('cli/api.sh')], { env, timeout: 10_000 });
     let output = '', error = '';
@@ -196,7 +197,8 @@ describe('owner-only local API socket', () => {
     const envFile = path.join(root, 'claude-env.sh');
     const runHook = async (hook: string, claudePid: number, conversation: string) => {
       const child = spawn('bash', [path.resolve(`hooks/${hook}.sh`)], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
-        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile } });
+        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile,
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
       let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
       child.stdin.end(JSON.stringify({ session_id: conversation, cwd: root }));
       expect(await new Promise((resolve) => child.once('close', resolve)), stderr).toBe(0);
@@ -225,7 +227,8 @@ describe('owner-only local API socket', () => {
     }, { fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const shell = spawn('bash', ['-c', 'source "$1"; source "$2"; api_send POST /api/origin-write "{}"', 'origin-cli', envFile, path.resolve('cli/api.sh')],
       { env: { ...process.env, MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_SESSION_ID: wrapped,
-        CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '' } });
+        CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '',
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
     let writeOutput = ''; let writeError = '';
     shell.stdout.on('data', chunk => { writeOutput += chunk; }); shell.stderr.on('data', chunk => { writeError += chunk; });
     expect(await new Promise(resolve => shell.once('close', resolve)), writeError).toBe(0);
