@@ -91,6 +91,7 @@
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
   --app-header-inline-inset: 18px;
+  --app-frame-header-height: 42px;
   --app-header-height: 48px;
   --app-header-control-size: 34px;
   --app-header-control-icon-size: 18px;
