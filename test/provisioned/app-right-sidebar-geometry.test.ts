@@ -282,8 +282,12 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(state.workspace.left).toBeCloseTo(state.rail.right, 1);
         expect(state.railButton.top).toBeGreaterThan(state.bar.bottom);
         expect(state.logo.right).toBeLessThan(state.buttons[0].left);
+        const logoCenter = (state.logo.left + state.logo.right) / 2;
+        const backCenter = (state.buttons[0].left + state.buttons[0].right) / 2;
+        const historySpacing = state.buttons[1].left - state.buttons[0].left;
+        expect(backCenter - logoCenter).toBeCloseTo(historySpacing, 2);
         expect((state.logo.top + state.logo.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 1);
-        if (native) expect(state.logo.left).toBeCloseTo(state.reservation || (34 - 22) / 2, 1);
+        if (native && state.reservation > 0) expect(state.logo.left).toBeCloseTo(state.reservation, 1);
         else expect((state.logo.left + state.logo.right) / 2).toBeCloseTo((state.rail.left + state.rail.right) / 2, 1);
         if (state.leftOpen) expect(state.main.left).toBeCloseTo(state.leftSeam!, 0);
         else expect(state.main.left - state.buttons[2].right).toBeLessThan(state.buttons[0].right - state.buttons[0].left);
@@ -296,7 +300,14 @@ describe('production app right sidebar geometry and interaction', () => {
       if (result.fullscreen) {
         const fullscreen = result.fullscreen as { before: FrameGeometry; during: FrameGeometry; after: FrameGeometry; retained: boolean };
         expect(fullscreen.retained).toBe(true);
-        expect(fullscreen.during.logo.left).toBeLessThan(fullscreen.before.logo.left);
+        const fullscreenLogoCenter = (fullscreen.during.logo.left + fullscreen.during.logo.right) / 2;
+        const railItemCenter = (fullscreen.during.railButton.left + fullscreen.during.railButton.right) / 2;
+        expect(fullscreen.during.reservation).toBe(0);
+        expect(Math.abs(fullscreenLogoCenter - railItemCenter)).toBeLessThanOrEqual(1);
+        expect(fullscreenLogoCenter).toBeCloseTo((fullscreen.during.rail.left + fullscreen.during.rail.right) / 2, 1);
+        const backCenter = (fullscreen.during.buttons[0].left + fullscreen.during.buttons[0].right) / 2;
+        expect(backCenter - fullscreenLogoCenter).toBeCloseTo(fullscreen.during.buttons[1].left - fullscreen.during.buttons[0].left, 2);
+        expect(fullscreen.during.backReachable).toBe(true);
         expect(fullscreen.after.logo).toEqual(fullscreen.before.logo);
         expect(fullscreen.during.railButton).toEqual(fullscreen.before.railButton);
         expect(fullscreen.during.workspace).toEqual(fullscreen.before.workspace);
