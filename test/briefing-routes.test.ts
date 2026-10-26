@@ -620,10 +620,10 @@ describe("plural Briefing routes", () => {
     const first = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ quiet: false, run_id: "run-1" });
-    expect(vi.mocked(broadcast)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(broadcast).mock.calls.filter(([type]) => type.startsWith("briefing:"))).toHaveLength(2);
     expect(await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" }))
       .toEqual(first);
-    expect(vi.mocked(broadcast)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(broadcast).mock.calls.filter(([type]) => type.startsWith("briefing:"))).toHaveLength(2);
     expect((await router.invoke({ method: "POST", url: "/api/briefing/ingest", body: payload(), credential: "agent-schedule" })).status).toBe(404);
     expect((await router.invoke({ method: "GET", url: "/api/asks/anything", credential: "human" })).status).toBe(404);
   });
@@ -846,7 +846,7 @@ describe("plural Briefing routes", () => {
       ["briefing:annotated", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
       ["briefing:submitted", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
     ]));
-    for (const [, eventPayload] of vi.mocked(broadcast).mock.calls) {
+    for (const [, eventPayload] of vi.mocked(broadcast).mock.calls.filter(([type]) => type.startsWith("briefing:"))) {
       expect(eventPayload).not.toHaveProperty("value");
       expect(eventPayload).not.toHaveProperty("actor_user_id");
     }

@@ -1,3 +1,5 @@
+import { requestOriginFromMetadata, withRequestOriginMetadata, withRequestOrigin } from "./request-origin.js";
+import { mutateLedgerRecord } from "./ledger/mutation-history.js";
 import { createHash } from "node:crypto";
 import type {
   ManagedReminder,
@@ -190,17 +192,23 @@ export function acknowledgeManagedReminderOccurrence(
       : new ManagedReminderError(`reminder occurrence not found: ${ref}`, 404, "not_found");
   }
   const id = resolved.id;
-  const result = db.prepare(
-    `UPDATE managed_task_occurrences
-        SET acknowledged_by = ?, acknowledged_at = ?
-      WHERE id = ? AND acknowledged_at IS NULL`,
-  ).run(acknowledgedBy, now, id);
-  if (result.changes !== 1) {
-    throw new ManagedReminderError(`reminder occurrence already acknowledged: ${ref}`, 404, "not_found");
-  }
-  return occurrenceFromRow(
-    db.prepare("SELECT * FROM managed_task_occurrences WHERE id = ?").get(id) as OccurrenceRow,
-  ) as ManagedReminderOccurrence;
+  const task = db.prepare("SELECT task.project_id FROM managed_task_occurrences occurrence JOIN managed_tasks task ON task.id = occurrence.task_id WHERE occurrence.id = ?").get(id) as { project_id: string };
+  return mutateLedgerRecord(db, {
+    entity_type: "reminder_occurrence", entity_id: id, project_id: task.project_id,
+    snapshot: () => db.prepare("SELECT task_id, revision_id, acknowledged_by, acknowledged_at FROM managed_task_occurrences WHERE id = ?").get(id) ?? null,
+  }, () => {
+    const result = db.prepare(
+      `UPDATE managed_task_occurrences
+          SET acknowledged_by = ?, acknowledged_at = ?
+        WHERE id = ? AND acknowledged_at IS NULL`,
+    ).run(acknowledgedBy, now, id);
+    if (result.changes !== 1) {
+      throw new ManagedReminderError(`reminder occurrence already acknowledged: ${ref}`, 404, "not_found");
+    }
+    return occurrenceFromRow(
+      db.prepare("SELECT * FROM managed_task_occurrences WHERE id = ?").get(id) as OccurrenceRow,
+    ) as ManagedReminderOccurrence;
+  });
 }
 
 function reminderFromRow(db: Db, row: ReminderJoinedRow): ManagedReminder {
@@ -302,7 +310,7 @@ function appendAuditEvent(
     input.eventType,
     input.actorUserId,
     input.evidenceMethod,
-    JSON.stringify(input.payload ?? {}),
+    JSON.stringify(withRequestOriginMetadata(input.payload ?? {})),
     input.now,
   );
 }
@@ -400,7 +408,7 @@ function capabilityFor(
         eventType: "completed",
         actorUserId: SYSTEM_USER_ID,
         evidenceMethod: "system_internal",
-        payload: { occurrence_id: occurrenceId, occurrence_key: evaluation.occurrence_key },
+        payload: { occurrence_id: occurrenceId, operation: "complete", changed_fields: ["lifecycle", "completed_at"] },
         now,
       });
       return true;
@@ -474,7 +482,7 @@ export function createManagedReminder(
       eventType: "created",
       actorUserId: actor.userId,
       evidenceMethod: actor.evidenceMethod,
-      payload: { idempotency_key: request.idempotency_key, payload_digest: payloadDigest },
+      payload: { operation: "create", changed_fields: ["active_revision_id", "lifecycle"] },
       now,
     });
     const firedImmediately = evaluateManagedReminder(
@@ -539,6 +547,7 @@ export function cancelManagedReminder(
       eventType: "cancelled",
       actorUserId: actor.userId,
       evidenceMethod: actor.evidenceMethod,
+      payload: { operation: "cancel", changed_fields: ["lifecycle", "cancelled_at"] },
       now,
     });
     return getManagedReminder(db, taskId);
@@ -561,7 +570,9 @@ export function reconcileManagedReminders(db: Db, now: number = Date.now()): {
   }>;
   const fired: string[] = [];
   for (const task of armed) {
-    const didFire = db.transaction(() => {
+    const creation = db.prepare("SELECT payload_json FROM managed_task_events WHERE task_id = ? AND event_type = 'created'").get(task.id) as { payload_json: string } | undefined;
+    const origin = creation ? requestOriginFromMetadata(JSON.parse(creation.payload_json)) : null;
+    const didFire = withRequestOrigin(origin, () => db.transaction(() => {
       const current = db.prepare("SELECT lifecycle FROM managed_tasks WHERE id = ?")
         .get(task.id) as { lifecycle: ManagedReminderLifecycle } | undefined;
       if (current?.lifecycle !== "armed") return false;
@@ -577,7 +588,7 @@ export function reconcileManagedReminders(db: Db, now: number = Date.now()): {
         parseStoredReminderPayload(revision.payload_json),
         now,
       );
-    }).immediate();
+    }).immediate());
     if (didFire) fired.push(task.id);
   }
   return { evaluated: armed.length, fired: fired.length, task_ids: fired };
