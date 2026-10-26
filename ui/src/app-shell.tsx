@@ -400,7 +400,7 @@ export function AppRightSidebarToggleButton({
 }
 
 export function AppRightSidebarHeaderControls({ descriptor }: { descriptor: AppRightSidebarDescriptor }): JSX.Element {
-  return <div className="app-right-sidebar__header">
+  return <>
         {descriptor.kind === 'panel' ? (
           descriptor.icon ? (
             <span className="app-right-sidebar__panel-icon" aria-hidden="true" title={descriptor.title}>
@@ -415,10 +415,11 @@ export function AppRightSidebarHeaderControls({ descriptor }: { descriptor: AppR
             onActiveTabChange={descriptor.onActiveTabChange}
             idPrefix="app-right-sidebar"
             className="app-right-sidebar__tabs"
+            presentation="frame"
           />
         )}
 
-  </div>;
+  </>;
 }
 
 export function AppRightSidebarSurface({
