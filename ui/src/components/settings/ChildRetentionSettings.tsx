@@ -35,7 +35,7 @@ export function ChildRetentionSettings({ canSave }: { canSave: boolean }): JSX.E
       <div className="settings-view__toggle-row" data-settings-searchable>
         <div className="settings-view__toggle-info">
           <h3 className="settings-view__section-title">Clean up child chats</h3>
-          <p className="settings-view__section-desc">Archive eligible Codex and Claude child chats in Mandible. Codex chats are also archived in Codex when available. Parent and successor chats stay active.</p>
+          <p className="settings-view__section-desc">Archive eligible Codex and Claude child chats in Mandible. Codex chats are also archived in Codex when available. Autonomous and successor chats stay active.</p>
         </div>
         {toggle('Clean up child chats', draft.enabled, () => setDraft({ ...draft, enabled: !draft.enabled }))}
       </div>
@@ -68,8 +68,8 @@ export function ChildRetentionSettings({ canSave }: { canSave: boolean }): JSX.E
         {toggle('Resolved worker child cleanup', draft.worker.enabled, () => setDraft({ ...draft, worker: { enabled: !draft.worker.enabled } }), !draft.enabled)}
       </div>
       {!CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(draft).success ? <p className="settings-view__warning" role="status">Enter a valid positive idle time.</p> : null}
-      <button type="button" disabled={!canSave || saving || JSON.stringify(saved) === JSON.stringify(draft) || !CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(draft).success} onClick={() => { void save(); }}>{saving ? 'Saving…' : 'Save child cleanup'}</button>
+      <button type="button" className="btn btn--active btn--sm" disabled={!canSave || saving || JSON.stringify(saved) === JSON.stringify(draft) || !CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(draft).success} onClick={() => { void save(); }}>{saving ? 'Saving…' : 'Save child cleanup'}</button>
     </> : null}
-    {error ? <DetailPaneNotice severity="error" density="compact" actions={!loaded ? <button type="button" onClick={() => setLoadAttempt(value => value + 1)}>Retry</button> : undefined}>{error}</DetailPaneNotice> : null}
+    {error ? <DetailPaneNotice severity="error" density="compact" actions={!loaded ? <button type="button" className="btn btn--ghost btn--sm" onClick={() => setLoadAttempt(value => value + 1)}>Retry</button> : undefined}>{error}</DetailPaneNotice> : null}
   </div>;
 }
