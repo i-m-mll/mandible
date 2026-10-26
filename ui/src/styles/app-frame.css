@@ -1,5 +1,6 @@
 .app-frame {
   display: grid;
+  isolation: isolate;
   grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
   grid-template-rows: var(--app-frame-header-height) minmax(0, 1fr);
   flex: 1;
@@ -109,30 +110,33 @@
   z-index: calc(var(--z-app-subdivision) + 1);
   pointer-events: none;
 }
-/* The three disjoint layers share one distance-from-edge profile, including
- * the corner tangents. Paint lives above opaque workspace children. */
+/* Isolation keeps the negative shadow above the frame material and below
+ * normal content. The disjoint layers meet at the rounded edge's tangents. */
 .app-frame::after {
-  --app-boundary-shadow-inner-radius: calc(var(--radius-chat-surface) - var(--app-boundary-shadow-paint-width));
+  --app-boundary-shadow-outer-radius: calc(var(--radius-chat-surface) + var(--app-boundary-shadow-paint-width));
   content: '';
   grid-column: 2;
   grid-row: 2;
   min-width: 0;
   min-height: 0;
-  border-top-left-radius: var(--radius-chat-surface);
-  z-index: var(--z-app-subdivision);
+  margin-block-start: calc(0px - var(--app-boundary-shadow-paint-width));
+  margin-inline-start: calc(0px - var(--app-boundary-shadow-paint-width));
+  border-top-left-radius: var(--app-boundary-shadow-outer-radius);
+  z-index: -1;
   pointer-events: none;
   background-image:
-    linear-gradient(to top, var(--app-boundary-shadow-gradient-stops)),
-    linear-gradient(to left, var(--app-boundary-shadow-gradient-stops)),
+    linear-gradient(to bottom, var(--app-boundary-shadow-gradient-stops)),
+    linear-gradient(to right, var(--app-boundary-shadow-gradient-stops)),
     radial-gradient(circle at right bottom,
-      transparent var(--app-boundary-shadow-inner-radius),
-      var(--app-boundary-shadow-sample-24) calc(var(--app-boundary-shadow-inner-radius) + var(--app-boundary-shadow-stop-24)),
-      var(--app-boundary-shadow-sample-59) calc(var(--app-boundary-shadow-inner-radius) + var(--app-boundary-shadow-stop-59)),
-      var(--app-boundary-shadow-color) var(--radius-chat-surface));
+      transparent var(--radius-chat-surface),
+      var(--app-boundary-shadow-color) var(--radius-chat-surface),
+      var(--app-boundary-shadow-sample-59) calc(var(--app-boundary-shadow-outer-radius) - var(--app-boundary-shadow-stop-59)),
+      var(--app-boundary-shadow-sample-24) calc(var(--app-boundary-shadow-outer-radius) - var(--app-boundary-shadow-stop-24)),
+      transparent var(--app-boundary-shadow-outer-radius));
   background-size:
-    calc(100% - var(--radius-chat-surface)) var(--app-boundary-shadow-paint-width),
-    var(--app-boundary-shadow-paint-width) calc(100% - var(--radius-chat-surface)),
-    var(--radius-chat-surface) var(--radius-chat-surface);
+    calc(100% - var(--app-boundary-shadow-outer-radius)) var(--app-boundary-shadow-paint-width),
+    var(--app-boundary-shadow-paint-width) calc(100% - var(--app-boundary-shadow-outer-radius)),
+    var(--app-boundary-shadow-outer-radius) var(--app-boundary-shadow-outer-radius);
   background-position: right top, left bottom, left top;
   background-repeat: no-repeat;
 }

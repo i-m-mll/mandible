@@ -3,7 +3,7 @@ import { ArrowIcon } from './components/icons/ArrowIcon';
 import { APP_FRAME_CONTROLS_OFFSET, AppRightSidebarHeaderControls, AppRightSidebarToggleButton, ViewSidebarIcon, type AppRightSidebarDescriptor } from './app-shell';
 import './styles/app-frame.css';
 
-const HISTORY_ARROW_SIZE = 23;
+const HISTORY_ARROW_SIZE = 18;
 
 export function AppFrame({ nativeControlsReservation, rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
   nativeControlsReservation: number;
