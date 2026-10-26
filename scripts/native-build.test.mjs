@@ -4,12 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { nativeCandidate, verifyNativeBundle, verifyNativeSelection, stageNativeBuild, runNativeBuildPhase } from './native-build.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 import { createOwnedRun, saveOwnedMetadata, processIdentity } from './owned-run.mjs';
-import { stopNativePreview, cleanupNativePreview } from './native-preview.mjs';
+import { nativeProcessGroupMembers } from './native-process-group.mjs';
+import { stopNativePreview, cleanupNativePreview, failNativePreviewAttempt } from './native-preview.mjs';
 import { acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer } from './preview-custody.mjs';
 
 function fixture() {
@@ -20,7 +21,7 @@ function fixture() {
   const file = path.join(root, 'metadata.json');
   const ownership = createOwnedRun({ root, runId, instanceId: 'fixture', project: 'fixture', workUnit: 'fixture',
     outputs: [{ path: 'profile', kind: 'interactive' }, { path: 'build', kind: 'generated' }, { path: 'build.log', kind: 'generated' }] });
-  const receipt = { schema: 'mandible-native-preview@1', ownership, receipt: file, profile, executable: path.join(root, 'app/native') };
+  const receipt = { schema: 'mandible-native-preview@1', attemptId: randomUUID(), ownership, receipt: file, profile, executable: path.join(root, 'app/native') };
   const save = () => saveOwnedMetadata(file, receipt); save();
   return { base, root, file, receipt, save, dispose: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
@@ -78,9 +79,11 @@ test('failed build has exact owned residue, retry succeeds, and repeated cleanup
 test('build deadline stops its real child group and leaves a reclaimable failure receipt', async () => {
   const f = fixture();
   try {
-    await assert.rejects(runNativeBuildPhase({ command: '/bin/sh', args: ['-c', 'sleep 120 & wait'], cwd: f.root, env: process.env,
-      log: path.join(f.root, 'build.log'), budgetMs: 50, receipt: f.receipt, save: f.save, identity: processIdentity }), /exceeded/);
+    await assert.rejects(runNativeBuildPhase({ command: '/bin/sh', args: ['-c', 'mkdir -p build; sleep 120 & echo $! > build/descendant.pid; wait'], cwd: f.root, env: process.env,
+      log: path.join(f.root, 'build.log'), budgetMs: 500, receipt: f.receipt, save: f.save, identity: processIdentity }), /exceeded/);
     assert.equal(processIdentity(f.receipt.buildProcess.pid), null);
+    assert.ok(Number(fs.readFileSync(path.join(f.root, 'build/descendant.pid'), 'utf8')) > 1);
+    assert.deepEqual(nativeProcessGroupMembers(f.receipt.buildProcess.pid), []);
     await cleanupNativePreview(f.file, { disposition: 'discard' });
     assert.equal(fs.existsSync(f.root), false);
   } finally { f.dispose(); }
@@ -97,7 +100,7 @@ test('pending native build is retained through stop and blocks attachment after 
     const parentFile = path.join(parentRoot, 'metadata.json'); saveOwnedMetadata(parentFile, metadata);
     f.receipt.parent = parent; f.save();
     const reservation = await acquirePreviewConsumer(parent, { consumerId: f.receipt.ownership.runId, runId: f.receipt.ownership.runId,
-      root: f.root, rootIdentity: f.receipt.ownership.rootIdentity, metadataFile: f.file, borrowedBackend: true,
+      root: f.root, rootIdentity: f.receipt.ownership.rootIdentity, metadataFile: f.file, borrowedBackend: true, attemptId: f.receipt.attemptId,
       expectedGeneration: ownership.source.commit, expectedSource: ownership.source });
     f.receipt.reservation = reservation; f.save();
     await stopNativePreview(f.file);
@@ -123,7 +126,7 @@ test('stopped native run reacquires the refreshed candidate while preserving pro
     const metadata = { ownership, instanceEnv: { MANDIBLE_BACKEND_GENERATION: original.commit } };
     const parentFile = path.join(parentRoot, 'metadata.json'); saveOwnedMetadata(parentFile, metadata);
     const child = { consumerId: f.receipt.ownership.runId, runId: f.receipt.ownership.runId, root: f.root,
-      rootIdentity: f.receipt.ownership.rootIdentity, metadataFile: f.file, borrowedBackend: true,
+      rootIdentity: f.receipt.ownership.rootIdentity, metadataFile: f.file, borrowedBackend: true, attemptId: f.receipt.attemptId,
       expectedGeneration: original.commit, expectedSource: original };
     const reservation = await acquirePreviewConsumer(parent, child);
     f.receipt.parent = parent; f.receipt.build = original; f.receipt.status = 'stopped'; f.save();
@@ -139,7 +142,7 @@ test('stopped native run reacquires the refreshed candidate while preserving pro
     refreshed.ownership.source = candidate; refreshed.instanceEnv.MANDIBLE_BACKEND_GENERATION = candidate.commit;
     saveOwnedMetadata(parentFile, refreshed);
     const request = { ...child, expectedGeneration: candidate.commit, expectedSource: candidate,
-      expectedPriorGeneration: original.commit, expectedPriorSource: original };
+      expectedPriorGeneration: original.commit, expectedPriorSource: original, attemptId: randomUUID(), expectedPriorAttemptId: child.attemptId };
     f.receipt.pid = process.pid; f.save();
     await assert.rejects(reacquirePreviewConsumer(parent, request), /live process/);
     delete f.receipt.pid; f.save();
@@ -149,8 +152,72 @@ test('stopped native run reacquires the refreshed candidate while preserving pro
     assert.equal(fs.existsSync(stale), false);
     assert.equal(fs.readFileSync(warm, 'utf8'), 'compiled dependency');
     assert.equal(fs.readFileSync(profileFile, 'utf8'), 'keep user state');
-    f.receipt.reservation = reacquired; f.save();
+    f.receipt.reservation = reacquired; f.receipt.attemptId = reacquired.attemptId; f.save();
     await cleanupNativePreview(f.file, { disposition: 'discard' });
     assert.equal(JSON.parse(fs.readFileSync(parentFile)).ownership.consumers[0].state, 'released');
   } finally { f.dispose(); }
+});
+
+
+test('failed inner command cannot leave descendants after its group leader exits', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(runNativeBuildPhase({ command: '/bin/sh', args: ['-c', 'mkdir -p build; sleep 120 & echo $! > build/descendant.pid; exit 7'],
+      cwd: f.root, env: process.env, log: path.join(f.root, 'build.log'), budgetMs: 5000, receipt: f.receipt, save: f.save, identity: processIdentity }), /failed/);
+    assert.ok(Number(fs.readFileSync(path.join(f.root, 'build/descendant.pid'), 'utf8')) > 1);
+    assert.deepEqual(nativeProcessGroupMembers(f.receipt.buildProcess.pid), []);
+    await cleanupNativePreview(f.file, { disposition: 'discard' });
+    assert.equal(fs.existsSync(f.root), false);
+  } finally { f.dispose(); }
+});
+
+
+test('rejected reacquisition and stale failure cannot alter or stop the successful native attempt', async () => {
+  const f = fixture();
+  let app;
+  try {
+    const parentRoot = path.join(f.base, 'backend'); fs.mkdirSync(parentRoot);
+    const ownership = createOwnedRun({ root: parentRoot, instanceId: 'fixture', project: 'fixture', workUnit: 'fixture', outputs: [] });
+    ownership.state = 'active'; ownership.lifecycle = { phase: 'ready' }; ownership.source = { commit: 'a'.repeat(40), source_digest: 'b'.repeat(64) };
+    const parent = { root: parentRoot, runId: ownership.runId };
+    const parentFile = path.join(parentRoot, 'metadata.json');
+    saveOwnedMetadata(parentFile, { ownership, instanceEnv: { MANDIBLE_BACKEND_GENERATION: ownership.source.commit } });
+    const first = { consumerId: f.receipt.ownership.runId, runId: f.receipt.ownership.runId, root: f.root,
+      rootIdentity: f.receipt.ownership.rootIdentity, metadataFile: f.file, borrowedBackend: true,
+      attemptId: f.receipt.attemptId, expectedGeneration: ownership.source.commit, expectedSource: ownership.source };
+    const original = await acquirePreviewConsumer(parent, first);
+    f.receipt.parent = parent; f.receipt.build = ownership.source; f.receipt.status = 'stopped'; f.save();
+    await publishPreviewConsumer(original, { build: ownership.source });
+    const attemptA = randomUUID();
+    const request = { ...first, attemptId: attemptA, expectedPriorAttemptId: first.attemptId,
+      expectedPriorGeneration: first.expectedGeneration, expectedPriorSource: first.expectedSource };
+    const winner = await reacquirePreviewConsumer(parent, request);
+    fs.mkdirSync(path.join(f.root, 'build'));
+    const executable = path.join(f.root, 'build/native-sleep'); fs.copyFileSync('/bin/sleep', executable);
+    app = spawn(executable, ['120'], { stdio: 'ignore' });
+    await new Promise((resolve, reject) => { app.once('spawn', resolve); app.once('error', reject); });
+    const current = JSON.parse(fs.readFileSync(f.file));
+    Object.assign(current, { attemptId: attemptA, status: 'visible', pid: app.pid, processIdentity: processIdentity(app.pid), executable, reservation: winner });
+    saveOwnedMetadata(f.file, current);
+    await publishPreviewConsumer(winner, { build: ownership.source });
+    const unchanged = fs.readFileSync(f.file, 'utf8');
+    const attemptB = randomUUID();
+    let refused;
+    try { await reacquirePreviewConsumer(parent, { ...request, attemptId: attemptB }); }
+    catch (error) { refused = error; }
+    assert.ok(refused);
+    await assert.rejects(failNativePreviewAttempt({ receiptFile: f.file, resumed: true, attemptId: attemptB, error: refused }), error => error === refused);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), unchanged);
+    assert.equal(processIdentity(app.pid), current.processIdentity);
+    await assert.rejects(failNativePreviewAttempt({ receiptFile: f.file, resumed: true, reservation: original,
+      attemptId: first.attemptId, error: new Error('stale failed launch') }), /attempt changed/);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), unchanged);
+    assert.equal(processIdentity(app.pid), current.processIdentity);
+    await stopNativePreview(f.file);
+    await cleanupNativePreview(f.file, { disposition: 'discard' });
+    assert.equal(fs.existsSync(f.root), false);
+  } finally {
+    if (app && app.exitCode === null && app.signalCode === null) app.kill();
+    f.dispose();
+  }
 });

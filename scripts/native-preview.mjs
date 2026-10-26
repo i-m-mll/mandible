@@ -48,7 +48,11 @@ function terminalNativeReceipt(file) {
 async function nativeOperation(file, options, operation) {
   if (!fs.existsSync(file)) return terminalNativeReceipt(file);
   const initial = ownedReceipt(file);
-  const execute = () => withOwnedRunLock(path.dirname(file), () => operation(ownedReceipt(file)));
+  const execute = () => withOwnedRunLock(path.dirname(file), () => {
+    const current = ownedReceipt(file);
+    if (options.attemptId && current.attemptId !== options.attemptId) throw new Error('Native launch attempt changed; refusing stale lifecycle action');
+    return operation(current);
+  });
   if (options.parentLockHeld || !initial.parent) return execute();
   const { withPreviewRun } = await import('./preview-custody.mjs');
   return withPreviewRun(initial.parent, execute);
@@ -58,6 +62,7 @@ export async function stopNativePreview(file, options = {}) {
   return nativeOperation(file, options, async receipt => {
     const processes = [receipt.buildProcess && !receipt.buildProcess.finishedAt && {
       pid: receipt.buildProcess.pid, identity: receipt.buildProcess.identity, birth: receipt.buildProcess.birth, group: true },
+      ...(receipt.buildProcess?.remaining ?? []),
       receipt.pid && { pid: receipt.pid, identity: receipt.processIdentity, executable: receipt.executable }].filter(Boolean);
     for (const child of processes) {
       const identity = processIdentity(child.pid);
@@ -117,6 +122,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     const consumer = consumers[0];
     return withOwnedRunLock(consumer.root, () => {
       const current = ownedReceipt(consumer.metadataFile);
+      if (['preparing', 'loading'].includes(current.status)) throw new Error('Native launch attempt is still in progress');
       if (current.ownership.state === 'terminal') throw new Error('Native cleanup is pending; complete it before setup');
       const live = current.pid ? processIdentity(current.pid) : null;
       if (live !== null) {
@@ -146,6 +152,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
   const base = path.join(os.homedir(), '.cache/mandible/native-previews');
   fs.mkdirSync(base, { recursive: true });
   const resumed = existing?.resume === true;
+  const attemptId = randomUUID();
   const runId = resumed ? existing.receipt.ownership.runId : randomUUID();
   const root = resumed ? existing.receipt.ownership.root : path.join(fs.realpathSync(base), `native-${runId}`);
   if (!resumed) fs.mkdirSync(root, { mode: 0o700 });
@@ -154,7 +161,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     outputs: [{ path: 'profile', kind: 'interactive' }, { path: 'app', kind: 'generated' },
       { path: 'build', kind: 'generated' }, { path: 'build.log', kind: 'generated' }, { path: 'stdout.log', kind: 'generated' }, { path: 'stderr.log', kind: 'generated' }] });
   const receiptFile = path.join(root, 'metadata.json');
-  const receipt = resumed ? existing.receipt : { schema: 'mandible-native-preview@1', ownership, status: 'preparing',
+  const receipt = resumed ? existing.receipt : { schema: 'mandible-native-preview@1', attemptId, ownership, status: 'preparing',
     executable: path.join(root, 'app', `Mandible Preview ${ownership.runId.slice(0, 8)}.app`, 'Contents/MacOS', `mandible-native-preview-${ownership.runId.slice(0, 8)}`),
     build: candidate, sourceBundle: bundle ?? null, parent, manifest: path.join(previewRoot, 'metadata.json'), previewRunId: owner.runId,
     instanceId: owner.instanceId, origin: selected.instanceEnv.MANDIBLE_PUBLIC_ORIGIN, profile,
@@ -165,19 +172,20 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
   let reservation;
   try {
     reservation = await (resumed ? reacquirePreviewConsumer : acquirePreviewConsumer)(parent, { consumerId: ownership.runId, runId: ownership.runId, root,
-      rootIdentity: ownership.rootIdentity, metadataFile: receiptFile, borrowedBackend: true, newInstance,
+      rootIdentity: ownership.rootIdentity, metadataFile: receiptFile, borrowedBackend: true, newInstance, attemptId,
+      expectedPriorAttemptId: existing?.consumer?.attemptId,
       expectedGeneration: selected.instanceEnv.MANDIBLE_BACKEND_GENERATION, expectedSource: candidate,
       expectedPriorGeneration: existing?.consumer?.generation, expectedPriorSource: existing?.consumer?.source });
     await withOwnedRunLock(root, async () => {
       const latest = ownedReceipt(receiptFile);
-      if (latest.ownership.runId !== receipt.ownership.runId || latest.ownership.state === 'terminal'
-        || latest.ownership.revision !== receipt.ownership.revision) throw new Error('Native ownership changed before build');
+      if (latest.attemptId !== attemptId || latest.ownership.runId !== receipt.ownership.runId || latest.ownership.state === 'terminal') throw new Error('Native ownership changed before build');
+      receipt.ownership = latest.ownership;
       if (resumed) {
         receipt.attempts ??= [];
-        receipt.attempts.push({ build: receipt.build, nativeBuild: receipt.nativeBuild, status: receipt.status, error: receipt.error, pid: receipt.pid });
+        receipt.attempts.push({ attemptId: receipt.attemptId, build: receipt.build, nativeBuild: receipt.nativeBuild, status: receipt.status, error: receipt.error, pid: receipt.pid });
         for (const key of ['pid', 'processIdentity', 'window', 'error', 'cleanupPending', 'stoppedAt']) delete receipt[key];
       }
-      receipt.reservation = reservation; receipt.build = candidate; receipt.status = 'preparing';
+      receipt.attemptId = attemptId; receipt.reservation = reservation; receipt.build = candidate; receipt.status = 'preparing';
       saveOwnedMetadata(receiptFile, receipt);
       const sourceBundle = bundle ?? await buildNativePreview({ worktree: selected.worktree, root, candidate, receipt,
         save: () => saveOwnedMetadata(receiptFile, receipt), identity: processIdentity });
@@ -233,29 +241,34 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     await publishPreviewConsumer(reservation, { pid: receipt.pid, processIdentity: receipt.processIdentity, build: candidate });
     return receipt;
   } catch (error) {
-    const failureOptions = { parentLockHeld: !reservation };
-    try {
-      await nativeOperation(receiptFile, failureOptions, current => {
-        current.status = 'failed'; current.error = String(error); saveOwnedMetadata(receiptFile, current);
-      });
-      await stopNativePreview(receiptFile, failureOptions);
-      if (!resumed) {
-        const cleanup = await cleanupNativePreview(receiptFile, { ...failureOptions, disposition: 'discard' });
-        if (cleanup.action === 'skip' || cleanup.action === 'cleanup-pending' || cleanup.remaining?.length) {
-          throw new Error(cleanup.reason ?? 'Native generated output cleanup is pending');
-        }
-      } else {
-        await nativeOperation(receiptFile, failureOptions, current => {
-          current.status = 'failed';
-          current.cleanupPending = 'Stopped-run relaunch failed; profile and warm target retained for retry or explicit cleanup';
-          saveOwnedMetadata(receiptFile, current);
-        });
-      }
-    } catch (cleanupError) {
-      throw new Error(`${error.message}; cleanup pending: ${cleanupError.message}; native receipt: ${receiptFile}`);
-    }
-    throw new Error(`${error.message}; native receipt: ${receiptFile}`);
+    return failNativePreviewAttempt({ receiptFile, resumed, reservation, attemptId, error });
   }
+}
+
+export async function failNativePreviewAttempt({ receiptFile, resumed, reservation, attemptId, error }) {
+  if (resumed && !reservation) throw error;
+  const failureOptions = { parentLockHeld: !reservation, attemptId };
+  try {
+    await nativeOperation(receiptFile, failureOptions, current => {
+      current.status = 'failed'; current.error = String(error); saveOwnedMetadata(receiptFile, current);
+    });
+    await stopNativePreview(receiptFile, failureOptions);
+    if (!resumed) {
+      const cleanup = await cleanupNativePreview(receiptFile, { ...failureOptions, disposition: 'discard' });
+      if (cleanup.action === 'skip' || cleanup.action === 'cleanup-pending' || cleanup.remaining?.length) {
+        throw new Error(cleanup.reason ?? 'Native generated output cleanup is pending');
+      }
+    } else {
+      await nativeOperation(receiptFile, failureOptions, current => {
+        current.status = 'failed';
+        current.cleanupPending = 'Stopped-run relaunch failed; profile and warm target retained for retry or explicit cleanup';
+        saveOwnedMetadata(receiptFile, current);
+      });
+    }
+  } catch (cleanupError) {
+    throw new Error(`${error.message}; cleanup pending: ${cleanupError.message}; native receipt: ${receiptFile}`);
+  }
+  throw new Error(`${error.message}; native receipt: ${receiptFile}`);
 }
 
 export async function cleanupNativePreview(file, options = {}) {

@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { nativeProcessGroupMembers } from './native-process-group.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 
 function command(command, args, cwd) {
@@ -96,7 +98,8 @@ export async function runNativeBuildPhase({ command, args, cwd, env, log, budget
   let child;
   const started = Date.now();
   try {
-    child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
+    const supervisor = fileURLToPath(new URL('./native-build-supervisor.mjs', import.meta.url));
+    child = spawn(process.execPath, [supervisor, JSON.stringify({ command, args })], { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
   } finally { fs.closeSync(fd); }
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
@@ -121,6 +124,16 @@ export async function runNativeBuildPhase({ command, args, cwd, env, log, budget
     throw error;
   } finally {
     clearTimeout(timer);
+    const deadline = Date.now() + 5000;
+    while (nativeProcessGroupMembers(child.pid).length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    const remaining = nativeProcessGroupMembers(child.pid);
+    if (remaining.length) {
+      receipt.buildProcess.remaining = remaining.map(pid => { const value = identity(pid); return { pid, identity: value, birth: value?.slice(0, 24) }; });
+      receipt.buildProcess.cleanupPending = 'Native build descendants remain active after phase exit';
+      save();
+      throw new Error('Native build group remains active; cleanup pending');
+    }
+    receipt.buildProcess.remaining = [];
     receipt.buildProcess.finishedAt = new Date().toISOString();
     receipt.buildProcess.elapsedMs = Date.now() - started;
     save();

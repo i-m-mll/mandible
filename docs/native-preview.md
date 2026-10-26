@@ -37,6 +37,9 @@ trust installation, production bootstrap or production daemon startup occurs.
 The native run registers its pending consumer before building. Its receipt
 records its parent backend, exact candidate commit/source digest, toolchain,
 build fingerprint, supervised processes, stage budgets, timings and outputs.
+Each launch/rebuild claims an exact attempt identity before effects. A refused
+reacquisition leaves the existing run untouched; stale failures cannot stop or
+rewrite a later successful attempt.
 The build uses the pinned Bun and the candidate's frozen dependencies. The
 backend worktree and dependency installation remain borrowed resources.
 
@@ -50,7 +53,9 @@ Older Cargo versions that keep intermediates in target still remain contained.
 Download stores and verified runtime archives are borrowed caches.
 
 Preview builds use Tauri's debug app profile with Rust debug info disabled to
-reduce compile/link latency. They use the same bundling/preparation path as
+reduce compile/link latency. A persistent supervisor owns each build process
+group until it is quiescent, including descendants left after a command exits.
+Deadline and failure cleanup stop that group before marking a phase finished. They use the same bundling/preparation path as
 ordinary builds, with `--bundles app --locked`; no installers are generated.
 Repeating setup after stopping or naturally closing the app reacquires the same
 run, preserves its profile/target, regenerates staged sources and rebuilds the
