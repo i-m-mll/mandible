@@ -101,6 +101,7 @@ export interface ActivityItem extends ChatItemBase {
 export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
 
 export interface BlockMetadata {
+  execution_state?: "active" | "settled" | "unknown";
   tool_name?: string;
   tool_kind?: string;
   tool_id?: string;

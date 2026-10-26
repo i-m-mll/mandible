@@ -1736,6 +1736,19 @@ export async function getManagedChatDefaults(): Promise<ManagedChatDefaults> {
   return parseManagedChatDefaults(snapshot.value);
 }
 
+export type ChildRetentionSettings = import('../../src/conversations/retention-contract').ChildRetentionSettings;
+
+export async function getChildRetentionSettings(): Promise<ChildRetentionSettings> {
+  const response = await apiGet('/api/settings/child-retention');
+  return await parseMaybeJson(response) as ChildRetentionSettings;
+}
+
+export async function updateChildRetentionSettings(value: ChildRetentionSettings): Promise<ChildRetentionSettings> {
+  const response = await apiPut('/api/settings/child-retention', value);
+  invalidateApiGetCache('/api/settings/child-retention');
+  return await parseMaybeJson(response) as ChildRetentionSettings;
+}
+
 export async function updateManagedChatDefaults(value: ManagedChatDefaults): Promise<ManagedChatDefaults> {
   const response = await apiPut('/api/user-settings/managed_chat_defaults', { value: JSON.stringify(value) });
   const snapshot = await parseMaybeJson(response) as { value: string };
@@ -2455,9 +2468,10 @@ export async function updateConversation(id: string, data: {
   return (await parseMaybeJson(resp)) as Conversation;
 }
 
-export async function updateConversationArchive(id: string, archived: boolean): Promise<void> {
-  await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, { archived });
+export async function updateConversationArchive(id: string, archived: boolean): Promise<Pick<Conversation, 'id' | 'archived_at'> & Partial<Conversation>> {
+  const response = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, { archived });
   invalidateApiGetCache('/api/conversations');
+  return await parseMaybeJson(response) as Pick<Conversation, 'id' | 'archived_at'> & Partial<Conversation>;
 }
 
 export async function exportConversationBlocks(id: string, data: {

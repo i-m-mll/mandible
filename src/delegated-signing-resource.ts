@@ -1,3 +1,4 @@
+import { shortenDelegatedSigningLease } from "./users/store.js";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -240,11 +241,8 @@ export class DelegatedSigningResource {
       live.draining = true;
       live.binding.state = "draining";
       live.binding.retired_reason = reason;
-      this.db.prepare(
-        `UPDATE delegated_signing_leases
-            SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?))
-          WHERE id = ?`,
-      ).run(this.now(), leaseId);
+      shortenDelegatedSigningLease(this.db, leaseId, this.now(),
+        reason === "expired" || reason === "clearance_inactive" || reason === "clearance_exhausted" || reason === "released");
       this.db.prepare(
         "UPDATE delegated_signing_runtime_bindings SET state = 'draining', retired_reason = ? WHERE lease_id = ? AND state = 'available'",
       ).run(reason, leaseId);

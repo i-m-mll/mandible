@@ -19,6 +19,7 @@ interface SseClient {
 export class SseManager {
   private clients = new Set<SseClient>();
   private observers = new Set<(type: MandibleEventType) => void>();
+  private eventObservers = new Set<(event: SSEEvent) => void>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private startupCommit: StartupCommitInfo | null = null;
 
@@ -91,6 +92,7 @@ export class SseManager {
       this.writeClient(client, payload);
     }
     for (const observer of this.observers) observer(event.type);
+    for (const observer of this.eventObservers) observer(event);
   }
 
   /** Observe the type of every broadcast event; returns the disposer. */
@@ -99,8 +101,14 @@ export class SseManager {
     return () => { this.observers.delete(observer); };
   }
 
+  observeEvents(observer: (event: SSEEvent) => void): () => void {
+    this.eventObservers.add(observer);
+    return () => { this.eventObservers.delete(observer); };
+  }
+
   closeAll(): void {
     this.observers.clear();
+    this.eventObservers.clear();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

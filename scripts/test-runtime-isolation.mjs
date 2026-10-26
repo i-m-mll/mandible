@@ -33,6 +33,29 @@ function verifiedSqliteArchive() {
   return sqliteArchive;
 }
 
+function selectedTestToolchain() {
+  if (process.platform !== 'darwin') return null;
+  const directories = (process.env.PATH ?? '').split(path.delimiter);
+  const selected = directories.findIndex(directory => {
+    try { fs.accessSync(path.resolve(directory || '.', 'git'), fs.constants.X_OK); return true; }
+    catch { return false; }
+  });
+  if (selected < 0 || path.resolve(directories[selected] || '.', 'git') !== '/usr/bin/git') return null;
+  // Apple's launcher resolves this same executable on every Git invocation.
+  // Select the developer tools directly, retaining earlier custom PATH entries.
+  const executable = fs.realpathSync(execFileSync('/usr/bin/xcrun', ['--find', 'git'], {
+    encoding: 'utf8', timeout: 10_000,
+  }).trim());
+  const version = execFileSync(executable, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim();
+  const directory = path.dirname(executable);
+  const before = directories[selected];
+  directories.splice(selected, 0, directory);
+  return { path: directories.join(path.delimiter), git: {
+    launcher: '/usr/bin/git', executable, version,
+    path_selection: { kind: 'developer-tools-directory', directory, before },
+  } };
+}
+
 /**
  * Private roots must exist before the child runtime captures os.homedir().
  * Spawn test children with `env.MANDIBLE_RUNTIME`, the verified pinned Bun.
@@ -40,6 +63,8 @@ function verifiedSqliteArchive() {
 export function createTestRuntime() {
   const bun = pinnedRuntime();
   const archive = verifiedSqliteArchive();
+  const toolchain = selectedTestToolchain();
+  const git = toolchain?.git ?? null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-test-run-'));
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
@@ -54,6 +79,8 @@ export function createTestRuntime() {
     MANDIBLE_RUNTIME: bun,
     ...(archive ? { MANDIBLE_SQLITE_LIBRARY_ARCHIVE: archive } : {}),
     MANDIBLE_TEST_RUNTIME_ROOT: root,
+    PATH: toolchain?.path ?? process.env.PATH,
+    MANDIBLE_TEST_GIT_EXECUTABLE: git?.executable,
   };
   for (const key of [
     'MANDIBLE_HOME', 'MANDIBLE_CONFIG_DIR', 'MANDIBLE_ARTIFACT_DIR',
@@ -61,5 +88,6 @@ export function createTestRuntime() {
     'MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR', 'MANDIBLE_CLI_CACHE_DIR',
     'MANDIBLE_FILE_RPC_DIR', 'MANDIBLE_SOCKET', 'MANDIBLE_DB',
   ]) delete env[key];
-  return { env, close: () => fs.rmSync(root, { recursive: true, force: true }) };
+  if (!git) delete env.MANDIBLE_TEST_GIT_EXECUTABLE;
+  return { env, toolchain: { git }, close: () => fs.rmSync(root, { recursive: true, force: true }) };
 }

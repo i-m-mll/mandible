@@ -1,6 +1,4 @@
 import { SessionExecutionStore } from "../src/session-execution.js";
-import { SESSION_EXECUTION_SCHEMA_SQL } from "../src/db-baseline.js";
-import { CONVERSATION_CONTROL_SCHEMA_SQL } from "../src/conversation-control/schema.js";
 /**
  * The canonical session-liveness rule and the consumers that act on it.
  *
@@ -14,11 +12,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { archiveFinishedWorkerThreads, type CodexThreadArchiver } from "../src/codex-thread-archive.js";
 import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof, withFreshCodexTaskLiveness } from "../src/codex-task-liveness.js";
 import { setDb, type Db } from "../src/db.js";
 import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
-import SqliteDatabase from "../src/sqlite.ts";
 import { classifyHolderLiveness } from "../src/work-unit-custody.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { mapWorkUnitRow } from "../src/work-unit-utils.js";
@@ -28,11 +24,6 @@ import { useStubCommand } from "./helpers/event-loop-blocking.js";
 const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
 const PROVIDER_THREAD = "01a04e24-a731-7362-bce3-ff7a63a845e2";
-
-const recordingArchiver = (archived: string[]): CodexThreadArchiver => ({
-  archive: async (threadId) => { archived.push(threadId); },
-  unarchive: async () => undefined,
-});
 
 function nativeCodexFailure(db: Db, conversationId: string, thread: string): void {
   db.prepare(`INSERT INTO conversation_control_state (conversation_id, provider, provider_session_id, generation, owner_kind, controller_state,
@@ -157,38 +148,13 @@ describe("a Codex lock check that cannot complete", () => {
     codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "liveness-outage-"));
     lockDir = path.join(codexRoot, "thread-writer-locks");
     const rollout = path.join(codexRoot, "sessions", "2026", "10", "21", `rollout-${THREAD}.jsonl`);
-    db = new SqliteDatabase(":memory:") as unknown as Db;
-    db.exec(`
-      CREATE TABLE conversations (
-        id TEXT PRIMARY KEY, source TEXT NOT NULL, session_id TEXT NOT NULL,
-        source_path TEXT NOT NULL, cwd TEXT, branch TEXT, updated_at TEXT,
-        ended_at TEXT, source_mtime REAL
-      );
-      CREATE TABLE work_units (
-        id TEXT PRIMARY KEY, issue_id TEXT NOT NULL DEFAULT 'issue-1', ledger_issue_id TEXT,
-        repo_id TEXT NOT NULL DEFAULT '', branch TEXT, state TEXT NOT NULL,
-        assigned_session_id TEXT, provider TEXT, provider_session_id TEXT,
-        worker_provider_session_id TEXT, activated_at INTEGER, auth_request_id TEXT,
-        resolved_at INTEGER, created_at INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE branches (
-        repo_root TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL,
-        ahead_default INTEGER DEFAULT 0, PRIMARY KEY (repo_root, branch)
-      );
-      CREATE TABLE worker_thread_archives (
-        work_unit_id TEXT NOT NULL, thread_id TEXT NOT NULL, archived_at INTEGER,
-        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_retry_at INTEGER,
-        PRIMARY KEY (work_unit_id, thread_id)
-      );
-    `);
-    db.exec(SESSION_EXECUTION_SCHEMA_SQL);
-    db.exec(CONVERSATION_CONTROL_SCHEMA_SQL[0]!);
-    db.prepare("INSERT INTO conversations (id, source, session_id, source_path) VALUES ('conv', 'codex', ?, ?)")
+    db = migratedMemoryDb();
+    db.prepare("INSERT INTO conversations (id, source, session_id, source_path,source_hash,source_mtime,title,started_at,created_at,updated_at) VALUES ('conv', 'codex', ?, ?,'hash',1,'Chat','2026-01-01','2026-01-01','2026-01-01')")
       .run(THREAD, rollout);
     nativeCodexFailure(db, "conv", THREAD);
     const unit = db.prepare(
-      `INSERT INTO work_units (id, state, provider, assigned_session_id, worker_provider_session_id, auth_request_id)
-       VALUES (?, ?, 'codex', ?, ?, ?)`,
+      `INSERT INTO work_units (id, issue_id,repo_id,state, provider, assigned_session_id, worker_provider_session_id, auth_request_id,created_at)
+       VALUES (?, 'issue-1','fixture',?, 'codex', ?, ?, ?,1)`,
     );
     unit.run("wu-held", "committed", THREAD, null, null);
     unit.run("wu-merged", "resolved", null, THREAD, "auth-1");
@@ -208,7 +174,7 @@ describe("a Codex lock check that cannot complete", () => {
     clearCodexTaskLivenessCache();
   });
 
-  const reconciler = () => new WorkUnitReconciler(() => undefined, { archiver: recordingArchiver(archived) });
+  const reconciler = () => new WorkUnitReconciler(() => undefined);
   const heldUnit = () =>
     mapWorkUnitRow(db.prepare("SELECT * FROM work_units WHERE id = 'wu-held'").get() as Record<string, unknown>);
   const holder = () => db.prepare("SELECT assigned_session_id FROM work_units WHERE id = 'wu-held'").get();
@@ -230,9 +196,6 @@ describe("a Codex lock check that cannot complete", () => {
     fs.writeFileSync(lockDir, "");
 
     expect(sessionAliasLiveness(db, THREAD, { readCodexTaskLiveness: () => ({ status: "live" }) })).toBe("live");
-    await archiveFinishedWorkerThreads(db, { archiver: recordingArchiver(archived),
-      liveness: (database, id) => sessionAliasLiveness(database, id, { readCodexTaskLiveness: () => ({ status: "live" }) }),
-      resolveAlias: resolveSessionAlias, now: () => 0 });
     expect(archived).toEqual([]);
     expect(await freshLiveness()).toBe("unknown");
     await reconciler().reconcile();
@@ -255,63 +218,6 @@ describe("a Codex lock check that cannot complete", () => {
     expect(await freshHolderState()).toBe("stopped");
     await reconciler().reconcile();
     expect(holder()).toEqual({ assigned_session_id: null });
-    expect(archived).toEqual([THREAD]);
-  });
-});
-
-describe("Codex worker thread archival excludes live threads", () => {
-  function archiveDb(): Db {
-    const archive = new SqliteDatabase(":memory:") as unknown as Db;
-    archive.exec(`
-      CREATE TABLE work_units (
-        id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, ledger_issue_id TEXT, state TEXT NOT NULL,
-        assigned_session_id TEXT, provider_session_id TEXT, worker_provider_session_id TEXT,
-        auth_request_id TEXT
-      );
-      CREATE TABLE sessions (id TEXT PRIMARY KEY, status TEXT);
-      CREATE TABLE console_sessions (
-        id TEXT PRIMARY KEY, mandible_session_id TEXT, provider_session_id TEXT, command TEXT, status TEXT
-      );
-      CREATE TABLE worker_thread_archives (
-        work_unit_id TEXT NOT NULL, thread_id TEXT NOT NULL, archived_at INTEGER,
-        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_retry_at INTEGER,
-        PRIMARY KEY (work_unit_id, thread_id)
-      );
-    `);
-    archive.prepare(
-      `INSERT INTO work_units (id, issue_id, state, worker_provider_session_id, auth_request_id)
-       VALUES ('wu-live', 'issue-live', 'resolved', 'thread-live', 'auth-1'),
-              ('wu-done', 'issue-done', 'resolved', 'thread-done', 'auth-1')`,
-    ).run();
-    return archive;
-  }
-
-  it.each([
-    {
-      name: "its console session is still running",
-      seed: `INSERT INTO console_sessions (id, provider_session_id, command, status)
-             VALUES ('cs-live', 'thread-live', 'codex', 'running'), ('cs-done', 'thread-done', 'codex', 'stopped')`,
-    },
-    {
-      name: "its linked Mandible session is still active",
-      seed: `INSERT INTO sessions (id, status) VALUES ('mandible-live', 'active');
-             INSERT INTO console_sessions (id, mandible_session_id, provider_session_id, command, status)
-             VALUES ('cs-live', 'mandible-live', 'thread-live', 'codex', 'stopped'),
-                    ('cs-done', NULL, 'thread-done', 'codex', 'stopped')`,
-    },
-  ])("skips a thread when $name", async ({ seed }) => {
-    const archive = archiveDb();
-    archive.exec(seed);
-    const archived: string[] = [];
-
-    await archiveFinishedWorkerThreads(archive, {
-      archiver: recordingArchiver(archived),
-      liveness: sessionAliasLiveness,
-      resolveAlias: resolveSessionAlias,
-      now: () => 0,
-    });
-
-    expect(archived).toEqual(["thread-done"]);
-    archive.close();
+    expect(archived).toEqual([]);
   });
 });

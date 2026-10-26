@@ -12,7 +12,9 @@ import { addProject } from "../src/ledger/project-registry.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router, type RouteHandler } from "../src/server.js";
-import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { createLedgerIssue, createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
 
 let tempDir = "";
 let policyRouter: Router | null = null;
@@ -48,6 +50,26 @@ it("denies the production approval route over file RPC before request lookup", a
     (await queue.dispose());
     db.close();
   }
+});
+
+it("persists file-RPC native origin with its authoritative comment revision", async () => {
+  const db = migratedMemoryDb();
+  try {
+    const project = createLedgerProject(db, tempDir);
+    const issue = createLedgerIssue(db, { project_id: project.project.id });
+    const store = new LedgerStore(db);
+    const router = new Router();
+    router.post('/api/ledger/issues/:issueId/comments', (_req, res) => {
+      res.json(store.addComment(issue.id, { body: 'From file RPC', actor_type: 'system', author_display: 'System', attribution: systemAction() }));
+    }, { fileRpc: 'allow', operation: { id: 'fixture.origin-comment', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    const origin = { provider: 'claude', provider_session_id: 'exact-file-native' };
+    fs.writeFileSync(path.join(tempDir, 'origin.request.json'), JSON.stringify({ id: 'origin', method: 'POST',
+      path: `/api/ledger/issues/${issue.id}/comments`, request_origin: origin }));
+    await new FileRpcTransport({ router, dir: tempDir }).processOnce();
+    const response = JSON.parse(fs.readFileSync(path.join(tempDir, 'origin.response.json'), 'utf8'));
+    expect(response.status).toBe(200);
+    expect(store.listBodyRevisions({ entity_type: 'comment_body', entity_id: response.body.id })[0].request_origin).toEqual(origin);
+  } finally { db.close(); }
 });
 
 const noop: RouteHandler = (_req, res) => {

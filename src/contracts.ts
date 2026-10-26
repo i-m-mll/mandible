@@ -477,6 +477,7 @@ export type AuthRequestActionInput = {
 };
 
 export type AuthRequestAction = AuthRequestActionInput & {
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   auth_request_id: string;
   ordinal: number;
@@ -568,6 +569,7 @@ export type WorkUnit = {
   assigned_session_id: string | null;
   provider: string | null;
   provider_session_id: string | null;
+  worker_provider: string | null;
   worker_provider_session_id: string | null;
   continuation: string | null;
   continuation_by: string | null;
@@ -741,7 +743,7 @@ export type ConversationExternalNavigation =
       label: "Go to terminal";
     };
 
-export type Conversation = {
+export type Conversation = Partial<import("./conversations/retention-contract.js").RetentionNativeProjection> & {
   identity_aliases?: string[];
   id: string;
   source: ConversationSource;
@@ -1583,6 +1585,8 @@ export type BriefingBundleLayoutInputEntry =
   | { kind: "briefing"; briefing_ref: string }
   | { kind: "subgroup"; name: string; briefing_refs: string[] };
 export type BriefingBundle = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   name: string;
   created_at: number;
@@ -1592,6 +1596,8 @@ export type BriefingBundle = {
   layout: BriefingBundleLayoutEntry[];
 };
 export type BriefingGroup = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   key: string;
   name: string;
@@ -1661,6 +1667,8 @@ export type BriefingGroupReviewCandidate = {
   items: BriefingGroupReviewItem[];
 };
 export type BriefingGroupDisposition = {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   kind: "promoted" | "dismissed" | "accepted" | "rejected";
   prior_base: BriefingBundle | null;

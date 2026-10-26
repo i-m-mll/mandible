@@ -73,11 +73,11 @@ it("keeps active cache leases while enforcing output and disk quotas", async () 
   fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
   const options = { cacheRoot, reserveBytes: 0, cacheBytes: header.length * 2, maxLogicalBytes: header.length };
   const first = await openLogicalSource(source, options);
-  const other = source.replace("-a", "-b");
+  const other = path.join(path.dirname(source), "rollout-b.jsonl");
   fs.writeFileSync(`${other}.zst`, zstd.zstdCompressSync(Buffer.from(header.toString().replace("native", "second"))));
   const second = await openLogicalSource(other, options);
   expect(await first.readFile()).toEqual(header);
-  const third = source.replace("-a", "-c");
+  const third = path.join(path.dirname(source), "rollout-c.jsonl");
   fs.writeFileSync(`${third}.zst`, zstd.zstdCompressSync(Buffer.from(header.toString().replace("native", "third-"))));
   await expect(openLogicalSource(third, options)).rejects.toThrow(/quota/);
   await first.close();
@@ -119,7 +119,7 @@ it.each(["warm", "cold"])("acquires a readable %s source when another process ev
   });
   const pending = openLogicalSource(source, options);
   await pause;
-  const other = source.replace("-a", "-b");
+  const other = path.join(path.dirname(source), "rollout-b.jsonl");
   fs.writeFileSync(`${other}.zst`, zstd.zstdCompressSync(Buffer.from(header.toString().replace("native", "second"))));
   const script = `import {openLogicalSource} from ${JSON.stringify(path.resolve("src/conversations/logical-source.ts"))};
     const h=await openLogicalSource(${JSON.stringify(other)},${JSON.stringify(options)}); await h.close();`;
@@ -133,7 +133,7 @@ it.each(["warm", "cold"])("acquires a readable %s source when another process ev
 it("serves native inventory and raw-path inspection through bounded prefixes with raw precedence", async () => {
   fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
   fs.writeFileSync(source, header.toString().replace("native-session", "raw-session"));
-  const older = source.replace("-a", "-older");
+  const older = path.join(path.dirname(source), "rollout-older.jsonl");
   fs.writeFileSync(`${older}.zst`, "invalid frame that inventory must not decode before its limit");
   fs.utimesSync(`${older}.zst`, new Date(0), new Date(0));
   const run = async (...args: string[]) => JSON.parse((await promisify(execFile)(process.env.MANDIBLE_RUNTIME!,
@@ -199,4 +199,4 @@ it("streams a 211MB cold rollout once for concurrent readers and seeks warm tail
   await warm.close();
   expect((await readLogicalSourcePrefix(source, header.length)).toString()).toBe(header.toString());
   console.info("logical-source performance", { logicalLength, decoded, peakRssDelta: peakRss - initialRss, eventLoopTurns: turns });
-}, 30_000);
+});

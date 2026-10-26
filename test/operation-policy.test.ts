@@ -2,11 +2,24 @@ import { describe, expect, it } from "vitest";
 import { bindOperationCatalog, canPerformOperation, type InstanceInfo } from "../ui/src/api";
 import { registeredOperationRouter } from "./helpers/registered-operation-router.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { MAIN_CLI_INSTANCE } from "./helpers/main-cli-instance.js";
+import { readOperationCatalogSeed } from "./helpers/operation-catalog-seed.js";
 
 const preview: InstanceInfo = { ...resolveInstanceInfo({ env: {} }), role: "preview", instance_id: "preview-copy",
   allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"] };
 
 describe("daemon-bound operation affordances", () => {
+  it("shares the canonical run catalog while keeping each reader's values private", () => {
+    const first = readOperationCatalogSeed();
+    const second = readOperationCatalogSeed();
+    expect(first).toEqual({ instance: MAIN_CLI_INSTANCE,
+      operations: registeredOperationRouter(MAIN_CLI_INSTANCE).operationCatalog('ui-test') });
+    const count = second.operations.routes.length;
+    first.operations.routes.splice(0);
+    expect(second.operations.routes).toHaveLength(count);
+    expect(readOperationCatalogSeed().operations.routes).toHaveLength(count);
+  });
+
   it("uses registered static effects while leaving body decisions to the daemon", () => {
     const catalog = registeredOperationRouter(preview).operationCatalog("test");
     expect(bindOperationCatalog(preview, catalog)).toBe(true);

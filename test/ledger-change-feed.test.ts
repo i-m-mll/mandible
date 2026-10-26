@@ -54,10 +54,10 @@ describe("bounded ledger change feed", () => {
     expect(initial).toMatchObject({
       schema: LEDGER_CHANGE_FEED_SCHEMA,
       changes: [],
-      high_water_mark: 0,
       resync: { established: true },
     });
 
+    const baseline = initial.high_water_mark as number;
     addIssue(store, beta.id, "Other project");
     addIssue(store, alpha.id, "Visible project");
     const page = readLedgerChangeFeed(db, {
@@ -66,7 +66,7 @@ describe("bounded ledger change feed", () => {
       cursor: cursor(initial),
     });
     expect(changes(page)).toHaveLength(1);
-    expect(changes(page)[0]).toMatchObject({ sequence: 1, event_type: "issue.created" });
+    expect(changes(page)[0]).toMatchObject({ sequence: baseline + 1, event_type: "issue.created" });
     expect(JSON.stringify(changes(page)[0])).not.toContain("private body");
   });
 
@@ -74,6 +74,7 @@ describe("bounded ledger change feed", () => {
     const project = addProject(db, { project_key: "alpha" });
     const store = new LedgerStore(db);
     const initial = readLedgerChangeFeed(db, { project_id: project.id, project_key: project.project_key });
+    const baseline = initial.high_water_mark as number;
     addIssue(store, project.id, "One");
     addIssue(store, project.id, "Two");
 
@@ -83,7 +84,7 @@ describe("bounded ledger change feed", () => {
       cursor: cursor(initial),
       limit: 1,
     });
-    expect(first).toMatchObject({ high_water_mark: 2, page: { count: 1, has_more: true } });
+    expect(first).toMatchObject({ high_water_mark: baseline + 2, page: { count: 1, has_more: true } });
 
     const secondBeforeAppend = readLedgerChangeFeed(db, {
       project_id: project.id,
@@ -101,30 +102,31 @@ describe("bounded ledger change feed", () => {
     expect(replay).toEqual(secondBeforeAppend);
 
     const second = replay;
-    expect(second).toMatchObject({ high_water_mark: 2, page: { count: 1, has_more: false } });
+    expect(second).toMatchObject({ high_water_mark: baseline + 2, page: { count: 1, has_more: false } });
     const third = readLedgerChangeFeed(db, {
       project_id: project.id,
       project_key: project.project_key,
       cursor: cursor(second),
     });
-    expect(changes(third)[0]).toMatchObject({ sequence: 3 });
+    expect(changes(third)[0]).toMatchObject({ sequence: baseline + 3 });
   });
 
   it("fails closed for retention gaps, truncation, and cursor drift", () => {
     const project = addProject(db, { project_key: "alpha" });
     const store = new LedgerStore(db);
     const initial = readLedgerChangeFeed(db, { project_id: project.id, project_key: project.project_key });
+    const baseline = initial.high_water_mark as number;
     addIssue(store, project.id, "One");
     addIssue(store, project.id, "Two");
 
-    db.prepare("DELETE FROM ledger_change_log WHERE project_id = ? AND sequence = 1").run(project.id);
+    db.prepare("DELETE FROM ledger_change_log WHERE project_id = ? AND sequence = ?").run(project.id, baseline + 1);
     expect(() => readLedgerChangeFeed(db, {
       project_id: project.id,
       project_key: project.project_key,
       cursor: cursor(initial),
     })).toThrowError(expect.objectContaining({ code: "truncated_change_log" }));
 
-    db.prepare("UPDATE ledger_change_feed_state SET retained_from_sequence = 2 WHERE project_id = ?").run(project.id);
+    db.prepare("UPDATE ledger_change_feed_state SET retained_from_sequence = ? WHERE project_id = ?").run(baseline + 2, project.id);
     expect(() => readLedgerChangeFeed(db, {
       project_id: project.id,
       project_key: project.project_key,

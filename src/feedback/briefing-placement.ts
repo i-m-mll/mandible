@@ -1,3 +1,4 @@
+import { requestOriginJson } from "../request-origin.js";
 import { randomUUID } from "node:crypto";
 
 import type { Db } from "../db.js";
@@ -114,10 +115,10 @@ export function enforceActivePlacement(
       "briefing_collection_placement_conflict", { placement_candidates: conflicts });
   }
   const insert = db.prepare(`INSERT INTO briefing_collection_sharing_receipts
-    (id, operation, target_kind, target_id, subject_kind, subject_id, owner_kind, owner_id,
+    (request_origin_json, id, operation, target_kind, target_id, subject_kind, subject_id, owner_kind, owner_id,
      reason, actor_user_id, evidence_method, credential_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const conflict of conflicts) insert.run(randomUUID(), input.operation, input.target.kind, input.target.id,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const conflict of conflicts) insert.run(requestOriginJson(), randomUUID(), input.operation, input.target.kind, input.target.id,
     conflict.subject_kind, conflict.subject_id, conflict.owner_kind, conflict.owner_id, reason,
     input.override?.actorUserId, input.override?.evidenceMethod, input.override?.credentialId, input.now);
 }

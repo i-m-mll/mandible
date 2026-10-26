@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { requestOriginFromMetadata, withRequestOriginMetadata } from "../request-origin.js";
 import type { Db } from "../db.js";
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents, type LedgerBroadcaster, type LedgerSsePayload } from "./events.js";
@@ -260,8 +261,9 @@ export interface RecordLedgerEventInput extends LedgerActorInput {
   event_type: string;
   source?: LedgerEventSource;
   payload?: Record<string, unknown>;
-  project_id: string;
+  project_id?: string | null;
   occurred_at?: number;
+  notify?: boolean;
 }
 
 export class LedgerStore {
@@ -989,28 +991,41 @@ export class LedgerStore {
   }
 
   recordEvent(input: RecordLedgerEventInput): LedgerEvent {
-    const emitted: LedgerSsePayload[] = [];
-    const now = input.occurred_at ?? Date.now();
-    const actor = this.resolveActor(input);
-    const source = input.source ?? "system";
+    return this.prepareEventRecorder(input)(input);
+  }
 
-    const event = this.db.transaction(() => this.insertEvent({
-      entity_type: input.entity_type,
-      entity_id: input.entity_id,
-      event_type: input.event_type,
-      actor_id: actor.actor_id,
-      actor_type: actor.actor_type,
-      actor_user_id: actor.actor_user_id,
-      evidence_method: actor.evidence_method,
-      evidence_id: actor.evidence_id,
-      source,
-      payload: input.payload ?? {},
-      project_id: input.project_id,
-      occurred_at: now,
-    }))();
-    emitted.push({ event, payload: input.payload ?? { entity_id: input.entity_id } });
-    emitLedgerEvents(emitted, this.broadcaster);
-    return event;
+  /** Freeze validated attribution before a mutation can retire its own actor. */
+  prepareEventRecorder(input: LedgerActorInput): (event: Omit<RecordLedgerEventInput, keyof LedgerActorInput>) => LedgerEvent {
+    const actor = this.resolveActor(input);
+    return (input) => {
+      const now = input.occurred_at ?? Date.now();
+      const source = input.source ?? "system";
+
+      const event = this.db.transaction(() => this.insertEvent({
+        entity_type: input.entity_type,
+        entity_id: input.entity_id,
+        event_type: input.event_type,
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
+        source,
+        payload: input.payload ?? {},
+        project_id: input.project_id,
+        occurred_at: now,
+      }))();
+      if (input.notify !== false) {
+        emitLedgerEvents([{ event, payload: input.payload ?? { entity_id: input.entity_id } }], this.broadcaster);
+      }
+      return event;
+    };
+  }
+
+  /** Publish a committed record after an enclosing mutation transaction succeeds. */
+  notifyEvent(event: LedgerEvent): void {
+    if (this.db.inTransaction) throw new Error("Ledger event notification requires a committed transaction");
+    emitLedgerEvents([{ event, payload: parseJsonObject(event.payload_json) }], this.broadcaster);
   }
 
   addComment(issueId: string, input: AddLedgerCommentInput): LedgerComment {
@@ -2103,7 +2118,9 @@ export class LedgerStore {
       `SELECT * FROM ledger_body_revisions
        WHERE entity_type = ? AND entity_id = ?
        ORDER BY revision_no`,
-    ).all(entity.entity_type, entity.entity_id) as LedgerBodyRevision[];
+    ).all(entity.entity_type, entity.entity_id).map((row) => ({
+      ...row, request_origin: requestOriginFromMetadata(parseJsonObject(row.metadata_json)),
+    })) as LedgerBodyRevision[];
   }
 
   getBodyRevision(id: string): LedgerBodyRevision {
@@ -2113,7 +2130,7 @@ export class LedgerStore {
     if (!row) {
       throw new Error(`Ledger body revision not found: ${id}`);
     }
-    return row;
+    return { ...row, request_origin: requestOriginFromMetadata(parseJsonObject(row.metadata_json)) };
   }
 
   getEvent(id: string): LedgerEvent {
@@ -2291,7 +2308,7 @@ export class LedgerStore {
       baseHash,
       newHash,
       input.next_body,
-      jsonStringify(input.metadata ?? {}),
+      jsonStringify(withRequestOriginMetadata(input.metadata ?? {})),
     );
     return { revision: this.getBodyRevision(revisionId), event };
   }
@@ -2586,12 +2603,12 @@ export class LedgerStore {
     evidence_id?: string | null;
     source: LedgerEventSource;
     payload: Record<string, unknown>;
-    project_id: string;
+    project_id?: string | null;
     occurred_at: number;
   }): LedgerEvent {
     const observedAt = Date.now();
     const occurrence = createCreationNonce();
-    const payload = { ...input.payload, event_nonce: occurrence };
+    const payload = withRequestOriginMetadata({ ...input.payload, event_nonce: occurrence });
     const id = createStableEventId({
       entity_type: input.entity_type,
       entity_id: input.entity_id,
@@ -2625,6 +2642,8 @@ export class LedgerStore {
       input.occurred_at,
       observedAt,
     );
+
+    if (!input.project_id) return this.getEvent(id);
 
     this.db.prepare(
       `INSERT INTO ledger_change_feed_state (

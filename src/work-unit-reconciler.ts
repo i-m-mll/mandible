@@ -1,15 +1,11 @@
+import { hasArchivedResponsibility } from "./work-unit-worker.js";
+import { mutateWorkUnit } from "./work-unit-history.js";
 import fs from "node:fs";
 import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import {
-  archiveFinishedWorkerThreads,
-  type CodexThreadArchiver,
-  type WorkerThreadLiveness,
-} from "./codex-thread-archive.js";
 import { observeRepoIdentities, checkoutRootsForRef } from "./repo-identity.js";
-import { freshSessionAliasResolver, resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
-import { withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
+import { freshSessionAliasResolver } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
 import { listLocalBranches } from "./work-scanner.js";
@@ -30,47 +26,30 @@ function workUnitDecisionState(db: Db, id: string): string {
 }
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
-// Runs every 60s and performs four reconciliation passes:
+// Runs every 60s and performs three reconciliation passes:
 // 1. Dead holder cleanup: clear assigned_session_id when its alias resolves to a stopped agent
-// 2. Worker thread archival: archive Codex worker threads whose bound units are resolved
-// 3. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
-// 4. Auto-commit detection: open → committed when branch has commits
+// 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
+// 3. Auto-commit detection: open → committed when branch has commits
 
 const RECONCILE_INTERVAL_MS = 60_000;
-const LOGGED_SAMPLE_LIMIT = 50;
-
-function sample<T>(items: T[]): T[] {
-  return items.slice(0, LOGGED_SAMPLE_LIMIT);
-}
-
 export interface WorkUnitReconcilerOptions {
-  archiver: CodexThreadArchiver;
   /** Replaces the shared rule, whose Codex answers come from lock scans made for each pass. */
   resolveSession?: WorkUnitSessionResolver;
-  threadLiveness?: WorkerThreadLiveness;
   now?: () => number;
 }
-
-/** A thread's liveness from a Codex lock scan made for this question. */
-const freshThreadLiveness: WorkerThreadLiveness = (db, threadId) =>
-  withFreshCodexTaskLiveness((read) => sessionAliasLiveness(db, threadId, { readCodexTaskLiveness: read }));
 
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
   private readonly resolveSession: WorkUnitSessionResolver | undefined;
-  private readonly archiver: CodexThreadArchiver;
-  private readonly threadLiveness: WorkerThreadLiveness;
   private readonly now: () => number;
   private readonly abort = new AbortController();
   private pass: Promise<void> | null = null;
   private lastUnknownHolders = 0;
 
-  constructor(logger: Logger, options: WorkUnitReconcilerOptions) {
+  constructor(logger: Logger, options: WorkUnitReconcilerOptions = {}) {
     this.logger = logger;
     this.resolveSession = options.resolveSession;
-    this.archiver = options.archiver;
-    this.threadLiveness = options.threadLiveness ?? freshThreadLiveness;
     this.now = options.now ?? Date.now;
   }
 
@@ -102,7 +81,6 @@ export class WorkUnitReconciler {
   private async runPasses(): Promise<void> {
     try {
       const holders = await this.reconcileDeadHolders();
-      await this.archiveFinishedWorkerThreads();
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = await this.reconcileAutoCommit();
 
@@ -132,12 +110,12 @@ export class WorkUnitReconciler {
     const db = getDb();
     const heldRows = () => db
       .prepare(
-        `SELECT id, assigned_session_id FROM work_units
+        `SELECT * FROM work_units
          WHERE assigned_session_id IS NOT NULL
            AND state IN ('open', 'committed')
          ORDER BY id`
       )
-      .all() as Array<{ id: string; assigned_session_id: string }>;
+      .all() as Array<Record<string, unknown> & { id: string; assigned_session_id: string }>;
     const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
       for (const row of heldRows()) probe(db, row.assigned_session_id);
     });
@@ -147,7 +125,7 @@ export class WorkUnitReconciler {
     let unknown = 0;
     for (const row of held) {
       const liveness = resolve(db, row.assigned_session_id)?.liveness ?? "unknown";
-      if (liveness === "stopped") dead.push(row);
+      if (liveness === "stopped" && !hasArchivedResponsibility(db, row)) dead.push(row);
       else if (liveness === "unknown") unknown++;
     }
     if (dead.length === 0) return { cleared: 0, unknown };
@@ -159,39 +137,11 @@ export class WorkUnitReconciler {
     const cleared = db.transaction(() => {
       let count = 0;
       for (const row of dead) {
-        count += Number(clearStmt.run(row.id, row.assigned_session_id).changes);
+        count += Number(mutateWorkUnit(db, row.id, () => clearStmt.run(row.id, row.assigned_session_id)).changes);
       }
       return count;
     })();
     return { cleared, unknown };
-  }
-
-  /**
-   * Pass 2: Archive Codex worker threads whose bound work units are resolved.
-   * A pass may work through a backlog, so it logs one summary per pass rather
-   * than one line per thread; `worker_thread_archives` keeps the per-thread
-   * record. A pass logs only when it archived a thread or a thread newly failed;
-   * retries of a known failure stay quiet while their recorded backoff paces them.
-   */
-  private async archiveFinishedWorkerThreads(): Promise<void> {
-    const outcome = await archiveFinishedWorkerThreads(getDb(), {
-      archiver: this.archiver,
-      liveness: this.threadLiveness,
-      resolveAlias: this.resolveSession ?? resolveSessionAlias,
-      now: this.now,
-    });
-    const newlyFailed = outcome.failed.filter(({ attempts }) => attempts === 1);
-    if (outcome.archived.length === 0 && newlyFailed.length === 0) return;
-    this.logger(newlyFailed.length > 0 ? "warn" : "info", "worker_thread_archive_pass", {
-      archived: outcome.archived.length,
-      recovered: outcome.archived.filter(({ prior_attempts }) => prior_attempts > 0).length,
-      failed: outcome.failed.length,
-      deferred: outcome.deferred.length,
-      archived_thread_ids: sample(outcome.archived.map(({ thread_id }) => thread_id)),
-      ...(newlyFailed.length > 0
-        ? { newly_failed: sample(newlyFailed.map(({ thread_id, error }) => ({ thread_id, error }))) }
-        : {}),
-    });
   }
 
   /**
@@ -283,11 +233,11 @@ export class WorkUnitReconciler {
         }
         if (authRequest.status === "matched") {
           if (authRequest.completed) {
-            resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+            mutateWorkUnit(db, row.id, () => resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id));
           }
           continue;
         }
-        count += Number(abandonStmt.run(row.id).changes);
+        count += Number(mutateWorkUnit(db, row.id, () => abandonStmt.run(row.id)).changes);
       }
       return count;
     })();
@@ -413,7 +363,7 @@ export class WorkUnitReconciler {
         if (workUnitDecisionState(db, row.id) !== state || JSON.stringify(readBranches(row.branch)) !== JSON.stringify(branches)) continue;
         const keys = identity.keysForRef(row.repo_id);
         const ahead = branches.some(branch => branch.repo_root === row.repo_id || [...identity.keysForRef(branch.repo_root)].some(key => keys.has(key)));
-        if (ahead) count += Number(db.prepare("UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ? AND state = 'open'").run(this.now(), row.id).changes);
+        if (ahead) count += Number(mutateWorkUnit(db, row.id, () => db.prepare("UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ? AND state = 'open'").run(this.now(), row.id)).changes);
       }
       return count;
     })();

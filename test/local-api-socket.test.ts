@@ -11,11 +11,16 @@ import { createLocalSocketServer, createServer, Router } from '../src/server.js'
 import { localApiSocketPath, startLocalApiSocket } from '../src/local-api-socket.js';
 import { SseManager } from '../src/sse.js';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy.js';
-import { addBinding, createUser, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
+import { addBinding, createUser, getOperator, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
+import { projectManagedProviderIdentity } from '../src/backends/mandible-transport.js';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin.js';
 import { registerUserRoutes } from '../src/routes/users.js';
 import { registerSessionRoutes } from '../src/routes/sessions.js';
 import { SessionRegistry } from '../src/registry.js';
+import { currentRequestOrigin } from '../src/request-origin.js';
+import { attributionForRequest } from '../src/client-auth/authz.js';
+import { LedgerStore } from '../src/ledger/store.js';
+import { createLedgerProject, createLedgerIssue } from './helpers/ledger-fixtures.js';
 import type { InstanceInfo } from '../src/types.js';
 
 let root: string; let db: Db; let auth: ClientAuthenticator; let router: Router;
@@ -46,7 +51,7 @@ beforeEach(async () => {
   router = new Router({ clientAuth: auth, instance: instance() });
   registerUserRoutes(router);
   router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity,
-    localManaged: req.local_managed_identity, managed: req.managed_client }), { fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+    localManaged: req.local_managed_identity, managed: req.managed_client, request_origin: currentRequestOrigin() }), { fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
   router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
     getStartupInfo: () => null, instance: instance(), clientAuth: auth };
@@ -63,6 +68,42 @@ afterEach(async () => {
 });
 
 describe('owner-only local API socket', () => {
+  it('carries a subprocess origin as metadata while its explicit human credential remains authoritative', async () => {
+    const operator = getOperator(db)!;
+    const credential = auth.mintApiToken(operator.id).token;
+    const project = createLedgerProject(db, root, { workRepoId: 'child-origin-fixture' });
+    const issue = createLedgerIssue(db, { project_id: project.project.id });
+    const store = new LedgerStore(db);
+    router.post('/api/child-origin', (req, res) => {
+      res.json(store.addComment(issue.id, { body: 'Child transport', attribution: attributionForRequest(db, req) }));
+    }, { fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    const origin = { provider: 'claude', provider_session_id: 'initiating-native-session' };
+    const env: NodeJS.ProcessEnv = { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, MANDIBLE_TRANSPORT: 'http',
+      MANDIBLE_TOKEN: credential, MANDIBLE_REQUEST_ORIGIN: JSON.stringify(origin), MANDIBLE_MANAGED_CLIENT: '1',
+      CODEX_THREAD_ID: 'daemon-native-session', CLAUDE_SESSION_ID: 'inherited-native-session' };
+    projectManagedProviderIdentity(env, 'shell');
+    delete env.MANDIBLE_MANAGED_CLIENT;
+    env.MANDIBLE_REQUEST_ORIGIN = JSON.stringify(origin);
+    const usersBefore = db.prepare('SELECT count(*) AS n FROM users').get();
+    const child = spawn('bash', ['-c', 'source "$1"; api_send POST /api/child-origin "{}"', 'child-origin', path.resolve('cli/api.sh')], { env, timeout: 10_000 });
+    let output = '', error = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { error += chunk; });
+    expect(await new Promise(resolve => child.once('close', resolve)), error).toBe(0);
+    const revision = store.listBodyRevisions({ entity_type: 'comment_body', entity_id: JSON.parse(output).id })[0];
+    expect(revision).toMatchObject({ actor_user_id: operator.id, evidence_method: 'api_token', request_origin: origin });
+    expect(db.prepare('SELECT count(*) AS n FROM users').get()).toEqual(usersBefore);
+    expect(db.prepare('SELECT id FROM sessions').all()).toEqual([]);
+    expect((await request('GET', '/api/read', { 'X-Mandible-Request-Origin': JSON.stringify(origin) })).body)
+      .toMatchObject({ identity: { user_id: operator.id }, managed: false, localManaged: null, request_origin: origin });
+    for (const explicit of ['null', 'malformed']) {
+      expect((await request('GET', '/api/read', { Authorization: `Bearer ${credential}`,
+        'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'executing-session',
+        'X-Mandible-Request-Origin': explicit }, false)).body)
+        .toMatchObject({ identity: { user_id: operator.id }, request_origin: null });
+    }
+  });
+
   it('registers a managed wrapper session before a provider ID exists and retains its agent on later calls', async () => {
     const agent = createUser(db, { slug: 'wrapper-agent', kind: 'agent', display_name: 'Wrapper Agent' });
     addBinding(db, agent.id, { binding_type: 'app_name', value: 'codex' });
@@ -75,6 +116,19 @@ describe('owner-only local API socket', () => {
     expect(later).toMatchObject({ status: 200, body: { identity: { user_id: agent.id, method: 'local_socket' },
       localManaged: { app_name: 'codex', session_id: 'wrapper-session-1' } } });
     expect((await request('GET', '/api/read', { ...headers, 'X-Mandible-Managed-App': 'claude' })).status).toBe(401);
+    expect((await request('GET', '/api/read', headers)).body.request_origin).toBeNull();
+    db.prepare('UPDATE sessions SET conversation_id = ? WHERE id = ?').run('exact-native-codex', 'wrapper-session-1');
+    expect((await request('GET', '/api/read', headers)).body.request_origin)
+      .toEqual({ provider: 'codex', provider_session_id: 'exact-native-codex' });
+    addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
+    expect((await request('GET', '/api/read', { ...headers,
+      'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'conflicting-native-codex' })).body.request_origin).toBeNull();
+    db.prepare(`INSERT INTO console_sessions (id, label, command, created_at, updated_at, mandible_session_id, provider_session_id)
+      VALUES ('console-binding', 'Exact binding', 'codex', 1, 1, 'wrapper-session-1', 'different-recorded-native')`).run();
+    expect((await request('GET', '/api/read', headers)).body.request_origin).toBeNull();
+    db.prepare("UPDATE console_sessions SET provider_session_id = 'exact-native-codex' WHERE id = 'console-binding'").run();
+    expect((await request('GET', '/api/read', headers)).body.request_origin)
+      .toEqual({ provider: 'codex', provider_session_id: 'exact-native-codex' });
   });
   it('keeps a wrapper-launched Claude session and its claim intact when the channel server re-registers it', async () => {
     // Issue f52d4dd: the channel server relabeled the session `claude-channel`
@@ -143,7 +197,8 @@ describe('owner-only local API socket', () => {
     const envFile = path.join(root, 'claude-env.sh');
     const runHook = async (hook: string, claudePid: number, conversation: string) => {
       const child = spawn('bash', [path.resolve(`hooks/${hook}.sh`)], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
-        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile } });
+        MANDIBLE_SESSION_ID: wrapped, CLAUDE_CODE_SESSION_ID: conversation, CLAUDE_PID: String(claudePid), CLAUDE_ENV_FILE: envFile,
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
       let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
       child.stdin.end(JSON.stringify({ session_id: conversation, cwd: root }));
       expect(await new Promise((resolve) => child.once('close', resolve)), stderr).toBe(0);
@@ -152,10 +207,35 @@ describe('owner-only local API socket', () => {
 
     await runHook('session-start', wrapperPid, 'coordinator-conversation');
     expect(row(wrapped)).toEqual({ pid: wrapperPid, conversation_id: 'coordinator-conversation', status: 'active' });
-    expect(fs.existsSync(envFile)).toBe(false);
+    const projectedIdentity = async () => {
+      const child = spawn('bash', ['-c', 'source "$1"; printf "%s|%s|%s|%s" "${MANDIBLE_SESSION_ID:-}" "${CLAUDE_CODE_SESSION_ID:-}" "${CLAUDE_SESSION_ID:-}" "${CODEX_THREAD_ID:-}"', 'origin-test', envFile],
+        { env: { ...process.env, MANDIBLE_SESSION_ID: wrapped, CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex' } });
+      let output = ''; child.stdout.on('data', chunk => { output += chunk; });
+      expect(await new Promise(resolve => child.once('close', resolve))).toBe(0);
+      return output;
+    };
+    expect(await projectedIdentity()).toBe(`${wrapped}|coordinator-conversation||`);
 
     await runHook('session-start', nestedPid, 'nested-conversation');
-    expect(fs.readFileSync(envFile, 'utf8')).toBe('unset MANDIBLE_SESSION_ID\n');
+    expect(await projectedIdentity()).toBe('|nested-conversation||');
+    const project = createLedgerProject(db, root, { workRepoId: 'origin-fixture' });
+    const issue = createLedgerIssue(db, { project_id: project.project.id });
+    router.post('/api/origin-write', (req, res) => {
+      const comment = new LedgerStore(db).addComment(issue.id, { body: 'After native hook', actor_type: 'mandible_user',
+        author_display: 'Agent', attribution: attributionForRequest(db, req) });
+      res.json({ id: comment.id });
+    }, { fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    const shell = spawn('bash', ['-c', 'source "$1"; source "$2"; api_send POST /api/origin-write "{}"', 'origin-cli', envFile, path.resolve('cli/api.sh')],
+      { env: { ...process.env, MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_SESSION_ID: wrapped,
+        CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '',
+        MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
+    let writeOutput = ''; let writeError = '';
+    shell.stdout.on('data', chunk => { writeOutput += chunk; }); shell.stderr.on('data', chunk => { writeError += chunk; });
+    expect(await new Promise(resolve => shell.once('close', resolve)), writeError).toBe(0);
+    const commentId = JSON.parse(writeOutput).id;
+    const revision = new LedgerStore(db).listBodyRevisions({ entity_type: 'comment_body', entity_id: commentId })[0];
+    expect(revision.request_origin).toEqual({ provider: 'claude', provider_session_id: 'nested-conversation' });
+    expect(revision.actor_user_id).toBe(agent.id);
     await runHook('session-end', nestedPid, 'nested-conversation');
     expect(row(wrapped)).toEqual({ pid: wrapperPid, conversation_id: 'coordinator-conversation', status: 'active' });
     expect(row('nested-conversation')).toEqual({ pid: nestedPid, conversation_id: 'nested-conversation', status: 'ended' });

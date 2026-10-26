@@ -1,4 +1,5 @@
-import { authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
+import { currentRequestOrigin, requestOriginForRequest } from "./request-origin.js";
+import { authRequestSnapshot, authSnapshotDigest, AUTH_SNAPSHOT_SHAPE_V212 } from "./auth-request-snapshot.js";
 import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
@@ -8,6 +9,13 @@ import type {
   AuthRequestLifecycleEventType,
   AuthRequestStatus,
 } from "./types.js";
+
+const AUTH_LIFECYCLE_HISTORY_COLUMNS_V212 = [
+  "id", "auth_request_id", "revision", "event_type", "prior_status", "next_status",
+  "snapshot_json", "snapshot_sha256", "prior_snapshot_json", "prior_snapshot_sha256",
+  "actor_user_id", "evidence_method", "evidence_id", "credential_id", "reason", "related_request_id",
+  "custody_work_unit_id", "custody_generation", "authority_path", "occurred_at",
+] as const;
 
 export function appendAuthLifecycleEvent(
   db: Db,
@@ -20,15 +28,20 @@ export function appendAuthLifecycleEvent(
     reason?: string | null;
     relatedRequestId?: string | null;
     priorSnapshot?: string | null;
+    historyShape?: "v212" | "current";
     occurredAt: number;
   },
 ): AuthRequestLifecycleEvent {
-  const snapshot = authRequestSnapshot(db, input.requestId);
+  const snapshot = authRequestSnapshot(db, input.requestId, input.historyShape === "v212" ? AUTH_SNAPSHOT_SHAPE_V212 : undefined);
   const revision = Number((db.prepare(
     "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?",
   ).get(input.requestId) as { revision: number }).revision);
+  const origin = input.actor?.authority_path === "system"
+    ? authRequestInitiatingOrigin(db, input.requestId) : currentRequestOrigin();
   const event: AuthRequestLifecycleEvent = {
     id: randomUUID(),
+    request_origin_json: origin ? JSON.stringify(origin) : null,
+    request_origin: origin,
     auth_request_id: input.requestId,
     revision,
     event_type: input.eventType,
@@ -49,17 +62,11 @@ export function appendAuthLifecycleEvent(
     authority_path: input.actor?.authority_path ?? (input.actor ? "custodian" : "system"),
     occurred_at: input.occurredAt,
   };
-  db.prepare(`INSERT INTO auth_request_lifecycle_events (
-    id, auth_request_id, revision, event_type, prior_status, next_status,
-    snapshot_json, snapshot_sha256, prior_snapshot_json, prior_snapshot_sha256,
-    actor_user_id, evidence_method, evidence_id, credential_id, reason,
-    related_request_id, custody_work_unit_id, custody_generation, authority_path, occurred_at
-  ) VALUES (
-    @id, @auth_request_id, @revision, @event_type, @prior_status, @next_status,
-    @snapshot_json, @snapshot_sha256, @prior_snapshot_json, @prior_snapshot_sha256,
-    @actor_user_id, @evidence_method, @evidence_id, @credential_id, @reason,
-    @related_request_id, @custody_work_unit_id, @custody_generation, @authority_path, @occurred_at
-  )`).run(event);
+  const columns = input.historyShape === "v212" ? AUTH_LIFECYCLE_HISTORY_COLUMNS_V212
+    : ["request_origin_json" as const, ...AUTH_LIFECYCLE_HISTORY_COLUMNS_V212];
+  db.prepare(`INSERT INTO auth_request_lifecycle_events (${columns.join(",")})
+    VALUES (${columns.map(column => `@${column}`).join(",")})`)
+    .run(Object.fromEntries(columns.map(column => [column, event[column]])));
   return event;
 }
 
@@ -73,7 +80,8 @@ function rowCustody(db: Db, requestId: string): { work_unit_id: string; custody_
 export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestLifecycleEvent[] {
   return db.prepare(
     "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision",
-  ).all(requestId) as AuthRequestLifecycleEvent[];
+  ).all(requestId).map((row: AuthRequestLifecycleEvent) => ({ ...row, request_origin_json: row.request_origin_json ?? null,
+    request_origin: row.request_origin_json ? JSON.parse(row.request_origin_json) : null })) as AuthRequestLifecycleEvent[];
 }
 
 /**
@@ -104,4 +112,11 @@ export function listAuthExecutionAttempts(db: Db, requestId: string): AuthExecut
       failure_reason: failed ? describeAuthExecutionFailure(row.error ?? row.output ?? row.reason, row.exit_code) : null,
     };
   });
+}
+
+/** The initiating session is serialized with submission, never inferred from the daemon. */
+export function authRequestInitiatingOrigin(db: Db, requestId: string) {
+  const row = db.prepare("SELECT request_origin_json FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND event_type = 'submitted' ORDER BY revision LIMIT 1")
+    .get(requestId) as { request_origin_json: string | null } | undefined;
+  return requestOriginForRequest({ ambient_identity: row?.request_origin_json ? JSON.parse(row.request_origin_json) : null });
 }

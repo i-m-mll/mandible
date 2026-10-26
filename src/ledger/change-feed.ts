@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { CURRENT_SCHEMA_VERSION, type Db } from "../db.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { requestOriginFromMetadata } from "../request-origin.js";
 
 export const LEDGER_CHANGE_FEED_SCHEMA = "mandible-ledger-change-feed@1";
 export const DEFAULT_LEDGER_CHANGE_LIMIT = 100;
@@ -239,6 +240,7 @@ export function readLedgerChangeFeed(db: Db, input: {
       occurred_at: row.occurred_at,
       observed_at: row.observed_at,
       recorded_at: row.recorded_at,
+      request_origin: requestOriginFromMetadata(parseJsonObject(row.payload_json)),
       evidence: {
         actor_id: row.actor_id,
         actor_type: row.actor_type,

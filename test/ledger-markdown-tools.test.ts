@@ -59,14 +59,14 @@ describe("ledger escaped Markdown audit and normalization", () => {
       created_at: 1100,
     });
 
+    const eventsBefore = db.prepare("SELECT id, event_type FROM ledger_events ORDER BY rowid").all();
     const result = auditEscapedMarkdownBodies(db, { issue_refs: [issue.id] });
 
     expect(result.dry_run).toBe(true);
     expect(result.counts).toEqual({ issue_bodies: 1, comments: 1, changed: 2 });
     expect(store.getIssue(issue.id).body).toBe("First\\n\\nSecond\\n- item");
     expect(store.getComment(comment.id).body).toBe("Comment\\n\\nDetails");
-    expect(db.prepare("SELECT event_type FROM ledger_events ORDER BY occurred_at").all())
-      .toEqual([{ event_type: "issue.created" }, { event_type: "comment.created" }]);
+    expect(db.prepare("SELECT id, event_type FROM ledger_events ORDER BY rowid").all()).toEqual(eventsBefore);
   });
 
   it("normalizes only through explicit apply targets and records normalization events", () => {

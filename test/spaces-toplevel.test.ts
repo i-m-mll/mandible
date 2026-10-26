@@ -49,7 +49,9 @@ describe("spaces v86 nullable project_id schema (issue 812df41)", () => {
       const top = createSpace(db, { title: "Global" });
       expect(top.project_id).toBeNull();
       // Project-scoped Space still works.
-      const scoped = createSpace(db, { project_id: projectId, title: "Scoped" });
+      db.prepare("INSERT INTO spaces (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run("scoped", projectId, "Scoped", now(), now());
+      const scoped = getSpace(db, "scoped")!;
       expect(scoped.project_id).toBe(projectId);
       // RESTRICT still guards a project that owns a Space.
       expect(() => db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(projectId)).toThrow();

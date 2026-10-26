@@ -23,7 +23,7 @@ if (!vitestPath) {
 const preparationStartedAt = performance.now();
 const runtime = createTestRuntime();
 let preparationMs = 0;
-let schemaPreparationMs = 0;
+let fixturePreparationMs = 0;
 const packetPath = path.join(runtime.env.MANDIBLE_TEST_RUNTIME_ROOT, "timing.json");
 runtime.env.MANDIBLE_TEST_TIMING_PACKET = packetPath;
 const workerTimingPath = path.join(runtime.env.MANDIBLE_TEST_RUNTIME_ROOT, 'worker-lifecycles.jsonl');
@@ -42,11 +42,11 @@ let lifecycles = [];
 let lifecycleRaw;
 let cleanupMs;
 try {
-  const schemaStartedAt = performance.now();
-  execFileSync(runtime.env.MANDIBLE_RUNTIME, [path.join(scriptDir, 'prepare-test-db.ts')], {
+  const fixturesStartedAt = performance.now();
+  execFileSync(runtime.env.MANDIBLE_RUNTIME, [path.join(scriptDir, 'prepare-test-fixtures.ts')], {
     cwd: repoRoot, env: { ...runtime.env, VITEST: 'true' }, stdio: 'inherit', timeout: 15_000,
   });
-  schemaPreparationMs = performance.now() - schemaStartedAt;
+  fixturePreparationMs = performance.now() - fixturesStartedAt;
   preparationMs = performance.now() - preparationStartedAt;
   childStartedAt = performance.now();
   child = spawn(runtime.env.MANDIBLE_RUNTIME, [vitestPath, ...process.argv.slice(2)], {
@@ -92,12 +92,13 @@ if (packet && errors.length === 0) {
     const completed = completeTimingPacket(packet, {
       wall_ms: performance.now() - commandStartedAt,
       preparation_ms: preparationMs,
-      schema_preparation_ms: schemaPreparationMs,
+      fixture_preparation_ms: fixturePreparationMs,
       child_ms: childMs,
       cleanup_ms: cleanupMs,
       child_overhead_ms: Math.max(0, childMs - packet.vitest_wall_ms),
       reporter_to_settlement_ms: Number(childSettledAtNs - BigInt(packet.reporter_finished_at_ns)) / 1e6,
     }, lifecycles, process.env.MANDIBLE_TIMING_GATE === "1");
+    completed.toolchain = runtime.toolchain;
     if (process.env.MANDIBLE_TIMING_JSON) {
       writeFileSync(process.env.MANDIBLE_TIMING_JSON, `${JSON.stringify(completed, null, 2)}\n`);
     }
@@ -135,7 +136,7 @@ if (errors.length) {
       runtime_root: runtime.env.MANDIBLE_TEST_RUNTIME_ROOT,
       runner: { pid: process.pid, parent_pid: process.ppid, uid: process.getuid(), runtime: process.execPath },
       child: { captured_pid: capturedChildPid, observed_pid: child?.pid, exit_code: child?.exitCode, signal_code: child?.signalCode },
-      command: { cwd: repoRoot, argv: process.argv, runtime: runtime.env.MANDIBLE_RUNTIME },
+      command: { cwd: repoRoot, argv: process.argv, runtime: runtime.env.MANDIBLE_RUNTIME, toolchain: runtime.toolchain },
       observed_wall_ms: performance.now() - commandStartedAt,
       child_started_ms: childStartedAt,
       child_settled: childSettledAtNs !== undefined,

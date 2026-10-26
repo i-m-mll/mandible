@@ -1,3 +1,5 @@
+import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
+import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { preserveLegacyDocuments } from "./spaces/history.js";
@@ -2190,6 +2192,8 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 217, name: "issue_event_read_indexes", statements: [...ISSUE_EVENT_READ_INDEX_SQL] },
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
+  { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
+  { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
 ];
 
 /**
@@ -2456,7 +2460,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));
     const recovery = recoverArtifactCustody(db, { retain_git_commit: retainArtifactCommit });
     if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
-    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json` });
+    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json`, history_shape: 'v184' });
     found = 184;
   }
   {

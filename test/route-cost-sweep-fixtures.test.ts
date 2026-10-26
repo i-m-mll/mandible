@@ -5,6 +5,7 @@ import { afterEach, expect, it } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import { observeStableSourceAliasExtent } from "../src/conversations/source-observer.ts";
 import { planRoute, readFixtures, restoreSweepSnapshot, sourceIsIndexed } from "../scripts/route-cost-sweep.ts";
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from "../src/conversations/retention-contract.js";
 
 const roots: string[] = [];
 function tempRoot(): string {
@@ -149,6 +150,9 @@ it("requires usable settings, destination routes, and enough distinct per-pass e
       CREATE TABLE webhook_events (id TEXT, status TEXT);
     `);
     expect(plan("GET", "/api/settings/:key")).toEqual({ kind: "skip", reason: "no generic settings keys in the ledger" });
+    expect(plan("PUT", "/api/settings/child-retention")).toEqual({ kind: "exercise", requests: [
+      { label: "child retention defaults", url: "/api/settings/child-retention", body: DEFAULT_CHILD_RETENTION_SETTINGS },
+    ] });
     db.exec("INSERT INTO settings VALUES ('theme', 'x'), ('app_rail_order', 'xx'), ('managed_chat_defaults', 'xxx')");
     const settings = plan("GET", "/api/settings/:key");
     expect(settings.kind).toBe("exercise");

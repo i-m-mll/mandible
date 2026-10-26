@@ -1054,7 +1054,8 @@ describe("v212 failed execution state", () => {
       insert.run("failed-request", "Failed merge", 1, signingFailure, signingFailure);
       insert.run("merged-request", "Merged", 0, "merged", null);
       for (const id of ["failed-request", "merged-request"]) {
-        appendAuthLifecycleEvent(db, { requestId: id, eventType: "completed", priorStatus: "executing", nextStatus: "completed", occurredAt: 2 });
+        appendAuthLifecycleEvent(db, { requestId: id, eventType: "completed", priorStatus: "executing", nextStatus: "completed", occurredAt: 2,
+          historyShape: "v212" });
       }
       // Delivery and acknowledgement change the row without a lifecycle revision.
       db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1', updated_at = 6 WHERE id = 'failed-request'").run();

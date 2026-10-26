@@ -1,3 +1,4 @@
+import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -20,6 +21,7 @@ import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
+import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -62,6 +64,7 @@ export interface RequestLike {
   query: Record<string, string>;
   body: unknown;
   ambient_identity?: AmbientProviderIdentity | null;
+  request_origin?: unknown;
   local_managed_identity?: LocalManagedIdentity | null;
   managed_client?: boolean;
   // Issue 708dc4c — the authenticated client identity resolved by the
@@ -120,6 +123,8 @@ export interface UnattributedWriteRecord {
  * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
+  mutationAttribution?(request: RequestLike): import("./ledger/types.js").LedgerAttributionInput | null;
+  resolveManagedOrigin?(identity: LocalManagedIdentity): import("./request-origin.js").ManagedRequestOrigin;
   localBrowserIdentity?(): ResolvedClientIdentity | null;
   localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean, localManaged?: LocalManagedIdentity | null): ResolvedClientIdentity | null;
   localSocketBootstrapAllowed?(): boolean;
@@ -240,6 +245,7 @@ export interface RouterInvokeRequest {
   url: string;
   body?: unknown;
   ambient_identity?: unknown;
+  request_origin?: unknown;
   // Issue 708dc4c — bearer/capability token presented over an in-process or
   // file-RPC invocation, and the transport used to present it.
   credential?: string | null;
@@ -509,6 +515,8 @@ export class Router implements RouteRegistrar {
       input.credential,
       input.transport ?? "in-process",
       input.signal,
+      undefined,
+      Object.hasOwn(input, "request_origin") ? { request_origin: input.request_origin } : {},
     );
     if (!handled) {
       return { status: 404, body: { error: "not_found" } };
@@ -573,6 +581,7 @@ export class Router implements RouteRegistrar {
           managed: managedClientFromHeaders(req.headers),
           localManaged,
         },
+        requestOriginEnvelopeFromHeaders(req.headers),
       );
     } finally {
       req.removeListener("aborted", abort);
@@ -597,6 +606,7 @@ export class Router implements RouteRegistrar {
       managed?: boolean;
       localManaged?: LocalManagedIdentity | null;
     },
+    originEnvelope: { request_origin?: unknown } = {},
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -731,6 +741,7 @@ export class Router implements RouteRegistrar {
         query,
         body,
         ambient_identity: requestAmbientIdentity,
+        ...originEnvelope,
         local_managed_identity: transport === "local-socket" ? httpAuth?.localManaged ?? null : null,
         managed_client: transport === "local-socket" && httpAuth?.managed === true,
         client_identity: clientIdentity,
@@ -739,7 +750,10 @@ export class Router implements RouteRegistrar {
       };
 
       try {
-        await route.handler(request, response);
+        const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
+        await withRequestOrigin(origin, () => withLedgerMutationActor({
+          attribution: this.options.clientAuth?.mutationAttribution?.(request) ?? null,
+        }, () => route.handler(request, response)));
       } catch (error) {
         if (error instanceof OperatorNotConfiguredError) {
           response.status(409).json({
@@ -823,6 +837,13 @@ function serializeFileRpcPolicy(policy: FileRpcPolicy): "allow" | "deny" | "cond
 // instance-policy.ts. This wrapper only names the route-pattern call site; do
 // not reintroduce a local copy of either table here.
 
+
+function requestOriginEnvelopeFromHeaders(headers: http.IncomingHttpHeaders): { request_origin?: unknown } {
+  const value = headerValue(headers["x-mandible-request-origin"]);
+  if (value === undefined) return {};
+  try { return { request_origin: JSON.parse(value) }; }
+  catch { return { request_origin: null }; }
+}
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
   const provider = headerValue(headers["x-mandible-ambient-provider"]);

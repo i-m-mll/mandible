@@ -340,6 +340,8 @@ export interface AuthLifecycleActor {
 }
 
 export interface AuthRequestLifecycleEvent {
+  request_origin_json?: string | null;
+  request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
   auth_request_id: string;
   revision: number;

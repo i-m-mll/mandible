@@ -15,7 +15,7 @@ import type { SessionExecutionObservation } from "./contracts.js";
  * this module, `src/routes/issues.ts` compared `sessions.status` directly and
  * understood only the first form, so a provider thread id — the id a Codex
  * coordinator actually has — resolved to nothing and was reported as a dead
- * holder. `src/codex-thread-archive.ts` understood all four but kept its own
+ * holder. The original worker archive pass understood all four but kept its own
  * copy of the rule, and `src/ledger/graph-adapter.ts` kept a third copy of the
  * status list.
  *

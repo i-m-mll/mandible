@@ -8,6 +8,7 @@ import type { Db } from "./db.js";
 import { protectedBranchNames } from "./protected-branches.js";
 import { resolveProjectRefAsync, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
+import { withPreviewLifecycle, previewWorktreeCustodyReason } from "../scripts/preview-custody.mjs";
 import { parseJsonObject } from "./row-coerce.js";
 import {
   classifyIgnored,
@@ -762,7 +763,15 @@ export function trashBranch(
   input: TrashCreateInput,
   now = Date.now(),
 ): Promise<TrashRemoval> {
-  return serialized(() => trashBranchNow(db, input, now));
+  return serialized(async () => {
+    let entered = false;
+    try {
+      return await withPreviewLifecycle(input.branch, () => { entered = true; return trashBranchNow(db, input, now); });
+    } catch (error) {
+      if (entered || error instanceof TrashServiceError) throw error;
+      throw new TrashServiceError(`preview custody check failed: ${error instanceof Error ? error.message : String(error)}`, "preview_custody_unavailable", 409);
+    }
+  });
 }
 
 async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Promise<TrashRemoval> {
@@ -808,6 +817,8 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
       { worktree_path: worktree.path },
     );
   }
+  const custody = await previewWorktreeCustodyReason(branch, worktree?.path ?? null);
+  if (custody) throw new TrashServiceError(`refusing to trash preview worktree: ${custody}`, "preview_worktree_owned", 409);
   const active = db.prepare(
     `SELECT id FROM trash_entries
       WHERE project_id = ? AND branch = ?

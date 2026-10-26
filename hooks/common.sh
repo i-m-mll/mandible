@@ -5,6 +5,15 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../cli" && pwd)/api.sh"
 INPUT=$(cat)
 provider_session_id=$(jq -r '.session_id // empty' <<< "$INPUT")
 
+# The provider payload identifies this hook's run exactly, even when a nested
+# Claude inherits another session's provider markers.
+unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID MANDIBLE_REQUEST_ORIGIN
+if [[ -n "$provider_session_id" ]]; then
+  export CLAUDE_CODE_SESSION_ID="$provider_session_id"
+else
+  unset CLAUDE_CODE_SESSION_ID
+fi
+
 # A nested run inherits its parent's MANDIBLE_SESSION_ID; it keys on its own
 # provider session instead (api_scope_inherited_identity).
 inherited_session_id="${MANDIBLE_SESSION_ID:-}"

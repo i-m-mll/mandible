@@ -1,3 +1,6 @@
+import { withLedgerMutationActor } from "./ledger/mutation-history.js";
+import { withRequestOrigin } from "./request-origin.js";
+import { mutateWorkUnit } from "./work-unit-history.js";
 import { authDependencies } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
@@ -92,12 +95,8 @@ import {
   saveProtectedBaseAudit,
   unseenBaseAuditFindings,
 } from "./protected-base-audit.js";
-import {
-  defaultCodexThreadArchiver,
-  listCompletedWorkerThreadArchiveCandidates,
-  safeArchiveCodexThread,
-  type CodexThreadArchiver,
-} from "./codex-thread-archive.js";
+import { scheduleResolvedWorkerArchive } from "./conversations/retention.js";
+import type { ConversationSource } from "./parsers/types.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { resolveId } from "./entity-refs.js";
@@ -140,7 +139,7 @@ import { broadcast as defaultBroadcast } from "./sse.js";
 import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
-import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from "./auth-lifecycle.js";
+import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -389,11 +388,7 @@ export interface AuthMergeCheckReport {
 export interface CodexArchiveReplayResult {
   request_id: string;
   archived: number;
-  // Issue 75f52ac — count of candidates that HAD a provider handle but whose
-  // codex archive CLI attempt failed (error/timeout). Distinct from
-  // "definitively not archivable" candidates, which are filtered out of the
-  // candidate list before any attempt. The Stage 3 finalizer step propagates a
-  // non-zero count as a step failure so the bounded retry re-attempts it.
+  // Scheduling failures only; native archive outcomes belong to child retention.
   attempt_failures: number;
   candidates: Array<{
     provider_session_id: string;
@@ -416,7 +411,6 @@ export interface AuthQueueOptions {
   hookManager?: AuthHookManager;
   autoApprover?: AuthAutoApprover;
   clearanceManager?: AuthClearanceManager;
-  codexThreadArchiver?: CodexThreadArchiver;
   // Issue 93d978e — override the abandoned-work-unit merge-scan retention
   // window (default 30 days) so tests can exercise the retirement sweep.
   workUnitAbandonedScanRetentionMs?: number;
@@ -592,7 +586,6 @@ export class AuthQueue {
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
   private readonly clearanceManager?: AuthClearanceManager;
-  private readonly codexThreadArchiver: CodexThreadArchiver;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
   private readonly workUnitAbandonedScanRetentionMs: number;
@@ -669,7 +662,6 @@ export class AuthQueue {
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
     this.clearanceManager = options.clearanceManager;
-    this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
@@ -2027,14 +2019,16 @@ export class AuthQueue {
           issues: request.issues ? JSON.stringify(request.issues) : null
         });
         insertAuthRequestActions(this.db, request, actions, now);
-        if (payload.space_publication_id) bindAuthPublication(this.db, request, payload.space_publication_id);
+        if (payload.space_publication_id) withLedgerMutationActor({ actor_type: "mandible_user",
+          attribution: { user_id: actor.user_id, evidence_method: actor.evidence_method, evidence_id: actor.evidence_id } },
+          () => bindAuthPublication(this.db, request, payload.space_publication_id!));
         if (custody) {
-          const bound = this.db.prepare(
+          const bound = mutateWorkUnit(this.db, custody.id, () => this.db.prepare(
             `UPDATE work_units SET auth_request_id = ?
            WHERE id = ? AND state = 'committed' AND resolved_at IS NULL
              AND owner_user_id = ? AND owner_credential_id = ? AND custody_generation = ?
              AND (auth_request_id IS NULL OR auth_request_id = ?)`,
-          ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null);
+          ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null));
           if (bound.changes !== 1) {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
           }
@@ -5269,7 +5263,13 @@ export class AuthQueue {
     }
   }
 
-  private async executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+  private executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.executeOriginBoundRequest(request, settleClearance)));
+  }
+
+  private async executeOriginBoundRequest(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
@@ -5735,7 +5735,13 @@ export class AuthQueue {
    * was outstanding. Idempotent: actions already applied are no longer
    * `staged`, so a repeat call is a no-op.
    */
-  private async releaseWithheldClosures(request: AuthRequest): Promise<void> {
+  private releaseWithheldClosures(request: AuthRequest): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.releaseOriginBoundClosures(request)));
+  }
+
+  private async releaseOriginBoundClosures(request: AuthRequest): Promise<void> {
     const current = this.getRequestById(request.id);
     if (!current || current.status !== "completed" || current.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(current))) return;
     const execution = this.executionToken(current.id);
@@ -6256,12 +6262,7 @@ export class AuthQueue {
         name: "archive_worker_threads",
         run: async () => {
           const archiveResult = await this.archiveCompletedWorkerThreads(finalized);
-          // Issue 75f52ac — a candidate with a provider handle whose codex
-          // archive CLI attempt failed (error/timeout) must not silently resolve
-          // this step: propagate it as a step failure so the FinalizerQueue's
-          // bounded retry (FINALIZER_MAX_ATTEMPTS, then failed-and-surfaced) owns
-          // it. Handle-less "definitively not archivable" candidates are already
-          // excluded from the list, so any attempt failure here is retryable.
+          // This step schedules the shared policy; native reconciliation has its own persisted deadline.
           if (archiveResult.attempt_failures > 0) {
             throw new Error(
               `codex thread archive failed for ${archiveResult.attempt_failures} candidate(s)`,
@@ -6868,7 +6869,13 @@ export class AuthQueue {
     }
   }
 
-  private async applyLedgerCompletionForRequest(request: AuthRequest): Promise<void> {
+  private applyLedgerCompletionForRequest(request: AuthRequest): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.applyOriginBoundLedgerCompletion(request)));
+  }
+
+  private async applyOriginBoundLedgerCompletion(request: AuthRequest): Promise<void> {
     const observed = this.observationToken(request.id, request);
     if ((await this.successfulMergeEvidenceFailure(request))) return;
     this.assertObservation(request.id, observed);
@@ -6921,7 +6928,8 @@ export class AuthQueue {
     if ((await this.successfulMergeEvidenceFailure(request))) return;
     this.assertObservation(request.id, observed);
     const execution = this.executionToken(request.id);
-    await this.applyDeferredLedgerActions(request, () => this.assertExecution(request.id, execution));
+    await withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+      () => this.applyDeferredLedgerActions(request, () => this.assertExecution(request.id, execution)));
   }
 
   private async applyDeferredLedgerActions(request: AuthRequest, guard: () => void): Promise<void> {
@@ -6957,7 +6965,8 @@ export class AuthQueue {
       }
       try {
         this.db.transaction(() => {
-          const outcome = this.applyDeferredLedgerAction(request, action);
+          const outcome = withRequestOrigin(action.request_origin ?? null,
+            () => this.applyDeferredLedgerAction(request, action));
           if (!action.id.startsWith("legacy:")) {
             this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
           }
@@ -7429,7 +7438,7 @@ export class AuthQueue {
       .all(completed.id) as Array<{ id: string }>;
 
     for (const row of byAuthId) {
-      resolveStmt.run(now, completed.id, row.id);
+      mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
       resolvedIds.add(row.id);
     }
 
@@ -7447,7 +7456,7 @@ export class AuthQueue {
           !resolvedIds.has(row.id) &&
           this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)
         ) {
-          resolveStmt.run(now, completed.id, row.id);
+          mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
           resolvedIds.add(row.id);
         }
       }
@@ -7472,7 +7481,7 @@ export class AuthQueue {
         );
         for (const row of matching) {
           if (!resolvedIds.has(row.id)) {
-            resolveStmt.run(now, completed.id, row.id);
+            mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
             resolvedIds.add(row.id);
           }
         }
@@ -7504,7 +7513,7 @@ export class AuthQueue {
 
       for (const row of byLedgerIssue) {
         if (!resolvedIds.has(row.id)) {
-          resolveStmt.run(now, completed.id, row.id);
+          mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
           resolvedIds.add(row.id);
         }
       }
@@ -7570,9 +7579,9 @@ export class AuthQueue {
       for (const row of scan.matches) {
         if (!resolvedIds.has(row.id)) {
           if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
-            recoverClosedMergedStmt.run(now, completed.id, row.id);
+            mutateWorkUnit(this.db, row.id, () => recoverClosedMergedStmt.run(now, completed.id, row.id));
           } else {
-            recoverMergedStmt.run(now, row.id);
+            mutateWorkUnit(this.db, row.id, () => recoverMergedStmt.run(now, row.id));
           }
           resolvedIds.add(row.id);
         }
@@ -7972,18 +7981,14 @@ export class AuthQueue {
     }
     const logSummary = options.logSummary ?? true;
     try {
-      const candidates = await listCompletedWorkerThreadArchiveCandidates(this.db, completed);
+      const candidates = this.db.prepare(`SELECT id AS work_unit_id,COALESCE(ledger_issue_id,issue_id) AS issue_id,
+        worker_provider,worker_provider_session_id AS provider_session_id FROM work_units
+        WHERE state='resolved' AND auth_request_id=? AND worker_provider IS NOT NULL AND worker_provider_session_id IS NOT NULL`)
+        .all(completed.id) as { work_unit_id: string; issue_id: string; worker_provider: ConversationSource; provider_session_id: string }[];
       for (const candidate of candidates) {
-        const archived = await safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
-        if (archived) {
-          result.archived += 1;
-        } else {
-          // Every candidate has a provider handle (listing filters out the
-          // handle-less "definitively not archivable" rows), so a false result
-          // means the codex archive CLI attempt failed (error/timeout).
-          result.attempt_failures += 1;
-        }
-        result.candidates.push({ ...candidate, archived });
+        scheduleResolvedWorkerArchive(this.db, candidate.worker_provider, candidate.provider_session_id, this.now());
+        result.candidates.push({ provider_session_id: candidate.provider_session_id, work_unit_id: candidate.work_unit_id,
+          issue_id: candidate.issue_id, console_session_id: null, mandible_session_id: null, archived: false });
       }
       if (logSummary && result.archived > 0) {
         authLog("info", "auth_completed_worker_threads_archived", {

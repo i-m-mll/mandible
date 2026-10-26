@@ -58,6 +58,7 @@ export const METADATA_BACKUP_TABLES = [
   // observations. None of it is in a provider transcript. Control state keeps
   // the generation counters that outbox and usage rows are keyed by.
   "conversation_archive_states",
+  "conversation_retention_state",
   "conversation_runtime_settings",
   "conversation_control_state",
   "conversation_control_journal",

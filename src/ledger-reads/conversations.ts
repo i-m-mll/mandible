@@ -1,12 +1,13 @@
 import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
 import { createHash } from "node:crypto";
 import type { Db } from "../db.js";
+import type { RetentionNativeProjection } from "../conversations/retention-contract.js";
 import { MAX_ORDERED_SIDEBAR_IDS } from "../host-user-preferences.js";
 import { resolveConversationId } from "../conversations/identity.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
 import type { ConversationSidebarProject, ConversationSidebarRow, ConversationSidebarSort } from "../conversations/sidebar-projection.js";
 
-export interface ConversationRow {
+export interface ConversationRow extends Partial<RetentionNativeProjection> {
   id: string;
   source: string;
   source_path: string;

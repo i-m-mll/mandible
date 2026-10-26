@@ -112,6 +112,7 @@ configureSqliteRuntime(DatabaseSync);
 export default class SqliteDatabase {
   private readonly native: NativeDatabase;
   private savepoint = 0;
+  private readonly commitCallbacks: Array<{ callbacks: Array<() => void>; managed: boolean }> = [];
   readonly name: string;
   readonly readonly: boolean;
   constructor(filename: string = ":memory:", options: SqliteOpenOptions = {}) {
@@ -163,22 +164,43 @@ export default class SqliteDatabase {
    * another connection holds or has just released the lock, because SQLite does not invoke the
    * busy handler for an upgrade. Use `.deferred()` only for read-only snapshots.
    */
+  afterCommit(callback: () => void): void {
+    const callbacks = this.commitCallbacks.at(-1);
+    if (callbacks?.managed) callbacks.callbacks.push(callback);
+    else if (callbacks) throw new Error("afterCommit requires a managed outer SQLite transaction");
+    else if (this.inTransaction) throw new Error("afterCommit requires a managed SQLite transaction");
+    else callback();
+  }
   transaction<Args extends any[], Value>(callback: (...args: Args) => Value): Transaction<Args, Value> {
     const execute = (mode: string, args: Args): Value => {
       if (callback.constructor.name === "AsyncFunction") throw new Error("SQLite transactions require synchronous callbacks");
       const nested = this.inTransaction;
       const savepoint = `mandible_${++this.savepoint}`;
       this.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN ${mode}`);
+      const callbacks: Array<() => void> = [];
+      this.commitCallbacks.push({ callbacks, managed: !nested || this.commitCallbacks.at(-1)?.managed === true });
+      let value: Value;
       try {
-        const value = callback(...args);
+        value = callback(...args);
         if (value && (typeof value === "object" || typeof value === "function") && "then" in value) throw new Error("SQLite transactions require synchronous callbacks");
         this.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
-        return value;
       } catch (error) {
+        this.commitCallbacks.pop();
         try { this.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK"); }
         catch (rollbackError) { throw new AggregateError([error, rollbackError], "SQLite transaction and rollback failed"); }
         throw error;
       }
+      this.commitCallbacks.pop();
+      if (nested) this.commitCallbacks.at(-1)?.callbacks.push(...callbacks);
+      else {
+        const failures: unknown[] = [];
+        for (const committed of callbacks) {
+          try { committed(); } catch (error) { failures.push(error); }
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "SQLite post-commit effects failed");
+      }
+      return value;
     };
     const deferred = (...args: Args) => execute("DEFERRED", args);
     const immediate = (...args: Args) => execute("IMMEDIATE", args);

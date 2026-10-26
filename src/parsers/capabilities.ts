@@ -62,6 +62,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
+      "Provider stop_reason end_turn, max_tokens, and stop_sequence mark normalized assistant execution as settled; tool_use remains active and absent stop evidence remains unknown.",
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result.",
       "Messages, tools, thinking, progress, summaries, and informational records expose metadata.chat_item using the shared provider-neutral contract.",

@@ -21,6 +21,8 @@ import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
+import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../scripts/owned-run.mjs";
+import { previewPaths } from "../scripts/preview-custody.mjs";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, {
@@ -48,6 +50,7 @@ describe.sequential("trash custody", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-trash-"));
+    vi.stubEnv("MANDIBLE_PREVIEW_BASE_DIR", path.join(tempDir, "preview-cache"));
     repoRoot = path.join(tempDir, "repo");
     featureWorktree = path.join(repoRoot, "worktrees", "feature-trash");
     fs.mkdirSync(repoRoot, { recursive: true });
@@ -487,6 +490,29 @@ describe.sequential("trash custody", () => {
       worktree_path: path.join(link, "restored"),
     })).rejects.toThrow(/resolving symlinks/);
     expect(fs.existsSync(path.join(outside, "restored"))).toBe(false);
+  });
+
+  it("preserves an ancestry-merged preview until its owned lifecycle is finalized", async () => {
+    const { root, metadata } = previewPaths("feature/trash");
+    fs.mkdirSync(root, { recursive: true });
+    const ownership = createOwnedRun({ root, instanceId: "preview-fixture", project: projectId, workUnit: "resolved-unit",
+      outputs: [], disposable: true });
+    ownership.state = "active";
+    saveOwnedMetadata(metadata, { branch: "feature/trash", worktree: featureWorktree, ownership });
+    const request = { project: "trash-test", branch: "feature/trash", reason: "merged" as const, merged_into: "main" };
+    await expect(trashBranch(db, request)).rejects.toMatchObject({ code: "preview_worktree_owned" });
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    expect(await listTrashEntries(db)).toEqual([]);
+    const finalized = finalizeOwnedRun(metadata, { expectedRevision: ownership.revision, outcome: "assessed", summary: "Preview review complete",
+      inspect: () => ({ idle: true }) });
+    const receiptFile = finalized.ownership.receipt;
+    const receiptBytes = fs.readFileSync(receiptFile, "utf8");
+    fs.writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receiptBytes), manifestDigest: "changed" }));
+    await expect(trashBranch(db, request)).rejects.toMatchObject({ code: "preview_worktree_owned" });
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    fs.writeFileSync(receiptFile, receiptBytes);
+    expect((await trashBranch(db, request)).result).toBe("removed");
+    expect(fs.existsSync(featureWorktree)).toBe(false);
   });
 
   it("preserves Mandible docs and Codex app-managed worktrees at the public service boundary", async () => {

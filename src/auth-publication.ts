@@ -1,3 +1,4 @@
+import { mutateSpaceRecord } from "./spaces/mutation-history.js";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -56,9 +57,13 @@ export function assertAuthPublication(db: Db, request: AuthRequest, publicationI
 }
 
 export function bindAuthPublication(db: Db, request: AuthRequest, id: string): void {
-  assertAuthPublication(db, request, id);
-  const row = db.prepare("SELECT auth_request_id,state FROM space_publications WHERE id=?").get(id) as { auth_request_id: string | null; state: string };
-  if (row.auth_request_id && row.auth_request_id !== request.supersedes_request_id) throw new Error("Publication already has an auth request; inspect it before preparing another publication.");
-  const result = db.prepare("UPDATE space_publications SET auth_request_id=?,state='submitted' WHERE id=? AND auth_request_id IS ? AND state=?").run(request.id,id,row.auth_request_id,row.state);
-  if (result.changes !== 1) throw new Error("Publication binding changed; inspect it before preparing another publication.");
+  const publication = db.prepare("SELECT space_id FROM space_publications WHERE id=?").get(id) as { space_id: string } | undefined;
+  if (!publication) throw new Error("Publication not found");
+  return mutateSpaceRecord(db, "space_publications", id, publication.space_id, () => {
+    assertAuthPublication(db, request, id);
+    const row = db.prepare("SELECT auth_request_id,state FROM space_publications WHERE id=?").get(id) as { auth_request_id: string | null; state: string };
+    if (row.auth_request_id && row.auth_request_id !== request.supersedes_request_id) throw new Error("Publication already has an auth request; inspect it before preparing another publication.");
+    const result = db.prepare("UPDATE space_publications SET auth_request_id=?,state='submitted' WHERE id=? AND auth_request_id IS ? AND state=?").run(request.id,id,row.auth_request_id,row.state);
+    if (result.changes !== 1) throw new Error("Publication binding changed; inspect it before preparing another publication.");
+  });
 }

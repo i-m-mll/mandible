@@ -6,13 +6,7 @@ import { createAuthCheckRepo, git } from "./helpers/auth-queue-fixtures.js";
 import type { Logger } from "../src/types.js";
 import { resolveSessionAlias, type SessionAliasResolution } from "../src/session-liveness.js";
 import { computeWorkUnitLiveness, mapWorkUnitRow, type WorkUnitSessionResolver } from "../src/work-unit-utils.js";
-import type { CodexThreadArchiver, WorkerThreadLiveness } from "../src/codex-thread-archive.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
-
-const recordingArchiver: CodexThreadArchiver = {
-  archive: async () => undefined,
-  unarchive: async () => undefined,
-};
 
 let db: Db;
 let logs: Array<{ level: string; event: string; data: Record<string, unknown> | undefined }>;
@@ -20,6 +14,9 @@ let logs: Array<{ level: string; event: string; data: Record<string, unknown> | 
 beforeEach(() => {
   db = new SqliteDatabase(":memory:");
   db.exec(`
+    CREATE TABLE ledger_events (id TEXT PRIMARY KEY,entity_type TEXT,entity_id TEXT,event_type TEXT,
+      actor_id TEXT,actor_type TEXT,actor_user_id TEXT,evidence_method TEXT,evidence_id TEXT,
+      source TEXT,payload_json TEXT,occurred_at INTEGER,observed_at INTEGER);
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL
@@ -34,6 +31,7 @@ beforeEach(() => {
       assigned_session_id TEXT,
       provider TEXT,
       provider_session_id TEXT,
+      worker_provider TEXT,
       worker_provider_session_id TEXT,
       activated_at INTEGER,
       auth_request_id TEXT,
@@ -215,7 +213,6 @@ describe("work unit reconciler", () => {
     );
 
     await new WorkUnitReconciler(() => undefined, {
-      archiver: recordingArchiver,
       resolveSession: (_database, id) => id === "desktop-task" ? liveCodexResolution(id) : null,
     }).reconcile();
 
@@ -345,119 +342,12 @@ describe("work unit reconciler", () => {
   });
 });
 
-describe("worker thread archival", () => {
-  const archived: string[] = [];
-  let now = 0;
-
-  function archivingReconciler(options: {
-    liveness?: Record<string, ReturnType<WorkerThreadLiveness>>;
-    aliases?: Record<string, string>;
-    archive?: (threadId: string) => Promise<void>;
-  } = {}): WorkUnitReconciler {
-    const logger: Logger = (level, event, data) => {
-      logs.push({ level, event, data });
-    };
-    return new WorkUnitReconciler(logger, {
-      archiver: {
-        archive: options.archive ?? (async (threadId) => { archived.push(threadId); }),
-        unarchive: async () => undefined,
-      },
-      threadLiveness: (_database, threadId) => options.liveness?.[threadId] ?? "stopped",
-      resolveSession: (_database, id) => {
-        const provider = options.aliases?.[id];
-        return provider ? { ...liveCodexResolution(provider), supplied_id: id, mandible_session_id: id } : null;
-      },
-      now: () => now,
-    });
-  }
-
-  function resolvedUnit(id: string, thread: string): void {
-    db.prepare(
-      "INSERT INTO work_units (id, state, worker_provider_session_id) VALUES (?, 'resolved', ?)",
-    ).run(id, thread);
-  }
-
-  beforeEach(() => {
-    archived.length = 0;
-    now = 0;
-  });
-
-  it("archives a stopped worker thread once per resolved unit, with or without an auth request", async () => {
-    resolvedUnit("wu-a", "thread-1");
-    resolvedUnit("wu-b", "thread-1");
-    db.prepare("UPDATE work_units SET auth_request_id = 'auth-1' WHERE id = 'wu-a'").run();
-
-    await archivingReconciler().reconcile();
-    await archivingReconciler().reconcile();
-    expect(archived).toEqual(["thread-1"]);
-
-    resolvedUnit("wu-c", "thread-1");
-    await archivingReconciler().reconcile();
-    expect(archived).toEqual(["thread-1", "thread-1"]);
-  });
-
-  it("leaves live, unknown, parent-role, and still-working threads alone", async () => {
-    resolvedUnit("wu-live", "thread-live");
-    resolvedUnit("wu-unknown", "thread-unknown");
-    resolvedUnit("wu-parent", "thread-parent");
-    resolvedUnit("wu-done", "thread-busy");
-    db.prepare(
-      "INSERT INTO work_units (id, state, assigned_session_id) VALUES ('wu-next', 'committed', 'mandible-session')",
-    ).run();
-    db.prepare(
-      `INSERT INTO ledger_issue_checkpoints (id, kind, payload_json)
-       VALUES ('chk', 'parent-role', '{"provider_session_id":"thread-parent"}')`,
-    ).run();
-
-    await archivingReconciler({
-      liveness: { "thread-live": "live", "thread-unknown": "unknown" },
-      aliases: { "mandible-session": "thread-busy" },
-    }).reconcile();
-    expect(archived).toEqual([]);
-
-    await archivingReconciler({ aliases: { "mandible-session": "thread-busy" } }).reconcile();
-    expect(archived).toEqual(["thread-live", "thread-unknown"]);
-  });
-
-  it("retries a failed archive with backoff and logs only the first failure and the recovery", async () => {
-    resolvedUnit("wu-a", "thread-1");
-    let failures = 2;
-    const archive = async (threadId: string) => {
-      if (failures-- > 0) throw new Error("codex unavailable");
-      archived.push(threadId);
-    };
-
-    for (const at of [0, 30_000, 60_000, 90_000, 180_000]) {
-      now = at;
-      await archivingReconciler({ archive }).reconcile();
-    }
-
-    expect(archived).toEqual(["thread-1"]);
-    const passes = logs.filter((entry) => entry.event === "worker_thread_archive_pass");
-    expect(passes.map((entry) => [entry.level, entry.data?.archived, entry.data?.recovered])).toEqual([
-      ["warn", 0, 0],
-      ["info", 1, 1],
-    ]);
-  });
-
-  it("logs one summary for a pass over a backlog of threads", async () => {
-    for (let index = 0; index < 150; index++) resolvedUnit(`wu-${index}`, `thread-${index}`);
-
-    await archivingReconciler({}).reconcile();
-    await archivingReconciler({}).reconcile();
-
-    expect(archived).toHaveLength(150);
-    const archiveLogs = logs.filter((entry) => entry.event.startsWith("worker_thread_archive"));
-    expect(archiveLogs).toHaveLength(1);
-    expect(archiveLogs[0]?.data).toMatchObject({ archived: 150, failed: 0, deferred: 0 });
-  });
-});
 
 function reconciler(resolveSession?: WorkUnitSessionResolver): WorkUnitReconciler {
   const logger: Logger = (level, event, data) => {
     logs.push({ level, event, data });
   };
-  return new WorkUnitReconciler(logger, { archiver: recordingArchiver, resolveSession });
+  return new WorkUnitReconciler(logger, { resolveSession });
 }
 
 function liveCodexResolution(id: string): SessionAliasResolution {

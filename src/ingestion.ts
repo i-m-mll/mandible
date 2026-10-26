@@ -13,6 +13,8 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
+import { projectChildRetentionActivity } from "./conversations/retention-state.js";
+import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
 import { resolveConversationId } from './conversations/identity.js';
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -1819,6 +1821,7 @@ async function relocateMovedCodexSource(
     if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
     const stat = await logicalSourceStat(candidate);
     await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
+    reconcileIngestedChildRetention(db, match.id, candidate, parsed.blocks);
     // A bulk archive moves many rollouts at once. The durable source alias is
     // the record of each move; reconcile summarizes its relocations per pass.
     logger("debug", "ingestion_source_relocated", {
@@ -2150,6 +2153,7 @@ function applyIngestedLineage(
   result: ParseResult,
 ): void {
   const gap = linkIngestedConversation(db, conversation, result);
+  projectChildRetentionActivity(db, conversation.id, result.blocks);
   if (gap) {
     const severity = lineageGapSeverity(gap);
     logger(severity === "gap" ? "warn" : "info", "conversation_lineage_gap", {
@@ -3675,6 +3679,7 @@ async function ingestFilePass(
   applyIngestedLineage(db, { ...result.conversation, id: conversationId }, result);
 
   // Broadcast SSE event
+  if (!appendInfo?.hasMore) reconcileIngestedChildRetention(db, conversationId, filePath, newBlocks);
   const eventType = isNew ? "conversation:new" : "conversation:updated";
   const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
   eventPublisher(eventType, {
@@ -3778,6 +3783,7 @@ async function recordDurableConversationSource(
         : { blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })) }),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
+    reconcileIngestedChildRetention(db, conversationId, filePath, blocks);
     const promotion = await store.promoteNativeConversationPayload(conversationId);
     if (!promotion.promoted
         && promotion.reason !== "no legacy payload is available for promotion") {
