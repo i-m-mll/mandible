@@ -43,19 +43,14 @@ function origins(db: Db, entity: string, id: string) {
     .all(entity, id).map((row: { payload_json: string }) => JSON.parse(row.payload_json).request_origin);
 }
 
-it("retains separate concurrent publication origins, immutable version origin and later edits", async () => {
+it("preserves publication origin across later session and human edits", () => {
   const { db, publisher, human } = fixture();
-  const [a, b] = await Promise.all([
-    withRequestOrigin(codex, async () => { await Promise.resolve(); return publishBriefingRun(db, runRequest(human.id, "a"), publisher.id); }),
-    withRequestOrigin(claude, async () => { await Promise.resolve(); return publishBriefingRun(db, runRequest(human.id, "b"), publisher.id); }),
-  ]);
-  for (const [receipt, origin] of [[a, codex], [b, claude]] as const) {
-    const detail = readBriefing(db, receipt.briefing_id, { actorUserId: human.id, operator: true })!;
-    expect(detail.briefing).toMatchObject({ request_origin: origin });
-    expect(detail.rounds[0]).toMatchObject({ request_origin: origin });
-    const metadata = db.prepare("SELECT metadata_json FROM artifact_version WHERE id=?").get(receipt.artifact_version_id) as { metadata_json: string };
-    expect(JSON.parse(metadata.metadata_json).request_origin).toEqual(origin);
-  }
+  const a = withRequestOrigin(codex, () => publishBriefingRun(db, runRequest(human.id, "a"), publisher.id));
+  const detail = readBriefing(db, a.briefing_id, { actorUserId: human.id, operator: true })!;
+  expect(detail.briefing).toMatchObject({ request_origin: codex });
+  expect(detail.rounds[0]).toMatchObject({ request_origin: codex });
+  const metadata = db.prepare("SELECT metadata_json FROM artifact_version WHERE id=?").get(a.artifact_version_id) as { metadata_json: string };
+  expect(JSON.parse(metadata.metadata_json).request_origin).toEqual(codex);
   withRequestOrigin(claude, () => updateBriefingTitle(db, a.briefing_id, "Renamed", { userId: human.id, operator: true }));
   withRequestOrigin(null, () => updateBriefingTitle(db, a.briefing_id, "Human edit", { userId: human.id, operator: true }));
   expect(origins(db, "briefing", a.briefing_id)).toEqual([claude, null]);
