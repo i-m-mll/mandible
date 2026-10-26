@@ -43,7 +43,7 @@ function selectedTestGit() {
     });
   if (selected !== '/usr/bin/git') return null;
   // Apple's launcher resolves this same executable on every Git invocation.
-  // Resolve once; a private Git-only shim leaves all other tools in PATH order.
+  // Resolve once; a private Git-only entry leaves all other tools in PATH order.
   const executable = fs.realpathSync(execFileSync('/usr/bin/xcrun', ['--find', 'git'], {
     encoding: 'utf8', timeout: 10_000,
   }).trim());
@@ -65,7 +65,8 @@ export function createTestRuntime() {
   const tools = path.join(root, 'bin');
   if (git) {
     fs.mkdirSync(tools);
-    fs.symlinkSync(git.executable, path.join(tools, 'git'));
+    const quoted = `'${git.executable.replaceAll("'", "'\\''")}'`;
+    fs.writeFileSync(path.join(tools, 'git'), `#!/bin/sh\nexec ${quoted} "$@"\n`, { mode: 0o700 });
   }
   const env = {
     ...process.env,

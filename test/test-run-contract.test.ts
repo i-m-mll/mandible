@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { checkoutViolation, completeTimingPacket } from '../scripts/test-run-contract.mjs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { scratchDir } from './helpers/cli-process.js';
 
 function sample(intervals: number[][]) {
   const files = intervals.map((_, i) => ({ file: `test/${i}.test.ts`, absolute_file: `/repo/test/${i}.test.ts`, diagnostic_occupancy_ms: 1 }));
@@ -8,6 +12,28 @@ function sample(intervals: number[][]) {
 }
 
 describe('complete command timing contract', () => {
+  if (process.platform === 'darwin') {
+    it('preserves the selected Git prefix, init templates and explicit tool overrides', () => {
+      const native = execFileSync('/usr/bin/xcrun', ['--find', 'git'], { encoding: 'utf8', timeout: 10_000 }).trim();
+      const run = (command: string, args: string[], env = process.env) => spawnSync(command, args, { env, encoding: 'utf8', timeout: 10_000 });
+      const expected = run(native, ['--exec-path']);
+      const actual = run('git', ['--exec-path']);
+      expect(expected.status).toBe(0);
+      expect(actual.status).toBe(0);
+      expect(actual.stdout).toBe(expected.stdout);
+      const root = scratchDir('git-prefix');
+      for (const [label, command] of [['native', native], ['qualified', 'git']]) {
+        const initialized = run(command, ['init', '--quiet', path.join(root, label)]);
+        expect(initialized.status, initialized.stderr).toBe(0);
+        expect(initialized.stderr).toBe('');
+      }
+      const hooks = (label: string) => fs.readdirSync(path.join(root, label, '.git', 'hooks')).sort();
+      expect(hooks('qualified')).toEqual(hooks('native'));
+      const override = path.join(root, 'explicit-exec-path');
+      expect(run('git', ['--exec-path'], { ...process.env, GIT_EXEC_PATH: override }).stdout.trim()).toBe(override);
+    });
+  }
+
   it('counts overlapping worker lifetimes and uncovered shared work exactly once', () => {
     const { packet, lifecycles } = sample([[10, 40], [20, 50]]);
     expect(completeTimingPacket(packet, { wall_ms: 45 }, lifecycles, false)).toMatchObject({
