@@ -1,3 +1,5 @@
+import { withRequestOrigin } from "../src/request-origin.js";
+import { withLedgerMutationActor } from "../src/ledger/mutation-history.js";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -12,7 +14,7 @@ import {
   type SignerSocketIdentity,
 } from "../src/delegated-signing-resource.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
-import { addCredential, addDelegatedSigningLease, createUser, getOperator } from "../src/users/store.js";
+import { addCredential, addDelegatedSigningLease, shortenDelegatedSigningLease, SYSTEM_USER_ID, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/ledger-fixtures.js";
 import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
 
@@ -270,7 +272,12 @@ describe("delegated signer reconnect lifecycle", () => {
       const context = await resource.issueFresh(60);
       f.addClearance(context.leaseId);
       const borrow = await resource.borrow(context.leaseId);
-      const draining = resource.drain(context.leaseId, "clearance_exhausted");
+      const caller = { attribution: { user_id: getOperator(f.db)!.id, evidence_method: "api_token" as const } };
+      const origin = { provider: "codex", provider_session_id: "native-lease-owner" };
+      withRequestOrigin(origin, () => withLedgerMutationActor(caller, () =>
+        shortenDelegatedSigningLease(f.db, context.leaseId, 30_000)));
+      const draining = withRequestOrigin(origin, () => withLedgerMutationActor(caller, () =>
+        resource.drain(context.leaseId, "clearance_exhausted")));
       await Promise.resolve();
       expect(f.stopped).toEqual([]);
       await borrow.settle();
@@ -281,6 +288,15 @@ describe("delegated signer reconnect lifecycle", () => {
       ).get(context.leaseId)).toEqual({ state: "retired", retired_reason: "clearance_exhausted" });
       expect(f.db.prepare("SELECT expires_at FROM delegated_signing_leases WHERE id = ?").get(context.leaseId))
         .toEqual({ expires_at: 10_001 });
+      const updates = () => f.db.prepare("SELECT actor_user_id,actor_type,evidence_method,payload_json FROM ledger_events WHERE entity_type='signing_lease' AND event_type='signing_lease.updated' AND entity_id=? ORDER BY rowid").all(context.leaseId);
+      expect(updates().map(event => ({ actor: event.actor_user_id, evidence: event.evidence_method, payload: JSON.parse(event.payload_json) })))
+        .toEqual([
+          { actor: getOperator(f.db)!.id, evidence: "api_token", payload: expect.objectContaining({ request_origin: origin, changed_fields: ["expires_at"] }) },
+          { actor: SYSTEM_USER_ID, evidence: "system_internal", payload: expect.objectContaining({ request_origin: origin, changed_fields: ["expires_at"] }) },
+        ]);
+      expect(updates()[1].actor_type).toBe("system");
+      shortenDelegatedSigningLease(f.db, context.leaseId, 40_000);
+      expect(updates()).toHaveLength(2);
     } finally {
       f.db.close();
     }
