@@ -2716,8 +2716,8 @@ function App(): JSX.Element {
         ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
-      {splashActive ? <div className="app-shell__splash-notice" data-tauri-drag-region><PreviewCopyNotice instance={instanceInfo} /></div> : null}
       <div className="app-shell__workspace">{children}</div>
+      <PreviewCopyNotice instance={instanceInfo} />
     </div>
   );
 
@@ -2794,7 +2794,6 @@ function App(): JSX.Element {
           rightSidebarOpen={rightSidebarOpen}
           onRightSidebarOpenChange={setRightSidebarOpen}
           rightToggleRef={rightSidebarToggleRef}
-          notice={<PreviewCopyNotice instance={instanceInfo} />}
           rail={(
           <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
               <nav
