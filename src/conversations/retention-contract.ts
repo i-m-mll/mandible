@@ -1,4 +1,11 @@
 import * as z from "zod";
+import type { CodexNativeArchiveOutcome } from "../conversation-control/codex-native-archive.js";
+
+export type RetentionNativeStatus = CodexNativeArchiveOutcome["status"] | "pending";
+export interface RetentionNativeProjection {
+  retention_native_status: RetentionNativeStatus | null;
+  retention_native_reason: string | null;
+}
 
 const idleRole = z.object({ enabled: z.boolean(), idleHours: z.number().positive().max(87600) }).strict();
 export const CHILD_RETENTION_SETTINGS_SCHEMA = z.object({

@@ -23,11 +23,12 @@ export function writeChildRetentionSettings(db: Db, value: ChildRetentionSetting
       .run(CHILD_RETENTION_SETTINGS_KEY, JSON.stringify(settings), now);
     db.prepare(`UPDATE conversation_retention_state SET activity_generation = activity_generation + 1,
       attempts = 0, due_at = CASE
+      WHEN ? = 0 THEN NULL
       WHEN native_pending = 1 THEN ?
       WHEN role = 'planner' AND ? AND ? THEN MAX(COALESCE(last_activity_at,?),COALESCE(restored_at,0)) + ?
       WHEN role = 'archaeologist' AND ? AND ? THEN MAX(COALESCE(last_activity_at,?),COALESCE(restored_at,0)) + ?
       WHEN trigger = 'resolved-worker' AND ? AND ? THEN ? ELSE NULL END`)
-      .run(now, settings.enabled ? 1 : 0, settings.planner.enabled ? 1 : 0, now, settings.planner.idleHours * 3600000,
+      .run(settings.enabled ? 1 : 0, now, settings.enabled ? 1 : 0, settings.planner.enabled ? 1 : 0, now, settings.planner.idleHours * 3600000,
         settings.enabled ? 1 : 0, settings.archaeologist.enabled ? 1 : 0, now, settings.archaeologist.idleHours * 3600000,
         settings.enabled ? 1 : 0, settings.worker.enabled ? 1 : 0, now);
   })();
@@ -92,11 +93,15 @@ export function projectChildRetentionActivity(db: Db, conversationId: string,
     attempts=CASE WHEN ? THEN 0 ELSE attempts END`).run(conversationId, child.role, activity || null, input || null,
     terminal || null, state, (previous?.activity_generation ?? 0) + (changed ? 1 : 0), source?.current_version_id ?? null,
     changed ? 1 : 0, changed ? 1 : 0);
-  rearmChildRetention(db, conversationId);
+  if (changed || !previous) rearmChildRetention(db, conversationId);
 }
 
 export function restoreChildRetention(db: Db, conversationId: string, now = Date.now()): void {
+  const child = getRetainedChild(db, conversationId);
+  if (!child) return;
+  db.prepare(`INSERT INTO conversation_retention_state(conversation_id,role) VALUES (?,?) ON CONFLICT DO NOTHING`)
+    .run(conversationId, child.role);
   db.prepare(`UPDATE conversation_retention_state SET restored_at=?, activity_generation=activity_generation+1,
-    native_pending=0,attempts=0,trigger=NULL,due_at=NULL WHERE conversation_id=?`).run(now, conversationId);
+    native_pending=0,attempts=0,trigger=NULL,due_at=NULL,last_native_outcome=NULL,provider_archived=1 WHERE conversation_id=?`).run(now, conversationId);
   rearmChildRetention(db, conversationId);
 }

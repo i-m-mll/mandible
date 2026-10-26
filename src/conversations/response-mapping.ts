@@ -3,8 +3,14 @@ import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
 import type { ConversationRow, ProjectedConversationRow } from "../ledger-reads/conversations.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
 import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
+import type { RetentionNativeProjection } from "./retention-contract.js";
 
 export function mapConversation(row: ConversationRow, externalNavigation?: ConversationExternalNavigation) {
+  const native = getDb().prepare(`SELECT native_pending,last_native_outcome FROM conversation_retention_state WHERE conversation_id=?`)
+    .get(row.id) as { native_pending: number; last_native_outcome: string | null } | undefined;
+  const outcome = native?.last_native_outcome ? JSON.parse(native.last_native_outcome) as {
+    status: RetentionNativeProjection["retention_native_status"]; reason?: string;
+  } : null;
   let tags: string[] = [];
   try {
     const parsed: unknown = JSON.parse(row.tags);
@@ -37,6 +43,8 @@ export function mapConversation(row: ConversationRow, externalNavigation?: Conve
     tags,
     starred: row.starred === 1,
     archived_at: row.archived_at ?? null,
+    retention_native_status: outcome?.status ?? (native?.native_pending ? "pending" : null),
+    retention_native_reason: outcome?.reason ?? null,
     parent_conversation_id: row.parent_conversation_id ?? null,
     is_sidechain: row.is_sidechain === 1,
     agent_id: row.agent_id ?? null,

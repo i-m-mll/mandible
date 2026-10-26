@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
 import { projectChildRetentionActivity } from "./conversations/retention-state.js";
+import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
 import { resolveConversationId } from './conversations/identity.js';
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -3677,6 +3678,7 @@ async function ingestFilePass(
   applyIngestedLineage(db, { ...result.conversation, id: conversationId }, result);
 
   // Broadcast SSE event
+  if (!appendInfo?.hasMore) reconcileIngestedChildRetention(db, conversationId, filePath, newBlocks);
   const eventType = isNew ? "conversation:new" : "conversation:updated";
   const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
   eventPublisher(eventType, {
@@ -3780,6 +3782,7 @@ async function recordDurableConversationSource(
         : { blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })) }),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
+    reconcileIngestedChildRetention(db, conversationId, filePath, blocks);
     const promotion = await store.promoteNativeConversationPayload(conversationId);
     if (!promotion.promoted
         && promotion.reason !== "no legacy payload is available for promotion") {
