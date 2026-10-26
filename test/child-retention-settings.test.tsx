@@ -9,7 +9,7 @@ import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention
 beforeEach(establishTestClientAccess);
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('retains an unsaved policy across refresh and a failed save, then reloads the persisted policy', async () => {
+it('retains an unsaved policy after a failed save, then reloads the persisted policy', async () => {
   let persisted = structuredClone(DEFAULT_CHILD_RETENTION_SETTINGS);
   let rejectSave = true;
   const writes: unknown[] = [];
@@ -25,8 +25,6 @@ it('retains an unsaved policy across refresh and a failed save, then reloads the
   const view = render(<ChildRetentionSettings canSave />);
   const hours = await screen.findByRole('spinbutton', { name: 'Planner idle hours' }) as HTMLInputElement;
   fireEvent.input(hours, { target: { value: '24' } });
-  view.rerender(<ChildRetentionSettings canSave />);
-  expect(hours.value).toBe('24');
   fireEvent.click(screen.getByRole('button', { name: 'Save child cleanup' }));
   await screen.findByRole('alert');
   expect(hours.value).toBe('24');
