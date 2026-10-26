@@ -9,6 +9,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ApiError } from '../../../ui/src/api';
 import {
   AppRightSidebarSurface,
+  APP_RAIL_WIDTHS,
   AppShellProvider,
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
   WIDE_RESPONSIVE_SIDEBAR_STATE,
@@ -171,11 +172,12 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
-  const railWidth = new URLSearchParams(location.search).has('fullRail') ? 208 : 56;
+  const railMode = new URLSearchParams(location.search).has('fullRail') ? 'both' : 'icons';
+  const railWidth = APP_RAIL_WIDTHS[railMode];
   const nativeControlsReservation = document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0;
   const { rightSidebarLayout: layout, viewSidebarWidth: effectiveLeft } = resolveAppFrameGeometry({ viewportWidth: window.innerWidth, railWidth, viewSidebarWidth: leftWidth, rightSidebar: descriptor, rightSidebarOpen: stored.open, nativeControlsReservation });
   return (
-    <div className={`app-shell ${railWidth === 56 ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
+    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
       <AppShellProvider value={{ active: true, rightSidebar: descriptor, frameHeaderHost: host, registerFrameHeader, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: setLeftWidth, viewSidebarWidth: effectiveLeft }}>
       <AppFrame headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail" />}>
         <main className={`app-content app-content--${surface}`}>

@@ -21,6 +21,8 @@ export type AppRightSidebarLayout = {
   maxWidth: number;
 };
 
+export const APP_RAIL_WIDTHS = { icons: 44.8, both: 208 } as const;
+
 export const APP_RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 300;
 export const APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH = 720;
 export const CHAT_DETAIL_PREVIEW_MIN_WIDTH = 360;
