@@ -73,6 +73,7 @@ function contained(root, relative, allowLeafLink = false) {
 }
 
 export function ownedRunIdentityMatches(root, run) {
+  if (!run) return false;
   const stat = fs.lstatSync(root);
   return run.schema === OWNED_RUN_SCHEMA && run.root === fs.realpathSync(root)
     && !stat.isSymbolicLink() && fs.realpathSync(root) === run.root

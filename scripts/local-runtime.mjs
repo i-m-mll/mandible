@@ -16,6 +16,7 @@ import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
+import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 const ACCOUNT_HOME = os.userInfo().homedir;
@@ -946,13 +947,14 @@ async function reloadGatewayRuntime({ launchMode = installedLaunchMode(), ifConf
   if (ifConfigured && !fs.existsSync(GATEWAY_CONFIG)) return { skipped: 'local HTTPS gateway is not configured' };
   if (initial.status.state === 'port_conflict') throw new Error(initial.status.detail);
   if (initial.trusted.error) throw new Error(initial.trusted.error);
-  if (!initial.backend.ok) throw new Error('The production daemon is not ready; the shared gateway was not changed.');
   assertLifecycleMutation();
   prepareGateway(initial.production);
   const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'] });
   if (!reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
   assertInstalledDefinitions();
-  return (await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode)).status;
+  const inspected = await inspectRuntime({ launchMode });
+  if (!inspected.gatewayPortOpen) throw new Error('Shared gateway listener is unavailable after reconciliation');
+  return inspected.status;
 }
 
 function sameEffectList(actual, expected) {
@@ -1037,7 +1039,7 @@ function explicitServiceConfiguration(args) {
   return validateServiceConfiguration(JSON.parse(fs.readFileSync(args[index + 1], 'utf8')));
 }
 
-async function main() {
+async function mainLocked() {
   const [command, ...args] = process.argv.slice(2);
   const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
   const activePath = path.join(RUNTIME_DIR, 'handoff-active.json');
@@ -1121,6 +1123,17 @@ async function main() {
     throw new Error("Usage: local-runtime.mjs status|install [--root <checkout>] [--service-config <json>]|configure-launch-mode [--service-config <json>]|start|stop|restart|reload-gateway [--launch-mode=manual|on_demand]");
   }
   process.stdout.write(`${JSON.stringify(status)}\n`);
+}
+
+async function main() {
+  const command = process.argv[2];
+  if (['status', 'handoff-snapshot', 'handoff-verify'].includes(command)) return mainLocked();
+  return withInstallationGatewayLock(HOME, async token => {
+    const previous = process.env.MANDIBLE_GATEWAY_LOCK_TOKEN;
+    process.env.MANDIBLE_GATEWAY_LOCK_TOKEN = token;
+    try { return await mainLocked(); }
+    finally { if (previous === undefined) delete process.env.MANDIBLE_GATEWAY_LOCK_TOKEN; else process.env.MANDIBLE_GATEWAY_LOCK_TOKEN = previous; }
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

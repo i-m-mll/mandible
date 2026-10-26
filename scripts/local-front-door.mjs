@@ -9,6 +9,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
+import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
 const caPaths = localCaPaths(home);
@@ -21,8 +22,7 @@ const configPath = path.join(authorityDir, "Caddyfile");
 const command = process.argv[2] ?? "status";
 
 function fail(message) {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function readInstances() {
@@ -119,7 +119,7 @@ function configure() {
   const config = caddyfile(readInstances());
   if (fs.existsSync(binary)) {
     const adapted = spawnSync(binary, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
-      input: config, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+      input: config, encoding: "utf8", timeout: 5000, maxBuffer: 8 * 1024 * 1024,
     });
     if (adapted.status !== 0) fail(`Local HTTPS configuration is invalid: ${adapted.stderr.trim()}`);
   }
@@ -145,6 +145,7 @@ function runRuntimeCommand(commandName, args = []) {
   if (result.stdout) process.stdout.write(result.stdout);
 }
 
+async function main() {
 if (command === "initialize") {
   initializeInstallationAuthority();
 } else if (command === "install") {
@@ -163,3 +164,9 @@ if (command === "initialize") {
 } else {
   fail("Usage: local-front-door.mjs initialize|install|configure|reload [--if-configured]|run|status");
 }
+}
+
+try {
+  if (['initialize', 'install', 'configure'].includes(command)) await withInstallationGatewayLock(home, () => main());
+  else await main();
+} catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
