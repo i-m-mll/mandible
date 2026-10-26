@@ -45,9 +45,8 @@ Object.assign(window, { runSettingsNavigationProof: async () => {
     const target = section(id);
     const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
     const margin = parseFloat(getComputedStyle(target).scrollMarginTop);
-    const max = root.scrollHeight - root.clientHeight;
     return active() === nav(id) && !target.hidden && !nav(id).hidden
-      && (Math.abs(offset - margin) < 2 || Math.abs(root.scrollTop - max) < 2);
+      && Math.abs(offset - margin) < 2;
   };
   const jump = async (id: string) => {
     nav(id).click();
@@ -55,12 +54,10 @@ Object.assign(window, { runSettingsNavigationProof: async () => {
   };
   const search = root.querySelector<HTMLInputElement>('input[type=search]')!;
   const filter = (query: string) => { search.value = query; search.dispatchEvent(new Event('input', { bubbles: true })); };
-  const checkpoints: string[] = [];
 
   await jump('settings-chat-defaults');
   await jump('settings-child-cleanup');
   await jump('settings-conversations');
-  checkpoints.push('formerly-misordered-sections');
 
   // The async cleanup response expands an earlier section while the user reads Conversations.
   root.style.overflowAnchor = 'none';
@@ -73,18 +70,20 @@ Object.assign(window, { runSettingsNavigationProof: async () => {
   root.scrollTo({ top: root.scrollTop + section('settings-conversations').getBoundingClientRect().top
     - root.getBoundingClientRect().top - parseFloat(getComputedStyle(section('settings-conversations')).scrollMarginTop), behavior: 'instant' });
   await until('Manual scrolling did not select visible Conversations', () => atTarget('settings-conversations'));
-  checkpoints.push('async-height-and-manual-scroll');
 
+  await jump('settings-version-control');
+  await jump('settings-maintenance');
   await jump('settings-backup');
-  if (section('settings-backup').getBoundingClientRect().top <= root.getBoundingClientRect().top + 26) {
-    throw new Error('Fixture must exercise an unreachable trailing alignment');
+  if (section('settings-backup').getBoundingClientRect().height >= root.clientHeight / 2) {
+    throw new Error('Fixture must exercise a short trailing section');
   }
-  checkpoints.push('short-trailing-section');
 
+  const departure = root.scrollTop;
   nav('settings-notifications').click();
+  await until('First navigation did not begin moving', () => root.scrollTop < departure
+    && section('settings-notifications').getBoundingClientRect().top < root.getBoundingClientRect().top);
   nav('settings-child-cleanup').click();
   await until('Second navigation failed to supersede motion', () => atTarget('settings-child-cleanup'));
-  checkpoints.push('rapid-navigation');
 
   filter('child cleanup');
   await until('Filter retained a hidden active target', () => nav('settings-conversations').hidden && active() === nav('settings-child-cleanup'));
@@ -99,7 +98,5 @@ Object.assign(window, { runSettingsNavigationProof: async () => {
   root.style.fontSize = '20px';
   root.style.height = '620px';
   await jump('settings-child-cleanup');
-  checkpoints.push('filter-empty-unfilter-refresh-and-resize');
   if (unmodeledRequests.length) throw new Error('Unmodeled requests: ' + unmodeledRequests.join(', '));
-  return checkpoints;
 } });
