@@ -1,14 +1,14 @@
 # Codex child-chat archive capability
 
-The complete standalone automatic-archive route remains **unestablished**.
-The existing independent app-server client demonstrably reads shared desktop
-turn history. The installed runtime also has native queue, archive and restore
-operations, and an agent-context desktop bridge successfully archived and
-restored a disposable loaded-idle chat. Shared queue visibility for an
-unarchived desktop chat and the independent archive effect on a loaded-idle
-desktop chat have not been demonstrated here. No adapter or automatic archive
-effect is enabled. Absence of a direct owning-desktop IPC connection does not
-by itself rule out the existing public API plus native-history/hook route.
+The existing independent app-server client provides a demonstrated standalone
+route for shared stored turn history, empty-queue reads, same-ID restoration
+and archival of the disposable fixture. It requires no caller-chat
+impersonation or direct owning-desktop IPC. An agent-context desktop bridge
+also successfully archived and restored a loaded-idle fixture. No adapter or
+automatic archive effect is enabled. Pending-input coverage across runtimes
+and an independent archive effect while the desktop holds the thread loaded
+remain unproved; a blanket standalone-transport blocker is not supported by
+these measurements.
 
 A fresh history, status and queue check followed by archive is the selected
 practical visibility workflow. Atomic conditional archival is not required.
@@ -130,8 +130,25 @@ archive, unarchive or queue mutation, and closed with exit code 0.
 - `thread/queue/list` rejected this archived fixture with an instruction to
   unarchive first. It returned no queue data. This proves the request reaches
   the fixture lookup, but does not establish shared pending-input visibility
-  for a loaded, unarchived desktop chat. The fixture was not restored merely
-  to extend this read-only probe.
+  for a loaded, unarchived desktop chat.
+
+A subsequent expressly authorized fixture-only probe used the same existing
+client boundary, independent stdio app-server PID 83488:
+
+| Public native operation | Result |
+| --- | --- |
+| `thread/unarchive({threadId})` | Restored the exact fixture ID to its `sessions/2026/10/26` path; returned process-local notLoaded. |
+| `thread/read({threadId, includeTurns:false})` | Same ID and restored path; process-local notLoaded. |
+| `thread/turns/list({threadId, limit:10, sortDirection:"desc", itemsView:"notLoaded"})` | Same three desktop-created turns and original start/end times; nextCursor null. |
+| `thread/queue/list({threadId, limit:10})` | Empty data and nextCursor null. |
+| `thread/archive({threadId})` | Success with an empty result; restored the fixture to archive custody. |
+
+The server closed with code 0. A read-only native flag/path probe confirmed
+`archived=1` and the original archived rollout path. This probe issued no
+`thread/resume`, `turn/start`, user input, queue mutation or model turn.
+It establishes a legitimate standalone history/empty-queue/restore/archive
+boundary. It does not establish visibility of a nonempty desktop queue, nor
+the archive effect while a different runtime retains a loaded writer.
 
 The installed Codex hooks register SessionStart, UserPromptSubmit, Stop,
 Interrupt and SessionEnd through Mandible's existing execution hook. The exact
@@ -154,9 +171,10 @@ The existing archive implementation invokes the independent `codex archive`
 and `codex unarchive` CLI commands. The existing app-server client itself
 currently has a typed unarchive request but no archive/turn-history/queue
 request entries; the read-only probe exercised the public methods directly.
-Whether that independent archive effect succeeds for a loaded-idle desktop
-thread, and whether its queue reads cover pending desktop input, remain the
-specific unproved semantics of this alternative route.
+The native archive and restore requests succeeded for the fixture through that
+same client boundary. Whether an independent archive effect succeeds while
+the desktop keeps a thread loaded, and whether queue reads cover pending
+desktop input across runtimes, remain the specific unproved semantics.
 
 ### Direct desktop bridge
 
@@ -196,11 +214,12 @@ threads actually archived. Descendant effects were not exercised here. An MCP-cr
 child marker alone would not establish the provider's spawned-descendant
 effect set.
 
-Implementation needs demonstrated current-input and archive-effect semantics
-at a legitimate daemon boundary, without borrowing or inventing an agent
-executor identity. The existing independent API plus shared native history and
-execution hooks is a plausible route; direct owning IPC is not mandatory if
-that route supplies sufficient evidence and effects. Reconcile fresh
+The existing independent API supplies a legitimate daemon boundary, without
+borrowing or inventing an agent executor identity. Its shared native history
+and execution-hook evidence support the practical workflow; direct owning IPC
+is not mandatory. Assessment of current-input coverage and loaded-thread
+archive behavior must distinguish demonstrated operations from the remaining
+unproved semantics above. Reconcile fresh
 continuous-activity history and current execution/queue evidence, then archive.
 Review the remaining input/effect race proportionately to this recoverable
 visibility operation. Verify a single-thread effect or the complete effect
