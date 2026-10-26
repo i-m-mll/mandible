@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { withOwnedRunLock, validateOwnedRunFinalization, ownedRunIdentityMatches, saveOwnedMetadata, ownedRunReceipt } from './owned-run.mjs';
+import { withOwnedRunLock, validateOwnedRunFinalization, ownedRunIdentityMatches, saveOwnedMetadata, ownedRunReceipt, processIdentity } from './owned-run.mjs';
 
 export async function withPreviewRun(handle, operation) {
   if (!handle?.root || !handle.runId) throw new Error('Exact preview run handle required');
@@ -48,11 +48,40 @@ export function publishPreviewConsumer(reservation, identity) {
     const child = JSON.parse(fs.readFileSync(consumer.metadataFile, 'utf8'));
     if (child.ownership?.runId !== consumer.runId || !ownedRunIdentityMatches(consumer.root, child.ownership)
       || child.parent?.runId !== run.runId || path.resolve(child.parent?.root ?? '') !== run.root) throw new Error('Native child receipt does not belong to reserved preview run');
+    if (JSON.stringify(identity.build) !== JSON.stringify(child.build)
+      || JSON.stringify(child.build) !== JSON.stringify(run.source)) throw new Error('Native child build differs from selected source identity');
     consumer.state = 'attached'; consumer.identity = identity;
     consumer.rootIdentity = child.ownership.rootIdentity;
     save();
     return consumer;
   });
+}
+
+export function verifyPreviewConsumerStopped(consumer) {
+  const child = JSON.parse(fs.readFileSync(consumer.metadataFile, 'utf8'));
+  if (child.ownership?.runId !== consumer.runId || !ownedRunIdentityMatches(consumer.root, child.ownership)
+    || child.ownership.rootIdentity.dev !== consumer.rootIdentity.dev || child.ownership.rootIdentity.ino !== consumer.rootIdentity.ino) throw new Error('Native consumer root identity changed');
+  if (child.pid && processIdentity(child.pid) !== null) throw new Error('Native consumer still has a live process');
+  if (child.buildProcess?.pid && processIdentity(child.buildProcess.pid) !== null) throw new Error('Native consumer still has a live build process');
+  if (child.status !== 'stopped') throw new Error('Native consumer must be reconciled stopped before backend refresh or reacquisition');
+  return child;
+}
+
+export function reacquirePreviewConsumer(handle, child) {
+  return withPreviewRun(handle, (metadata, save) => withOwnedRunLock(child.root, () => {
+    const run = metadata.ownership;
+    const previous = run.consumers?.find(entry => entry.consumerId === child.consumerId);
+    if (!previous || previous.state === 'released' || previous.runId !== child.runId || previous.root !== child.root
+      || previous.metadataFile !== child.metadataFile || previous.generation !== child.expectedPriorGeneration
+      || JSON.stringify(previous.source) !== JSON.stringify(child.expectedPriorSource)) throw new Error('Native reacquisition association changed');
+    verifyPreviewConsumerStopped(previous);
+    if (run.state !== 'active' || run.lifecycle.teardown || run.lifecycle.phase !== 'ready'
+      || child.expectedGeneration !== metadata.instanceEnv.MANDIBLE_BACKEND_GENERATION
+      || JSON.stringify(child.expectedSource) !== JSON.stringify(run.source)) throw new Error('Parent preview changed before native reacquisition');
+    previous.state = 'pending'; previous.generation = child.expectedGeneration; previous.source = child.expectedSource;
+    save();
+    return previous;
+  }));
 }
 
 export function releasePreviewConsumer(reservation) {

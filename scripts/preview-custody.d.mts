@@ -7,3 +7,5 @@ export function withPreviewRun<T>(handle: PreviewRunHandle, operation: (metadata
 export function acquirePreviewConsumer(handle: PreviewRunHandle, child: any): Promise<any>;
 export function publishPreviewConsumer(reservation: any, identity: any): Promise<any>;
 export function releasePreviewConsumer(reservation: any): Promise<any>;
+export function reacquirePreviewConsumer(handle: PreviewRunHandle, child: any): Promise<any>;
+export function verifyPreviewConsumerStopped(consumer: any): any;
