@@ -1,3 +1,5 @@
+import { ensureAgentGroupMembership } from "../permissions/store.js";
+import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import { isSqliteConstraint as isUniqueConstraint } from "../sqlite.js";
 import type { Db } from "../db.js";
 import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
@@ -27,7 +29,6 @@ import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 /** Fixed sentinel id for the single canonical `system` user (see migration v107). */
 export const SYSTEM_USER_ID = "00000000000000000000000000";
 export const SYSTEM_USER_SLUG = "system";
-const AGENTS_GROUP_ID = "00000000000000000000000001";
 
 /** Settings key recording which user is the local human operator. */
 export const OPERATOR_SETTING_KEY = "user.operator_id";
@@ -403,30 +404,34 @@ export function createUser(db: Db, input: CreateUserInput, now: number = Date.no
     throw new UserRegistryError("conflict", `A user with slug '${slug}' already exists.`);
   }
   const id = ulid(now);
-  db.prepare(
-    `INSERT INTO users (id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    slug,
-    input.kind,
-    display,
-    input.email ?? null,
-    input.status ?? "active",
-    now,
-    now,
-    serializeMetadata(input.metadata),
-  );
-  if (input.kind === "agent") {
-    // Issue a0379a3 — creating an agent is the deliberate enrollment action.
-    // INSERT OR IGNORE keeps setupAgentUsers idempotent without silently
-    // enrolling pre-existing non-agent principals.
+
+  return mutateLedgerRecord(db, {
+    entity_type: "user",
+    entity_id: id,
+    snapshot: () => db.prepare("SELECT id, slug, kind, display_name, email, status, metadata_json FROM users WHERE id = ?").get(id) ?? null,
+  }, () => {
     db.prepare(
-      `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
-       VALUES (?, ?, ?)`,
-    ).run(AGENTS_GROUP_ID, id, now);
-  }
-  return getUserById(db, id)!;
+      `INSERT INTO users (id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      slug,
+      input.kind,
+      display,
+      input.email ?? null,
+      input.status ?? "active",
+      now,
+      now,
+      serializeMetadata(input.metadata),
+    );
+    if (input.kind === "agent") {
+      // Issue a0379a3 — creating an agent is the deliberate enrollment action.
+      // INSERT OR IGNORE keeps setupAgentUsers idempotent without silently
+      // enrolling pre-existing non-agent principals.
+      ensureAgentGroupMembership(db, id, now);
+    }
+    return getUserById(db, id)!;
+  });
 }
 
 export function updateUser(
@@ -460,9 +465,16 @@ export function updateUser(
   fields.push("updated_at = ?");
   params.push(now);
   params.push(user.id);
-  db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).run(...params);
-  if (patch.status !== undefined && patch.status !== user.status) notifyProtectionInputsChanged("user:status");
-  return getUserById(db, user.id)!;
+
+  return mutateLedgerRecord(db, {
+    entity_type: "user",
+    entity_id: user.id,
+    snapshot: () => db.prepare("SELECT id, display_name, email, status, metadata_json FROM users WHERE id = ?").get(user.id) ?? null,
+  }, () => {
+    db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+    if (patch.status !== undefined && patch.status !== user.status) db.afterCommit(() => notifyProtectionInputsChanged("user:status"));
+    return getUserById(db, user.id)!;
+  });
 }
 
 // --- credentials ---
@@ -499,34 +511,42 @@ export function addCredential(
   const publicMaterial = input.public_material?.trim() || null;
 
   const id = ulid(now);
-  try {
-    db.prepare(
-      `INSERT INTO user_credentials
-         (id, user_id, type, fingerprint, public_material, label, status, created_at, revoked_at, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)`,
-    ).run(
-      id,
-      user.id,
-      input.type,
-      fingerprint,
-      publicMaterial,
-      input.label ?? null,
-      now,
-      serializeMetadata(input.metadata),
-    );
-  } catch (error) {
-    if (isUniqueConstraint(error)) {
-      throw new UserRegistryError(
-        "conflict",
-        `An active credential already exists for fingerprint '${fingerprint}'. Revoke it before re-adding.`,
+
+  return mutateLedgerRecord(db, {
+    entity_type: "credential",
+    entity_id: id,
+    payload: { user_id: user.id },
+    snapshot: () => db.prepare("SELECT id, user_id, type, fingerprint, public_material, label, status, revoked_at, metadata_json FROM user_credentials WHERE id = ?").get(id) ?? null,
+  }, () => {
+    try {
+      db.prepare(
+        `INSERT INTO user_credentials
+           (id, user_id, type, fingerprint, public_material, label, status, created_at, revoked_at, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)`,
+      ).run(
+        id,
+        user.id,
+        input.type,
+        fingerprint,
+        publicMaterial,
+        input.label ?? null,
+        now,
+        serializeMetadata(input.metadata),
       );
+    } catch (error) {
+      if (isUniqueConstraint(error)) {
+        throw new UserRegistryError(
+          "conflict",
+          `An active credential already exists for fingerprint '${fingerprint}'. Revoke it before re-adding.`,
+        );
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (isSigningCredentialType(input.type)) notifyProtectionInputsChanged("credential:add");
-  return mapCredential(
-    db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(id) as CredentialRow,
-  );
+    if (isSigningCredentialType(input.type)) db.afterCommit(() => notifyProtectionInputsChanged("credential:add"));
+    return mapCredential(
+      db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(id) as CredentialRow,
+    );
+  });
 }
 
 export function revokeCredential(
@@ -539,14 +559,22 @@ export function revokeCredential(
     .get(credentialId) as CredentialRow | undefined;
   if (!row) throw new UserRegistryError("not_found", `No credential '${credentialId}'.`);
   if (row.status === "revoked") return mapCredential(row);
-  db.prepare("UPDATE user_credentials SET status = 'revoked', revoked_at = ? WHERE id = ?").run(
-    now,
-    credentialId,
-  );
-  if (isSigningCredentialType(row.type)) notifyProtectionInputsChanged("credential:revoke");
-  return mapCredential(
-    db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(credentialId) as CredentialRow,
-  );
+
+  return mutateLedgerRecord(db, {
+    entity_type: "credential",
+    entity_id: credentialId,
+    payload: { user_id: row.user_id },
+    snapshot: () => db.prepare("SELECT id, user_id, status, revoked_at FROM user_credentials WHERE id = ?").get(credentialId) ?? null,
+  }, () => {
+    db.prepare("UPDATE user_credentials SET status = 'revoked', revoked_at = ? WHERE id = ?").run(
+      now,
+      credentialId,
+    );
+    if (isSigningCredentialType(row.type)) db.afterCommit(() => notifyProtectionInputsChanged("credential:revoke"));
+    return mapCredential(
+      db.prepare("SELECT * FROM user_credentials WHERE id = ?").get(credentialId) as CredentialRow,
+    );
+  });
 }
 
 export function findActiveCredentialByFingerprint(
@@ -584,19 +612,26 @@ export function addDelegatedSigningLease(
   if (input.expires_at <= input.minted_at) {
     throw new UserRegistryError("invalid", "Delegated signing lease expiry must follow mint time.");
   }
-  db.prepare(
-    `INSERT INTO delegated_signing_leases (
-       id, credential_id, owner_user_id, minted_at, expires_at, mint_method
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    input.id,
-    input.credential_id,
-    input.owner_user_id,
-    input.minted_at,
-    input.expires_at,
-    input.mint_method,
-  );
-  return getDelegatedSigningLease(db, input.id)!;
+
+  return mutateLedgerRecord(db, {
+    entity_type: "signing_lease",
+    entity_id: input.id,
+    snapshot: () => db.prepare("SELECT id, credential_id, owner_user_id, minted_at, expires_at, mint_method FROM delegated_signing_leases WHERE id = ?").get(input.id) ?? null,
+  }, () => {
+    db.prepare(
+      `INSERT INTO delegated_signing_leases (
+         id, credential_id, owner_user_id, minted_at, expires_at, mint_method
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.id,
+      input.credential_id,
+      input.owner_user_id,
+      input.minted_at,
+      input.expires_at,
+      input.mint_method,
+    );
+    return getDelegatedSigningLease(db, input.id)!;
+  });
 }
 
 export function getDelegatedSigningLease(db: Db, id: string): DelegatedSigningLease | null {
@@ -661,20 +696,35 @@ export function addBinding(
   const value = input.value.trim();
   if (!value) throw new UserRegistryError("invalid", "binding value is required.");
   const id = ulid(now);
-  db.prepare(
-    `INSERT INTO user_bindings (id, user_id, binding_type, value, scope, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, user.id, input.binding_type, value, input.scope ?? null, input.status ?? "active", now, now);
-  return mapBinding(
-    db.prepare("SELECT * FROM user_bindings WHERE id = ?").get(id) as BindingRow,
-  );
+
+  return mutateLedgerRecord(db, {
+    entity_type: "binding",
+    entity_id: id,
+    payload: { user_id: user.id },
+    snapshot: () => db.prepare("SELECT id, user_id, binding_type, value, scope, status FROM user_bindings WHERE id = ?").get(id) ?? null,
+  }, () => {
+    db.prepare(
+      `INSERT INTO user_bindings (id, user_id, binding_type, value, scope, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, user.id, input.binding_type, value, input.scope ?? null, input.status ?? "active", now, now);
+    return mapBinding(
+      db.prepare("SELECT * FROM user_bindings WHERE id = ?").get(id) as BindingRow,
+    );
+  });
 }
 
 export function removeBinding(db: Db, bindingId: string): void {
-  const result = db.prepare("DELETE FROM user_bindings WHERE id = ?").run(bindingId);
-  if (result.changes === 0) {
-    throw new UserRegistryError("not_found", `No binding '${bindingId}'.`);
-  }
+  return mutateLedgerRecord(db, {
+    entity_type: "binding",
+    entity_id: bindingId,
+    snapshot: () => db.prepare("SELECT id, user_id, binding_type, value, scope, status FROM user_bindings WHERE id = ?").get(bindingId) ?? null,
+  }, () => {
+
+    const result = db.prepare("DELETE FROM user_bindings WHERE id = ?").run(bindingId);
+    if (result.changes === 0) {
+      throw new UserRegistryError("not_found", `No binding '${bindingId}'.`);
+    }
+  });
 }
 
 // --- operator setup ---
@@ -691,7 +741,7 @@ function setSetting(db: Db, key: string, value: string, now: number = Date.now()
     `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   ).run(key, value, now);
-  if (key === OPERATOR_SETTING_KEY) notifyProtectionInputsChanged("setting:operator");
+  if (key === OPERATOR_SETTING_KEY) db.afterCommit(() => notifyProtectionInputsChanged("setting:operator"));
 }
 
 function isSigningCredentialType(type: string): boolean {
@@ -734,40 +784,47 @@ export function setupOperator(
   input: SetupOperatorInput = {},
   now: number = Date.now(),
 ): User {
-  const slug = normalizeSlug(deriveOperatorSlug(input));
-  const existingId = getOperatorId(db);
-  let user = existingId ? getUserById(db, existingId) : null;
-  if (!user) user = getUserBySlug(db, slug);
+  return db.transaction(() => {
+    const slug = normalizeSlug(deriveOperatorSlug(input));
+    const existingId = getOperatorId(db);
+    let user = existingId ? getUserById(db, existingId) : null;
+    if (!user) user = getUserBySlug(db, slug);
 
-  if (user) {
-    if (user.kind !== "human") {
-      throw new UserRegistryError(
-        "conflict",
-        `User '${user.slug}' is kind '${user.kind}', not 'human'; cannot use as operator.`,
+    if (user) {
+      if (user.kind !== "human") {
+        throw new UserRegistryError(
+          "conflict",
+          `User '${user.slug}' is kind '${user.kind}', not 'human'; cannot use as operator.`,
+        );
+      }
+      const patch: UpdateUserInput = {};
+      if (input.display_name !== undefined && input.display_name.trim()) {
+        patch.display_name = input.display_name;
+      }
+      if (input.email !== undefined) patch.email = input.email;
+      if (input.metadata !== undefined) patch.metadata = input.metadata;
+      if (Object.keys(patch).length > 0) user = updateUser(db, user.id, patch, now);
+    } else {
+      user = createUser(
+        db,
+        {
+          slug,
+          kind: "human",
+          display_name: input.display_name?.trim() || slug,
+          email: input.email ?? null,
+          metadata: input.metadata,
+        },
+        now,
       );
     }
-    const patch: UpdateUserInput = {};
-    if (input.display_name !== undefined && input.display_name.trim()) {
-      patch.display_name = input.display_name;
-    }
-    if (input.email !== undefined) patch.email = input.email;
-    if (input.metadata !== undefined) patch.metadata = input.metadata;
-    if (Object.keys(patch).length > 0) user = updateUser(db, user.id, patch, now);
-  } else {
-    user = createUser(
-      db,
-      {
-        slug,
-        kind: "human",
-        display_name: input.display_name?.trim() || slug,
-        email: input.email ?? null,
-        metadata: input.metadata,
-      },
-      now,
-    );
-  }
-  setSetting(db, OPERATOR_SETTING_KEY, user.id, now);
-  return user;
+    const operator = user;
+    mutateLedgerRecord(db, {
+      entity_type: "operator", entity_id: OPERATOR_SETTING_KEY,
+      snapshot: () => db.prepare("SELECT value AS user_id FROM settings WHERE key = ?").get(OPERATOR_SETTING_KEY) ?? null,
+    }, () => setSetting(db, OPERATOR_SETTING_KEY, operator.id, now));
+    return user;
+
+  })();
 }
 
 const AGENT_SETUP_MANIFEST = [
@@ -811,10 +868,7 @@ export function setupAgentUsers(
         display_name: definition.display_name,
       }, now);
     }
-    db.prepare(
-      `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
-       VALUES (?, ?, ?)`,
-    ).run(AGENTS_GROUP_ID, user.id, now);
+    ensureAgentGroupMembership(db, user.id, now);
     for (const appName of definition.app_names) {
       ensureActiveBinding(db, user.id, "app_name", appName, now);
     }
@@ -852,8 +906,11 @@ function ensureActiveBinding(
       ORDER BY updated_at DESC LIMIT 1`,
   ).get(userId, bindingType, value) as { id: string } | undefined;
   if (inactive) {
-    db.prepare("UPDATE user_bindings SET status = 'active', updated_at = ? WHERE id = ?")
-      .run(now, inactive.id);
+    mutateLedgerRecord(db, {
+      entity_type: "binding", entity_id: inactive.id,
+      snapshot: () => db.prepare("SELECT id, user_id, status FROM user_bindings WHERE id = ?").get(inactive.id) ?? null,
+    }, () => db.prepare("UPDATE user_bindings SET status = 'active', updated_at = ? WHERE id = ?")
+      .run(now, inactive.id));
     return;
   }
   addBinding(db, userId, { binding_type: bindingType, value }, now);

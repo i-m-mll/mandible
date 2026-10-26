@@ -192,7 +192,14 @@ export default class SqliteDatabase {
       }
       this.commitCallbacks.pop();
       if (nested) this.commitCallbacks.at(-1)?.callbacks.push(...callbacks);
-      else for (const committed of callbacks) committed();
+      else {
+        const failures: unknown[] = [];
+        for (const committed of callbacks) {
+          try { committed(); } catch (error) { failures.push(error); }
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "SQLite post-commit effects failed");
+      }
       return value;
     };
     const deferred = (...args: Args) => execute("DEFERRED", args);

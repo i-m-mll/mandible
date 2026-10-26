@@ -13,6 +13,7 @@ describe("request origin dispatch", () => {
       const broadcast = vi.fn();
       const store = new LedgerStore(db, { broadcaster: broadcast });
       const user = createUser(db, { slug: 'origin-fixture', kind: 'agent', display_name: 'Before' });
+      const initialEvents = db.prepare('SELECT count(*) AS n FROM ledger_events').get();
       const origin = { provider: 'claude', provider_session_id: 'native-global-author' };
       const input = { actor_type: 'system' as const, attribution: systemAction(), entity_type: 'user', entity_id: user.id,
         event_type: 'user.updated', project_id: null, notify: false, payload: { operation: 'update', changed_fields: ['display_name'] } };
@@ -22,7 +23,7 @@ describe("request origin dispatch", () => {
         throw new Error('abort mutation');
       })())).toThrow('abort mutation');
       expect(db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id)).toEqual({ display_name: 'Before' });
-      expect(db.prepare('SELECT count(*) AS n FROM ledger_events').get()).toEqual({ n: 0 });
+      expect(db.prepare('SELECT count(*) AS n FROM ledger_events').get()).toEqual(initialEvents);
       expect(broadcast).not.toHaveBeenCalled();
       const event = withRequestOrigin(origin, () => db.transaction(() => {
         db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run('After', user.id);
@@ -36,8 +37,8 @@ describe("request origin dispatch", () => {
       expect(db.prepare('SELECT count(*) AS n FROM ledger_change_feed_state').get()).toEqual({ n: 0 });
       expect(db.prepare('SELECT count(*) AS n FROM ledger_change_log').get()).toEqual({ n: 0 });
       const project = createLedgerProject(db, process.cwd());
-      store.recordEvent({ ...input, project_id: project.project.id });
-      expect(db.prepare('SELECT project_id FROM ledger_change_log').all()).toEqual([{ project_id: project.project.id }]);
+      const projectEvent = store.recordEvent({ ...input, project_id: project.project.id });
+      expect(db.prepare('SELECT project_id FROM ledger_change_log WHERE event_id = ?').all(projectEvent.id)).toEqual([{ project_id: project.project.id }]);
     } finally { db.close(); }
   });
 
