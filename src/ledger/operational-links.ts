@@ -1,4 +1,4 @@
-import { mutateWorkUnit } from "../work-unit-history.js";
+import { currentLedgerMutationActor } from "./mutation-history.js";
 import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
@@ -134,10 +134,19 @@ export function linkWorkUnitToLedgerIssue(
     ...(input.metadata ?? {}),
   };
   db.transaction(() => {
-    mutateWorkUnit(db, input.work_unit_id, () => db.prepare("UPDATE work_units SET ledger_issue_id = ? WHERE id = ?").run(
-      resolved.issue_id,
-      input.work_unit_id,
-    ));
+    const previous = db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get(input.work_unit_id) as
+      { ledger_issue_id: string | null } | undefined;
+    const link = db.prepare("SELECT metadata_json FROM ledger_work_unit_issue_links WHERE work_unit_id = ? AND issue_id = ? AND link_type = ?")
+      .get(input.work_unit_id, resolved.issue_id, linkType) as { metadata_json: string } | undefined;
+    const source = input.source ?? "work_unit";
+    const metadataJson = JSON.stringify(metadata);
+    const changed = previous?.ledger_issue_id !== resolved.issue_id || !link
+      || link.metadata_json !== metadataJson;
+    const store = new LedgerStore(db);
+    const record = input.recordEvent === false || !changed ? null : store.prepareEventRecorder(
+      input.actor ?? currentLedgerMutationActor() ?? { actor_type: "system", attribution: systemAction() },
+    );
+    db.prepare("UPDATE work_units SET ledger_issue_id = ? WHERE id = ?").run(resolved.issue_id, input.work_unit_id);
     db.prepare(
       `INSERT INTO ledger_work_unit_issue_links (
         work_unit_id, issue_id, link_type, source, created_at, last_seen_at, metadata_json
@@ -145,24 +154,17 @@ export function linkWorkUnitToLedgerIssue(
       ON CONFLICT(work_unit_id, issue_id, link_type) DO UPDATE SET
         last_seen_at = excluded.last_seen_at,
         metadata_json = excluded.metadata_json`,
-    ).run(
-      input.work_unit_id,
-      resolved.issue_id,
-      linkType,
-      input.source ?? "work_unit",
-      now,
-      now,
-      JSON.stringify(metadata),
-    );
+    ).run(input.work_unit_id, resolved.issue_id, linkType, source, now, now, metadataJson);
+    if (record) {
+      const event = record({
+        entity_type: "work_unit", entity_id: input.work_unit_id,
+        event_type: "work_unit.issue_linked", source: "work_unit", project_id: resolved.project_id,
+        notify: false,
+        payload: { work_unit_id: input.work_unit_id, issue_id: resolved.issue_id, link_type: linkType },
+      });
+      db.afterCommit(() => store.notifyEvent(event));
+    }
   })();
-  maybeRecordLinkEvent(db, input.recordEvent, {
-    entity_type: "work_unit",
-    entity_id: input.work_unit_id,
-    event_type: "work_unit.issue_linked",
-    source: "work_unit",
-    project_id: resolved.project_id,
-    payload: { work_unit_id: input.work_unit_id, issue_id: resolved.issue_id, link_type: linkType },
-  });
   return { ok: true, issue_id: resolved.issue_id, project_id: resolved.project_id };
 }
 
