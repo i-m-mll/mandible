@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { SettingsView } from '../ui/src/views/settings';
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 
 beforeEach(() => {
   for (const instance of [mainInstance, previewInstance, preferenceWritablePreviewInstance]) bindTestInstanceCatalog(instance);
@@ -68,6 +69,7 @@ describe('SettingsView', () => {
   it('skips unavailable automatic reads while keeping copied Settings preferences editable', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/api/settings/child-retention') return Response.json(DEFAULT_CHILD_RETENTION_SETTINGS);
       if (url === '/api/settings/instructions-delivery') {
         return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
           headers: { 'content-type': 'application/json' },
@@ -127,6 +129,7 @@ describe('SettingsView', () => {
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/settings/child-retention') return Response.json(DEFAULT_CHILD_RETENTION_SETTINGS);
       if (url === '/api/settings/instructions-delivery' && init?.method !== 'PUT') {
         return new Response(JSON.stringify({
           targets,
