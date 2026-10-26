@@ -1,3 +1,5 @@
+import { mutateWorkUnit } from "../work-unit-history.js";
+import { requestOriginJson } from "../request-origin.js";
 import { randomUUID } from "node:crypto";
 import {
   normalizeAmbientProviderIdentity,
@@ -388,8 +390,8 @@ export function registerWorkUnitRoutes(
           const guard = changingKind
             ? " AND custody_generation = ? AND owner_user_id = ? AND owner_credential_id = ? AND kind = ? AND auth_request_id IS NULL"
             : "";
-          const changed = db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?${guard}`)
-            .run(...params, existing.id, ...(changingKind ? [body.expected_generation, current.owner_user_id, current.owner_credential_id, current.kind] : []));
+          const changed = mutateWorkUnit(db, existing.id, () => db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?${guard}`)
+            .run(...params, existing.id, ...(changingKind ? [body.expected_generation, current.owner_user_id, current.owner_credential_id, current.kind] : [])), attributionForRequest(db, req));
           if (changed.changes !== 1) return false;
         }
         if (changingKind) {
@@ -444,7 +446,7 @@ export function registerWorkUnitRoutes(
       { source: "work_unit", entity_id: id },
     );
 
-    db.prepare(
+    mutateWorkUnit(db, id, () => db.prepare(
       `INSERT INTO work_units (
         id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
         provider, provider_session_id, created_at, owner_user_id, owner_credential_id, custody_generation
@@ -463,7 +465,7 @@ export function registerWorkUnitRoutes(
       ownerUserId,
       null,
       0,
-    );
+    ));
     if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
     const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
@@ -562,9 +564,9 @@ export function registerWorkUnitRoutes(
       }
       params.push(existing.id);
 
-      db.prepare(
+      mutateWorkUnit(db, existing.id, () => db.prepare(
         `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
-      ).run(...params);
+      ).run(...params), attributionForRequest(db, req));
 
       const ledgerLink = linkLedgerIssue(db, existing.id, body.issue_id, repoId);
       sendJson(res, 200, {
@@ -587,7 +589,7 @@ export function registerWorkUnitRoutes(
         logger,
         { source: "work_unit", entity_id: id },
       );
-      db.prepare(
+      mutateWorkUnit(db, id, () => db.prepare(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
           provider, provider_session_id, created_at, activated_at, last_commit_at,
@@ -608,7 +610,7 @@ export function registerWorkUnitRoutes(
         body.worker_owner === true ? ambientIdentity!.provider_session_id : null,
         null,
         0,
-      );
+      ));
       if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
       const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
@@ -658,9 +660,9 @@ export function registerWorkUnitRoutes(
       sendJson(res, 409, { error: "Resolved work cannot be released." });
       return;
     }
-    const changed = db.prepare(`UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL
+    const changed = mutateWorkUnit(db, row.id, () => db.prepare(`UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL
       WHERE id = ? AND custody_generation = ? AND state != 'abandoned'`)
-      .run(row.id, body.expected_generation);
+      .run(row.id, body.expected_generation), attributionForRequest(db, req));
     sendJson(res, 200, { ok: true, id: row.id, released: changed.changes, unchanged: changed.changes === 0 });
   }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { body: { id: entityRefs.workUnit } } });
@@ -691,7 +693,7 @@ export function registerWorkUnitRoutes(
     }
     db.transaction(() => {
       const release = db.prepare("UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL WHERE id = ?");
-      for (const row of rows) release.run(row.id);
+      for (const row of rows) mutateWorkUnit(db, row.id, () => release.run(row.id), attributionForRequest(db, req));
     })();
     sendJson(res, 200, { ok: true, released: rows.length });
   }, { operation: { id: "post:/api/work-units/release-issue", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
@@ -1076,9 +1078,9 @@ export function registerWorkUnitRoutes(
     }
 
     params.push(id);
-    db.prepare(
+    mutateWorkUnit(db, id, () => db.prepare(
       `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
-    ).run(...params);
+    ).run(...params), attributionForRequest(db, req));
 
     const updatedRow = db
       .prepare("SELECT * FROM work_units WHERE id = ?")
@@ -1115,15 +1117,15 @@ function assignInitialCustody(
   }
   const next = Number(current.custody_generation) + 1;
   db.transaction(() => {
-    const changed = db.prepare(`UPDATE work_units SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?
+    const changed = mutateWorkUnit(db, workUnitId, () => db.prepare(`UPDATE work_units SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?
       WHERE id = ? AND owner_credential_id IS NULL AND auth_request_id IS NULL AND custody_generation = ?`)
-      .run(userId, credentialId, next, workUnitId, current.custody_generation);
+      .run(userId, credentialId, next, workUnitId, current.custody_generation));
     if (changed.changes !== 1) throw new Error("work_unit_custody_conflict");
     db.prepare(`INSERT INTO work_unit_custody_events
-      (id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+      (request_origin_json, id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
        prior_generation, new_generation, authority_path, reason, occurred_at)
-      VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'initial_assignment', 'Authenticated work-unit activation.', ?)`)
-      .run(randomUUID(), workUnitId, current.owner_user_id, userId, credentialId, current.custody_generation, next, now);
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'initial_assignment', 'Authenticated work-unit activation.', ?)`)
+      .run(requestOriginJson(), randomUUID(), workUnitId, current.owner_user_id, userId, credentialId, current.custody_generation, next, now);
   })();
   return { ok: true };
 }

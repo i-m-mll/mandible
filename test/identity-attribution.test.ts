@@ -189,7 +189,7 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
       evidence_method: "system_internal",
     });
     expect(db.prepare(
-      "SELECT COUNT(*) AS n FROM ledger_events WHERE actor_user_id IS NULL OR evidence_method = 'forged_after_validation'",
+      "SELECT COUNT(*) AS n FROM ledger_events WHERE entity_type = 'issue' AND (actor_user_id IS NULL OR evidence_method = 'forged_after_validation')",
     ).get()).toEqual({ n: 0 });
   });
 

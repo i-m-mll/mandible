@@ -1,3 +1,6 @@
+import { withLedgerMutationActor } from "./ledger/mutation-history.js";
+import { withRequestOrigin } from "./request-origin.js";
+import { mutateWorkUnit } from "./work-unit-history.js";
 import { authDependencies } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
@@ -140,7 +143,7 @@ import { broadcast as defaultBroadcast } from "./sse.js";
 import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
-import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from "./auth-lifecycle.js";
+import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -2027,14 +2030,16 @@ export class AuthQueue {
           issues: request.issues ? JSON.stringify(request.issues) : null
         });
         insertAuthRequestActions(this.db, request, actions, now);
-        if (payload.space_publication_id) bindAuthPublication(this.db, request, payload.space_publication_id);
+        if (payload.space_publication_id) withLedgerMutationActor({ actor_type: "mandible_user",
+          attribution: { user_id: actor.user_id, evidence_method: actor.evidence_method, evidence_id: actor.evidence_id } },
+          () => bindAuthPublication(this.db, request, payload.space_publication_id!));
         if (custody) {
-          const bound = this.db.prepare(
+          const bound = mutateWorkUnit(this.db, custody.id, () => this.db.prepare(
             `UPDATE work_units SET auth_request_id = ?
            WHERE id = ? AND state = 'committed' AND resolved_at IS NULL
              AND owner_user_id = ? AND owner_credential_id = ? AND custody_generation = ?
              AND (auth_request_id IS NULL OR auth_request_id = ?)`,
-          ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null);
+          ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null));
           if (bound.changes !== 1) {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
           }
@@ -5269,7 +5274,13 @@ export class AuthQueue {
     }
   }
 
-  private async executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+  private executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.executeOriginBoundRequest(request, settleClearance)));
+  }
+
+  private async executeOriginBoundRequest(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
@@ -5735,7 +5746,13 @@ export class AuthQueue {
    * was outstanding. Idempotent: actions already applied are no longer
    * `staged`, so a repeat call is a no-op.
    */
-  private async releaseWithheldClosures(request: AuthRequest): Promise<void> {
+  private releaseWithheldClosures(request: AuthRequest): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.releaseOriginBoundClosures(request)));
+  }
+
+  private async releaseOriginBoundClosures(request: AuthRequest): Promise<void> {
     const current = this.getRequestById(request.id);
     if (!current || current.status !== "completed" || current.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(current))) return;
     const execution = this.executionToken(current.id);
@@ -6868,7 +6885,13 @@ export class AuthQueue {
     }
   }
 
-  private async applyLedgerCompletionForRequest(request: AuthRequest): Promise<void> {
+  private applyLedgerCompletionForRequest(request: AuthRequest): Promise<void> {
+    return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
+      () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+        () => this.applyOriginBoundLedgerCompletion(request)));
+  }
+
+  private async applyOriginBoundLedgerCompletion(request: AuthRequest): Promise<void> {
     const observed = this.observationToken(request.id, request);
     if ((await this.successfulMergeEvidenceFailure(request))) return;
     this.assertObservation(request.id, observed);
@@ -6921,7 +6944,8 @@ export class AuthQueue {
     if ((await this.successfulMergeEvidenceFailure(request))) return;
     this.assertObservation(request.id, observed);
     const execution = this.executionToken(request.id);
-    await this.applyDeferredLedgerActions(request, () => this.assertExecution(request.id, execution));
+    await withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
+      () => this.applyDeferredLedgerActions(request, () => this.assertExecution(request.id, execution)));
   }
 
   private async applyDeferredLedgerActions(request: AuthRequest, guard: () => void): Promise<void> {
@@ -6957,7 +6981,8 @@ export class AuthQueue {
       }
       try {
         this.db.transaction(() => {
-          const outcome = this.applyDeferredLedgerAction(request, action);
+          const outcome = withRequestOrigin(action.request_origin ?? null,
+            () => this.applyDeferredLedgerAction(request, action));
           if (!action.id.startsWith("legacy:")) {
             this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
           }
@@ -7429,7 +7454,7 @@ export class AuthQueue {
       .all(completed.id) as Array<{ id: string }>;
 
     for (const row of byAuthId) {
-      resolveStmt.run(now, completed.id, row.id);
+      mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
       resolvedIds.add(row.id);
     }
 
@@ -7447,7 +7472,7 @@ export class AuthQueue {
           !resolvedIds.has(row.id) &&
           this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)
         ) {
-          resolveStmt.run(now, completed.id, row.id);
+          mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
           resolvedIds.add(row.id);
         }
       }
@@ -7472,7 +7497,7 @@ export class AuthQueue {
         );
         for (const row of matching) {
           if (!resolvedIds.has(row.id)) {
-            resolveStmt.run(now, completed.id, row.id);
+            mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
             resolvedIds.add(row.id);
           }
         }
@@ -7504,7 +7529,7 @@ export class AuthQueue {
 
       for (const row of byLedgerIssue) {
         if (!resolvedIds.has(row.id)) {
-          resolveStmt.run(now, completed.id, row.id);
+          mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
           resolvedIds.add(row.id);
         }
       }
@@ -7570,9 +7595,9 @@ export class AuthQueue {
       for (const row of scan.matches) {
         if (!resolvedIds.has(row.id)) {
           if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
-            recoverClosedMergedStmt.run(now, completed.id, row.id);
+            mutateWorkUnit(this.db, row.id, () => recoverClosedMergedStmt.run(now, completed.id, row.id));
           } else {
-            recoverMergedStmt.run(now, row.id);
+            mutateWorkUnit(this.db, row.id, () => recoverMergedStmt.run(now, row.id));
           }
           resolvedIds.add(row.id);
         }

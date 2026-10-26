@@ -20,6 +20,9 @@ let logs: Array<{ level: string; event: string; data: Record<string, unknown> | 
 beforeEach(() => {
   db = new SqliteDatabase(":memory:");
   db.exec(`
+    CREATE TABLE ledger_events (id TEXT PRIMARY KEY,entity_type TEXT,entity_id TEXT,event_type TEXT,
+      actor_id TEXT,actor_type TEXT,actor_user_id TEXT,evidence_method TEXT,evidence_id TEXT,
+      source TEXT,payload_json TEXT,occurred_at INTEGER,observed_at INTEGER);
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL

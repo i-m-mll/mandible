@@ -96,4 +96,33 @@ request origin is not projected as a subprocess's agent enrollment identity.
 Their initiating envelope travels through the independent metadata-only channel;
 existing explicit credentials retain authority over downstream CLI writes.
 
+Registry and access mutation coverage:
+
+| Canonical boundary | Retained history |
+| --- | --- |
+| Project add/update, checkout add/update/reassignment, discovery reconciliation, key backfill, repair merge | Common project/checkout events; merge records identify both projects |
+| User create/update/retire, explicit operator selection, agent enrollment | Common user/operator/membership events |
+| Credential add/revoke, delegated signing lease creation/expiry shortening, binding add/remove/reactivation | Common credential/lease/binding events with owner IDs and changed field names; no material or values |
+| Group create/delete, membership add/remove, grant add/remove, project restriction | Common group/membership/grant/project events, including deletion cascades |
+| Reminder create/cancel/complete | Existing managed task events; the created event captures the initiating origin for later system execution |
+| Reminder occurrence acknowledgement | Common occurrence event |
+
+`ClientAuthenticator.mutationAttribution` uses the existing request attribution
+resolver. Router dispatch carries that result separately from native origin to
+nested history helpers. Each recorded actor is validated before the mutation,
+so retiring the acting user preserves that already-validated attribution.
+History never grants access or changes credential authority. Lease expiry
+shortening keeps the current caller attribution when present; automatic drain,
+expiry, and cancellation record the system executor independently of any retained
+native origin. An unchanged expiry produces no lease update event.
+
+Registry/access snapshots exclude update timestamps and runtime observations.
+Unchanged canonical fields, rejected requests, rolled-back transactions, and
+reminder idempotency replays produce no additional change events. No last-seen,
+retry, cache, derived ingestion, or view-preference history is added.
+
+`Db.afterCommit` queues synchronous effects through managed transaction
+savepoints, discards rolled-back effects, and runs committed effects outside the
+rollback handler. An unmanaged SQL transaction cannot register these effects.
+
 Co-Authored-By: Codex (GPT) <codex@openai.com>

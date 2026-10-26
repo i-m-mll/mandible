@@ -10,6 +10,10 @@ export function withLedgerMutationActor<T>(actor: LedgerActorInput, action: () =
   return actors.run(actor, action);
 }
 
+export function currentLedgerMutationActor(): LedgerActorInput | null {
+  return actors.getStore() ?? null;
+}
+
 /** Use the existing event stream for canonical state without specialized history. */
 export function mutateLedgerRecord<T>(db: Db, input: {
   entity_type: string;
@@ -23,7 +27,6 @@ export function mutateLedgerRecord<T>(db: Db, input: {
   snapshot: () => Record<string, unknown> | null;
 }, mutate: () => T): T {
   const store = new LedgerStore(db);
-  let event: ReturnType<LedgerStore["recordEvent"]> | undefined;
   const result = db.transaction(() => {
     const record = store.prepareEventRecorder({
       ...actors.getStore(),
@@ -36,15 +39,17 @@ export function mutateLedgerRecord<T>(db: Db, input: {
     const after = input.snapshot();
     const fields = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])]
       .filter(key => JSON.stringify(before?.[key] ?? null) !== JSON.stringify(after?.[key] ?? null));
-    if (fields.length) event = record({
+    if (fields.length) {
+    const event = record({
       entity_type: input.entity_type, entity_id: input.entity_id,
       event_type: `${input.entity_type}.${before ? after ? "updated" : "deleted" : "created"}`,
       project_id: input.project_id, source: input.source ?? "mandible",
       notify: false,
       payload: { ...input.payload, operation: before ? after ? "update" : "delete" : "create", changed_fields: fields },
     });
+    db.afterCommit(() => store.notifyEvent(event));
+    }
     return result;
   })();
-  if (event) { const committed = event; db.afterCommit(() => store.notifyEvent(committed)); }
   return result;
 }

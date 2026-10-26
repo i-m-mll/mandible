@@ -1,3 +1,6 @@
+import { requestOriginFromRow } from "../ledger/origin-read.js";
+import { mutateBriefing } from "./mutation-history.js";
+import { requestOriginJson } from "../request-origin.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { readArtifactBytesFull } from "../artifact-content.js";
@@ -282,9 +285,9 @@ export function publishBriefingRun(
     if (!briefing) {
       const id = randomUUID();
       db.prepare(
-        `INSERT INTO briefings (id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, 0, ?, ?)`,
-      ).run(id, request.briefing_key, request.title, request.description ?? null, now, now);
+        `INSERT INTO briefings (request_origin_json, id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
+      ).run(requestOriginJson(), id, request.briefing_key, request.title, request.description ?? null, now, now);
       briefing = { id, latest_round_id: null, round_count: 0, logical_artifact_id: null };
     } else {
       if (request.description === undefined) {
@@ -340,9 +343,9 @@ export function publishBriefingRun(
       if (!existingRound) {
         db.prepare(
           `INSERT INTO briefing_rounds
-            (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(roundId, briefing.id, briefing.round_count + 1, artifactVersionId,
+            (request_origin_json, id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(requestOriginJson(), roundId, briefing.id, briefing.round_count + 1, artifactVersionId,
           briefing.latest_round_id, BRIEFING_PROFILE, bindingDigest, now);
       }
       directives.forEach((directive, position) => {
@@ -387,11 +390,11 @@ export function publishBriefingRun(
     const receiptId = randomUUID();
     db.prepare(
       `INSERT INTO briefing_runs
-        (id, briefing_id, round_id, artifact_version_id, publisher_user_id, task_identity, run_id, run_key,
+        (request_origin_json, id, briefing_id, round_id, artifact_version_id, publisher_user_id, task_identity, run_id, run_key,
          request_digest, evidence_series_ref, evidence_version, evidence_digest, source_health_json,
          quiet, quiet_reason, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(receiptId, briefing.id, roundId, artifactVersionId, publisherUserId, request.task_identity,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(requestOriginJson(), receiptId, briefing.id, roundId, artifactVersionId, publisherUserId, request.task_identity,
       request.run_id, request.run_key, digest, request.evidence.series_ref, request.evidence.version,
       request.evidence.digest, JSON.stringify(request.source_health), request.document ? 0 : 1,
       request.quiet_reason, now);
@@ -617,8 +620,8 @@ export function publishBriefingFromArtifactVersion(
       }
       const id = randomUUID();
       db.prepare(`INSERT INTO briefings
-        (id, briefing_key, logical_artifact_id, title, description, latest_round_id, round_count, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+        (request_origin_json, id, briefing_key, logical_artifact_id, title, description, latest_round_id, round_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(requestOriginJson(),
         id,
         requestedKey ?? `manual:${id}`,
         logicalArtifactId,
@@ -632,8 +635,8 @@ export function publishBriefingFromArtifactVersion(
         const provenance = validateCreationProvenance(db, request.creation_provenance);
         overrideReceiptId = randomUUID();
         db.prepare(`INSERT INTO briefing_creation_overrides
-          (id, briefing_id, logical_artifact_id, reason, actor_user_id, evidence_method, credential_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          (request_origin_json, id, briefing_id, logical_artifact_id, reason, actor_user_id, evidence_method, credential_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(),
           overrideReceiptId,
           id,
           logicalArtifactId,
@@ -687,9 +690,9 @@ export function publishBriefingFromArtifactVersion(
     }
     const roundId = randomUUID();
     db.prepare(`INSERT INTO briefing_rounds
-      (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+      (request_origin_json, id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
        previous_round_id, profile, binding_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(roundId, briefing.id, briefing.round_count + 1, versionId,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), roundId, briefing.id, briefing.round_count + 1, versionId,
       comparisonBaseVersionId, briefing.latest_round_id, request.profile, roundBindingDigest(directives), now);
     directives.forEach((directive, position) => {
       let definition = db.prepare("SELECT id FROM briefing_directive_definitions WHERE artifact_version_id = ? AND directive_key = ?")
@@ -788,9 +791,9 @@ export function publishBriefingReportRound(db: Db, input: {
     ).run(briefing.id, responder, now);
     const roundId = randomUUID();
     db.prepare(`INSERT INTO briefing_rounds
-      (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+      (request_origin_json, id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
        previous_round_id, profile, binding_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(roundId, briefing.id, briefing.round_count + 1, versionId,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), roundId, briefing.id, briefing.round_count + 1, versionId,
       expectedVersionId, briefing.latest_round_id, BRIEFING_PROFILE_V3, roundBindingDigest(directives), now);
     directives.forEach((directive, position) => {
       let definition = db.prepare(`SELECT id FROM briefing_directive_definitions
@@ -911,6 +914,7 @@ export function updateBriefingTitle(
 ) {
   const normalized = normalizeBriefingTitle(title);
   const briefingId = resolveBriefingId(db, briefingRef, viewer);
+  return mutateBriefing(db, "briefing", briefingId, () => {
   const briefing = db.prepare("SELECT id, title FROM briefings WHERE id = ?")
     .get(briefingId) as { id: string; title: string } | undefined;
   if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
@@ -918,6 +922,7 @@ export function updateBriefingTitle(
     db.prepare("UPDATE briefings SET title = ? WHERE id = ?").run(normalized, briefing.id);
   }
   return { briefing_id: briefing.id, title: normalized, changed: briefing.title !== normalized };
+  });
 }
 
 export function updateBriefingDescription(
@@ -929,6 +934,7 @@ export function updateBriefingDescription(
 ) {
   const normalized = normalizeBriefingDescription(description);
   const briefingId = resolveBriefingId(db, briefingRef, viewer);
+  return mutateBriefing(db, "briefing", briefingId, () => {
   const briefing = db.prepare("SELECT id, description FROM briefings WHERE id = ?")
     .get(briefingId) as { id: string; description: string | null } | undefined;
   if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
@@ -938,6 +944,7 @@ export function updateBriefingDescription(
       .run(normalized, now, briefing.id);
   }
   return { briefing_id: briefing.id, description: normalized, changed };
+  });
 }
 
 export function setBriefingArchived(
@@ -948,6 +955,7 @@ export function setBriefingArchived(
   now = Date.now(),
 ) {
   const briefingId = resolveBriefingId(db, briefingRef, viewer);
+  return mutateBriefing(db, "briefing", briefingId, () => {
   const briefing = db.prepare("SELECT archived_at FROM briefings WHERE id = ?")
     .get(briefingId) as { archived_at: number | null } | undefined;
   if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
@@ -955,6 +963,7 @@ export function setBriefingArchived(
   if (changed) db.prepare("UPDATE briefings SET archived_at = ? WHERE id = ?")
     .run(archived ? now : null, briefingId);
   return { briefing_id: briefingId, archived_at: archived ? (briefing.archived_at ?? now) : null, changed };
+  });
 }
 
 function pinnedRoundDocument(db: Db, artifactVersionId: string): { source: string; content_hash: string } {
@@ -1114,7 +1123,7 @@ export function readBriefing(
 ) {
   const briefing = db.prepare(
     `SELECT b.id, b.briefing_key, b.logical_artifact_id, b.title, b.description, b.latest_round_id,
-            b.round_count, b.archived_at, b.created_at, b.updated_at,
+            b.round_count, b.archived_at, b.created_at, b.updated_at, b.request_origin_json,
             (SELECT MIN(policy.publication_mode)
                FROM briefing_destination_routes route
                JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
@@ -1122,10 +1131,11 @@ export function readBriefing(
        FROM briefings b WHERE b.id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;
+  Object.assign(briefing, { request_origin: requestOriginFromRow(briefing) });
   const roundRows = db.prepare(
     `SELECT r.id, r.ordinal, r.artifact_version_id, r.comparison_base_artifact_version_id,
             r.previous_round_id, r.profile,
-            r.binding_digest, r.created_at,
+            r.binding_digest, r.created_at, r.request_origin_json,
             COALESCE((SELECT json_extract(run.source_health_json, '$.source')
                FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1),
               (SELECT composition.source_key FROM briefing_composition_report_publications publication
@@ -1143,11 +1153,13 @@ export function readBriefing(
   ).all(briefingId) as Array<{
     id: string; ordinal: number; artifact_version_id: string; comparison_base_artifact_version_id: string | null;
     previous_round_id: string | null;
+    request_origin_json: string | null;
     profile: string; binding_digest: string; created_at: number; origin_source: string | null;
     origin_run_id: string | null; origin_task_identity: string | null;
   }>;
   const rounds = roundRows.map(({ origin_source, origin_run_id, origin_task_identity, ...round }) => ({
     ...round,
+    request_origin: requestOriginFromRow(round),
     origin: origin_run_id === null ? null : {
       source: origin_source,
       run_id: origin_run_id,
@@ -1431,9 +1443,9 @@ export function applyBriefingAnswers(
         const retractionId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_response_events
-            (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-           VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
-        ).run(retractionId, roundId, briefingId, directive.id, current.id, actorUserId, now);
+            (request_origin_json, id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+           VALUES (?, ?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+        ).run(requestOriginJson(), retractionId, roundId, briefingId, directive.id, current.id, actorUserId, now);
         answerEventIds.push(retractionId);
         continue;
       }
@@ -1445,15 +1457,15 @@ export function applyBriefingAnswers(
       }
       if (current) db.prepare(
         `INSERT INTO briefing_response_events
-          (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
-      ).run(randomUUID(), roundId, briefingId, directive.id, current.id, actorUserId, now);
+          (request_origin_json, id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+      ).run(requestOriginJson(), randomUUID(), roundId, briefingId, directive.id, current.id, actorUserId, now);
       const eventId = randomUUID();
       db.prepare(
         `INSERT INTO briefing_response_events
-          (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, ?, ?, 'set', ?, NULL, ?, ?)`,
-      ).run(eventId, roundId, briefingId, directive.id, serialized, actorUserId, now);
+          (request_origin_json, id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'set', ?, NULL, ?, ?)`,
+      ).run(requestOriginJson(), eventId, roundId, briefingId, directive.id, serialized, actorUserId, now);
       answerEventIds.push(eventId);
     }
     return { answer_event_ids: answerEventIds,
@@ -1489,10 +1501,10 @@ export function applyBriefingAnnotations(
         const retractionId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_annotation_events
-            (id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
+            (request_origin_json, id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
              replacement_text, retracts_event_id, actor_user_id, created_at)
-           VALUES (?, ?, ?, 'retract', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
-        ).run(retractionId, roundId, briefingId, targetId, actorUserId, now);
+           VALUES (?, ?, ?, ?, 'retract', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+        ).run(requestOriginJson(), retractionId, roundId, briefingId, targetId, actorUserId, now);
         ids.push(retractionId);
         continue;
       }
@@ -1524,10 +1536,10 @@ export function applyBriefingAnnotations(
       const id = randomUUID();
       db.prepare(
         `INSERT INTO briefing_annotation_events
-          (id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
+          (request_origin_json, id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
            replacement_text, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-      ).run(id, roundId, briefingId, kind, start, end, quote, body, replacement, actorUserId, now);
+         VALUES (?, ?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      ).run(requestOriginJson(), id, roundId, briefingId, kind, start, end, quote, body, replacement, actorUserId, now);
       ids.push(id);
     }
     return { annotation_event_ids: ids, annotations: effectiveAnnotations(db, roundId, actorUserId) };
@@ -1606,9 +1618,9 @@ export function submitBriefingRound(
     const submissionId = randomUUID();
     db.prepare(
       `INSERT INTO briefing_submissions
-        (id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(submissionId, roundId, briefingId, ordinal, supersedes, actorUserId, now);
+        (request_origin_json, id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(requestOriginJson(), submissionId, roundId, briefingId, ordinal, supersedes, actorUserId, now);
     current.forEach((answer, position) => db.prepare(
       `INSERT INTO briefing_submission_answers
         (submission_id, round_id, actor_user_id, directive_instance_id, response_event_id, position)

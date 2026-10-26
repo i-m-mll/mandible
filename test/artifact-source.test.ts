@@ -105,6 +105,7 @@ it('backfills only consistent sources and preserves duplicate/ambiguous history 
   expect(legacy.prepare('SELECT id FROM artifact_version ORDER BY id').all()).toEqual(ids);
   expect(legacy.prepare('SELECT reconciliation_reason FROM artifact_source ORDER BY artifact_id').all()).toEqual([
     {reconciliation_reason:null},{reconciliation_reason:'historical_source_ambiguous'},{reconciliation_reason:'duplicate_current_source'},{reconciliation_reason:'duplicate_current_source'},{reconciliation_reason:'historical_source_ambiguous'}]);
+  legacy.exec("ALTER TABLE artifact_source_move ADD COLUMN request_origin_json TEXT");
   const repair={artifact_id:'mixed',expected_revision:1,source:{kind:'managed' as const,key:'reconciled'},actor:'operator'};
   expect(planArtifactSourceMove(legacy,repair)).toMatchObject({ok:false,error:{code:'reconciliation_required'}});
   const plan=ok(planArtifactSourceMove(legacy,{...repair,reconcile:true}));

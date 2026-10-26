@@ -1,3 +1,5 @@
+import { mutateBriefing } from "./mutation-history.js";
+import { requestOriginJson } from "../request-origin.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import { readArtifactBytesFull } from "../artifact-content.js";
@@ -554,6 +556,7 @@ export function reconcileBriefingDestinationRoutes(
           409, "briefing_destination_route_revision_drift",
           { route_key: planned.route_key, current_revision: planned.current_revision });
       }
+      mutateBriefing(db, "briefing_route", route.route_key, () => {
       db.prepare(`INSERT INTO briefing_destination_routes
         (route_key, logical_artifact_id, heading, composer_kind, active_template_version,
          max_contributions, max_document_bytes, max_directives, created_at, updated_at)
@@ -571,6 +574,7 @@ export function reconcileBriefingDestinationRoutes(
         VALUES (?, ?, ?, ?) ON CONFLICT(route_key) DO UPDATE SET
           publication_mode = excluded.publication_mode, updated_at = excluded.updated_at`)
         .run(route.route_key, route.publication_mode, now, now);
+      });
     }
     return plan;
   }).immediate();
@@ -749,15 +753,15 @@ function cloneBaseBundle(db: Db, base: BaseDocument, replacements: ReadonlyMap<s
   enforceActivePlacement(db, { operation: "composition_proposal", target: { kind: "group", id: base.groupId },
     briefingIds, now });
   const bundleId = randomUUID();
-  db.prepare("INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-    .run(bundleId, `${base.groupName} proposed update`, now, now);
+  db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run(requestOriginJson(), bundleId, `${base.groupName} proposed update`, now, now);
   const insert = db.prepare(`INSERT INTO briefing_bundle_members
     (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   members.forEach((member) => insert.run(bundleId, replacements.get(member.briefing_id) ?? member.briefing_id,
     member.layout_position, member.entry_kind, member.subgroup_name, member.subgroup_position, now));
-  db.prepare(`INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at)
-    VALUES (?, ?, 0, ?)`).run(base.groupId, bundleId, now);
+  db.prepare(`INSERT INTO briefing_group_updates (request_origin_json, group_id, bundle_id, position, created_at)
+    VALUES (?, ?, ?, 0, ?)`).run(requestOriginJson(), base.groupId, bundleId, now);
   db.prepare("UPDATE briefing_groups SET updated_at = ? WHERE id = ?").run(now, base.groupId);
   return bundleId;
 }
@@ -834,9 +838,9 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
       bases.set(`${base.groupId}:${base.logicalArtifactId}`, base);
     }
     db.prepare(`INSERT INTO briefing_composition_runs
-      (id, publisher_user_id, task_identity, run_id, run_key, request_digest, source_key, source_cursor,
-       source_health_json, quiet, quiet_reason, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(receiptId, publisherUserId, request.task_identity, request.run_id, request.run_key, requestDigest,
+      (request_origin_json, id, publisher_user_id, task_identity, run_id, run_key, request_digest, source_key, source_cursor,
+       source_health_json, quiet, quiet_reason, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(requestOriginJson(), receiptId, publisherUserId, request.task_identity, request.run_id, request.run_key, requestDigest,
         request.source.key, request.source.cursor, canonicalJson(request.source_health), request.quiet_reason === null ? 0 : 1,
         request.quiet_reason, now);
     const insertInput = db.prepare(`INSERT INTO briefing_composition_inputs
@@ -849,13 +853,13 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         input.expected_current_round_id, input.agentic_markdown);
     }
     const insertContribution = db.prepare(`INSERT OR IGNORE INTO briefing_composition_contributions
-      (id, run_id, publisher_user_id, source_key, route_key, change_id, evidence_ref, evidence_digest,
+      (request_origin_json, id, run_id, publisher_user_id, source_key, route_key, change_id, evidence_ref, evidence_digest,
        occurred_at, slots_json, observed_base_artifact_version_id, state, proposal_bundle_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)`);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)`);
     for (const contribution of request.contributions) {
       const route = routes.get(contribution.route_key)!;
       const base = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
-      insertContribution.run(randomUUID(), receiptId, publisherUserId, request.source.key, route.route_key,
+      insertContribution.run(requestOriginJson(), randomUUID(), receiptId, publisherUserId, request.source.key, route.route_key,
         contribution.change_id, contribution.evidence_ref, contribution.evidence_digest, contribution.occurred_at,
         canonicalJson(validateSlots(route, contribution.slots)), base.artifactVersionId, now);
     }
@@ -866,9 +870,9 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
       for (const route of reportDocuments.values()) {
         const current = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
         db.prepare(`INSERT INTO briefing_composition_report_publications
-          (run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
+          (request_origin_json, run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
            previous_artifact_version_id, current_artifact_version_id, created_at)
-          VALUES (?, ?, ?, ?, 'unchanged', ?, ?, ?, ?, ?)`).run(receiptId, current.logicalArtifactId,
+          VALUES (?, ?, ?, ?, ?, 'unchanged', ?, ?, ?, ?, ?)`).run(requestOriginJson(), receiptId, current.logicalArtifactId,
           current.groupId, current.briefingId, current.latestRoundId, current.latestRoundId,
           current.artifactVersionId, current.artifactVersionId, now);
         targets.push({ publication_mode: "published-report", group_id: current.groupId,
@@ -882,8 +886,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         const route = [...routes.values()].find((candidate) => candidate.group_id === groupId)!;
         const base = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
         db.prepare(`INSERT INTO briefing_composition_targets
-          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
-          .run(receiptId, groupId, base.baseBundleId);
+          (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'unchanged', ?, NULL)`)
+          .run(requestOriginJson(), receiptId, groupId, base.baseBundleId);
         targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged",
           base_bundle_id: base.baseBundleId, proposal_bundle_id: null });
       }
@@ -947,9 +951,9 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
           WHERE id IN (${contributionIds.map(() => "?").join(",")})`).run(...contributionIds);
       }
       db.prepare(`INSERT INTO briefing_composition_report_publications
-        (run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
+        (request_origin_json, run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
          previous_artifact_version_id, current_artifact_version_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(receiptId, current.logicalArtifactId, current.groupId,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), receiptId, current.logicalArtifactId, current.groupId,
         current.briefingId, outcome, current.latestRoundId, currentRoundId, current.artifactVersionId,
         currentVersionId, now);
       targets.push({ publication_mode: "published-report", group_id: current.groupId,
@@ -970,8 +974,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         "briefing_destination_proposal_drift");
       if (active.length === 1) {
         db.prepare(`INSERT INTO briefing_composition_targets
-          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'queued', ?, NULL)`)
-          .run(receiptId, groupId, anyBase.baseBundleId);
+          (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'queued', ?, NULL)`)
+          .run(requestOriginJson(), receiptId, groupId, anyBase.baseBundleId);
       targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
@@ -984,8 +988,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
           AND c.state = 'pending' ORDER BY c.created_at, c.id`).all(groupId) as Array<Record<string, unknown>>;
       if (pending.length === 0) {
         db.prepare(`INSERT INTO briefing_composition_targets
-          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
-          .run(receiptId, groupId, anyBase.baseBundleId);
+          (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'unchanged', ?, NULL)`)
+          .run(requestOriginJson(), receiptId, groupId, anyBase.baseBundleId);
         targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
@@ -1006,8 +1010,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         && !document.routes.some((route) => typeof inputs.get(route.route_key)?.agentic_markdown === "string"));
       if (missingAgenticInput) {
         db.prepare(`INSERT INTO briefing_composition_targets
-          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'queued', ?, NULL)`)
-          .run(receiptId, groupId, anyBase.baseBundleId);
+          (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'queued', ?, NULL)`)
+          .run(requestOriginJson(), receiptId, groupId, anyBase.baseBundleId);
         targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
@@ -1069,8 +1073,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
             .run(...composedContributionIds);
         }
         db.prepare(`INSERT INTO briefing_composition_targets
-          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
-          .run(receiptId, groupId, anyBase.baseBundleId);
+          (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'unchanged', ?, NULL)`)
+          .run(requestOriginJson(), receiptId, groupId, anyBase.baseBundleId);
         targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
@@ -1080,8 +1084,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
       db.prepare(`UPDATE briefing_composition_contributions SET state = 'composed', proposal_bundle_id = ?
         WHERE id IN (${placeholders})`).run(proposalBundleId, ...composedContributionIds);
       db.prepare(`INSERT INTO briefing_composition_targets
-        (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'proposed', ?, ?)`)
-        .run(receiptId, groupId, anyBase.baseBundleId, proposalBundleId);
+        (request_origin_json, run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, ?, 'proposed', ?, ?)`)
+        .run(requestOriginJson(), receiptId, groupId, anyBase.baseBundleId, proposalBundleId);
       targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "proposed", base_bundle_id: anyBase.baseBundleId,
         proposal_bundle_id: proposalBundleId });
     }
