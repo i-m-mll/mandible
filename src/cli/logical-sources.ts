@@ -43,13 +43,25 @@ async function files() {
   return result;
 }
 
+async function inputPaths(): Promise<string[]> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.from(chunk);
+    size += bytes.length;
+    if (size > 16 * 1024 * 1024) throw new Error("native source catalog exceeds input budget");
+    chunks.push(bytes);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as string[];
+}
+
 const [operation, argument, count] = process.argv.slice(2);
 let result: unknown;
 if (operation === "head") result = await head(argument, Number(count ?? 200));
 else if (operation === "summary") result = await summary(argument);
 else if (operation === "list") result = (await files()).map((file) => file.path);
 else if (operation === "missing") {
-  const indexed = new Set(JSON.parse(argument) as string[]);
+  const indexed = new Set(await inputPaths());
   result = [];
   for (const file of await files()) {
     if (!indexed.has(file.path)) (result as unknown[]).push(await summary(file.path));

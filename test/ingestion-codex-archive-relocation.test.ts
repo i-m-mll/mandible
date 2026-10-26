@@ -1,3 +1,4 @@
+import { openLogicalSource } from "../src/conversations/logical-source.js";
 import { zstdCompressSync } from "node:zlib";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ensureExactConversationFresh } from "../src/conversations/freshness.js";
@@ -7,7 +8,7 @@ import { ensureExactConversationFresh } from "../src/conversations/freshness.js"
 // relocation as a move. Before the fix it treated the source as missing and
 // deleted the conversation and every ingested block.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -114,6 +115,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -143,6 +145,36 @@ describe("codex archive relocation", () => {
     if (blocks.status === "source") expect(blocks.value.at(-1)?.content).toBe("resumed");
     expect(db.prepare("SELECT starred, notes FROM conversations WHERE id = ?").get(conversation.id)).toEqual({ starred: 1, notes: "keep notes" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversations").get()).toEqual({ n: 1 });
+  });
+
+  it("reconciles unchanged compressed history larger than its retained cache without decoding or eviction", async () => {
+    const cacheBase = path.join(tempDir, "cache");
+    vi.stubEnv("XDG_CACHE_HOME", cacheBase);
+    const cacheRoot = path.join(cacheBase, "mandible", "logical-sources");
+    let historyBytes = 0;
+    for (let index = 0; index < 3; index++) {
+      const file = index === 0 ? sessionPath : sessionPath.replace("archive-move", `archive-move-${index}`);
+      const bytes = Buffer.from(transcript(`history-${index}`));
+      historyBytes += bytes.length;
+      fs.writeFileSync(`${file}.zst`, zstdCompressSync(bytes));
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    }
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversations").get()).toEqual({ n: 3 });
+    const other = path.join(tempDir, "outside", ".codex", "sessions", "rollout-offscan.jsonl");
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    const bytes = Buffer.from(transcript("offscan"));
+    fs.writeFileSync(`${other}.zst`, zstdCompressSync(bytes));
+    const quota = bytes.length * 2;
+    expect(historyBytes).toBeGreaterThan(quota);
+    const lease = await openLogicalSource(other, { cacheRoot, cacheBytes: quota, maxLogicalBytes: bytes.length, reserveBytes: 0 });
+    await lease.close();
+    const payloads = () => fs.readdirSync(cacheRoot).filter((name) => name.endsWith(".jsonl")).sort()
+      .map((name) => { const stat = fs.statSync(path.join(cacheRoot, name)); return [name, stat.ino, stat.size]; });
+    const retained = payloads();
+    expect(retained.reduce((total, row) => total + Number(row[2]), 0)).toBeLessThanOrEqual(quota);
+    for (let pass = 0; pass < 3; pass++) await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    expect(payloads()).toEqual(retained);
   });
 
   it("keeps the conversation and its blocks when a thread is archived", async () => {

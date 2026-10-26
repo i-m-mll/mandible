@@ -191,6 +191,14 @@ describe("conversation custody", () => {
     expect(titleBytes).not.toContain("secret other title");
     const capturedBase = captured.manifest.files.find((file) => file.dependency_role === "history_base_rollout")!;
     expect(fs.readFileSync(path.join(captured.version_path, capturedBase.path), "utf8")).not.toContain("wrong near-collision rollout");
+    const selectedFile = captured.manifest.files.find((file) => file.dependency_role === "selected_rollout")!;
+    const providerTarget = path.join(tempRoot, "arbitrary-provider-target");
+    const occupied = path.join(providerTarget, `${selectedFile.provider_relative_path}.zst`);
+    const occupiedBytes = fs.readFileSync(`${source}.zst`);
+    write(occupied, occupiedBytes);
+    expect(() => new ConversationCustodyStore(custodyRoot).stageProviderRestore("conv-codex", path.join(tempRoot, "restore-stage"), providerTarget))
+      .toThrowError(/provider collision/);
+    expect(fs.readFileSync(occupied)).toEqual(occupiedBytes);
     expect(captured.manifest.restore.capability).toBe("partial");
   });
 

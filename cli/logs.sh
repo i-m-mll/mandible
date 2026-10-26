@@ -181,9 +181,9 @@ def parse_since(value: str | None) -> float | None:
         raise SystemExit("--since must be Nd or YYYY-MM-DD")
 
 
-def codex_bridge(operation: str, *arguments: Any) -> Any:
+def codex_bridge(operation: str, *arguments: Any, input_data: Any = None) -> Any:
     script = pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "src" / "cli" / "logical-sources.ts"
-    result = subprocess.run([os.environ["MANDIBLE_RUNTIME"], str(script), operation, *map(str, arguments)], check=True, capture_output=True, text=True, timeout=60)
+    result = subprocess.run([os.environ["MANDIBLE_RUNTIME"], str(script), operation, *map(str, arguments)], check=True, capture_output=True, text=True, timeout=60, input=json.dumps(input_data) if input_data is not None else None)
     if result.stderr:
         print(result.stderr, file=sys.stderr, end="")
     return json.loads(result.stdout)
@@ -340,7 +340,7 @@ def missing(args: SimpleNamespace) -> int:
     indexed = db_paths(args.provider)
     rows = []
     if args.provider in {"all", "codex"}:
-        rows.extend(codex_bridge("missing", json.dumps(list(indexed))))
+        rows.extend(codex_bridge("missing", input_data=list(indexed)))
     for provider, path in iter_files(args.provider, include_codex=False):
         if str(path) not in indexed:
             rows.append(summarize_file(provider, path))

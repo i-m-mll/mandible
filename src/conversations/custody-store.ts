@@ -1,5 +1,5 @@
 import * as readline from "node:readline";
-import { openLogicalSource, canonicalSourcePath, discoverLogicalSources, readLogicalSourcePrefix } from "./logical-source.js";
+import { openLogicalSource, canonicalSourcePath, discoverLogicalSources, readLogicalSourcePrefix, sourceRepresentationExistsSync } from "./logical-source.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -168,7 +168,7 @@ async function streamStableFile(sourcePath: string, destination?: string, rootPa
       const bytes = chunk as Buffer;
       size += bytes.length;
       hash.update(bytes);
-      if (output) await output.write(bytes);
+      if (output) await output.writeFile(bytes);
     }
     afterRead?.(sourcePath);
     const after = await handle.stat({ bigint: true });
@@ -752,7 +752,7 @@ export class ConversationCustodyStore {
       const relative = assertRelative(file.provider_relative_path, "provider restore path");
       const liveTarget = path.join(path.resolve(providerRoot), relative);
       if (!within(path.resolve(providerRoot), liveTarget)) throw new CustodyError("provider restore path escaped target root", "unsafe_path");
-      if (fs.existsSync(liveTarget)) throw new CustodyError(`provider collision; refusing to overwrite: ${relative}`, "provider_collision", 409);
+      if (sourceRepresentationExistsSync(liveTarget, provider)) throw new CustodyError(`provider collision; refusing to overwrite: ${relative}`, "provider_collision", 409);
     }
     ensureDir(destination);
     try {

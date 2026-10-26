@@ -13,6 +13,21 @@ export function canonicalSourcePath(filename: string): string {
   return isCodexLogicalSource(filename) && filename.endsWith(".zst") ? filename.slice(0, -4) : filename;
 }
 
+export function sourceRepresentationPaths(filename: string, provider?: string): string[] {
+  const codex = provider === "codex" || isCodexLogicalSource(filename);
+  const canonical = codex && filename.endsWith(".jsonl.zst") ? filename.slice(0, -4) : filename;
+  return codex ? [canonical, `${canonical}.zst`] : [canonical];
+}
+
+/** Collision checks test logical occupancy, including non-provider restore roots. */
+export function sourceRepresentationExistsSync(filename: string, provider?: string): boolean {
+  for (const candidate of sourceRepresentationPaths(filename, provider)) {
+    try { fs.lstatSync(candidate); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  return false;
+}
+
 export function isCodexLogicalSource(filename: string): boolean {
   return /[/\\]\.codex[/\\](sessions|archived_sessions)[/\\].+\.jsonl(?:\.zst)?$/.test(filename);
 }
@@ -120,14 +135,12 @@ function inside(root: string, candidate: string): boolean {
 }
 
 async function selectedPath(filename: string): Promise<string> {
-  const canonical = canonicalSourcePath(filename);
-  try {
-    await fs.promises.lstat(canonical);
-    return canonical;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !isCodexLogicalSource(canonical)) throw error;
-    return `${canonical}.zst`;
+  const candidates = sourceRepresentationPaths(filename);
+  for (const candidate of candidates) {
+    try { await fs.promises.lstat(candidate); return candidate; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
+  return candidates[candidates.length - 1];
 }
 
 async function openProvider(filename: string, declaredRoot?: string): Promise<{ handle: FileHandle; physicalPath: string }> {
@@ -215,7 +228,7 @@ async function decode(
     await pipeline(provider.createReadStream({ autoClose: false }), createZstdDecompress(), meter,
       new Writable({
         write(chunk: Buffer, _encoding, callback) {
-          output.write(chunk).then(() => callback(), callback);
+          output.writeFile(chunk).then(() => callback(), callback);
         },
       }));
     const after = await provider.stat({ bigint: true });
@@ -264,18 +277,18 @@ export async function openLogicalSource(filename: string, options: LogicalSource
       const key = createHash("sha256").update(`${physicalPath}\0${token(before)}`).digest("hex");
       const manifest = path.join(root, `${createHash("sha256").update(physicalPath).digest("hex")}.json`);
       const flightKey = `${root}/${key}`;
+      const cachedSource = async (): Promise<CachedSource | null> => {
+        try {
+          const cached = JSON.parse(await fs.promises.readFile(manifest, "utf8")) as CachedSource;
+          if (cached.token === token(before) && /^[a-f0-9]{64}$/.test(cached.digest)
+              && token(await fs.promises.stat(path.join(root, `${cached.digest}.jsonl`), { bigint: true })) === cached.cacheToken) return cached;
+        } catch (error) {
+          if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        return null;
+      };
       let flight = flights.get(flightKey);
       if (!flight) {
-        const cachedSource = async (): Promise<CachedSource | null> => {
-          try {
-            const cached = JSON.parse(await fs.promises.readFile(manifest, "utf8")) as CachedSource;
-            if (cached.token === token(before) && /^[a-f0-9]{64}$/.test(cached.digest)
-                && token(await fs.promises.stat(path.join(root, `${cached.digest}.jsonl`), { bigint: true })) === cached.cacheToken) return cached;
-          } catch (error) {
-            if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-          return null;
-        };
         flight = (async () => await cachedSource() ?? withCacheWriter(root, async () =>
           await cachedSource() ?? decodeSlot(() => decode(provider, physicalPath, before, root, manifest, options))))();
         flights.set(flightKey, flight);
@@ -283,11 +296,24 @@ export async function openLogicalSource(filename: string, options: LogicalSource
       }
       entry = await flight;
       if (entry.size > (options.maxLogicalBytes ?? DEFAULT_MAX_LOGICAL_BYTES)) throw new Error("decoded source exceeds logical byte budget");
-      cachePath = path.join(root, `${entry.digest}.jsonl`);
-      leases.set(cachePath, (leases.get(cachePath) ?? 0) + 1);
-      reader = await fs.promises.open(cachePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-      leasePath = path.join(root, `.lease-${entry.digest}-${process.pid}-${randomUUID()}`);
-      await fs.promises.writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
+      const acquire = async () => {
+        const candidate = path.join(root, `${entry!.digest}.jsonl`);
+        reader = await fs.promises.open(candidate, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        cachePath = candidate;
+        leases.set(candidate, (leases.get(candidate) ?? 0) + 1);
+        leasePath = path.join(root, `.lease-${entry!.digest}-${process.pid}-${randomUUID()}`);
+        await fs.promises.writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
+      };
+      try { await acquire(); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || reader !== provider) throw error;
+        // An unleased cache entry may disappear after lookup. Retry publication
+        // and acquire its descriptor/lease within the eviction writer protocol.
+        await withCacheWriter(root, async () => {
+          entry = await cachedSource() ?? await decodeSlot(() => decode(provider, physicalPath, before, root, manifest, options));
+          await acquire();
+        });
+      }
     }
     let closed = false;
     const logicalStat = async (statOptions?: { bigint?: boolean }) => {
@@ -309,12 +335,11 @@ export async function openLogicalSource(filename: string, options: LogicalSource
         if (property === "physicalPath") return physicalPath;
         if (property === "logicalHash") return entry?.digest ?? null;
         if (property === "statSync") return () => {
-          const canonical = canonicalSourcePath(filename);
-          let selected = canonical;
-          try { fs.lstatSync(canonical); }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !isCodexLogicalSource(canonical)) throw error;
-            selected = `${canonical}.zst`;
+          const candidates = sourceRepresentationPaths(filename);
+          let selected = candidates[candidates.length - 1];
+          for (const candidate of candidates) {
+            try { fs.lstatSync(candidate); selected = candidate; break; }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
           }
           const observed = fs.fstatSync(provider.fd, { bigint: true });
           const current = fs.lstatSync(selected, { bigint: true });
@@ -360,16 +385,20 @@ export async function logicalSourceStat(filename: string): Promise<fs.Stats & { 
 }
 
 export async function logicalSourceExists(filename: string): Promise<boolean> {
-  try { const handle = await openLogicalSource(filename); await handle.close(); return true; }
+  try { const { handle } = await openProvider(filename); await handle.close(); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
 /** Physical metadata and unsealed prefixes are for discovery only, never content proof. */
-export async function inspectSourceRepresentation(filename: string): Promise<{ path: string; physicalPath: string; size: number; mtimeMs: number }> {
+export async function inspectSourceRepresentation(filename: string): Promise<{
+  path: string; physicalPath: string; size: number; mtimeMs: number;
+  physicalGeneration: { device: string; inode: string; ctimeNs: string };
+}> {
   const { handle, physicalPath } = await openProvider(filename);
   try {
-    const stat = await handle.stat();
-    return { path: canonicalSourcePath(filename), physicalPath, size: stat.size, mtimeMs: stat.mtimeMs };
+    const stat = await handle.stat({ bigint: true });
+    return { path: canonicalSourcePath(filename), physicalPath, size: Number(stat.size), mtimeMs: Number(stat.mtimeNs) / 1_000_000,
+      physicalGeneration: { device: String(stat.dev), inode: String(stat.ino), ctimeNs: String(stat.ctimeNs) } };
   } finally { await handle.close(); }
 }
 

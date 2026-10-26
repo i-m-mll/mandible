@@ -1,4 +1,4 @@
-import { canonicalSourcePath, logicalSourceStat, logicalSourceExists, openLogicalSource } from "./conversations/logical-source.js";
+import { canonicalSourcePath, inspectSourceRepresentation, logicalSourceStat, logicalSourceExists, openLogicalSource } from "./conversations/logical-source.js";
 import { DOMAIN_EVENTS, type MandibleEventType } from "./contracts.js";
 import { isSqliteBusy } from "./sqlite.js";
 // Ingestion service: watches filesystem for conversation files and maintains
@@ -4005,9 +4005,11 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     }>;
   const dbPaths = new Map<string, number>();
   const conversationPaths = new Set<string>();
+  const repeatedConversationPaths = new Set<string>();
   const codexSessionIds = new Map<string, Set<string>>();
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
+    if (conversationPaths.has(row.source_path)) repeatedConversationPaths.add(row.source_path);
     conversationPaths.add(row.source_path);
     if (row.source === "codex") {
       const ids = codexSessionIds.get(row.source_path) ?? new Set<string>();
@@ -4072,6 +4074,29 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       .map((row) => [row.file_path, row] as const),
   );
 
+  const sealedCodexSources = db.prepare(`
+    SELECT c.source_path, s.conversation_id, s.parser_format, s.parser_version,
+           s.normalization_version, s.redaction_epoch, v.byte_length, v.file_mtime_ms,
+           v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns
+      FROM conversations c JOIN conversation_sources s ON s.conversation_id = c.id
+      JOIN conversation_source_versions v ON v.id = s.current_version_id
+     WHERE c.source = 'codex' AND s.provider = 'codex' AND s.native_session_id = c.session_id
+       AND s.availability = 'available' AND v.availability = 'available'
+       AND v.generation = 'sealed_sha256'
+  `).all() as Array<{
+    source_path: string; conversation_id: string; parser_format: string; parser_version: string;
+    normalization_version: string; redaction_epoch: number; byte_length: number; file_mtime_ms: number;
+    filesystem_device: string | null; filesystem_inode: string | null; filesystem_ctime_ns: string | null;
+  }>;
+  const indexedPhysicalSources = new Map<string, typeof sealedCodexSources[number]>();
+  const repeatedPaths = new Set<string>();
+  for (const row of sealedCodexSources) {
+    if (indexedPhysicalSources.has(row.source_path)) repeatedPaths.add(row.source_path);
+    indexedPhysicalSources.set(row.source_path, row);
+  }
+  for (const repeated of repeatedPaths) indexedPhysicalSources.delete(repeated);
+  for (const repeated of repeatedConversationPaths) indexedPhysicalSources.delete(repeated);
+
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
@@ -4094,6 +4119,18 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
       // Check if file needs ingestion
       try {
+        const indexed = indexedPhysicalSources.get(filePath);
+        if (indexed && indexed.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+            && indexed.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+            && indexed.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
+            && indexed.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+            && appendStates.get(filePath)?.byte_offset === indexed.byte_length) {
+          const physical = await inspectSourceRepresentation(filePath);
+          if (physical.physicalGeneration.device === indexed.filesystem_device
+              && physical.physicalGeneration.inode === indexed.filesystem_inode
+              && physical.physicalGeneration.ctimeNs === indexed.filesystem_ctime_ns
+              && physical.mtimeMs === indexed.file_mtime_ms) continue;
+        }
         const stat = await logicalSourceStat(filePath);
         const dbMtime = dbPaths.get(filePath);
         const emptyState = emptyPaths.get(filePath);

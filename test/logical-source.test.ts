@@ -3,10 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   discoverLogicalSources, openLogicalSource, readLogicalSourcePrefix,
 } from "../src/conversations/logical-source.js";
@@ -26,7 +26,7 @@ beforeEach(() => {
   cacheRoot = path.join(root, "cache");
   fs.mkdirSync(path.dirname(source), { recursive: true });
 });
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }); });
 
 it("resolves representations once, keeps raw precedence, and never serves a cache without its current provider", async () => {
   fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
@@ -98,6 +98,35 @@ it("shares a cold decode and disk budget between daemon and ingestion processes"
   expect(results.reduce((total, result) => total + Number(result.stdout.trim()), 0)).toBe(header.length);
 });
 
+it("acquires a readable source when another process evicts it between lookup and lease", async () => {
+  fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
+  const options = { cacheRoot, reserveBytes: 0, cacheBytes: header.length, maxLogicalBytes: header.length };
+  const warm = await openLogicalSource(source, options);
+  await warm.close();
+  const payload = path.join(cacheRoot, fs.readdirSync(cacheRoot).find((name) => name.endsWith(".jsonl"))!);
+  let paused!: () => void;
+  const pause = new Promise<void>((resolve) => { paused = resolve; });
+  let resume!: () => void;
+  const barrier = new Promise<void>((resolve) => { resume = resolve; });
+  let intercepted = false;
+  const actualOpen = fs.promises.open.bind(fs.promises);
+  vi.spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+    if (!intercepted && args[0] === payload) { intercepted = true; paused(); await barrier; }
+    return actualOpen(...args);
+  });
+  const pending = openLogicalSource(source, options);
+  await pause;
+  const other = source.replace("-a", "-b");
+  fs.writeFileSync(`${other}.zst`, zstd.zstdCompressSync(Buffer.from(header.toString().replace("native", "second"))));
+  const script = `import {openLogicalSource} from ${JSON.stringify(path.resolve("src/conversations/logical-source.ts"))};
+    const h=await openLogicalSource(${JSON.stringify(other)},${JSON.stringify(options)}); await h.close();`;
+  try { await promisify(execFile)(process.env.MANDIBLE_RUNTIME!, ["--eval", script], { timeout: 10_000 }); }
+  finally { resume(); }
+  const acquired = await pending;
+  expect(await acquired.readFile()).toEqual(header);
+  await acquired.close();
+});
+
 it("serves native inventory and raw-path inspection through bounded prefixes with raw precedence", async () => {
   fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
   fs.writeFileSync(source, header.toString().replace("native-session", "raw-session"));
@@ -112,6 +141,25 @@ it("serves native inventory and raw-path inspection through bounded prefixes wit
   fs.unlinkSync(source);
   expect(await run("find", source)).toBe(source);
   expect(await run("head", source, "1")).toEqual([JSON.parse(header.toString())]);
+});
+
+it("accepts a native missing-source catalog larger than the OS argument limit through stdin", async () => {
+  fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(header));
+  const indexed = [source, ...Array.from({ length: 20_000 }, (_, index) => `/tmp/${"catalog-path/".repeat(9)}${index}.jsonl`)];
+  const input = JSON.stringify(indexed);
+  expect(Buffer.byteLength(input)).toBeGreaterThan(2 * 1024 ** 2);
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn(process.env.MANDIBLE_RUNTIME!, [path.resolve("src/cli/logical-sources.ts"), "missing"],
+      { env: { ...process.env, HOME: root }, timeout: 10_000, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr)));
+    child.stdin.end(input);
+  });
+  expect(JSON.parse(output)).toEqual([]);
 });
 
 it("streams a 211MB cold rollout once for concurrent readers and seeks warm tail bytes without decoding again", async () => {
