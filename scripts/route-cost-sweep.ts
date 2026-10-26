@@ -20,6 +20,7 @@ import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { resolveLedgerDbPath } from "../src/db-read.ts";
 import { EVENT_LOOP_STALL_BUDGET_MS, HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.ts";
 import { DEFAULT_TIMELINE_VIEW_STATE } from "../ui/src/types/timeline.ts";
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from "../src/conversations/retention-contract.ts";
 import {
   bunRuntime,
   previewInstanceEnv,
@@ -422,6 +423,7 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/chat-attachments": () => "stores attachment bytes outside the ledger",
 
   "PUT /api/settings/:key": () => "some keys also write the dotfiles configuration",
+  "PUT /api/settings/child-retention": () => [post("child retention defaults", "/api/settings/child-retention", DEFAULT_CHILD_RETENTION_SETTINGS)],
   "PUT /api/settings/instructions-delivery": () => "exports instruction files to their delivery targets",
   "PUT /api/user-settings/:key": () => `${NOT_DRIVEN}needs a per-user setting key`,
   "PUT /api/host-preferences/chat-shown-projects": () => `${NOT_DRIVEN}needs the preference's current revision`,
