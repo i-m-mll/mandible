@@ -33,22 +33,27 @@ function verifiedSqliteArchive() {
   return sqliteArchive;
 }
 
-function selectedTestGit() {
+function selectedTestToolchain() {
   if (process.platform !== 'darwin') return null;
-  const selected = (process.env.PATH ?? '').split(path.delimiter)
-    .map(directory => path.resolve(directory || '.', 'git'))
-    .find(candidate => {
-      try { fs.accessSync(candidate, fs.constants.X_OK); return true; }
-      catch { return false; }
-    });
-  if (selected !== '/usr/bin/git') return null;
+  const directories = (process.env.PATH ?? '').split(path.delimiter);
+  const selected = directories.findIndex(directory => {
+    try { fs.accessSync(path.resolve(directory || '.', 'git'), fs.constants.X_OK); return true; }
+    catch { return false; }
+  });
+  if (selected < 0 || path.resolve(directories[selected] || '.', 'git') !== '/usr/bin/git') return null;
   // Apple's launcher resolves this same executable on every Git invocation.
-  // Resolve once; a private Git-only entry leaves all other tools in PATH order.
+  // Select the developer tools directly, retaining earlier custom PATH entries.
   const executable = fs.realpathSync(execFileSync('/usr/bin/xcrun', ['--find', 'git'], {
     encoding: 'utf8', timeout: 10_000,
   }).trim());
   const version = execFileSync(executable, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim();
-  return { launcher: selected, executable, version };
+  const directory = path.dirname(executable);
+  const before = directories[selected];
+  directories.splice(selected, 0, directory);
+  return { path: directories.join(path.delimiter), git: {
+    launcher: '/usr/bin/git', executable, version,
+    path_selection: { kind: 'developer-tools-directory', directory, before },
+  } };
 }
 
 /**
@@ -58,16 +63,11 @@ function selectedTestGit() {
 export function createTestRuntime() {
   const bun = pinnedRuntime();
   const archive = verifiedSqliteArchive();
-  const git = selectedTestGit();
+  const toolchain = selectedTestToolchain();
+  const git = toolchain?.git ?? null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-test-run-'));
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
-  const tools = path.join(root, 'bin');
-  if (git) {
-    fs.mkdirSync(tools);
-    const quoted = `'${git.executable.replaceAll("'", "'\\''")}'`;
-    fs.writeFileSync(path.join(tools, 'git'), `#!/bin/sh\nexec ${quoted} "$@"\n`, { mode: 0o700 });
-  }
   const env = {
     ...process.env,
     HOME: home,
@@ -79,7 +79,8 @@ export function createTestRuntime() {
     MANDIBLE_RUNTIME: bun,
     ...(archive ? { MANDIBLE_SQLITE_LIBRARY_ARCHIVE: archive } : {}),
     MANDIBLE_TEST_RUNTIME_ROOT: root,
-    PATH: git ? `${tools}${path.delimiter}${process.env.PATH ?? ''}` : process.env.PATH,
+    PATH: toolchain?.path ?? process.env.PATH,
+    MANDIBLE_TEST_GIT_EXECUTABLE: git?.executable,
   };
   for (const key of [
     'MANDIBLE_HOME', 'MANDIBLE_CONFIG_DIR', 'MANDIBLE_ARTIFACT_DIR',
@@ -87,5 +88,6 @@ export function createTestRuntime() {
     'MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR', 'MANDIBLE_CLI_CACHE_DIR',
     'MANDIBLE_FILE_RPC_DIR', 'MANDIBLE_SOCKET', 'MANDIBLE_DB',
   ]) delete env[key];
+  if (!git) delete env.MANDIBLE_TEST_GIT_EXECUTABLE;
   return { env, toolchain: { git }, close: () => fs.rmSync(root, { recursive: true, force: true }) };
 }

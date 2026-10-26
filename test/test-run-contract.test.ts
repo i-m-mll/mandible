@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkoutViolation, completeTimingPacket } from '../scripts/test-run-contract.mjs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scratchDir } from './helpers/cli-process.js';
@@ -12,19 +12,18 @@ function sample(intervals: number[][]) {
 }
 
 describe('complete command timing contract', () => {
-  const runtimeRoot = process.env.MANDIBLE_TEST_RUNTIME_ROOT;
-  const qualifiedGit = runtimeRoot ? path.join(runtimeRoot, 'bin', 'git') : null;
-  if (process.platform === 'darwin' && qualifiedGit && fs.existsSync(qualifiedGit)) {
+  const qualifiedGit = process.env.MANDIBLE_TEST_GIT_EXECUTABLE;
+  if (process.platform === 'darwin' && qualifiedGit) {
     it('preserves the selected Git prefix, init templates and explicit tool overrides', () => {
-      const native = execFileSync('/usr/bin/xcrun', ['--find', 'git'], { encoding: 'utf8', timeout: 10_000 }).trim();
+      const native = qualifiedGit;
       const run = (command: string, args: string[], env = process.env) => spawnSync(command, args, { env, encoding: 'utf8', timeout: 10_000 });
       const expected = run(native, ['--exec-path']);
-      const actual = run(qualifiedGit, ['--exec-path']);
+      const actual = run('git', ['--exec-path']);
       expect(expected.status).toBe(0);
       expect(actual.status).toBe(0);
       expect(actual.stdout).toBe(expected.stdout);
       const root = scratchDir('git-prefix');
-      for (const [label, command] of [['native', native], ['qualified', qualifiedGit]]) {
+      for (const [label, command] of [['native', native], ['qualified', 'git']]) {
         const initialized = run(command, ['init', '--quiet', path.join(root, label)]);
         expect(initialized.status, initialized.stderr).toBe(0);
         expect(initialized.stderr).toBe('');
@@ -32,7 +31,7 @@ describe('complete command timing contract', () => {
       const hooks = (label: string) => fs.readdirSync(path.join(root, label, '.git', 'hooks')).sort();
       expect(hooks('qualified')).toEqual(hooks('native'));
       const override = path.join(root, 'explicit-exec-path');
-      expect(run(qualifiedGit, ['--exec-path'], { ...process.env, GIT_EXEC_PATH: override }).stdout.trim()).toBe(override);
+      expect(run('git', ['--exec-path'], { ...process.env, GIT_EXEC_PATH: override }).stdout.trim()).toBe(override);
     });
   }
 
