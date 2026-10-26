@@ -3,10 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
 import { ConversationDetail } from '../../../ui/src/views/conversations';
+import { queryClient } from '../../../ui/src/query/client';
+import { conversationKeys } from '../../../ui/src/query/conversationKeys';
 
 const conversationId = 'source-backed-conversation';
 const providerSessionId = 'source-backed-session';
 const ignoreNavigation = () => undefined;
+const overlayViewport = new URLSearchParams(location.search).has('overlay-viewport');
 
 function chatItem(
   type: 'message' | 'activity',
@@ -38,7 +41,7 @@ function chatItem(
 const canonicalItems = [
   chatItem('activity', 'system', 0),
   chatItem('message', 'user', 5, 'A source-backed user prompt'),
-  chatItem('message', 'assistant', 6, 'A source-backed assistant response'),
+  chatItem('message', 'assistant', 6, 'A source-backed assistant response'.repeat(overlayViewport ? 200 : 1)),
   chatItem('activity', 'system', 8),
 ];
 
@@ -200,6 +203,53 @@ function Fixture(): JSX.Element {
   }), [registerRightSidebar, rightSidebar, updateRightSidebar]);
 
   useEffect(() => {
+    if (overlayViewport) {
+      const nextLayout = () => new Promise<void>((resolve) => window.setTimeout(resolve, 32));
+      void (async () => {
+        let scroll: HTMLElement | null = null;
+        for (let frame = 0; frame < 30 && !scroll; frame += 1) {
+          await nextLayout();
+          scroll = document.querySelector<HTMLElement>('.stream-renderer__scroll');
+        }
+        if (!scroll) throw new Error('Transcript did not mount');
+        const root = document.getElementById('root')!;
+        root.style.height = '24px';
+        for (let frame = 0; frame < 8; frame += 1) {
+          window.dispatchEvent(new Event('resize'));
+          await nextLayout();
+        }
+        root.style.height = '700px';
+        window.dispatchEvent(new Event('resize'));
+        await nextLayout();
+        scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
+        scroll.scrollTop = 100;
+        scroll.dispatchEvent(new Event('scroll'));
+        await nextLayout();
+        const readingPosition = scroll.scrollTop;
+        let blankFrames = 0;
+        let scrollReplaced = false;
+        let maxRestoredHeight = 0;
+        let maxRestoredPadding = 0;
+        let scrollDrift = 0;
+        for (let frame = 0; frame < 12; frame += 1) {
+          await queryClient.invalidateQueries({ queryKey: conversationKeys.conversation(conversationId) });
+          window.dispatchEvent(new Event('resize'));
+          await nextLayout();
+          scrollReplaced ||= document.querySelector('.stream-renderer__scroll') !== scroll;
+          const viewport = scroll.closest('.detail-pane-shell__body')!.getBoundingClientRect();
+          const visibleContent = [...scroll.querySelectorAll('.stream-renderer__virtual-row')].some((row) => {
+            const bounds = row.getBoundingClientRect();
+            return bounds.bottom > viewport.top && bounds.top < viewport.bottom && Boolean(row.textContent?.trim());
+          });
+          if (!visibleContent) blankFrames += 1;
+          maxRestoredHeight = Math.max(maxRestoredHeight, scroll.getBoundingClientRect().height);
+          maxRestoredPadding = Math.max(maxRestoredPadding, parseFloat(getComputedStyle(scroll).paddingBottom));
+          scrollDrift = Math.max(scrollDrift, Math.abs(scroll.scrollTop - readingPosition));
+        }
+        document.body.dataset.overlayResult = btoa(JSON.stringify({ blankFrames, scrollReplaced, maxRestoredHeight, maxRestoredPadding, scrollDrift }));
+      })().catch((error) => { document.body.dataset.overlayResult = btoa(JSON.stringify({ error: String(error) })); });
+      return;
+    }
     const timer = window.setTimeout(() => {
       const rows = document.querySelectorAll('.stream-renderer__virtual-row');
       const hasResponse = document.body.textContent?.includes('A source-backed assistant response') ?? false;

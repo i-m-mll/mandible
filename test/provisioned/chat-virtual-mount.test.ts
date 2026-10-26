@@ -38,6 +38,36 @@ function bundleFixture(directory: string): string {
 }
 
 describe('Chat transcript native mount', () => {
+  it('keeps the transcript mounted and its scroll viewport bounded after overlay resize and reconciliation', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'mandible-chat-overlay-'));
+    try {
+      const fixture = bundleFixture(directory);
+      const styles = ['tokens', 'base', 'detail-pane-shell', 'console', 'conversations', 'chat-history']
+        .map((name) => readFileSync(resolve(`ui/src/styles/${name}.css`), 'utf8')).join('\n');
+      const path = join(directory, 'index.html');
+      writeFileSync(path, `<!doctype html><html><head><style>${styles}
+        html,body { height: 100%; margin: 0; overflow: hidden; }
+        #root { display: flex; height: 700px; min-height: 0; }
+      </style></head><body><div id="root"></div><script>${fixture}</script></body></html>`);
+      const rendered = runChromium(['--virtual-time-budget=2500', '--dump-dom', `file://${path}?overlay-viewport`],
+        { encoding: 'utf8', maxBuffer: 20_000_000 });
+      expect(rendered.error, rendered.stderr).toBeUndefined();
+      expect(rendered.status, rendered.stderr).toBe(0);
+      const encoded = rendered.stdout.match(/data-overlay-result="([^"]+)"/)?.[1];
+      expect(encoded, rendered.stdout.slice(-3000)).toBeDefined();
+      const result = JSON.parse(Buffer.from(encoded!, 'base64').toString('utf8'));
+      if (process.env.MANDIBLE_CHAT_MOUNT_EVIDENCE) writeFileSync(process.env.MANDIBLE_CHAT_MOUNT_EVIDENCE, JSON.stringify(result, null, 2));
+      expect(result.error).toBeUndefined();
+      expect(result.scrollReplaced).toBe(false);
+      expect(result.blankFrames).toBe(0);
+      expect(result.maxRestoredHeight).toBeLessThanOrEqual(700);
+      expect(result.maxRestoredPadding).toBeLessThan(700);
+      expect(result.scrollDrift).toBeLessThanOrEqual(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('settles measured end anchoring without trapping the browser main thread', () => {
     const directory = mkdtempSync(join(tmpdir(), 'mandible-chat-mount-'));
     try {
