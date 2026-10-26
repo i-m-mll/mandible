@@ -4,8 +4,8 @@ The existing independent app-server client provides a demonstrated standalone
 route for shared stored turn history, empty-queue reads, same-ID restoration
 and archival of the disposable fixture. It requires no caller-chat
 impersonation or direct owning-desktop IPC. An agent-context desktop bridge
-also successfully archived and restored a loaded-idle fixture. No adapter or
-automatic archive effect is enabled. Both the existing CLI adapter and the
+also successfully archived and restored a loaded-idle fixture. The native
+adapter reports explicit outcomes to the local archive policy. Both the CLI adapter and the
 bundled independent app-server failed to archive the desktop-loaded idle
 fixture; the latter explicitly rejected its active writer. Pending-input
 coverage for a nonempty desktop queue remains unproved. Standalone reads and
@@ -257,6 +257,17 @@ No broader control-plane search or additional archive fixture was performed.
 The verdict is **unestablished**, not technically impossible.
 
 ## Effect scope and implementation conditions
+
+`CodexNativeArchiveAdapter` uses the existing bundled app-server public API.
+Archive returns `archived`, `already_archived`, `deferred` with reason
+`desktop_writer_owned`, or `failed` with a reason. Success requires exact
+native identity and verified native archive location. Restore returns
+`restored`, `already_restored`, or `failed`; the managed controller uses the
+same restore helper before resuming the original ID. Queue reads distinguish
+known pending/empty from unknown, including incomplete pages and native errors.
+Eligibility, canonical selected-ingestion freshness, local visibility and
+scheduling remain the caller's responsibility. Native deferral does not erase
+Mandible-local archive state or claim native success.
 
 The [official app-server archive contract](https://learn.chatgpt.com/docs/app-server#archive-a-thread)
 accepts a thread ID and attempts to archive spawned descendants. Individual
