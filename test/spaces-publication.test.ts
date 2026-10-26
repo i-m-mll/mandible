@@ -1,3 +1,4 @@
+import { withRequestOrigin } from "../src/request-origin.js";
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,11 +51,23 @@ afterEach(()=>{db.close();delete process.env.MANDIBLE_ARTIFACT_DIR;fs.rmSync(roo
 
 it('freezes saved revision, retains failed proposal, refuses changed destination, and imports separately',async()=> {
   const repo=path.join(root,'repo');fs.writeFileSync(path.join(repo,'doc.md'),'destination');
-  const publication=preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'});
+  const author = {provider:"codex",provider_session_id:"document-author"};
+  const importer = {provider:"claude",provider_session_id:"document-importer"};
+  const publication=withRequestOrigin(author,()=>preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'}));
   const originalBlock=listSpaceBlocks(db,space)[0];updateSpaceBlock(db,space,originalBlock.id,{markdown:'edited later'});
   expect(getPublication(db,space,publication.id).content).toContain('original');
   expect(serializeSpaceDocument(db,space)).toContain('edited later');
-  const copy=importManagedDocument(db,{ref:publication.snapshot_ref,title:'Copy',projectId:'p'});
+  const copy=withRequestOrigin(importer,()=>importManagedDocument(db,{ref:publication.snapshot_ref,title:'Copy',projectId:'p'}));
+  const events = db.prepare("SELECT entity_id,payload_json FROM ledger_events WHERE entity_type IN ('space_publication','space','space_block') ORDER BY rowid").all() as Array<{entity_id:string;payload_json:string}>;
+  expect(JSON.parse(events.find(row=>row.entity_id===publication.id)!.payload_json).request_origin).toEqual(author);
+  expect(events.filter(row=>row.entity_id===copy.id || row.entity_id===listSpaceBlocks(db,copy.id)[0].id).every(row=>JSON.parse(row.payload_json).request_origin.provider_session_id===importer.provider_session_id)).toBe(true);
+  const beforeFailure = db.prepare("SELECT count(*) AS n FROM ledger_events").get();
+  const spacesBefore = db.prepare("SELECT count(*) AS n FROM spaces").get();
+  db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON space_blocks BEGIN SELECT RAISE(ABORT,'import unavailable'); END");
+  expect(importResult(db,{ref:publication.snapshot_ref,title:'Failed copy'})).toMatchObject({ok:false});
+  expect(db.prepare("SELECT count(*) AS n FROM spaces").get()).toEqual(spacesBefore);
+  expect(db.prepare("SELECT count(*) AS n FROM ledger_events").get()).toEqual(beforeFailure);
+  db.exec("DROP TRIGGER reject_import");
   expect(copy.id).not.toBe(space);expect(listSpaceBlocks(db,copy.id)[0].markdown).toBe('original');
   updateSpaceBlock(db,copy.id,listSpaceBlocks(db,copy.id)[0].id,{markdown:'copy edit'});
   expect(getPublication(db,space,publication.id).content).toContain('original');
@@ -83,7 +96,11 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=> {
     git(directory,'add',value.path);git(directory,'commit','-m','Fixture publication');git(repo,'fetch',directory,'HEAD:refs/heads/fixture-proposal');return git(directory,'rev-parse','HEAD');
   },submit:(_directory,value)=>{submissions++;db.prepare("UPDATE space_publications SET auth_request_id='fixture-auth',state='submitted' WHERE id=?").run(value.id);return 'fixture-auth';}};
-  const published=await executePublication(db,space,publication.id,runner);
+  const submitter={provider:"claude",provider_session_id:"publication-submitter"};
+  const published=await withRequestOrigin(submitter,()=>executePublication(db,space,publication.id,runner));
+  const lifecycle=db.prepare("SELECT payload_json FROM ledger_events WHERE entity_type='space_publication' AND event_type='space_publication.updated'").all() as Array<{payload_json:string}>;
+  expect(lifecycle).toHaveLength(3);
+  expect(lifecycle.every(row=>JSON.parse(row.payload_json).request_origin.provider_session_id===submitter.provider_session_id)).toBe(true);
   expect(published.state).toBe('submitted');expect(published.version_ref).toBeTruthy();
   expect(git(repo,'show',`${published.commit_sha}:doc.md`)).toContain('original');
   expect(serializeSpaceDocument(db,space)).toContain('later');

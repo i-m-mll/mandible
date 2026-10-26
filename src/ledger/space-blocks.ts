@@ -1,3 +1,4 @@
+import { mutateSpaceRecord } from "../spaces/mutation-history.js";
 import crypto from "node:crypto";
 import type { Db } from "../db.js";
 import {
@@ -392,42 +393,44 @@ export function createSpaceBlock(
     throw new BlockValidationError(`invalid block_type: ${String(input.block_type)}`);
   }
   const id = input.id ?? newId();
-  const parentId = input.parent_id ?? null;
-  if (parentId !== null) {
-    assertNoParentCycle(db, spaceId, id, parentId);
-  }
-  const itemId = input.item_id ?? null;
-  const snapshot = input.item_snapshot ?? null;
-  if (itemId !== null && snapshot === null) {
-    throw new BlockValidationError("assigning item_id requires item_snapshot");
-  }
-  const sortKey =
-    input.sort_key && isValidSortKey(input.sort_key)
-      ? input.sort_key
-      : nextSiblingSortKey(db, spaceId, parentId);
+  return mutateSpaceRecord(db, "space_blocks", id, spaceId, () => {
+    const parentId = input.parent_id ?? null;
+    if (parentId !== null) {
+      assertNoParentCycle(db, spaceId, id, parentId);
+    }
+    const itemId = input.item_id ?? null;
+    const snapshot = input.item_snapshot ?? null;
+    if (itemId !== null && snapshot === null) {
+      throw new BlockValidationError("assigning item_id requires item_snapshot");
+    }
+    const sortKey =
+      input.sort_key && isValidSortKey(input.sort_key)
+        ? input.sort_key
+        : nextSiblingSortKey(db, spaceId, parentId);
 
-  db.prepare(
-    `INSERT INTO space_blocks (
-       id, space_id, parent_id, block_type, item_id, item_snapshot_json,
-       sort_key, markdown, metadata_json, created_at, updated_at
-     ) VALUES (
-       @id, @space_id, @parent_id, @block_type, @item_id, @item_snapshot_json,
-       @sort_key, @markdown, @metadata_json, @created_at, @updated_at
-     )`,
-  ).run({
-    id,
-    space_id: spaceId,
-    parent_id: parentId,
-    block_type: input.block_type,
-    item_id: itemId,
-    item_snapshot_json: serializeSnapshot(snapshot),
-    sort_key: sortKey,
-    markdown: input.markdown ?? "",
-    metadata_json: serializeObject(input.metadata),
-    created_at: now,
-    updated_at: now,
+    db.prepare(
+      `INSERT INTO space_blocks (
+         id, space_id, parent_id, block_type, item_id, item_snapshot_json,
+         sort_key, markdown, metadata_json, created_at, updated_at
+       ) VALUES (
+         @id, @space_id, @parent_id, @block_type, @item_id, @item_snapshot_json,
+         @sort_key, @markdown, @metadata_json, @created_at, @updated_at
+       )`,
+    ).run({
+      id,
+      space_id: spaceId,
+      parent_id: parentId,
+      block_type: input.block_type,
+      item_id: itemId,
+      item_snapshot_json: serializeSnapshot(snapshot),
+      sort_key: sortKey,
+      markdown: input.markdown ?? "",
+      metadata_json: serializeObject(input.metadata),
+      created_at: now,
+      updated_at: now,
+    });
+    return getSpaceBlock(db, spaceId, id)!;
   });
-  return getSpaceBlock(db, spaceId, id)!;
 }
 
 export interface UpdateBlockInput {
@@ -447,72 +450,76 @@ export function updateSpaceBlock(
   input: UpdateBlockInput,
   now = Date.now(),
 ): SpaceBlockRecord | null {
-  const existing = getSpaceBlock(db, spaceId, blockId);
-  if (!existing) return null;
+  return mutateSpaceRecord(db, "space_blocks", blockId, spaceId, () => {
+    const existing = getSpaceBlock(db, spaceId, blockId);
+    if (!existing) return null;
 
-  if (input.block_type !== undefined && !isBlockType(input.block_type)) {
-    throw new BlockValidationError(`invalid block_type: ${String(input.block_type)}`);
-  }
-  const parentId = input.parent_id === undefined ? existing.parent_id : input.parent_id;
-  if (parentId !== null) {
-    assertNoParentCycle(db, spaceId, blockId, parentId);
-  }
+    if (input.block_type !== undefined && !isBlockType(input.block_type)) {
+      throw new BlockValidationError(`invalid block_type: ${String(input.block_type)}`);
+    }
+    const parentId = input.parent_id === undefined ? existing.parent_id : input.parent_id;
+    if (parentId !== null) {
+      assertNoParentCycle(db, spaceId, blockId, parentId);
+    }
 
-  const itemId = input.item_id === undefined ? existing.item_id : input.item_id;
-  // Resolve the snapshot after the item_id, then enforce the invariant.
-  let snapshot: BlockItemSnapshot | null;
-  if (input.item_snapshot !== undefined) {
-    snapshot = input.item_snapshot;
-  } else if (input.item_id === undefined) {
-    snapshot = existing.item_snapshot;
-  } else if (input.item_id === null) {
-    // Detaching the item: keep the existing snapshot as a placeholder.
-    snapshot = existing.item_snapshot;
-  } else {
-    snapshot = existing.item_snapshot;
-  }
-  if (itemId !== null && snapshot === null) {
-    throw new BlockValidationError("assigning item_id requires item_snapshot");
-  }
+    const itemId = input.item_id === undefined ? existing.item_id : input.item_id;
+    // Resolve the snapshot after the item_id, then enforce the invariant.
+    let snapshot: BlockItemSnapshot | null;
+    if (input.item_snapshot !== undefined) {
+      snapshot = input.item_snapshot;
+    } else if (input.item_id === undefined) {
+      snapshot = existing.item_snapshot;
+    } else if (input.item_id === null) {
+      // Detaching the item: keep the existing snapshot as a placeholder.
+      snapshot = existing.item_snapshot;
+    } else {
+      snapshot = existing.item_snapshot;
+    }
+    if (itemId !== null && snapshot === null) {
+      throw new BlockValidationError("assigning item_id requires item_snapshot");
+    }
 
-  const sortKey =
-    input.sort_key === undefined
-      ? existing.sort_key
-      : input.sort_key && isValidSortKey(input.sort_key)
-        ? input.sort_key
-        : nextSiblingSortKey(db, spaceId, parentId);
+    const sortKey =
+      input.sort_key === undefined
+        ? existing.sort_key
+        : input.sort_key && isValidSortKey(input.sort_key)
+          ? input.sort_key
+          : nextSiblingSortKey(db, spaceId, parentId);
 
-  db.prepare(
-    `UPDATE space_blocks
-        SET parent_id = @parent_id,
-            block_type = @block_type,
-            item_id = @item_id,
-            item_snapshot_json = @item_snapshot_json,
-            sort_key = @sort_key,
-            markdown = @markdown,
-            metadata_json = @metadata_json,
-            updated_at = @updated_at
-      WHERE space_id = @space_id AND id = @id`,
-  ).run({
-    space_id: spaceId,
-    id: blockId,
-    parent_id: parentId,
-    block_type: input.block_type ?? existing.block_type,
-    item_id: itemId,
-    item_snapshot_json: serializeSnapshot(snapshot),
-    sort_key: sortKey,
-    markdown: input.markdown === undefined ? existing.markdown : input.markdown ?? "",
-    metadata_json: serializeObject(input.metadata ?? existing.metadata),
-    updated_at: now,
+    db.prepare(
+      `UPDATE space_blocks
+          SET parent_id = @parent_id,
+              block_type = @block_type,
+              item_id = @item_id,
+              item_snapshot_json = @item_snapshot_json,
+              sort_key = @sort_key,
+              markdown = @markdown,
+              metadata_json = @metadata_json,
+              updated_at = @updated_at
+        WHERE space_id = @space_id AND id = @id`,
+    ).run({
+      space_id: spaceId,
+      id: blockId,
+      parent_id: parentId,
+      block_type: input.block_type ?? existing.block_type,
+      item_id: itemId,
+      item_snapshot_json: serializeSnapshot(snapshot),
+      sort_key: sortKey,
+      markdown: input.markdown === undefined ? existing.markdown : input.markdown ?? "",
+      metadata_json: serializeObject(input.metadata ?? existing.metadata),
+      updated_at: now,
+    });
+    return getSpaceBlock(db, spaceId, blockId);
   });
-  return getSpaceBlock(db, spaceId, blockId);
 }
 
 export function deleteSpaceBlock(db: Db, spaceId: string, blockId: string): boolean {
-  const result = db
-    .prepare("DELETE FROM space_blocks WHERE space_id = ? AND id = ?")
-    .run(spaceId, blockId);
-  return result.changes > 0;
+  return mutateSpaceRecord(db, "space_blocks", blockId, spaceId, () => {
+    const result = db
+      .prepare("DELETE FROM space_blocks WHERE space_id = ? AND id = ?")
+      .run(spaceId, blockId);
+    return result.changes > 0;
+  });
 }
 
 // --- detach / degrade -------------------------------------------------------
@@ -539,17 +546,8 @@ export function detachItemFromBlocks(
       .prepare("SELECT * FROM space_blocks WHERE space_id = ? AND item_id = ?")
       .all(spaceId, itemId) as SpaceBlockRow[];
     const detached: SpaceBlockRecord[] = [];
-    const update = db.prepare(
-      `UPDATE space_blocks
-          SET item_id = NULL,
-              updated_at = @updated_at
-        WHERE space_id = @space_id AND id = @id`,
-    );
     for (const row of rows) {
-      // The snapshot column is intentionally left intact: it is the placeholder.
-      // The DB CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL) is
-      // satisfied because item_id becomes NULL.
-      update.run({ space_id: spaceId, id: row.id, updated_at: now });
+      updateSpaceBlock(db, spaceId, row.id, { item_id: null }, now);
       const updated = getSpaceBlock(db, spaceId, row.id);
       if (updated) detached.push(updated);
     }
