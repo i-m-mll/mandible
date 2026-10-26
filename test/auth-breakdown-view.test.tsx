@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { render, cleanup, configure, fireEvent, screen, waitFor } from './helpers/dom';
 import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
+import { normalizeAuthChangeBreakdownViewState, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE } from '../ui/src/views/auth-change-breakdown-state';
 import { authBreakdownFixture } from './helpers/auth-breakdown-fixture';
 
 beforeEach(() => {
@@ -26,7 +27,7 @@ it('exposes file statuses, paths and types', () => {
     expect(screen.getAllByLabelText(status).length).toBeGreaterThan(0);
   }
   expect([...items.querySelectorAll('code')].some(node => node.textContent?.includes('previous/location/') && node.textContent.includes(' → '))).toBe(true);
-  for (const fact of ['binary', 'symlink', 'gitlink', 'generated', 'vendor']) {
+  for (const fact of ['binary', 'symlink', 'gitlink', 'generated', 'third-party']) {
     expect([...items.querySelectorAll('code')].some(node => node.title.includes(fact))).toBe(true);
   }
   expect(screen.getByLabelText('Submodule reference change').textContent).toBe('submodule');
@@ -76,7 +77,7 @@ it('keeps sibling group offsets independent and separates grouped modes', () => 
   const role = screen.getByRole('region', { name: 'Implementation files' });
   expect(role.scrollTop).toBe(0);
   role.scrollTop = 77; fireEvent.scroll(role);
-  fireEvent.click(screen.getByRole('tab', { name: 'Generated / vendor' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Generated / third-party' }));
   fireEvent.click(screen.getByRole('button', { name: /^Generated\b/ }));
   expect(screen.getByRole('region', { name: 'Generated files' }).querySelectorAll('a')).toHaveLength(1);
   fireEvent.click(screen.getByRole('tab', { name: 'Language' }));
@@ -86,4 +87,51 @@ it('keeps sibling group offsets independent and separates grouped modes', () => 
   expect(screen.getByRole('region', { name: 'JavaScript files' }).scrollTop).toBe(88);
   fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
   expect(screen.getByRole('region', { name: 'Implementation files' }).scrollTop).toBe(77);
+});
+
+
+it('partitions flags once, reconciles metrics, and restores legacy expansion intent', () => {
+  const report = authBreakdownFixture(8);
+  report.files.forEach((file, index) => {
+    file.generated = index % 4 < 2;
+    file.vendor = index % 2 === 0;
+    file.additions = index % 4 === 3 ? 1000 : 1;
+    file.deletions = 2;
+  });
+  for (const [legacy, expected] of Object.entries({
+    'flag:generated': ['flag:generated-only', 'flag:both'],
+    'flag:not-generated': ['flag:third-party-only', 'flag:neither'],
+    'flag:vendor': ['flag:third-party-only', 'flag:both'],
+    'flag:not-vendor': ['flag:generated-only', 'flag:neither'],
+  })) {
+    expect(normalizeAuthChangeBreakdownViewState({ expandedGroups: [legacy] }, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE).expandedGroups).toEqual(expected);
+  }
+  const state = normalizeAuthChangeBreakdownViewState({ view: 'flags',
+    expandedGroups: ['flag:generated', 'flag:not-generated', 'flag:vendor', 'role:other'], directoryPath: ['src'] }, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE);
+  expect(new Set(state.expandedGroups)).toEqual(new Set(['flag:both', 'flag:generated-only', 'flag:third-party-only', 'flag:neither', 'role:other']));
+  expect(state.directoryPath).toEqual(['src']);
+  const view = render(<AuthChangeBreakdown requestId="partition" report={report} initialState={state} />);
+  const groups = [...view.container.querySelectorAll('.auth-change-group__row--outside')];
+  expect(groups).toHaveLength(4);
+  expect(groups.at(-1)?.querySelector('.auth-change-group__name')?.textContent).toBe('Other files');
+  const displayedPaths = [...view.container.querySelectorAll('.auth-change-file__path')].map(node => node.textContent);
+  expect(displayedPaths).toHaveLength(report.files.length);
+  expect(new Set(displayedPaths).size).toBe(report.files.length);
+  const metrics = groups.map(group => [...group.children].slice(1).map(node => Number(node.textContent?.replace(/[^0-9]/g, ''))));
+  expect(metrics.reduce((sum, row) => sum + row[0]!, 0)).toBe(report.files.length);
+  expect(metrics.reduce((sum, row) => sum + row[1]!, 0)).toBe(report.files.reduce((sum, file) => sum + file.additions!, 0));
+  expect(metrics.reduce((sum, row) => sum + row[2]!, 0)).toBe(report.files.reduce((sum, file) => sum + file.deletions!, 0));
+});
+
+it('puts residual roles and languages last while treating a directory named Other normally', () => {
+  const report = authBreakdownFixture(2);
+  Object.assign(report.files[0]!, { new_path: 'Other/opaque', language: 'Unknown', file_role: 'other', additions: 9000, deletions: 0 });
+  Object.assign(report.files[1]!, { new_path: 'program.py', language: 'Python', file_role: 'implementation', additions: 1, deletions: 0 });
+  const view = render(<AuthChangeBreakdown requestId="residuals" report={report} />);
+  const labels = () => [...view.container.querySelectorAll('.auth-change-group__name')].map(node => node.textContent);
+  expect(labels()).toEqual(['Python', 'Unknown']);
+  fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
+  expect(labels()).toEqual(['Implementation', 'Other']);
+  fireEvent.click(screen.getByRole('tab', { name: 'Directory' }));
+  expect(labels()).toEqual(['Other/']);
 });

@@ -97,6 +97,57 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     session.sessionId = (await session.send('Target.attachToTarget', { targetId: target.targetId, flatten: true }, false)).sessionId;
     await session.send('Page.enable'); await session.send('Runtime.enable');
     const frames = () => session!.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    for (const width of [1200, 360]) {
+      await session.send('Emulation.setDeviceMetricsOverride', { width, height: 1128, deviceScaleFactor: 1, mobile: false });
+      const rightEdges: number[] = [];
+      for (const completed of [false, true]) {
+        await session.navigate(pathToFileURL(navigationHtml).href + `?action-layout=1${completed ? '&completed=1' : ''}`);
+        await session.evaluate(`new Promise((resolve, reject) => {
+          const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Issue titles did not resolve'))},2500);
+          const ready=()=>{if(document.querySelectorAll('.auth-action-row .issue-pill__title').length===2){clearTimeout(timer);observer.disconnect();resolve(true)}};
+          const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true});ready();})`);
+        await frames();
+        const layout = await session.evaluate(`(() => {
+          const rect=node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,right:r.right,left:r.left,height:r.height}};
+          const sidebar=document.querySelector('.auth-sidebar-item');
+          const meta=sidebar?.querySelector('.auth-sidebar-item__metadata');
+          return {rows:[...document.querySelectorAll('.auth-action-row')].map(row=>{
+            const title=row.querySelector('.issue-pill__title'),control=row.querySelector('.auth-action-row__veto')??row.querySelector('.auth-action-row__state');
+            return {identity:rect(row.querySelector('.auth-action-row__top')),control:rect(control),row:rect(row),
+              overflow:row.scrollWidth>row.clientWidth,titleWidth:title.clientWidth,titleScroll:title.scrollWidth,
+              fullTitle:title.parentElement.title,text:control.textContent};}),
+            sidebar:sidebar?{title:rect(sidebar.querySelector('.auth-sidebar-item__title')),dot:rect(sidebar.querySelector('.auth-sidebar-item__dot')),
+              meta:[...meta.children].map(rect),project:meta.firstElementChild.title,
+              projectWidth:meta.firstElementChild.clientWidth,projectScroll:meta.firstElementChild.scrollWidth,
+              overflow:sidebar.scrollWidth>sidebar.clientWidth,selected:sidebar.getAttribute('aria-current')}:null,
+            detailBranches:document.querySelector('.auth-detail-pane').textContent.includes('feature/navigation')};})()`);
+        for (const row of layout.rows) {
+          expect(row.overflow, `action overflow at ${width}`).toBe(false);
+          expect(row.control.top).toBeLessThan(row.identity.bottom);
+          expect(row.control.bottom).toBeGreaterThan(row.identity.top);
+          expect(row.titleWidth, `visible action title at ${width}`).toBeGreaterThan(0);
+          expect(row.row.right).toBeLessThanOrEqual(width);
+          expect(row.titleScroll).toBeGreaterThan(row.titleWidth);
+          expect(row.fullTitle).toContain('A complete long issue title');
+          rightEdges.push(row.control.right);
+        }
+        expect(layout.rows.map((row: any) => row.text)).toEqual(completed ? ['Done', 'Done'] : ['Veto', 'Restore']);
+        if (!completed) {
+          const sidebar = layout.sidebar;
+          expect(sidebar.overflow).toBe(false);
+          expect(sidebar.selected).toBe('true');
+          expect(sidebar.project).toContain('a-long-project-name');
+          expect(sidebar.projectScroll).toBeGreaterThan(sidebar.projectWidth);
+          expect(sidebar.title.top).toBeLessThan(sidebar.meta[0].top);
+          expect(sidebar.dot.top).toBeLessThan(sidebar.title.bottom);
+          expect(sidebar.meta[0].right).toBeLessThan(sidebar.meta[1].left);
+          expect(sidebar.meta[1].right).toBeLessThan(sidebar.meta[2].left);
+          expect(Math.max(...sidebar.meta.map((r: any) => r.top))).toBeLessThan(Math.min(...sidebar.meta.map((r: any) => r.bottom)));
+        }
+        expect(layout.detailBranches).toBe(true);
+      }
+      expect(Math.max(...rightEdges) - Math.min(...rightEdges), `Veto/Restore/Done right alignment at ${width}`).toBeLessThan(1);
+    }
     for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await session.navigate(pathToFileURL(html).href + `?width=${width}`);

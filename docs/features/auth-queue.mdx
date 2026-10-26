@@ -96,17 +96,25 @@ read-only.
 ### Change breakdown
 
 Merge requests show a **Change breakdown** panel beneath the commit message in Info.
-Language, directory, file-role, generated/vendor and largest-file views all use
+Language, directory, file-role, generated/third-party and largest-file views all use
 one stored file inventory. Rows expose files, additions, deletions and share of
 changed text lines, with contributing files available through expansion or
 directory navigation. View choices persist per request.
 
 Counts include comments and blank lines. Binary files show byte sizes instead
 of line counts; submodule references are identified separately. Generated and
-vendored files remain included, with independent flag groupings.
+third-party files remain included. Generated files are produced by tools;
+third-party files are copied dependencies. The category view partitions files
+into Generated, Third-party, Generated + third-party, and Other files, so each
+file contributes once and totals reconcile.
 
 Classification uses versioned filename/path rules and committed
 `linguist-language`, `linguist-generated` and `linguist-vendored` attributes.
+Recognized terminal `.template` suffixes use the underlying format (for example,
+`settings.json.template` is JSON configuration). Extensionless regular files
+can supply script-language evidence through a recognized interpreter shebang
+in the pinned committed blob, including `/usr/bin/env -S` forms. Executable
+mode and source-directory names alone do not establish implementation evidence.
 Unknown formats remain Unknown. File-role precedence is fixtures/data, tests,
 documentation, configuration, implementation, then other. These labels describe
 rule-based categories, not inferred purpose or effort.
@@ -114,7 +122,9 @@ rule-based categories, not inferred purpose or effort.
 Reports and their bounded diff previews share pinned commit IDs and Git diff
 rules. User configuration, private attributes and working-tree changes do not
 affect capture. Historical requests without a report show Unavailable; they are
-not recomputed from current branches. Collection failures and candidates over
+not recomputed from current branches. Captured classifier versions and report
+bytes remain unchanged when request prose is edited; classifier improvements
+apply to new captures only. Collection failures and candidates over
 10,000 changed files are explicit submission errors.
 
 ### Duplicate Detection

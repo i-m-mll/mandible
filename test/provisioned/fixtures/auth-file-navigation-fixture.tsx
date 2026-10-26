@@ -20,7 +20,29 @@ if (!window.location.hash) {
   window.history.replaceState({ fixtureState: 'preserved' }, '', `#/auth?request=${canonical ? canonicalId.slice(0, 8) : navigationRequestId}&sidebar=hidden&agent_session=fixture-agent`);
 }
 const root = document.getElementById('root')!;
-if (diagnostic || canonical) {
+const actionLayout = new URLSearchParams(location.search).has('action-layout');
+if (actionLayout) {
+  const completed = new URLSearchParams(location.search).has('completed');
+  const issueTitle = 'A complete long issue title that remains accessible while the action row truncates its visible identity '.repeat(3);
+  const request = { ...navigationRequest, repo: 'a-long-project-name-for-approval-sidebar-truncation',
+    title: 'A long approval title with enough detail to truncate in the sidebar',
+    status: completed ? 'completed' : 'pending', action_count: 2,
+    actions: ['first', 'second'].map((id, index) => ({ ...navigationRequest.actions![0]!, id,
+      kind: 'issue_close' as const, payload: {}, target_issue_ref: 'abcdef1',
+      outcome_detail: null, ordinal: index,
+      state: completed ? 'applied' as const : index === 0 ? 'staged' as const : 'vetoed' as const })),
+  };
+  const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+  window.fetch = input => {
+    const path = String(input);
+    if (path.startsWith('/api/spaces/resolve')) return Promise.resolve(json({ resolved: true,
+      entity: { id: 'abcdef1', short_id: 'abcdef1', project_ref: request.repo, title: issueTitle }, detail: { same_project: true } }));
+    if (path.endsWith('/actions')) return Promise.resolve(json({ actions: request.actions }));
+    if (path.startsWith('/api/auth/request/')) return Promise.resolve(json(request));
+    return Promise.reject(new Error('Offline layout fixture: ' + path));
+  };
+  render(<RoutedAuthReview requests={[request]} sidebarHidden={false} />, root);
+} else if (diagnostic || canonical) {
   const events: unknown[] = [];
   const setItem = Storage.prototype.setItem;
   Storage.prototype.setItem = function(key, value) {

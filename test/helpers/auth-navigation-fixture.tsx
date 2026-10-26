@@ -28,7 +28,7 @@ export const navigationRequest: AuthRequest = {
   issue_references: ['review-reference'],
 };
 
-export function RoutedAuthReview({ requests = [navigationRequest], active = true }: { requests?: AuthRequest[]; active?: boolean }) {
+export function RoutedAuthReview({ requests = [navigationRequest], active = true, sidebarHidden = true }: { requests?: AuthRequest[]; active?: boolean; sidebarHidden?: boolean }) {
   const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
   const authRoute = useRef(route);
   if (route.tab === 'auth') authRoute.current = route;
@@ -46,6 +46,6 @@ export function RoutedAuthReview({ requests = [navigationRequest], active = true
   return <AppShellProvider value={{ active: true, noticeHost, registerMainNoticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
     registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>
     <AuthQueueView queue={requests} historyQueue={[]} outputs={{}} initialRequestId={authRoute.current.params.request}
-      reviewRouteParams={authRoute.current.params} reviewRouteActive={active} sidebarHidden onApprove={() => undefined} onReject={() => undefined} onRetry={() => undefined} />
+      reviewRouteParams={authRoute.current.params} reviewRouteActive={active} sidebarHidden={sidebarHidden} onApprove={() => undefined} onReject={() => undefined} onRetry={() => undefined} />
   </AppShellProvider>;
 }

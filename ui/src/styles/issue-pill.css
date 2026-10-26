@@ -62,3 +62,14 @@
 .issue-reference-row:hover > .issue-pill__title {
   text-decoration: underline;
 }
+
+.issue-reference-row--compact {
+  flex: 1;
+  overflow: hidden;
+}
+
+.issue-reference-row--compact > .issue-pill__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

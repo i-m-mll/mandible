@@ -27,6 +27,13 @@ function isBreakdownView(value: unknown): value is AuthChangeBreakdownView {
     && (AUTH_CHANGE_BREAKDOWN_VIEWS as readonly string[]).includes(value);
 }
 
+const LEGACY_FLAG_GROUPS: Readonly<Record<string, string[]>> = {
+  'flag:generated': ['flag:generated-only', 'flag:both'],
+  'flag:not-generated': ['flag:third-party-only', 'flag:neither'],
+  'flag:vendor': ['flag:third-party-only', 'flag:both'],
+  'flag:not-vendor': ['flag:generated-only', 'flag:neither'],
+};
+
 export function normalizeAuthChangeBreakdownViewState(
   value: unknown,
   defaults: Readonly<AuthChangeBreakdownViewState>,
@@ -37,7 +44,7 @@ export function normalizeAuthChangeBreakdownViewState(
   const expandedGroups = Array.isArray(record.expandedGroups)
     ? Array.from(new Set(record.expandedGroups.filter(
         (item): item is string => typeof item === 'string' && item.length > 0,
-      )))
+      ).flatMap(id => LEGACY_FLAG_GROUPS[id] ?? [id])))
     : defaults.expandedGroups;
   const directoryPath = Array.isArray(record.directoryPath)
     ? record.directoryPath.filter(

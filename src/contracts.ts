@@ -428,8 +428,8 @@ export type AuthChangeFile = {
  */
 export type AuthChangeReport = {
   schema: "mandible-auth-change-report@1";
-  classifier_version: "mandible-auth-change-classifier@1";
-  rules_version: "mandible-auth-change-rules@1";
+  classifier_version: "mandible-auth-change-classifier@1" | "mandible-auth-change-classifier@2";
+  rules_version: "mandible-auth-change-rules@1" | "mandible-auth-change-rules@2";
   comparison: {
     base_sha: string;
     head_sha: string;

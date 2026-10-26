@@ -7,7 +7,7 @@ export type IssuePillProps = {
   issueRef: string;
   /** The project or repo the ref was written in; a bare ref resolves there first. */
   context?: string;
-  layout?: 'pill' | 'row';
+  layout?: 'pill' | 'row' | 'compact-row';
 };
 
 type ResolvedIssue = {
@@ -63,16 +63,18 @@ export function IssuePill({ issueRef, context, layout = 'pill' }: IssuePillProps
   }, [ref, context]);
 
   const issue = state?.ref === ref ? state.issue : undefined;
+  const row = layout !== 'pill';
+  const className = row ? `issue-reference-row${layout === 'compact-row' ? ' issue-reference-row--compact' : ''}` : 'issue-pill';
   if (issue) {
     const label = issue.sameProject || !issue.projectRef ? issue.shortId : `${issue.projectRef}/${issue.shortId}`;
     return (
       <a
-        className={layout === 'row' ? 'issue-reference-row' : 'issue-pill'}
+        className={className}
         href={issueRouteHref(issue.shortId, issue.projectRef || context)}
         onClick={(event) => event.stopPropagation()}
         title={issue.title ? `${label} ${issue.title}` : label}
       >
-        <span className={layout === 'row' ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{label}</span>
+        <span className={row ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{label}</span>
         {issue.title && <span className="issue-pill__title">{issue.title}</span>}
       </a>
     );
@@ -82,12 +84,12 @@ export function IssuePill({ issueRef, context, layout = 'pill' }: IssuePillProps
   const unresolved = issue === null;
   return (
     <a
-      className={`${layout === 'row' ? 'issue-reference-row' : 'issue-pill'}${unresolved ? ' issue-pill--unresolved' : ''}`}
+      className={`${className}${unresolved ? ' issue-pill--unresolved' : ''}`}
       href={issueRouteHref(target?.issue ?? ref, target?.project ?? context)}
       onClick={(event) => event.stopPropagation()}
       title={unresolved ? `No issue matches ${ref}` : ref}
     >
-      <span className={layout === 'row' ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{ref}</span>
+      <span className={row ? 'issue-pill issue-pill__id' : 'issue-pill__id'}>{ref}</span>
     </a>
   );
 }

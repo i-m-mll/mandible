@@ -33,6 +33,7 @@ function git(args: string[], cwd = repo): string {
   const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
+    timeout: 15000,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
@@ -245,8 +246,60 @@ describe("auth change reports", () => {
     });
   });
 
+  it("classifies template formats and pinned extensionless scripts without relying on source directories", async () => {
+    git(["checkout", "main"]);
+    write("deleted-program", "#!/usr/bin/python3\nprint('delete')\n");
+    write("old-program", "#!/bin/bash\necho rename\n");
+    git(["add", "-A"]); git(["commit", "-m", "script base"]);
+    git(["checkout", "feature/report"]);
+    git(["merge", "main", "--no-edit"]);
+    fs.rmSync(path.join(repo, "deleted-program"));
+    fs.renameSync(path.join(repo, "old-program"), path.join(repo, "renamed-program"));
+    const cases: Array<[string, string, string, string]> = [
+      ["service.py", "print('root')\n", "Python", "implementation"],
+      ["arbitrary/code.ts", "export const code = 1;\n", "TypeScript", "implementation"],
+      [".codex/hooks.json.template", "{}\n", "JSON", "configuration"],
+      [".config/claude/settings.json.template", "{}\n", "JSON", "configuration"],
+      ["mystery.zzz.template", "unknown\n", "Unknown", "other"],
+      ["bin/compile-provider-settings", "#!/usr/bin/env -S python3 -u\nprint('script')\n", "Python", "implementation"],
+      ["bin/direct", "#!/bin/zsh\necho direct\n", "Shell", "implementation"],
+      ["bin/quoted", '#!/usr/bin/env -S "node --no-warnings"\nconsole.log(1)\n', "JavaScript", "implementation"],
+      ["bin/with-env", "#!/usr/bin/env -i MODE=test python3\nprint('env')\n", "Python", "implementation"],
+      ["bin/missing", "#!/usr/bin/env unknown-interpreter\nunknown\n", "Unknown", "other"],
+      ["bin/executable", "echo no shebang\n", "Unknown", "other"],
+      ["src/opaque.zzz", "unknown\n", "Unknown", "other"],
+      ["packages/opaque", "unknown\n", "Unknown", "other"],
+      ["fixtures/tests/manual.json.template", "{}\n", "JSON", "fixtures_data"],
+      ["tests/docs/script", "#!/bin/sh\necho test\n", "Shell", "tests"],
+      ["docs/config/script", "#!/bin/sh\necho docs\n", "Shell", "documentation"],
+      ["config/program", "#!/bin/sh\necho config\n", "Shell", "configuration"],
+      ["attr-language", "opaque\n", "Python", "implementation"],
+      ["attr-unknown", "opaque\n", "Mystery", "other"],
+      ["attr-priority", "#!/bin/sh\necho override\n", "Ruby", "implementation"],
+      ["large-program", "#!/usr/bin/env python3\n" + "#padding\n".repeat(40000), "Python", "implementation"],
+      ["binary-program", "\0#!/bin/sh\n", "Unknown", "other"],
+    ];
+    for (const [name, content] of cases) write(name, content);
+    fs.chmodSync(path.join(repo, "bin/executable"), 0o755);
+    fs.appendFileSync(path.join(repo, ".gitattributes"), "attr-language linguist-language=Python\nattr-unknown linguist-language=Mystery\nattr-priority linguist-language=Ruby\n");
+    fs.symlinkSync("#!/usr/bin/python3", path.join(repo, "script-link"));
+    git(["add", "-A"]); git(["commit", "-m", "classifier fixture"]);
+    const baseline = (await report()).report!;
+    for (const [name, , language, file_role] of cases) {
+      expect(baseline.files.find(file => file.new_path === name), name).toMatchObject({ language, file_role, generated: false });
+    }
+    expect(baseline.files.find(file => file.old_path === "deleted-program")).toMatchObject({ new_path: null, language: "Python", file_role: "implementation" });
+    expect(baseline.files.find(file => file.new_path === "renamed-program")).toMatchObject({ change_kind: "renamed", language: "Shell", file_role: "implementation" });
+    expect(baseline.files.find(file => file.new_path === "script-link")).toMatchObject({ file_type_after: "symlink", language: "Unknown", file_role: "other" });
+    expect(baseline).toMatchObject({ classifier_version: "mandible-auth-change-classifier@2", rules_version: "mandible-auth-change-rules@2" });
+    for (const [name] of cases) write(name, "#!/unknown\nworking tree changed\n");
+    expect((await report()).report).toEqual(baseline);
+  });
+
   it("keeps captured reports and their headline counts immutable while prose remains editable", async () => {
-    const captured = (await report()).report!;
+    const captured = { ...(await report()).report!,
+      classifier_version: "mandible-auth-change-classifier@1" as const, rules_version: "mandible-auth-change-rules@1" as const };
+    const originalBytes = JSON.stringify(captured);
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
@@ -265,6 +318,7 @@ describe("auth change reports", () => {
       }));
       const revised = (await queue.update(request.id, { title: "Edited prose" }));
       expect(revised.change_report).toEqual(captured);
+      expect(JSON.stringify(revised.change_report)).toBe(originalBytes);
       await expect((async () => (await queue.update(request.id, { additions: captured.totals.additions + 1 }))())).rejects
         .toThrow(/immutable/);
       expect(() => db.prepare("UPDATE auth_requests SET change_report_json = NULL WHERE id = ?").run(request.id))
