@@ -37,6 +37,7 @@ beforeEach(() => {
       assigned_session_id TEXT,
       provider TEXT,
       provider_session_id TEXT,
+      worker_provider TEXT,
       worker_provider_session_id TEXT,
       activated_at INTEGER,
       auth_request_id TEXT,

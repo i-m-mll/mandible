@@ -1,3 +1,4 @@
+import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -133,12 +134,12 @@ export class WorkUnitReconciler {
     const db = getDb();
     const heldRows = () => db
       .prepare(
-        `SELECT id, assigned_session_id FROM work_units
+        `SELECT * FROM work_units
          WHERE assigned_session_id IS NOT NULL
            AND state IN ('open', 'committed')
          ORDER BY id`
       )
-      .all() as Array<{ id: string; assigned_session_id: string }>;
+      .all() as Array<Record<string, unknown> & { id: string; assigned_session_id: string }>;
     const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
       for (const row of heldRows()) probe(db, row.assigned_session_id);
     });
@@ -148,7 +149,7 @@ export class WorkUnitReconciler {
     let unknown = 0;
     for (const row of held) {
       const liveness = resolve(db, row.assigned_session_id)?.liveness ?? "unknown";
-      if (liveness === "stopped") dead.push(row);
+      if (liveness === "stopped" && !hasArchivedResponsibility(db, row)) dead.push(row);
       else if (liveness === "unknown") unknown++;
     }
     if (dead.length === 0) return { cleared: 0, unknown };

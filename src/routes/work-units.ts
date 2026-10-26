@@ -501,12 +501,6 @@ export function registerWorkUnitRoutes(
       sendJson(res, 400, { error: "worker_owner must be a boolean" });
       return;
     }
-    if (body.worker_owner === true && ambientIdentity?.provider !== "codex") {
-      sendJson(res, 400, {
-        error: "worker_owner requires an allowlisted ambient Codex provider identity",
-      });
-      return;
-    }
     if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
 
     const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, true);
@@ -558,10 +552,6 @@ export function registerWorkUnitRoutes(
         updates.push("provider = ?", "provider_session_id = ?");
         params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
       }
-      if (body.worker_owner === true) {
-        updates.push("worker_provider_session_id = ?");
-        params.push(ambientIdentity!.provider_session_id);
-      }
       params.push(existing.id);
 
       mutateWorkUnit(db, existing.id, () => db.prepare(
@@ -607,7 +597,7 @@ export function registerWorkUnitRoutes(
         now,
         now,
         ownerUserId,
-        body.worker_owner === true ? ambientIdentity!.provider_session_id : null,
+        null,
         null,
         0,
       ));
@@ -834,7 +824,7 @@ export function registerWorkUnitRoutes(
         return;
       }
       priorLiveness = holding.liveness;
-      if (holding.state !== "stopped") return (await blocked(holding.liveness));
+      if (holding.state !== "stopped" || holding.liveness.responsibility_retained) return (await blocked(holding.liveness));
       authorityPath = "stopped_holder_takeover";
     } else if (!operatorRecovery && unit.kind === "integration") {
       if (!unit.ledger_issue_id || !body.parent_role_checkpoint_id) {
@@ -858,7 +848,7 @@ export function registerWorkUnitRoutes(
       authorityPath = "parent_role_handoff";
     } else if (!operatorRecovery) {
       priorLiveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
-      if (priorLiveness.state !== "stopped") return (await blocked(priorLiveness));
+      if (priorLiveness.state !== "stopped" || priorLiveness.responsibility_retained) return (await blocked(priorLiveness));
       authorityPath = "stopped_holder_takeover";
     }
     try {
@@ -1249,7 +1239,7 @@ function holderRefusal(
   } else {
     liveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
   }
-  if (liveness.state !== "stopped") return liveHolderRefusal(db, unit, liveness, sameCredential);
+  if (liveness.state !== "stopped" || liveness.responsibility_retained) return liveHolderRefusal(db, unit, liveness, sameCredential);
   const holder = describeCustodyHolder(db, unit.owner_user_id, unit.owner_credential_id);
   return {
     error: `Work unit is held by ${sameCredential ? "another session of your credential " : ""}${holderLabel(holder)}, ` +
@@ -1327,7 +1317,7 @@ function custodyCheck(
       });
     }
     const where = `Work unit held by another session of your credential ${holderLabel(holder)}, whose session ${livenessLabel(holding.liveness)}. `;
-    return holding.state === "stopped"
+    return holding.state === "stopped" && !holding.liveness.responsibility_retained
       ? answer("takeover_available", `${where}Take over custody with the command below before committing.`,
         { holder, holder_liveness: holding.liveness, takeover_command: takeoverCommand(db, unit) })
       : answer("held", `${where}Do not commit here. Ask that session to release it, or request operator approval with the command below.`,
@@ -1350,7 +1340,7 @@ function custodyCheck(
       { holder, holder_liveness: liveness,
         takeover_command: takeoverCommand(db, unit, { parentRoleCheckpointId: callerHoldsRole ? checkpoint!.id : null }) });
   }
-  if (liveness.state === "stopped") {
+  if (liveness.state === "stopped" && !liveness.responsibility_retained) {
     return answer("takeover_available",
       `Work unit held by ${holderLabel(holder)}, whose session ${livenessLabel(liveness)}. ` +
         "Take over custody with the command below before committing.",

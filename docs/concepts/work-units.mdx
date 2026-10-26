@@ -72,7 +72,7 @@ At least one commit exists on the branch. The work is in progress or ready for r
 
 ### resolved
 
-The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed. A unit's Codex worker thread, bound by `work-unit activate --worker`, is archived by the work-unit reconciler once the thread is stopped and holds no other open or committed unit; this applies to every resolution path, not only merges. A later Codex resume dispatch unarchives the thread first.
+The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed. A positively identified child worker becomes eligible for the shared child cleanup policy once all its current assigned units resolve; this applies to every resolution path, not only merges. A later Codex resume dispatch unarchives the thread first.
 
 ### abandoned
 
@@ -145,11 +145,19 @@ array of `{ "id": "...", "expected_generation": 1 }` entries for every active
 unit of that issue and repository. All entries must match current custody and
 the complete active set; any conflict leaves all units unchanged.
 
-`activate --worker` is an explicit worker-role assertion. It binds the caller's
-allowlisted ambient Codex thread to `worker_provider_session_id`, which is the
-only direct work-unit identity authorized for post-merge thread archival.
-Ordinary activation records ambient attribution only; coordinators, triage
-tasks, and requesters must not pass `--worker` for their own coordination units.
+Claim, activation and structured assignment automatically bind an indexed child
+worker's exact provider and native session ID in `worker_provider` and
+`worker_provider_session_id`. A coordinator creating or updating a unit remains
+mutation attribution; it does not become the assigned worker. Missing or ambiguous
+identity stays unknown. No worker flag or separate completion declaration is needed.
+All current assigned units must resolve before worker completion is eligible;
+the issue itself may remain open.
+
+Visibility archive and restore preserve an unresolved holder's assignment and
+credential custody after the provider unloads. The holder may correctly read as
+stopped while retaining responsibility. An explicit reassignment, custody transfer,
+release or resolution changes that responsibility; ordinary dead holders retain
+the existing cleanup and takeover behavior.
 
 ## Liveness
 
