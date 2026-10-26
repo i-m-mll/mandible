@@ -1922,11 +1922,12 @@ describe("iab-preview launcher", () => {
       cwd: repo,
       encoding: "utf8",
       env: previewLauncherEnv(previewBase),
-    });
+    }).then(() => { throw new Error("Unverified live preview was accepted"); }, error => error);
     expect(JSON.parse(reuse.stdout)).toMatchObject({
-      status: "dry-run",
-      mode: "current-worktree",
+      ok: false,
+      error: expect.stringContaining("application root returned HTTP 404"),
     });
+    expect(reuse.stdout).not.toContain("Stopped preview material");
 
     const cleanup = await execFileAsync(process.execPath, [
       SCRIPT, "cleanup", "--preview-base-dir", previewBase, "--json",
@@ -1987,7 +1988,7 @@ describe("iab-preview launcher", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ready: true, warm: true });
   });
 
-  it("returns clean preview URLs and never places session credentials in a fragment", async () => {
+  it("reuses a recovered healthy owned preview and keeps credentials out of its URL", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
@@ -2017,6 +2018,8 @@ describe("iab-preview launcher", () => {
     const sourceDb = path.join(repo, "source.db");
     fs.writeFileSync(sourceDb, "source database", "utf8");
     const metadata = {
+      ownership: { ...createOwnedRun({ root: previewRoot, instanceId: "preview-recovered", project: "fixture-project",
+        workUnit: "preview-owner", outputs: [] }), state: "active" },
       status: "started",
       branch: "integration/test-preview",
       worktree: repo,

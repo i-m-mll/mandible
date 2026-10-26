@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import fs from "node:fs";
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "./owned-run.mjs";
+import { previewPaths, previewBaseDir } from "./preview-custody.mjs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -19,7 +20,6 @@ import SqliteDatabase from "../src/sqlite.ts";
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
 const DEFAULT_DB_PATH = liveDbPath();
-const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
 const APPLICATION_SHELL_MARKER_RE = /<script\b[^>]*\bid=["']mandible-bootstrap["'][^>]*>/i;
 const APPLICATION_SHELL_MAX_BYTES = 512 * 1024;
@@ -240,6 +240,8 @@ async function createOrReusePreview(options) {
 
   fs.mkdirSync(preview.root, { recursive: true });
   if (fs.existsSync(preview.metadata)) {
+    const active = await previewConsumerReason(priorMetadata ?? {}, preview.root);
+    if (active) throw new Error(`Existing preview has an active consumer but failed reuse validation: ${active}. No relaunch or cleanup occurred.`);
     throw new Error(`Stopped preview material requires finalization before relaunch: ${preview.root}`);
   }
   if (fs.readdirSync(preview.root).length) throw new Error(`Unclassified preview material prevents launch: ${preview.root}`);
@@ -1087,9 +1089,9 @@ export async function healthyExistingPreview(branch, expected = {}) {
   if (!metadata.port) return null;
 
   const readiness = await readPreviewReadiness(metadata.port);
-  if (!readiness.ok) return null;
+  if (!readiness.ok) return refuseLivePreviewReuse(metadata, preview.root, readiness.reason);
   const { health } = readiness;
-  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
+  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
   const drift = previewInstanceEnvDrift(metadata, preview.root);
   const logIsolationUpgrade = metadata.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined && drift.includes("MANDIBLE_STDOUT_LOG_PATH")
@@ -1098,7 +1100,7 @@ export async function healthyExistingPreview(branch, expected = {}) {
     const userPreferencesIsolationUpgrade = isUserPreferencesIsolationUpgrade(metadata, health, preview.root, drift);
     if (!userPreferencesIsolationUpgrade && !logIsolationUpgrade
         && !isExactLegacyPreview(metadata, health, preview.root, drift)
-        && !isLegacyPreviewListener(health)) return null;
+        && !isLegacyPreviewListener(health)) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
     return {
       ...metadata,
       health,
@@ -1113,6 +1115,12 @@ export async function healthyExistingPreview(branch, expected = {}) {
     health,
     freshUrl: `${metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/?fresh=${Date.now()}#/timeline`,
   };
+}
+
+async function refuseLivePreviewReuse(metadata, root, reason) {
+  const active = await previewConsumerReason(metadata, root);
+  if (active) throw new Error(`Existing preview is active but cannot be reused: ${reason}; ${active}. No relaunch or cleanup occurred.`);
+  return null;
 }
 
 function isLegacyPreviewListener(health) {
@@ -2215,17 +2223,6 @@ function isPortOpen(port) {
   });
 }
 
-function previewPaths(branch) {
-  const root = path.join(previewBaseDir(), slugify(branch));
-  return {
-    root,
-    metadata: path.join(root, "metadata.json"),
-  };
-}
-
-function previewBaseDir(override = null) {
-  return path.resolve(expandHome(override ?? process.env.MANDIBLE_PREVIEW_BASE_DIR ?? DEFAULT_PREVIEW_BASE_DIR));
-}
 
 function readJsonFile(filePath) {
   try {
@@ -2338,13 +2335,6 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function slugify(value) {
-  return value
-    .replace(/^refs\/heads\//, "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
-}
 
 function shortHash(value) {
   return String(value).slice(0, 8);
