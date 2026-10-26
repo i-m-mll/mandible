@@ -5,6 +5,7 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
+  --app-frame-navigation-gap: 2px;
   --app-frame-left-width: var(--app-view-sidebar-width);
   background: var(--surface-chrome);
 }
@@ -24,7 +25,7 @@
   align-items: center;
   flex: 0 0 auto;
   min-width: max-content;
-  gap: 2px;
+  gap: var(--app-frame-navigation-gap);
   padding-inline: 8px;
   height: 100%;
 }
@@ -66,7 +67,8 @@
 .app-frame > .app-layout { grid-column: 2; grid-row: 2; }
 :root[data-frame-presentation='macos-overlay'] .app-frame { --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width)); }
 :root[data-frame-presentation='macos-overlay'] .app-frame__bar { grid-column: 1 / -1; }
-:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: var(--app-native-controls-reservation, 88px); flex: none; height: 100%; }
+:root[data-frame-presentation='macos-overlay'] .app-frame__navigation { padding-inline-start: 0; }
+:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: calc(var(--app-native-controls-reservation, 88px) - var(--app-header-control-icon-inline-inset) - var(--app-frame-navigation-gap)); flex: none; height: 100%; }
 :root[data-frame-presentation='macos-overlay'] .app-frame > .app-rail { grid-row: 2; border-right: 0; }
 :root[data-frame-presentation='macos-overlay'] .app-frame > .app-layout { border-top-left-radius: var(--radius-chat-surface); }
 :root[data-native-glass='regular'] .app-frame { background: var(--surface-glass-tint); }

@@ -2772,6 +2772,7 @@ export type NativeWindowCapabilities = {
   framePresentation: 'macos-overlay' | 'system';
   topBarHeight: number;
   trafficLightReservation: number;
+  trafficLightBounds?: { left: number; top: number; width: number; height: number } | null;
   liquidGlassRegular: boolean;
 };
 
