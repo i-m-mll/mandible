@@ -94,8 +94,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     throw new Error('Visible native preview requires macOS 14+ for a separate WebKit store');
   }
   if ((!branch && !supplied) || !project || !workUnit) throw new Error('launch requires a selected preview, --project and --work-unit');
-  const { healthyExistingPreview } = await import('./iab-preview.mjs');
-  const selected = supplied ?? await healthyExistingPreview(branch);
+  const selected = supplied ?? await (await import('./iab-preview.mjs')).healthyExistingPreview(branch);
   if (!selected || selected.legacyContractDrift?.length || selected.userPreferencesIsolationUpgrade || selected.logIsolationUpgrade) {
     throw new Error('Selected launcher preview is unavailable or requires explicit Coordinator recovery');
   }
