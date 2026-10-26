@@ -1,6 +1,7 @@
 // Resolve intrinsic local browser identity and explicit agent credentials.
 
 import type { Db } from "../db.js";
+import { resolveManagedRequestOrigin, type ManagedRequestOrigin } from "../request-origin.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createHmac } from "node:crypto";
@@ -145,6 +146,10 @@ export class ClientAuthenticator implements ClientAuthGate {
         .update(`mandible:local-csrf:${this.clientAuthAuthorityId}:${audience}`)
         .digest("base64url"),
     };
+  }
+
+  resolveManagedOrigin(identity: LocalManagedIdentity): ManagedRequestOrigin {
+    return resolveManagedRequestOrigin(this.db, identity);
   }
 
   localSocketIdentity(

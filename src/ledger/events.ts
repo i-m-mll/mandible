@@ -1,6 +1,7 @@
 import { LEDGER_EVENT_CREATED, ledgerSseTypeForEvent, type LedgerDomainEvent } from "./event-contract.js";
 export { ledgerSseTypeForEvent } from "./event-contract.js";
 import type { LedgerEvent } from "./types.js";
+import { requestOriginFromMetadata } from "../request-origin.js";
 
 export interface LedgerSsePayload {
   event: LedgerEvent;
@@ -26,6 +27,7 @@ export function emitLedgerEvents(
       actor_type: event.event.actor_type,
       actor_user_id: event.event.actor_user_id ?? null,
       evidence_method: event.event.evidence_method ?? null,
+      request_origin: requestOriginFromMetadata(JSON.parse(event.event.payload_json)),
       source: event.event.source,
       occurred_at: event.event.occurred_at,
     });

@@ -1,8 +1,46 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Router } from "../src/server.js";
 import { currentRequestOrigin, requestOriginJson, withRequestOrigin, withRequestOriginMetadata } from "../src/request-origin.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { createLedgerProject, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { createUser } from "../src/users/store.js";
+import { systemAction } from "../src/identity/resolver.js";
 
 describe("request origin dispatch", () => {
+  it("records global mutations atomically and publishes recorded origin only after commit", () => {
+    const db = migratedMemoryDb();
+    try {
+      const broadcast = vi.fn();
+      const store = new LedgerStore(db, { broadcaster: broadcast });
+      const user = createUser(db, { slug: 'origin-fixture', kind: 'agent', display_name: 'Before' });
+      const origin = { provider: 'claude', provider_session_id: 'native-global-author' };
+      const input = { actor_type: 'system' as const, attribution: systemAction(), entity_type: 'user', entity_id: user.id,
+        event_type: 'user.updated', project_id: null, notify: false, payload: { operation: 'update', changed_fields: ['display_name'] } };
+      expect(() => withRequestOrigin(origin, () => db.transaction(() => {
+        db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run('Rolled back', user.id);
+        store.recordEvent(input);
+        throw new Error('abort mutation');
+      })())).toThrow('abort mutation');
+      expect(db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id)).toEqual({ display_name: 'Before' });
+      expect(db.prepare('SELECT count(*) AS n FROM ledger_events').get()).toEqual({ n: 0 });
+      expect(broadcast).not.toHaveBeenCalled();
+      const event = withRequestOrigin(origin, () => db.transaction(() => {
+        db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run('After', user.id);
+        const recorded = store.recordEvent(input);
+        expect(() => store.notifyEvent(recorded)).toThrow('requires a committed transaction');
+        return recorded;
+      })());
+      expect(broadcast).not.toHaveBeenCalled();
+      store.notifyEvent(event);
+      expect(broadcast).toHaveBeenCalledWith('ledger:event:created', expect.objectContaining({ request_origin: origin, entity_id: user.id }));
+      expect(db.prepare('SELECT count(*) AS n FROM ledger_change_feed_state').get()).toEqual({ n: 0 });
+      expect(db.prepare('SELECT count(*) AS n FROM ledger_change_log').get()).toEqual({ n: 0 });
+      const project = createLedgerProject(db, process.cwd());
+      store.recordEvent({ ...input, project_id: project.project.id });
+      expect(db.prepare('SELECT project_id FROM ledger_change_log').all()).toEqual([{ project_id: project.project.id }]);
+    } finally { db.close(); }
+  });
+
   it("isolates overlapping requests, clears absent origin, and restores serialized queued origin", async () => {
     const router = new Router();
     let release!: () => void;

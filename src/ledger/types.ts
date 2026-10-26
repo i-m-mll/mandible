@@ -237,6 +237,7 @@ export interface LedgerIssueCheckpoint {
 }
 
 export interface LedgerBodyRevision {
+  request_origin?: import("../request-origin.js").RequestOrigin | null;
   id: string;
   entity_type: LedgerBodyRevisionEntityType;
   entity_id: string;
