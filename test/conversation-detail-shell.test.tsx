@@ -273,6 +273,26 @@ function deferred<T>() {
 
 describe('compact detail pane shell', () => {
 
+  it('keeps the selected transcript and reading cache while archiving and restoring', async () => {
+    const selected = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const archive = vi.spyOn(api, 'updateConversationArchive').mockImplementation(async (id, archived) => ({
+      id, archived_at: archived ? 42 : null,
+    }));
+    renderConversationDetail(selected);
+    await screen.findByText(transcriptBlock.content);
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))!;
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+    const restore = await screen.findByRole('button', { name: 'Restore' });
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.blocks).toBe(aggregate.blocks);
+    await waitFor(() => expect((restore as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(restore);
+    await waitFor(() => expect(archive).toHaveBeenLastCalledWith(selected.id, false));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull());
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+  });
+
   it('does not turn an obsolete transcript request into a visible Chat error', () => {
     expect(conversationLoadFailure(new CancelledError(), true, 'edge-older')).toBeNull();
     expect(conversationLoadFailure(new DOMException('aborted', 'AbortError'), true, 'refresh')).toBeNull();

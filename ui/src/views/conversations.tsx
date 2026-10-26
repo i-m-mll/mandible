@@ -68,6 +68,7 @@ import {
   type ProviderLiveProjection,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { applyConversationSse } from '../query/conversationSse';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
@@ -1317,6 +1318,8 @@ export function ConversationDetail({
   const selectionGeneration = selectionRef.current.generation;
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
   const historyRetryRef = useRef<ConversationHistoryRetry | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
@@ -1549,6 +1552,23 @@ export function ConversationDetail({
       : initialConversation ? conversationShell(initialConversation) : null
   ), [aggregateQuery.data, initialConversation]);
   const loading = windowQuery.isFetching;
+  const handleArchive = async () => {
+    if (!conversation || archiveBusy) return;
+    const generation = selectionRef.current.generation;
+    setArchiveBusy(true);
+    setArchiveError(null);
+    try {
+      const updated = await updateConversationArchive(conversationId, !conversation.archived_at);
+      const { block_count, ...metadata } = updated;
+      applyConversationSse(queryClient, 'conversation:updated', metadata);
+      await queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
+    } catch (cause) {
+      if (selectionRef.current.generation === generation) setArchiveError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (selectionRef.current.generation === generation) setArchiveBusy(false);
+    }
+  };
+  useEffect(() => { setArchiveBusy(false); setArchiveError(null); }, [conversationId]);
   const targetRequest = effectiveAnchor !== null;
   const notFound = !targetRequest && isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
   const error = navigationError ?? (
@@ -2489,6 +2509,7 @@ export function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
+      metadata={conversation.archived_at ? <span>Archived</span> : undefined}
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
@@ -2508,6 +2529,9 @@ export function ConversationDetail({
               >
                 <button type="button" role="menuitem" onClick={() => { setInfoOpen(true); setActionsOpen(false); }}>
                   View metadata
+                </button>
+                <button type="button" role="menuitem" disabled={archiveBusy} onClick={() => { void handleArchive(); setActionsOpen(false); }}>
+                  {conversation.archived_at ? 'Restore' : 'Archive'}
                 </button>
                 <button
                   type="button"
@@ -2774,6 +2798,8 @@ export function ConversationDetail({
       onDragOverCapture={handleFileDragOver}
       onDropCapture={handleFileDrop}
       notice={<>
+        {archiveError ? <DetailPaneNotice severity="error" density="compact">{archiveError}</DetailPaneNotice> : null}
+        {conversation.archived_at ? <DetailPaneNotice severity="info" density="compact" actions={<button type="button" className="btn btn--ghost btn--sm" disabled={archiveBusy} onClick={() => { void handleArchive(); }}>Restore</button>}>Archived in Mandible.</DetailPaneNotice> : null}
         {controlFailureNotice}
         {creationNotice}
         {controlLoadNotice}
@@ -2908,7 +2934,7 @@ function ChatEntryItem({
   if (onToggleArchived) {
     overflowActions.push({
       id: conversation?.archived_at ? 'unarchive' : 'archive',
-      label: conversation?.archived_at ? 'Unarchive' : 'Archive',
+      label: conversation?.archived_at ? 'Restore' : 'Archive',
       onSelect: onToggleArchived,
     });
   }
@@ -3873,7 +3899,12 @@ export function ConversationsView({
       if (selection?.type === 'conversation' && selection.id === entry.conversation.id) {
         setRetainedSelection(entry.conversation);
       }
-      await updateConversationArchive(entry.conversation.id, archived);
+      const updated = await updateConversationArchive(entry.conversation.id, archived);
+      const { block_count, ...metadata } = updated;
+      applyConversationSse(queryClient, 'conversation:updated', metadata);
+      if (selection?.type === 'conversation' && selection.id === entry.conversation.id) {
+        setRetainedSelection({ ...entry.conversation, ...updated });
+      }
       await queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
       await fetchConversationGroups();
     } catch (error) {
