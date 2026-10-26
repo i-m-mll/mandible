@@ -52,9 +52,14 @@ Download stores and verified runtime archives are borrowed caches.
 Preview builds use Tauri's debug app profile with Rust debug info disabled to
 reduce compile/link latency. They use the same bundling/preparation path as
 ordinary builds, with `--bundles app --locked`; no installers are generated.
+Repeating setup after stopping or naturally closing the app reacquires the same
+run, preserves its profile/target, regenerates staged sources and rebuilds the
+selected candidate. A failed relaunch retains that existing profile and warm
+target with an explicit retry/cleanup reason.
+
 Preparation has a one-minute budget. Cold native compilation has a ten-minute
 upper bound; its actual time is recorded, and the owned target remains warm
-until teardown. A running app's files are immutable. Stop/clean it before
+until teardown. A running app's files are immutable. Stop it before
 building a replacement; source changes never silently replace a live app.
 
 The packaged `build-revision.json` must equal the selected backend's exact

@@ -19,6 +19,14 @@ export function nativeCandidate(worktree) {
   return candidate;
 }
 
+export function verifyNativeSelection(selected, candidate) {
+  if (selected.instanceEnv?.MANDIBLE_BACKEND_GENERATION !== candidate.commit
+    || selected.ownership?.source?.commit !== candidate.commit
+    || selected.ownership?.source?.source_digest !== candidate.source_digest) {
+    throw new Error('Native candidate differs from the selected backend generation/source identity');
+  }
+}
+
 export function verifyNativeBundle(bundle, candidate) {
   const marker = JSON.parse(fs.readFileSync(path.join(bundle, 'Contents/Resources/build-revision.json'), 'utf8'));
   if (marker.commit !== candidate.commit || marker.source_digest !== candidate.source_digest) {
@@ -27,10 +35,25 @@ export function verifyNativeBundle(bundle, candidate) {
   return marker;
 }
 
+export function nativeToolchain(worktree) {
+  const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
+  const cargoHome = process.env.CARGO_HOME ?? path.join(process.env.HOME, '.cargo');
+  const cargoConfiguration = ['config', 'config.toml'].flatMap(name => {
+    const file = path.join(cargoHome, name);
+    return fs.existsSync(file) ? [[name, createHash('sha256').update(fs.readFileSync(file)).digest('hex')]] : [];
+  });
+  return { cargo: command('cargo', ['--version'], worktree), rustc: command('rustc', ['-vV'], worktree),
+    bun: command(bun, ['--version'], worktree), tauri: command(bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), '--version'], worktree),
+    cargoConfiguration, environment: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      /^(RUST|CARGO_|SDKROOT$|MACOSX_DEPLOYMENT_TARGET$|DEVELOPER_DIR$|CC$|CXX$)/.test(key)
+        && !['CARGO_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR', 'CARGO_PROFILE_DEV_DEBUG'].includes(key))) };
+}
+
 export function stageNativeBuild({ worktree, root, candidate }) {
   const buildRoot = path.join(root, 'build');
   const source = path.join(buildRoot, 'source');
   const crate = path.join(source, 'src-tauri');
+  fs.rmSync(source, { recursive: true, force: true });
   fs.mkdirSync(crate, { recursive: true });
   const files = command('git', ['ls-files', '--', 'src-tauri'], worktree).split('\n').filter(Boolean);
   for (const file of files) {
@@ -61,8 +84,7 @@ export function stageNativeBuild({ worktree, root, candidate }) {
     TMPDIR: temporary, TMP: temporary, TEMP: temporary, MANDIBLE_DESKTOP_TRUST_CACHE: path.join(buildRoot, 'swift-cache'),
     CARGO_PROFILE_DEV_DEBUG: '0', MANDIBLE_DESKTOP_BOOTSTRAP_DIR: bootstrap,
     MANDIBLE_DESKTOP_RUNTIME_DIR: runtime, MANDIBLE_DESKTOP_TRUST_HELPER: trustHelper };
-  const toolchain = { cargo: command('cargo', ['--version'], worktree), rustc: command('rustc', ['-vV'], worktree),
-    bun: command(bun, ['--version'], worktree), tauri: command(bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), '--version'], worktree) };
+  const toolchain = nativeToolchain(worktree);
   const fingerprint = createHash('sha256').update(JSON.stringify({ candidate, config, toolchain,
     profile: 'dev-debug-0', cargoBuildDir: env.CARGO_BUILD_BUILD_DIR, cargoTargetDir: env.CARGO_TARGET_DIR })).digest('hex');
   return { buildRoot, source, crate, configFile, bun, env, candidate, toolchain, fingerprint,
@@ -79,19 +101,20 @@ export async function runNativeBuildPhase({ command, args, cwd, env, log, budget
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
   receipt.buildProcess = { pid: child.pid, identity: identity(child.pid), command, startedAt: new Date(started).toISOString(), budgetMs };
+  receipt.buildProcess.birth = receipt.buildProcess.identity?.slice(0, 24);
   let timer;
   try {
     save();
     const result = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve(null), budgetMs); })]);
     if (result === null) {
-      if (identity(child.pid) !== receipt.buildProcess.identity) throw new Error('Build process identity changed; refusing signal');
+      if (identity(child.pid)?.slice(0, 24) !== receipt.buildProcess.birth) throw new Error('Build process identity changed; refusing signal');
       process.kill(-child.pid, 'SIGKILL');
       await exited;
       throw new Error(`Native build phase exceeded ${budgetMs}ms; inspect ${log}`);
     }
     if (result.code !== 0) throw new Error(`Native build phase failed (${result.code ?? result.signal}); inspect ${log}`);
   } catch (error) {
-    if (child.exitCode === null && child.signalCode === null && identity(child.pid) === receipt.buildProcess.identity) {
+    if (child.exitCode === null && child.signalCode === null && identity(child.pid)?.slice(0, 24) === receipt.buildProcess.birth) {
       process.kill(-child.pid, 'SIGKILL');
       await exited;
     }
