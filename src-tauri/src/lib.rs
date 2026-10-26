@@ -14,6 +14,17 @@ use tauri::webview::PageLoadEvent;
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 mod acceptance;
+mod native_preview;
+
+#[derive(Clone, Default)]
+struct NativeLaunchContext(Option<native_preview::NativePreview>);
+
+fn require_production_context(app: &AppHandle) -> Result<(), String> {
+    if app.state::<NativeLaunchContext>().0.is_some() {
+        return Err("Production native operations are unavailable in a native preview".into());
+    }
+    Ok(())
+}
 mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
 
@@ -221,6 +232,7 @@ fn run_ca_setup_command(
     app: &AppHandle,
     command_name: &str,
 ) -> Result<SecureLocalConnectionsStatus, String> {
+    require_production_context(app)?;
     let script = resolve_ca_setup_script(app)?;
     let output = runtime_command(app)?
         .arg(script)
@@ -377,6 +389,7 @@ fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
 
 #[command]
 fn navigate_to_desktop_bootstrap(app: AppHandle, skip_auto_start: bool) -> Result<(), String> {
+    require_production_context(&app)?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
@@ -524,6 +537,7 @@ fn run_local_runtime(
     operation: &str,
     config: &DesktopConfig,
 ) -> Result<DaemonStatus, String> {
+    require_production_context(app)?;
     let script = resolve_local_runtime_script(app)?;
     let working_directory = resolve_runtime_controller_working_directory(&script)?;
     let mut child = runtime_command(app)?
@@ -599,6 +613,7 @@ fn resolve_local_runtime_script(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
+    require_production_context(app)?;
     let config_path = desktop_config_path(app)?;
     if !config_path.exists() {
         return Ok(DesktopConfig::default());
@@ -732,8 +747,24 @@ fn validate_launch_mode(launch_mode: &str) -> Result<(), String> {
     }
 }
 
+fn native_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 pub fn run() {
-    let mut context = tauri::generate_context!();
+    let preview = native_preview::configuration()
+        .expect("invalid native preview configuration; production bootstrap refused");
+    let launch_context = NativeLaunchContext(preview.clone());
+    let mut context = native_context();
+    if let Some(config) = &preview {
+        for window in &mut context.config_mut().app.windows {
+            window.url =
+                tauri::WebviewUrl::External(config.initial_url().expect("invalid preview route"));
+            window.title = config.window_title.clone();
+            window.visible = true;
+            window.focus = true;
+        }
+    }
     let acceptance =
         acceptance::configuration().expect("invalid candidate acceptance configuration");
     if let Some(config) = &acceptance {
@@ -770,16 +801,35 @@ pub fn run() {
     }
     let unattended = acceptance.is_some();
     #[allow(unused_mut)]
-    let mut app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if preview.is_none() {
+        builder = builder.plugin(tauri_plugin_deep_link::init());
+    }
+    let mut app = builder
+        .manage(launch_context)
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("native-preview-navigation")
+                .on_navigation(|webview, url| {
+                    let context = webview.state::<NativeLaunchContext>();
+                    context
+                        .0
+                        .as_ref()
+                        .map_or(true, |preview| preview.permits(url))
+                })
+                .build(),
+        )
         .manage(NativeWindowCapabilityState::default())
         .on_page_load(|webview, payload| {
             note_dashboard_page_load(webview.label(), payload.url(), payload.event());
             acceptance::page_loaded(webview, payload.url(), payload.event());
+            native_preview::page_loaded(webview, payload.url(), payload.event());
         })
-        .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             if let Some(config) = &acceptance {
                 acceptance::install(app, config)?;
+            }
+            if let Some(config) = &preview {
+                native_preview::install(app, config)?;
             }
             if let Some(identifier) = isolated_store_identifier {
                 for window in app
@@ -809,6 +859,9 @@ pub fn run() {
                         .liquid_glass_regular
                         .clone(),
                 );
+            }
+            if preview.is_some() {
+                return Ok(());
             }
             let setup_item = MenuItemBuilder::with_id(
                 "secure_local_connections_setup",
