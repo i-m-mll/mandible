@@ -154,7 +154,8 @@ export function DetailPaneShell({
   }, [footer?.mode, scrollOwner]);
 
   useLayoutEffect(() => {
-    if (!overlayControl || !shellRef.current || !overlayControlRef.current || !scrollOwner) {
+    const bodyViewport = bodyScrollOwnerRef.current;
+    if (!overlayControl || !shellRef.current || !overlayControlRef.current || !scrollOwner || !bodyViewport) {
       shellRef.current?.style.removeProperty('--detail-pane-overlay-control-scroll-space');
       return undefined;
     }
@@ -166,7 +167,7 @@ export function DetailPaneShell({
       if (visualControl) {
         const scrollSpace = overlayControlScrollSpace(
           visualControl.getBoundingClientRect(),
-          scrollOwner.getBoundingClientRect(),
+          bodyViewport.getBoundingClientRect(),
         );
         shellRef.current.style.setProperty('--detail-pane-overlay-control-scroll-space', `${scrollSpace}px`);
       } else {
@@ -176,6 +177,7 @@ export function DetailPaneShell({
     updateGeometry();
     const observer = new ResizeObserver(updateGeometry);
     observer.observe(overlayControlRef.current);
+    observer.observe(bodyViewport);
     observer.observe(scrollOwner);
     const visualControl = overlayControlRef.current.querySelector<HTMLElement>('[data-detail-pane-overlay-visual]');
     if (visualControl) observer.observe(visualControl);
