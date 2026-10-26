@@ -24,6 +24,8 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { addGrant } from "../src/permissions/store.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { briefingRoute, parseRouteFromHash } from "../ui/src/routing.js";
+import { normalizeBriefings, normalizeBriefingProjection } from "../ui/src/api.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}
@@ -790,8 +792,17 @@ describe("plural Briefing routes", () => {
     expect(list.body).toMatchObject({ briefings: [{
       id: ids.briefing_id, latest_round_id: ids.round_id, round_count: 1, unanswered_directive_count: 1,
     }] });
-    const detail = await router.invoke({ method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`, credential: "human" });
-    expect(detail.body).toMatchObject({ selected_round: { id: ids.round_id, binding: { status: "valid" }, items: [{ directive_key: "paper" }] } });
+    const listed = normalizeBriefings(list.body).briefings[0];
+    const route = parseRouteFromHash(briefingRoute(listed.collectionId, listed.latestRoundId).slice(1));
+    const detailUrl = `/api/briefings/${route.params.briefing}?round=${route.params.round}`;
+    const detail = await router.invoke({ method: "GET", url: detailUrl, credential: "human" });
+    expect(detail).toMatchObject({ status: 200, body: { selected_round: {
+      id: ids.round_id, binding: { status: "valid" }, items: [{ directive_key: "paper" }],
+      document: { source: payload().document.markdown },
+    } } });
+    expect(normalizeBriefingProjection(detail.body)).toMatchObject({
+      valid: true, briefing_id: ids.briefing_id, selected_round_id: ids.round_id,
+    });
     const answer = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
       credential: "human", body: { answers: [{ directive_key: "paper", operation: "set",
         expected_response_event_id: null, value: { verdict: "keep" } }] } });
@@ -813,7 +824,7 @@ describe("plural Briefing routes", () => {
     const submissionId = (submitted.body as { submission_id: string }).submission_id;
     expect(await router.invoke({
       method: "GET",
-      url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}&submission=${submissionId}`,
+      url: `${detailUrl}&submission=${submissionId}`,
       credential: "human",
     })).toMatchObject({
       status: 200,
@@ -954,6 +965,30 @@ describe("plural Briefing routes", () => {
     expect(await request()).toMatchObject({ status: 401, body: { code: "authentication_required" } });
     expect(await request("other-agent")).toMatchObject({ status: 403, body: { code: "human_responder_required" } });
     expect(await request("inactive-human")).toMatchObject({ status: 403, body: { code: "human_responder_required" } });
+  });
+
+  it("resolves Briefing refs within the reader's visibility and rejects ambiguous prefixes", async () => {
+    const published = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const ref = ids.briefing_id.slice(0, 8);
+    const get = (target: string, credential = "human") => router.invoke({
+      method: "GET", url: `/api/briefings/${encodeURIComponent(target)}`, credential,
+    });
+    expect(await get(`briefing:${ref}`)).toMatchObject({
+      status: 200, body: { briefing: { id: ids.briefing_id }, selected_round: { id: ids.round_id } },
+    });
+    createUser(db, { slug: "outsider", kind: "human", display_name: "Outsider" });
+    expect(await get(ref, "outsider")).toMatchObject({ status: 404, body: { code: "not_found" } });
+    expect(await get("missing-briefing")).toMatchObject({ status: 404, body: { code: "not_found" } });
+
+    const collisionId = `${ref}-collision`;
+    db.prepare(`INSERT INTO briefings (id, briefing_key, title, created_at, updated_at)
+      VALUES (?, 'collision', 'Collision', 1, 1)`).run(collisionId);
+    expect(await get(ref)).toMatchObject({ status: 200, body: { briefing: { id: ids.briefing_id } } });
+    db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, 1)")
+      .run(collisionId, humanId);
+    expect(await get(ref)).toMatchObject({ status: 409, body: { code: "ambiguous_ref" } });
+    expect(await get(ids.briefing_id)).toMatchObject({ status: 200, body: { briefing: { id: ids.briefing_id } } });
   });
 
   it("resolves round refs only inside the authorized Briefing and rejects ambiguous prefixes", async () => {

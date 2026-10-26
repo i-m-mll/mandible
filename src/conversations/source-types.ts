@@ -58,6 +58,7 @@ export interface ConversationSourceVersion extends ConversationSourceEpochs {
   contentSha256: string;
   byteLength: number;
   fileMtimeMs: number | null;
+  /** Physical provider generation, independent of logical byteLength/contentSha256. */
   filesystemDevice: string | null;
   filesystemInode: string | null;
   filesystemCtimeNs: string | null;

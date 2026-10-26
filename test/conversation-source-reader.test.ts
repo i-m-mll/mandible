@@ -1,3 +1,4 @@
+import { zstdCompressSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -95,6 +96,72 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it("preserves source versions, locators and block identities across raw/zstd transitions", async () => {
+    const db = migratedMemoryDb();
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    try {
+      const parsed = await parse(filePath);
+      insertConversation(db, "compressed", filePath, parsed);
+      const version = await record(db, "compressed", filePath);
+      const reader = new ConversationSourceReader(db, { legacyFallback: false });
+      const original = await reader.readAll("compressed");
+      expect(original.status).toBe("source");
+      const raw = fs.readFileSync(filePath);
+      fs.writeFileSync(`${filePath}.zst`, zstdCompressSync(raw));
+      fs.unlinkSync(filePath);
+      expect((await parse(filePath)).sourceSnapshot?.contentHash).toBe(parsed.sourceSnapshot?.contentHash);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      expect(await record(db, "compressed", filePath)).toBe(version);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      fs.writeFileSync(filePath, raw);
+      expect(await record(db, "compressed", filePath)).toBe(version);
+      expect(await reader.readAll("compressed")).toEqual(original);
+      fs.unlinkSync(filePath);
+      fs.writeFileSync(`${filePath}.zst`, zstdCompressSync(Buffer.from(raw.toString().replace("duplicate-session", "different-session"))));
+      expect((await reader.readAll("compressed")).status).not.toBe("source");
+      fs.unlinkSync(`${filePath}.zst`);
+      expect((await reader.readAll("compressed")).status).not.toBe("source");
+    } finally { db.close(); }
+  });
+
+  it("repairs shared historical aliases without merging distinct provider records", async () => {
+    const db = migratedMemoryDb();
+    try {
+      const filePath = rolloutPath();
+      writeRecords(filePath, records());
+      const parsed = await parse(filePath);
+      insertConversation(db, "conversation-a", filePath, parsed);
+      await record(db, "conversation-a", filePath);
+      const prior = db.prepare(`SELECT id, position, provider_key FROM conversation_structural_blocks
+        WHERE conversation_id = 'conversation-a' ORDER BY position`).all() as Array<{ id: string; position: number; provider_key: string }>;
+      const first = prior[0];
+      const last = prior.at(-1)!;
+      db.prepare("UPDATE conversation_block_aliases SET block_id = ? WHERE alias = ?")
+        .run(first.id, `legacy-conversation-a-${last.position}`);
+      db.prepare("DELETE FROM conversation_structural_blocks WHERE id = ?").run(last.id);
+      db.prepare("UPDATE conversation_structural_blocks SET provider_key = ?, position = ? WHERE id = ?")
+        .run(last.provider_key, last.position, first.id);
+
+      const snapshots: string[][] = [];
+      for (let pass = 0; pass < 2; pass += 1) {
+        await record(db, "conversation-a", filePath);
+        const read = await new ConversationSourceReader(db, { legacyFallback: false }).readAll("conversation-a");
+        expect(read.status).toBe("source");
+        if (read.status !== "source") throw new Error("expected exact provider records");
+        expect(read.value.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
+        expect(read.value.at(-1)?.id).toBe(first.id);
+        expect(new Set(read.value.map((block) => block.id)).size).toBe(parsed.blocks.length);
+        snapshots.push(read.value.map((block) => block.id));
+        expect(getConversationStructureCache(db).captureDenseRows(db, "conversation-a", "replace").cached)
+          .toBe(parsed.blocks.length);
+      }
+      expect(snapshots[1]).toEqual(snapshots[0]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("rebuilds identical source block identities from the same transcript", async () => {
     const filePath = rolloutPath();
     writeRecords(filePath, records());

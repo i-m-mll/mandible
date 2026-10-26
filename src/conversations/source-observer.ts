@@ -1,3 +1,4 @@
+import { openLogicalSource, LogicalSourceChangedError, isCodexLogicalSource } from "./logical-source.js";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
@@ -45,6 +46,7 @@ export interface StableSourceObservation {
 }
 
 export interface StableSourceExtentObservation {
+  contentSha256?: string;
   path: string;
   byteLength: number;
   fileMtimeMs: number;
@@ -108,7 +110,7 @@ export async function observeStableSourceAlias(
     instrumentation?: SourceReadInstrumentation;
   } = {},
 ): Promise<StableSourceObservation> {
-  if (alias.availability !== "available") {
+  if (alias.availability !== "available" && !isCodexLogicalSource(alias.path)) {
     throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
   }
   try {
@@ -117,12 +119,7 @@ export async function observeStableSourceAlias(
     if (declared !== path.resolve(alias.path) || !insideSourceRoot(declaredRoot, declared)) {
       throw new SourceObservationError("conversation source alias escapes its declared root", "unavailable");
     }
-    const rootReal = await fs.promises.realpath(declaredRoot);
-    const fileReal = await fs.promises.realpath(declared);
-    if (!insideSourceRoot(rootReal, fileReal)) {
-      throw new SourceObservationError("conversation source resolves outside its declared root", "unavailable");
-    }
-    const handle = await fs.promises.open(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const handle = await openLogicalSource(declared, { rootPath: declaredRoot });
     try {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile()) {
@@ -130,7 +127,7 @@ export async function observeStableSourceAlias(
       }
       const beforeExtent = numericSourceExtent(before);
       const beforeIdentity = sourceFilesystemIdentity(before);
-      if (options.maxBytes !== undefined && beforeExtent.byteLength > options.maxBytes) {
+      if (options.captureBytes && options.maxBytes !== undefined && beforeExtent.byteLength > options.maxBytes) {
         throw new SourceObservationError("source exceeds bounded cold-read limit", "unsupported");
       }
       const captureBytes = options.captureBytes === true;
@@ -139,6 +136,7 @@ export async function observeStableSourceAlias(
       const tailLength = Math.min(TAIL_HASH_BYTES, beforeExtent.byteLength);
       let position = 0;
       const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, beforeExtent.byteLength)));
+      if (handle.logicalHash && !captureBytes) position = beforeExtent.byteLength;
       while (position < beforeExtent.byteLength) {
         const requested = Math.min(chunk.length, beforeExtent.byteLength - position);
         options.instrumentation?.({ position, length: requested, fileSize: beforeExtent.byteLength });
@@ -174,7 +172,7 @@ export async function observeStableSourceAlias(
         path: alias.path,
         byteLength: beforeExtent.byteLength,
         fileMtimeMs: beforeExtent.fileMtimeMs,
-        contentSha256: contentHash.digest("hex"),
+        contentSha256: handle.logicalHash ?? contentHash.digest("hex"),
         tailHash: beforeExtent.byteLength === 0 ? "" : createHash("sha256").update(tail).digest("hex"),
         bytes: captured,
         filesystemIdentity: beforeIdentity,
@@ -184,6 +182,7 @@ export async function observeStableSourceAlias(
     }
   } catch (error) {
     if (error instanceof SourceObservationError) throw error;
+    if (error instanceof LogicalSourceChangedError) throw new SourceObservationError(error.message, "changed");
     throw new SourceObservationError(
       error instanceof Error ? error.message : "conversation source could not be read",
       "unavailable",
@@ -200,7 +199,7 @@ export async function observeStableSourceAliasExtent(
   alias: ConversationSourceAlias,
   options: { instrumentation?: SourceReadInstrumentation } = {},
 ): Promise<StableSourceExtentObservation> {
-  if (alias.availability !== "available") {
+  if (alias.availability !== "available" && !isCodexLogicalSource(alias.path)) {
     throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
   }
   try {
@@ -209,12 +208,7 @@ export async function observeStableSourceAliasExtent(
     if (declared !== path.resolve(alias.path) || !insideSourceRoot(declaredRoot, declared)) {
       throw new SourceObservationError("conversation source alias escapes its declared root", "unavailable");
     }
-    const rootReal = await fs.promises.realpath(declaredRoot);
-    const fileReal = await fs.promises.realpath(declared);
-    if (!insideSourceRoot(rootReal, fileReal)) {
-      throw new SourceObservationError("conversation source resolves outside its declared root", "unavailable");
-    }
-    const handle = await fs.promises.open(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const handle = await openLogicalSource(declared, { rootPath: declaredRoot });
     try {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile()) {
@@ -245,6 +239,7 @@ export async function observeStableSourceAliasExtent(
       }
       return {
         path: alias.path,
+        ...(handle.logicalHash ? { contentSha256: handle.logicalHash } : {}),
         byteLength: beforeExtent.byteLength,
         fileMtimeMs: beforeExtent.fileMtimeMs,
         tailHash: beforeExtent.byteLength === 0 ? "" : createHash("sha256").update(tail).digest("hex"),
@@ -255,6 +250,7 @@ export async function observeStableSourceAliasExtent(
     }
   } catch (error) {
     if (error instanceof SourceObservationError) throw error;
+    if (error instanceof LogicalSourceChangedError) throw new SourceObservationError(error.message, "changed");
     throw new SourceObservationError(
       error instanceof Error ? error.message : "conversation source could not be read",
       "unavailable",
@@ -280,7 +276,7 @@ export async function observeStableSourceAliasRanges(
     prefix?: { byteLength: number; contentSha256: string; filesystemIdentity: Pick<SourceFilesystemIdentity, "device" | "inode"> };
   } = {},
 ): Promise<StableSourceRangeObservation> {
-  if (alias.availability !== "available") {
+  if (alias.availability !== "available" && !isCodexLogicalSource(alias.path)) {
     throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
   }
   const maxRangeBytes = options.maxRangeBytes ?? 64 * 1024 * 1024;
@@ -303,12 +299,7 @@ export async function observeStableSourceAliasRanges(
     if (declared !== path.resolve(alias.path) || !insideSourceRoot(declaredRoot, declared)) {
       throw new SourceObservationError("conversation source alias escapes its declared root", "unavailable");
     }
-    const rootReal = await fs.promises.realpath(declaredRoot);
-    const fileReal = await fs.promises.realpath(declared);
-    if (!insideSourceRoot(rootReal, fileReal)) {
-      throw new SourceObservationError("conversation source resolves outside its declared root", "unavailable");
-    }
-    const handle = await fs.promises.open(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const handle = await openLogicalSource(declared, { rootPath: declaredRoot });
     try {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile()) throw new SourceObservationError("conversation source is not a regular file", "unavailable");
@@ -409,6 +400,7 @@ export async function observeStableSourceAliasRanges(
     }
   } catch (error) {
     if (error instanceof SourceObservationError) throw error;
+    if (error instanceof LogicalSourceChangedError) throw new SourceObservationError(error.message, "changed");
     throw new SourceObservationError(
       error instanceof Error ? error.message : "conversation source ranges could not be read",
       "unavailable",

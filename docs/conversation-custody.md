@@ -84,3 +84,40 @@ All commands accept `--json`. Capture, verify, export, import, and restore
 staging are operator mutations. The API exposes the same operations beneath
 `/api/conversations/:id/custody`; raw custody bytes are never returned by an
 API route.
+
+## Compressed Codex sources
+
+Codex `.jsonl` and exact `.jsonl.zst` siblings share one canonical raw-path
+identity. Raw takes precedence whenever present, including when its content is
+invalid. Discovery, parser snapshots, ingestion checkpoints, freshness probes,
+source ranges, native-log inspection, and custody capture resolve storage through
+`src/conversations/logical-source.ts`.
+
+Offsets, record hashes, source SHA-256, source-version IDs, and captured rollout
+bytes describe decompressed JSONL. Filesystem device/inode/ctime and mtime describe
+the selected physical representation. Changing representation preserves the
+content version; resumed content changes pass through ordinary ingestion.
+
+Compressed content streams into an owner-only seekable cache under
+`$XDG_CACHE_HOME/mandible/logical-sources` (default `~/.cache/mandible/logical-sources`). Publication
+requires a stable provider descriptor, complete decoded hash, and native Codex
+session header. Cache files are content-addressed and read-only. Every lease
+revalidates current provider identity; removing provider bytes makes the source
+unavailable even while its cache survives. Changed physical generations require
+fresh decoding. Warm range reads retain record-hash verification without repeating
+full decoding or hashing.
+
+The shared cache writer serializes cold publication across daemon and ingestion
+processes. The default decoded-source ceiling is 1 GiB; cached payloads share a
+2 GiB disk quota with a 256 MiB free-space reserve. Active process leases prevent
+eviction. Errors remain visible when a source or resource budget cannot be
+verified. Native inventory uses explicitly unsealed bounded prefixes after
+physical-metadata filtering, so listing a few recent logs does not decode all
+cold history.
+
+Custody captures and verifies Codex dependencies by streaming logical bytes to
+canonical `.jsonl` archive paths. Its manifests remain compatible with existing
+captures and preserve no-overwrite restore semantics. The seekable cache itself
+never constitutes custody.
+
+Co-Authored-By: Codex (GPT) <codex@openai.com>

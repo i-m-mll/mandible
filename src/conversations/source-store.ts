@@ -1,3 +1,4 @@
+import { openLogicalSource, canonicalSourcePath, type LogicalSourceHandle } from "./logical-source.js";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
@@ -113,7 +114,7 @@ function insideDeclaredRoot(root: string, candidate: string): boolean {
 }
 
 function sourceRoot(provider: ConversationSource, filePath: string): AliasRoot {
-  const normalized = path.resolve(filePath);
+  const normalized = path.resolve(canonicalSourcePath(filePath));
   const separators = normalized.split(path.sep);
   if (provider === "codex") {
     const codex = separators.lastIndexOf(".codex");
@@ -147,7 +148,7 @@ async function snapshotJsonl(
   expected: RecordConversationSourceInput["sourceSnapshot"] = undefined,
   expectedPriorContentHash?: string,
 ): Promise<SourceSnapshot> {
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const handle = await openLogicalSource(filePath);
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) throw new Error("conversation source is not a regular file");
@@ -245,7 +246,7 @@ async function snapshotJsonl(
     const afterSize = Number(after.size);
     const afterIdentity = sourceFilesystemIdentity(after);
     if (expected) {
-      const pathAfter = await fs.promises.lstat(filePath, { bigint: true });
+      const pathAfter = await handle.stat({ bigint: true });
       if (
         total !== size || afterSize < size
         || beforeIdentity.device !== afterIdentity.device
@@ -448,7 +449,7 @@ export class ConversationSourceStore {
     `).all(conversationId) as CompatibilityBlockRow[];
   }
 
-  private stripConversationPayload(conversationId: string): { promoted: boolean; blocks: number; reason: string | null } {
+  private stripConversationPayload(conversationId: string, proof: LogicalSourceHandle): { promoted: boolean; blocks: number; reason: string | null } {
     const state = this.db.prepare(`
         SELECT c.block_count,
                (SELECT COUNT(*) FROM conversation_blocks b
@@ -515,62 +516,21 @@ export class ConversationSourceStore {
       inode: state.filesystem_inode,
       ctimeNs: state.filesystem_ctime_ns,
     };
-    const aliases = this.db.prepare(`
-      SELECT root_path, relative_path, path
-        FROM conversation_source_aliases
-       WHERE source_id = ? AND availability = 'available'
-       ORDER BY last_seen_at DESC
-    `).all(state.source_id) as Array<{ root_path: string; relative_path: string; path: string }>;
-    let sourceHandle: number | null = null;
-    let sourcePath: string | null = null;
-    let sourceRootPath: string | null = null;
-    for (const alias of aliases) {
-      try {
-        const declaredRoot = path.resolve(alias.root_path);
-        const declared = path.resolve(alias.root_path, alias.relative_path);
-        if (declared !== path.resolve(alias.path) || !insideDeclaredRoot(declaredRoot, declared)) continue;
-        const rootReal = fs.realpathSync.native(declaredRoot);
-        const fileReal = fs.realpathSync.native(declared);
-        if (!insideDeclaredRoot(rootReal, fileReal)) continue;
-        const handle = fs.openSync(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-        const stat = fs.fstatSync(handle, { bigint: true });
-        if (!stat.isFile() || Number(stat.size) !== state.byte_length
-            || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(stat))) {
-          fs.closeSync(handle);
-          continue;
-        }
-        sourceHandle = handle;
-        sourcePath = declared;
-        sourceRootPath = rootReal;
-        break;
-      } catch {
-        // Try the next verified provider alias.
-      }
-    }
-    if (sourceHandle === null || sourcePath === null || sourceRootPath === null) {
+    const before = proof.statSync();
+    if (Number(before.size) !== state.byte_length
+        || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(before))) {
       return { promoted: false, blocks: state.body_rows, reason: "exact provider source is no longer present" };
     }
-    try {
-      this.db.prepare(`
-        UPDATE conversation_blocks
-           SET content = '', metadata_json = '{}', compressed = 0,
-               payload_state = 'source'
-         WHERE conversation_id = ?
-      `).run(conversationId);
-      const finalFdStat = fs.fstatSync(sourceHandle, { bigint: true });
-      const finalRealPath = fs.realpathSync.native(sourcePath);
-      const finalPathStat = fs.statSync(finalRealPath, { bigint: true });
-      if (Number(finalFdStat.size) !== state.byte_length
-          || Number(finalPathStat.size) !== state.byte_length
-          || !insideDeclaredRoot(sourceRootPath, finalRealPath)
-          || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalFdStat))
-          || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalPathStat))) {
-        throw new ConversationSourceChangedError("conversation source changed while duplicate payload was stripped");
-      }
-      return { promoted: true, blocks: state.block_count, reason: null };
-    } finally {
-      fs.closeSync(sourceHandle);
+    this.db.prepare(`
+      UPDATE conversation_blocks SET content = '', metadata_json = '{}', compressed = 0,
+        payload_state = 'source' WHERE conversation_id = ?
+    `).run(conversationId);
+    const after = proof.statSync();
+    if (Number(after.size) !== state.byte_length
+        || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(after))) {
+      throw new ConversationSourceChangedError("conversation source changed while duplicate payload was stripped");
     }
+    return { promoted: true, blocks: state.block_count, reason: null };
   }
 
   /** Strip only after the ordinary unmasked source reader exactly reproduces the DB projection. */
@@ -647,12 +607,20 @@ export class ConversationSourceStore {
         };
       }
     }
+    const source = this.resolveConversation(conversationId);
+    let proof: LogicalSourceHandle | null = null;
+    for (const alias of source ? this.listAliases(source.sourceId) : []) {
+      if (alias.availability !== "available") continue;
+      try { proof = await openLogicalSource(alias.path, { rootPath: alias.rootPath }); break; }
+      catch { /* Source verification below fails closed if no alias remains. */ }
+    }
+    if (!proof) return { promoted: false, blocks: expected.length, reason: "exact provider source is no longer present" };
     const promote = this.db.transaction(() => {
       const current = this.compatibilityRows(conversationId);
       if (!sameCompatibilityRows(compatibilitySnapshot, current)) {
         throw new ConversationPayloadChangedError("conversation payload changed after source verification");
       }
-      return this.stripConversationPayload(conversationId);
+      return this.stripConversationPayload(conversationId, proof!);
     });
     try {
       return promote.immediate();
@@ -661,6 +629,8 @@ export class ConversationSourceStore {
         return { promoted: false, blocks: expected.length, reason: error.message };
       }
       throw error;
+    } finally {
+      await proof.close();
     }
   }
 
@@ -855,7 +825,7 @@ export class ConversationSourceStore {
     // new id that the UNIQUE(source_id, content_sha256) upsert will not insert.
     const versionId = existingVersion?.id ?? stableId("cver", sourceId, snapshot.contentHash);
     const alias = sourceRoot(input.provider, input.filePath);
-    const aliasPath = path.resolve(input.filePath);
+    const aliasPath = path.resolve(canonicalSourcePath(input.filePath));
     const aliasId = stableId("csa", sourceId, aliasPath);
     const now = Date.now();
     const blocks: LegacyBlockRow[] = input.blocks
@@ -879,6 +849,24 @@ export class ConversationSourceStore {
          ORDER BY position
       `).all(input.conversationId) as LegacyBlockRow[];
     const structuralMode = input.structuralMode ?? "replace";
+    const providerKeyOccurrences = new Map<string, number>();
+    const structuralBlocks = blocks.flatMap((block) => {
+      const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
+      const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
+      const recordOrdinal = wholeGeminiSource ? 0 : numericMetadata(metadata, "source_record_ordinal");
+      const range = wholeGeminiSource
+        ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
+        : recordOrdinal === null
+          ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
+          : snapshot.records[recordOrdinal];
+      if (!range) return [];
+      const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
+      const base = providerBlockKey(block, metadata, range, subBlockOrdinal);
+      const occurrence = providerKeyOccurrences.get(base) ?? 0;
+      providerKeyOccurrences.set(base, occurrence + 1);
+      const providerKey = occurrence === 0 ? base : `${base}:occurrence:${occurrence}`;
+      return [{ block, range, subBlockOrdinal, providerKey }];
+    });
     const codexModelPositions = new Set(
       input.provider === "codex"
         ? blocks.filter((block) => {
@@ -1033,15 +1021,18 @@ export class ConversationSourceStore {
           : [],
       );
       const pendingParents: Array<{ blockId: string; parentPosition: number | null }> = [];
-      const providerKeyOccurrences = new Map<string, number>();
       const findAlias = this.db.prepare(
         "SELECT block_id FROM conversation_block_aliases WHERE alias = ?",
       );
-      const findProviderKey = this.db.prepare(`
-        SELECT id FROM conversation_structural_blocks
-         WHERE conversation_id = ? AND provider_key = ?
-         ORDER BY created_at LIMIT 1
-      `);
+      const providerOwners = new Map((this.db.prepare(`
+        SELECT id, provider_key FROM conversation_structural_blocks WHERE conversation_id = ?
+      `).all(input.conversationId) as Array<{ id: string; provider_key: string }>)
+        .map((row) => [row.provider_key, row.id]));
+      const reservedIds = new Set(structuralBlocks.flatMap(({ providerKey }) => {
+        const owner = providerOwners.get(providerKey);
+        return owner ? [owner] : [];
+      }));
+      const claimedIds = new Set(positionToId.values());
       const upsertStructuralBlock = this.db.prepare(`
         INSERT INTO conversation_structural_blocks (
           id, conversation_id, source_version_id, status, provider_key, position,
@@ -1073,37 +1064,19 @@ export class ConversationSourceStore {
       const setParent = this.db.prepare(
         "UPDATE conversation_structural_blocks SET parent_block_id = ? WHERE id = ?",
       );
-      for (const block of blocks) {
-        const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
-        // Gemini's legacy JSON and JSONL parser normalizes the whole session at
-        // once and does not expose per-message record ordinals. Its files are
-        // bounded, so seal the complete provider file as one exact record.
-        const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
-        const recordOrdinal = wholeGeminiSource
-          ? 0
-          : numericMetadata(metadata, "source_record_ordinal");
-        const range = wholeGeminiSource
-          ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
-          : recordOrdinal === null
-          ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
-          : snapshot.records[recordOrdinal];
-        if (!range) continue;
-        const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
-        const providerKeyBase = providerBlockKey(block, metadata, range, subBlockOrdinal);
-        const providerKeyOccurrence = providerKeyOccurrences.get(providerKeyBase) ?? 0;
-        providerKeyOccurrences.set(providerKeyBase, providerKeyOccurrence + 1);
-        const providerKey = providerKeyOccurrence === 0
-          ? providerKeyBase
-          : `${providerKeyBase}:occurrence:${providerKeyOccurrence}`;
+      for (const { block, range, subBlockOrdinal, providerKey } of structuralBlocks) {
         const aliasRow = findAlias.get(block.id) as { block_id: string } | undefined;
-        const keyRow = findProviderKey.get(input.conversationId, providerKey) as { id: string } | undefined;
-        // The provider key is the stable parser identity. A legacy block alias
-        // can point at an older placeholder structural row while a partial
-        // prior index already owns this key; reusing the alias row would try
-        // to assign the same unique key twice. Reuse the key owner and move
-        // the legacy alias to it instead.
-        const blockId = keyRow?.id ?? aliasRow?.block_id
-          ?? stableId("cblk", input.conversationId, providerKey);
+        // Historical aliases may share a surrogate after parser positions shift.
+        // Reserve every proven provider owner before assigning any alias so an
+        // earlier block cannot overwrite a later record's identity.
+        const aliasId = aliasRow && !reservedIds.has(aliasRow.block_id) && !claimedIds.has(aliasRow.block_id)
+          ? aliasRow.block_id : undefined;
+        const ownerId = providerOwners.get(providerKey);
+        let blockId = ownerId ?? aliasId ?? stableId("cblk", input.conversationId, providerKey);
+        for (let occurrence = 1; !ownerId && (reservedIds.has(blockId) || claimedIds.has(blockId)); occurrence += 1) {
+          blockId = stableId("cblk", input.conversationId, providerKey, String(occurrence));
+        }
+        claimedIds.add(blockId);
         positionToId.set(block.position, blockId);
         const parentPosition = block.parent_id !== null && /^\d+$/.test(block.parent_id)
           ? Number(block.parent_id)

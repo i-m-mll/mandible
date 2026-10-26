@@ -1,3 +1,5 @@
+import * as readline from "node:readline";
+import { openLogicalSource, canonicalSourcePath, discoverLogicalSources, readLogicalSourcePrefix, sourceRepresentationExistsSync } from "./logical-source.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -154,6 +156,30 @@ function readStableFile(sourcePath: string, afterRead?: (sourcePath: string) => 
   }
 }
 
+async function streamStableFile(sourcePath: string, destination?: string, rootPath?: string, afterRead?: (sourcePath: string) => void): Promise<{ size: number; sha256: string }> {
+  const handle = await openLogicalSource(sourcePath, { rootPath });
+  let output: fs.promises.FileHandle | undefined;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (destination) output = await fs.promises.open(destination, "wx", 0o600);
+    const hash = crypto.createHash("sha256");
+    let size = 0;
+    for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      const bytes = chunk as Buffer;
+      size += bytes.length;
+      hash.update(bytes);
+      if (output) await output.writeFile(bytes);
+    }
+    afterRead?.(sourcePath);
+    const after = await handle.stat({ bigint: true });
+    if (BigInt(size) !== before.size || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw new CustodyError(`source changed during capture: ${sourcePath}`, "source_changed", 409);
+    }
+    if (output) await output.sync();
+    return { size, sha256: hash.digest("hex") };
+  } finally { await output?.close(); await handle.close(); }
+}
+
 function filteredJsonLines(filePath: string, sessionIds: Set<string>): Buffer | null {
   if (!fs.existsSync(filePath)) return null;
   const { data } = readStableFile(filePath);
@@ -251,13 +277,12 @@ function extractCodexSessionId(data: Buffer): string | null {
   return null;
 }
 
-function findCodexRollout(codexRoot: string, id: string): string | null {
+async function findCodexRollout(codexRoot: string, id: string): Promise<string | null> {
   const matches: string[] = [];
   for (const rootName of ["sessions", "archived_sessions"]) {
     const root = path.join(codexRoot, rootName);
-    for (const file of listRegularFiles(root)) {
-      if (!file.endsWith(".jsonl")) continue;
-      const { data } = readStableFile(file);
+    for await (const file of discoverLogicalSources(root)) {
+      const data = await readLogicalSourcePrefix(file);
       if (extractCodexSessionId(data) === id) matches.push(file);
     }
   }
@@ -265,8 +290,29 @@ function findCodexRollout(codexRoot: string, id: string): string | null {
   return matches[0] ?? null;
 }
 
-function codexDependencies(source: CustodySource) {
-  const sourcePath = path.resolve(source.source_path);
+async function codexMetadata(file: string): Promise<{ nativeId: string | null; historyBases: string[] }> {
+  const handle = await openLogicalSource(file);
+  const bases = new Set<string>();
+  let nativeId: string | null = null;
+  try {
+    const before = await handle.stat({ bigint: true });
+    const lines = readline.createInterface({ input: handle.createReadStream({ autoClose: false }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (line.length > 64 * 1024 * 1024) throw new CustodyError("provider record exceeds metadata scan budget", "unsupported_source");
+      const bytes = Buffer.from(line);
+      nativeId ??= extractCodexSessionId(bytes);
+      for (const id of extractHistoryBases(bytes)) bases.add(id);
+    }
+    const after = await handle.stat({ bigint: true });
+    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw new CustodyError("source changed during metadata scan", "source_changed", 409);
+    }
+    return { nativeId, historyBases: [...bases] };
+  } finally { await handle.close(); }
+}
+
+async function codexDependencies(source: CustodySource) {
+  const sourcePath = path.resolve(canonicalSourcePath(source.source_path));
   const match = sourcePath.match(/^(.*[/\\]\.codex)[/\\](sessions|archived_sessions)[/\\]/);
   if (!match) throw new CustodyError("Codex source is outside a .codex sessions root", "unsupported_source");
   const codexRoot = match[1];
@@ -278,17 +324,17 @@ function codexDependencies(source: CustodySource) {
     const file = pending.shift()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    const { data } = readStableFile(file);
-    const nativeId = extractCodexSessionId(data);
+    const metadata = await codexMetadata(file);
+    const nativeId = metadata.nativeId;
     if (!nativeId) throw new CustodyError(`Codex rollout has no parsed native session identity: ${file}`, "invalid_provider_metadata");
     if (file === sourcePath && nativeId !== source.session_id) {
       throw new CustodyError("Codex selected rollout identity does not match the conversation source", "source_version_mismatch", 409);
     }
     const relative = assertRelative(path.relative(codexRoot, file), "Codex rollout path");
     dependencies.push({ source_path: file, archive_path: `providers/codex/${relative}`, provider_relative_path: relative, role: file === sourcePath ? "selected_rollout" : "history_base_rollout", required: true });
-    for (const id of extractHistoryBases(data)) {
+    for (const id of metadata.historyBases) {
       sessionIds.add(id);
-      const base = findCodexRollout(codexRoot, id);
+      const base = await findCodexRollout(codexRoot, id);
       if (!base) throw new CustodyError(`required Codex history_base rollout is unavailable: ${id}`, "dependency_unavailable", 409);
       pending.push(base);
     }
@@ -350,7 +396,7 @@ function geminiDependencies(source: CustodySource) {
   return { providerRoot: geminiRoot, nativeIdentities: [source.session_id, `project:${match[2]}`], dependencies, generated, restore: { capability: "partial" as const, adapter_version: ADAPTER_VERSION, limitations: ["Only session-addressable Gemini artifacts are captured; provider-global databases are never copied.", "Gemini native resume after reinjection is provider-version-dependent and not guaranteed."] } };
 }
 
-function discover(source: CustodySource, options: CustodyCaptureOptions) {
+async function discover(source: CustodySource, options: CustodyCaptureOptions) {
   if (source.provider === "claude_code") return claudeDependencies(source, options);
   if (source.provider === "codex") return codexDependencies(source);
   if (source.provider === "gemini") return geminiDependencies(source);
@@ -398,7 +444,7 @@ export class ConversationCustodyStore {
     return next;
   }
 
-  capture(source: CustodySource, options: CustodyCaptureOptions = {}): CustodyCaptureResult {
+  async capture(source: CustodySource, options: CustodyCaptureOptions = {}): Promise<CustodyCaptureResult> {
     assertSafeComponent(source.conversation_id, "conversation id");
     assertSafeComponent(source.session_id, "session id");
     if (!!source.expected_source_version_id !== !!source.expected_source_sha256) {
@@ -411,10 +457,12 @@ export class ConversationCustodyStore {
     this.transition(source.conversation_id, "capturing");
     let staging = "";
     try {
-      const discovered = discover(source, options);
+      const discovered = await discover(source, options);
       const dependencyKeys = new Set<string>();
       for (const dependency of discovered.dependencies) {
-        assertWithinProviderRoot(discovered.providerRoot, dependency.source_path);
+        const logical = await openLogicalSource(dependency.source_path, { rootPath: discovered.providerRoot });
+        await logical.close();
+        if (source.provider !== "codex") assertWithinProviderRoot(discovered.providerRoot, dependency.source_path);
         dependency.archive_path = assertRelative(dependency.archive_path, "archive path");
         if (dependencyKeys.has(dependency.archive_path)) throw new CustodyError(`duplicate archive path: ${dependency.archive_path}`, "archive_collision");
         dependencyKeys.add(dependency.archive_path);
@@ -424,19 +472,18 @@ export class ConversationCustodyStore {
       const files: CustodyFileRecord[] = [];
       let selectedSourceMatched = false;
       for (const dependency of discovered.dependencies) {
-        const { data } = readStableFile(dependency.source_path, this.hooks.afterSourceRead);
-        if (path.resolve(dependency.source_path) === path.resolve(source.source_path)) {
-          if (selectedSourceMatched) throw new CustodyError("selected transcript was discovered more than once", "archive_collision");
-          selectedSourceMatched = true;
-          if (source.expected_source_sha256 && sha256(data) !== source.expected_source_sha256) {
-            throw new CustodyError("selected transcript bytes no longer match the current sealed source version", "source_changed", 409);
-          }
-        }
         const destination = path.join(staging, dependency.archive_path);
         if (!within(staging, destination)) throw new CustodyError("archive destination escaped staging root", "unsafe_path");
         ensureDir(path.dirname(destination));
-        fs.writeFileSync(destination, data, { mode: 0o600, flag: "wx" });
-        files.push({ path: dependency.archive_path, provider_relative_path: dependency.provider_relative_path, dependency_role: dependency.role, size: data.length, sha256: sha256(data), required: dependency.required });
+        const observed = await streamStableFile(dependency.source_path, destination, discovered.providerRoot, this.hooks.afterSourceRead);
+        if (canonicalSourcePath(path.resolve(dependency.source_path)) === canonicalSourcePath(path.resolve(source.source_path))) {
+          if (selectedSourceMatched) throw new CustodyError("selected transcript was discovered more than once", "archive_collision");
+          selectedSourceMatched = true;
+          if (source.expected_source_sha256 && observed.sha256 !== source.expected_source_sha256) {
+            throw new CustodyError("selected transcript bytes no longer match the current sealed source version", "source_changed", 409);
+          }
+        }
+        files.push({ path: dependency.archive_path, provider_relative_path: dependency.provider_relative_path, dependency_role: dependency.role, size: observed.size, sha256: observed.sha256, required: dependency.required });
       }
       if (!selectedSourceMatched) throw new CustodyError("selected transcript was not captured", "source_version_mismatch", 409);
       for (const generated of discovered.generated) {
@@ -475,7 +522,7 @@ export class ConversationCustodyStore {
       const versionPath = path.join(versionsRoot, custodyVersion);
       let reused = false;
       if (fs.existsSync(versionPath)) {
-        const existing = this.verifyVersion(source.conversation_id, custodyVersion);
+        const existing = await this.verifyVersionStreaming(source.conversation_id, custodyVersion);
         if (!existing.ok) throw new CustodyError(`existing immutable version failed verification: ${existing.errors.join("; ")}`, "integrity_failure", 409);
         reused = true;
         fs.rmSync(staging, { recursive: true, force: true });
@@ -486,7 +533,7 @@ export class ConversationCustodyStore {
         fs.writeFileSync(path.join(staging, "SHA256SUMS"), `${sums}\n`, { mode: 0o600, flag: "wx" });
         fs.renameSync(staging, versionPath);
         staging = "";
-        const verified = this.verifyVersion(source.conversation_id, custodyVersion);
+        const verified = await this.verifyVersionStreaming(source.conversation_id, custodyVersion);
         if (!verified.ok) throw new CustodyError(`captured version failed verification: ${verified.errors.join("; ")}`, "integrity_failure", 500);
       }
       this.transition(source.conversation_id, "verified", reused ? "verified existing immutable version" : undefined, custodyVersion);
@@ -506,7 +553,22 @@ export class ConversationCustodyStore {
     return manifest;
   }
 
-  verifyVersion(conversationId: string, version?: string): IntegrityResult {
+  private async verifyVersionStreaming(conversationId: string, version: string): Promise<IntegrityResult> {
+    const result = this.verifyVersion(conversationId, version, true);
+    const versionPath = path.join(this.conversationRoot(conversationId), "versions", version);
+    for (const file of result.manifest.files) {
+      try {
+        const relative = assertRelative(file.path, "manifest file path");
+        const observed = await streamStableFile(path.join(versionPath, relative), undefined, versionPath);
+        if (observed.size !== file.size) result.errors.push(`${relative}: size mismatch`);
+        if (observed.sha256 !== file.sha256) result.errors.push(`${relative}: checksum mismatch`);
+      } catch (error) { result.errors.push(error instanceof Error ? error.message : String(error)); }
+    }
+    result.ok = result.errors.length === 0;
+    return result;
+  }
+
+  verifyVersion(conversationId: string, version?: string, manifestOnly = false): IntegrityResult {
     const status = this.status(conversationId);
     const selected = version ?? status?.active_version;
     if (!selected) throw new CustodyError("conversation has no captured custody version", "custody_unavailable", 404);
@@ -535,7 +597,7 @@ export class ConversationCustodyStore {
       }
     }
     const declared = new Set(manifest.files.map((file) => file.path));
-    for (const file of manifest.files) {
+    for (const file of manifestOnly ? [] : manifest.files) {
       try {
         const relative = assertRelative(file.path, "manifest file path");
         const candidate = path.join(versionPath, relative);
@@ -690,7 +752,7 @@ export class ConversationCustodyStore {
       const relative = assertRelative(file.provider_relative_path, "provider restore path");
       const liveTarget = path.join(path.resolve(providerRoot), relative);
       if (!within(path.resolve(providerRoot), liveTarget)) throw new CustodyError("provider restore path escaped target root", "unsafe_path");
-      if (fs.existsSync(liveTarget)) throw new CustodyError(`provider collision; refusing to overwrite: ${relative}`, "provider_collision", 409);
+      if (sourceRepresentationExistsSync(liveTarget, provider)) throw new CustodyError(`provider collision; refusing to overwrite: ${relative}`, "provider_collision", 409);
     }
     ensureDir(destination);
     try {

@@ -1,3 +1,4 @@
+import { canonicalSourcePath, logicalSourceStat } from "../conversations/logical-source.js";
 // Parser for Codex (OpenAI) JSONL conversation files.
 // Format: ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<ULID>.jsonl
 // Archived: ~/.codex/archived_sessions/rollout-<timestamp>-<ULID>.jsonl
@@ -364,7 +365,7 @@ export function locateCodexRollout(filePath: string): CodexRolloutLocation | nul
  * files, so both are Codex sources.
  */
 function isCodexRolloutSourcePath(filePath: string): boolean {
-  return filePath.endsWith(".jsonl")
+  return /\.jsonl(?:\.zst)?$/.test(filePath)
     && (filePath.includes("/.codex/sessions/") || filePath.includes("/.codex/archived_sessions/"));
 }
 
@@ -476,10 +477,11 @@ export class CodexParser implements ConversationParser {
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {
+    filePath = canonicalSourcePath(filePath);
     const { records, sourceHash, sourceSnapshot } = await readJsonlFileRecords<CodexRecord>(filePath);
     let sourceMtime = 0;
     try {
-      const stat = await fs.promises.stat(filePath);
+      const stat = await logicalSourceStat(filePath);
       sourceMtime = stat.mtimeMs;
     } catch {
       // ignore
