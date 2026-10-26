@@ -23,7 +23,7 @@ if (!vitestPath) {
 const preparationStartedAt = performance.now();
 const runtime = createTestRuntime();
 let preparationMs = 0;
-let schemaPreparationMs = 0;
+let fixturePreparationMs = 0;
 const packetPath = path.join(runtime.env.MANDIBLE_TEST_RUNTIME_ROOT, "timing.json");
 runtime.env.MANDIBLE_TEST_TIMING_PACKET = packetPath;
 const workerTimingPath = path.join(runtime.env.MANDIBLE_TEST_RUNTIME_ROOT, 'worker-lifecycles.jsonl');
@@ -42,11 +42,11 @@ let lifecycles = [];
 let lifecycleRaw;
 let cleanupMs;
 try {
-  const schemaStartedAt = performance.now();
-  execFileSync(runtime.env.MANDIBLE_RUNTIME, [path.join(scriptDir, 'prepare-test-db.ts')], {
+  const fixturesStartedAt = performance.now();
+  execFileSync(runtime.env.MANDIBLE_RUNTIME, [path.join(scriptDir, 'prepare-test-fixtures.ts')], {
     cwd: repoRoot, env: { ...runtime.env, VITEST: 'true' }, stdio: 'inherit', timeout: 15_000,
   });
-  schemaPreparationMs = performance.now() - schemaStartedAt;
+  fixturePreparationMs = performance.now() - fixturesStartedAt;
   preparationMs = performance.now() - preparationStartedAt;
   childStartedAt = performance.now();
   child = spawn(runtime.env.MANDIBLE_RUNTIME, [vitestPath, ...process.argv.slice(2)], {
@@ -92,7 +92,7 @@ if (packet && errors.length === 0) {
     const completed = completeTimingPacket(packet, {
       wall_ms: performance.now() - commandStartedAt,
       preparation_ms: preparationMs,
-      schema_preparation_ms: schemaPreparationMs,
+      fixture_preparation_ms: fixturePreparationMs,
       child_ms: childMs,
       cleanup_ms: cleanupMs,
       child_overhead_ms: Math.max(0, childMs - packet.vitest_wall_ms),
