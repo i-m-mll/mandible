@@ -2460,7 +2460,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));
     const recovery = recoverArtifactCustody(db, { retain_git_commit: retainArtifactCommit });
     if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
-    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json` });
+    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json`, history_shape: 'v184' });
     found = 184;
   }
   {

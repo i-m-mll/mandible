@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Db } from './db.js';
 import {
   commitArtifactSourceMove, planArtifactSourceMove, sourceKey, validateArtifactSource,
-  type ArtifactSource,
+  type ArtifactSource, type ArtifactSourceMoveHistoryShape,
 } from './artifact-source.js';
 
 export interface ArtifactSourceRecoveryDecision {
@@ -17,7 +17,7 @@ export interface ArtifactSourceRecoveryDecision {
 /** Runs only after version custody recovery; history never chooses a collision winner. */
 export function reconcileRecoveredArtifactSources(
   db: Db,
-  options: { collisions?: 'fail' | 'managed'; receipt_path?: string } = {},
+  options: { collisions?: 'fail' | 'managed'; receipt_path?: string; history_shape?: ArtifactSourceMoveHistoryShape } = {},
 ): ArtifactSourceRecoveryDecision[] {
   return db.transaction(() => {
     const rows = db.prepare(`SELECT artifact_id,source_json,revision,reconciliation_reason
@@ -83,7 +83,7 @@ export function reconcileRecoveredArtifactSources(
         expected_revision: decision.revision, source: decision.source, reconcile: true,
         actor: `migration:artifact-custody-v185:${decision.basis}` });
       if (!plan.ok) throw new Error(plan.error.message);
-      const result = commitArtifactSourceMove(db, plan.value);
+      const result = commitArtifactSourceMove(db, plan.value, Date.now(), options.history_shape);
       if (!result.ok) throw new Error(result.error.message);
     }
     return decisions;
