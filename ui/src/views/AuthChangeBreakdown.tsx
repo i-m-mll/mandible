@@ -33,9 +33,15 @@ const VIEW_LABELS: Record<AuthChangeBreakdownView, string> = {
   language: 'Language',
   directory: 'Directory',
   role: 'File role',
-  flags: 'Generated / vendor',
+  flags: 'Generated / third-party',
   largest: 'Largest files',
 };
+
+const COLUMN_LABELS: Record<AuthChangeBreakdownView, string> = {
+  directory: 'Path', language: 'Language', role: 'Role', largest: 'Path', flags: 'Category',
+};
+
+const RESIDUAL_GROUP_IDS = new Set(['role:other', 'language:Unknown', 'flag:neither']);
 
 const ROLE_LABELS: Record<AuthChangeFileRole, string> = {
   fixtures_data: 'Fixtures / data',
@@ -78,8 +84,9 @@ function finishGroups(groups: Iterable<ChangeGroup>): ChangeGroup[] {
   return Array.from(groups)
     .map((group) => ({ ...group, files: group.files.sort(compareFiles) }))
     .sort((left, right) => {
+      const residualDifference = Number(RESIDUAL_GROUP_IDS.has(left.id)) - Number(RESIDUAL_GROUP_IDS.has(right.id));
       const changedDifference = groupChangedLines(right) - groupChangedLines(left);
-      return changedDifference || left.label.localeCompare(right.label);
+      return residualDifference || changedDifference || left.label.localeCompare(right.label);
     });
 }
 
@@ -195,7 +202,7 @@ function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines:
   const navigation = useContext(FileNavigationContext);
   const identity: DiffFileIdentity = { oldPath: file.old_path, newPath: file.new_path };
   const status = FILE_STATUS[file.change_kind];
-  const metadata = [...fileKindLabels(file), ...(file.generated ? ['generated'] : []), ...(file.vendor ? ['vendor'] : [])];
+  const metadata = [...fileKindLabels(file), ...(file.generated ? ['generated'] : []), ...(file.vendor ? ['third-party'] : [])];
   const description = [fullPath(file), ...metadata].join(' · ');
   return (
     <li>
@@ -259,10 +266,11 @@ function breakdownView(report: AuthChangeReport, state: AuthChangeBreakdownViewS
     ? groupFiles(report.files, file => ({ id: `language:${file.language}`, label: file.language }))
     : state.view === 'role'
       ? groupFiles(report.files, file => ({ id: `role:${file.file_role}`, label: ROLE_LABELS[file.file_role] }))
-      : groupFiles(report.files, file => file.generated
-        ? { id: 'flag:generated', label: 'Generated' } : { id: 'flag:not-generated', label: 'Not generated' })
-        .concat(groupFiles(report.files, file => file.vendor
-          ? { id: 'flag:vendor', label: 'Vendor' } : { id: 'flag:not-vendor', label: 'Not vendor' }));
+      : groupFiles(report.files, file => file.generated && file.vendor
+        ? { id: 'flag:both', label: 'Generated + third-party' }
+        : file.generated ? { id: 'flag:generated-only', label: 'Generated' }
+        : file.vendor ? { id: 'flag:third-party-only', label: 'Third-party' }
+        : { id: 'flag:neither', label: 'Other files' });
   return { kind: 'groups', groups, files: [] };
 }
 
@@ -423,14 +431,14 @@ export function AuthChangeBreakdown({
           <div className="auth-change-breakdown__view" role="tabpanel" id={viewPanelId}
             aria-labelledby={`${viewPanelId}-tab-${state.view}`}>
             {state.view === 'flags' && <p className="auth-change-breakdown__hint">
-              Generated and vendor are independent flags, so each file appears once in each pair.
+              Generated files are produced by tools; third-party files are copied dependencies.
             </p>}
             {state.view === 'directory' && <DirectoryBreadcrumbs state={state} setState={setState} />}
             {model && report.files.length > 0 ? (
               <div className="auth-change-breakdown__table" style={columnWidths}>
                 <div className="auth-change-breakdown__table-content">
                   <div className={`auth-change-columns-header${model.kind === 'files' ? ' auth-change-columns-header--files' : ''}`} aria-hidden="true">
-                    <span>{model.kind === 'directory' ? 'Directory' : model.kind === 'files' ? 'File' : 'Group'}</span>
+                    <span>{COLUMN_LABELS[state.view]}</span>
                     {model.kind !== 'files' && <span>Files</span>}
                     <span>+</span><span>−</span><span>Share</span>
                   </div>
@@ -441,9 +449,6 @@ export function AuthChangeBreakdown({
               </div>
             ) : <p className="auth-change-breakdown__empty">The reviewed commits contain no file changes.</p>}
           </div>
-          <p className="auth-change-breakdown__footnote">
-            Language and file-role labels are rule-based classifications of the frozen reviewed files, not semantic guarantees.
-          </p>
         </>
       )}
     </CollapsiblePanel>

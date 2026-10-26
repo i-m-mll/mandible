@@ -272,6 +272,18 @@ describe('Auth Description disclosure persistence', () => {
 });
 
 describe('AuthQueueView persisted action expansion', () => {
+  it('reveals the full payload behind a truncated one-line action preview', async () => {
+    const body = 'A long review comment. '.repeat(30) + 'The complete final sentence.';
+    const request = { ...pendingRequest, actions: [{ ...deferredAction, payload: { body }, outcome_detail: null }] };
+    render(<AuthQueueView queue={[request]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
+      daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
+    const preview = document.querySelector('.auth-action-row__summary')!;
+    expect(preview.textContent!.length).toBeLessThan(body.length);
+    expect(document.querySelector('.auth-action-row__detail')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Comment action' }));
+    expect(document.querySelector('.auth-action-row__detail')?.textContent).toBe(body);
+  });
+
   it('restores normalized per-request expansion and preserves it through queue refetches', async () => {
     const storageKey = 'auth-action-expanded:req-1';
     localStorage.setItem(storageKey, JSON.stringify(['action-1', 42, 'action-1']));

@@ -91,7 +91,7 @@ export async function collectAuthMergeReview(
     const git = createIsolatedGit(repoRoot, gitDir);
     const diffArgs = pinnedDiffArgs(comparison);
     value = {};
-    if (options.report !== false) value.report = collectReportFromGit(git, comparison, diffArgs);
+    if (options.report !== false) value.report = await collectReportFromGit(git, comparison, diffArgs);
     if (options.diffSummary !== false) {
       value.diffSummary = await readBoundedDiffPreview(git, comparison.head_sha, diffArgs);
     }
@@ -134,11 +134,11 @@ function pinnedDiffArgs(comparison: AuthChangeReport["comparison"]): string[] {
   ];
 }
 
-function collectReportFromGit(
+async function collectReportFromGit(
   git: IsolatedGit,
   comparison: AuthChangeReport["comparison"],
   diffArgs: string[],
-): AuthChangeReport {
+): Promise<AuthChangeReport> {
   const gitPrefix = [`--attr-source=${comparison.head_sha}`];
   const raw = parseRawChanges(runGit(git, [...gitPrefix, "diff", "--raw", "--no-abbrev", "-z", ...diffArgs]));
   if (raw.length > MAX_REPORT_FILES) {
@@ -168,6 +168,7 @@ function collectReportFromGit(
     readCommittedAttributes(git, comparison.merge_base_sha, basePaths),
   );
   const objectSizes = readBlobSizes(git, raw);
+  const scriptLanguages = await readScriptLanguages(git, raw, objectSizes);
 
   const files = raw.map((change): AuthChangeFile => {
     const stat = statsByPath.get(rawPathPairKey(change));
@@ -184,6 +185,10 @@ function collectReportFromGit(
     }
     const attrs = attributes.get(classificationPath) ?? new Map<string, string>();
     const gitlink = fileTypeBefore === "gitlink" || fileTypeAfter === "gitlink";
+    const scriptLanguage = scriptLanguages.get(change.newPath === null ? change.oldOid : change.newOid);
+    const format = filenameFormat(classificationPath)
+      ?? (scriptLanguage ? { language: scriptLanguage, role: "implementation" as const } : undefined);
+    const language = classifyLanguage(format, attrs.get("linguist-language"));
     return {
       old_path: change.oldPath,
       new_path: change.newPath,
@@ -194,8 +199,8 @@ function collectReportFromGit(
       deletions: gitlink ? null : stat.deletions,
       bytes_before: blobSize(change.oldOid, fileTypeBefore, objectSizes),
       bytes_after: blobSize(change.newOid, fileTypeAfter, objectSizes),
-      language: classifyLanguage(classificationPath, attrs.get("linguist-language")),
-      file_role: classifyFileRole(classificationPath),
+      language,
+      file_role: classifyFileRole(classificationPath, format, language),
       generated: classifyFlag(
         attrs.get("linguist-generated"),
         pathSegments(classificationPath).some((part) => GENERATED_SEGMENTS.has(part)),
@@ -223,8 +228,8 @@ function collectReportFromGit(
 
   return {
     schema: "mandible-auth-change-report@1",
-    classifier_version: "mandible-auth-change-classifier@1",
-    rules_version: "mandible-auth-change-rules@1",
+    classifier_version: "mandible-auth-change-classifier@2",
+    rules_version: "mandible-auth-change-rules@2",
     comparison,
     rename_similarity_percent: RENAME_SIMILARITY_PERCENT,
     totals,
@@ -533,6 +538,121 @@ function blobSize(oid: string, type: AuthChangeFileType, sizes: Map<string, numb
   return size;
 }
 
+/** Stream pinned blobs once, retaining only bounded first-line evidence for extensionless regular files. */
+async function readScriptLanguages(git: IsolatedGit, changes: RawChange[], sizes: Map<string, number>): Promise<Map<string, string>> {
+  const oids = [...new Set(changes.flatMap(change => {
+    const file = change.newPath ?? change.oldPath;
+    const mode = change.newPath === null ? change.oldMode : change.newMode;
+    if (!file || fileType(mode) !== "blob" || path.posix.extname(file) || filenameFormat(file)) return [];
+    return [change.newPath === null ? change.oldOid : change.newOid];
+  }))].sort();
+  const languages = new Map<string, string>();
+  if (oids.length === 0) return languages;
+  const totalBytes = oids.reduce((sum, oid) => sum + (sizes.get(oid) ?? 0) + oid.length + 32, 0);
+  if (totalBytes > GIT_MAX_OUTPUT_BYTES) {
+    throw new AuthChangeReportCollectionError("Extensionless script evidence exceeds the 64 MiB capture limit. Split the candidate before submission.");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("git", ["cat-file", "--batch"], { cwd: git.cwd, env: git.env, stdio: ["pipe", "pipe", "pipe"] });
+    let failure: Error | null = null;
+    const fail = (error: Error) => { failure ??= error; child.kill("SIGTERM"); };
+    const timer = setTimeout(() => fail(new AuthChangeReportCollectionError("Timed out reading committed script evidence.")), GIT_TIMEOUT_MS);
+    let index = 0;
+    let remaining: number | null = null;
+    let header = "";
+    let prefix = Buffer.alloc(0);
+    let firstLineComplete = false;
+    let separator = false;
+    let bytesRead = 0;
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (failure) return;
+      bytesRead += chunk.length;
+      if (bytesRead > GIT_MAX_OUTPUT_BYTES) { fail(new AuthChangeReportCollectionError("Script evidence output exceeded its capture limit.")); return; }
+      let offset = 0;
+      while (offset < chunk.length && !failure) {
+        if (separator) {
+          if (chunk[offset++] !== 10) { fail(new AuthChangeReportCollectionError("Invalid script blob terminator.")); return; }
+          const language = shebangLanguage(prefix.toString("utf8"));
+          if (language) languages.set(oids[index], language);
+          index += 1;
+          separator = false;
+          remaining = null;
+          prefix = Buffer.alloc(0);
+          firstLineComplete = false;
+        } else if (remaining === null) {
+          const newline = chunk.indexOf(10, offset);
+          const end = newline < 0 ? chunk.length : newline;
+          header += chunk.subarray(offset, end).toString("ascii");
+          offset = end + (newline < 0 ? 0 : 1);
+          if (header.length > 200) { fail(new AuthChangeReportCollectionError("Invalid script blob header.")); return; }
+          if (newline < 0) continue;
+          if (index >= oids.length || header !== `${oids[index]} blob ${sizes.get(oids[index])}`) {
+            fail(new AuthChangeReportCollectionError("Script blob inventory did not match pinned objects.")); return;
+          }
+          remaining = sizes.get(oids[index])!;
+          header = "";
+          separator = remaining === 0;
+        } else {
+          const count = Math.min(remaining, chunk.length - offset);
+          if (!firstLineComplete && prefix.length < 4096) {
+            const content = chunk.subarray(offset, offset + Math.min(count, 4096 - prefix.length));
+            const newline = content.indexOf(10);
+            prefix = Buffer.concat([prefix, newline < 0 ? content : content.subarray(0, newline)]);
+            firstLineComplete = newline >= 0;
+          }
+          remaining -= count;
+          offset += count;
+          separator = remaining === 0;
+        }
+      }
+    });
+    child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(0, 4096); });
+    child.on("error", fail);
+    child.stdin.on("error", fail);
+    child.on("close", code => {
+      clearTimeout(timer);
+      if (failure) reject(failure);
+      else if (code !== 0 || stderr || index !== oids.length || header || remaining !== null) {
+        reject(new AuthChangeReportCollectionError(`Unable to read committed script evidence: ${stderr || "incomplete blob inventory"}`));
+      } else resolve();
+    });
+    child.stdin.end(`${oids.join("\n")}\n`);
+  });
+  return languages;
+}
+
+function shebangLanguage(line: string): string | undefined {
+  if (!line.startsWith("#!")) return undefined;
+  const tokens = line.slice(2).trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)
+    ?.map(token => token.replace(/^["']|["']$/g, "")) ?? [];
+  let interpreter = tokens.shift() ?? "";
+  if (path.posix.basename(interpreter) === "env") {
+    while (tokens.length) {
+      const token = tokens.shift()!;
+      if (["-u", "--unset", "-C", "--chdir"].includes(token)) { tokens.shift(); continue; }
+      if (token === "-S" || token === "--split-string") {
+        tokens.unshift(...tokens.splice(0).flatMap(part => part.split(/\s+/)));
+        continue;
+      }
+      if (token.startsWith("-") || /^[A-Za-z_][A-Za-z_0-9]*=/.test(token)) continue;
+      interpreter = token;
+      break;
+    }
+  }
+  const name = path.posix.basename(interpreter);
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(name)) return "Python";
+  if (/^(?:ba|da|k|z)?sh$/.test(name) || name === "fish") return "Shell";
+  if (/^(?:node(?:js)?|bun|deno)$/.test(name)) return "JavaScript";
+  if (/^ruby(?:\d+(?:\.\d+)*)?$/.test(name)) return "Ruby";
+  if (name === "perl") return "Perl";
+  if (name === "php") return "PHP";
+  if (/^lua(?:\d+(?:\.\d+)*)?$/.test(name)) return "Lua";
+  if (name === "Rscript") return "R";
+  if (name === "swift") return "Swift";
+  return undefined;
+}
+
 function readCommittedAttributes(git: IsolatedGit, source: string, paths: string[]): Attributes {
   if (paths.length === 0) return new Map();
   const uniquePaths = [...new Set(paths)].sort(compareUtf8);
@@ -561,48 +681,59 @@ function mergeAttributes(...sets: Attributes[]): Attributes {
   return merged;
 }
 
-const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
-  ".bash": "Shell", ".c": "C", ".cc": "C++", ".cfg": "Configuration", ".conf": "Configuration",
-  ".cpp": "C++", ".cs": "C#", ".css": "CSS", ".csv": "CSV", ".fish": "Shell", ".go": "Go",
-  ".h": "C", ".hpp": "C++", ".html": "HTML", ".ini": "Configuration", ".java": "Java",
-  ".js": "JavaScript", ".json": "JSON", ".jsonc": "JSON with Comments", ".jsx": "JavaScript JSX",
-  ".kt": "Kotlin", ".kts": "Kotlin", ".less": "Less", ".md": "Markdown", ".mdx": "MDX",
-  ".php": "PHP", ".ps1": "PowerShell", ".py": "Python", ".rb": "Ruby", ".rs": "Rust",
-  ".rst": "reStructuredText", ".sass": "Sass", ".scala": "Scala", ".scss": "SCSS", ".sh": "Shell",
-  ".sql": "SQL", ".svelte": "Svelte", ".swift": "Swift", ".toml": "TOML", ".ts": "TypeScript",
-  ".tsx": "TypeScript JSX", ".tsv": "TSV", ".txt": "Text", ".vue": "Vue", ".xml": "XML",
-  ".yaml": "YAML", ".yml": "YAML", ".zsh": "Shell",
+type FileFormat = { language: string; role: AuthChangeFileRole };
+
+function formats(role: AuthChangeFileRole, entries: Record<string, string>): Record<string, FileFormat> {
+  return Object.fromEntries(Object.entries(entries).map(([key, language]) => [key, { language, role }]));
+}
+
+const FORMAT_BY_EXTENSION: Readonly<Record<string, FileFormat>> = Object.freeze({
+  ...formats("implementation", {
+    ".bash": "Shell", ".c": "C", ".cc": "C++", ".cpp": "C++", ".cs": "C#", ".css": "CSS",
+    ".fish": "Shell", ".go": "Go", ".h": "C", ".hpp": "C++", ".html": "HTML", ".java": "Java",
+    ".js": "JavaScript", ".jsx": "JavaScript JSX", ".kt": "Kotlin", ".kts": "Kotlin", ".less": "Less",
+    ".php": "PHP", ".ps1": "PowerShell", ".py": "Python", ".rb": "Ruby", ".rs": "Rust",
+    ".sass": "Sass", ".scala": "Scala", ".scss": "SCSS", ".sh": "Shell", ".sql": "SQL",
+    ".svelte": "Svelte", ".swift": "Swift", ".ts": "TypeScript", ".tsx": "TypeScript JSX",
+    ".vue": "Vue", ".zsh": "Shell",
+  }),
+  ...formats("documentation", { ".md": "Markdown", ".mdx": "MDX", ".rst": "reStructuredText" }),
+  ...formats("configuration", {
+    ".cfg": "Configuration", ".conf": "Configuration", ".ini": "Configuration", ".json": "JSON",
+    ".jsonc": "JSON with Comments", ".toml": "TOML", ".xml": "XML", ".yaml": "YAML", ".yml": "YAML",
+  }),
+  ...formats("fixtures_data", { ".csv": "CSV", ".tsv": "TSV" }),
+  ...formats("other", { ".txt": "Text" }),
 });
-const LANGUAGE_BY_BASENAME: Readonly<Record<string, string>> = Object.freeze({
-  dockerfile: "Dockerfile", makefile: "Makefile", rakefile: "Ruby", gemfile: "Ruby",
+const FORMAT_BY_BASENAME: Readonly<Record<string, FileFormat>> = Object.freeze({
+  ...formats("configuration", { dockerfile: "Dockerfile", makefile: "Makefile" }),
+  ...formats("implementation", { rakefile: "Ruby", gemfile: "Ruby" }),
 });
-const IMPLEMENTATION_EXTENSIONS = new Set([
-  ".bash", ".c", ".cc", ".cpp", ".cs", ".css", ".fish", ".go", ".h", ".hpp", ".html", ".java",
-  ".js", ".jsx", ".kt", ".kts", ".less", ".php", ".ps1", ".py", ".rb", ".rs", ".sass", ".scala",
-  ".scss", ".sh", ".sql", ".svelte", ".swift", ".ts", ".tsx", ".vue", ".zsh",
-]);
-const DOCUMENTATION_EXTENSIONS = new Set([".md", ".mdx", ".rst"]);
-const CONFIGURATION_EXTENSIONS = new Set([".cfg", ".conf", ".ini", ".json", ".jsonc", ".toml", ".xml", ".yaml", ".yml"]);
-const DATA_EXTENSIONS = new Set([".csv", ".tsv"]);
+const IMPLEMENTATION_LANGUAGES = new Set(Object.values(FORMAT_BY_EXTENSION)
+  .filter(format => format.role === "implementation").map(format => format.language.toLowerCase()));
 const GENERATED_SEGMENTS = new Set(["generated", "gen"]);
 const VENDOR_SEGMENTS = new Set(["vendor", "vendors", "third_party", "node_modules"]);
 
-function classifyLanguage(file: string, attribute: string | undefined): string {
-  if (attribute && !["unspecified", "unset", "set"].includes(attribute)) return attribute;
+function filenameFormat(file: string): FileFormat | undefined {
   const basename = path.posix.basename(file).toLowerCase();
-  return LANGUAGE_BY_BASENAME[basename] ?? LANGUAGE_BY_EXTENSION[path.posix.extname(basename)] ?? "Unknown";
+  const name = basename.endsWith(".template") ? basename.slice(0, -".template".length) : basename;
+  return FORMAT_BY_BASENAME[name] ?? FORMAT_BY_EXTENSION[path.posix.extname(name)];
 }
 
-function classifyFileRole(file: string): AuthChangeFileRole {
+function classifyLanguage(format: FileFormat | undefined, attribute: string | undefined): string {
+  if (attribute && !["unspecified", "unset", "set"].includes(attribute)) return attribute;
+  return format?.language ?? "Unknown";
+}
+
+function classifyFileRole(file: string, format: FileFormat | undefined, language: string): AuthChangeFileRole {
   const segments = pathSegments(file);
   const basename = segments.at(-1) ?? "";
-  const extension = path.posix.extname(basename);
   const rules: Record<AuthChangeFileRole, boolean> = {
-    fixtures_data: segments.some((part) => ["fixture", "fixtures", "__fixtures__", "testdata", "test-data", "data"].includes(part)) || DATA_EXTENSIONS.has(extension),
+    fixtures_data: segments.some((part) => ["fixture", "fixtures", "__fixtures__", "testdata", "test-data", "data"].includes(part)) || format?.role === "fixtures_data",
     tests: segments.some((part) => ["test", "tests", "__tests__", "spec", "specs"].includes(part)) || /(?:^|\.)(?:test|spec)\.[^.]+$/.test(basename),
-    documentation: segments.some((part) => ["doc", "docs", "documentation"].includes(part)) || /^readme(?:\.|$)/.test(basename) || DOCUMENTATION_EXTENSIONS.has(extension),
-    configuration: segments.some((part) => ["config", "configs", ".github"].includes(part)) || basename.startsWith(".") || CONFIGURATION_EXTENSIONS.has(extension),
-    implementation: segments.some((part) => ["src", "lib", "app", "packages"].includes(part)) || IMPLEMENTATION_EXTENSIONS.has(extension),
+    documentation: segments.some((part) => ["doc", "docs", "documentation"].includes(part)) || /^readme(?:\.|$)/.test(basename) || format?.role === "documentation",
+    configuration: segments.some((part) => ["config", "configs", ".github"].includes(part)) || basename.startsWith(".") || format?.role === "configuration",
+    implementation: format?.role === "implementation" || IMPLEMENTATION_LANGUAGES.has(language.toLowerCase()),
     other: true,
   };
   return AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE.find((role) => rules[role]) ?? "other";

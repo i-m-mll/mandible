@@ -462,13 +462,6 @@ function getStatusClass(request: AuthRequest): string {
   return `status-pill status-pill--${status.toLowerCase()}`;
 }
 
-function getActionCount(request: AuthRequest): number {
-  if (Array.isArray(request.actions)) return request.actions.length;
-  return typeof request.action_count === 'number' && Number.isFinite(request.action_count)
-    ? request.action_count
-    : 0;
-}
-
 function getInlineActionList(request: AuthRequest): AuthRequestAction[] | undefined {
   if (!Array.isArray(request.actions)) return undefined;
   if (request.actions.length === 0 && typeof request.action_count === 'number' && request.action_count > 0) return undefined;
@@ -493,14 +486,15 @@ function formatActionKind(kind: AuthRequestAction['kind']): string {
   }
 }
 
-function actionPayloadSummary(action: AuthRequestAction): string {
+function actionPayloadSummary(action: AuthRequestAction, preview = true): string {
   const payload = action.payload ?? {};
+  const summarize = (value: string, limit: number) => preview ? truncateSummary(value, limit) : value;
   switch (action.kind) {
     case 'comment_add':
-      return truncateSummary(String(payload.body ?? ''), 180);
+      return summarize(String(payload.body ?? ''), 180);
     case 'issue_close':
       return payload.reason_comment
-        ? `Reason: ${truncateSummary(String(payload.reason_comment), 160)}`
+        ? `Reason: ${summarize(String(payload.reason_comment), 160)}`
         : '';
     case 'worker_status_set':
       return `Set to ${String(payload.value ?? '')}`;
@@ -513,7 +507,7 @@ function actionPayloadSummary(action: AuthRequestAction): string {
     case 'link_add': {
       const target = String(payload.target ?? '');
       const type = payload.type ? ` as ${String(payload.type)}` : '';
-      const note = payload.note ? `: ${truncateSummary(String(payload.note), 120)}` : '';
+      const note = payload.note ? `: ${summarize(String(payload.note), 120)}` : '';
       return `Link ${target}${type}${note}`;
     }
     case 'briefing_group_promote': {
@@ -619,7 +613,7 @@ function AuthActionBundle({
             <div className="auth-action-row__main">
               <div className="auth-action-row__top">
                 <span className="auth-action-row__kind">Close issue</span>
-                <IssuePill issueRef={ref} context={repoId} layout="row" />
+                <IssuePill issueRef={ref} context={repoId} layout="compact-row" />
               </div>
             </div>
           </div>
@@ -631,7 +625,7 @@ function AuthActionBundle({
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
-          const detail = action.outcome_detail || actionPayloadSummary(action);
+          const detail = action.outcome_detail || actionPayloadSummary(action, false);
           const canExpand = Boolean(detail) && (action.kind !== 'issue_close' || action.state !== 'staged');
           const expanded = canExpand && expandedIds.has(action.id);
           const summary = action.kind === 'issue_close' ? null : actionPayloadSummary(action);
@@ -644,51 +638,49 @@ function AuthActionBundle({
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
                   <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
-                  <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="row" />
+                  <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="compact-row" />
+                  {summary && <span className="auth-action-row__summary" title={summary}>{summary}</span>}
                 </div>
-                {summary && <div className="auth-action-row__summary">{summary}</div>}
                 {expanded && detail && (
                   <div id={`auth-action-detail-${action.id}`} className="auth-action-row__detail">{detail}</div>
                 )}
               </div>
               <div className="auth-action-row__controls">
-                <span className="auth-action-row__disclosure">
-                  {canExpand && (
-                    <button
-                      type="button"
-                      className="auth-action-row__expand"
-                      aria-expanded={expanded}
-                      aria-controls={`auth-action-detail-${action.id}`}
-                      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
-                      onClick={() => toggleExpanded(action.id)}
-                    >
-                      <DisclosureChevronIcon expanded={expanded} size={13} />
-                    </button>
-                  )}
-                </span>
-                {action.state !== 'staged' && (
+                {canExpand && (
+                  <button
+                    type="button"
+                    className="auth-action-row__expand"
+                    aria-expanded={expanded}
+                    aria-controls={`auth-action-detail-${action.id}`}
+                    aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                    onClick={() => toggleExpanded(action.id)}
+                  >
+                    <DisclosureChevronIcon expanded={expanded} size={13} />
+                  </button>
+                )}
+                {action.state !== 'staged' && !canToggle && (
                   <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
                     {actionStateLabel(action.state)}
                   </span>
                 )}
+                {canToggle && (
+                  <button
+                    type="button"
+                    className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
+                    role="switch"
+                    aria-checked={vetoed}
+                    disabled={vetoBusy || !canPerformOperation(
+                      instance,
+                      'POST',
+                      `/api/auth/request/${encodeURIComponent(requestId)}/actions/${encodeURIComponent(action.id)}/veto`,
+                      { vetoed: !vetoed },
+                    )}
+                    onClick={() => onToggleVeto(requestId, action, !vetoed)}
+                  >
+                    {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
+                  </button>
+                )}
               </div>
-              {canToggle && (
-                <button
-                  type="button"
-                  className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
-                  role="switch"
-                  aria-checked={vetoed}
-                  disabled={vetoBusy || !canPerformOperation(
-                    instance,
-                    'POST',
-                    `/api/auth/request/${encodeURIComponent(requestId)}/actions/${encodeURIComponent(action.id)}/veto`,
-                    { vetoed: !vetoed },
-                  )}
-                  onClick={() => onToggleVeto(requestId, action, !vetoed)}
-                >
-                  {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
-                </button>
-              )}
             </div>
           );
         })}
@@ -1499,11 +1491,6 @@ function AuthSidebarItem({
 
   const authType = getAuthType(request);
   const sidebarTypeMeta = AUTH_TYPE_META[authType];
-  const actionCount = getActionCount(request);
-
-  const headBranch = request.head_branch ?? request.head ?? '';
-  const baseBranch = request.base_branch ?? request.base ?? '';
-  const branchInfo = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : headBranch;
 
   const isHistory = isHistoryStatus(status);
   const timestampLabel = isHistory
@@ -1523,9 +1510,6 @@ function AuthSidebarItem({
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
       <span className="auth-sidebar-item__body">
         <span className="auth-sidebar-item__title-row">
-          <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>
-            {sidebarTypeMeta.label}
-          </span>
           {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
           <span
             className="auth-sidebar-item__title"
@@ -1533,19 +1517,12 @@ function AuthSidebarItem({
               __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
             }}
           />
-          {actionCount > 0 && (
-            <span className="auth-sidebar-item__action-badge" title={`${actionCount} deferred actions`}>
-              {actionCount}
-            </span>
-          )}
         </span>
-        {repo && (
-          <span className="auth-sidebar-item__repo">{repo}</span>
-        )}
-        {branchInfo && (
-          <span className="auth-sidebar-item__branch">{branchInfo}</span>
-        )}
-        <span className="auth-sidebar-item__time">{timestampLabel}</span>
+        <span className="auth-sidebar-item__metadata">
+          {repo && <span className="auth-sidebar-item__repo" title={repo}>{repo}</span>}
+          <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>{sidebarTypeMeta.label}</span>
+          <span className="auth-sidebar-item__time">{timestampLabel}</span>
+        </span>
       </span>
     </button>
   );
