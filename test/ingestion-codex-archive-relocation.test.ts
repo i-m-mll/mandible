@@ -152,15 +152,30 @@ describe("codex archive relocation", () => {
     vi.stubEnv("XDG_CACHE_HOME", cacheBase);
     const cacheRoot = path.join(cacheBase, "mandible", "logical-sources");
     let historyBytes = 0;
+    const files: string[] = [];
     for (let index = 0; index < 3; index++) {
       const file = index === 0 ? sessionPath : sessionPath.replace("archive-move", `archive-move-${index}`);
       const bytes = Buffer.from(transcript(`history-${index}`));
       historyBytes += bytes.length;
-      fs.writeFileSync(`${file}.zst`, zstdCompressSync(bytes));
-      if (fs.existsSync(file)) fs.unlinkSync(file);
+      fs.writeFileSync(file, bytes);
+      files.push(file);
     }
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversations").get()).toEqual({ n: 3 });
+    for (const file of files) {
+      const stat = fs.statSync(file);
+      fs.writeFileSync(`${file}.zst`, zstdCompressSync(fs.readFileSync(file)));
+      fs.utimesSync(`${file}.zst`, stat.atime, stat.mtime);
+      fs.unlinkSync(file);
+    }
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    for (const file of files) {
+      const version = db.prepare(`SELECT v.filesystem_inode FROM conversations c
+        JOIN conversation_sources s ON s.conversation_id = c.id
+        JOIN conversation_source_versions v ON v.id = s.current_version_id
+        WHERE c.source_path = ?`).get(file) as { filesystem_inode: string };
+      expect(version.filesystem_inode).toBe(String(fs.statSync(`${file}.zst`, { bigint: true }).ino));
+    }
     const other = path.join(tempDir, "outside", ".codex", "sessions", "rollout-offscan.jsonl");
     fs.mkdirSync(path.dirname(other), { recursive: true });
     const bytes = Buffer.from(transcript("offscan"));

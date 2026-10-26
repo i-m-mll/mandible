@@ -2587,6 +2587,7 @@ async function ingestFilePass(
     const currentSource = db.prepare(`
       SELECT source.current_version_id, source.parser_format, source.parser_version,
              source.normalization_version, source.redaction_epoch,
+             source.availability AS source_availability, version.availability AS version_availability,
              version.byte_length AS source_byte_length, version.filesystem_device,
              version.filesystem_inode, version.filesystem_ctime_ns
         FROM conversation_sources source
@@ -2602,6 +2603,8 @@ async function ingestFilePass(
       normalization_version: string;
       redaction_epoch: number;
       source_byte_length: number;
+      source_availability: string;
+      version_availability: string;
       filesystem_device: string | null;
       filesystem_inode: string | null;
       filesystem_ctime_ns: string | null;
@@ -2611,7 +2614,8 @@ async function ingestFilePass(
       || currentSource.filesystem_inode !== stat.physicalGeneration.inode
       || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
     sourceEpochNeedsRebuild = !currentSource || (
-      currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+      currentSource.source_availability !== "available" || currentSource.version_availability !== "available"
+      || currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
       || currentSource.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
@@ -4144,8 +4148,9 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         }
         const knownConversation = conversationPaths.has(filePath);
         const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
-        let needsIngest = !knownConversation || mtimeChanged;
-        if (knownConversation && !mtimeChanged) {
+        const codexNeedsVerification = codexSessionIds.has(filePath);
+        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification;
+        if (knownConversation && !mtimeChanged && !codexNeedsVerification) {
           const appendState = appendStates.get(filePath);
           if (appendState && appendState.byte_offset !== stat.size) {
             needsIngest = true;
