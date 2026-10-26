@@ -33,6 +33,24 @@ function verifiedSqliteArchive() {
   return sqliteArchive;
 }
 
+function selectedTestGit() {
+  if (process.platform !== 'darwin') return null;
+  const selected = (process.env.PATH ?? '').split(path.delimiter)
+    .map(directory => path.resolve(directory || '.', 'git'))
+    .find(candidate => {
+      try { fs.accessSync(candidate, fs.constants.X_OK); return true; }
+      catch { return false; }
+    });
+  if (selected !== '/usr/bin/git') return null;
+  // Apple's launcher resolves this same executable on every Git invocation.
+  // Resolve once; a private Git-only shim leaves all other tools in PATH order.
+  const executable = fs.realpathSync(execFileSync('/usr/bin/xcrun', ['--find', 'git'], {
+    encoding: 'utf8', timeout: 10_000,
+  }).trim());
+  const version = execFileSync(executable, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim();
+  return { launcher: selected, executable, version };
+}
+
 /**
  * Private roots must exist before the child runtime captures os.homedir().
  * Spawn test children with `env.MANDIBLE_RUNTIME`, the verified pinned Bun.
@@ -40,9 +58,15 @@ function verifiedSqliteArchive() {
 export function createTestRuntime() {
   const bun = pinnedRuntime();
   const archive = verifiedSqliteArchive();
+  const git = selectedTestGit();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-test-run-'));
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
+  const tools = path.join(root, 'bin');
+  if (git) {
+    fs.mkdirSync(tools);
+    fs.symlinkSync(git.executable, path.join(tools, 'git'));
+  }
   const env = {
     ...process.env,
     HOME: home,
@@ -54,6 +78,7 @@ export function createTestRuntime() {
     MANDIBLE_RUNTIME: bun,
     ...(archive ? { MANDIBLE_SQLITE_LIBRARY_ARCHIVE: archive } : {}),
     MANDIBLE_TEST_RUNTIME_ROOT: root,
+    PATH: git ? `${tools}${path.delimiter}${process.env.PATH ?? ''}` : process.env.PATH,
   };
   for (const key of [
     'MANDIBLE_HOME', 'MANDIBLE_CONFIG_DIR', 'MANDIBLE_ARTIFACT_DIR',
@@ -61,5 +86,5 @@ export function createTestRuntime() {
     'MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR', 'MANDIBLE_CLI_CACHE_DIR',
     'MANDIBLE_FILE_RPC_DIR', 'MANDIBLE_SOCKET', 'MANDIBLE_DB',
   ]) delete env[key];
-  return { env, close: () => fs.rmSync(root, { recursive: true, force: true }) };
+  return { env, toolchain: { git }, close: () => fs.rmSync(root, { recursive: true, force: true }) };
 }

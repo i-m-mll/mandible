@@ -98,6 +98,7 @@ if (packet && errors.length === 0) {
       child_overhead_ms: Math.max(0, childMs - packet.vitest_wall_ms),
       reporter_to_settlement_ms: Number(childSettledAtNs - BigInt(packet.reporter_finished_at_ns)) / 1e6,
     }, lifecycles, process.env.MANDIBLE_TIMING_GATE === "1");
+    completed.toolchain = runtime.toolchain;
     if (process.env.MANDIBLE_TIMING_JSON) {
       writeFileSync(process.env.MANDIBLE_TIMING_JSON, `${JSON.stringify(completed, null, 2)}\n`);
     }
@@ -135,7 +136,7 @@ if (errors.length) {
       runtime_root: runtime.env.MANDIBLE_TEST_RUNTIME_ROOT,
       runner: { pid: process.pid, parent_pid: process.ppid, uid: process.getuid(), runtime: process.execPath },
       child: { captured_pid: capturedChildPid, observed_pid: child?.pid, exit_code: child?.exitCode, signal_code: child?.signalCode },
-      command: { cwd: repoRoot, argv: process.argv, runtime: runtime.env.MANDIBLE_RUNTIME },
+      command: { cwd: repoRoot, argv: process.argv, runtime: runtime.env.MANDIBLE_RUNTIME, toolchain: runtime.toolchain },
       observed_wall_ms: performance.now() - commandStartedAt,
       child_started_ms: childStartedAt,
       child_settled: childSettledAtNs !== undefined,
