@@ -22,7 +22,6 @@ export function mutateLedgerRecord<T>(db: Db, input: {
   payload?: Record<string, unknown>;
   snapshot: () => Record<string, unknown> | null;
 }, mutate: () => T): T {
-  const nested = db.inTransaction;
   const store = new LedgerStore(db);
   let event: ReturnType<LedgerStore["recordEvent"]> | undefined;
   const result = db.transaction(() => {
@@ -44,6 +43,6 @@ export function mutateLedgerRecord<T>(db: Db, input: {
     });
     return result;
   })();
-  if (event && !nested) store.notifyEvent(event);
+  if (event) { const committed = event; db.afterCommit(() => store.notifyEvent(committed)); }
   return result;
 }
