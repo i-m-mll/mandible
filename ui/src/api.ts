@@ -2735,6 +2735,7 @@ type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<voi
 type TauriGlobalWindow = Window & {
   __TAURI__?: {
     core?: { invoke?: TauriInvoke };
+    event?: { listen: (event: string, handler: () => void) => Promise<() => void> };
     window?: { getCurrentWindow?: () => TauriDesktopWindow };
   };
   __TAURI_INTERNALS__?: { invoke?: TauriInvoke };
@@ -2782,6 +2783,13 @@ export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabil
     return { liquidGlassRegular: false, framePresentation: 'system', topBarHeight: 42, trafficLightReservation: 0 };
   }
   return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
+}
+
+export async function listenNativeFrameChanges(refresh: () => void): Promise<() => void> {
+  if (!hasTauriRuntime()) return () => {};
+  const events = tauriGlobalWindow()?.__TAURI__?.event;
+  if (!events) throw new Error('The Tauri event API is not available in this desktop runtime.');
+  return events.listen('native-frame-changed', refresh);
 }
 
 export async function observeNativeFrame(reason: 'first-frame' | 'resize' | 'visible' | 'manual'): Promise<NativeWindowCapabilities | null> {

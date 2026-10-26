@@ -51,9 +51,11 @@ pub struct AppliedFrame {
 pub struct FrameState {
     pub applied: Option<AppliedFrame>,
     dom: Option<DomFrame>,
+    fullscreen: Option<bool>,
 }
 
 pub struct Observation {
+    pub fullscreen: bool,
     pub bounds: Rect,
     pub snapshot: serde_json::Value,
 }
@@ -63,7 +65,8 @@ mod macos {
     use super::*;
     use block2::RcBlock;
     use objc2_app_kit::{
-        NSView, NSWindow, NSWindowButton, NSWindowDidUpdateNotification, NSWindowStyleMask,
+        NSView, NSWindow, NSWindowButton, NSWindowDidEnterFullScreenNotification,
+        NSWindowDidExitFullScreenNotification, NSWindowDidUpdateNotification, NSWindowStyleMask,
     };
     use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue};
     use objc2_web_kit::WKWebView;
@@ -72,7 +75,7 @@ mod macos {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
 
     thread_local! {
         static UPDATE_OBSERVER: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
@@ -174,9 +177,9 @@ mod macos {
             .expect("native frame lock poisoned")
             .dom
             .clone();
-        let applied = on_webview(window, move |native, webview| {
+        let (fullscreen, applied) = on_webview(window, move |native, webview| {
             if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
-                return Ok(None);
+                return Ok((true, None));
             }
             webview.layoutSubtreeIfNeeded();
             let web = frame(native, webview)?;
@@ -238,26 +241,38 @@ mod macos {
                 );
             }
             let left_padding = bounds.left - header.left;
-            Ok(Some(AppliedFrame {
-                bounds,
-                header,
-                reservation: (bounds.left + bounds.width + left_padding * 1.5 - header.left)
-                    / scale,
-            }))
+            Ok((
+                false,
+                Some(AppliedFrame {
+                    bounds,
+                    header,
+                    reservation: (bounds.left + bounds.width + left_padding * 1.5 - header.left)
+                        / scale,
+                }),
+            ))
         })?;
+        let mut state = state.lock().expect("native frame lock poisoned");
+        let mut changed = state.fullscreen != Some(fullscreen);
+        state.fullscreen = Some(fullscreen);
         if let Some(applied) = applied {
-            let mut state = state.lock().expect("native frame lock poisoned");
             if state
                 .applied
                 .map(|previous| (previous.bounds, previous.reservation))
                 != Some((applied.bounds, applied.reservation))
             {
+                changed = true;
                 eprintln!(
                     "native-frame-applied {}",
                     serde_json::to_string(&applied).expect("native geometry is finite")
                 );
             }
             state.applied = Some(applied);
+        }
+        drop(state);
+        if changed {
+            window
+                .emit("native-frame-changed", ())
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }
@@ -273,41 +288,64 @@ mod macos {
         let update_state = state.clone();
         let observer_active = active.clone();
         on_webview(window, move |native, _| {
-            let callback_active = observer_active.clone();
-            let callback = RcBlock::new(move |_notification: NonNull<NSNotification>| {
-                if !callback_active.load(Ordering::Acquire) || pending.swap(true, Ordering::AcqRel)
-                {
-                    return;
-                }
-                let target = target.clone();
-                let state = update_state.clone();
-                let active = callback_active.clone();
-                let pending = pending.clone();
-                let operation = RcBlock::new(move || {
-                    if active.load(Ordering::Acquire) {
-                        position(&target, state.clone(), "NSWindowDidUpdateNotification")
-                            .expect("native frame update reconciliation failed");
-                    }
-                    pending.store(false, Ordering::Release);
-                });
-                unsafe {
-                    NSOperationQueue::mainQueue().addOperationWithBlock(&operation);
-                }
-            });
             let center = NSNotificationCenter::defaultCenter();
-            let observer = unsafe {
-                center.addObserverForName_object_queue_usingBlock(
-                    Some(NSWindowDidUpdateNotification),
-                    Some(native),
-                    None,
-                    &callback,
-                )
-            };
+            let mut observers = Vec::new();
+            for (name, event) in [
+                (
+                    unsafe { NSWindowDidUpdateNotification },
+                    "NSWindowDidUpdateNotification",
+                ),
+                (
+                    unsafe { NSWindowDidEnterFullScreenNotification },
+                    "NSWindowDidEnterFullScreenNotification",
+                ),
+                (
+                    unsafe { NSWindowDidExitFullScreenNotification },
+                    "NSWindowDidExitFullScreenNotification",
+                ),
+            ] {
+                let callback_active = observer_active.clone();
+                let target = target.clone();
+                let update_state = update_state.clone();
+                let pending = pending.clone();
+                let callback = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+                    if !callback_active.load(Ordering::Acquire)
+                        || pending.swap(true, Ordering::AcqRel)
+                    {
+                        return;
+                    }
+                    let target = target.clone();
+                    let state = update_state.clone();
+                    let active = callback_active.clone();
+                    let pending = pending.clone();
+                    let operation = RcBlock::new(move || {
+                        if active.load(Ordering::Acquire) {
+                            position(&target, state.clone(), event)
+                                .expect("native frame update reconciliation failed");
+                        }
+                        pending.store(false, Ordering::Release);
+                    });
+                    unsafe {
+                        NSOperationQueue::mainQueue().addOperationWithBlock(&operation);
+                    }
+                });
+                let observer = unsafe {
+                    center.addObserverForName_object_queue_usingBlock(
+                        Some(name),
+                        Some(native),
+                        None,
+                        &callback,
+                    )
+                };
+                observers.push(observer);
+            }
             // AppKit observer custody stays on its main thread until the main window is destroyed.
             let cleanup: Box<dyn FnOnce()> = Box::new(move || {
                 observer_active.store(false, Ordering::Release);
                 unsafe {
-                    center.removeObserver((&*observer).as_ref());
+                    for observer in observers {
+                        center.removeObserver((&*observer).as_ref());
+                    }
                 }
             });
             UPDATE_OBSERVER.with(|slot| {
@@ -376,6 +414,7 @@ mod macos {
                 }).collect::<Vec<_>>()
             });
             let window = native.frame();
+            let fullscreen = native.styleMask().contains(NSWindowStyleMask::FullScreen);
             let snapshot = serde_json::json!({
                 "coordinateSpace": "window-logical-points-top-left", "reason": input.as_ref().map(|dom| &dom.reason),
                 "window": {"left": 0.0, "top": 0.0, "width": window.size.width, "height": window.size.height},
@@ -383,7 +422,7 @@ mod macos {
                 "header": header, "backIcon": back, "glyphs": glyphs,
                 "pageZoom": unsafe { webview.pageZoom() }, "backingScale": native.backingScaleFactor(),
                 "cssToLogicalScale": scale, "dom": input, "lastApplied": applied,
-                "fullscreen": native.styleMask().contains(NSWindowStyleMask::FullScreen),
+                "fullscreen": fullscreen,
                 "topClearance": header.map(|header| bounds.top - header.top),
                 "bottomClearance": header.map(|header| header.top + header.height - bounds.top - bounds.height),
                 "leftClearance": header.map(|header| bounds.left - header.left),
@@ -391,7 +430,7 @@ mod macos {
                 "backIconGap": back.map(|back| back.left - bounds.left - bounds.width),
             });
             eprintln!("native-frame-observed {}", snapshot);
-            Ok(Observation { bounds, snapshot })
+            Ok(Observation { fullscreen, bounds, snapshot })
         })).await.map_err(|error| error.to_string())??;
         if let Some(dom) = dom {
             state.lock().expect("native frame lock poisoned").dom = Some(dom);

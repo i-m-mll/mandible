@@ -2,7 +2,8 @@ import type { ComponentChildren, Ref } from 'preact';
 import { AppRightSidebarHeaderControls, AppRightSidebarToggleButton, ViewSidebarIcon, type AppRightSidebarDescriptor } from './app-shell';
 import './styles/app-frame.css';
 
-export function AppFrame({ rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
+export function AppFrame({ nativeControlsReservation, rail, layoutClassName = '', children, headerHostRef, hasMainHeader, viewSidebarOpen, viewSidebarAvailable, onViewSidebarToggle, rightSidebar, rightSidebarOpen, onRightSidebarOpenChange, rightToggleRef }: {
+  nativeControlsReservation: number;
   rail: ComponentChildren;
   layoutClassName?: string;
   children: ComponentChildren;
@@ -20,7 +21,7 @@ export function AppFrame({ rail, layoutClassName = '', children, headerHostRef, 
   return <div className={`app-frame${hasMainHeader ? ' app-frame--main-header' : ''}${viewSidebarOpen ? ' app-frame--left-open' : ''}${rightSidebarOpen ? ' app-frame--right-open' : ''}`}>
     <header className="app-frame__bar" aria-label="Application controls" data-app-surface="chrome" data-tauri-drag-region>
       <div className="app-frame__navigation" data-tauri-drag-region>
-        <span className="app-frame__native-controls" aria-hidden="true" data-tauri-drag-region />
+        {nativeControlsReservation > 0 ? <span className="app-frame__native-controls" aria-hidden="true" data-tauri-drag-region /> : null}
         <button type="button" className="app-frame__button" aria-label="Back" title="Back" onClick={() => window.history.back()}><HistoryArrow /></button>
         <button type="button" className="app-frame__button" aria-label="Forward" title="Forward" onClick={() => window.history.forward()}><HistoryArrow forward /></button>
         {viewSidebarAvailable ? <button type="button" className="app-frame__button" aria-label={leftLabel} title={leftLabel} aria-pressed={viewSidebarOpen} onClick={onViewSidebarToggle}><ViewSidebarIcon open={viewSidebarOpen} /></button> : null}

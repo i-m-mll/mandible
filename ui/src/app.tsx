@@ -17,6 +17,8 @@ import {
   getDashboardBadges,
   getAppThemePreference,
   getNativeWindowCapabilities,
+  listenNativeFrameChanges,
+  isDesktopShell,
   observeNativeFrame,
   setDesktopWindowTheme,
   getInboxGlobal,
@@ -1061,7 +1063,7 @@ function App(): JSX.Element {
   }, [route]);
 
   useEffect(() => {
-    if (!frameHeaderHost || nativeControlsReservation <= 0 || document.documentElement.dataset.framePresentation !== 'macos-overlay') return;
+    if (!frameHeaderHost || !isDesktopShell()) return;
     let first = 0;
     let second = 0;
     let disposed = false;
@@ -1091,23 +1093,27 @@ function App(): JSX.Element {
 
   useEffect(() => {
     let disposed = false;
-    getNativeWindowCapabilities()
+    let removeListener: (() => void) | undefined;
+    const refresh = () => getNativeWindowCapabilities()
       .then(({ liquidGlassRegular, framePresentation, topBarHeight, trafficLightReservation }) => {
         if (disposed) return;
         document.documentElement.dataset.framePresentation = framePresentation;
         setNativeControlsReservation(trafficLightReservation);
         if (topBarHeight) document.documentElement.style.setProperty('--app-frame-header-height', `${topBarHeight}px`);
-        if (trafficLightReservation) document.documentElement.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
-        if (!disposed && liquidGlassRegular) {
-          document.documentElement.dataset.nativeGlass = 'regular';
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to read native window capabilities:', error);
+        document.documentElement.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
+        if (liquidGlassRegular) document.documentElement.dataset.nativeGlass = 'regular';
       });
+    listenNativeFrameChanges(() => {
+      void refresh().catch(error => console.error('Failed to refresh native window capabilities:', error));
+    }).then(cleanup => {
+      if (disposed) { cleanup(); return; }
+      removeListener = cleanup;
+      return refresh();
+    }).catch(error => console.error('Failed to initialize native window capabilities:', error));
 
     return () => {
       disposed = true;
+      removeListener?.();
       document.documentElement.removeAttribute('data-native-glass');
       document.documentElement.removeAttribute('data-frame-presentation');
       document.documentElement.style.removeProperty('--app-frame-header-height');
@@ -2816,6 +2822,7 @@ function App(): JSX.Element {
       )}
       <AppShellProvider value={appShellContext}>
         <AppFrame
+          nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}
           hasMainHeader={frameHeaderOwners > 0}

@@ -72,7 +72,11 @@ async fn native_window_capabilities(
             "system"
         },
         top_bar_height: native_frame::HEADER_HEIGHT,
-        traffic_light_reservation: applied.map_or(0.0, |layout| layout.reservation),
+        traffic_light_reservation: if observed.as_ref().is_some_and(|frame| frame.fullscreen) {
+            0.0
+        } else {
+            applied.map_or(0.0, |layout| layout.reservation)
+        },
         traffic_light_bounds: observed.as_ref().map(|observed| observed.bounds),
         native_frame: observed.map(|observed| observed.snapshot),
     })
