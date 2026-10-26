@@ -1,3 +1,4 @@
+import { attributionForRequest } from "./authz.js";
 // Resolve intrinsic local browser identity and explicit agent credentials.
 
 import type { Db } from "../db.js";
@@ -146,6 +147,10 @@ export class ClientAuthenticator implements ClientAuthGate {
         .update(`mandible:local-csrf:${this.clientAuthAuthorityId}:${audience}`)
         .digest("base64url"),
     };
+  }
+
+  mutationAttribution(request: import("../server.js").RequestLike) {
+    return attributionForRequest(this.db, request);
   }
 
   resolveManagedOrigin(identity: LocalManagedIdentity): ManagedRequestOrigin {
