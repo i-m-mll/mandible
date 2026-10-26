@@ -181,15 +181,24 @@ def parse_since(value: str | None) -> float | None:
         raise SystemExit("--since must be Nd or YYYY-MM-DD")
 
 
+def codex_bridge(operation: str, *arguments: Any) -> Any:
+    script = pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "src" / "cli" / "logical-sources.ts"
+    result = subprocess.run([os.environ["MANDIBLE_RUNTIME"], str(script), operation, *map(str, arguments)], check=True, capture_output=True, text=True, timeout=60)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="")
+    return json.loads(result.stdout)
+
+
+def codex_path(path: pathlib.Path) -> bool:
+    return "/.codex/sessions/" in str(path) or "/.codex/archived_sessions/" in str(path)
+
+
 def provider_patterns(provider: str) -> list[tuple[str, str]]:
     patterns: list[tuple[str, str]] = []
     providers = ["codex", "claude", "gemini"] if provider == "all" else [provider]
     for item in providers:
         if item == "codex":
-            patterns.extend([
-                ("codex", str(HOME / ".codex" / "sessions" / "**" / "*.jsonl")),
-                ("codex", str(HOME / ".codex" / "archived_sessions" / "**" / "*.jsonl")),
-            ])
+            continue
         elif item == "claude":
             patterns.append(("claude", str(HOME / ".claude" / "projects" / "**" / "*.jsonl")))
         elif item == "gemini":
@@ -202,7 +211,7 @@ def provider_patterns(provider: str) -> list[tuple[str, str]]:
     return patterns
 
 
-def iter_files(provider: str) -> list[tuple[str, pathlib.Path]]:
+def iter_files(provider: str, include_codex: bool = True) -> list[tuple[str, pathlib.Path]]:
     seen: set[str] = set()
     rows: list[tuple[str, pathlib.Path]] = []
     for source, pattern in provider_patterns(provider):
@@ -213,10 +222,14 @@ def iter_files(provider: str) -> list[tuple[str, pathlib.Path]]:
                 continue
             seen.add(key)
             rows.append((source, path))
+    if include_codex and provider in {"all", "codex"}:
+        rows.extend(("codex", pathlib.Path(item)) for item in codex_bridge("list"))
     return rows
 
 
 def read_jsonl_head(path: pathlib.Path, limit: int = 200) -> list[dict[str, Any]]:
+    if codex_path(path):
+        return codex_bridge("head", path, limit)
     rows: list[dict[str, Any]] = []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -236,6 +249,8 @@ def read_jsonl_head(path: pathlib.Path, limit: int = 200) -> list[dict[str, Any]
 
 
 def summarize_file(source: str, path: pathlib.Path) -> dict[str, Any]:
+    if source == "codex" or codex_path(path):
+        return codex_bridge("summary", path)
     stat = path.stat()
     summary: dict[str, Any] = {
         "provider": source,
@@ -269,7 +284,12 @@ def summarize_file(source: str, path: pathlib.Path) -> dict[str, Any]:
 def inventory(args: SimpleNamespace) -> int:
     cutoff = parse_since(args.since)
     rows = []
-    for provider, path in iter_files(args.provider):
+    if args.provider in {"codex", "all"}:
+        rows.extend(codex_bridge("inventory", int((cutoff or 0) * 1000), args.limit))
+    other_provider = "all" if args.provider == "all" else args.provider
+    for provider, path in ([] if args.provider == "codex" else iter_files(other_provider, include_codex=False)):
+        if provider == "codex":
+            continue
         stat = path.stat()
         if cutoff is not None and stat.st_mtime < cutoff:
             continue
@@ -319,7 +339,9 @@ def db_paths(provider: str) -> dict[str, dict[str, Any]]:
 def missing(args: SimpleNamespace) -> int:
     indexed = db_paths(args.provider)
     rows = []
-    for provider, path in iter_files(args.provider):
+    if args.provider in {"all", "codex"}:
+        rows.extend(codex_bridge("missing", json.dumps(list(indexed))))
+    for provider, path in iter_files(args.provider, include_codex=False):
         if str(path) not in indexed:
             rows.append(summarize_file(provider, path))
     rows.sort(key=lambda row: row["mtime"], reverse=True)
@@ -333,8 +355,9 @@ def missing(args: SimpleNamespace) -> int:
 
 def orphans(args: SimpleNamespace) -> int:
     rows = []
+    codex_sources = set(codex_bridge("list")) if args.provider in {"all", "codex"} else set()
     for path, row in db_paths(args.provider).items():
-        if not pathlib.Path(path).exists():
+        if path not in codex_sources and not pathlib.Path(path).exists():
             rows.append(row)
     rows.sort(key=lambda row: row.get("updated_at") or "", reverse=True)
     if args.json:
@@ -349,7 +372,13 @@ def find_log(target: str, provider: str) -> tuple[str, pathlib.Path] | None:
     path = pathlib.Path(os.path.expanduser(target))
     if path.exists():
         return ("file", path)
+    if provider in {"all", "codex"}:
+        found = codex_bridge("find", target)
+        if found:
+            return ("codex", pathlib.Path(found))
     for source, candidate in iter_files(provider):
+        if source == "codex":
+            continue
         summary = summarize_file(source, candidate)
         if target in {summary.get("session_id"), candidate.name, str(candidate)}:
             return (source, candidate)

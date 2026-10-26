@@ -718,7 +718,7 @@ export class ConversationSourceReader {
             ctimeNs: version.filesystem_ctime_ns,
           });
         let records: Map<string, Buffer> | null = null;
-        if (observedExtent !== undefined && exactIdentity
+        if (observedExtent !== undefined && (exactIdentity || observedExtent.contentSha256 === version.content_sha256)
             && observedExtent.byteLength === version.byte_length) {
           try {
             const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
@@ -764,8 +764,8 @@ export class ConversationSourceReader {
           ]));
         }
 
-        if (!records && version.byte_length <= this.maxSourceBytes) {
-          const full = await observeStableSourceAlias(alias, { captureBytes: false, maxBytes: this.maxSourceBytes });
+        if (!records) {
+          const full = await observeStableSourceAlias(alias, { captureBytes: false });
           if (full.byteLength !== version.byte_length || full.contentSha256 !== version.content_sha256) continue;
           const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
             maxRangeBytes: MAX_SOURCE_RECORD_BYTES,

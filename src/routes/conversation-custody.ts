@@ -65,7 +65,7 @@ export function registerConversationCustodyRoutes(
     }
   }, { operation: { id: "get:/api/conversations/:id/custody", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
-  router.post("/api/conversations/:id/custody/capture", (req, res) => {
+  router.post("/api/conversations/:id/custody/capture", async (req, res) => {
     try {
       requireOperator(db, req);
       const conversation = requireConversation(db, req.params.id);
@@ -95,7 +95,7 @@ export function registerConversationCustodyRoutes(
         ? sourceStore.listAliases(source.sourceId).find((alias) => alias.availability === "available")
         : null;
       const body = bodyRecord(req);
-      const result = store.capture({
+      const result = await store.capture({
         conversation_id: conversation.id,
         provider: conversation.source as CustodyProvider,
         source_path: availableAlias?.path ?? conversation.source_path,

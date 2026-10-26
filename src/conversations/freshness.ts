@@ -123,13 +123,12 @@ function pinnedSource(db: Db, conversationId: string, candidates: string[]): Pin
       JOIN conversation_source_versions version ON version.id = s.current_version_id
       JOIN conversation_source_aliases alias ON alias.id = (
         SELECT candidate.id FROM conversation_source_aliases candidate
-         WHERE candidate.source_id = s.id AND candidate.availability = 'available'
+         WHERE candidate.source_id = s.id AND (candidate.availability = 'available' OR c.source = 'codex')
          ORDER BY candidate.last_seen_at DESC, candidate.id
          LIMIT 1
       )
      WHERE c.id = ?
-       AND s.availability = 'available'
-       AND version.availability = 'available'
+       AND ((s.availability = 'available' AND version.availability = 'available') OR c.source = 'codex')
   `).get(conversationId) as {
     conversation_id: string;
     provider: string;
@@ -308,10 +307,10 @@ async function observePinned(
   const source = db.prepare(`
     SELECT availability FROM conversation_sources WHERE id = ? AND conversation_id = ?
   `).get(pinned.sourceId, pinned.conversationId) as { availability: string } | undefined;
-  if (!source || source.availability !== "available") {
+  if (!source || (source.availability !== "available" && pinned.provider !== "codex")) {
     throw new ConversationFreshnessError("source_unavailable", "pinned conversation source is unavailable");
   }
-  const aliases = store.listAliases(pinned.sourceId).filter((alias) => alias.availability === "available");
+  const aliases = store.listAliases(pinned.sourceId).filter((alias) => alias.availability === "available" || pinned.provider === "codex");
   let lastError: unknown;
   for (const alias of aliases) {
     try {
@@ -341,10 +340,10 @@ async function observePinnedExtent(
   const source = db.prepare(`
     SELECT availability FROM conversation_sources WHERE id = ? AND conversation_id = ?
   `).get(pinned.sourceId, pinned.conversationId) as { availability: string } | undefined;
-  if (!source || source.availability !== "available") {
+  if (!source || (source.availability !== "available" && pinned.provider !== "codex")) {
     throw new ConversationFreshnessError("source_unavailable", "pinned conversation source is unavailable");
   }
-  const aliases = store.listAliases(pinned.sourceId).filter((alias) => alias.availability === "available");
+  const aliases = store.listAliases(pinned.sourceId).filter((alias) => alias.availability === "available" || pinned.provider === "codex");
   let lastError: unknown;
   for (const alias of aliases) {
     try {

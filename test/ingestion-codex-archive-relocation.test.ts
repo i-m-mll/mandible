@@ -1,3 +1,6 @@
+import { zstdCompressSync } from "node:zlib";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { ensureExactConversationFresh } from "../src/conversations/freshness.js";
 // Bug: c927726 — `codex archive` moves a rollout out of ~/.codex/sessions into
 // ~/.codex/archived_sessions. Mandible itself triggers that archive on
 // successful auth merges and on session resume, so reconcile must treat the
@@ -11,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { setDb, type Db } from "../src/db.js";
-import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
+import { triggerReconcileForTest, triggerTargetedIngest, triggerExactPathIngest } from "../src/ingestion.js";
 import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
@@ -116,6 +119,31 @@ afterEach(() => {
 });
 
 describe("codex archive relocation", () => {
+
+  it("discovers cold-only rollouts once and preserves pins, version and logical append coordinates", async () => {
+    const raw = fs.readFileSync(sessionPath);
+    fs.writeFileSync(`${sessionPath}.zst`, zstdCompressSync(raw));
+    fs.unlinkSync(sessionPath);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const conversation = conversationRow(sessionPath)!;
+    expect(conversation).toBeDefined();
+    db.prepare("UPDATE conversations SET starred = 1, notes = 'keep notes' WHERE id = ?").run(conversation.id);
+    const before = db.prepare("SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?").get(conversation.id);
+    expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id)).status).toBe("source");
+    db.prepare("UPDATE conversation_sources SET availability = 'missing' WHERE conversation_id = ?").run(conversation.id);
+    db.prepare("UPDATE conversation_source_aliases SET availability = 'missing'").run();
+    await ensureExactConversationFresh(db, conversation.id, { ingest: triggerExactPathIngest });
+    fs.writeFileSync(sessionPath, raw);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    expect(db.prepare("SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?").get(conversation.id)).toEqual(before);
+    fs.appendFileSync(sessionPath, row({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "resumed" }] } }));
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const blocks = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id);
+    expect(blocks.status).toBe("source");
+    if (blocks.status === "source") expect(blocks.value.at(-1)?.content).toBe("resumed");
+    expect(db.prepare("SELECT starred, notes FROM conversations WHERE id = ?").get(conversation.id)).toEqual({ starred: 1, notes: "keep notes" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversations").get()).toEqual({ n: 1 });
+  });
 
   it("keeps the conversation and its blocks when a thread is archived", async () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
