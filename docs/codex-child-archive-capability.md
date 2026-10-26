@@ -1,12 +1,14 @@
 # Codex child-chat archive capability
 
-The supported standalone daemon-to-owning-desktop transport is **unestablished**.
-The installed runtime has native status, turn-history, queue, archive and
-restore operations, and an agent-context desktop bridge successfully archived
-and restored a disposable loaded-idle chat. This investigation has not
-demonstrated a supported way for Mandible's standalone daemon to use those
-operations against that same owning desktop. No adapter or automatic archive
-effect is enabled.
+The complete standalone automatic-archive route remains **unestablished**.
+The existing independent app-server client demonstrably reads shared desktop
+turn history. The installed runtime also has native queue, archive and restore
+operations, and an agent-context desktop bridge successfully archived and
+restored a disposable loaded-idle chat. Shared queue visibility for an
+unarchived desktop chat and the independent archive effect on a loaded-idle
+desktop chat have not been demonstrated here. No adapter or automatic archive
+effect is enabled. Absence of a direct owning-desktop IPC connection does not
+by itself rule out the existing public API plus native-history/hook route.
 
 A fresh history, status and queue check followed by archive is the selected
 practical visibility workflow. Atomic conditional archival is not required.
@@ -110,6 +112,54 @@ daemon queue API.
 
 ## Standalone transport verdict
 
+### Existing independent client and execution hooks
+
+A bounded read-only probe used the existing
+`CodexAppServerClient.connect()` with its default bundled desktop executable,
+spawning independent stdio app-server PID 79338. It issued no start, resume,
+archive, unarchive or queue mutation, and closed with exit code 0.
+
+- `thread/read` returned the disposable fixture's actual archived rollout path
+  and paginated history mode. Its `notLoaded` status describes this independent
+  server and is not evidence of desktop idleness.
+- `thread/turns/list`, descending with a page size of 10, returned all three
+  desktop-created turns from the table above, with their exact statuses,
+  start/end timestamps and durations. `nextCursor` was null. Shared persisted
+  turn-history access is therefore demonstrated through Mandible's existing
+  daemon-compatible boundary without caller-chat impersonation or owning IPC.
+- `thread/queue/list` rejected this archived fixture with an instruction to
+  unarchive first. It returned no queue data. This proves the request reaches
+  the fixture lookup, but does not establish shared pending-input visibility
+  for a loaded, unarchived desktop chat. The fixture was not restored merely
+  to extend this read-only probe.
+
+The installed Codex hooks register SessionStart, UserPromptSubmit, Stop,
+Interrupt and SessionEnd through Mandible's existing execution hook. The exact
+fixture's `provider_session_execution` row records `codex_hook` SessionEnd at
+1793034940060, state ended with reason other. The mapping treats a submitted
+prompt as working, Stop as stopped, Interrupt as interrupted, SessionStart as
+unknown and SessionEnd as ended. Atomic hook outbox entries carry exact
+session/optional turn identity and observation time; the daemon drains them
+in order and supersedes older observations.
+
+That execution store retains the latest observation rather than a full event
+history. Its stopped/ended row can corroborate current evidence, but cannot
+alone exclude missed subsequent input or reconstruct the idle interval.
+Native turn history supplies interval evidence; fresh hook/outbox
+reconciliation can contribute current-state evidence. A managed controller
+provides its own exact execution observation. These facts do not require any
+change to global holder liveness.
+
+The existing archive implementation invokes the independent `codex archive`
+and `codex unarchive` CLI commands. The existing app-server client itself
+currently has a typed unarchive request but no archive/turn-history/queue
+request entries; the read-only probe exercised the public methods directly.
+Whether that independent archive effect succeeds for a loaded-idle desktop
+thread, and whether its queue reads cover pending desktop input, remain the
+specific unproved semantics of this alternative route.
+
+### Direct desktop bridge
+
 The installed app-tools MCP wrapper obtains its socket from
 `CODEX_APP_TOOLS_PIPE_PATH`. Requests use length-prefixed JSON-RPC frames.
 Its `tools/call` resolves a caller chat ID from `--interaction-client-id` or
@@ -146,14 +196,17 @@ threads actually archived. Descendant effects were not exercised here. An MCP-cr
 child marker alone would not establish the provider's spawned-descendant
 effect set.
 
-Implementation awaits a supported owning-runtime daemon attachment/API,
-without borrowing or inventing an agent executor identity. Through that
-boundary, reconcile fresh continuous-activity history and current status/queue,
-then archive. Review the remaining input/effect race proportionately to this
-recoverable visibility operation. Verify a single-thread effect or the complete
-effect set so autonomous/successor descendants can be excluded. Resume dispatch
-must restore the original ID before input; the measured external follow-up
-path does not do that automatically.
+Implementation needs demonstrated current-input and archive-effect semantics
+at a legitimate daemon boundary, without borrowing or inventing an agent
+executor identity. The existing independent API plus shared native history and
+execution hooks is a plausible route; direct owning IPC is not mandatory if
+that route supplies sufficient evidence and effects. Reconcile fresh
+continuous-activity history and current execution/queue evidence, then archive.
+Review the remaining input/effect race proportionately to this recoverable
+visibility operation. Verify a single-thread effect or the complete effect
+set so autonomous/successor descendants can be excluded. Resume dispatch must
+restore the original ID before input; the measured external follow-up path
+does not do that automatically.
 
 Do not substitute a separate app-server's notLoaded status, a writer lock, or
 Mandible's cached liveness for owning-runtime evidence. Do not change global
