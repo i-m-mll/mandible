@@ -358,9 +358,9 @@ export function resolveAppFrameGeometry({ viewportWidth, railWidth, viewSidebarW
   rightSidebarOpen: boolean;
   nativeControlsReservation?: number;
 }): { viewSidebarWidth: number | null; rightSidebarLayout: AppRightSidebarLayout } {
-  // Browser logo spans the rail; native logo uses a 34px slot with a 22px glyph.
+  // Center the browser's 34px logo slot over the rail; native reserves its glyph inset.
   // Include the three 34px controls, 2px gaps and 8px trailing padding.
-  const minimumNavigationWidth = nativeControlsReservation > 0 ? nativeControlsReservation + 144 : railWidth + 116;
+  const minimumNavigationWidth = nativeControlsReservation > 0 ? nativeControlsReservation + 144 : (railWidth - 34) / 2 + 34 + 116;
   const minimumLeft = Math.max(122, minimumNavigationWidth - railWidth);
   const rightSidebarLayout = resolveAppRightSidebarLayout(rightSidebar, viewportWidth, viewportWidth - railWidth - Math.max(0, minimumLeft - 122));
   return {

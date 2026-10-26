@@ -282,6 +282,10 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(state.workspace.left).toBeCloseTo(state.rail.right, 1);
         expect(state.railButton.top).toBeGreaterThan(state.bar.bottom);
         expect(state.logo.right).toBeLessThan(state.buttons[0].left);
+        const logoCenter = (state.logo.left + state.logo.right) / 2;
+        const backCenter = (state.buttons[0].left + state.buttons[0].right) / 2;
+        const historySpacing = state.buttons[1].left - state.buttons[0].left;
+        expect(backCenter - logoCenter).toBeCloseTo(historySpacing, 2);
         expect((state.logo.top + state.logo.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 1);
         if (native) expect(state.logo.left).toBeCloseTo(state.reservation || (34 - 22) / 2, 1);
         else expect((state.logo.left + state.logo.right) / 2).toBeCloseTo((state.rail.left + state.rail.right) / 2, 1);
