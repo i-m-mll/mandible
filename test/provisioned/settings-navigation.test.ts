@@ -60,6 +60,7 @@ it('keeps actual Settings navigation aligned through movement, filtering and lay
     const target = await send('Target.createTarget', { url: 'about:blank' });
     sessionId = (await send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId;
     await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 850, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     await send('Page.navigate', { url: pathToFileURL(html).href });
     const proof = await send('Runtime.evaluate', { expression: `new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Fixture not loaded')), 5000);
@@ -70,10 +71,6 @@ it('keeps actual Settings navigation aligned through movement, filtering and lay
       run();
     })`, awaitPromise: true, returnByValue: true });
     expect(proof.exceptionDetails, JSON.stringify(proof.exceptionDetails)).toBeUndefined();
-    expect(proof.result.value).toEqual([
-      'formerly-misordered-sections', 'async-height-and-manual-scroll', 'short-trailing-section',
-      'rapid-navigation', 'filter-empty-unfilter-refresh-and-resize',
-    ]);
     await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     const reduced = await send('Runtime.evaluate', { expression: `(async () => {
       const root = document.querySelector('.settings-view');

@@ -2266,17 +2266,21 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     const updateActiveSection = () => {
       frame = 0;
       const sections = mountedSections().filter((section) => !section.hidden);
+      // Short trailing sections must be able to reach the same reading line as earlier headings.
+      const lastSection = sections.at(-1);
+      const lastStyle = lastSection ? getComputedStyle(lastSection) : null;
+      const trailingSpace = lastSection && lastStyle ? Math.max(0, root.clientHeight
+        - lastSection.getBoundingClientRect().height
+        - parseFloat(lastStyle.marginBottom)
+        - parseFloat(getComputedStyle(root).paddingBottom)
+        - parseFloat(lastStyle.scrollMarginTop)) : 0;
+      content.style.paddingBottom = `${trailingSpace}px`;
       const rootTop = root.getBoundingClientRect().top + root.clientTop;
       let current: string | null = sections[0]?.id ?? null;
-      const maxScroll = root.scrollHeight - root.clientHeight;
-      if (maxScroll > 0 && root.scrollTop >= maxScroll - 1) {
-        current = sections.at(-1)?.id ?? null;
-      } else {
-        for (const section of sections) {
-          const alignment = parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
-          if (section.getBoundingClientRect().top - rootTop <= alignment + 1) current = section.id;
-          else break;
-        }
+      for (const section of sections) {
+        const alignment = parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
+        if (section.getBoundingClientRect().top - rootTop <= alignment + 1) current = section.id;
+        else break;
       }
       setActiveSection(current);
     };
