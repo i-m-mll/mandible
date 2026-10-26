@@ -28,6 +28,8 @@ export function acquirePreviewConsumer(handle, child) {
     const childStat = fs.lstatSync(child.root);
     if (!childStat.isDirectory() || childStat.isSymbolicLink() || !child.rootIdentity
       || childStat.dev !== child.rootIdentity.dev || childStat.ino !== child.rootIdentity.ino) throw new Error('Native consumer root identity changed');
+    const receipt = JSON.parse(fs.readFileSync(child.metadataFile, 'utf8'));
+    if (!child.attemptId || receipt.attemptId !== child.attemptId || receipt.ownership?.runId !== child.runId) throw new Error('Native consumer acquisition attempt changed');
     const previous = run.consumers.find(entry => entry.consumerId === child.consumerId);
     if (previous) throw new Error('Native consumer already acquired');
     const association = { ...child, parent: { root: run.root, runId: run.runId }, state: 'pending',
@@ -48,6 +50,7 @@ export function publishPreviewConsumer(reservation, identity) {
     const child = JSON.parse(fs.readFileSync(consumer.metadataFile, 'utf8'));
     if (child.ownership?.runId !== consumer.runId || !ownedRunIdentityMatches(consumer.root, child.ownership)
       || child.parent?.runId !== run.runId || path.resolve(child.parent?.root ?? '') !== run.root) throw new Error('Native child receipt does not belong to reserved preview run');
+    if (consumer.attemptId !== reservation.attemptId || child.attemptId !== reservation.attemptId) throw new Error('Native publish attempt changed');
     if (JSON.stringify(identity.build) !== JSON.stringify(child.build)
       || JSON.stringify(child.build) !== JSON.stringify(run.source)) throw new Error('Native child build differs from selected source identity');
     consumer.state = 'attached'; consumer.identity = identity;
@@ -63,7 +66,11 @@ export function verifyPreviewConsumerStopped(consumer) {
     || child.ownership.rootIdentity.dev !== consumer.rootIdentity.dev || child.ownership.rootIdentity.ino !== consumer.rootIdentity.ino) throw new Error('Native consumer root identity changed');
   if (child.pid && processIdentity(child.pid) !== null) throw new Error('Native consumer still has a live process');
   if (child.buildProcess?.pid && processIdentity(child.buildProcess.pid) !== null) throw new Error('Native consumer still has a live build process');
-  if (child.status !== 'stopped') throw new Error('Native consumer must be reconciled stopped before backend refresh or reacquisition');
+  if (child.status !== 'stopped') {
+    if (!['visible', 'loading', 'failed', 'launched', 'launching'].includes(child.status)) throw new Error('Native consumer must be reconciled stopped before backend refresh or reacquisition');
+    child.status = 'stopped'; child.stoppedAt = new Date().toISOString(); child.ownership.revision++;
+    saveOwnedMetadata(consumer.metadataFile, child);
+  }
   return child;
 }
 
@@ -73,18 +80,29 @@ export function reacquirePreviewConsumer(handle, child) {
     const previous = run.consumers?.find(entry => entry.consumerId === child.consumerId);
     if (!previous || previous.state === 'released' || previous.runId !== child.runId || previous.root !== child.root
       || previous.metadataFile !== child.metadataFile || previous.generation !== child.expectedPriorGeneration
-      || JSON.stringify(previous.source) !== JSON.stringify(child.expectedPriorSource)) throw new Error('Native reacquisition association changed');
-    verifyPreviewConsumerStopped(previous);
+      || JSON.stringify(previous.source) !== JSON.stringify(child.expectedPriorSource)
+      || previous.attemptId !== child.expectedPriorAttemptId) throw new Error('Native reacquisition association changed');
+    const receipt = verifyPreviewConsumerStopped(previous);
+    if (!child.attemptId || receipt.attemptId !== child.expectedPriorAttemptId) throw new Error('Native reacquisition attempt changed');
     if (run.state !== 'active' || run.lifecycle.teardown || run.lifecycle.phase !== 'ready'
       || child.expectedGeneration !== metadata.instanceEnv.MANDIBLE_BACKEND_GENERATION
       || JSON.stringify(child.expectedSource) !== JSON.stringify(run.source)) throw new Error('Parent preview changed before native reacquisition');
     previous.state = 'pending'; previous.generation = child.expectedGeneration; previous.source = child.expectedSource;
+    previous.attemptId = child.attemptId;
+    receipt.attemptId = child.attemptId; receipt.status = 'preparing'; receipt.ownership.revision++;
+    saveOwnedMetadata(child.metadataFile, receipt);
     save();
     return previous;
   }));
 }
 
 export function releasePreviewConsumer(reservation) {
+  const retainedParent = ownedRunReceipt(reservation.parent);
+  if (retainedParent?.cleanup === 'completed') {
+    const released = retainedParent.consumers?.find(entry => entry.consumerId === reservation.consumerId);
+    if (released?.state === 'released') return Promise.resolve(released);
+    return Promise.reject(new Error('Retired preview receipt does not prove released native consumer'));
+  }
   if (!fs.existsSync(path.join(reservation.parent.root, 'metadata.json'))) {
     const parent = ownedRunReceipt(reservation.parent);
     const consumer = parent?.consumers?.find(entry => entry.consumerId === reservation.consumerId);
@@ -94,6 +112,7 @@ export function releasePreviewConsumer(reservation) {
   return withPreviewRun(reservation.parent, (metadata, save) => {
     const consumer = metadata.ownership.consumers?.find(entry => entry.consumerId === reservation.consumerId);
     if (!consumer) throw new Error('Native consumer reservation missing');
+    if (consumer.attemptId !== reservation.attemptId) throw new Error('Native release attempt changed');
     if (consumer.state === 'released') return consumer;
     const receipt = ownedRunReceipt({ root: consumer.root, runId: consumer.runId });
     if (!receipt || receipt.cleanup !== 'completed') throw new Error('Native child cleanup is not completed');

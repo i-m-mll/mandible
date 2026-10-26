@@ -44,7 +44,13 @@ export async function withInstallationGatewayLock(home, operation) {
   if (token) {
     const lock = path.join(path.dirname(root), '.gateway.lock', 'owner.json');
     const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));
-    if (owner.token !== token || owner.pid !== process.ppid || processIdentity(owner.pid) !== owner.identity) throw new Error('Gateway lock delegation does not match its live owner');
+    let ancestor = process.pid;
+    for (let depth = 0; ancestor !== owner.pid && ancestor > 1 && depth < 16; depth++) {
+      const parent = spawnSync('/bin/ps', ['-p', String(ancestor), '-o', 'ppid='], { encoding: 'utf8', timeout: 5000 });
+      if (parent.error || parent.status !== 0) throw new Error('Gateway lock delegation ancestry cannot be inspected');
+      ancestor = Number(parent.stdout.trim());
+    }
+    if (owner.token !== token || ancestor !== owner.pid || processIdentity(owner.pid) !== owner.identity) throw new Error('Gateway lock delegation does not match its live owner');
     return operation(token);
   }
   return withLifecycleLock(root, operation);
