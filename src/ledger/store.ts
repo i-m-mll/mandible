@@ -991,8 +991,14 @@ export class LedgerStore {
   }
 
   recordEvent(input: RecordLedgerEventInput): LedgerEvent {
-    const now = input.occurred_at ?? Date.now();
+    return this.prepareEventRecorder(input)(input);
+  }
+
+  /** Freeze validated attribution before a mutation can retire its own actor. */
+  prepareEventRecorder(input: LedgerActorInput): (event: Omit<RecordLedgerEventInput, keyof LedgerActorInput>) => LedgerEvent {
     const actor = this.resolveActor(input);
+    return (input) => {
+    const now = input.occurred_at ?? Date.now();
     const source = input.source ?? "system";
 
     const event = this.db.transaction(() => this.insertEvent({
@@ -1013,6 +1019,7 @@ export class LedgerStore {
       emitLedgerEvents([{ event, payload: input.payload ?? { entity_id: input.entity_id } }], this.broadcaster);
     }
     return event;
+    };
   }
 
   /** Publish a committed record after an enclosing mutation transaction succeeds. */
