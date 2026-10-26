@@ -742,7 +742,7 @@ export type ConversationExternalNavigation =
       label: "Go to terminal";
     };
 
-export type Conversation = {
+export type Conversation = Partial<import("./conversations/retention-contract.js").RetentionNativeProjection> & {
   identity_aliases?: string[];
   id: string;
   source: ConversationSource;

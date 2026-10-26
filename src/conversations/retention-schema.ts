@@ -13,6 +13,7 @@ export const CHILD_RETENTION_SCHEMA_SQL: readonly string[] = [
     trigger TEXT CHECK(trigger IN ('retention','resolved-worker')),
     attempts INTEGER NOT NULL DEFAULT 0,
     native_pending INTEGER NOT NULL DEFAULT 0 CHECK(native_pending IN (0,1)),
+    provider_archived INTEGER CHECK(provider_archived IN (0,1)),
     last_native_outcome TEXT
   )`,
   `CREATE INDEX idx_conversation_retention_due ON conversation_retention_state(due_at, conversation_id) WHERE due_at IS NOT NULL`,
