@@ -4,14 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import {
-  archiveFinishedWorkerThreads,
-  type CodexThreadArchiver,
-  type WorkerThreadLiveness,
-} from "./codex-thread-archive.js";
 import { observeRepoIdentities, checkoutRootsForRef } from "./repo-identity.js";
-import { freshSessionAliasResolver, resolveSessionAlias, sessionAliasLiveness } from "./session-liveness.js";
-import { withFreshCodexTaskLiveness } from "./codex-task-liveness.js";
+import { freshSessionAliasResolver } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
 import { listLocalBranches } from "./work-scanner.js";
@@ -46,33 +40,23 @@ function sample<T>(items: T[]): T[] {
 }
 
 export interface WorkUnitReconcilerOptions {
-  archiver: CodexThreadArchiver;
   /** Replaces the shared rule, whose Codex answers come from lock scans made for each pass. */
   resolveSession?: WorkUnitSessionResolver;
-  threadLiveness?: WorkerThreadLiveness;
   now?: () => number;
 }
-
-/** A thread's liveness from a Codex lock scan made for this question. */
-const freshThreadLiveness: WorkerThreadLiveness = (db, threadId) =>
-  withFreshCodexTaskLiveness((read) => sessionAliasLiveness(db, threadId, { readCodexTaskLiveness: read }));
 
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
   private readonly resolveSession: WorkUnitSessionResolver | undefined;
-  private readonly archiver: CodexThreadArchiver;
-  private readonly threadLiveness: WorkerThreadLiveness;
   private readonly now: () => number;
   private readonly abort = new AbortController();
   private pass: Promise<void> | null = null;
   private lastUnknownHolders = 0;
 
-  constructor(logger: Logger, options: WorkUnitReconcilerOptions) {
+  constructor(logger: Logger, options: WorkUnitReconcilerOptions = {}) {
     this.logger = logger;
     this.resolveSession = options.resolveSession;
-    this.archiver = options.archiver;
-    this.threadLiveness = options.threadLiveness ?? freshThreadLiveness;
     this.now = options.now ?? Date.now;
   }
 
@@ -104,7 +88,6 @@ export class WorkUnitReconciler {
   private async runPasses(): Promise<void> {
     try {
       const holders = await this.reconcileDeadHolders();
-      await this.archiveFinishedWorkerThreads();
       const abandoned = await this.reconcileAbandonedBranches();
       const autoCommitted = await this.reconcileAutoCommit();
 
@@ -166,34 +149,6 @@ export class WorkUnitReconciler {
       return count;
     })();
     return { cleared, unknown };
-  }
-
-  /**
-   * Pass 2: Archive Codex worker threads whose bound work units are resolved.
-   * A pass may work through a backlog, so it logs one summary per pass rather
-   * than one line per thread; `worker_thread_archives` keeps the per-thread
-   * record. A pass logs only when it archived a thread or a thread newly failed;
-   * retries of a known failure stay quiet while their recorded backoff paces them.
-   */
-  private async archiveFinishedWorkerThreads(): Promise<void> {
-    const outcome = await archiveFinishedWorkerThreads(getDb(), {
-      archiver: this.archiver,
-      liveness: this.threadLiveness,
-      resolveAlias: this.resolveSession ?? resolveSessionAlias,
-      now: this.now,
-    });
-    const newlyFailed = outcome.failed.filter(({ attempts }) => attempts === 1);
-    if (outcome.archived.length === 0 && newlyFailed.length === 0) return;
-    this.logger(newlyFailed.length > 0 ? "warn" : "info", "worker_thread_archive_pass", {
-      archived: outcome.archived.length,
-      recovered: outcome.archived.filter(({ prior_attempts }) => prior_attempts > 0).length,
-      failed: outcome.failed.length,
-      deferred: outcome.deferred.length,
-      archived_thread_ids: sample(outcome.archived.map(({ thread_id }) => thread_id)),
-      ...(newlyFailed.length > 0
-        ? { newly_failed: sample(newlyFailed.map(({ thread_id, error }) => ({ thread_id, error }))) }
-        : {}),
-    });
   }
 
   /**
