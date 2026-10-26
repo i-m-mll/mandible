@@ -20,12 +20,17 @@ use canonical_origin::PRODUCTION_ORIGIN;
 #[derive(Default)]
 struct NativeWindowCapabilityState {
     liquid_glass_regular: Arc<AtomicBool>,
+    traffic_light_reservation: AtomicU64,
+    top_bar_height: AtomicU64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeWindowCapabilities {
     liquid_glass_regular: bool,
+    frame_presentation: &'static str,
+    top_bar_height: f64,
+    traffic_light_reservation: f64,
 }
 
 #[command]
@@ -34,7 +39,45 @@ fn native_window_capabilities(
 ) -> NativeWindowCapabilities {
     NativeWindowCapabilities {
         liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
+        frame_presentation: if cfg!(target_os = "macos") {
+            "macos-overlay"
+        } else {
+            "system"
+        },
+        top_bar_height: if cfg!(target_os = "macos") {
+            f64::from_bits(state.top_bar_height.load(Ordering::Acquire))
+        } else {
+            FRAME_TOP_BAR_HEIGHT
+        },
+        traffic_light_reservation: f64::from_bits(
+            state.traffic_light_reservation.load(Ordering::Acquire),
+        ),
     }
+}
+
+const FRAME_TOP_BAR_HEIGHT: f64 = 48.0;
+
+#[cfg(target_os = "macos")]
+fn overlay_frame_geometry(
+    window: &tauri::WebviewWindow,
+    inset_x: f64,
+    inset_y: f64,
+) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+    let native = unsafe { &*(window.ns_window()? as *const NSWindow) };
+    let close = native
+        .standardWindowButton(NSWindowButton::CloseButton)
+        .ok_or("Missing native close button")?;
+    let zoom = native
+        .standardWindowButton(NSWindowButton::ZoomButton)
+        .ok_or("Missing native zoom button")?;
+    let close_rect = NSView::frame(&close);
+    let zoom_rect = NSView::frame(&zoom);
+    // Tao's y inset controls the titlebar container height, retaining the button's origin.
+    let top_bar_height = 2.0 * (inset_y - close_rect.origin.y + close_rect.size.height / 2.0);
+    let reservation =
+        inset_x + zoom_rect.origin.x - close_rect.origin.x + zoom_rect.size.width + 16.0;
+    Ok((top_bar_height, reservation))
 }
 
 #[cfg(target_os = "macos")]
@@ -803,12 +846,33 @@ pub fn run() {
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
                 #[cfg(target_os = "macos")]
-                configure_regular_liquid_glass(
-                    window,
-                    app.state::<NativeWindowCapabilityState>()
-                        .liquid_glass_regular
-                        .clone(),
-                );
+                {
+                    let position = app
+                        .config()
+                        .app
+                        .windows
+                        .iter()
+                        .find(|config| config.label == "main")
+                        .and_then(|config| config.traffic_light_position.as_ref())
+                        .ok_or(
+                            "The macOS overlay frame requires a configured traffic-light position",
+                        )?;
+                    let (height, reservation) =
+                        overlay_frame_geometry(&window, position.x, position.y)?;
+                    let capabilities = app.state::<NativeWindowCapabilityState>();
+                    capabilities
+                        .top_bar_height
+                        .store(height.to_bits(), Ordering::Release);
+                    capabilities
+                        .traffic_light_reservation
+                        .store(reservation.to_bits(), Ordering::Release);
+                    configure_regular_liquid_glass(
+                        window,
+                        app.state::<NativeWindowCapabilityState>()
+                            .liquid_glass_regular
+                            .clone(),
+                    );
+                }
             }
             let setup_item = MenuItemBuilder::with_id(
                 "secure_local_connections_setup",

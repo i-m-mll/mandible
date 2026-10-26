@@ -748,6 +748,7 @@ export function GraphDetailPane({
       <DetailPaneShell
         presentation={presentation}
         as="aside"
+        headerPlacement={presentation === 'main' ? 'frame' : 'pane'}
         className="graph-detail-pane"
         header={<DetailPaneHeader presentation={presentation} variant="compact" title="Graph detail" />}
       >

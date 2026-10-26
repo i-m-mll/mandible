@@ -1,6 +1,7 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet } from '../../app-shell';
+import { FrameHeaderPortal, useFrameHeaderHost } from './FrameHeader';
 
 type DetailPaneShellAs = 'article' | 'section' | 'div' | 'aside';
 export type DetailPaneShellVariant = 'default' | 'compact';
@@ -32,6 +33,8 @@ export type DetailPaneShellProps = {
   bodyRef?: Ref<HTMLDivElement>;
   /** One anchored header composition. Omit for a headerless detail view. */
   header?: ComponentChildren;
+  /** Explicit primary compact-header placement; embedded/modal headers remain in the pane. */
+  headerPlacement?: 'pane' | 'frame';
   subheader?: ComponentChildren;
   /** One anchored notice boundary between the header region and scrolling body. */
   notice?: ComponentChildren;
@@ -86,6 +89,7 @@ export function DetailPaneShell({
   headerRef,
   bodyRef,
   header,
+  headerPlacement = 'pane',
   subheader,
   notice,
   footer,
@@ -96,6 +100,10 @@ export function DetailPaneShell({
   onDragOverCapture,
   onDropCapture,
 }: DetailPaneShellProps): JSX.Element {
+  const headerLabelId = useId();
+  const frameHeaderHost = useFrameHeaderHost(headerPlacement === 'frame' && presentation === 'main' && header != null);
+  const frameHeader = Boolean(frameHeaderHost);
+  const paneHeader = frameHeader ? null : header;
   const [bodyScrollOwner, setBodyScrollOwner] = useState<HTMLDivElement | null>(null);
   const [registeredScrollOwner, setRegisteredScrollOwner] = useState<HTMLElement | null>(null);
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
@@ -179,6 +187,8 @@ export function DetailPaneShell({
   }, [overlayControl, scrollOwner]);
 
   return (
+    <>
+    {frameHeaderHost ? <FrameHeaderPortal host={frameHeaderHost} headerRef={headerRef as Ref<HTMLDivElement>} labelId={headerLabelId}>{header}</FrameHeaderPortal> : null}
     <DetailPaneOverlayContext.Provider value={overlayContext}>
       <Element
         className={classNames(
@@ -192,19 +202,20 @@ export function DetailPaneShell({
         ref={(node: HTMLElement | null) => { shellRef.current = node; }}
         data-app-surface={presentation === 'main' ? 'main' : undefined}
         data-detail-pane-presentation={presentation}
+        aria-labelledby={headerPlacement === 'frame' && header != null ? headerLabelId : undefined}
         aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
         onDragOverCapture={onDragOverCapture}
         onDropCapture={onDropCapture}
       >
-        {(header !== undefined && header !== null) || (subheader !== undefined && subheader !== null) ? (
+        {(paneHeader !== undefined && paneHeader !== null) || (subheader !== undefined && subheader !== null) ? (
           <header
             className={classNames('detail-pane-shell__header', headerClassName)}
             data-detail-pane-slot="header"
             ref={headerRef}
           >
-            {header !== undefined && header !== null ? (
-              <div className={classNames('detail-pane-shell__header-primary', headerPrimaryClassName)}>
-                {header}
+            {paneHeader !== undefined && paneHeader !== null ? (
+              <div id={headerPlacement === 'frame' ? headerLabelId : undefined} className={classNames('detail-pane-shell__header-primary', headerPrimaryClassName)}>
+                {paneHeader}
               </div>
             ) : null}
             {subheader !== undefined && subheader !== null ? (
@@ -256,5 +267,6 @@ export function DetailPaneShell({
         {overlays}
       </Element>
     </DetailPaneOverlayContext.Provider>
+    </>
   );
 }

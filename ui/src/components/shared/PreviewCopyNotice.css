@@ -8,11 +8,6 @@
   overflow: hidden;
 }
 
-.app-shell--preview .app-shell__workspace {
-  --app-left-chrome-height: var(--app-header-height);
-  --app-titlebar-inset: 0px;
-}
-
 .preview-copy-banner {
   --preview-tooltip-bg: #3b2e14;
   position: relative;
@@ -25,7 +20,6 @@
   width: 100%;
   min-width: 0;
   min-height: 2.4rem;
-  margin-top: var(--app-titlebar-inset, 0px);
   padding: 0.55rem 1rem;
   border-bottom: 1px solid var(--status-warning-border);
   background: var(--status-warning-bg);

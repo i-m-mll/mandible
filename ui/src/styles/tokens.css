@@ -90,17 +90,6 @@
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
-  --app-boundary-shadow-offset: 8px;
-  --app-boundary-shadow-blur: 36px;
-  --app-boundary-shadow-spread: 0px;
-  --app-boundary-shadow-intensity-scale: 0.35;
-  --app-boundary-shadow-color: rgba(0, 0, 0, calc(0.0375 * var(--app-boundary-shadow-intensity-scale)));
-  /* The measured falloff is fully additive: layout reserves no gutter while
-     paint retains its independent 17px profile. The chrome edge is deliberately
-     half the original 0.7-strength treatment. */
-  --app-shadow-gutter-width: 0px;
-  --app-boundary-shadow-paint-width: 17px;
-  --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale))) 24%, rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale))) 59%, var(--app-boundary-shadow-color) 100%;
   --app-header-inline-inset: 18px;
   --app-header-height: 48px;
   --app-header-control-size: 34px;
@@ -124,7 +113,7 @@
   --surface-app-glow: var(--neutral-4);
   --surface-header: var(--surface-chrome);
   --surface-rail: var(--surface-chrome);
-  --surface-sidebar: var(--surface-chrome);
+  --surface-sidebar: color-mix(in srgb, var(--surface-main) 70%, var(--surface-chrome));
   --surface-toolbar: var(--surface-chrome);
   --surface-popover: rgba(12, 17, 24, 0.96);
   --surface-content: var(--surface-card);
@@ -340,7 +329,7 @@
 
   /* Exact Codex app subdivision surfaces. */
   --surface-main: #FFFFFF;
-  --surface-chrome: #FCFCFC;
+  --surface-chrome: #F2F2F2;
   --surface-page: var(--surface-main);
   --surface-app: var(--surface-main);
   --surface-panel: var(--neutral-1);
@@ -349,7 +338,7 @@
   --surface-app-glow: var(--neutral-1);
   --surface-header: var(--surface-chrome);
   --surface-rail: var(--surface-chrome);
-  --surface-sidebar: var(--surface-chrome);
+  --surface-sidebar: color-mix(in srgb, var(--surface-main) 70%, var(--surface-chrome));
   --surface-toolbar: var(--surface-chrome);
   --surface-popover: rgba(255, 255, 255, 0.98);
   --surface-code: rgba(15, 23, 42, 0.06);

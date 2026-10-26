@@ -1362,6 +1362,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       </ViewSidebar>
 
       <DetailPaneShell
+        headerPlacement={selected ? 'pane' : 'frame'}
         className="tasks-detail"
         bodyClassName="tasks-detail__scroll"
         header={selected ? (

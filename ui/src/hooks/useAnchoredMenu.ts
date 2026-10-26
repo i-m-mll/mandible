@@ -1,3 +1,4 @@
+import { useAppShell } from '../app-shell';
 import type { JSX, RefObject } from 'preact';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 
@@ -42,13 +43,14 @@ export function useAnchoredMenu({
   anchorInset = 0,
   matchAnchorWidth = false,
 }: UseAnchoredMenuOptions): JSX.CSSProperties | undefined {
+  const { active } = useAppShell();
   const [style, setStyle] = useState<JSX.CSSProperties>(HIDDEN_STYLE);
   const positionKeyRef = useRef('');
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
 
   useLayoutEffect(() => {
-    if (!open) return undefined;
+    if (!open || !active) return undefined;
     const anchor = anchorRef.current;
     const menu = menuRef.current;
     if (!anchor || !menu) return undefined;
@@ -149,7 +151,7 @@ export function useAnchoredMenu({
       document.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [anchorInset, anchorRef, focusRef, gap, gutter, matchAnchorWidth, menuRef, open, placement]);
+  }, [active, anchorInset, anchorRef, focusRef, gap, gutter, matchAnchorWidth, menuRef, open, placement]);
 
-  return open ? style : undefined;
+  return open && active ? style : undefined;
 }
