@@ -1,3 +1,4 @@
+import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import type { Db } from "../db.js";
 import { getClientAuthMode } from "../client-auth/mode.js";
 import type { RequestLike, ResolvedClientIdentity, ResponseLike } from "../server.js";
@@ -97,11 +98,18 @@ export function addGroup(
     throw new UserRegistryError("conflict", `A group with slug '${slug}' already exists.`);
   }
   const id = ulid(now);
-  db.prepare(
-    `INSERT INTO user_groups (id, slug, display_name, kind, created_at, updated_at)
-     VALUES (?, ?, ?, 'custom', ?, ?)`,
-  ).run(id, slug, displayName, now, now);
-  return resolveGroupOrThrow(db, id);
+
+  return mutateLedgerRecord(db, {
+    entity_type: "group",
+    entity_id: id,
+    snapshot: () => db.prepare("SELECT id, slug, display_name, kind FROM user_groups WHERE id = ?").get(id) ?? null,
+  }, () => {
+    db.prepare(
+      `INSERT INTO user_groups (id, slug, display_name, kind, created_at, updated_at)
+       VALUES (?, ?, ?, 'custom', ?, ?)`,
+    ).run(id, slug, displayName, now, now);
+    return resolveGroupOrThrow(db, id);
+  });
 }
 
 export function removeGroup(db: Db, ref: string): void {
@@ -109,9 +117,16 @@ export function removeGroup(db: Db, ref: string): void {
   if (group.kind === "system") {
     throw new UserRegistryError("forbidden", `System group '${group.slug}' cannot be removed.`);
   }
-  db.prepare("DELETE FROM permission_grants WHERE subject_type = 'group' AND subject_id = ?")
-    .run(group.id);
-  db.prepare("DELETE FROM user_groups WHERE id = ?").run(group.id);
+
+  return mutateLedgerRecord(db, {
+    entity_type: "group",
+    entity_id: group.id,
+    snapshot: () => db.prepare("SELECT id, slug, display_name, kind FROM user_groups WHERE id = ?").get(group.id) ?? null,
+  }, () => {
+    for (const grant of listGrants(db, { subject_type: "group", subject_id: group.id })) removeGrant(db, grant.id);
+    for (const member of listGroupMembers(db, group.id)) removeGroupMember(db, group.id, member.id);
+    db.prepare("DELETE FROM user_groups WHERE id = ?").run(group.id);
+  });
 }
 
 export function listGroupMembers(db: Db, ref: string): Array<{
@@ -138,26 +153,39 @@ export function addGroupMember(
 ): void {
   const group = resolveGroupOrThrow(db, groupRef);
   const user = resolveUserOrThrow(db, userRef);
-  db.prepare(
-    `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
-     VALUES (?, ?, ?)`,
-  ).run(group.id, user.id, now);
+
+  return mutateLedgerRecord(db, {
+    entity_type: "group_member",
+    entity_id: group.id + ":" + user.id,
+    payload: { group_id: group.id, user_id: user.id },
+    snapshot: () => db.prepare("SELECT group_id, user_id FROM user_group_members WHERE group_id = ? AND user_id = ?").get(group.id, user.id) ?? null,
+  }, () => {
+    db.prepare(
+      `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
+       VALUES (?, ?, ?)`,
+    ).run(group.id, user.id, now);
+  });
 }
 
 export function removeGroupMember(db: Db, groupRef: string, userRef: string): void {
   const group = resolveGroupOrThrow(db, groupRef);
   const user = resolveUserOrThrow(db, userRef);
-  db.prepare("DELETE FROM user_group_members WHERE group_id = ? AND user_id = ?")
-    .run(group.id, user.id);
+
+  return mutateLedgerRecord(db, {
+    entity_type: "group_member",
+    entity_id: group.id + ":" + user.id,
+    payload: { group_id: group.id, user_id: user.id },
+    snapshot: () => db.prepare("SELECT group_id, user_id FROM user_group_members WHERE group_id = ? AND user_id = ?").get(group.id, user.id) ?? null,
+  }, () => {
+    db.prepare("DELETE FROM user_group_members WHERE group_id = ? AND user_id = ?")
+      .run(group.id, user.id);
+  });
 }
 
 export function ensureAgentGroupMembership(db: Db, userId: string, now: number = Date.now()): void {
   const user = getUserById(db, userId);
   if (!user || user.kind !== "agent") return;
-  db.prepare(
-    `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
-     VALUES (?, ?, ?)`,
-  ).run(AGENTS_GROUP_ID, user.id, now);
+  addGroupMember(db, AGENTS_GROUP_ID, user.id, now);
 }
 
 function resolveSubjectId(db: Db, type: PermissionSubjectType, ref: string): string {
@@ -195,17 +223,36 @@ export function addGrant(db: Db, input: {
     PermissionGrant | undefined;
   if (existing) return existing;
   const id = ulid(now);
-  db.prepare(
-    `INSERT INTO permission_grants (
-       id, subject_type, subject_id, resource_type, resource_id, permission, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, input.subject_type, subjectId, input.resource_type, resourceId, input.permission, now);
-  return db.prepare("SELECT * FROM permission_grants WHERE id = ?").get(id) as PermissionGrant;
+
+  return mutateLedgerRecord(db, {
+    entity_type: "grant",
+    entity_id: id,
+    payload: { subject_id: subjectId },
+    project_id: resourceId,
+    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, resource_type, resource_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
+  }, () => {
+    db.prepare(
+      `INSERT INTO permission_grants (
+         id, subject_type, subject_id, resource_type, resource_id, permission, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, input.subject_type, subjectId, input.resource_type, resourceId, input.permission, now);
+    return db.prepare("SELECT * FROM permission_grants WHERE id = ?").get(id) as PermissionGrant;
+  });
 }
 
 export function removeGrant(db: Db, id: string): void {
-  const result = db.prepare("DELETE FROM permission_grants WHERE id = ?").run(id);
-  if (result.changes === 0) throw new UserRegistryError("not_found", `No permission grant '${id}'.`);
+  const grant = db.prepare("SELECT * FROM permission_grants WHERE id = ?").get(id) as PermissionGrant | undefined;
+  return mutateLedgerRecord(db, {
+    entity_type: "grant",
+    entity_id: id,
+    project_id: grant?.resource_id,
+    payload: { subject_id: grant?.subject_id },
+    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, resource_type, resource_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
+  }, () => {
+
+    const result = db.prepare("DELETE FROM permission_grants WHERE id = ?").run(id);
+    if (result.changes === 0) throw new UserRegistryError("not_found", `No permission grant '${id}'.`);
+  });
 }
 
 export function listGrants(db: Db, filter: {
@@ -232,9 +279,17 @@ export function setProjectRestricted(db: Db, projectRef: string, restricted: boo
   if (!resolved.ok) {
     throw new UserRegistryError("not_found", `No project matches '${projectRef}'.`);
   }
-  db.prepare("UPDATE ledger_projects SET restricted = ?, updated_at = ? WHERE id = ?")
-    .run(restricted ? 1 : 0, Date.now(), resolved.project.id);
-  return resolved.project.id;
+
+  return mutateLedgerRecord(db, {
+    entity_type: "project",
+    entity_id: resolved.project.id,
+    project_id: resolved.project.id,
+    snapshot: () => db.prepare("SELECT id, restricted FROM ledger_projects WHERE id = ?").get(resolved.project.id) ?? null,
+  }, () => {
+    db.prepare("UPDATE ledger_projects SET restricted = ?, updated_at = ? WHERE id = ?")
+      .run(restricted ? 1 : 0, Date.now(), resolved.project.id);
+    return resolved.project.id;
+  });
 }
 
 export function projectAccessSettings(db: Db, projectRef: string): {

@@ -53,4 +53,30 @@ belongs to another process. Managed launches project only an actual resumed
 native ID or the Claude SDK's reserved native UUID. No per-command session flag
 or manual issue/session link is needed.
 
+Registry and access mutation coverage:
+
+| Canonical boundary | Retained history |
+| --- | --- |
+| Project add/update, checkout add/update/reassignment, discovery reconciliation, key backfill, repair merge | Common project/checkout events; merge records identify both projects |
+| User create/update/retire, explicit operator selection, agent enrollment | Common user/operator/membership events |
+| Credential add/revoke, delegated signing lease creation, binding add/remove/reactivation | Common credential/lease/binding events with owner IDs and changed field names; no material or values |
+| Group create/delete, membership add/remove, grant add/remove, project restriction | Common group/membership/grant/project events, including deletion cascades |
+| Reminder create/cancel/complete | Existing managed task events; the created event captures the initiating origin for later system execution |
+| Reminder occurrence acknowledgement | Common occurrence event |
+
+`ClientAuthenticator.mutationAttribution` uses the existing request attribution
+resolver. Router dispatch carries that result separately from native origin to
+nested history helpers. Each recorded actor is validated before the mutation,
+so retiring the acting user preserves that already-validated attribution.
+History never grants access or changes credential authority.
+
+Registry/access snapshots exclude update timestamps and runtime observations.
+Unchanged canonical fields, rejected requests, rolled-back transactions, and
+reminder idempotency replays produce no additional change events. No last-seen,
+retry, cache, derived ingestion, or view-preference history is added.
+
+`Db.afterCommit` queues synchronous effects through managed transaction
+savepoints, discards rolled-back effects, and runs committed effects outside the
+rollback handler. An unmanaged SQL transaction cannot register these effects.
+
 Co-Authored-By: Codex (GPT) <codex@openai.com>

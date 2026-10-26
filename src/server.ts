@@ -1,3 +1,4 @@
+import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -121,6 +122,7 @@ export interface UnattributedWriteRecord {
  * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
+  mutationAttribution?(request: RequestLike): import("./ledger/types.js").LedgerAttributionInput | null;
   resolveManagedOrigin?(identity: LocalManagedIdentity): import("./request-origin.js").ManagedRequestOrigin;
   localBrowserIdentity?(): ResolvedClientIdentity | null;
   localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean, localManaged?: LocalManagedIdentity | null): ResolvedClientIdentity | null;
@@ -742,7 +744,9 @@ export class Router implements RouteRegistrar {
 
       try {
         const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
-        await withRequestOrigin(origin, () => route.handler(request, response));
+        await withRequestOrigin(origin, () => withLedgerMutationActor({
+          attribution: this.options.clientAuth?.mutationAttribution?.(request) ?? null,
+        }, () => route.handler(request, response)));
       } catch (error) {
         if (error instanceof OperatorNotConfiguredError) {
           response.status(409).json({

@@ -1,3 +1,4 @@
+import { mutateLedgerRecord } from "./mutation-history.js";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import type { Db } from "../db.js";
@@ -211,42 +212,54 @@ export function resolveProjectForCheckout(
       .prepare("SELECT * FROM ledger_projects WHERE remote_identity = ?")
       .get(identity) as LedgerProject | undefined;
 
-    if (!project) {
-      const id = createLedgerId("prj", { now });
-      const projectKey = allocateProjectKeyForInsert(db, {
-        remote_identity: identity,
-        display_name: displayName,
-        root,
-      });
-      if (projectKey !== null) {
+    const projectId = project?.id ?? createLedgerId("prj", { now });
+    mutateLedgerRecord(db, {
+      entity_type: "project", entity_id: projectId, project_id: projectId,
+      snapshot: () => {
+        const row = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(projectId);
+        if (!row) return null;
+        const { created_at, updated_at, ...canonical } = row;
+        return canonical;
+      },
+    }, () => {
+      if (!project) {
+        const id = projectId;
+        const projectKey = allocateProjectKeyForInsert(db, {
+          remote_identity: identity,
+          display_name: displayName,
+          root,
+        });
+        if (projectKey !== null) {
+          db.prepare(
+            `INSERT INTO ledger_projects (
+              id, project_key, display_name, remote_identity, upstream_identity,
+              namespace_policy, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(id, projectKey, displayName, identity, upstreamIdentity, namespacePolicy, now, now);
+        } else {
+          db.prepare(
+            `INSERT INTO ledger_projects (
+              id, display_name, remote_identity, upstream_identity,
+              namespace_policy, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).run(id, displayName, identity, upstreamIdentity, namespacePolicy, now, now);
+        }
+        project = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(id) as LedgerProject;
+      } else if (
+        project.display_name !== displayName ||
+        project.upstream_identity !== upstreamIdentity ||
+        project.namespace_policy !== namespacePolicy
+      ) {
         db.prepare(
-          `INSERT INTO ledger_projects (
-            id, project_key, display_name, remote_identity, upstream_identity,
-            namespace_policy, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(id, projectKey, displayName, identity, upstreamIdentity, namespacePolicy, now, now);
-      } else {
-        db.prepare(
-          `INSERT INTO ledger_projects (
-            id, display_name, remote_identity, upstream_identity,
-            namespace_policy, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(id, displayName, identity, upstreamIdentity, namespacePolicy, now, now);
+          `UPDATE ledger_projects
+           SET display_name = ?, upstream_identity = ?, namespace_policy = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(displayName, upstreamIdentity, namespacePolicy, now, project.id);
+        project = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(project.id) as LedgerProject;
       }
-      project = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(id) as LedgerProject;
-    } else if (
-      project.display_name !== displayName ||
-      project.upstream_identity !== upstreamIdentity ||
-      project.namespace_policy !== namespacePolicy
-    ) {
-      db.prepare(
-        `UPDATE ledger_projects
-         SET display_name = ?, upstream_identity = ?, namespace_policy = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(displayName, upstreamIdentity, namespacePolicy, now, project.id);
-      project = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(project.id) as LedgerProject;
-    }
+    });
 
+    project = db.prepare("SELECT * FROM ledger_projects WHERE id = ?").get(projectId) as LedgerProject;
     let checkout = db
       .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
       .get(root) as LedgerProjectCheckout | undefined;
@@ -256,49 +269,61 @@ export function resolveProjectForCheckout(
       input.workRepoId ?? checkout?.work_repo_id,
     );
 
-    if (!checkout) {
-      const id = createLedgerId("chk", { now });
-      db.prepare(
-        `INSERT INTO ledger_project_checkouts (
-          id, project_id, work_repo_id, root, name, default_branch,
-          remote_url, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        id,
-        project.id,
-        workRepoId,
-        root,
-        displayName,
-        input.defaultBranch ?? "",
-        remoteUrl ?? "",
-        now,
-        now,
-      );
-      checkout = db
-        .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
-        .get(id) as LedgerProjectCheckout;
-      notifyProtectionInputsChanged("checkout:add");
-    } else {
-      const previousDefaultBranch = checkout.default_branch;
-      db.prepare(
-        `UPDATE ledger_project_checkouts
-         SET project_id = ?, work_repo_id = ?, name = ?, default_branch = ?,
-             remote_url = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(
-        project.id,
-        workRepoId,
-        displayName,
-        input.defaultBranch ?? checkout.default_branch,
-        remoteUrl ?? checkout.remote_url,
-        now,
-        checkout.id,
-      );
-      checkout = db
-        .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
-        .get(checkout.id) as LedgerProjectCheckout;
-      if (checkout.default_branch !== previousDefaultBranch) notifyProtectionInputsChanged("checkout:default_branch");
-    }
+    const checkoutId = checkout?.id ?? createLedgerId("chk", { now });
+    mutateLedgerRecord(db, {
+      entity_type: "checkout", entity_id: checkoutId, project_id: project.id,
+      snapshot: () => {
+        const row = db.prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?").get(checkoutId);
+        if (!row) return null;
+        const { created_at, updated_at, ...canonical } = row;
+        return canonical;
+      },
+    }, () => {
+      if (!checkout) {
+        const id = checkoutId;
+        db.prepare(
+          `INSERT INTO ledger_project_checkouts (
+            id, project_id, work_repo_id, root, name, default_branch,
+            remote_url, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          projectId,
+          workRepoId,
+          root,
+          displayName,
+          input.defaultBranch ?? "",
+          remoteUrl ?? "",
+          now,
+          now,
+        );
+        checkout = db
+          .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
+          .get(id) as LedgerProjectCheckout;
+        db.afterCommit(() => notifyProtectionInputsChanged("checkout:add"));
+      } else {
+        const previousDefaultBranch = checkout.default_branch;
+        db.prepare(
+          `UPDATE ledger_project_checkouts
+           SET project_id = ?, work_repo_id = ?, name = ?, default_branch = ?,
+               remote_url = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(
+          projectId,
+          workRepoId,
+          displayName,
+          input.defaultBranch ?? checkout.default_branch,
+          remoteUrl ?? checkout.remote_url,
+          now,
+          checkout.id,
+        );
+        checkout = db
+          .prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?")
+          .get(checkout.id) as LedgerProjectCheckout;
+        if (checkout.default_branch !== previousDefaultBranch) db.afterCommit(() => notifyProtectionInputsChanged("checkout:default_branch"));
+      }
+    });
+    checkout = db.prepare("SELECT * FROM ledger_project_checkouts WHERE id = ?").get(checkoutId) as LedgerProjectCheckout;
 
     return { project, checkout };
   });

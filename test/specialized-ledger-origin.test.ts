@@ -109,7 +109,7 @@ it("records the original actor when an authorized mutation retires that actor", 
     attribution: { user_id: publisher.id, evidence_method: "api_token" },
     snapshot: () => db.prepare("SELECT id,status FROM users WHERE id=?").get(publisher.id) as Record<string, unknown> };
   withRequestOrigin(codex, () => mutateLedgerRecord(db, input, () => db.prepare("UPDATE users SET status='retired' WHERE id=?").run(publisher.id)));
-  expect(db.prepare("SELECT actor_user_id,evidence_method FROM ledger_events WHERE entity_type='user' AND entity_id=?").get(publisher.id))
+  expect(db.prepare("SELECT actor_user_id,evidence_method FROM ledger_events WHERE entity_type='user' AND event_type='user.updated' AND entity_id=?").get(publisher.id))
     .toEqual({ actor_user_id: publisher.id, evidence_method: "api_token" });
   expect(() => mutateLedgerRecord(db, input, () => db.prepare("UPDATE users SET status='active' WHERE id=?").run(publisher.id))).toThrow("not active");
   expect(input.snapshot().status).toBe("retired");
