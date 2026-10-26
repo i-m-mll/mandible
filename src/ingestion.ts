@@ -13,6 +13,7 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
+import { projectChildRetentionActivity } from "./conversations/retention-state.js";
 import { resolveConversationId } from './conversations/identity.js';
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -2150,6 +2151,7 @@ function applyIngestedLineage(
   result: ParseResult,
 ): void {
   const gap = linkIngestedConversation(db, conversation, result);
+  projectChildRetentionActivity(db, conversation.id, result.blocks);
   if (gap) {
     const severity = lineageGapSeverity(gap);
     logger(severity === "gap" ? "warn" : "info", "conversation_lineage_gap", {

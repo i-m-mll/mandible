@@ -40,6 +40,7 @@ interface ClaudeUsage {
 }
 
 interface ClaudeMessage {
+  stop_reason?: string | null;
   id?: string;
   role?: string;
   content?: string | ClaudeContentBlock[];
@@ -661,6 +662,8 @@ export class ClaudeParser implements ConversationParser {
 
 function buildAssistantMetadata(rec: ClaudeRecord): BlockMetadata {
   const meta: BlockMetadata = {};
+  if (["end_turn", "max_tokens", "stop_sequence"].includes(rec.message?.stop_reason ?? "")) meta.execution_state = "settled";
+  else if (rec.message?.stop_reason === "tool_use") meta.execution_state = "active";
   if (rec.message?.id) {
     meta.provider_message_id = rec.message.id;
   }

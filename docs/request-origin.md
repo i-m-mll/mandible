@@ -59,7 +59,7 @@ Registry and access mutation coverage:
 | --- | --- |
 | Project add/update, checkout add/update/reassignment, discovery reconciliation, key backfill, repair merge | Common project/checkout events; merge records identify both projects |
 | User create/update/retire, explicit operator selection, agent enrollment | Common user/operator/membership events |
-| Credential add/revoke, delegated signing lease creation, binding add/remove/reactivation | Common credential/lease/binding events with owner IDs and changed field names; no material or values |
+| Credential add/revoke, delegated signing lease creation/expiry shortening, binding add/remove/reactivation | Common credential/lease/binding events with owner IDs and changed field names; no material or values |
 | Group create/delete, membership add/remove, grant add/remove, project restriction | Common group/membership/grant/project events, including deletion cascades |
 | Reminder create/cancel/complete | Existing managed task events; the created event captures the initiating origin for later system execution |
 | Reminder occurrence acknowledgement | Common occurrence event |
@@ -68,7 +68,10 @@ Registry and access mutation coverage:
 resolver. Router dispatch carries that result separately from native origin to
 nested history helpers. Each recorded actor is validated before the mutation,
 so retiring the acting user preserves that already-validated attribution.
-History never grants access or changes credential authority.
+History never grants access or changes credential authority. Lease expiry
+shortening keeps the current caller attribution when present; automatic drain,
+expiry, and cancellation record the system executor independently of any retained
+native origin. An unchanged expiry produces no lease update event.
 
 Registry/access snapshots exclude update timestamps and runtime observations.
 Unchanged canonical fields, rejected requests, rolled-back transactions, and

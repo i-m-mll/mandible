@@ -1,3 +1,4 @@
+import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
@@ -2192,6 +2193,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 217, name: "issue_event_read_indexes", statements: [...ISSUE_EVENT_READ_INDEX_SQL] },
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
   { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
+  { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
 ];
 
 /**

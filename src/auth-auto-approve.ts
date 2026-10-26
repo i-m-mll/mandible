@@ -15,6 +15,7 @@ import type { SseEvent } from "./types.js";
 import {
   addCredential,
   addDelegatedSigningLease,
+  shortenDelegatedSigningLease,
   findActiveCredentialByFingerprint,
   getOperator,
 } from "./users/store.js";
@@ -226,7 +227,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     const durationSeconds = Math.min(300, Math.max(30, Math.round(ttlSeconds)));
     const lease = await this.createDelegatedSigningLease(durationSeconds, signal);
     if (signal?.aborted) {
-      this.db.prepare("UPDATE delegated_signing_leases SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?)) WHERE id = ?").run(this.now(), lease.id);
+      shortenDelegatedSigningLease(this.db, lease.id, this.now(), true);
       await stopSshAgent(lease.sshAgentPid);
       signal.throwIfAborted();
     }
@@ -428,11 +429,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   async removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
     const lease = this.activeLease;
     if (lease) {
-      this.db.prepare(
-        `UPDATE delegated_signing_leases
-         SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?))
-         WHERE id = ?`,
-      ).run(this.now(), lease.id);
+      shortenDelegatedSigningLease(this.db, lease.id, this.now());
       if (lease.timer) clearTimeout(lease.timer);
       lease.timer = null;
       lease.terminationPending = true;
