@@ -27,7 +27,7 @@ function Harness() {
     <button onClick={() => setRoute(route === 'chat' ? 'issue' : 'chat')}>Switch route</button>
     <button onClick={() => setRevision(n => n + 1)}>Reconcile</button>
     <output aria-label="Chosen item">{chosen}</output>
-    <AppFrame rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
+    <AppFrame nativeControlsReservation={0} rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
       <section hidden={route !== 'chat'}>
         <AppShellProvider value={{ ...context, active: route === 'chat' }}>
           <Selection.Provider value={`selected-${revision}`}>
