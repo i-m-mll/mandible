@@ -273,6 +273,40 @@ function deferred<T>() {
 
 describe('compact detail pane shell', () => {
 
+  it('keeps the selected transcript and reading cache while archiving and restoring', async () => {
+    const selected = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const archive = vi.spyOn(api, 'updateConversationArchive').mockImplementation(async (id, archived) => ({
+      id, archived_at: archived ? 42 : null,
+      retention_native_status: archived ? 'deferred' as const : null,
+      retention_native_reason: archived ? 'desktop_writer_owned' : null,
+    }));
+    renderConversationDetail(selected);
+    await screen.findByText(transcriptBlock.content);
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))!;
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+    await screen.findByRole('button', { name: 'Restore' });
+    expect(screen.getByText(/Archived in Mandible; still visible in Codex/)).toBeTruthy();
+    expect(screen.queryByText('Archived in Mandible and Codex.')).toBeNull();
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.blocks).toBe(aggregate.blocks);
+    act(() => applyConversationSse(queryClient, 'conversation:updated', {
+      id: selected.id, retention_native_status: 'failed', retention_native_reason: 'native archive unavailable',
+    }));
+    await screen.findByText('Archived in Mandible. Codex archiving could not be confirmed.');
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.archived_at).toBe(42);
+    act(() => applyConversationSse(queryClient, 'conversation:updated', {
+      id: selected.id, retention_native_status: 'archived', retention_native_reason: null,
+    }));
+    await screen.findByText('Archived in Mandible and Codex.');
+    const restore = screen.getByRole('button', { name: 'Restore' });
+    await waitFor(() => expect((restore as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(restore);
+    await waitFor(() => expect(archive).toHaveBeenLastCalledWith(selected.id, false));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull());
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+  });
+
   it('does not turn an obsolete transcript request into a visible Chat error', () => {
     expect(conversationLoadFailure(new CancelledError(), true, 'edge-older')).toBeNull();
     expect(conversationLoadFailure(new DOMException('aborted', 'AbortError'), true, 'refresh')).toBeNull();
