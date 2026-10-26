@@ -26,27 +26,13 @@ fn require_production_context(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 mod canonical_origin;
+mod native_frame;
 use canonical_origin::PRODUCTION_ORIGIN;
 
 #[derive(Default)]
 struct NativeWindowCapabilityState {
     liquid_glass_regular: Arc<AtomicBool>,
-    traffic_lights: Mutex<Option<NativeTrafficLightLayout>>,
-}
-
-#[derive(Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeTrafficLightBounds {
-    left: f64,
-    top: f64,
-    width: f64,
-    height: f64,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct NativeTrafficLightLayout {
-    bounds: NativeTrafficLightBounds,
-    reservation: f64,
+    frame: Arc<Mutex<native_frame::FrameState>>,
 }
 
 #[derive(Serialize)]
@@ -56,182 +42,40 @@ struct NativeWindowCapabilities {
     frame_presentation: &'static str,
     top_bar_height: f64,
     traffic_light_reservation: f64,
-    traffic_light_bounds: Option<NativeTrafficLightBounds>,
+    traffic_light_bounds: Option<native_frame::Rect>,
+    native_frame: Option<serde_json::Value>,
 }
 
 #[command]
-fn native_window_capabilities(
+async fn native_window_capabilities(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, NativeWindowCapabilityState>,
-) -> NativeWindowCapabilities {
-    let layout = *state
-        .traffic_lights
+    dom_frame: Option<native_frame::DomFrame>,
+) -> Result<NativeWindowCapabilities, String> {
+    #[cfg(target_os = "macos")]
+    let observed = Some(native_frame::observe(window, state.frame.clone(), dom_frame).await?);
+    #[cfg(not(target_os = "macos"))]
+    let observed: Option<native_frame::Observation> = {
+        let _ = (window, dom_frame);
+        None
+    };
+    let applied = state
+        .frame
         .lock()
-        .expect("native frame geometry lock poisoned");
-    NativeWindowCapabilities {
+        .expect("native frame lock poisoned")
+        .applied;
+    Ok(NativeWindowCapabilities {
         liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
         frame_presentation: if cfg!(target_os = "macos") {
             "macos-overlay"
         } else {
             "system"
         },
-        top_bar_height: FRAME_TOP_BAR_HEIGHT,
-        traffic_light_reservation: layout.map_or(0.0, |layout| layout.reservation),
-        traffic_light_bounds: layout.map(|layout| layout.bounds),
-    }
-}
-
-const FRAME_TOP_BAR_HEIGHT: f64 = 42.0;
-
-#[cfg(target_os = "macos")]
-fn position_native_controls(
-    window: &tauri::WebviewWindow,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use objc2_app_kit::{NSView, NSWindow, NSWindowButton, NSWindowStyleMask};
-    let native = unsafe { &*(window.ns_window()? as *const NSWindow) };
-    if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
-        return Ok(());
-    }
-    let content = native.contentView().ok_or("Missing native content view")?;
-    let buttons = [
-        NSWindowButton::CloseButton,
-        NSWindowButton::MiniaturizeButton,
-        NSWindowButton::ZoomButton,
-    ]
-    .into_iter()
-    .map(|kind| {
-        native
-            .standardWindowButton(kind)
-            .ok_or("Missing native window button")
+        top_bar_height: native_frame::HEADER_HEIGHT,
+        traffic_light_reservation: applied.map_or(0.0, |layout| layout.reservation),
+        traffic_light_bounds: observed.as_ref().map(|observed| observed.bounds),
+        native_frame: observed.map(|observed| observed.snapshot),
     })
-    .collect::<Result<Vec<_>, _>>()?;
-    // This is the same titlebar container used by pinned Tao's inset implementation.
-    let titlebar = unsafe { buttons[0].superview().and_then(|view| view.superview()) }
-        .ok_or("Missing native titlebar container")?;
-    let titlebar_parent =
-        unsafe { titlebar.superview() }.ok_or("Missing native titlebar parent")?;
-    let mut titlebar_frame = NSView::frame(&titlebar);
-    titlebar_frame.size.height = FRAME_TOP_BAR_HEIGHT;
-    titlebar_frame.origin.y = if titlebar_parent.isFlipped() {
-        0.0
-    } else {
-        titlebar_parent.bounds().size.height - FRAME_TOP_BAR_HEIGHT
-    };
-    titlebar.setFrame(titlebar_frame);
-    let frames = buttons
-        .iter()
-        .map(|button| button.convertRect_toView(button.bounds(), Some(&content)))
-        .collect::<Vec<_>>();
-    let height = frames
-        .iter()
-        .map(|rect| rect.size.height)
-        .fold(0.0_f64, f64::max);
-    let left = frames
-        .iter()
-        .map(|rect| rect.origin.x)
-        .fold(f64::INFINITY, f64::min);
-    let padding = (FRAME_TOP_BAR_HEIGHT - height) / 2.0;
-    assert!(
-        padding >= 0.0,
-        "native controls exceed the fixed frame height"
-    );
-    for (button, mut rect) in buttons.iter().zip(frames) {
-        rect.origin.x += padding - left;
-        rect.origin.y = if content.isFlipped() {
-            (FRAME_TOP_BAR_HEIGHT - rect.size.height) / 2.0
-        } else {
-            content.bounds().size.height - (FRAME_TOP_BAR_HEIGHT + rect.size.height) / 2.0
-        };
-        let parent = unsafe { button.superview() }.ok_or("Missing native button parent")?;
-        let frame = parent.convertRect_fromView(rect, Some(&content));
-        button.setFrameOrigin(frame.origin);
-    }
-    let applied = buttons
-        .iter()
-        .map(|button| {
-            let rect = button.convertRect_toView(button.bounds(), Some(&content));
-            NativeTrafficLightBounds {
-                left: rect.origin.x,
-                top: if content.isFlipped() {
-                    rect.origin.y
-                } else {
-                    content.bounds().size.height - rect.origin.y - rect.size.height
-                },
-                width: rect.size.width,
-                height: rect.size.height,
-            }
-        })
-        .collect::<Vec<_>>();
-    let left = applied
-        .iter()
-        .map(|rect| rect.left)
-        .fold(f64::INFINITY, f64::min);
-    let top = applied
-        .iter()
-        .map(|rect| rect.top)
-        .fold(f64::INFINITY, f64::min);
-    let right = applied
-        .iter()
-        .map(|rect| rect.left + rect.width)
-        .fold(0.0_f64, f64::max);
-    let bottom = applied
-        .iter()
-        .map(|rect| rect.top + rect.height)
-        .fold(0.0_f64, f64::max);
-    let bounds = NativeTrafficLightBounds {
-        left,
-        top,
-        width: right - left,
-        height: bottom - top,
-    };
-    let layout = NativeTrafficLightLayout {
-        bounds,
-        reservation: right + left * 1.5,
-    };
-    let capabilities = window.state::<NativeWindowCapabilityState>();
-    let mut previous = capabilities
-        .traffic_lights
-        .lock()
-        .expect("native frame geometry lock poisoned");
-    if previous.as_ref() != Some(&layout) {
-        eprintln!(
-            "native-frame {}",
-            serde_json::json!({
-                "headerHeight": NSView::frame(&titlebar).size.height,
-                "buttons": applied,
-                "group": bounds,
-                "topClearance": top,
-                "bottomClearance": FRAME_TOP_BAR_HEIGHT - bottom,
-                "leftClearance": left,
-                "backIconReservation": layout.reservation,
-                "reservedRightGap": layout.reservation - right,
-            })
-        );
-    }
-    *previous = Some(layout);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn configure_native_controls(
-    window: &tauri::WebviewWindow,
-) -> Result<(), Box<dyn std::error::Error>> {
-    position_native_controls(window)?;
-    let frame_window = window.clone();
-    window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            let target = frame_window.clone();
-            frame_window
-                .run_on_main_thread(move || {
-                    position_native_controls(&target)
-                        .expect("native frame positioning failed after layout");
-                })
-                .expect("native frame layout dispatch failed");
-        }
-    });
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1040,13 +884,16 @@ pub fn run() {
                 let _ = window.set_background_color(Some(dark));
                 #[cfg(target_os = "macos")]
                 {
-                    configure_native_controls(&window)?;
                     configure_regular_liquid_glass(
-                        window,
+                        window.clone(),
                         app.state::<NativeWindowCapabilityState>()
                             .liquid_glass_regular
                             .clone(),
                     );
+                    native_frame::install(
+                        &window,
+                        app.state::<NativeWindowCapabilityState>().frame.clone(),
+                    )?;
                 }
             }
             if preview.is_some() {
