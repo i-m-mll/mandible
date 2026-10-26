@@ -10,6 +10,10 @@ export function withLedgerMutationActor<T>(actor: LedgerActorInput, action: () =
   return actors.run(actor, action);
 }
 
+export function currentLedgerMutationActor(): LedgerActorInput | null {
+  return actors.getStore() ?? null;
+}
+
 /** Use the existing event stream for canonical state without specialized history. */
 export function mutateLedgerRecord<T>(db: Db, input: {
   entity_type: string;

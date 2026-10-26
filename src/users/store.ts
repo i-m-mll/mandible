@@ -1,5 +1,6 @@
+import { systemActor } from "../identity/resolver.js";
 import { ensureAgentGroupMembership } from "../permissions/store.js";
-import { mutateLedgerRecord } from "../ledger/mutation-history.js";
+import { currentLedgerMutationActor, mutateLedgerRecord } from "../ledger/mutation-history.js";
 import { isSqliteConstraint as isUniqueConstraint } from "../sqlite.js";
 import type { Db } from "../db.js";
 import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
@@ -632,6 +633,24 @@ export function addDelegatedSigningLease(
     );
     return getDelegatedSigningLease(db, input.id)!;
   });
+}
+
+/** Shorten durable signing authority without extending or replacing the lease. */
+export function shortenDelegatedSigningLease(
+  db: Db,
+  leaseId: string,
+  now: number = Date.now(),
+  automatic = false,
+): void {
+  const system = { ...systemActor(), actor_type: "system" as const, actor_id: null };
+  const actor = automatic ? system : currentLedgerMutationActor() ?? system;
+  mutateLedgerRecord(db, {
+    entity_type: "signing_lease", entity_id: leaseId,
+    attribution: actor.attribution, actor_type: actor.actor_type, actor_id: actor.actor_id,
+    snapshot: () => db.prepare("SELECT expires_at FROM delegated_signing_leases WHERE id = ?").get(leaseId) ?? null,
+  }, () => db.prepare(
+    "UPDATE delegated_signing_leases SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?)) WHERE id = ?",
+  ).run(now, leaseId));
 }
 
 export function getDelegatedSigningLease(db: Db, id: string): DelegatedSigningLease | null {
