@@ -114,7 +114,10 @@ export function updateConversationMetadata(db: Db, id: string, body: Record<stri
     return { updated, archivedAt: updated.archived_at ?? null, changedFields };
   });
   if (!result) return null;
-  if (result.changedFields.length) db.afterCommit(() => broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id, updates: result.changedFields }));
+  if (result.changedFields.length) db.afterCommit(() => broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
+    id, updates: result.changedFields,
+    ...(result.changedFields.includes("archived_at") ? { archived_at: result.archivedAt } : {}),
+  }));
   return { ...result, changed: result.changedFields.length > 0 };
 }
 

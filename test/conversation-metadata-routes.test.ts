@@ -184,7 +184,7 @@ describe("conversation metadata routes", () => {
       expect(notify).not.toHaveBeenCalled();
     })();
     expect(notify.mock.calls.filter(call => call[0] === "conversation:updated")).toEqual([
-      ["conversation:updated", { id: reservationId, updates: ["archived_at"] }],
+      ["conversation:updated", { id: reservationId, updates: ["archived_at"], archived_at: expect.any(Number) }],
     ]);
     expect(() => db.transaction(() => {
       setConversationArchiveState(db, { conversation_id: reservationId, archived: false, cause: "resolved-worker" }, actor);
