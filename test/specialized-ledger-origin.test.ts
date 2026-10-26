@@ -73,6 +73,12 @@ it("rolls specialized state and provenance back together and suppresses unchange
   })())).toThrow("rollback");
   expect(snapshot().body).toBe("before");
   expect(origins(db, "fixture", "one")).toEqual([]);
+  db.exec("BEGIN IMMEDIATE");
+  expect(() => mutateLedgerRecord(db, { entity_type: "fixture", entity_id: "one", snapshot },
+    () => db.exec("UPDATE authored_fixture SET body='raw outer transaction'"))).toThrow("managed outer SQLite transaction");
+  db.exec("COMMIT");
+  expect(snapshot().body).toBe("before");
+  expect(origins(db, "fixture", "one")).toEqual([]);
   mutateLedgerRecord(db, { entity_type: "fixture", entity_id: "one", snapshot }, () => db.exec("UPDATE authored_fixture SET body='before'"));
   expect(origins(db, "fixture", "one")).toEqual([]);
   withRequestOrigin(codex, () => mutateWorkUnit(db, "unit", () => db.prepare("INSERT INTO work_units(id,issue_id,repo_id,state,kind,created_at) VALUES ('unit','unlinked','fixture','open','solo',1)").run()));
