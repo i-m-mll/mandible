@@ -274,6 +274,12 @@ describe("exact conversation freshness", () => {
     const seeded = await seed("moving-session");
     const before = db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?").get(seeded.id);
     await appendAt(seeded.file, assistant("unindexed one", 3), 2);
+    const schedule = vi.fn(() => true);
+    const read = vi.fn();
+    await expect(ensureExactConversationFresh(db, seeded.id, { indexedOnly: true, scheduleReparse: schedule,
+      sourceReadInstrumentation: read })).rejects.toMatchObject({ code: "freshness_pending" });
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls.every(([range]) => range.length <= 4096)).toBe(true);
     let pass = 0;
     const movingIngest = async () => {
       pass += 1;

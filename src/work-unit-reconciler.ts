@@ -26,19 +26,12 @@ function workUnitDecisionState(db: Db, id: string): string {
 }
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
-// Runs every 60s and performs four reconciliation passes:
+// Runs every 60s and performs three reconciliation passes:
 // 1. Dead holder cleanup: clear assigned_session_id when its alias resolves to a stopped agent
-// 2. Worker thread archival: archive Codex worker threads whose bound units are resolved
-// 3. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
-// 4. Auto-commit detection: open → committed when branch has commits
+// 2. Abandoned branch detection: committed → abandoned when Git confirms the branch is gone
+// 3. Auto-commit detection: open → committed when branch has commits
 
 const RECONCILE_INTERVAL_MS = 60_000;
-const LOGGED_SAMPLE_LIMIT = 50;
-
-function sample<T>(items: T[]): T[] {
-  return items.slice(0, LOGGED_SAMPLE_LIMIT);
-}
-
 export interface WorkUnitReconcilerOptions {
   /** Replaces the shared rule, whose Codex answers come from lock scans made for each pass. */
   resolveSession?: WorkUnitSessionResolver;

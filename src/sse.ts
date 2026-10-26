@@ -108,6 +108,7 @@ export class SseManager {
 
   closeAll(): void {
     this.observers.clear();
+    this.eventObservers.clear();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

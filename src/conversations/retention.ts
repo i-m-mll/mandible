@@ -181,7 +181,7 @@ export class ChildRetentionScheduler {
     }
     const execution = child.provider === "gemini" ? null
       : new SessionExecutionStore(this.db).read(child.provider === "claude_code" ? "claude" : "codex", child.sessionId);
-    if (execution && execution.observed_at >= (row.last_terminal_at ?? 0)) {
+    if (execution && execution.observed_at >= Math.max(row.last_activity_at ?? 0, row.last_terminal_at ?? 0)) {
       return execution.state.kind !== "working" && execution.state.kind !== "unknown";
     }
     return row.activity_state === "settled";
@@ -199,7 +199,7 @@ export class ChildRetentionScheduler {
       this.db.prepare("UPDATE conversation_retention_state SET due_at=NULL WHERE conversation_id=?").run(child.conversationId);
       return;
     }
-    const fresh = await (this.options.ensureFresh ?? ensureExactConversationFresh)(this.db, child.conversationId);
+    const fresh = await (this.options.ensureFresh ?? ensureExactConversationFresh)(this.db, child.conversationId, { indexedOnly: true });
     if (!fresh.sourceId || !fresh.sourcePath) { this.defer(original, "source_unavailable"); return; }
     const current = this.row(child.conversationId);
     if (!current || current.activity_generation !== original.activity_generation) return;
@@ -217,11 +217,19 @@ export class ChildRetentionScheduler {
         rearmChildRetention(this.db, child.conversationId); return;
       }
     }
+    let unavailableNativeQueue: string | null = null;
     if (child.provider === "codex" && this.options.pendingNativeQueue) {
       const queue = await this.options.pendingNativeQueue(child.sessionId);
       if (queue.status === "known" && queue.pending) { this.defer(current, "native_queue_pending"); return; }
+      if (queue.status === "unknown") unavailableNativeQueue = queue.reason;
     }
     if (this.stopped || this.row(child.conversationId)?.activity_generation !== current.activity_generation) return;
+    const latestChild = getRetainedChild(this.db, child.conversationId);
+    if (!latestChild || latestChild.role !== child.role || latestChild.provider !== child.provider || latestChild.sessionId !== child.sessionId) {
+      this.db.prepare("UPDATE conversation_retention_state SET due_at=NULL WHERE conversation_id=?").run(child.conversationId);
+      return;
+    }
+    if (!this.eligible(child, current) || !this.executionSettled(child, current)) { this.defer(current, "eligibility_changed"); return; }
     this.db.transaction(() => {
       setConversationArchiveState(this.db, { conversation_id: child.conversationId, archived: true,
         cause: current.trigger ?? "retention" }, { actor_type: "system", actor_id: "child-retention", attribution: systemAction() });
@@ -236,7 +244,13 @@ export class ChildRetentionScheduler {
     })();
     if (child.provider !== "codex") return;
     if (this.stopped || this.row(child.conversationId)?.activity_generation !== current.activity_generation) return;
-    const outcome = await (this.options.nativeArchive ?? (id => defaultCodexNativeArchiveAdapter.archive(id)))(child.sessionId);
+    const hasNativeChild = this.db.prepare(`SELECT 1 FROM conversations WHERE source='codex'
+      AND parent_source='codex' AND parent_session_id=? LIMIT 1`).get(child.sessionId);
+    const outcome = unavailableNativeQueue !== null
+      ? { status: "deferred" as const, reason: `native_queue_unavailable:${unavailableNativeQueue}` }
+      : hasNativeChild
+      ? { status: "deferred" as const, reason: "native_descendants_present" }
+      : await (this.options.nativeArchive ?? (id => defaultCodexNativeArchiveAdapter.archive(id)))(child.sessionId);
     if (this.row(child.conversationId)?.activity_generation !== current.activity_generation) return;
     const success = outcome.status === "archived" || outcome.status === "already_archived";
     this.db.prepare(`UPDATE conversation_retention_state SET native_pending=?,last_native_outcome=?,due_at=?,attempts=?

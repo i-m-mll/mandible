@@ -10,15 +10,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
-import {
-  archiveFinishedWorkerThreads,
-  CodexCliThreadArchiver,
-  listCompletedWorkerThreadArchiveCandidates,
-  safeArchiveCodexThread,
-} from "../src/codex-thread-archive.js";
 import type { Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import SqliteDatabase from "../src/sqlite.ts";
@@ -46,13 +40,12 @@ import {
 import { SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
-type Archiver = NonNullable<ConstructorParameters<typeof AuthQueue>[0]["codexThreadArchiver"]>;
-
-function recordingArchiver(archived: string[]): Archiver {
-  return {
-    archive: async (threadId) => { archived.push(threadId); },
-    unarchive: async () => undefined,
-  };
+function controlledFinalStep(queue: AuthQueue, action: () => Promise<void>): void {
+  vi.spyOn(queue as unknown as { archiveCompletedWorkerThreads(request: AuthRequest): Promise<{ request_id: string; archived: number; attempt_failures: number; candidates: [] }> }, "archiveCompletedWorkerThreads")
+    .mockImplementation(async request => {
+      try { await action(); return { request_id: request.id, archived: 1, attempt_failures: 0, candidates: [] }; }
+      catch { return { request_id: request.id, archived: 0, attempt_failures: 1, candidates: [] }; }
+    });
 }
 
 async function sweep(queue: AuthQueue): Promise<void> {
@@ -114,7 +107,7 @@ function eventsFor(events: SseEvent[], requestId: string, name: string): SseEven
 }
 
 describe("staged finalizer lifecycle", () => {
-  it.each(["own progress", "branch", "closures", "proof"])("validates completed authority after the final archive await: %s", async change => {
+  it.each(["own progress", "branch", "closures", "proof"])("validates completed authority after the final scheduling await: %s", async change => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
     let enter!: () => void;
@@ -123,8 +116,8 @@ describe("staged finalizer lifecycle", () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
       broadcast: event => events.push(event),
-      codexThreadArchiver: { archive: async () => { enter(); await gate; }, unarchive: async () => undefined },
     });
+    controlledFinalStep(queue, async () => { enter(); await gate; });
     try {
       const id = await submitSuccessfulRequest(queue);
       insertCodexWorkUnit(db, "wu-final-step", id, "thread-final-step");
@@ -171,11 +164,8 @@ describe("staged finalizer lifecycle", () => {
             .get(requestId) as { merge_finalized_at: number | null }).merge_finalized_at;
         }
       },
-      codexThreadArchiver: {
-        archive: async () => { archiveStarted = true; await archiveGate; },
-        unarchive: async () => undefined,
-      },
     });
+    controlledFinalStep(queue, async () => { archiveStarted = true; await archiveGate; });
     try {
       const id = await submitSuccessfulRequest(queue);
       db.prepare(
@@ -232,18 +222,15 @@ describe("staged finalizer lifecycle", () => {
     }
   });
 
-  it("retries a failing archive step up to three attempts, then finalizes with the step marked failed", async () => {
+  it("retries a failing scheduling step up to three attempts, then finalizes with the step marked failed", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
     let archiveCalls = 0;
     const queue = new AuthQueue({
       db,
       broadcast: (event) => events.push(event),
-      codexThreadArchiver: {
-        archive: async () => { archiveCalls += 1; throw new Error("codex archive boom"); },
-        unarchive: async () => undefined,
-      },
     });
+    controlledFinalStep(queue, async () => { archiveCalls += 1; throw new Error("scheduling failed"); });
     try {
       const id = await submitSuccessfulRequest(queue);
       insertCodexWorkUnit(db, "wu-archive-fail", id, "thread-archive-fail");
@@ -300,8 +287,8 @@ describe("staged finalizer lifecycle", () => {
     const recovered = new AuthQueue({
       db,
       broadcast: (event) => events.push(event),
-      codexThreadArchiver: recordingArchiver(archived),
     });
+    controlledFinalStep(recovered, async () => { archived.push("thread-crash"); });
     try {
       await waitUntil(async () => (await recovered.getRequest(id))?.merge_finalized_at, "the startup sweep to finalize");
       await recovered.drainFinalizers();
@@ -433,8 +420,7 @@ describe("work-unit resolution on merge", () => {
         db,
         now: () => now,
         workUnitAbandonedScanRetentionMs: 1000,
-        codexThreadArchiver: recordingArchiver(archived),
-      });
+        });
       const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge integration/batch --into main",
@@ -745,227 +731,4 @@ describe("work-unit resolution on merge", () => {
       }
     },
   );
-});
-
-describe("worker thread archival", () => {
-  it("archives only reliably linked terminal Codex worker threads, and replays archival without rerunning finalizers", async () => {
-    const archived: string[] = [];
-    const db = createMigratedDb();
-    const repoRoot = createAuthCheckRepo();
-    commitOnBranch(repoRoot, "feature/archive-worker", { "worker.txt": "delivered\n" });
-    registerWorkRepo(db, repoRoot);
-    const project = createLedgerProject(db, repoRoot);
-    const issue = createLedgerIssue(db, project.project.id, "done123", "Done issue");
-    const parent = createLedgerIssue(db, project.project.id, "parent1", "Parent issue");
-    const queue = new AuthQueue({
-      executor: async (options) => publishFixtureExecution(queue, options),
-      db,
-      codexThreadArchiver: recordingArchiver(archived),
-    });
-    try {
-      insertMandibleSession(db, "mandible-worker", "ended");
-      insertMandibleSession(db, "parent-thread", "active");
-      insertConsoleSession(db, { id: "console-worker", providerSessionId: "thread-worker", mandibleSessionId: "mandible-worker" });
-      insertConsoleSession(db, { id: "console-parent", providerSessionId: "parent-thread", mandibleSessionId: "parent-thread" });
-      insertConsoleSession(db, { id: "console-running", providerSessionId: "thread-running", status: "running" });
-      new LedgerStore(db).addIssueCheckpoint(parent.id, {
-        ...SYSTEM_ACTOR,
-        kind: "parent-role",
-        payload: { session_id: "parent-thread", mechanism: "thread", assumed_at: Date.now() },
-        actor_type: "mandible_user",
-        source: "mandible",
-        created_at: Date.now(),
-      });
-
-      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
-        type: "merge",
-        command: "mandible auth merge feature/archive-worker --into main",
-        title: "Archive workers",
-        repo: project.checkout.root,
-        cwd: repoRoot,
-        merge_head_sha: git(repoRoot, ["rev-parse", "feature/archive-worker"]),
-        base_branch: "main",
-        head_branch: "feature/archive-worker",
-        issue_closures: ["done123"],
-        execution_mode: "daemon",
-      }));
-      for (const [id, session] of [["wu-worker", "console-worker"], ["wu-parent", "console-parent"], ["wu-running", "console-running"]]) {
-        insertWorkUnit(db, {
-          id,
-          issueShortId: "done123",
-          ledgerIssueId: issue.id,
-          repoId: project.checkout.root,
-          assignedSessionId: session,
-          authRequestId: request.id,
-        });
-      }
-
-      await awaitFixtureResolution(queue, request.id, async () => {
-        await approveFixtureRequest(queue, request.id);
-        await waitForStatus(queue, request.id, "completed");
-      });
-      await queue.drainFinalizers();
-
-      expect(archived).toEqual(["thread-worker"]);
-      expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-worker'").get()).toEqual({ state: "resolved" });
-      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({ status: "closed", resolution: "delivered" });
-
-      const finalizedAt = (await queue.getRequest(request.id))?.merge_finalized_at;
-      const replay = await queue.replayCodexThreadArchives(request.id);
-      expect(archived).toEqual(["thread-worker", "thread-worker"]);
-      expect(replay).toMatchObject({
-        request_id: request.id,
-        archived: 1,
-        candidates: [{ provider_session_id: "thread-worker", issue_id: issue.id, work_unit_id: "wu-worker", archived: true }],
-      });
-      expect((await queue.getRequest(request.id))?.merge_finalized_at).toBe(finalizedAt);
-    } finally {
-      (await queue.dispose());
-      db.close();
-    }
-  });
-
-  it("leaves worker-bound threads to the reconciler, which archives only explicit worker ownership", async () => {
-    const db = createMigratedDb();
-    const archived: string[] = [];
-    const queue = new AuthQueue({ db, broadcast: () => undefined, codexThreadArchiver: recordingArchiver(archived) });
-    try {
-      const id = await submitSuccessfulRequest(queue);
-      const resolvedAt = Date.parse("2026-08-20T13:04:55Z");
-      // The ambient-only coordinator incident (issue 66b3bda): an ambient
-      // provider id is never worker ownership.
-      db.prepare(
-        `INSERT INTO work_units (
-          id, issue_id, repo_id, branch, kind, state, assigned_session_id,
-          provider, provider_session_id, worker_provider_session_id, created_at,
-          resolved_at, auth_request_id
-        ) VALUES
-          ('wu-ambient', '66b3bda', 'finalizer-repo', NULL, 'solo', 'resolved', NULL,
-           'codex', 'ambient-coordinator', NULL, 0, ?, ?),
-          ('wu-explicit', 'issue-explicit', 'finalizer-repo', NULL, 'solo', 'resolved', NULL,
-           'codex', 'ambient-explicit', 'thread-explicit', 0, ?, ?)`,
-      ).run(resolvedAt, id, resolvedAt, id);
-
-      await completeFixturePublication(queue, id);
-      await queue.drainFinalizers();
-      expect(archived).toEqual([]);
-
-      await archiveFinishedWorkerThreads(db, {
-        archiver: recordingArchiver(archived),
-        liveness: () => "stopped",
-        resolveAlias: () => null,
-        now: () => 0,
-      });
-      expect(archived).toEqual(["thread-explicit"]);
-    } finally {
-      (await queue.dispose());
-      db.close();
-    }
-  });
-
-  it("drives the top-level Codex CLI idempotently and keeps its failures behind the safe wrapper", async () => {
-    const calls: Array<{ file: string; args: string[] }> = [];
-    const exec = ((file: string, args: string[]) => {
-      calls.push({ file, args: [...args] });
-      return "";
-    }) as unknown as typeof import("node:child_process").execFile;
-    const archiver = new CodexCliThreadArchiver(exec);
-    await archiver.archive("thread-123");
-    await archiver.unarchive("thread-456");
-    expect(calls).toEqual([
-      { file: "codex", args: ["archive", "thread-123"] },
-      { file: "codex", args: ["unarchive", "thread-456"] },
-    ]);
-
-    const throwing = (() => { throw new Error("codex archive failed"); }) as unknown as typeof import("node:child_process").execFile;
-    const logs: string[] = [];
-    expect(await safeArchiveCodexThread(new CodexCliThreadArchiver(throwing), "thread-789", (message) => logs.push(message)))
-      .toBe(false);
-    expect(logs).toEqual(["[codex-thread-archive] failed to archive thread-789: codex archive failed"]);
-
-    // A failed command counts as done only when the thread already sits in the requested state.
-    const failing = (() => { throw new Error("Error: failed to archive session"); }) as unknown as typeof import("node:child_process").execFile;
-    await expect(new CodexCliThreadArchiver(failing, () => true).archive("thread-1")).resolves.toBeUndefined();
-    await expect(new CodexCliThreadArchiver(failing, () => false).unarchive("thread-1")).resolves.toBeUndefined();
-    await expect(new CodexCliThreadArchiver(failing, () => false).archive("thread-1")).rejects.toThrow("failed to archive");
-    await expect(new CodexCliThreadArchiver(failing, () => null).archive("thread-1")).rejects.toThrow("failed to archive");
-  });
-
-  describe("archive candidates", () => {
-    const request = { id: "auth-1", type: "merge", issues: [], issue_closures: ["done123"] } as unknown as AuthRequest;
-
-    async function candidateDb(setup: (db: InstanceType<typeof SqliteDatabase>) => void) {
-      const db = new SqliteDatabase(":memory:");
-      db.exec(`
-        CREATE TABLE work_units (
-          id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, ledger_issue_id TEXT, state TEXT NOT NULL,
-          assigned_session_id TEXT, provider TEXT, provider_session_id TEXT,
-          worker_provider_session_id TEXT, auth_request_id TEXT
-        );
-        CREATE TABLE console_sessions (
-          id TEXT PRIMARY KEY, provider_session_id TEXT, mandible_session_id TEXT, command TEXT, status TEXT
-        );
-        CREATE TABLE sessions (id TEXT PRIMARY KEY, status TEXT);
-        CREATE TABLE ledger_issue_checkpoints (kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL);
-        CREATE TABLE ledger_session_issue_links (session_id TEXT, issue_id TEXT, created_at INTEGER);
-      `);
-      setup(db);
-      try {
-        return await listCompletedWorkerThreadArchiveCandidates(db, request);
-      } finally {
-        db.close();
-      }
-    }
-
-    const parentRole = (db: InstanceType<typeof SqliteDatabase>, session: string) => db.prepare(
-      "INSERT INTO ledger_issue_checkpoints (kind, payload_json, created_at) VALUES ('parent-role', ?, 1)",
-    ).run(JSON.stringify({ session_id: session }));
-    const stoppedConsole = (db: InstanceType<typeof SqliteDatabase>, id: string, thread: string) => db.prepare(
-      "INSERT INTO console_sessions (id, provider_session_id, command, status) VALUES (?, ?, 'codex', 'stopped')",
-    ).run(id, thread);
-
-    it.each([
-      ["a resolved unit with no link to this request", (db: InstanceType<typeof SqliteDatabase>) => {
-        db.prepare(`INSERT INTO work_units (id, issue_id, state, provider, provider_session_id)
-          VALUES ('wu-stale', 'done123', 'resolved', 'codex', 'thread-stale')`).run();
-      }],
-      ["live direct sessions and active parent-role holders", (db: InstanceType<typeof SqliteDatabase>) => {
-        db.prepare("INSERT INTO sessions (id, status) VALUES ('thread-live', 'active'), ('thread-parent', 'idle')").run();
-        parentRole(db, "thread-parent");
-        db.prepare(`INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, worker_provider_session_id)
-          VALUES ('wu-live', 'done123', 'resolved', 'codex', 'thread-live', 'thread-live'),
-                 ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'thread-parent')`).run();
-      }],
-      ["a stopped session that once held a parent role", (db: InstanceType<typeof SqliteDatabase>) => {
-        db.prepare("INSERT INTO sessions (id, status) VALUES ('thread-parent', 'ended')").run();
-        parentRole(db, "thread-parent");
-        db.prepare(`INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, worker_provider_session_id, auth_request_id)
-          VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'thread-parent', 'auth-1')`).run();
-      }],
-    ])("excludes %s", async (_label, setup) => {
-      expect(await candidateDb(setup)).toEqual([]);
-    });
-
-    it.each([
-      ["a console session linked to the closure issue through the ledger", (db: InstanceType<typeof SqliteDatabase>) => {
-        stoppedConsole(db, "console-worker", "thread-worker");
-        db.prepare("INSERT INTO ledger_session_issue_links (session_id, issue_id, created_at) VALUES ('thread-worker', 'done123', 1)").run();
-      }, { provider_session_id: "thread-worker", console_session_id: "console-worker", mandible_session_id: null, issue_id: "done123", work_unit_id: null }],
-      ["the assigned worker session instead of a parent provider id", (db: InstanceType<typeof SqliteDatabase>) => {
-        parentRole(db, "thread-parent");
-        stoppedConsole(db, "console-worker", "thread-worker");
-        db.prepare(`INSERT INTO work_units (id, issue_id, state, assigned_session_id, provider, provider_session_id, auth_request_id)
-          VALUES ('wu-child', 'done123', 'resolved', 'console-worker', 'codex', 'thread-parent', 'auth-1')`).run();
-      }, { provider_session_id: "thread-worker", console_session_id: "console-worker", mandible_session_id: null, issue_id: "done123", work_unit_id: "wu-child" }],
-      ["one best candidate per declared closure issue", (db: InstanceType<typeof SqliteDatabase>) => {
-        stoppedConsole(db, "console-worker-a", "thread-worker-a");
-        stoppedConsole(db, "console-worker-b", "thread-worker-b");
-        db.prepare(`INSERT INTO work_units (id, issue_id, state, assigned_session_id, provider, provider_session_id, auth_request_id)
-          VALUES ('wu-b', 'done123', 'resolved', 'console-worker-b', 'codex', 'thread-direct-b', 'auth-1'),
-                 ('wu-a', 'done123', 'resolved', 'console-worker-a', 'codex', 'thread-direct-a', 'auth-1')`).run();
-      }, { provider_session_id: "thread-worker-a", console_session_id: "console-worker-a", mandible_session_id: null, issue_id: "done123", work_unit_id: "wu-a" }],
-    ])("selects %s", async (_label, setup, expected) => {
-      expect(await candidateDb(setup)).toEqual([expected]);
-    });
-  });
 });

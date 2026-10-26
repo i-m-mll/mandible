@@ -95,12 +95,8 @@ import {
   saveProtectedBaseAudit,
   unseenBaseAuditFindings,
 } from "./protected-base-audit.js";
-import {
-  defaultCodexThreadArchiver,
-  listCompletedWorkerThreadArchiveCandidates,
-  safeArchiveCodexThread,
-  type CodexThreadArchiver,
-} from "./codex-thread-archive.js";
+import { scheduleResolvedWorkerArchive } from "./conversations/retention.js";
+import type { ConversationSource } from "./parsers/types.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { resolveId } from "./entity-refs.js";
@@ -392,11 +388,7 @@ export interface AuthMergeCheckReport {
 export interface CodexArchiveReplayResult {
   request_id: string;
   archived: number;
-  // Issue 75f52ac — count of candidates that HAD a provider handle but whose
-  // codex archive CLI attempt failed (error/timeout). Distinct from
-  // "definitively not archivable" candidates, which are filtered out of the
-  // candidate list before any attempt. The Stage 3 finalizer step propagates a
-  // non-zero count as a step failure so the bounded retry re-attempts it.
+  // Scheduling failures only; native archive outcomes belong to child retention.
   attempt_failures: number;
   candidates: Array<{
     provider_session_id: string;
@@ -419,7 +411,6 @@ export interface AuthQueueOptions {
   hookManager?: AuthHookManager;
   autoApprover?: AuthAutoApprover;
   clearanceManager?: AuthClearanceManager;
-  codexThreadArchiver?: CodexThreadArchiver;
   // Issue 93d978e — override the abandoned-work-unit merge-scan retention
   // window (default 30 days) so tests can exercise the retirement sweep.
   workUnitAbandonedScanRetentionMs?: number;
@@ -595,7 +586,6 @@ export class AuthQueue {
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
   private readonly clearanceManager?: AuthClearanceManager;
-  private readonly codexThreadArchiver: CodexThreadArchiver;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
   private readonly workUnitAbandonedScanRetentionMs: number;
@@ -672,7 +662,6 @@ export class AuthQueue {
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
     this.clearanceManager = options.clearanceManager;
-    this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
@@ -6273,12 +6262,7 @@ export class AuthQueue {
         name: "archive_worker_threads",
         run: async () => {
           const archiveResult = await this.archiveCompletedWorkerThreads(finalized);
-          // Issue 75f52ac — a candidate with a provider handle whose codex
-          // archive CLI attempt failed (error/timeout) must not silently resolve
-          // this step: propagate it as a step failure so the FinalizerQueue's
-          // bounded retry (FINALIZER_MAX_ATTEMPTS, then failed-and-surfaced) owns
-          // it. Handle-less "definitively not archivable" candidates are already
-          // excluded from the list, so any attempt failure here is retryable.
+          // This step schedules the shared policy; native reconciliation has its own persisted deadline.
           if (archiveResult.attempt_failures > 0) {
             throw new Error(
               `codex thread archive failed for ${archiveResult.attempt_failures} candidate(s)`,
@@ -7997,18 +7981,14 @@ export class AuthQueue {
     }
     const logSummary = options.logSummary ?? true;
     try {
-      const candidates = await listCompletedWorkerThreadArchiveCandidates(this.db, completed);
+      const candidates = this.db.prepare(`SELECT id AS work_unit_id,COALESCE(ledger_issue_id,issue_id) AS issue_id,
+        worker_provider,worker_provider_session_id AS provider_session_id FROM work_units
+        WHERE state='resolved' AND auth_request_id=? AND worker_provider IS NOT NULL AND worker_provider_session_id IS NOT NULL`)
+        .all(completed.id) as { work_unit_id: string; issue_id: string; worker_provider: ConversationSource; provider_session_id: string }[];
       for (const candidate of candidates) {
-        const archived = await safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
-        if (archived) {
-          result.archived += 1;
-        } else {
-          // Every candidate has a provider handle (listing filters out the
-          // handle-less "definitively not archivable" rows), so a false result
-          // means the codex archive CLI attempt failed (error/timeout).
-          result.attempt_failures += 1;
-        }
-        result.candidates.push({ ...candidate, archived });
+        scheduleResolvedWorkerArchive(this.db, candidate.worker_provider, candidate.provider_session_id, this.now());
+        result.candidates.push({ provider_session_id: candidate.provider_session_id, work_unit_id: candidate.work_unit_id,
+          issue_id: candidate.issue_id, console_session_id: null, mandible_session_id: null, archived: false });
       }
       if (logSummary && result.archived > 0) {
         authLog("info", "auth_completed_worker_threads_archived", {

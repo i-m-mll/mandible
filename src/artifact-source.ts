@@ -105,7 +105,13 @@ export function planArtifactSourceMove(db: Db, input: ArtifactSourceMoveInput): 
   movePlans.set(plan, {db, frozen: JSON.stringify(plan)});
   return { ok: true, value: plan };
 }
-export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, now = Date.now()): ArtifactLifecycleResult<ArtifactSourceState> {
+const SOURCE_MOVE_HISTORY_COLUMNS_V184 = [
+  'id', 'artifact_id', 'previous_source_json', 'source_json', 'previous_revision', 'revision', 'actor', 'created_at',
+] as const;
+export type ArtifactSourceMoveHistoryShape = 'v184' | 'current';
+
+export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, now = Date.now(),
+  historyShape: ArtifactSourceMoveHistoryShape = 'current'): ArtifactLifecycleResult<ArtifactSourceState> {
   const issued = movePlans.get(plan);
   if (!issued || issued.db !== db || issued.frozen !== JSON.stringify(plan)) return artifactFailure('stale_plan', 'Source move plan is not an unchanged issued plan');
   try {
@@ -117,9 +123,17 @@ export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, n
       if (!state.reconciliation_reason && state.source && sourceKey(state.source) === sourceKey(plan.source)) return { ok: true, value: state };
       db.prepare('UPDATE artifact_source SET source_json=?, revision=revision+1, reconciliation_reason=NULL, updated_at=? WHERE artifact_id=?')
         .run(sourceKey(plan.source), now, plan.artifact_id);
-      db.prepare(`INSERT INTO artifact_source_move (id,artifact_id,previous_source_json,source_json,previous_revision,revision,actor,created_at,request_origin_json) VALUES (?,?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), plan.artifact_id,
-        plan.previous_source ? sourceKey(plan.previous_source) : null, sourceKey(plan.source), plan.expected_revision,
-        plan.expected_revision + 1, plan.actor, now, requestOriginJson());
+      const columns = historyShape === 'v184' ? SOURCE_MOVE_HISTORY_COLUMNS_V184
+        : [...SOURCE_MOVE_HISTORY_COLUMNS_V184, 'request_origin_json'] as const;
+      const row = {
+        id: crypto.randomUUID(), artifact_id: plan.artifact_id,
+        previous_source_json: plan.previous_source ? sourceKey(plan.previous_source) : null,
+        source_json: sourceKey(plan.source), previous_revision: plan.expected_revision,
+        revision: plan.expected_revision + 1, actor: plan.actor, created_at: now,
+        request_origin_json: historyShape === 'current' ? requestOriginJson() : null,
+      };
+      db.prepare(`INSERT INTO artifact_source_move (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`)
+        .run(...columns.map(column => row[column]));
       return { ok: true, value: getArtifactCurrentSource(db, plan.artifact_id)! };
     }).immediate();
   } catch (error) { return artifactFailure('storage_error', String(error)); }

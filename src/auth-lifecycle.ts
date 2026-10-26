@@ -1,5 +1,5 @@
 import { currentRequestOrigin, requestOriginForRequest } from "./request-origin.js";
-import { authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
+import { authRequestSnapshot, authSnapshotDigest, type AuthSnapshotShape } from "./auth-request-snapshot.js";
 import { describeAuthExecutionFailure, type AuthExecutionAttempt } from "./contracts.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
@@ -21,10 +21,11 @@ export function appendAuthLifecycleEvent(
     reason?: string | null;
     relatedRequestId?: string | null;
     priorSnapshot?: string | null;
+    snapshotShape?: AuthSnapshotShape;
     occurredAt: number;
   },
 ): AuthRequestLifecycleEvent {
-  const snapshot = authRequestSnapshot(db, input.requestId);
+  const snapshot = authRequestSnapshot(db, input.requestId, input.snapshotShape);
   const revision = Number((db.prepare(
     "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?",
   ).get(input.requestId) as { revision: number }).revision);

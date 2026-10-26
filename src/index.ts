@@ -328,7 +328,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     db,
     logger,
     sessionRegistry,
-    undefined,
     clientAuth,
   );
   const conversationControl = new ConversationControlService(db, {
