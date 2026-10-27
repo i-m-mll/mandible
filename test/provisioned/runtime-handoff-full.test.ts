@@ -182,11 +182,19 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       if (!acceptanceSource.includes(buildCall)) throw new Error('Native cache fixture transform requires review.');
       acceptanceSource = acceptanceSource.replace(buildCall, `    if (!fs.existsSync(path.join(root, 'src-tauri/target'))) {
       command('/bin/cp', ['-c', '-R', ${JSON.stringify(cache)}, path.join(root, 'src-tauri/target')]);
-      // Tauri build-script metadata embeds absolute permission paths from its checkout.
+      // Cargo build-script metadata can embed paths into its former checkout.
+      const checkoutBound = new Set(['tauri', 'mandible-app']);
+      const outputs = path.join(root, 'src-tauri/target/release/build');
+      if (fs.existsSync(outputs)) for (const name of fs.readdirSync(outputs)) {
+        const output = path.join(outputs, name, 'output');
+        if (fs.existsSync(output) && fs.readFileSync(output, 'utf8').includes('/private/tmp/mandible-upgrade-')) {
+          checkoutBound.add(name.slice(0, name.lastIndexOf('-')));
+        }
+      }
       for (const relative of ['release/build', 'release/.fingerprint']) {
         const directory = path.join(root, 'src-tauri/target', relative);
         if (fs.existsSync(directory)) for (const name of fs.readdirSync(directory)) {
-          if (/^(tauri-|mandible-app-)/.test(name)) fs.rmSync(path.join(directory, name), { recursive: true, force: true });
+          if ([...checkoutBound].some(crate => name.startsWith(crate + '-'))) fs.rmSync(path.join(directory, name), { recursive: true, force: true });
         }
       }
     }\n${buildCall}`);
