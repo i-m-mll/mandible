@@ -615,6 +615,8 @@ export class AuthQueue {
   private readonly finalizerQueue: FinalizerQueue;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
   private handoffCompletionWatcher: FSWatcher | null = null;
+  private handoffCompletionPending = false;
+  private handoffCompletionWakeupUntil = 0;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
@@ -1068,6 +1070,9 @@ export class AuthQueue {
           }
           if (journal.phase !== 'complete') return;
         } catch { return; } // Atomic replacement may precede the next rename event.
+        this.handoffCompletionWakeupUntil ||= Date.now() + 60_000;
+        if (Date.now() >= this.handoffCompletionWakeupUntil) return;
+        this.handoffCompletionPending = true;
         void this.convergeWhileIdle();
       });
       this.handoffCompletionWatcher.on('error', error => {
@@ -5830,9 +5835,12 @@ export class AuthQueue {
       if (this.convergenceSweepInFlight) return;
       this.convergenceSweepInFlight = true;
       try {
-        await this.reconcileRuntimeHandoffs();
-        await this.runConvergenceSweep(limit);
-        await this.resumeDeferredLedgerActions();
+        do {
+          this.handoffCompletionPending = false;
+          await this.reconcileRuntimeHandoffs();
+          await this.runConvergenceSweep(limit);
+          await this.resumeDeferredLedgerActions();
+        } while (this.handoffCompletionPending && !this.disposed && this.isDbOpen());
       } finally {
         this.convergenceSweepInFlight = false;
       }

@@ -3,8 +3,31 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { AuthHookManager } from "../src/auth-hooks.js";
+import { AuthQueue } from "../src/auth-queue.js";
 import { createMigratedDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
+
+it('drains a completion hint that arrives during an owned convergence sweep', async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const reconcile = vi.fn(async () => {
+    if (reconcile.mock.calls.length === 1) { entered.resolve(); await release.promise; }
+  });
+  const queue = Object.assign(Object.create(AuthQueue.prototype), {
+    disposed: false, convergenceSweepInFlight: false, handoffCompletionPending: false,
+    beginObservation: () => () => undefined, isDbOpen: () => true,
+    reconcileRuntimeHandoffs: reconcile, runConvergenceSweep: async () => undefined,
+    resumeDeferredLedgerActions: async () => undefined,
+  }) as AuthQueue;
+  const sweep = queue.resumeHookConvergence();
+  await entered.promise;
+  (queue as any).handoffCompletionPending = true;
+  await queue.resumeHookConvergence();
+  expect(reconcile).toHaveBeenCalledTimes(1);
+  release.resolve();
+  await sweep;
+  expect(reconcile).toHaveBeenCalledTimes(2);
+});
 
 it("owns failure convergence through its rejection after recording the failed handoff", async () => {
   const home = fs.mkdtempSync(path.join(testRuntimeRoot, "handoff-failure-"));
