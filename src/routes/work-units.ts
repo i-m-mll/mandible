@@ -267,17 +267,17 @@ export function registerWorkUnitRoutes(
     });
     return freshHolderReader(db, units, sessionManager);
   };
-  const matchedUnitIds = (issueId: unknown, repoRef: unknown, branch: unknown, includeAbandoned: boolean): string[] => {
+  const matchedUnitIds = (issueId: unknown, repoRef: unknown, branch: unknown): string[] => {
     if (typeof issueId !== "string" || !issueId || typeof repoRef !== "string" || !repoRef) return [];
     const match = findExistingWorkUnit(db, issueId, normalizeProjectRepoId(db, repoRef),
-      typeof branch === "string" ? branch : null, includeAbandoned);
+      typeof branch === "string" ? branch : null);
     return match.status === "matched" && match.work_unit ? [match.work_unit.id] : [];
   };
 
   // POST /api/work-units/claim — create a new work unit (state=open)
   server.post("/api/work-units/claim", async (req, res) => {
     const body = readBody<ClaimInput>(req);
-    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch, false));
+    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -297,7 +297,7 @@ export function registerWorkUnitRoutes(
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const now = Date.now();
-    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, false);
+    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
     if (match.status === "ambiguous") {
       sendJson(res, 409, { error: "Multiple work units match; specify a unique branch or repair duplicate assignments." });
       return;
@@ -482,7 +482,7 @@ export function registerWorkUnitRoutes(
   // POST /api/work-units/activate — mark as committed, update timestamps
   server.post("/api/work-units/activate", async (req, res) => {
     const body = readBody<ActivateInput>(req);
-    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch, true));
+    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -503,7 +503,7 @@ export function registerWorkUnitRoutes(
     }
     if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
 
-    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, true);
+    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
     if (match.status === "ambiguous") {
       sendJson(res, 409, { error: "Multiple work units match; specify a unique branch or repair duplicate assignments." });
       return;
@@ -737,7 +737,7 @@ export function registerWorkUnitRoutes(
     const repoId = normalizeProjectRepoId(db, repoParam);
     let rows: Record<string, unknown>[];
     if (issueParam) {
-      const match = findExistingWorkUnit(db, issueParam, repoId, branch, true);
+      const match = findExistingWorkUnit(db, issueParam, repoId, branch);
       if (match.status === "ambiguous") {
         sendJson(res, 409, { error: "Multiple work units match; specify a unique branch or repair duplicate assignments." });
         return;
@@ -1132,12 +1132,11 @@ function workUnitAmbientIdentity(
 
 function findExistingWorkUnit(
   db: ReturnType<typeof getDb>, issueId: string, repoId: string,
-  branch: string | null, includeAbandoned: boolean,
+  branch: string | null,
 ): { status: "matched"; work_unit: ExistingWorkUnit | undefined } | { status: "ambiguous" } {
   const lookup = buildWorkUnitLookup(db, issueId, repoId);
-  const states = branch && includeAbandoned ? "'open', 'committed', 'abandoned'" : "'open', 'committed'";
   const candidates = db.prepare(`SELECT id, state, branch, ledger_issue_id, assigned_session_id
-    FROM work_units WHERE ${lookup.identity} AND state IN (${states})
+    FROM work_units WHERE ${lookup.identity} AND state IN ('open', 'committed')
       ${branch ? "AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))" : ""}`)
     .all(...lookup.params, ...(branch ? [branch] : [])) as ExistingWorkUnit[];
   const exact = branch ? candidates.filter(row => row.branch === branch) : candidates;
