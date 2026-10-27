@@ -11,8 +11,12 @@ export function finalizeAppPayload(app, identity = process.env.APPLE_SIGNING_IDE
   const resources = path.join(app, 'Contents/Resources');
   const manifest = path.join(resources, 'release.json');
   const release = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  for (const [role, entitlements] of Object.entries(release.signing)) {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', identity, '--options', 'runtime', '--preserve-metadata=identifier',
+      '--entitlements', path.join(resources, entitlements), path.resolve(resources, release.native[role])], { timeout: 60_000, stdio: 'inherit' });
+  }
   fs.writeFileSync(manifest, `${JSON.stringify(inventoryRelease(resources, release), null, 2)}\n`);
-  execFileSync('/usr/bin/codesign', ['--force', '--sign', identity, app], { timeout: 60_000, stdio: 'inherit' });
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', identity, '--preserve-metadata=identifier,entitlements,requirements,flags,runtime', app], { timeout: 60_000, stdio: 'inherit' });
   execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { timeout: 60_000, stdio: 'inherit' });
   return verifyInstalledRelease(resources);
 }
