@@ -1,3 +1,4 @@
+import { pushAppHistory, navigateAppHash } from '../app-history';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   addLedgerIssueComment,
@@ -886,7 +887,7 @@ export function IssuesView({
     }
     const nextHash = issueRouteHash(repoId, issueId);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
-      window.history.pushState(null, '', nextHash);
+      pushAppHistory(nextHash, null);
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
     setSelectedRepoId(repoId);
@@ -1114,7 +1115,7 @@ export function IssuesView({
       const units = visibleLedgerIssueDetail?.work_units.filter(unit => unit.assigned_session_id && ['open', 'committed'].includes(unit.state)) ?? [];
       if (units.length !== 1) throw new Error('Select an exact assigned work unit in Inbox before resuming.');
       const result = await spawnIssueAgent(selectedRepoId, selectedIssueId, units[0]);
-      window.location.hash = `#/console?conversation=${encodeURIComponent(result.conversation_id)}`;
+      navigateAppHash(`#/console?conversation=${encodeURIComponent(result.conversation_id)}`);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1132,16 +1133,16 @@ export function IssuesView({
       return;
     }
     if (type === 'session') {
-      window.location.hash = `#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
+      navigateAppHash(`#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
       return;
     }
     if (type === 'conversation') {
-      window.location.hash = `#/history?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
+      navigateAppHash(`#/history?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
       return;
     }
     if (type === 'auth_request') {
       // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
-      window.location.hash = `#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`;
+      navigateAppHash(`#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`);
     }
   }, [selectedRepoId, selectIssue]);
 

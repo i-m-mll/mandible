@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -456,7 +457,7 @@ function syncFilterRowsToHash(projectRef: string, filterRows: readonly TimelineF
   }
   const nextHash = `#/timeline${params.toString() ? `?${params.toString()}` : ''}`;
   if (window.location.hash !== nextHash) {
-    window.location.hash = nextHash;
+    navigateAppHash(nextHash);
   }
 }
 

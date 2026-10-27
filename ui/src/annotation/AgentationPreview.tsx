@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import { Agentation, type Annotation } from 'agentation';
 import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 import { highlightDraftAttachments } from '../chat/attachmentDrafts';
@@ -13,7 +14,7 @@ export function AgentationPreview(): JSX.Element {
       `#/console?conversation=${encodeURIComponent(target)}`,
       getAgentPageBinding(),
     );
-    if (window.location.hash !== hash) window.location.hash = hash;
+    if (window.location.hash !== hash) navigateAppHash(hash);
   };
 
   return <Agentation appName="Mandible" onSubmit={handleSubmit} />;

@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import hljs from 'highlight.js/lib/core';
@@ -1173,7 +1174,7 @@ export function ArtifactDetail({
         return;
       }
       if (typeof window !== 'undefined') {
-        window.location.hash = briefingRoute(receipt.briefing_id, receipt.round_id).slice(1);
+        navigateAppHash(briefingRoute(receipt.briefing_id, receipt.round_id).slice(1));
       }
     } catch (error) {
       setBriefingError(error instanceof Error ? error.message : String(error));
@@ -2251,7 +2252,7 @@ function writeArtifactHash(
   }, ARTIFACT_ROUTE_SELECTORS);
   if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
     lastWrittenHashRef.current = { seriesRef: seriesRefValue, versionNo };
-    window.location.hash = nextHash;
+    navigateAppHash(nextHash);
   }
 }
 

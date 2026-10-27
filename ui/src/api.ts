@@ -2744,7 +2744,7 @@ export type DesktopDaemonStatus = {
  */
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type DesktopWindowTheme = 'light' | 'dark' | null;
-type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void> };
+type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void>; startDragging: () => Promise<void> };
 
 export type NativeHost = {
   kind: 'tauri';
@@ -2856,6 +2856,13 @@ export async function setDesktopWindowTheme(theme: DesktopWindowTheme): Promise<
     throw new Error('The Tauri window API is not available in this desktop runtime.');
   }
   await currentWindow.setTheme(theme);
+}
+
+export async function startDesktopWindowDrag(): Promise<void> {
+  if (!hasTauriRuntime()) return;
+  const currentWindow = tauriGlobalWindow()?.__TAURI__?.window?.getCurrentWindow?.();
+  if (!currentWindow) throw new Error('The Tauri window API is not available in this desktop runtime.');
+  await currentWindow.startDragging();
 }
 
 async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {

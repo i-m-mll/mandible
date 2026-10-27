@@ -1,4 +1,5 @@
 import { useIsFrameHeader } from './FrameHeader';
+import { appTip } from './AppHoverTips';
 import type { ComponentChildren } from 'preact';
 import { shortIdentityRef } from '../../identity-refs';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
@@ -142,21 +143,20 @@ export function DetailPaneHeader({
     return (
       <div
         className={classNames('detail-pane-header', 'detail-pane-header--compact', className)}
-        data-tauri-drag-region={frameHeader || undefined}
         data-detail-pane-header-variant="compact"
         data-detail-pane-presentation={presentation}
       >
-        <div className="detail-pane-header__main" data-tauri-drag-region={frameHeader || undefined}>
-          <div className="detail-pane-header__title-row" data-tauri-drag-region={frameHeader || undefined}>
+        <div className="detail-pane-header__main">
+          <div className="detail-pane-header__title-row">
             {supportingMetadata !== undefined && supportingMetadata !== null ? (
               <div className="detail-pane-header__title-block">
-                <h2 id={titleId} className="detail-pane-header__title" data-tauri-drag-region={frameHeader || undefined} title={titleTooltip}>
+                <h2 id={titleId} className="detail-pane-header__title" {...(frameHeader ? appTip(titleTooltip) : { title: titleTooltip })}>
                   {title}
                 </h2>
                 <div className="detail-pane-header__supporting-metadata">{supportingMetadata}</div>
               </div>
             ) : (
-              <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+              <h2 id={titleId} className="detail-pane-header__title" {...(frameHeader ? appTip(titleTooltip) : { title: titleTooltip })}>
                 {title}
               </h2>
             )}
@@ -246,13 +246,13 @@ export function DetailPaneHeader({
         <div className="detail-pane-header__title-row">
           {supportingMetadata !== undefined && supportingMetadata !== null ? (
             <div className="detail-pane-header__title-block">
-              <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+              <h2 id={titleId} className="detail-pane-header__title" {...(frameHeader ? appTip(titleTooltip) : { title: titleTooltip })}>
                 {title}
               </h2>
               <div className="detail-pane-header__supporting-metadata">{supportingMetadata}</div>
             </div>
           ) : (
-            <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+            <h2 id={titleId} className="detail-pane-header__title" {...(frameHeader ? appTip(titleTooltip) : { title: titleTooltip })}>
               {title}
             </h2>
           )}

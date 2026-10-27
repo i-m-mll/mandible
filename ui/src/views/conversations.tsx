@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { CancelledError, isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
@@ -2392,7 +2393,7 @@ export function ConversationDetail({
     const focus = sessionId ? `session:${sessionId}` : undefined;
     const params = new URLSearchParams({ mode: 'activity' });
     if (focus) params.set('focus', focus);
-    window.location.hash = `#/graph?${params.toString()}`;
+    navigateAppHash(`#/graph?${params.toString()}`);
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   const retryLoad = useCallback(() => {
@@ -2576,7 +2577,7 @@ export function ConversationDetail({
                     type="button"
                     role="menuitem"
                     onClick={() => {
-                      window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
+                      navigateAppHash(`#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`);
                       setActionsOpen(false);
                     }}
                   >
@@ -3133,7 +3134,7 @@ export function ConversationsView({
       routeIntent.current.identity = JSON.stringify([selectionIntent.current.routeTarget, anchor ?? null]);
     }
     if (replace) replaceRouteHash(nextHash);
-    else if (window.location.hash !== nextHash) window.location.hash = nextHash;
+    else if (window.location.hash !== nextHash) navigateAppHash(nextHash);
   }, []);
   const overrideRouteWithFilter = useCallback(() => {
     setSelection(selectionIntent.current.selection);

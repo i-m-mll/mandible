@@ -1,6 +1,6 @@
+import { useAppHistory } from '../ui/src/hooks/useAppHistory';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
-import { useEffect, useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../ui/src/api';
 import { ApiError, normalizeBriefingProjection, type BriefingSidebarSnapshot } from '../ui/src/api';
@@ -51,12 +51,8 @@ const projection = (id: string) => normalizeBriefingProjection({
 });
 
 function RoutedView() {
-  const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
-  useEffect(() => {
-    const change = () => setRoute(parseRouteFromHash(window.location.hash));
-    window.addEventListener('hashchange', change);
-    return () => window.removeEventListener('hashchange', change);
-  }, []);
+  const navigation = useAppHistory();
+  const route = parseRouteFromHash(new URL(navigation.href).hash);
   return <BriefingView instance={null} initialBriefingId={route.params.briefing}
     initialGroupId={route.params.group} initialRoundId={route.params.round} />;
 }

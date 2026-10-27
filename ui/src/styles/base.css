@@ -382,32 +382,9 @@ a {
   background: var(--neutral-alpha-08);
 }
 
-.app-rail__tooltip {
-  position: absolute;
-  left: calc(100% + 9px);
-  top: 50%;
-  z-index: 80;
-  max-width: 180px;
-  transform: translateY(-50%) translateX(-2px);
-  opacity: 0;
-  pointer-events: none;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: rgba(12, 17, 24, 0.96);
-  border: 1px solid var(--neutral-alpha-10);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-soft);
-  font-size: 12px;
-  line-height: 1.2;
-  white-space: nowrap;
-  transition: opacity 0.12s ease 0.28s, transform 0.12s ease 0.28s;
-}
 
-.app-rail__item:hover .app-rail__tooltip,
-.app-rail__item:focus-visible .app-rail__tooltip {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-}
+
+
 
 .app-rail__icon {
   width: 22px;
@@ -864,12 +841,7 @@ a {
   background: var(--bg-secondary);
 }
 
-:root[data-theme='light'] .app-rail__tooltip {
-  background: var(--surface-popover);
-  border-color: var(--neutral-alpha-12);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-soft);
-}
+
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .settings-view__confirm-overlay,

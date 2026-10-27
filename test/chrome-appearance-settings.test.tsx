@@ -23,7 +23,7 @@ const seeded = JSON.stringify({ version: 1, theme: 'dark', overrides: { dark: { 
 
 function Harness({ role = 'preview', instanceId = previewInstance.instance_id, open = true, glassAvailable = false }: { role?: string; instanceId?: string; open?: boolean; glassAvailable?: boolean }) {
   const preview = useChromeAppearancePreview({ role, instance_id: instanceId }, 'light', glassAvailable);
-  return <AppFrame chromeAppearance={preview.themes} nativeControlsReservation={0} rail={null} headerHostRef={null} hasMainHeader={false}
+  return <AppFrame navigation={{ canBack: true, canForward: true, href: '', entryId: 'fixture', revision: 0, back: () => window.history.back(), forward: () => window.history.forward() }} chromeAppearance={preview.themes} nativeControlsReservation={0} rail={null} headerHostRef={null} hasMainHeader={false}
     viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={null} rightSidebarOpen={false} onRightSidebarOpenChange={() => undefined}>
     <span aria-label="theme override">{preview.themeOverride ?? 'none'}</span>
     {open && preview.controller ? <ChromeAppearanceSettings controller={preview.controller} /> : null}

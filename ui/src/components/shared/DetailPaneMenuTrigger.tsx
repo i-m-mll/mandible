@@ -1,3 +1,4 @@
+import { appTip } from './AppHoverTips';
 import type { JSX, Ref } from 'preact';
 
 export type DetailPaneMenuTriggerProps = {
@@ -23,7 +24,7 @@ export function DetailPaneMenuTrigger({
       aria-label={label}
       aria-haspopup="menu"
       aria-expanded={expanded}
-      title={title}
+      {...appTip(title)}
       onClick={onClick}
     >
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
