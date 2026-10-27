@@ -14,7 +14,7 @@ import { expect, it } from 'vitest';
 import SqliteDatabase from '../../src/sqlite.js';
 import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
-import { resolveAcceptedRelease, applicationIdentity } from '../../scripts/accepted-release.mjs';
+import { resolveAcceptedRelease, readAcceptedReleaseReceipt, applicationIdentity } from '../../scripts/accepted-release.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
 import { parseLoadedService, loadedServiceMatches } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
@@ -124,6 +124,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
   const suffix = digest(home).slice(0, 8); const domain = `gui/${process.getuid!()}`;
   const backendLabel = `${fixtureIdentifier}.local-session-production`; const gatewayLabel = `${fixtureIdentifier}.local-front-door`;
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let candidateRoot = ''; let requestId = ''; let executionId = ''; let journal: any;
+  const nativeApp = path.join(scratch, 'Mandible.app');
   const evidence = path.join(buildHome, '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
     // Reuse the installed build toolchain, while cloning dependency cache bytes
@@ -169,7 +170,6 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const acceptanceProgram = path.join(candidateRoot, 'scripts/candidate-acceptance.mjs');
     fs.writeFileSync(acceptanceProgram, fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; result.bootstrapOversized = 'x'.repeat(70000);`));
     git(candidateRoot, ['add', '-A']); git(candidateRoot, ['commit', '-m', 'Candidate source with isolated connection ports']);
-    const nativeApp = path.join(scratch, 'Mandible.app');
     const poisonedShim = path.join(userHome, '.dotfiles/bin/mandible'); fs.mkdirSync(path.dirname(poisonedShim), { recursive: true });
     const poisonMarker = path.join(scratch, 'old-cli-used');
     fs.writeFileSync(poisonedShim, `#!/bin/sh\necho old-cli > ${quote(poisonMarker)}\necho poisoned-old-cli >&2\nexit 97\n`, { mode: 0o700 });
@@ -304,7 +304,38 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       const loaded = parseLoadedService(detail); loaded.program = path.join(nativeApp, 'Contents/MacOS/mandible-service');
       expect(loadedServiceMatches(nativeDefinition, loaded)).toBe(true);
     }
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: 'installed protected-root update', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), oldGatewayLoadedDefinitionHash: digest(oldGatewayJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    const firstDelivery = { requestId: request.id, executionId, packageSha256: retained.receipt.package.sha256 };
+    git(candidateRoot, ['merge', '--ff-only', 'main']);
+    fs.appendFileSync(path.join(candidateRoot, 'src/index.ts'), '\n');
+    git(candidateRoot, ['add', 'src/index.ts']); git(candidateRoot, ['commit', '-m', 'Subsequent packaged publication candidate']);
+    const secondIssue = createLedgerIssue(db, registered.project.id, 'bootstrap-subsequent', 'Private bundle replacement');
+    const secondUnit = await activateBootstrapWorkUnit(agentApi, secondIssue.id, 'mandible', 'feature/actual-upgrade');
+    const second = await submitBootstrapDelivery({ ...agentApi, cwd: repo, repo: 'mandible', headBranch: 'feature/actual-upgrade', baseBranch: 'main', headSha: git(candidateRoot, ['rev-parse', 'HEAD']), baseSha: git(repo, ['rev-parse', 'main']), issueRef: secondIssue.id, workUnitId: secondUnit, requesterCredentialId: agentToken.credential.id, verification,
+      commitMessage: `Merge subsequent packaged publication\n\nWhy: Replace the native installation with exact accepted bytes.\n\nVerification:\n${verification}\n` });
+    requestId = second.id; executionId = '';
+    await acceptBootstrapDelivery(agentApi, second.id);
+    const secondAccepted = readBootstrapAcceptanceEvidence(db, second.id)!;
+    const secondRetained = resolveAcceptedRelease(secondAccepted.result.receipt);
+    const secondDetail = await readBootstrapDelivery(agentApi, second.id);
+    const secondAction = await fetch(`${baseUrl}/api/auth/request/${second.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: secondIssue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: secondAccepted.id, reference: secondAccepted.result.receipt } }, expected_revision: secondDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: secondDetail.lifecycle_events.at(-1)!.custody_generation }) });
+    expect(secondAction.ok, JSON.stringify(await secondAction.json())).toBe(true);
+    await approveBootstrapDelivery(operatorApi, second.id);
+    await until(() => {
+      const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(second.id, 'builtin-mandible-rebuild') as any;
+      if (hook) executionId = hook.id;
+      journal = executionId ? readRuntimeHandoff(home, second.id, executionId) : null;
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Subsequent handoff refused: ${hook.output}`);
+      return journal?.phase === 'acknowledged';
+    }, 120000, 'Native bundle-to-bundle acknowledgment');
+    expect(applicationIdentity(nativeApp)).toBe(secondRetained.receipt.package.sha256);
+    expect(fs.existsSync(retained.receipt.package.handle.root)).toBe(false);
+    expect(readAcceptedReleaseReceipt(accepted.result.receipt).package.sha256).toBe(firstDelivery.packageSha256);
+    expect(fs.existsSync(poisonBuild)).toBe(false);
+    const subsequentDelivery = await readBootstrapDelivery(operatorApi, second.id);
+    assertBootstrapOperatorProof(subsequentDelivery, signing.operatorId, signing.credentialId);
+    expect(subsequentDelivery.status).toBe('completed'); expect(subsequentDelivery.exit_code).toBe(0);
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: 'legacy-to-bundle and bundle-to-bundle', firstDelivery, subsequentDelivery: { id: subsequentDelivery.id, status: subsequentDelivery.status, packageSha256: secondRetained.receipt.package.sha256 }, oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), oldGatewayLoadedDefinitionHash: digest(oldGatewayJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, requestId, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, '.cache/mandible/production-stderr.log'), path.join(scratch, '.cache/mandible/local-front-door-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log'), path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'helper.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
     const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, error, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;
@@ -313,6 +344,10 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const candidateAcceptance = requestId && db ? readBootstrapAcceptanceEvidence(db, requestId) : null;
     fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, candidateAcceptance, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
   } finally {
+    const nativeHelper = path.join(nativeApp, 'Contents/MacOS/mandible-service');
+    if (fs.existsSync(nativeHelper)) for (const role of ['gateway', 'backend']) {
+      command(nativeHelper, ['unregister', role]);
+    }
     if (requestId && executionId) spawnSync('/bin/launchctl', ['bootout', `${domain}/bio.mll.mandible.runtime-handoff.${digest(`${home}:${requestId}:${executionId}`).slice(0, 16)}`], { timeout: 5000 });
     for (const label of [backendLabel, gatewayLabel]) spawnSync('/bin/launchctl', ['bootout', `${domain}/${label}`], { timeout: 5000 });
     db?.close();
