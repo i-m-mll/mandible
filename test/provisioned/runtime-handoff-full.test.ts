@@ -117,7 +117,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
   const fixtureIdentifier = `bio.mll.mandible.fixture.${randomBytes(8).toString('hex')}`;
   const env = { MANDIBLE_FIXTURE_IDENTIFIER: fixtureIdentifier, USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_SERVICE_ACCOUNT_HOME: userHome,
-    MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(ports.backend), MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: repo, depth: 0 }]),
+    MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(ports.backend), MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: scratch, depth: 1 }]),
     MANDIBLE_SECURITY_BIN: securityAdapter, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_ARCHIVE: archivePath, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
   const libraryInputs = Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]!]));
   Object.assign(env, libraryInputs);
@@ -351,6 +351,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     }
     const firstDelivery = { requestId: request.id, executionId, packageSha256: retained.receipt.package.sha256,
       acceptedReceipt: retained.receipt, journal: readRuntimeHandoff(home, request.id, executionId) };
+    expect(db.prepare('SELECT dir_exists FROM work_repos WHERE root=?').get(repo)).toEqual({ dir_exists: 1 });
     git(candidateRoot, ['merge', '--ff-only', 'main']);
     fs.appendFileSync(path.join(candidateRoot, 'src/index.ts'), '\n');
     git(candidateRoot, ['add', 'src/index.ts']); git(candidateRoot, ['commit', '-m', 'Subsequent packaged publication candidate']);
