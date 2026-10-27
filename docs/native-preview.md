@@ -73,6 +73,13 @@ candidate, and source identity is checked again after compilation. An explicit
 Stale bundles are refused. Failure records its cause, stops the exact spawned
 processes and reclaims generated residue, or records pending cleanup and why.
 
+Supported setup or exact backend refresh adopts older owned previews only after
+verifying their retained runtime, registration and native receipts. Status remains
+read-only. Adoption preserves both stopped and live native profiles and records the
+unique live attachment as the default, even after it is explicitly stopped. A
+missing backend source digest remains unclaimed until ordinary refresh installs
+a verified build; native acquisition requires that exact source identity.
+
 ## Native isolation
 
 The copied app has a unique bundle identifier, executable name and window title,

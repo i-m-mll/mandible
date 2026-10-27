@@ -15,6 +15,33 @@ export function previewRegistration(env) {
     writable_roots_json: env.MANDIBLE_WRITABLE_ROOTS };
 }
 
+/** Adopt an existing serving tuple without changing or reloading its route. */
+export async function withLegacyPreviewRegistration({ home, runId, registration }, operation) {
+  const authority = path.join(home, 'config', 'local-sessions');
+  if (fs.readFileSync(path.join(home, 'config', 'client-auth', 'authority-id'), 'utf8').trim() !== registration.installation_id) throw new Error('Preview installation authority changed');
+  return withInstallationGatewayLock(home, async () => {
+    const bindings = path.join(authority, 'preview-bindings');
+    if (!/^preview-[a-f0-9]+$/.test(registration.instance_id)
+      || fs.existsSync(bindings) && fs.lstatSync(bindings).isSymbolicLink()) throw new Error('Invalid preview registration custody path');
+    const file = path.join(bindings, `${registration.instance_id}.json`);
+    if (fs.existsSync(file) && (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink())) throw new Error('Preview registration binding is not an exact regular file');
+    const binding = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+    const db = new SqliteDatabase(path.join(authority, 'sessions.db'), { readonly: true, fileMustExist: true });
+    try {
+      const current = tuple(db.prepare('SELECT * FROM instance_registrations WHERE instance_id = ?').get(registration.instance_id));
+      if (!isDeepStrictEqual(current, tuple(registration))) throw new Error('Legacy preview registration identity changed');
+      if (binding && (binding.runId !== runId || binding.state !== 'registered'
+        || !isDeepStrictEqual(binding.registration, current))) throw new Error('Legacy preview registration belongs to another acquisition');
+    } finally { db.close(); }
+    return operation(() => {
+      if (!binding) {
+        fs.mkdirSync(bindings, { recursive: true });
+        saveOwnedMetadata(file, { runId, registration: tuple(registration), state: 'registered', adoptedAt: new Date().toISOString() });
+      }
+    });
+  });
+}
+
 export async function reconcilePreviewRegistration({ home, runId, expected, desired, reload }) {
   const target = desired ?? expected;
   if (!target || target.role !== 'preview' || !runId) throw new Error('Exact owned preview registration required');

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, finalizeOwnedRun, cleanupOwnedRun, processIdentity } from './owned-run.mjs';
+import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, finalizeOwnedRun, cleanupOwnedRun, processIdentity, processLifetimeMatches, processReleaseBlocked } from './owned-run.mjs';
 
 import { nativeCandidate, verifyNativeBundle, buildNativePreview, nativeToolchain, verifyNativeSelection } from './native-build.mjs';
 
@@ -67,13 +67,15 @@ export async function stopNativePreview(file, options = {}) {
     for (const child of processes) {
       const identity = processIdentity(child.pid);
       if (identity === null) continue;
-      if ((child.birth ? identity.slice(0, 24) !== child.birth : identity !== child.identity) || (child.executable && !identity.includes(child.executable))) {
+      const matches = processLifetimeMatches(child, identity);
+      if (receipt.status === 'stopped' && matches === false) continue;
+      if (matches !== true || (child.executable && !identity.includes(child.executable))) {
         throw new Error('Native PID identity changed; refusing to signal a different process');
       }
       process.kill(child.group ? -child.pid : child.pid, child.group ? 'SIGKILL' : 'SIGTERM');
-      await until(() => processIdentity(child.pid) === null, 'Native preview did not stop');
+      await until(() => !processReleaseBlocked(child, true), 'Native preview did not stop');
     }
-    receipt.status = 'stopped'; receipt.stoppedAt = new Date().toISOString();
+    receipt.status = 'stopped'; receipt.stoppedAt ??= new Date().toISOString();
     saveOwnedMetadata(file, receipt);
     return receipt;
   });
@@ -113,7 +115,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
   const candidate = nativeCandidate(selected.worktree);
   verifyNativeSelection(selected, candidate);
   const parent = { root: previewRoot, runId: owner.runId };
-  const { withPreviewRun, acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer } = await import('./preview-custody.mjs');
+  const { withPreviewRun, acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer, nativePreviewBaseDir } = await import('./preview-custody.mjs');
   const existing = await withPreviewRun(parent, async metadata => {
     if (newInstance) return null;
     const consumers = metadata.ownership.consumers?.filter(entry => entry.state !== 'released') ?? [];
@@ -124,7 +126,8 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
       if (['preparing', 'loading'].includes(current.status)) throw new Error('Native launch attempt is still in progress');
       if (current.ownership.state === 'terminal') throw new Error('Native cleanup is pending; complete it before setup');
       const live = current.pid ? processIdentity(current.pid) : null;
-      if (live !== null) {
+      const stoppedLifetimeGone = current.status === 'stopped' && live !== null && processLifetimeMatches(current, live) === false;
+      if (live !== null && !stoppedLifetimeGone) {
         if (live !== current.processIdentity || current.status !== 'visible') throw new Error('Native attachment is busy or its process identity changed');
         if (current.build.commit !== candidate.commit || current.build.source_digest !== candidate.source_digest) {
           throw new Error('Stop the native attachment before rebuilding a changed candidate');
@@ -134,8 +137,8 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
         }
         return { ...current, reused: true };
       }
-      if ((current.buildProcess && !current.buildProcess.finishedAt && processIdentity(current.buildProcess.pid) !== null)
-        || current.buildProcess?.remaining?.some(child => processIdentity(child.pid) !== null)) throw new Error('Native build is still running');
+      if (processReleaseBlocked(current.buildProcess, current.status === 'stopped' || Boolean(current.buildProcess?.finishedAt))
+        || current.buildProcess?.remaining?.some(child => processReleaseBlocked(child, current.status === 'stopped'))) throw new Error('Native build is still running');
       current.status = 'stopped'; current.stoppedAt ??= new Date().toISOString();
       saveOwnedMetadata(consumer.metadataFile, current);
       return { resume: true, receipt: current, consumer };
@@ -149,7 +152,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     }
     verifyNativeBundle(bundle, candidate);
   }
-  const base = path.join(os.homedir(), '.cache/mandible/native-previews');
+  const base = nativePreviewBaseDir();
   fs.mkdirSync(base, { recursive: true });
   const resumed = existing?.resume === true;
   const attemptId = randomUUID();
@@ -274,9 +277,10 @@ export async function failNativePreviewAttempt({ receiptFile, resumed, reservati
 export async function cleanupNativePreview(file, options = {}) {
   let reservation;
   const result = await nativeOperation(file, options, receipt => {
-    if (receipt.pid && processIdentity(receipt.pid) !== null) throw new Error('Stop the native preview before cleanup');
-    if ((receipt.buildProcess && !receipt.buildProcess.finishedAt && processIdentity(receipt.buildProcess.pid) !== null)
-      || receipt.buildProcess?.remaining?.some(child => processIdentity(child.pid) !== null)) throw new Error('Stop the native build before cleanup');
+    const stopped = receipt.status === 'stopped';
+    if (processReleaseBlocked(receipt, stopped)) throw new Error('Stop the native preview before cleanup');
+    if (processReleaseBlocked(receipt.buildProcess, stopped || Boolean(receipt.buildProcess?.finishedAt))
+      || receipt.buildProcess?.remaining?.some(child => processReleaseBlocked(child, stopped))) throw new Error('Stop the native build before cleanup');
     reservation = receipt.reservation;
     if (receipt.ownership.state !== 'terminal') {
       const finalized = finalizeOwnedRun(file, { expectedRevision: receipt.ownership.revision,
