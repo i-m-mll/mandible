@@ -42,10 +42,18 @@ service identities, installed package digest and any owed desktop relaunch must
 converge before delivery actions close issues.
 
 The retained accepted app belongs to its acceptance owned-run. Pending or failed
-handoffs preserve it for recovery. Retained packages are not cache material;
-`disposeAcceptedRelease(reference, candidate, reason)` is the explicit owner
-cleanup operation for abandoned or superseded releases. Immutable acceptance
-receipts and evidence survive disposal. Current handoff runtime custody must
-remain available until its journal no longer needs verification.
+handoffs preserve it for recovery. Acknowledgment removes the scoped previous
+installed app and disposes the superseded owner's retained package. The current
+release retains one package for its pinned verification runtime. Immutable
+acceptance receipts and evidence survive disposal. Abandoned requests use:
+
+```sh
+bun scripts/dispose-accepted-release.mjs REQUEST ACCEPTANCE 'Reason'
+```
+
+This refuses an installed release or unresolved handoff, and requires a rejected,
+withdrawn, superseded or expired request. Retained packages are not cache material.
+Whole-package verification and disposal run in bounded child processes so the
+daemon continues serving requests during convergence.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

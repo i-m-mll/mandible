@@ -37,7 +37,7 @@ function referenceFor(file) {
 }
 
 /** Resolve only the selected immutable receipt; never discover another acceptance or app. */
-export function resolveAcceptedRelease(reference, expectedCandidate) {
+export function readAcceptedReleaseReceipt(reference, expectedCandidate) {
   const match = /^accepted-release:([a-f0-9]{64}):([A-Za-z0-9_-]+)$/.exec(reference ?? '');
   if (!match || reference.length > 512) throw new Error('Invalid accepted release reference.');
   const file = Buffer.from(match[2], 'base64url').toString('utf8');
@@ -53,6 +53,12 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   const handle = receipt.package.handle;
   if (!handle?.root || file !== path.join(path.dirname(handle.root), '.receipts', `${handle.runId}-accepted-release.json`)
       || receipt.acceptance.run_id !== handle.runId) throw new Error('Accepted release custody locator changed.');
+  return receipt;
+}
+
+export function resolveAcceptedRelease(reference, expectedCandidate) {
+  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
+  const handle = receipt.package.handle;
   const metadata = JSON.parse(fs.readFileSync(path.join(handle.root, 'metadata.json'), 'utf8'));
   if (!ownedRunIdentityMatches(handle.root, metadata.ownership) || metadata.ownership.runId !== handle.runId
       || metadata.ownership.project !== receipt.retention.project || metadata.ownership.workUnit !== receipt.retention.work_unit) throw new Error('Accepted release owner changed.');

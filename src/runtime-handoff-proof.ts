@@ -7,6 +7,7 @@ import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
+import path from 'node:path';
 import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
 
 export interface RuntimePublicationBinding {
@@ -74,13 +75,13 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   const base = frozen.merge_preflight_base_sha as string;
   const head = frozen.merge_head_sha as string;
   const tree = frozen.merge_candidate_tree_sha as string;
-  const selected = binding.delivery === 'accepted-release' ? acceptedReleaseSelection(db, frozen, snapshot.actions ?? []) : null;
+  const selected = binding.delivery === 'accepted-release' ? acceptedReleaseSelection(db, frozen, snapshot.actions ?? [], false) : null;
   if (selected) {
-  if (binding.acceptedRelease && JSON.stringify(binding.acceptedRelease) !== JSON.stringify(selected.selection)) fail('accepted release selection changed');
-  const liveSelection = db.prepare('SELECT state, payload FROM auth_request_actions WHERE id = ? AND auth_request_id = ?').get(
-    snapshot.actions.find((action: any) => action.kind === 'checkpoint_add' && action.payload?.kind === 'accepted-release').id, row.id) as { state: string; payload: string } | undefined;
-  if (!liveSelection || !['staged', 'applied'].includes(liveSelection.state)
-      || JSON.stringify(JSON.parse(liveSelection.payload).payload) !== JSON.stringify(selected.selection)) fail('accepted release selection was removed or vetoed');
+    if (binding.acceptedRelease && JSON.stringify(binding.acceptedRelease) !== JSON.stringify(selected.selection)) fail('accepted release selection changed');
+    const liveSelection = db.prepare('SELECT state, payload FROM auth_request_actions WHERE id = ? AND auth_request_id = ?').get(
+      snapshot.actions.find((action: any) => action.kind === 'checkpoint_add' && action.payload?.kind === 'accepted-release').id, row.id) as { state: string; payload: string } | undefined;
+    if (!liveSelection || !['staged', 'applied'].includes(liveSelection.state)
+        || JSON.stringify(JSON.parse(liveSelection.payload).payload) !== JSON.stringify(selected.selection)) fail('accepted release selection was removed or vetoed');
   }
   if (binding.mergeBase && binding.mergeBase !== base || binding.mergeHead && binding.mergeHead !== head) fail("reviewed revisions differ");
   for (const field of ["command", "repo", "base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest", "approval_lease_id"]) {
@@ -121,6 +122,8 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
       (await git(["rev-parse", "HEAD"])) !== commit || (await git(["rev-parse", `refs/heads/${row.base_branch}`])) !== commit ||
       (await git(["write-tree"])) !== tree || (await git(["status", "--porcelain", "--untracked-files=no"]))) fail("exact applied checkout differs");
   if (frozen.commit_message_digest && canonicalizeChangeMessage(published.message) !== frozen.commit_message) fail("canonical merge message differs");
+  if (selected) await childOutput(process.execPath, [path.join(root, 'scripts/verify-accepted-release.mjs'), selected.selection.reference,
+    JSON.stringify(selected.receipt.candidate)], { timeout: 60_000, encoding: 'utf8' });
   if (JSON.stringify(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId)) !== JSON.stringify(row) ||
       JSON.stringify(db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId)) !== JSON.stringify(hook)) fail("request or hook changed during publication observation");
   if (authorizedMergeSignerLines(db, row.approved_by_user_id, signature.credential_id).length === 0) fail("publication signer is no longer authorized");

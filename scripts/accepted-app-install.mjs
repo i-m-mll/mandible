@@ -27,11 +27,12 @@ export function installAcceptedApplication(binding, context) {
   const accepted = acceptedApplication(binding);
   const owner = readBundleOwner(context);
   const installedOwner = owner?.generation === accepted.receipt.shipped.provenance.commit
-    && owner?.sourceDigest === accepted.receipt.shipped.provenance.source_digest && owner?.bundleRoot === context.bundleRoot;
+    && owner?.sourceDigest === accepted.receipt.shipped.provenance.source_digest && owner?.bundleRoot === context.bundleRoot
+    && owner?.acceptedRelease === binding.acceptedRelease.reference;
   if (!installedOwner && JSON.stringify(owner) !== JSON.stringify(binding.bundleOwner ?? null)) throw new Error('Bundle ownership changed during installation.');
   const paths = acceptedInstallPaths(binding);
   if (fs.existsSync(binding.nativeApp) && applicationIdentity(binding.nativeApp) === accepted.receipt.package.sha256) {
-    if (!installedOwner) adoptBundleRelease(context, accepted.receipt.shipped, owner);
+    if (!installedOwner) adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference);
     return { packageSha256: accepted.receipt.package.sha256, ...paths };
   }
   if (installedOwner || fs.existsSync(paths.previous) && fs.existsSync(binding.nativeApp)) throw new Error('Installation paths changed after package replacement.');
@@ -43,9 +44,12 @@ export function installAcceptedApplication(binding, context) {
   if (applicationIdentity(paths.staging) !== accepted.receipt.package.sha256) throw new Error('Staged application differs from the exact accepted package.');
   const signed = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', paths.staging], { timeout: 30_000, encoding: 'utf8' });
   if (signed.error || signed.status !== 0) throw new Error(`Accepted application signature failed: ${signed.error?.message || signed.stderr}`);
-  if (fs.existsSync(binding.nativeApp)) fs.renameSync(binding.nativeApp, paths.previous);
+  if (fs.existsSync(binding.nativeApp)) {
+    if (applicationIdentity(binding.nativeApp) !== binding.priorAppSha256) throw new Error('Prior installed application changed after admission.');
+    fs.renameSync(binding.nativeApp, paths.previous);
+  } else if (binding.priorAppSha256 && !fs.existsSync(paths.previous)) throw new Error('Prior installed application disappeared after admission.');
   fs.renameSync(paths.staging, binding.nativeApp);
   verifyAcceptedApplication(binding);
-  adoptBundleRelease(context, accepted.receipt.shipped, owner);
+  adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference);
   return { packageSha256: accepted.receipt.package.sha256, ...paths };
 }

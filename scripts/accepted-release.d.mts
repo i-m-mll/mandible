@@ -12,6 +12,7 @@ export interface AcceptedReleaseReceipt {
 }
 export const ACCEPTED_RELEASE_SCHEMA: string;
 export function applicationIdentity(app: string): string;
+export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string };
 export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string): Promise<{ action: string; reason: string; remaining?: string[] }>;
 export function retainAcceptedRelease(input: { app: string; storage: string; ownership: { runId: string; instanceId: string; project: string; workUnit: string }; candidate: AcceptedReleaseCandidate; acceptance: { record_id: string | null; request_id: string | null }; evidence: AcceptedReleaseReceipt['evidence']; expectedDigest: string }): Promise<string>;

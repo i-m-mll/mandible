@@ -54,7 +54,7 @@ export function admitBundleOwner(context, release, { relocation = false } = {}) 
 }
 
 /** The delivery journal authorizes replacement; this boundary proves the old writer is gone. */
-export function adoptBundleRelease(context, release, expectedOwner) {
+export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease) {
   assertLifecycleLockHeld();
   const current = readBundleOwner(context);
   if (JSON.stringify(current) !== JSON.stringify(expectedOwner)) throw new Error('Bundle owner changed after handoff capture.');
@@ -66,7 +66,7 @@ export function adoptBundleRelease(context, release, expectedOwner) {
   const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
   if (current && current.installationId !== installationId) throw new Error('Bundle owner belongs to another installation authority.');
   publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
-    generation: release.provenance.commit, sourceDigest: release.provenance.source_digest });
+    generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, ...(acceptedRelease ? { acceptedRelease } : {}) });
   return readBundleOwner(context);
 }
 
@@ -136,7 +136,7 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     const configuration = readServiceConfiguration(context);
     if (configuration.migrated) publishServiceConfiguration(configuration.file, configuration.configuration);
     const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
-    publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
+    publish(ownerFile(context), { ...admission.owner, schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
       generation: release.provenance.commit, sourceDigest: release.provenance.source_digest });
     const prior = fs.existsSync(launchFile(context)) ? readBundleLaunch(context) : null;
     const currentSession = session();

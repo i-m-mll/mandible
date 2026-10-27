@@ -244,7 +244,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const accepted = readBootstrapAcceptanceEvidence(db, request.id)!;
     const retained = resolveAcceptedRelease(accepted.result.receipt);
     const requestDetail = await readBootstrapDelivery(agentApi, request.id);
-    const action = await fetch(`${baseUrl}/api/auth/request/${request.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: issue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: accepted.result.receipt } }, expected_revision: requestDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: (requestDetail as any).custody_generation }) });
+    const action = await fetch(`${baseUrl}/api/auth/request/${request.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: issue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: accepted.result.receipt } }, expected_revision: requestDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: requestDetail.lifecycle_events.at(-1)!.custody_generation }) });
     expect(action.ok, JSON.stringify(await action.json())).toBe(true);
     const poisonBuild = path.join(scratch, 'build-after-acceptance');
     const poisonScript = path.join(scratch, 'deny-build');
