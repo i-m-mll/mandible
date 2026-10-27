@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import { useIsFrameHeader } from './FrameHeader';
@@ -172,7 +173,7 @@ export function CopyRefButton({ value, label }: { value: string; label: string }
       aria-label={effectiveLabel}
       onClick={() => void handleCopy()}
     >
-      {copied ? <CheckIcon /> : <CopyIcon />}
+      {copied ? <Icon name="copied" /> : <Icon name="copy" size={10} />}
     </button>
   );
 }
@@ -219,21 +220,4 @@ function copyTextWithSelection(value: string): boolean {
     }
   }
   return copied;
-}
-
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-    </svg>
-  );
-}
-
-function CheckIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M20 6L9 17l-5-5" />
-    </svg>
-  );
 }

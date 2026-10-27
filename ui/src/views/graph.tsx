@@ -1,3 +1,4 @@
+import { Icon } from '../components/icons/Icon';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
@@ -38,7 +39,6 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
-import { PreviewIcon } from '../components/icons/TabIcons';
 
 type ReactFlowNode = {
   id: string
@@ -579,7 +579,7 @@ function TokenMultiSelect({
               className="graph-token-select__remove"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => removeValue(value)}
-            />
+            ><Icon name="removeToken" /></button>
           </span>
         ))}
         <input
@@ -1120,7 +1120,7 @@ export function GraphView({
     id: 'graph-detail',
     kind: 'panel' as const,
     title: 'Graph detail',
-    icon: <PreviewIcon size={18} />,
+    icon: <Icon name="preview" size={18} />,
     ariaLabel: 'Graph detail',
     open: detailPanelOpen,
     width: detailPanelState.width,

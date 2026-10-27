@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 // Bug: a0963df — Unified hover-revealed action bar for messages
 // Bug: 02d701a — P3: overflow menu and onInfo callback
 
@@ -90,7 +91,7 @@ export function MessageActions({
           aria-label={isSelected ? 'Deselect message' : 'Select message'}
           aria-pressed={isSelected}
         >
-          {isSelected ? '✓' : '□'}
+          <Icon name={isSelected ? 'messageSelectionChecked' : 'messageSelect'} />
         </button>
       )}
       {onCopy && (
@@ -101,14 +102,9 @@ export function MessageActions({
           aria-label={copiedFeedback ? 'Copied' : 'Copy message'}
         >
           {copiedFeedback ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
+            <Icon name="messageCopied" size={14} />
           ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
+            <Icon name="copyMessage" size={14} />
           )}
         </ContextualAction>
       )}
@@ -125,8 +121,7 @@ export function MessageActions({
             aria-haspopup="menu"
             aria-expanded={overflowOpen}
           >
-            &#x2026;
-          </ContextualAction>
+            <Icon name="menu" /></ContextualAction>
           {overflowOpen && (
             <div
               ref={overflowMenuRef}
@@ -142,7 +137,7 @@ export function MessageActions({
                   role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onFork)}
                 >
-                  &#x2441; Fork
+                  <Icon name="forkConversation" /> Fork
                 </button>
               )}
               {shouldShowResume && (
@@ -152,7 +147,7 @@ export function MessageActions({
                   role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onResume)}
                 >
-                  &#x21A9; Resume
+                  <Icon name="resume" /> Resume
                 </button>
               )}
               {onInfo && (
@@ -162,7 +157,7 @@ export function MessageActions({
                   role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onInfo)}
                 >
-                  &#x2139; Info
+                  <Icon name="information" /> Info
                 </button>
               )}
             </div>

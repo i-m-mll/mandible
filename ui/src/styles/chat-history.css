@@ -46,7 +46,7 @@
   margin: 0;
   padding: 6px 10px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
 }
 
 .chat-project-chooser {
@@ -56,7 +56,7 @@
   padding: 0 7px 7px;
 }
 
-.chat-project-chooser select {
+.chat-project-chooser :is(select, .native-select) {
   min-width: 0;
   min-height: 30px;
 }
@@ -68,12 +68,12 @@
   background: var(--bg-card);
   color: var(--text-primary);
   font: inherit;
-  font-size: var(--text-sm);
+  font-size: calc(var(--text-sm) + var(--chrome-text-increment, 0px));
 }
 
 .chat-filter-popover__select span {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -83,7 +83,7 @@
   align-items: center;
   gap: 8px;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
 }
 
 .chat-filter-popover__select {
@@ -118,7 +118,7 @@
 .chat-history-item__owner {
   max-width: 78px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
 }
 
 .agent-mark {
@@ -156,7 +156,7 @@
   padding: 24px 12px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
 }
 
 .chat-history-detail {

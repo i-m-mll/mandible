@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
@@ -117,7 +118,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
               title={props.clearAriaLabel}
               onClick={() => props.onValueChange('')}
             >
-              <ClearSearchIcon />
+              <Icon name="clearSearch" />
             </button>
           ) : null}
         </div>
@@ -135,7 +136,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             aria-controls={props.panel?.id}
             onClick={props.filterTrigger.onToggle}
           >
-            {props.filterTrigger.kind === 'menu' ? <MenuTriggerIcon /> : <FilterTriggerIcon />}
+            {props.filterTrigger.kind === 'menu' ? <Icon name="sidebarMenu" /> : <Icon name="filter" />}
             {props.filterTrigger.count !== undefined && props.filterTrigger.count > 0 ? (
               <span className="sidebar-search-filter__badge">{props.filterTrigger.count}</span>
             ) : null}
@@ -174,28 +175,4 @@ function isEditableTarget(target: HTMLElement): boolean {
     || target instanceof HTMLTextAreaElement
     || target instanceof HTMLSelectElement
     || target.isContentEditable;
-}
-
-function ClearSearchIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-      <path d="M3 3l6 6M9 3L3 9" />
-    </svg>
-  );
-}
-
-function FilterTriggerIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M7 12h10M10 18h4" />
-    </svg>
-  );
-}
-
-function MenuTriggerIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M4 12h16M4 18h16" />
-    </svg>
-  );
 }

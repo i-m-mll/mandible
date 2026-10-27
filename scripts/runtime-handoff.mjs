@@ -850,7 +850,7 @@ export async function runRuntimeHandoffWorker(file, {
     recordVerificationFailure(journal, new Error('Initial handoff execution budget exhausted before launch.'));
     return journal;
   }
-  const inspectEvidence = async () => JSON.parse(await control(journal, 'handoff-evidence', true, { until: now() + 5000 }));
+  const inspectEvidence = async () => JSON.parse(await control(journal, 'handoff-evidence', false, { until: now() + 5000 }));
   const verify = async initial => {
     await withRuntimeObservation(journal, async token => {
       await verifyPublication(journal);
@@ -866,7 +866,7 @@ export async function runRuntimeHandoffWorker(file, {
         if (!observationPending(error)) throw error;
         if (error.evidence) bindLaunchedProcesses(journal, error.evidence);
       }
-      await control(journal, 'handoff-verify', !initial, { until, awaitReady: true });
+      await control(journal, 'handoff-verify', false, { until, awaitReady: true });
       save(journal, { phase: 'observing', launch: { ...journal.launch, readyAt: journal.launch.readyAt ?? now() } });
       if (initial) await desktop(journal);
       const receipt = await observe(journal, { observerToken: token, deadlineMs: Math.max(0, until - now()), readEvidence: inspectEvidence });

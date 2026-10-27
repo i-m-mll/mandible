@@ -116,16 +116,6 @@
   display: none;
 }
 
-.instruction-message-block__summary::before {
-  content: '\25B8';
-  font-size: 10px;
-  line-height: 1;
-}
-
-.instruction-message-block[open] .instruction-message-block__summary::before {
-  content: '\25BE';
-}
-
 .instruction-message-block__label {
   color: var(--text-primary);
   font-weight: 600;
@@ -270,7 +260,7 @@
   color: inherit;
 }
 
-.compact-activity__icon > :is(svg, span) {
+.compact-activity__icon > :is(.app-icon, span) {
   width: 16px;
   height: 16px;
 }

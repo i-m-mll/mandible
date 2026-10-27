@@ -10,7 +10,7 @@
   border-radius: 999px;
   background: rgba(245, 194, 92, 0.12);
   color: var(--accent-yellow);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   font-family: var(--font-mono);
   text-decoration: none;
   cursor: pointer;
@@ -47,7 +47,7 @@
   gap: 8px;
   min-width: 0;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   text-decoration: none;
 }
 

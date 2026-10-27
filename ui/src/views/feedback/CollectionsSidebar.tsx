@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../components/shared/NativeSelect';
 import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 
@@ -338,7 +339,7 @@ export function CollectionsSidebar({
               <>
                 <div className="sidebar-search-filter__section">
                   <label className="sidebar-search-filter__label" for="briefing-lifecycle">Collection</label>
-                  <select
+                  <NativeSelect
                     id="briefing-lifecycle"
                     aria-label="Briefing collection lifecycle"
                     value={viewState.collectionLifecycle}
@@ -350,11 +351,11 @@ export function CollectionsSidebar({
                     <option value="active">Active</option>
                     <option value="all">All</option>
                     <option value="archived">Archived</option>
-                  </select>
+                  </NativeSelect>
                 </div>
                 <div className="sidebar-search-filter__section">
                   <label className="sidebar-search-filter__label" for="briefing-sort">Sort</label>
-                  <select
+                  <NativeSelect
                     id="briefing-sort"
                     aria-label="Sort briefings"
                     value={viewState.collectionSort}
@@ -366,7 +367,7 @@ export function CollectionsSidebar({
                     <option value="activity">Recent activity</option>
                     <option value="name">Name</option>
                     <option value="unanswered-count">Needs response</option>
-                  </select>
+                  </NativeSelect>
                 </div>
               </>
             ),

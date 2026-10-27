@@ -165,11 +165,11 @@ export function loopbackListening(port) {
 }
 
 /**
- * Probe until `isReady` accepts an answer. A refused connection means the
- * target has not bound yet and is waited for; any other probe failure ends the
- * wait at once. Expiry names the last observation.
+ * Probe until `isReady` accepts an answer. Connection refusal is pending by
+ * default; callers may supply a scoped startup predicate. Expiry names the
+ * last observation within the same fixed deadline.
  */
-export async function awaitReadiness(probe, isReady, { timeout, description, interval = 100 }) {
+export async function awaitReadiness(probe, isReady, { timeout, description, interval = 100, pending = readinessPending }) {
   const end = Date.now() + timeout;
   let last = 'no probe completed';
   while (Date.now() < end) {
@@ -178,12 +178,37 @@ export async function awaitReadiness(probe, isReady, { timeout, description, int
       if (isReady(value)) return value;
       last = 'answered, not ready';
     } catch (error) {
-      if (!readinessPending(error)) throw error;
+      if (!pending(error)) throw error;
       last = error.message;
     }
     await delay(interval);
   }
   throw new Error(`${description} did not complete within ${timeout}ms; last observation: ${last}`);
+}
+
+export function awaitAcceptanceGatewayReadiness(probe, isReady, { onInitialTlsError = () => {}, ...options }) {
+  let answered = false;
+  return awaitReadiness(async () => {
+    const value = await probe();
+    answered = true;
+    return value;
+  }, isReady, { ...options, pending: error => {
+    if (!answered && error.code === 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR') {
+      onInitialTlsError({ code: error.code, message: error.message });
+      return true;
+    }
+    return readinessPending(error);
+  } });
+}
+
+export function acceptanceFailureLogs(run) {
+  return ['daemon', 'gateway'].flatMap(name => {
+    const file = path.join(run, `${name}.log`);
+    if (!fs.existsSync(file)) return [];
+    const bytes = fs.readFileSync(file);
+    return [{ name, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
+      excerpt: bytes.subarray(Math.max(0, bytes.length - 8000)).toString('utf8') }];
+  });
 }
 
 async function freePort() {
@@ -316,7 +341,9 @@ async function main() {
       if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) throw new Error('Wrong or stale instance answered acceptance health.');
       return value;
     };
-    const health = await awaitReadiness(probe, value => value.ready === true && value.startup_commit?.hash === candidate, { timeout: 30000, description: 'Exact production daemon readiness' });
+    const health = await awaitAcceptanceGatewayReadiness(probe, value => value.ready === true && value.startup_commit?.hash === candidate,
+      { timeout: 30000, description: 'Exact production daemon readiness',
+        onInitialTlsError: error => { result.checks.initial_transport_error ??= error; } });
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
     if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
     await new Promise((resolve, reject) => {
@@ -367,6 +394,7 @@ async function main() {
     if (result.checks.log_failures.length) result.status = 'failed';
     result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode, gateway_exit: gateway?.exitCode, gateway_signal: gateway?.signalCode };
     if ([daemon, gateway].some(child => child && (child.exitCode !== 0 || child.signalCode))) result.status = 'failed';
+    if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
     if (![daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {

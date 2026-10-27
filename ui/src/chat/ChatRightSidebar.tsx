@@ -1,3 +1,4 @@
+import { Icon, type IconName } from '../components/icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { SessionOverviewView } from '../views/session-overview';
@@ -9,7 +10,7 @@ export type ChatActivityItemStatus = 'active' | 'finished' | 'waiting' | 'error'
 
 export type ChatActivityItem = {
   id: string;
-  icon: string;
+  icon: IconName;
   label: string;
   status: ChatActivityItemStatus;
   meta: string[];
@@ -72,7 +73,7 @@ export function ChatActivity({ items }: { items: ChatActivityItem[] }): JSX.Elem
                   className={`chat-activity__item chat-activity__item--${item.status}`}
                   onClick={item.onActivate}
                 >
-                  <span className="chat-activity__icon" aria-hidden="true">{item.icon}</span>
+                  <span className="chat-activity__icon" aria-hidden="true"><Icon name={item.icon} /></span>
                   <span className="chat-activity__main">
                     <span className="chat-activity__label">{item.label}</span>
                     {item.meta.length > 0 ? (

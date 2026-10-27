@@ -6,7 +6,11 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createHash } from 'node:crypto';
+import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
+import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
+import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
@@ -196,6 +200,84 @@ it('retains bounded aggregate route diagnostics without treating caller volume a
     http_requests: { routes: [{ count: 101, untimed: 101, peak_window_count: 101 }] } } });
   const error = JSON.stringify({ level: 'error', message: 'http_request', method: 'GET', pathname: '/api/projects', status: 500 });
   expect(assessRuntimeLogs(`${aggregate}\n${error}`).failures).toEqual([error]);
+});
+
+it('waits through the initial certificate alert but rejects the same alert after validated HTTPS', async () => {
+  const alert = Object.assign(new Error('leaf certificate is not available yet'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  const initialErrors: unknown[] = [];
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) throw alert;
+    return { ready: true };
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway',
+    onInitialTlsError: error => initialErrors.push(error) })).resolves.toEqual({ ready: true });
+  expect(initialErrors).toEqual([{ code: alert.code, message: alert.message }]);
+  probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) return { ready: false };
+    throw alert;
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(alert);
+  expect(probes).toBe(2);
+});
+
+it('bounds persistent certificate startup and keeps unrelated gateway failures fatal', async () => {
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    probes++;
+    throw Object.assign(new Error('still missing the leaf'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  }, () => true, { timeout: 15, interval: 1, description: 'Gateway' }))
+    .rejects.toThrow('last observation: still missing the leaf');
+  expect(probes).toBeGreaterThan(1);
+  for (const error of [
+    Object.assign(new Error('untrusted certificate'), { code: 'CERT_HAS_EXPIRED' }),
+    Object.assign(new Error('wrong hostname'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }),
+    Object.assign(new Error('wrong TLS version'), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' }),
+    new Error('Health HTTPS 502'), new Error('Owned HTTPS gateway exited'), new Error('Wrong generation'),
+  ]) {
+    probes = 0;
+    await expect(awaitAcceptanceGatewayReadiness(async () => { probes++; throw error; }, () => true,
+      { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(error);
+    expect(probes).toBe(1);
+  }
+});
+
+it.each([false, true])('records nested acceptance diagnostics through private cleanup (oversized=%s)', async oversized => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-evidence-'));
+  const home = path.join(scratch, 'private'); fs.mkdirSync(home);
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  try {
+    const daemonLog = `${(oversized ? '\u001b' : 'startup detail\n').repeat(1000)}daemon failed startup`;
+    const gatewayLog = `${oversized ? '\u001b'.repeat(9000) : ''}no certificate available for app.mandible.localhost`;
+    fs.writeFileSync(path.join(home, 'daemon.log'), daemonLog);
+    fs.writeFileSync(path.join(home, 'gateway.log'), gatewayLog);
+    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
+      initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
+      failure_logs: acceptanceFailureLogs(home),
+    } };
+    insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
+    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {}, () => false);
+    runs.enqueue('outer-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
+      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
+    await runs.idle();
+    const packet = path.join(scratch, 'outer-failure.json');
+    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readBootstrapAcceptanceEvidence(db, 'outer-request') }));
+    fs.rmSync(home, { recursive: true });
+    const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
+    expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);
+    expect(retained).toMatchObject({ status: 'failed', result: { status: 'failed', candidate: result.candidate, error: result.error,
+      checks: { initial_transport_error: result.checks.initial_transport_error } } });
+    if (oversized) expect(retained.result.truncated).toBe(true);
+    for (const [name, content, diagnostic] of [
+      ['daemon', daemonLog, 'daemon failed startup'],
+      ['gateway', gatewayLog, 'no certificate available for app.mandible.localhost'],
+    ]) {
+      const log = retained.result.checks.failure_logs.find(entry => entry.name === name);
+      expect(log).toMatchObject({ name, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) });
+      expect(content.endsWith(log.excerpt)).toBe(true);
+      expect(log.excerpt.endsWith(diagnostic)).toBe(true);
+    }
+  } finally { db.close(); fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 

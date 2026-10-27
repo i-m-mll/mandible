@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { JSX } from 'preact/jsx-runtime';
 
 export function OverlayCloseButton({
@@ -9,10 +10,7 @@ export function OverlayCloseButton({
 }): JSX.Element {
   return (
     <button type="button" className="overlay-close-button" aria-label={label} onClick={onClick}>
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="m18 6-12 12" />
-        <path d="m6 6 12 12" />
-      </svg>
+      <Icon name="close" />
     </button>
   );
 }

@@ -1,3 +1,4 @@
+import { Icon } from '../components/icons/Icon';
 import { ApiError, type ConversationControlError, type ConversationSpawnFailure } from '../api.js';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
@@ -143,7 +144,7 @@ export function ChatFailureNotice({
       title={failure.title}
       actions={(failure.retryable && onRetry) || onDismiss ? <>
         {failure.retryable && onRetry ? <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onRetry}>Retry</button> : null}
-        {onDismiss ? <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={onDismiss}>×</button> : null}
+        {onDismiss ? <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={onDismiss}><Icon name="dismiss" /></button> : null}
       </> : undefined}
     >
       {failure.detail ? <span>{failure.detail}</span> : null}

@@ -320,9 +320,9 @@
 .tabs--both .tab-overflow__menu a { display: flex; align-items: center; gap: 6px; }
 
 /* SVG icons inside tabs: ensure vertical centering */
-.tabs svg,
-.tab-twin__btn svg,
-.tab-overflow__menu svg {
+.tabs .app-icon,
+.tab-twin__btn .app-icon,
+.tab-overflow__menu .app-icon {
   flex-shrink: 0;
   vertical-align: middle;
 }
@@ -721,7 +721,7 @@
   background: transparent;
   color: var(--status-info-fg);
   cursor: pointer;
-  font: var(--text-xs)/1 var(--font-mono);
+  font: calc(var(--text-xs) + var(--chrome-text-increment, 0px))/1 var(--font-mono);
   white-space: nowrap;
 }
 

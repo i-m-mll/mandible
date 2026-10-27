@@ -15,7 +15,7 @@
 
 .tasks-sidebar__empty {
   padding: 16px 14px;
-  font-size: var(--text-sm);
+  font-size: calc(var(--text-sm) + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
   line-height: 1.5;
 }

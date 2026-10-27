@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 // SHARED COMPONENT — used by BOTH Chat (StreamRenderer) and History (conversations.tsx).
 // Changes here affect BOTH views. If you modify rendering for one view,
 // the other MUST update automatically because they use this same component.
@@ -40,14 +41,9 @@ export function GroupFooter({
           aria-label={copied ? 'Copied' : 'Copy all messages'}
         >
           {copied ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
+            <Icon name="messageCopied" size={14} />
           ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
+            <Icon name="copyMessage" size={14} />
           )}
         </ContextualAction>
         {/* Bug: 0a1ad82 — Select button for turn selection */}
@@ -59,14 +55,9 @@ export function GroupFooter({
             aria-label={isSelected ? 'Deselect turn' : 'Select turn'}
           >
             {isSelected ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
-                <polyline points="17 8 10 16 7 13" />
-              </svg>
+              <Icon name="messageSelected" size={14} />
             ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
-              </svg>
+              <Icon name="selectMessage" size={14} />
             )}
           </ContextualAction>
         )}
@@ -77,12 +68,7 @@ export function GroupFooter({
             title="Open markdown"
             aria-label="Open turn as markdown"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <path d="M14 2v6h6" />
-              <path d="M9 15h6" />
-              <path d="M9 18h3" />
-            </svg>
+            <Icon name="openMarkdown" size={14} />
           </ContextualAction>
         )}
         {totalTokens != null && (

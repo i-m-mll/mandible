@@ -22,7 +22,7 @@ import { addGrant } from '../../src/permissions/store.js';
 import { loadOrCreatePepper } from '../../src/client-auth/secret-store.js';
 import { mintApiToken } from '../../src/client-auth/tokens.js';
 import { setSetting } from '../../src/client-auth/settings-kv.js';
-import { activateBootstrapWorkUnit, submitBootstrapDelivery, acceptBootstrapDelivery, approveBootstrapDelivery, readBootstrapDelivery, assertBootstrapOperatorProof } from '../helpers/bootstrap-delivery-api.js';
+import { activateBootstrapWorkUnit, submitBootstrapDelivery, acceptBootstrapDelivery, approveBootstrapDelivery, readBootstrapDelivery, readBootstrapAcceptanceEvidence, assertBootstrapOperatorProof } from '../helpers/bootstrap-delivery-api.js';
 
 const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -281,7 +281,8 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, error, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;
     if (requestState?.output) requestState.output = requestState.output.slice(-16000);
     const hookStates = requestId && db ? (db.prepare('SELECT hook_id, position, state, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? ORDER BY position').all(requestId) as any[]).map(row => ({ ...row, output: row.output?.slice(-16000) })) : [];
-    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
+    const candidateAcceptance = requestId && db ? readBootstrapAcceptanceEvidence(db, requestId) : null;
+    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, candidateAcceptance, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
   } finally {
     if (requestId && executionId) spawnSync('/bin/launchctl', ['bootout', `${domain}/bio.mll.mandible.runtime-handoff.${digest(`${home}:${requestId}:${executionId}`).slice(0, 16)}`], { timeout: 5000 });
     for (const label of [backendLabel, gatewayLabel]) spawnSync('/bin/launchctl', ['bootout', `${domain}/${label}`], { timeout: 5000 });

@@ -786,6 +786,47 @@ it('runs the staged bundled helper without activating imported command-line entr
   expect(readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId)?.phase).toBe('failed');
 });
 
+it.each([false, true])('completes bundled handoff observation without replaying launch effects (resumed=%s)', async resumed => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const dir = handoffDirectory(binding.home, binding.requestId, binding.executionId);
+  const file = path.join(dir, 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: resumed ? 'verification-pending' : 'armed', attempts: resumed ? 1 : 0,
+    deadline: f.fakeStart + (resumed ? -1 : 30_000), bridgeInstalled: true, stages: {},
+    ...(resumed ? { launch: { id: 'already-launched', enteredAt: f.fakeStart - 1000 } } : {}),
+    environment: { ...process.env, MANDIBLE_HOME: f.home } };
+  delete (journal as any).error;
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  stageHandoffController(process.cwd(), dir);
+  const processes = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
+  const evidence = { ...f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)), processes };
+  const commandsFile = path.join(f.home, 'controller-commands.jsonl');
+  fs.writeFileSync(path.join(dir, 'controller.mjs'), `import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(commandsFile)}, JSON.stringify(process.argv[2]) + '\\n');
+console.log(${JSON.stringify(JSON.stringify(evidence))});
+`);
+  const helper = path.join(dir, 'helper.mjs');
+  execFileSync(process.execPath, ['build', 'scripts/runtime-handoff.mjs', '--target', 'bun', '--outfile', helper], { stdio: 'pipe', timeout: STATE_DEADLINE_MS });
+  const runtime = await import(pathToFileURL(helper).href);
+  const stage = vi.fn(async () => { fs.appendFileSync(path.join(dir, 'convergence.log'), 'fixture stage\n'); });
+  const observe = vi.fn(async (current, options) => {
+    const observed = await options.readEvidence();
+    return { bindingDigest: current.bindingDigest, evidence: observed };
+  });
+  const complete = await runtime.runRuntimeHandoffWorker(file, {
+    verifyPublication: async () => {}, stage, desktop: async () => {}, observe,
+  });
+  expect(complete, complete.error).toMatchObject({ phase: 'complete', attempts: 1,
+    launch: { processes, readyAt: expect.any(Number) }, receipt: { evidence } });
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject(complete);
+  expect(stage).toHaveBeenCalledTimes(resumed ? 0 : 4);
+  expect(observe).toHaveBeenCalledOnce();
+  expect(fs.readFileSync(commandsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)))
+    .toEqual([...(resumed ? [] : ['handoff-remove', 'handoff-start']), 'handoff-evidence', 'handoff-verify', 'handoff-evidence']);
+  if (resumed) expect(complete.launch.id).toBe('already-launched');
+});
+
 
 /** Copy the handoff controller and the daemon modules it imports, as a qualified installation lays them out. */
 function installQualifiedController(home: string): string {

@@ -31,6 +31,20 @@ textarea::placeholder {
   font-size: var(--font-ui-size);
 }
 
+:is(.app-frame__bar, .app-rail, .view-sidebar) {
+  --chrome-text-increment: 2pt;
+  font-size: calc(var(--font-ui-size) + var(--chrome-text-increment));
+}
+
+:is(.app-frame__bar, .app-rail, .view-sidebar) :is(.app-anchored-menu, .sidebar-search-filter__panel--popover, .spaces-tree__seed-overlay, .detail-pane-modal) {
+  --chrome-text-increment: 0px;
+  font-size: var(--font-ui-size);
+}
+
+.view-sidebar .contextual-action {
+  font-size: var(--font-ui-size);
+}
+
 [data-app-surface='main'] {
   background: var(--surface-main);
 }
@@ -75,7 +89,7 @@ a {
   content: '';
 }
 
-.chat-circle-action > svg {
+.chat-circle-action > .app-icon {
   position: relative;
   width: var(--chat-circle-action-icon-size);
   height: var(--chat-circle-action-icon-size);
@@ -134,7 +148,7 @@ a {
   cursor: pointer;
 }
 
-.app-right-sidebar-toggle > svg {
+.app-right-sidebar-toggle > .app-icon {
   width: var(--app-header-control-icon-size);
   height: var(--app-header-control-icon-size);
   flex: none;
@@ -326,7 +340,7 @@ a {
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   line-height: 1.2;
   text-decoration: none;
   transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
@@ -387,6 +401,7 @@ a {
 
 
 .app-rail__icon {
+  font-size: 13px;
   width: 22px;
   height: 22px;
   flex: 0 0 22px;
@@ -459,7 +474,7 @@ a {
   right: 1px;
   min-width: 16px;
   padding: 1px 4px;
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
@@ -595,7 +610,7 @@ a {
   color: var(--accent-blue);
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .tab-badge--auth {
