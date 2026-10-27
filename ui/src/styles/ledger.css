@@ -2,7 +2,7 @@
 
 /* Large status pill variant */
 .status-pill--lg {
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   padding: 4px 14px;
 }
 

@@ -25,7 +25,7 @@
 
 .spaces-tree__status {
   padding: 0.5rem 0.75rem;
-  font-size: 0.78rem;
+  font-size: calc(0.78rem + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
 }
 
@@ -35,7 +35,7 @@
 
 .spaces-tree__group-label {
   padding: 0.25rem 0.75rem;
-  font-size: 0.68rem;
+  font-size: calc(0.68rem + var(--chrome-text-increment, 0px));
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
@@ -67,7 +67,7 @@
 }
 
 .spaces-tree__chooser-title {
-  font-size: 0.78rem;
+  font-size: calc(0.78rem + var(--chrome-text-increment, 0px));
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -76,7 +76,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  font-size: 0.72rem;
+  font-size: calc(0.72rem + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
 }
 
@@ -86,7 +86,7 @@
 
 .spaces-tree__chooser-field input {
   padding: 0.35rem 0.5rem;
-  font-size: 0.8rem;
+  font-size: calc(0.8rem + var(--chrome-text-increment, 0px));
   color: var(--text-primary);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
@@ -106,7 +106,7 @@
   gap: 0.35rem;
   min-width: 0;
   padding: 0.32rem 0.4rem;
-  font-size: 0.73rem;
+  font-size: calc(0.73rem + var(--chrome-text-increment, 0px));
   text-align: left;
   color: var(--text-muted);
   background: var(--bg-secondary);
@@ -135,7 +135,7 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.76rem;
+  font-size: calc(0.76rem + var(--chrome-text-increment, 0px));
   color: var(--text-primary);
 }
 
@@ -146,7 +146,7 @@
 
 .spaces-tree__chooser-error {
   margin: 0;
-  font-size: 0.74rem;
+  font-size: calc(0.74rem + var(--chrome-text-increment, 0px));
   color: var(--status-danger);
 }
 
@@ -158,7 +158,7 @@
 .spaces-tree__chooser-action {
   flex: 1 1 auto;
   padding: 0.35rem 0.5rem;
-  font-size: 0.76rem;
+  font-size: calc(0.76rem + var(--chrome-text-increment, 0px));
   color: var(--text-primary);
   background: var(--bg-secondary);
   border: 1px solid var(--border);

@@ -941,7 +941,7 @@
   align-items: center;
   padding: 2px 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
   text-transform: capitalize;
   background: var(--neutral-alpha-06);
   transition: background 0.3s ease, color 0.3s ease;
@@ -1958,7 +1958,7 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
   padding: 4px 10px;
   border-radius: 20px;
   cursor: pointer;
@@ -1988,7 +1988,7 @@
 .auth-sidebar__empty {
   padding: 20px 14px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
 }
 
 /* Compact sidebar item */
@@ -2003,7 +2003,7 @@
   cursor: pointer;
   text-align: left;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   transition: background 0.12s ease;
   border-left: 3px solid transparent;
 }
@@ -2081,7 +2081,7 @@
 }
 
 .auth-sidebar-item__time {
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
 }
 
@@ -2089,7 +2089,7 @@
   min-width: 0;
   flex: 0 1 auto;
   display: inline-block;
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
   background: var(--neutral-alpha-06);
   border-radius: 3px;
@@ -2115,7 +2115,7 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   padding: 3px 8px;
   border-radius: 20px;
   cursor: pointer;
@@ -2155,7 +2155,7 @@
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 6px;
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   padding: 4px 8px;
   outline: none;
   min-width: 0;
@@ -2194,7 +2194,7 @@
   border: none;
   background: var(--neutral-alpha-06);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
   padding: 2px 7px;
   border-radius: 20px;
   cursor: pointer;

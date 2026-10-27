@@ -30,7 +30,7 @@
   background: rgba(77, 163, 255, 0.14);
   color: var(--text-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
   text-align: left;
 }
 
@@ -43,7 +43,7 @@
   color: var(--text-primary);
   cursor: pointer;
   font: inherit;
-  font-size: var(--text-sm);
+  font-size: calc(var(--text-sm) + var(--chrome-text-increment, 0px));
   text-align: left;
 }
 
@@ -65,7 +65,7 @@
 .inbox-sidebar__empty {
   padding: 20px 14px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
 }
 
 /* Sidebar item */
@@ -81,7 +81,7 @@
   cursor: pointer;
   text-align: left;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   transition: background 0.12s ease;
 }
 
@@ -101,7 +101,7 @@
 }
 
 .inbox-sidebar-item__badge {
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
   font-weight: 600;
   text-transform: uppercase;
   padding: 1px 7px;
@@ -110,14 +110,14 @@
 }
 
 .inbox-sidebar-item__time {
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
   flex-shrink: 0;
 }
 
 .inbox-sidebar-item__title {
   font-weight: 500;
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -133,7 +133,7 @@
 }
 
 .inbox-sidebar-item__repo {
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
   background: var(--neutral-alpha-06);
   padding: 1px 6px;
@@ -145,7 +145,7 @@
 }
 
 .inbox-sidebar-item__branch {
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
   font-family: var(--font-mono);
   overflow: hidden;

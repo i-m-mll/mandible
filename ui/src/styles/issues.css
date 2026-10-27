@@ -110,7 +110,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   font-weight: 600;
 }
 
@@ -122,7 +122,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .artifacts-sidebar__meta span {
@@ -146,7 +146,7 @@
 .artifacts-empty,
 .artifacts-error {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   padding: 14px;
 }
 
@@ -924,7 +924,7 @@ code.inbox-detail__meta-value {
 /* Small button variant for inline use */
 .btn--sm {
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
 }
 
 .issues-item {
@@ -1008,7 +1008,7 @@ code.inbox-detail__meta-value {
 .issues-tree__empty {
   padding: 16px 4px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   text-align: center;
 }
 

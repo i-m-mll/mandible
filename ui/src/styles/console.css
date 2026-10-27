@@ -721,7 +721,7 @@
   background: transparent;
   color: var(--status-info-fg);
   cursor: pointer;
-  font: var(--text-xs)/1 var(--font-mono);
+  font: calc(var(--text-xs) + var(--chrome-text-increment, 0px))/1 var(--font-mono);
   white-space: nowrap;
 }
 

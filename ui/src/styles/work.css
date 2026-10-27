@@ -97,7 +97,7 @@
   display: grid;
   gap: 5px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .work-filter-panel__check {
@@ -105,7 +105,7 @@
   align-items: center;
   gap: 7px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   cursor: pointer;
 }
 
@@ -134,7 +134,7 @@
 .work-refresh-action {
   justify-self: start;
   padding: 6px 9px;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .work-filter-panel__direction:hover,
@@ -172,7 +172,7 @@
 .work-sidebar__capability-note {
   grid-column: 1 / -1;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
 }
 
 .work-detail {
@@ -494,6 +494,7 @@
 
 .repo-settings-strip__input,
 .repo-add-form__input {
+  font-size: calc(10pt + var(--chrome-text-increment, 0px));
   min-width: 0;
   background: var(--bg-secondary);
   border: 1px solid var(--neutral-alpha-08);
@@ -522,7 +523,7 @@
 
 .repo-add-form__error {
   color: var(--accent-red, #f26b6b);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .repo-card--collapsible {
@@ -587,6 +588,7 @@
 }
 
 .work-search {
+  font-size: calc(10pt + var(--chrome-text-increment, 0px));
   width: 100%;
   min-width: 0;
   background: var(--bg-secondary);
