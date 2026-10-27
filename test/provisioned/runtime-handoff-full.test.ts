@@ -28,7 +28,7 @@ import { activateBootstrapWorkUnit, submitBootstrapDelivery, acceptBootstrapDeli
 const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 function command(binary: string, args: string[], options: any = {}) {
-  const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 180000, maxBuffer: 128 * 1024 * 1024, ...options });
+  const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 60000, maxBuffer: 128 * 1024 * 1024, ...options });
   if (result.status !== 0 || result.error) throw new Error(`${binary} ${args[0]}: ${result.error?.message || result.stderr || result.status}`);
   return result.stdout;
 }
@@ -47,7 +47,7 @@ function archive(source: string, revision: string, destination: string) {
 }
 function configurePorts(root: string, runtime: string, ports: { public: number; backend: number; admin: number }, env: NodeJS.ProcessEnv) {
   const identifier = env.MANDIBLE_FIXTURE_IDENTIFIER!;
-  for (const relative of ['scripts/service-definitions.mjs', 'scripts/bundle-service-roles.mjs', 'src-tauri/tauri.conf.json']) {
+  for (const relative of ['scripts/service-definitions.mjs', 'scripts/local-session-production-runner.mjs', 'scripts/bundle-service-roles.mjs', 'src-tauri/tauri.conf.json']) {
     const file = path.join(root, relative);
     if (fs.existsSync(file)) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('bio.mll.mandible', identifier));
   }
