@@ -63,6 +63,13 @@ it('serves open issues with current labels under canonical project and checkout 
   }
   for (const filter of ['alpha', 'alpha-recent', path.join(root, 'alpha', 'recent')]) {
     expect(listLedgerOpenIssues(db, scanner, filter)).toEqual(expected.filter(issue => issue.repo_id === 'alpha'));
+    const scoped = await router.invoke({ method: 'GET', url: `/api/inbox?repo=${encodeURIComponent(filter)}` });
+    expect(scoped.status).toBe(200);
+    expect(scoped.body).toMatchObject({
+      open_issues: expected.filter(issue => issue.repo_id === 'alpha').map(({ id, title, labels }) => ({ id, title, labels })),
+      total: 2,
+    });
+    expect((scoped.body as { open_issues: object[] }).open_issues[0]).not.toHaveProperty('repo_id');
   }
 });
 
