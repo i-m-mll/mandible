@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { canonicalizeChangeMessage, changeMessageDigest, validateCanonicalChangeMessage } from '../../src/auth-change-message.js';
 import type { AuthRequest, AuthRequestLifecycleEvent } from '../../src/types.js';
+import type { Db } from '../../src/db.js';
 
 type Api = { baseUrl: string; headers: HeadersInit };
 export type BootstrapDeliveryDetail = AuthRequest & { lifecycle_events: AuthRequestLifecycleEvent[] };
@@ -71,6 +72,16 @@ export async function submitBootstrapDelivery(input: BootstrapDeliveryInputs): P
 
 export async function readBootstrapDelivery(api: Api, requestId: string): Promise<BootstrapDeliveryDetail> {
   return await jsonRequest(api, `/api/auth/request/${encodeURIComponent(requestId)}`) as BootstrapDeliveryDetail;
+}
+
+export function readBootstrapAcceptanceEvidence(db: Db, requestId: string) {
+  const row = db.prepare(`SELECT id, status, error, pin_sha, tree_sha, base_sha, head_sha, result_json
+    FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+    .get(requestId) as { id: string; status: string; error: string | null; pin_sha: string; tree_sha: string;
+      base_sha: string; head_sha: string; result_json: string | null } | undefined;
+  if (!row) return null;
+  const { result_json, ...record } = row;
+  return { ...record, result: result_json === null ? null : JSON.parse(result_json) };
 }
 
 /**

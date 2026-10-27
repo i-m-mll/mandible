@@ -6,7 +6,10 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createHash } from 'node:crypto';
+import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
+import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
@@ -196,6 +199,75 @@ it('retains bounded aggregate route diagnostics without treating caller volume a
     http_requests: { routes: [{ count: 101, untimed: 101, peak_window_count: 101 }] } } });
   const error = JSON.stringify({ level: 'error', message: 'http_request', method: 'GET', pathname: '/api/projects', status: 500 });
   expect(assessRuntimeLogs(`${aggregate}\n${error}`).failures).toEqual([error]);
+});
+
+it('waits through the initial certificate alert but rejects the same alert after validated HTTPS', async () => {
+  const alert = Object.assign(new Error('leaf certificate is not available yet'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  const initialErrors: unknown[] = [];
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) throw alert;
+    return { ready: true };
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway',
+    onInitialTlsError: error => initialErrors.push(error) })).resolves.toEqual({ ready: true });
+  expect(initialErrors).toEqual([{ code: alert.code, message: alert.message }]);
+  probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) return { ready: false };
+    throw alert;
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(alert);
+  expect(probes).toBe(2);
+});
+
+it('bounds persistent certificate startup and keeps unrelated gateway failures fatal', async () => {
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    probes++;
+    throw Object.assign(new Error('still missing the leaf'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  }, () => true, { timeout: 15, interval: 1, description: 'Gateway' }))
+    .rejects.toThrow('last observation: still missing the leaf');
+  expect(probes).toBeGreaterThan(1);
+  for (const error of [
+    Object.assign(new Error('untrusted certificate'), { code: 'CERT_HAS_EXPIRED' }),
+    Object.assign(new Error('wrong hostname'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }),
+    Object.assign(new Error('wrong TLS version'), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' }),
+    new Error('Health HTTPS 502'), new Error('Owned HTTPS gateway exited'), new Error('Wrong generation'),
+  ]) {
+    probes = 0;
+    await expect(awaitAcceptanceGatewayReadiness(async () => { probes++; throw error; }, () => true,
+      { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(error);
+    expect(probes).toBe(1);
+  }
+});
+
+it('preserves bounded nested acceptance diagnostics after the private installation is removed', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-evidence-'));
+  const home = path.join(scratch, 'private'); fs.mkdirSync(home);
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  try {
+    const daemonLog = `${'startup detail\n'.repeat(1000)}daemon failed startup`;
+    const gatewayLog = 'no certificate available for app.mandible.localhost';
+    fs.writeFileSync(path.join(home, 'daemon.log'), daemonLog);
+    fs.writeFileSync(path.join(home, 'gateway.log'), gatewayLog);
+    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', checks: {
+      initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
+      failure_logs: acceptanceFailureLogs(home),
+    } };
+    insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
+    db.prepare(`INSERT INTO auth_candidate_acceptances
+      (id,auth_request_id,pin_sha,tree_sha,base_sha,head_sha,status,started_at,finished_at,result_json,error)
+      VALUES ('nested-acceptance','outer-request','pin','tree','base','head','failed',1,2,?,'TLS alert')`).run(JSON.stringify(result));
+    const packet = path.join(scratch, 'outer-failure.json');
+    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readBootstrapAcceptanceEvidence(db, 'outer-request') }));
+    fs.rmSync(home, { recursive: true });
+    const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
+    expect(retained).toMatchObject({ status: 'failed', result });
+    expect(retained.result.checks.failure_logs).toEqual([
+      { name: 'daemon', sha256: createHash('sha256').update(daemonLog).digest('hex'), bytes: Buffer.byteLength(daemonLog), excerpt: Buffer.from(daemonLog).subarray(-8000).toString('utf8') },
+      { name: 'gateway', sha256: createHash('sha256').update(gatewayLog).digest('hex'), bytes: Buffer.byteLength(gatewayLog), excerpt: gatewayLog },
+    ]);
+  } finally { db.close(); fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 
