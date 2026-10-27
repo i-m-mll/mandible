@@ -55,6 +55,10 @@
     ],
     "macOS": {
       "signingIdentity": "-",
+      "minimumSystemVersion": "15.0",
+      "files": {
+        "Library/LaunchAgents": "resources/app-payload/Contents/Library/LaunchAgents"
+      },
       "entitlements": null,
       "frameworks": [
         "resources/libsqlite3.dylib"
@@ -64,7 +68,8 @@
       "binaries/mandible-bun",
       "binaries/mandible-caddy",
       "binaries/mandible-claude",
-      "binaries/mandible-trust-helper"
+      "binaries/mandible-trust-helper",
+      "binaries/mandible-service"
     ]
   }
 }

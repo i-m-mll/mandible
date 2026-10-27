@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { installPinnedCaddy } from './pinned-caddy.mjs';
 import { RELEASE_SCHEMA, installedFileIdentity } from './installed-release.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
+import { stageBundleServices } from './prepare-bundle-services.mjs';
+import { bundleServiceLabel } from './bundle-service-roles.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, encoding: 'utf8', timeout: 60_000 }).trim();
@@ -70,7 +72,7 @@ export async function stageAppPayload(contents) {
   fs.mkdirSync(resources, { recursive: true });
   for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
-  const scripts = new Set(['local-runtime.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs']);
+  const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs']);
   const discoverScripts = directory => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
@@ -88,12 +90,17 @@ export async function stageAppPayload(contents) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, compiled);
   }
+  copy(path.join(root, 'scripts/bundle-services.json'), path.join(resources, 'scripts/bundle-services.json'));
+  execFileSync('cargo', ['build', '--locked', '--release', '--manifest-path', path.join(root, 'src-tauri/service-helper/Cargo.toml')], {
+    cwd: root, env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: '13.0' }, timeout: 60_000, stdio: 'inherit',
+  });
+  stageBundleServices(contents, path.join(root, 'src-tauri/service-helper/target/release/mandible-service'));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
   const sqlite = run(runtime, [path.join(root, 'scripts/sqlite-runtime-install.mjs')]);
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');
   const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy',
-    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', sqlite: '../Frameworks/libsqlite3.dylib' };
+    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
   const sdkNative = path.join(resources, `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);
   const signing = {};
   for (const [role, executable] of Object.entries({ bun: runtime, claude: sdkNative })) {
@@ -124,10 +131,11 @@ esac
 `, { mode: 0o755 });
   const commitInfo = run('git', ['show', '-s', '--format=%s%n%cI', provenance.commit]).split('\n');
   const release = { schema: RELEASE_SCHEMA, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
-    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks' } },
+    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents' } },
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
-    entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', channel: 'dist/channel-server/index.js', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs' }, native, signing };
+    entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', channel: 'dist/channel-server/index.js', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
+    resources: Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), native, signing };
   fs.writeFileSync(path.join(resources, 'release.json'), `${JSON.stringify(inventoryRelease(resources, release), null, 2)}\n`);
   return { resources, packageCount, release };
 }

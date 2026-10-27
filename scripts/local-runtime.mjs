@@ -641,7 +641,7 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
 }
 
 function runtimeBinary(root) {
-  if (installedResources) return path.join(installedResources, '../MacOS/mandible-bun');
+  if (installedResources) return process.env.MANDIBLE_RUNTIME;
   return installationRuntime(root, INSTALLATION);
 }
 

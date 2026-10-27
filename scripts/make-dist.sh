@@ -20,7 +20,7 @@ payload_contents="${MANDIBLE_DESKTOP_PAYLOAD_CONTENTS:-src-tauri/resources/app-p
 binaries="${MANDIBLE_DESKTOP_BINARIES_DIR:-src-tauri/binaries}"
 sqlite_library="${MANDIBLE_DESKTOP_SQLITE_LIBRARY:-src-tauri/resources/libsqlite3.dylib}"
 mkdir -p "$binaries"
-for name in mandible-bun mandible-caddy mandible-claude mandible-trust-helper; do
+for name in mandible-bun mandible-caddy mandible-claude mandible-trust-helper mandible-service; do
   cp "$payload_contents/MacOS/$name" "$binaries/$name-$triple"
 done
 cp -f "$payload_contents/Frameworks/libsqlite3.dylib" "$sqlite_library"

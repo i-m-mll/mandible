@@ -13,7 +13,10 @@ Build the small helper with
 Before final payload hashing/signing, call `stageBundleServices(contents, helper)`
 from `scripts/prepare-bundle-services.mjs`. The payload manifest must include
 the native `serviceHelper` role, both descriptors, and the `scripts/` closure.
-The helper uses the objc2 Service Management binding. macOS 13+ is required.
+The helper uses the objc2 Service Management binding, available from macOS 13.
+The app declares macOS 15 as its minimum, matching the bundled trust helper's
+deployment target and the installed command baseline. Current qualification
+is macOS arm64.
 
 ## Runtime and mutable state
 

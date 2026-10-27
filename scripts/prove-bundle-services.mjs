@@ -34,6 +34,8 @@ try {
   fs.writeFileSync(path.join(contents, 'Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleName</key><string>Mandible Private Service Proof</string><key>CFBundleExecutable</key><string>Mandible</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>`);
   fs.copyFileSync(process.execPath, path.join(contents, 'MacOS/mandible-bun'), fs.constants.COPYFILE_FICLONE);
   fs.writeFileSync(path.join(contents, 'Resources/service-fixture.json'), JSON.stringify({ accountHome: fixture }));
+  fs.writeFileSync(path.join(contents, 'Resources/release.json'), JSON.stringify({ schema: 'mandible-installed-release@1',
+    native: { bun: '../MacOS/mandible-bun' }, entrypoints: { service: 'scripts/bundle-service.mjs' } }));
   fs.writeFileSync(path.join(contents, 'Resources/scripts/bundle-service.mjs'), `import fs from 'node:fs';
 const output = process.env.HOME + '/heartbeat.json';
 const tick = () => fs.writeFileSync(output, JSON.stringify({ pid: process.pid, at: Date.now(), root: process.env.MANDIBLE_RELEASE_ROOT }));

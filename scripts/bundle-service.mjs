@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { serviceInstallationContext } from './service-definitions.mjs';
 import { readServiceConfiguration, servicePath } from './service-configuration.mjs';
 import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSession } from './bundle-services.mjs';
-import { installedRuntimeEnvironment, readInstalledRelease } from './installed-release.mjs';
+import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
 
 const root = process.env.MANDIBLE_RELEASE_ROOT;
 if (!root || !path.isAbsolute(root)) throw new Error('Foreground services require an explicit installed release root.');
@@ -19,7 +19,7 @@ if (!admission.ok || !admission.owner) throw new Error(admission.message || 'Thi
 const preference = readBundleLaunch(context);
 if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
   const configuration = readServiceConfiguration(context).configuration;
-  const runtime = path.join(root, '../MacOS/mandible-bun');
+  const runtime = releaseFile(root, release.native.bun, release.layout);
   const environment = installedRuntimeEnvironment(root, { HOME: context.accountHome,
     PATH: servicePath(runtime, root, context, configuration), ...configuration.environment });
   Object.assign(process.env, environment, { MANDIBLE_HOME: context.home,

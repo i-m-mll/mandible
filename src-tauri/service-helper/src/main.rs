@@ -34,6 +34,29 @@ fn run() -> Result<(), String> {
             .to_string_lossy()
             .into_owned();
         let resources = root.join("Contents/Resources");
+        let release: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(resources.join("release.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if release["schema"] != "mandible-installed-release@1" {
+            return Err("Unsupported installed release".into());
+        }
+        let resource = |section: &str, key: &str| -> Result<PathBuf, String> {
+            let relative = release[section][key]
+                .as_str()
+                .ok_or("Installed service resource is not declared")?;
+            if std::path::Path::new(relative).is_absolute() {
+                return Err("Installed resource must be bundle relative".into());
+            }
+            let file = resources
+                .join(relative)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if !file.starts_with(root.join("Contents")) || !file.is_file() {
+                return Err("Installed resource leaves the app bundle".into());
+            }
+            Ok(file)
+        };
         if identifier.starts_with("bio.mll.mandible.fixture.") {
             let fixture: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(resources.join("service-fixture.json"))
@@ -66,17 +89,13 @@ fn run() -> Result<(), String> {
                 return Err(std::io::Error::last_os_error().to_string());
             }
         }
-        let error = Command::new(root.join("Contents/MacOS/mandible-bun"))
-            .arg(resources.join("scripts/bundle-service.mjs"))
+        let error = Command::new(resource("native", "bun")?)
+            .arg(resource("entrypoints", "service")?)
             .arg(role)
             .env_clear()
             .env("HOME", &home)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("MANDIBLE_RELEASE_ROOT", &resources)
-            .env(
-                "MANDIBLE_SERVICE_EXECUTABLE",
-                root.join("Contents/MacOS/mandible-service"),
-            )
             .current_dir(&resources)
             .exec();
         return Err(format!("Cannot execute bundled service runtime: {error}"));

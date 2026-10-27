@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
 import { inspectServiceDefinitionsSync } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
+import { readInstalledRelease, releaseFile } from './installed-release.mjs';
 
 const ownerFile = context => path.join(context.runtimeDir, 'bundle-owner.json');
 const launchFile = context => path.join(context.runtimeDir, 'bundle-launch.json');
@@ -30,7 +31,7 @@ export function bundleLoginSession() {
   return loginSession;
 }
 export function bundleLaunchAllowed(preference, session, role = 'backend') {
-  return (role === 'gateway' ? preference?.gatewayEnabled ?? preference?.enabled : preference?.enabled) === true
+  return (role === 'gateway' ? preference?.gatewayEnabled : preference?.enabled) === true
     && (preference.launchMode === 'on_demand' || preference.launchMode === 'manual' && preference.session === session);
 }
 export function readBundleLaunch(context) {
@@ -72,7 +73,10 @@ export function adoptBundleRelease(context, release, expectedOwner) {
 export function nativeServiceControl(context, operation, role) {
   if (!['status', 'register', 'unregister', 'settings'].includes(operation) || !['backend', 'gateway'].includes(role)) throw new Error('Invalid native service operation.');
   if (operation !== 'status') assertLifecycleLockHeld();
-  const result = spawnSync(path.join(context.bundleRoot, 'Contents/MacOS/mandible-service'), [operation, role], {
+  const resources = path.join(context.bundleRoot, 'Contents/Resources');
+  const release = readInstalledRelease(resources);
+  const helper = releaseFile(resources, release.native.serviceHelper, release.layout);
+  const result = spawnSync(helper, [operation, role], {
     encoding: 'utf8', timeout: 10_000, env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
   });
   if (result.error || result.status !== 0) throw new Error(`Native ${role} ${operation} failed: ${result.stderr || result.error?.message}`);
