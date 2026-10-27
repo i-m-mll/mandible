@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ChatEntityClickAction } from '../../../src/contracts';
@@ -32,7 +33,7 @@ export function currentChatPlatform(navigatorValue: Navigator = navigator): 'mac
 export function openChatEntityNormally(target: ChatPreviewTarget): void {
   const url = new URL(target.href, window.location.href);
   if (url.origin === window.location.origin && url.hash) {
-    window.location.hash = url.hash;
+    navigateAppHash(url.hash);
     return;
   }
   window.location.assign(url.href);

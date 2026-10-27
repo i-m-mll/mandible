@@ -1,3 +1,4 @@
+import { navigateAppHash } from '../app-history';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
@@ -112,11 +113,11 @@ export function IssueReferenceDetail({
         if (type === 'issue') {
           const params = new URLSearchParams({ issue: id });
           if (repoId) params.set('repo', repoId);
-          window.location.hash = `#/issues?${params.toString()}`;
+          navigateAppHash(`#/issues?${params.toString()}`);
         } else if (type === 'auth_request') {
-          window.location.hash = `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
+          navigateAppHash(`#/auth?request=${encodeURIComponent(shortRouteId(id))}`);
         } else if (type === 'session') {
-          window.location.hash = `#/console?session=${encodeURIComponent(id)}`;
+          navigateAppHash(`#/console?session=${encodeURIComponent(id)}`);
         }
       }}
     />

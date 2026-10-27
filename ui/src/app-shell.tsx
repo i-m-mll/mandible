@@ -1,3 +1,4 @@
+import { appTip } from './components/shared/AppHoverTips';
 import { createContext, type ComponentChildren, type Ref, type RefObject } from 'preact';
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { createCoalescedRefresh, type CoalescedRefresh, type RefreshRun } from './lib/coalesced-refresh';
@@ -396,7 +397,7 @@ export function AppRightSidebarToggleButton({
       aria-label={label}
       aria-controls="app-right-sidebar"
       aria-pressed={open}
-      title={label}
+      {...appTip(label)}
       onClick={() => onOpenChange(!open)}
     >
       <RightSidebarIcon />
@@ -408,7 +409,7 @@ export function AppRightSidebarHeaderControls({ descriptor }: { descriptor: AppR
   return <>
         {descriptor.kind === 'panel' ? (
           descriptor.icon ? (
-            <span className="app-right-sidebar__panel-icon" aria-hidden="true" title={descriptor.title}>
+            <span className="app-right-sidebar__panel-icon" aria-hidden="true" {...appTip(descriptor.title)}>
               {descriptor.icon}
             </span>
           ) : <h2>{descriptor.title}</h2>
