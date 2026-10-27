@@ -91,7 +91,7 @@ export function MessageActions({
           aria-label={isSelected ? 'Deselect message' : 'Select message'}
           aria-pressed={isSelected}
         >
-          <Icon name={isSelected ? 'planCompleted' : 'messageSelect'} />
+          <Icon name={isSelected ? 'messageSelectionChecked' : 'messageSelect'} />
         </button>
       )}
       {onCopy && (
