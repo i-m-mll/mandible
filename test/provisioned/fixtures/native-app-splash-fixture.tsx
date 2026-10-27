@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/preact-query';
 import { App } from '../../../ui/src/app';
 import { adoptAgentSessionFragment } from '../../../ui/src/agent-page-binding';
 import { queryClient } from '../../../ui/src/query/client';
+import { installNativeDragDiagnostics } from './native-drag-diagnostics';
 import '../../../ui/src/style.css';
 
 const reason = new URLSearchParams(location.search).get('reason') === 'rebuilding' ? 'rebuilding' : 'starting';
@@ -26,6 +27,8 @@ class FixtureEvents {
   close(): void {}
 }
 window.EventSource = FixtureEvents as unknown as typeof EventSource;
+if ('__TAURI__' in window || '__TAURI_INTERNALS__' in window) document.body.classList.add('tauri-window');
+installNativeDragDiagnostics();
 adoptAgentSessionFragment();
 render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>, document.getElementById('proof-root')!);
 const restore = document.createElement('a');
