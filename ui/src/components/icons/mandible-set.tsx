@@ -232,7 +232,7 @@ export const mandibleSet = {
   selectMessage: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
               </svg>),
-  resumeConversation: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  openMarkdown: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <path d="M14 2v6h6" />
               <path d="M9 15h6" />
@@ -421,6 +421,7 @@ export const mandibleSet = {
   toolWrite: plusGlyph,
   toolDelete: glyphIcon("−"),
   toolMove: forwardGlyph,
+  toolSwitchMode: forwardGlyph,
   toolSearch: glyphIcon("⌕"),
   toolJavascript: glyphIcon("JS"),
   toolFetch: downGlyph,
@@ -444,6 +445,7 @@ export const mandibleSet = {
   plan: glyphIcon("P"),
   add: plusGlyph,
   messageSelect: glyphIcon('□'),
+  messageSelectionChecked: checkGlyph,
   openLink: forwardGlyph,
   menuSelected: checkGlyph,
   removeToken: TokenRemove,

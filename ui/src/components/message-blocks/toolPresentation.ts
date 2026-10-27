@@ -24,7 +24,7 @@ const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural
   think: { icon: 'thought', phrase: 'Thought', plural: 'Thought several times' },
   fetch: { icon: 'toolFetch', phrase: 'Fetched a resource', plural: 'Fetched several resources' },
   browser: { icon: 'toolBrowser', phrase: 'Used the browser', plural: 'Used the browser several times' },
-  switch_mode: { icon: 'toolMove', phrase: 'Switched mode', plural: 'Switched modes several times' },
+  switch_mode: { icon: 'toolSwitchMode', phrase: 'Switched mode', plural: 'Switched modes several times' },
   other: { icon: 'monitor', phrase: 'Used a tool', plural: 'Used some tools' },
 };
 

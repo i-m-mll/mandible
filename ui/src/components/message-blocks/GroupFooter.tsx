@@ -68,7 +68,7 @@ export function GroupFooter({
             title="Open markdown"
             aria-label="Open turn as markdown"
           >
-            <Icon name="resumeConversation" size={14} />
+            <Icon name="openMarkdown" size={14} />
           </ContextualAction>
         )}
         {totalTokens != null && (
