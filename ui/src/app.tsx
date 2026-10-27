@@ -1,3 +1,7 @@
+import { AppHoverTips, appTip } from './components/shared/AppHoverTips';
+import { NativeTopBarBand } from './components/NativeTopBarBand';
+import { pushAppHistory, replaceAppHistory } from './app-history';
+import { useAppHistory } from './hooks/useAppHistory';
 import { AppFrame } from './app-frame';
 import { useChromeAppearancePreview } from './hooks/useChromeAppearancePreview';
 import type { ChromeAppearanceTheme } from './chrome-appearance';
@@ -584,6 +588,7 @@ function RebuildingSplash({
   const isRebuilding = reason === 'rebuilding';
   return (
     <div className="rebuilding-splash">
+      <NativeTopBarBand />
       <div className="rebuilding-splash__content">
         <div className="rebuilding-splash__spinner" aria-hidden="true" />
         <div className="rebuilding-splash__title">
@@ -646,7 +651,8 @@ function App(): JSX.Element {
     ...initialState,
     ...loadCachedState(),
   }));
-  const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const navigation = useAppHistory();
+  const route = useMemo(() => parseRouteFromHash(hashWithAgentSession(new URL(navigation.href).hash || '#/spaces', getAgentPageBinding())), [navigation.href, navigation.revision]);
   const [startupDestinationPending, setStartupDestinationPending] = useState(() =>
     typeof window !== 'undefined' && !hasExplicitStartupDestination(window.location.hash));
   const [startupSettingsReady, setStartupSettingsReady] = useState(false);
@@ -926,9 +932,8 @@ function App(): JSX.Element {
     }
     const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
     if (window.location.hash !== boundHash) {
-      window.history.pushState(null, '', boundHash);
+      pushAppHistory(boundHash, null);
     }
-    setRoute(parseRouteFromHash(boundHash));
     setStartupDestinationPending(false);
   }, []);
 
@@ -988,18 +993,12 @@ function App(): JSX.Element {
       const hash = window.location.hash || '#/spaces';
       const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
       if (boundHash !== hash) {
-        window.history.replaceState(window.history.state, '', boundHash);
+        replaceAppHistory(boundHash, window.history.state, false);
       }
-      setRoute(parseRouteFromHash(boundHash));
       if (hasExplicitStartupDestination(window.location.hash)) setStartupDestinationPending(false);
     };
-    window.addEventListener('hashchange', handleChange);
-    window.addEventListener('popstate', handleChange);
-    return () => {
-      window.removeEventListener('hashchange', handleChange);
-      window.removeEventListener('popstate', handleChange);
-    };
-  }, []);
+    handleChange();
+  }, [navigation.revision]);
 
   const cancelRailInteraction = useCallback((announce = false) => {
     railDragRef.current = null;
@@ -2396,8 +2395,7 @@ function App(): JSX.Element {
     );
     if (destination) {
       const hash = hashWithAgentSession(destination, getAgentPageBinding());
-      window.history.replaceState(window.history.state, '', hash);
-      setRoute(parseRouteFromHash(hash));
+      replaceAppHistory(hash, window.history.state);
       setStartupDestinationPending(false);
     }
   }, [startupDestinationPending, railOrderReady, startupSettingsReady, railOrderSetting, previewRailOrder, state.settings.show_experimental_features, agentPageBinding]);
@@ -2609,6 +2607,7 @@ function App(): JSX.Element {
         href={hashWithAgentSession(item.href, agentPageBinding)}
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
+        {...appTip(railDisplayMode !== 'both' ? item.label : undefined, 'right')}
         aria-label={item.title}
         aria-describedby={reorderable ? 'app-rail-reorder-instructions app-rail-reorder-status' : undefined}
         aria-keyshortcuts={reorderable ? 'Control+Shift+ArrowUp Control+Shift+ArrowDown' : undefined}
@@ -2643,7 +2642,7 @@ function App(): JSX.Element {
           <Icon size={18} />
         </span>
         {railDisplayMode === 'both' && <span className="app-rail__label">{item.label}</span>}
-        {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{item.label}</span>}
+
         {item.badge ? (
           <span className={`tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ''}`}>
             {item.badge}
@@ -2720,6 +2719,7 @@ function App(): JSX.Element {
       } as JSX.CSSProperties}
     >
       <div className="app-shell__workspace">{children}</div>
+      <AppHoverTips />
       <PreviewCopyNotice instance={instanceInfo} />
     </div>
   );
@@ -2787,6 +2787,7 @@ function App(): JSX.Element {
       )}
       <AppShellProvider value={appShellContext}>
         <AppFrame
+          navigation={navigation}
           chromeAppearance={chromeAppearancePreview.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
@@ -2831,14 +2832,14 @@ function App(): JSX.Element {
                   type="button"
                   className="app-rail__item app-rail__theme-toggle"
                   aria-label={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
-                  title={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
+                  {...appTip(`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`, 'right')}
                   onClick={() => {
                     void saveAppTheme(nextAppThemeMode);
                   }}
                 >
                   <span className="app-rail__icon">{appThemeIcon}</span>
                   {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeLabel}</span>}
-                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">App theme: {appThemeLabel}</span>}
+
                 </button>
                 {renderRailItem(logsNavItem)}
                 <AgentationToggleButton

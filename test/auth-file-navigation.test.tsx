@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, configure, fireEvent, render, screen, waitFor } from './helpers/dom';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom';
 import { RoutedAuthReview, navigationRequest, navigationRequestId } from './helpers/auth-navigation-fixture';
 import { authReviewHash } from '../ui/src/views/auth-review-navigation';
 import { establishTestClientAccess } from './helpers/local-client-access';
 
 beforeEach(() => {
-  configure({ asyncUtilTimeout: 1000 });
   const values = new Map<string, string>();
   Object.defineProperty(window, 'localStorage', { configurable: true, value: {
     get length() { return values.size; }, key: (index: number) => [...values.keys()][index] ?? null,
