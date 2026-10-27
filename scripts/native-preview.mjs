@@ -113,7 +113,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
   const candidate = nativeCandidate(selected.worktree);
   verifyNativeSelection(selected, candidate);
   const parent = { root: previewRoot, runId: owner.runId };
-  const { withPreviewRun, acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer } = await import('./preview-custody.mjs');
+  const { withPreviewRun, acquirePreviewConsumer, reacquirePreviewConsumer, publishPreviewConsumer, nativePreviewBaseDir } = await import('./preview-custody.mjs');
   const existing = await withPreviewRun(parent, async metadata => {
     if (newInstance) return null;
     const consumers = metadata.ownership.consumers?.filter(entry => entry.state !== 'released') ?? [];
@@ -149,7 +149,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
     }
     verifyNativeBundle(bundle, candidate);
   }
-  const base = path.join(os.homedir(), '.cache/mandible/native-previews');
+  const base = nativePreviewBaseDir();
   fs.mkdirSync(base, { recursive: true });
   const resumed = existing?.resume === true;
   const attemptId = randomUUID();

@@ -129,6 +129,10 @@ export function previewBaseDir(override = null) {
   return path.resolve(selected.replace(/^~(?=$|\/)/, os.homedir()));
 }
 
+export function nativePreviewBaseDir() {
+  return path.join(os.homedir(), '.cache', 'mandible', 'native-previews');
+}
+
 export function previewPaths(branch) {
   const slug = branch.trim().replace(/^refs\/heads\//, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
   const root = path.join(previewBaseDir(), slug);
