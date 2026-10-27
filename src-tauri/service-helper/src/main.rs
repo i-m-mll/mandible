@@ -103,12 +103,14 @@ fn run() -> Result<(), String> {
     let service = unsafe {
         SMAppService::agentServiceWithPlistName(&NSString::from_str(&format!("{label}.plist")))
     };
+    let mut registration_changed = false;
     unsafe {
         match operation {
             "status" => {},
             "register" => {
                 if service.status() != SMAppServiceStatus::Enabled && service.status() != SMAppServiceStatus::RequiresApproval {
                     service.registerAndReturnError().map_err(|e| format!("{e:?}"))?;
+                    registration_changed = true;
                 }
             },
             "unregister" => {
@@ -128,7 +130,7 @@ fn run() -> Result<(), String> {
         };
         println!(
             "{}",
-            serde_json::json!({ "service": role, "label": label, "status": status })
+            serde_json::json!({ "service": role, "label": label, "status": status, "registration_changed": registration_changed })
         );
     }
     Ok(())

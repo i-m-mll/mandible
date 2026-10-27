@@ -17,9 +17,10 @@ function fixture() {
   fs.writeFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'original-authority');
   fs.writeFileSync(path.join(context.home, 'mandible.db-wal'), 'durable-existing-writes');
   const events: string[] = [];
+  const inspect = async () => ({ status: { state: 'stopped', healthy: false }, trusted: { error: 'no trust' }, backendPortOpen: false, backendJob: { loaded: false } });
   const options = { context, release, launchMode: 'manual', session: () => 'login-1',
     initialize: async () => { events.push('initialize'); },
-    inspect: async () => ({ status: { state: 'stopped', healthy: false }, trusted: { error: 'no trust' }, backendPortOpen: false, backendJob: { loaded: false } }),
+    inspect, waitReady: inspect, previewCount: () => 0, reloadGateway: () => { events.push('reload-gateway'); },
     configureGateway: () => { events.push('gateway-config'); },
     observe: () => ({ ok: true, observations: [] }),
     control: (_: unknown, operation: string, role: string) => { if (operation !== 'status') events.push(`${operation}:${role}`); return { status: 'not_registered' }; },

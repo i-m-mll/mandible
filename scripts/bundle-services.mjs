@@ -82,7 +82,7 @@ export function nativeServiceControl(context, operation, role) {
   if (result.error || result.status !== 0) throw new Error(`Native ${role} ${operation} failed: ${result.stderr || result.error?.message}`);
   const status = JSON.parse(result.stdout);
   if (status.service !== role || status.label !== context[`${role}Label`] || !['not_registered', 'enabled', 'requires_approval', 'not_found'].includes(status.status)) throw new Error('Native service returned invalid identity/status.');
-  if (operation === 'register' && status.status === 'enabled') {
+  if (operation === 'register' && status.status === 'enabled' && status.registration_changed === false) {
     const started = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${status.label}`], { encoding: 'utf8', timeout: 2500 });
     if (started.error || started.status !== 0) throw new Error(`Cannot start the registered ${role}: ${started.stderr || started.error?.message}`);
   }
@@ -90,7 +90,7 @@ export function nativeServiceControl(context, operation, role) {
 }
 
 export async function bundleRuntimeCommand(command, { context, release, launchMode, initialize, inspect, configureGateway,
-  reloadGateway = () => {}, previewCount = () => 0, waitReady,
+  reloadGateway, previewCount, waitReady,
   control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync }) {
   if (control === nativeServiceControl && (context.home !== path.join(os.userInfo().homedir, '.mandible')
       || context.accountHome !== os.userInfo().homedir || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
@@ -159,7 +159,7 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
   if (!readBundleOwner(context)) return { state: 'stopped', launch_mode: launchMode, healthy: false, dashboard_ready: false,
     port: 0, pid: null, pid_file: '', log_file: '', detail: null, dashboard_origin: 'https://app.mandible.localhost:19420',
     gateway_state: 'stopped', gateway_error: null, gateway_log_file: '', background_services: services };
-  const current = ['start', 'restart'].includes(command) && waitReady ? await waitReady(launchMode) : await inspect({ launchMode });
+  const current = ['start', 'restart'].includes(command) ? await waitReady(launchMode) : await inspect({ launchMode });
   if (command === 'restart' && (!current.backend?.ok || !current.backend.document?.startup_epoch
       || current.backend.document.startup_epoch === beforeRestart?.backend?.document?.startup_epoch)) throw new Error('Restart did not confirm a ready backend with a new startup epoch.');
   if (command === 'stop' && current.status.healthy) throw new Error('Stop was requested, but the backend is still responding.');

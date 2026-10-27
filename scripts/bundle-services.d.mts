@@ -4,7 +4,7 @@ export interface BundleRelease { provenance: { commit: string; source_digest: st
 export interface BundleOwner { schema: 'mandible-bundle-owner@1'; bundleRoot: string; installationId: string; generation: string; sourceDigest: string }
 export interface BundleLaunch { enabled: boolean; gatewayEnabled?: boolean; launchMode: 'manual' | 'on_demand'; session?: string }
 export type NativeServiceStatus = 'not_registered' | 'enabled' | 'requires_approval' | 'not_found';
-export interface NativeServiceObservation { service: ServiceKind; label: string; status: NativeServiceStatus }
+export interface NativeServiceObservation { service: ServiceKind; label: string; status: NativeServiceStatus; registration_changed: boolean }
 export type BundleAdmission = { ok: true; owner: BundleOwner | null } | { ok: false; code: 'ownership_conflict' | 'replacement_required'; message: string };
 export function readBundleOwner(context: ServiceInstallationContext): BundleOwner | null;
 export function readBundleLaunch(context: ServiceInstallationContext): BundleLaunch;
@@ -24,8 +24,8 @@ export interface BundleRuntimeObservation {
 export function bundleRuntimeCommand(command: string, options: {
   context: BundleContext; release: BundleRelease; launchMode: 'manual' | 'on_demand';
   initialize(root: string): Promise<unknown>; inspect(options: { launchMode: string }): Promise<BundleRuntimeObservation>;
-  configureGateway(root: string): void; reloadGateway?(): void; previewCount?(root: string): number;
-  waitReady?(launchMode: string): Promise<BundleRuntimeObservation>;
+  configureGateway(root: string): void; reloadGateway(): void; previewCount(root: string): number;
+  waitReady(launchMode: string): Promise<BundleRuntimeObservation>;
   control?: typeof nativeServiceControl; session?: typeof bundleLoginSession;
   observe?: (context: ServiceInstallationContext) => ServiceDefinitionInspection;
 }): Promise<Record<string, unknown>>;
