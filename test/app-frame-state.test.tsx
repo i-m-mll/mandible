@@ -34,7 +34,7 @@ function HeaderAction({ onChoose }: { onChoose(value: string): void }) {
   return <button onClick={() => onChoose(selected)}>Choose current item</button>;
 }
 function Harness() {
-  const reservation = useNativeWindowPresentation();
+  const { trafficLightReservation: reservation, liquidGlassRegular } = useNativeWindowPresentation();
   const [route, setRoute] = useState('chat');
   const [revision, setRevision] = useState(0);
   const [chosen, setChosen] = useState('');
@@ -47,6 +47,7 @@ function Harness() {
   return <>
     <button onClick={() => setRoute(route === 'chat' ? 'issue' : 'chat')}>Switch route</button>
     <button onClick={() => setRevision(n => n + 1)}>Reconcile</button>
+    <span aria-label="Liquid Glass available">{String(liquidGlassRegular)}</span>
     <output aria-label="Chosen item">{chosen}</output>
     <AppFrame nativeControlsReservation={reservation} rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
       <section hidden={route !== 'chat'}>
@@ -141,9 +142,13 @@ it('changes only the native reservation through fullscreen entry and exit while 
   fireEvent.input(draft, { target: { value: 'Unsent native work' } });
   await waitFor(() => expect(back.previousElementSibling?.previousElementSibling?.tagName).toBe('SPAN'));
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
-  capabilities = { ...windowed, trafficLightReservation: 0 };
+  expect(document.documentElement.dataset.nativeGlass).toBe('regular');
+  expect(screen.getByLabelText('Liquid Glass available').textContent).toBe('true');
+  capabilities = { ...windowed, trafficLightReservation: 0, liquidGlassRegular: false };
   refresh();
   await waitFor(() => expect(back.previousElementSibling?.previousElementSibling).toBeNull());
+  expect(document.documentElement.hasAttribute('data-native-glass')).toBe(false);
+  expect(screen.getByLabelText('Liquid Glass available').textContent).toBe('false');
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
   expect(within(bar).getByRole('button', { name: 'Back' })).toBe(back);
   capabilities = windowed;
@@ -154,6 +159,7 @@ it('changes only the native reservation through fullscreen entry and exit while 
   expect((screen.getByRole('textbox', { name: 'Draft' }) as HTMLTextAreaElement).value).toBe('Unsent native work');
   view.unmount();
   expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(document.documentElement.hasAttribute('data-native-glass')).toBe(false);
 });
 
 it('keeps the logo decorative and history controls connected to browser history', () => {

@@ -13,7 +13,7 @@ import {
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
 import { runChromium } from '../helpers/chromium';
-import type { ChromeShadowParameters } from '../../ui/src/chrome-shadow';
+import { CHROME_APPEARANCE_DEFAULTS, type ChromeShadowParameters } from '../../ui/src/chrome-appearance';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
@@ -39,7 +39,7 @@ function bundleFixture(directory: string): string {
 
 let fixtureBundle: string | undefined;
 
-function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string; shadow?: ChromeShadowParameters } = {}): Result {
+function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string; shadow?: ChromeShadowParameters; glassTransparency?: number } = {}): Result {
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
@@ -49,7 +49,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
       const getPaintSurface=()=>{
         const frame=document.querySelector('.app-frame'); const shadow=getComputedStyle(frame,'::after'); const dock=document.querySelector('.app-right-sidebar');
         return {workspace:rect(document.querySelector('.app-layout')),main:rect(document.querySelector('.chat-detail-frame')||document.querySelector('main')),dock:rect(dock),radius:parseFloat(getComputedStyle(document.querySelector('.app-layout')).borderTopLeftRadius),
-          frameBackground:getComputedStyle(frame).backgroundColor,barBackground:getComputedStyle(document.querySelector('.app-frame__bar')).backgroundColor,railBackground:getComputedStyle(document.querySelector('.app-rail')).backgroundColor,
+          frameBackground:getComputedStyle(frame).backgroundColor,frameOpacity:getComputedStyle(frame).opacity,contentBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor,textColor:getComputedStyle(document.querySelector('.app-content')).color,contour:getComputedStyle(frame,'::before').borderTopColor,barBackground:getComputedStyle(document.querySelector('.app-frame__bar')).backgroundColor,railBackground:getComputedStyle(document.querySelector('.app-rail')).backgroundColor,
           shadow:{width:shadow.width,height:shadow.height,zIndex:shadow.zIndex,pointerEvents:shadow.pointerEvents,backgroundImage:shadow.backgroundImage,backgroundSize:shadow.backgroundSize},dockZIndex:getComputedStyle(dock).zIndex};
       };
       const edgeTarget = node => { const r=rect(node); return document.elementFromPoint(r.left+0.5,(r.top+r.bottom)/2); };
@@ -201,7 +201,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
-    const html = `<!doctype html><html data-theme="${theme}" data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const html = `<!doctype html><html data-theme="${theme}" ${paint.glassTransparency !== undefined ? 'data-native-glass="regular"' : ''} data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const evidenceDirectory = paint.screenshotPath ? undefined : process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const evidenceName = `${surface}-${width}-${theme}-${native ? 'native' : 'browser'}-${fullRail ? 'expanded' : 'icons'}-${scale}`;
     if (evidenceDirectory) mkdirSync(evidenceDirectory, { recursive: true });
@@ -209,7 +209,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
     const screenshotArgs = screenshotPath ? [`--screenshot=${screenshotPath}`] : [];
     const path = join(directory, 'fixture.html');
     writeFileSync(path, paint.disableShadow ? html.replace('</head>', '<style>.app-frame::after{background-image:none}</style></head>') : html);
-    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}${paint.shadow ? '&shadow=' + encodeURIComponent(JSON.stringify(paint.shadow)) : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
+    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}${paint.shadow ? '&shadow=' + encodeURIComponent(JSON.stringify(paint.shadow)) : ''}${paint.glassTransparency !== undefined ? '&glass=' + paint.glassTransparency : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));
@@ -249,6 +249,40 @@ function compareShadowPixels(directory: string, painted: string, baseline: strin
 }
 
 describe('rendered workspace shadow', () => {
+  it.each(['light', 'dark'] as const)('applies %s glass tint endpoints and default once on the native frame while content and shadow geometry stay fixed', theme => {
+    const directory = mkdtempSync(join(tmpdir(), 'mandible-native-tint-'));
+    try {
+      const cases = [0, 0.28, 1].map(glassTransparency => {
+        const screenshot = join(directory, `tint-${glassTransparency}.png`);
+        return { glassTransparency, screenshot, result: renderCase('chat', 1280, theme, true, false, 1, { glassTransparency, screenshotPath: screenshot }) };
+      });
+      type SurfacePaint = { workspace: { left: number; top: number }; frameBackground: string; frameOpacity: string; barBackground: string; railBackground: string; contentBackground: string; textColor: string; contour: string; shadow: unknown };
+      const baseline = cases[0]!;
+      const original = baseline.result.paintSurface as SurfacePaint;
+      for (const item of cases) {
+        const surface = item.result.paintSurface as SurfacePaint;
+        const alpha = Number(/\/ ([\d.]+)\)/.exec(surface.frameBackground)?.[1] ?? 1);
+        expect(alpha).toBeCloseTo(1 - item.glassTransparency, 3);
+        expect(surface.frameOpacity).toBe('1');
+        expect(surface.barBackground).toBe('rgba(0, 0, 0, 0)');
+        expect(surface.railBackground).toBe('rgba(0, 0, 0, 0)');
+        expect(surface.contentBackground).toBe(original.contentBackground);
+        expect(surface.contentBackground).toMatch(/^rgb\(/);
+        expect(surface.textColor).toBe(original.textColor);
+        expect(surface.contour).toBe(original.contour);
+        expect(surface.workspace).toEqual(original.workspace);
+        expect(surface.shadow).toEqual(original.shadow);
+        if (item === baseline) continue;
+        const pixels = compareShadowPixels(directory, item.screenshot, baseline.screenshot, 1280, {
+          chrome: [{ distance: 0, x: 1000, y: 10 }],
+          opaque: [{ distance: 0, x: original.workspace.left + 100, y: original.workspace.top + 100 }, { distance: 0, x: 700, y: 200 }, { distance: 0, x: original.workspace.left + 100, y: original.workspace.top + 0.5 }],
+        });
+        expect(Math.abs(pixels.chrome![0]!.delta)).toBeGreaterThan(0);
+        for (const sample of pixels.opaque!) expect(sample.delta).toBe(0);
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it.each([{ widthPx: 5, profile: 0 }, { widthPx: 5, profile: 1 }, { widthPx: 16, profile: 1 }])('renders profile $profile at width $widthPx outward with an unchanged interior', parameters => {
     const directory = mkdtempSync(join(tmpdir(), 'mandible-shadow-profile-'));
     try {
@@ -295,9 +329,10 @@ describe('rendered workspace shadow', () => {
       type Rect = { left: number; right: number; top: number; bottom: number };
       const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number; shadow: { width: string; height: string } };
       const { workspace, main, dock, radius } = surface;
-      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(5, 1);
-      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(5, 1);
-      const distances = [1.5, 2, 3, 4, 4.5, 6];
+      const width = CHROME_APPEARANCE_DEFAULTS[theme].widthPx;
+      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(width, 1);
+      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(width, 1);
+      const distances = [1.5, width * 0.4, width * 0.6, width * 0.8, width - 0.5, width + 1];
       const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
         topSidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top - distance })),
         topMain: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top - distance })),
@@ -315,8 +350,8 @@ describe('rendered workspace shadow', () => {
         ]),
         line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
         outside: [
-          { distance: 0, x: workspace.left - 6, y: workspace.top + 100 },
-          { distance: 0, x: workspace.left + 96, y: workspace.top - 6 },
+          { distance: 0, x: workspace.left - width - 1, y: workspace.top + 100 },
+          { distance: 0, x: workspace.left + 96, y: workspace.top - width - 1 },
           { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
           { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
         ],

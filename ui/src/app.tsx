@@ -1,6 +1,6 @@
 import { AppFrame } from './app-frame';
-import { useChromeShadowPreview } from './hooks/useChromeShadowPreview';
-import type { ChromeShadowTheme } from './chrome-shadow';
+import { useChromeAppearancePreview } from './hooks/useChromeAppearancePreview';
+import type { ChromeAppearanceTheme } from './chrome-appearance';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
@@ -419,7 +419,7 @@ function setLastSeenStartupEpoch(epoch: string): void {
   }
 }
 
-function updateRootAppTheme(settings: Record<string, string>, previewTheme?: ChromeShadowTheme, onResolved?: (theme: ChromeShadowTheme) => void): () => void {
+function updateRootAppTheme(settings: Record<string, string>, previewTheme?: ChromeAppearanceTheme, onResolved?: (theme: ChromeAppearanceTheme) => void): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
   }
@@ -757,7 +757,7 @@ function App(): JSX.Element {
   ));
   const responsiveSidebarStateRef = useRef<ResponsiveSidebarThresholdState>(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
-  const nativeControlsReservation = useNativeWindowPresentation();
+  const { trafficLightReservation: nativeControlsReservation, liquidGlassRegular } = useNativeWindowPresentation();
   const [frameHeaderHost, setFrameHeaderHost] = useState<HTMLDivElement | null>(null);
   const [frameHeaderOwners, setFrameHeaderOwners] = useState(0);
   const registerFrameHeader = useCallback(() => {
@@ -887,9 +887,9 @@ function App(): JSX.Element {
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
   ), [hostAppTheme, state.settings]);
 
-  const [resolvedTheme, setResolvedTheme] = useState<ChromeShadowTheme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
-  const chromeShadowPreview = useChromeShadowPreview(instanceInfo, resolvedTheme);
-  useEffect(() => updateRootAppTheme(effectiveSettings, chromeShadowPreview.themeOverride, setResolvedTheme), [effectiveSettings, chromeShadowPreview.themeOverride]);
+  const [resolvedTheme, setResolvedTheme] = useState<ChromeAppearanceTheme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  const chromeAppearancePreview = useChromeAppearancePreview(instanceInfo, resolvedTheme, liquidGlassRegular);
+  useEffect(() => updateRootAppTheme(effectiveSettings, chromeAppearancePreview.themeOverride, setResolvedTheme), [effectiveSettings, chromeAppearancePreview.themeOverride]);
 
   useEffect(() => {
     let active = true;
@@ -2787,7 +2787,7 @@ function App(): JSX.Element {
       )}
       <AppShellProvider value={appShellContext}>
         <AppFrame
-          chromeShadows={chromeShadowPreview.themes}
+          chromeAppearance={chromeAppearancePreview.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}
@@ -3006,7 +3006,7 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
-            chromeShadowPreview={chromeShadowPreview.controller}
+            chromeAppearancePreview={chromeAppearancePreview.controller}
             settings={effectiveSettings}
             onSave={handleSettingsSave}
             loadError={state.settingsLoadError}
