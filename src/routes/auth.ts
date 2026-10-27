@@ -564,9 +564,9 @@ export function registerAuthRoutes(
       if (!request) { res.status(404).json({ error: 'Auth request not found.' }); return; }
       const control = body.mode === 'verify-current' ? authMutationControl(db, req, res, request, body, true) : null;
       if (body.mode === 'verify-current' && !control?.actor) return;
-      const convergence = await authQueue.retryHookConvergence(req.params.id, hookId,
+      const { verification, ...convergence } = await authQueue.retryHookConvergence(req.params.id, hookId,
         body.mode === 'verify-current' ? { mode: 'verify-current', actor: control!.actor! } : undefined);
-      res.status(200).json({ request_id: req.params.id, convergence });
+      res.status(200).json({ request_id: req.params.id, convergence, ...(verification ? { verification } : {}) });
     } catch (error) {
       handleQueueError(error, res);
     }

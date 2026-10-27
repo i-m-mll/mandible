@@ -16,8 +16,9 @@ import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
-import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
+import { RuntimeObservationError } from './runtime-observation.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 const ACCOUNT_HOME = os.userInfo().homedir;
@@ -100,18 +101,24 @@ function readMainInstance(root) {
 }
 
 export function healthDocumentError(document, expected) {
-  if (!document || typeof document !== "object" || Array.isArray(document)) return "The service returned malformed health data.";
-  if (document.status !== "ok" || document.ready !== true || document.warm !== true) {
-    return "The service responded, but Mandible is not ready yet.";
+  return healthDocumentObservation(document, expected).error ?? null;
+}
+
+export function healthDocumentObservation(document, expected) {
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    return { ok: false, code: 'malformed_health', error: 'The service returned malformed health data.' };
   }
   const instance = document.instance;
   if (!instance || instance.role !== "main" || instance.instance_id !== "production"
     || instance.installation_id !== expected.installationId
     || instance.public_origin !== expected.publicOrigin
     || instance.backend_generation !== expected.generation) {
-    return "The service response belongs to a different Mandible instance or build.";
+    return { ok: false, code: 'wrong_instance', error: 'The service response belongs to a different Mandible instance or build.' };
   }
-  return null;
+  if (document.status !== 'ok' || document.ready !== true || document.warm !== true) {
+    return { ok: false, code: 'not_ready', error: 'The service responded, but Mandible is not ready yet.' };
+  }
+  return { ok: true, document };
 }
 
 export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
@@ -128,13 +135,13 @@ export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     };
     const target = new URL(url);
     if (target.protocol !== "http:" && target.protocol !== "https:") {
-      finish({ ok: false, error: "The health URL must use HTTP or HTTPS." });
+      finish({ ok: false, code: 'invalid_protocol', error: "The health URL must use HTTP or HTTPS." });
       return;
     }
     const transport = target.protocol === "https:" ? https : http;
     deadline = setTimeout(() => {
       request?.destroy(new Error("health probe exceeded its deadline"));
-      finish({ ok: false, error: `Health check exceeded its ${timeoutMs} ms deadline.` });
+      finish({ ok: false, code: 'probe_deadline', error: `Health check exceeded its ${timeoutMs} ms deadline.` });
     }, timeoutMs);
     const options = {
       timeout: timeoutMs,
@@ -156,30 +163,33 @@ export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       });
       response.on("end", () => {
         if (response.statusCode !== 200) {
-          finish({ ok: false, error: `Health endpoint returned HTTP ${response.statusCode ?? "unknown"}.` });
+          finish({ ok: false, code: 'http_status', status: response.statusCode, error: `Health endpoint returned HTTP ${response.statusCode ?? "unknown"}.` });
           return;
         }
         try {
           finish({ ok: true, document: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
         } catch {
-          finish({ ok: false, error: "The service returned malformed health data." });
+          finish({ ok: false, code: 'malformed_health', error: "The service returned malformed health data." });
         }
       });
       });
     } catch (error) {
-      finish({ ok: false, error: `The service could not be reached: ${error.message}` });
+      finish({ ok: false, code: 'connection_error', error: `The service could not be reached: ${error.message}` });
       return;
     }
-    request.on("timeout", () => request.destroy(new Error("health probe exceeded its deadline")));
+    request.on("timeout", () => request.destroy(Object.assign(new Error("health probe exceeded its deadline"), { code: 'ETIMEDOUT' })));
     request.on("error", (error) => {
-      const message = error.code === "ETIMEDOUT" || /deadline|timed out/i.test(error.message)
+      const code = error.code === 'ETIMEDOUT' ? 'probe_deadline'
+        : /^(CERT_|ERR_TLS_|DEPTH_ZERO_|UNABLE_TO_)/.test(error.code ?? '') ? 'tls_error'
+          : error.code === 'ECONNREFUSED' ? 'connection_refused' : 'connection_error';
+      const message = code === 'probe_deadline'
         ? `Health check exceeded its ${timeoutMs} ms deadline.`
-        : error.code?.startsWith("CERT_") || /certificate|self-signed|issuer/i.test(error.message)
+        : code === 'tls_error'
           ? "The HTTPS certificate failed verification against this installation's trusted Mandible certificate."
-          : error.code === "ECONNREFUSED"
+          : code === 'connection_refused'
             ? "The service is not accepting connections."
             : `The service could not be reached: ${error.message}`;
-      finish({ ok: false, error: message });
+      finish({ ok: false, code, error: message });
     });
   });
 }
@@ -203,6 +213,7 @@ function readTrustedRoot() {
 }
 
 function runLaunchctl(args, timeout = 2500) {
+  assertLifecycleLockHeld();
   if (process.platform !== "darwin") throw new Error("Mandible's supervised local runtime requires macOS launchd.");
   const result = spawnSync("/bin/launchctl", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
   if (result.error) throw new Error(`launchctl ${args[0]} failed: ${result.error.message}`);
@@ -363,9 +374,22 @@ export function handoffProbeTimeout(until, now = Date.now()) {
 
 /** One answered inspection of the candidate front door, with the reason it is not ready. */
 export function handoffFrontDoorError(inspection, mergeCommit) {
-  if (!inspection.status.dashboard_ready) return inspection.status.detail || `Runtime state is ${inspection.status.state}.`;
-  if (inspection.main.backend_generation !== mergeCommit) return `The registered generation ${inspection.main.backend_generation} is not the merge ${mergeCommit}.`;
-  return null;
+  return handoffFrontDoorObservation(inspection, mergeCommit).error ?? null;
+}
+
+export function handoffFrontDoorObservation(inspection, mergeCommit, { expectedServing = false } = {}) {
+  if (inspection.main.backend_generation !== mergeCommit) return { outcome: 'failed', code: 'wrong_generation',
+    error: `The registered generation ${inspection.main.backend_generation} is not the merge ${mergeCommit}.` };
+  if (inspection.status.state === 'port_conflict') return { outcome: 'failed', code: 'access_path_failed', error: inspection.status.detail };
+  for (const response of [inspection.backend, inspection.gateway]) {
+    if (!response || response.ok) continue;
+    if (response.code === 'probe_deadline' || response.code === 'not_ready') continue;
+    if (!expectedServing && (response.code === 'connection_refused' || response.code === 'http_status' && [502, 503].includes(response.status))) continue;
+    return { outcome: 'failed', code: response.code ?? 'access_path_failed', error: response.error };
+  }
+  if (!inspection.status.dashboard_ready) return { outcome: 'pending', code: 'starting',
+    error: inspection.status.detail || `Runtime state is ${inspection.status.state}.` };
+  return { outcome: 'confirmed' };
 }
 
 const NEVER_EXITED = '(never exited)';
@@ -378,13 +402,16 @@ const NEVER_EXITED = '(never exited)';
 export function handoffServiceExit(started, inspection) {
   for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
     const exit = job.lastExit && job.lastExit !== NEVER_EXITED ? ` (last exit code ${job.lastExit})` : '';
-    if (!job.loaded) return `The candidate ${name} service was unloaded.`;
-    if (!job.pid) return `The candidate ${name} process exited${exit}.`;
     const first = started?.[name];
-    if (first && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
+    if (!job.loaded && first?.pid) return `The candidate ${name} service was unloaded.`;
+    if (!job.pid) {
+      if (first?.pid || exit) return `The candidate ${name} process exited${exit}.`;
+      continue;
+    }
+    if (first?.pid && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
   }
   const backend = inspection.backendJob;
-  if (!started && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
+  if (!started?.backend?.pid && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
   return null;
 }
 
@@ -398,15 +425,19 @@ export function handoffServiceExit(started, inspection) {
 export async function awaitHandoffReadiness(mergeCommit, until, inspect, {
   pauseMs = RUNTIME_HEALTH_PROBE_INTERVAL_MS, now = Date.now,
   wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  expectedProcesses = null, expectedServing = false,
 } = {}) {
-  let started = null;
+  let started = expectedProcesses ? structuredClone(expectedProcesses) : null;
   for (;;) {
     const inspection = await inspect(handoffProbeTimeout(until, now()));
     const exited = handoffServiceExit(started, inspection);
-    if (exited) return { inspection, error: exited, exited: true };
-    started ??= Object.fromEntries([['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]].map(([name, job]) => [name, { pid: job.pid, runs: job.runs }]));
-    const error = handoffFrontDoorError(inspection, mergeCommit);
-    if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error, exited: false };
+    if (exited) return { inspection, error: exited, exited: true, outcome: 'failed', code: 'process_changed' };
+    started ??= {};
+    for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
+      if (job.pid && !started[name]?.pid) started[name] = { pid: job.pid, runs: job.runs };
+    }
+    const outcome = handoffFrontDoorObservation(inspection, mergeCommit, { expectedServing });
+    if (outcome.outcome !== 'pending' || now() >= until) return { inspection, ...outcome, error: outcome.error ?? null, exited: false };
     await wait(Math.min(pauseMs, Math.max(0, until - now())));
   }
 }
@@ -418,7 +449,7 @@ export async function awaitHandoffReadiness(mergeCommit, until, inspect, {
  */
 export function candidateStartupFailure(logText, mergeCommit) {
   const lines = logText.split('\n');
-  const start = lines.findIndex(line => line.startsWith('[production-runner] starting ') && line.trimEnd().endsWith(` build ${mergeCommit}`));
+  const start = lines.findLastIndex(line => line.startsWith('[production-runner] starting ') && line.trimEnd().endsWith(` build ${mergeCommit}`));
   if (start < 0) return null;
   let failure = null;
   for (const line of lines.slice(start + 1)) {
@@ -440,34 +471,64 @@ function readLogTail(file, limit = 1024 * 1024) {
   } finally { fs.closeSync(fd); }
 }
 
-export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
+export function inspectHandoffEvidence(binding, expectedProcesses = null) {
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
   const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
-  if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
+  if (backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services differ from the pinned runtime.');
+  const backendJob = inspectJob(BACKEND_LABEL), gatewayJob = inspectJob(GATEWAY_LABEL);
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  const logPath = installed?.record.StandardErrorPath;
+  if (!path.isAbsolute(logPath || '')) throw new Error('Loaded service log provenance is unavailable.');
+  const startup = fs.existsSync(logPath) ? candidateStartupFailure(readLogTail(logPath), binding.mergeCommit) : null;
+  if (startup) throw new RuntimeObservationError('startup_failed', `Candidate runtime failed to start: ${startup}`);
+  const processes = {};
+  let waiting = null;
+  for (const [name, job] of [['backend', backendJob], ['gateway', gatewayJob]]) {
+    const expected = expectedProcesses?.[name];
+    if ((!job.loaded && expected?.pid) || (!job.pid && (expected?.pid || job.lastExit && job.lastExit !== NEVER_EXITED))) {
+      throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited or was unloaded.`, { job, expected });
+    }
+    if (!job.pid) { waiting = `Candidate ${name} launch is not yet confirmed.`; continue; }
+    const identity = { pid: job.pid, startedAt: processStart(job.pid), runs: job.runs };
+    if (!identity.startedAt) throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited.`, { job });
+    if (expected?.pid && (expected.pid !== identity.pid || expected.startedAt !== identity.startedAt || identity.runs > expected.runs)) {
+      throw new RuntimeObservationError('process_changed', `Candidate ${name} process was replaced.`, { expected, current: identity });
+    }
+    processes[name] = identity;
+  }
+  const job = backendJob;
+  const startedAt = processes.backend?.startedAt;
+  if (!startedAt) throw new RuntimeObservationError('starting', waiting, { processes }, 'pending');
+  if (!fs.existsSync(logPath)) throw new RuntimeObservationError('starting', 'Candidate log is not available yet.', { processes }, 'pending');
+  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
+  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
+  const log = fs.statSync(logPath);
+  const evidence = { outcome: 'confirmed', backend, gateway, processes, process: { pid: job.pid, startedAt },
+    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
+  if (waiting) throw new RuntimeObservationError('starting', waiting, evidence, 'pending');
+  return evidence;
+}
+
+export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false, expectedProcesses = null, expectedServing = false } = {}) {
+  try { inspectHandoffEvidence(binding, expectedProcesses); }
+  catch (error) { if (!awaitReady || !(error instanceof RuntimeObservationError) || error.outcome !== 'pending') throw error; }
   const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
-  const { inspection: status, error, exited } = awaitReady
-    ? await awaitHandoffReadiness(binding.mergeCommit, until, inspect)
-    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection, error: handoffFrontDoorError(inspection, binding.mergeCommit), exited: false }));
+  const { inspection: status, error, exited, outcome, code } = awaitReady
+    ? await awaitHandoffReadiness(binding.mergeCommit, until, inspect, { expectedProcesses, expectedServing })
+    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection,
+      ...handoffFrontDoorObservation(inspection, binding.mergeCommit, { expectedServing }), exited: false }));
   if (exited) {
     const logPath = locateLaunchAgent(BACKEND_LABEL)?.record.StandardErrorPath;
     let startup = null;
     try { startup = logPath ? candidateStartupFailure(readLogTail(logPath), binding.mergeCommit) : null; } catch { /* the exit itself is the reported failure */ }
-    throw new Error(`Candidate runtime failed to start: ${error}${startup ? ` Daemon reported: ${startup}` : ''}`);
+    throw new RuntimeObservationError('startup_failed', `Candidate runtime failed to start: ${error}${startup ? ` Daemon reported: ${startup}` : ''}`);
   }
-  if (error) throw new Error(`Candidate production front door is not ready at the exact merge generation: ${error}`);
-  const job = inspectJob(BACKEND_LABEL);
-  const startedAt = processStart(job.pid);
-  const installed = locateLaunchAgent(BACKEND_LABEL);
-  const logPath = installed?.record.StandardErrorPath;
-  if (!job.pid || !startedAt || !path.isAbsolute(logPath || '')) throw new Error('Current daemon process or launchd log provenance is unavailable.');
-  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
-  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
-  const log = fs.statSync(logPath);
-  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document,
-    process: { pid: job.pid, startedAt, startupEpoch: status.backend.document.startup_epoch },
-    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
+  if (error) throw new RuntimeObservationError(code, `Candidate production front door is not ready at the exact merge generation: ${error}`, { inspection: status }, outcome);
+  const evidence = inspectHandoffEvidence(binding, expectedProcesses);
+  return { ...evidence, health: status.backend.document, frontDoorHealth: status.gateway.document,
+    process: { ...evidence.process, startupEpoch: status.backend.document.startup_epoch } };
 }
 
 function portOpen(url) {
@@ -528,13 +589,11 @@ async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALT
     portOpen(main.publicUrl),
     portOpen(main.backendUrl),
   ]);
-  const backendError = backendResponse.ok ? healthDocumentError(backendResponse.document, expected) : backendResponse.error;
-  const backend = backendError ? { ok: false, error: backendError } : { ok: true, document: backendResponse.document };
-  let gateway = { ok: false, error: trusted.error };
+  const backend = backendResponse.ok ? healthDocumentObservation(backendResponse.document, expected) : backendResponse;
+  let gateway = { ok: false, code: 'tls_error', error: trusted.error };
   if (!trusted.error) {
     const gatewayResponse = await probeJson(healthEndpointUrl(PRODUCTION_ORIGIN), { ca: trusted.ca, timeoutMs: probeTimeoutMs });
-    const gatewayError = gatewayResponse.ok ? healthDocumentError(gatewayResponse.document, expected) : gatewayResponse.error;
-    gateway = gatewayError ? { ok: false, error: gatewayError } : { ok: true, document: gatewayResponse.document };
+    gateway = gatewayResponse.ok ? healthDocumentObservation(gatewayResponse.document, expected) : gatewayResponse;
   }
   const runner = readRunnerMetadata(production);
   const status = classifyRuntimeStatus({
@@ -605,6 +664,7 @@ function locateLaunchAgent(label) {
 }
 
 function archiveLaunchAgent(file, label, bytes) {
+  assertLifecycleLockHeld();
   const digest = createHash("sha256").update(bytes).digest("hex");
   const archiveDir = path.join(RUNTIME_DIR, "launch-agent-history");
   const archive = path.join(archiveDir, `${label}-${digest.slice(0, 12)}.plist`);
@@ -619,6 +679,7 @@ function archiveLaunchAgent(file, label, bytes) {
 }
 
 function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8");
@@ -645,6 +706,7 @@ function assertOwnedLaunchAgent(file, record, label, recognizesLegacy) {
 }
 
 function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
   const { installed } = observeOwnedService(service);
   for (const existing of installed.filter(item => item.file !== file)) {
@@ -663,6 +725,7 @@ function parsePlist(file) {
 }
 
 function prepareRunner(root) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
   for (const [sourceName, targetName] of [
     ["local-session-production-runner.mjs", "production-runner.mjs"],
@@ -1056,15 +1119,19 @@ async function mainLocked() {
     process.stdout.write(`${JSON.stringify(captureRuntimeHandoff(args[rootIndex + 1] ?? process.cwd()))}\n`);
     return;
   }
-  if (command === 'handoff-remove' || command === 'handoff-start' || command === 'handoff-verify') {
-    const acceptedProbe = command === 'handoff-verify' && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
+  if (['handoff-remove', 'handoff-start', 'handoff-verify', 'handoff-evidence'].includes(command)) {
+    const acceptedProbe = ['handoff-verify', 'handoff-evidence'].includes(command) && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
     if (!directHandoff && !acceptedProbe) throw new Error('Runtime handoff command requires its exact active journal.');
+    if (['handoff-remove', 'handoff-start'].includes(command) && Date.now() > journal.deadline) throw new RuntimeObservationError('execution_budget_exhausted', 'Initial helper execution budget ended before its runtime mutation.', null, 'pending');
     const untilIndex = args.indexOf('--until');
     const until = untilIndex >= 0 ? Number(args[untilIndex + 1]) : Date.now();
     if (!Number.isFinite(until)) throw new Error('Runtime handoff verification requires a numeric --until deadline.');
     const result = command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
       : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding)
-        : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready') });
+        : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, journal.phase === 'failed' ? null : journal.launch?.processes)
+          : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready'),
+            expectedProcesses: journal.phase === 'failed' ? null : journal.launch?.processes,
+            expectedServing: !!journal.launch?.readyAt || ['failed', 'complete', 'acknowledged'].includes(journal.phase) });
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;
   }
@@ -1131,7 +1198,7 @@ async function mainLocked() {
 
 async function main() {
   const command = process.argv[2];
-  if (['status', 'handoff-snapshot', 'handoff-verify'].includes(command)) return mainLocked();
+  if (['status', 'handoff-snapshot', 'handoff-verify', 'handoff-evidence'].includes(command)) return mainLocked();
   return withInstallationGatewayLock(HOME, async token => {
     const previous = process.env.MANDIBLE_GATEWAY_LOCK_TOKEN;
     process.env.MANDIBLE_GATEWAY_LOCK_TOKEN = token;
@@ -1142,7 +1209,8 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+    const failure = error instanceof RuntimeObservationError ? error : new RuntimeObservationError('controller_failed', error.message);
+    process.stderr.write(`${process.argv[2]?.startsWith('handoff-') ? JSON.stringify(failure) : error.message}\n`);
     process.exitCode = 1;
   });
 }

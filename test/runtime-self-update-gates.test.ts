@@ -487,16 +487,16 @@ describe("rebuild failure", () => {
 });
 
 describe("failed handoff retirement", () => {
-  it("retires only the exact failed lock and preserves its journal as evidence", () => {
+  it("retires only the exact failed lock and preserves its journal as evidence", async () => {
     const armed = holdHandoffLock("armed");
-    expect(() => retireFailedRuntimeHandoff(home, { bindingDigest: armed.digest, actor: { user_id: "operator" }, reason: "stale" })).toThrow(/Only a failed handoff/);
+    await expect(retireFailedRuntimeHandoff(home, { bindingDigest: armed.digest, actor: { user_id: "operator" }, reason: "stale" })).rejects.toThrow(/Only a failed/);
     fs.rmSync(path.join(home, "config"), { recursive: true });
 
     const held = holdHandoffLock();
     const lockBytes = fs.readFileSync(held.lockPath);
     const journalBytes = fs.readFileSync(held.journalPath);
-    expect(() => retireFailedRuntimeHandoff(home, { bindingDigest: "e".repeat(64), actor: {}, reason: "stale" })).toThrow(/different binding digest/);
-    const retirement = retireFailedRuntimeHandoff(home, { bindingDigest: held.digest, actor: { user_id: "operator" }, reason: "Superseded by later merges" });
+    await expect(retireFailedRuntimeHandoff(home, { bindingDigest: "e".repeat(64), actor: {}, reason: "stale" })).rejects.toThrow(/different binding digest/);
+    const retirement = await retireFailedRuntimeHandoff(home, { bindingDigest: held.digest, actor: { user_id: "operator" }, reason: "Superseded by later merges" });
     expect(retirement).toMatchObject({ requestId: expect.stringMatching(/^f3ecce00/), failure: { phase: "failed", error: "Candidate runtime readiness failed" }, reason: "Superseded by later merges" });
     expect(readRuntimeHandoffLock(home)).toBeNull();
     expect(fs.readFileSync(path.join(held.dir, "retired-active.json"))).toEqual(lockBytes);

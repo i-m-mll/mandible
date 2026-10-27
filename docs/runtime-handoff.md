@@ -20,10 +20,13 @@ transition. A changed owned gateway definition is reloaded explicitly.
 
 Starting the candidate services only starts them. The helper then awaits the
 started daemon's readiness: it inspects the front door until it answers ready
-and warm at the exact merge generation, bounded by the handoff deadline. Every
-handoff health probe waits for the daemon's actual answer until that deadline
-(or one observation window for a recovery that outlived it); a slow answer is
-the daemon's state, not a failure. A refusal names the daemon's last answer.
+and warm at the exact merge generation, within a bounded observation wait.
+An unanswered probe, a normal starting response, or valid repeated diagnostics
+without enough interval coverage leaves verification pending. These observations
+retain the last actual evidence; they never fabricate a successful receipt.
+A concrete startup exit, replaced process, wrong generation, invalid protocol,
+malformed diagnostics, or hard log fault remains a failure even when the wait
+is incomplete.
 Readiness and observation inspect immediately, then pause one second after each
 answered inspection. This shared cadence leaves room for ordinary clients when
 each inspection probes both the backend and the front door.
@@ -39,16 +42,26 @@ contiguous. The observer waits until a completed sample covers the end of the
 pass by returning the same snapshot. The candidate hook manager verifies this
 receipt and publication proof before settling convergence or releasing
 deferred delivery actions.
-The handoff judges convergence, not performance. Once `handoff-start` has run
-nothing rolls back, and the observation window covers the desktop relaunch and
-a cold-cache startup warmup, the slowest seconds of a generation's life.
+The handoff judges convergence. The helper persists a possible-backend-launch
+boundary before issuing `handoff-start`. Every later helper entry and current
+verification is observation-only: it cannot unload, reinstall, rebuild or start
+services again. The uninterrupted initial helper waits for backend readiness,
+then may issue one owed desktop relaunch, recording its issued marker before
+the action. Desktop installation records the prior process identities before
+replacement. A later independent quit/reopen of the exact installed app can
+satisfy desktop verification without inventing an issued or completed action.
+An outstanding desktop remains pending with a quit/reopen instruction; an
+observed desktop exit is a concrete failure. An originally closed app creates
+no relaunch obligation. The observation covers cold-cache startup warmup.
 Event-loop lag warnings, maximum event-loop delays of 250 ms or more, and
 memory warnings, in samples and in the log, are recorded in the receipt's
 `performance` (bounded) and never fail the handoff. Candidate acceptance, which
 runs before the merge on an empty fixture database, fails on any of them.
 The log assessment fails on any `error` line from the current process and on
-any one event or route that exceeds 100 lines in a 10-second window. That rate
-rule detects runaway loops. Scheduled work that goes through a backlog, such as
+any non-HTTP event that exceeds 100 lines in a 10-second window. HTTP method/route
+volume aggregates independent callers and remains diagnostic evidence: bounded
+route counts, peak windows and status distributions are retained in candidate
+acceptance evidence and successful handoff receipts. Scheduled work that goes through a backlog, such as
 reconciler passes, startup backfills, ingestion reconcile and full ingest,
 therefore logs one summary event per pass, with counts and a bounded sample of
 identifiers. The per-item record stays in its durable rows, such as
@@ -65,8 +78,11 @@ The journal has schema `mandible-runtime-handoff@1` and lives at
 `MANDIBLE_HOME/config/local-sessions/handoff/<request>-<execution>/journal.json`.
 It binds installation, process, service definitions, runtime bytes, approved
 candidate and actual merge. A conflicting owner or changed checkout fails
-visibly. Helper crash recovery has six attempts and a 30-minute deadline.
-Failure preserves the journal and reports the failed phase as **merged, not
+visibly. Initial mutation execution has six attempts and a 30-minute budget.
+After the possible-launch boundary, that budget does not imply runtime failure
+or approval expiry. A bounded incomplete wait records `verification-pending`
+and `lastObservation`, exits normally, and keeps its installation lock, staged
+actions, publication binding and logs. Failure preserves the journal and reports the failed phase as **merged, not
 live**. It does not restore the old dependency graph or replay publication.
 
 ## Installation-owned services
@@ -176,14 +192,19 @@ candidate runtime launches stay deferred and every approval/execution path,
 including documentation-only merges, refuses. This keeps the protected branch
 at the exact generation needed to recover the failed publication. Releasing
 the lock schedules one missing current-candidate acceptance without repeating
-an unchanged failed result. A failed handoff keeps
+an unchanged failed result. A failed or verification-pending handoff keeps
 the lock until `mandible auth handoff recover <request>` (verification-only
 recovery, below) succeeds or the operator retires it with
 `mandible auth handoff retire --binding-digest <digest> --reason <text>`.
 Retirement boots out the exact idle helper job if one is still loaded and moves
 the lock beside the journal as `retired-active.json` with a `retirement.json`
-record. The journal, staged material and logs stay in place, and the failed
-delivery stays failed.
+record. Retirement requires an idle exact helper and idle observer, and is
+terminal for reconciliation. The original journal bytes, staged material and
+logs remain; retirement confirms no delivery and releases no issue closures.
+If an exact observation acceptance already committed, retirement refuses and
+completion/acknowledgment must finish. A persisted observation whose DB
+transaction rolled back remains retireable; unreadable or inconsistent DB
+acceptance refuses retirement.
 
 A rebuild that ends without an admitted handoff, or whose handoff fails, is
 reported once as `rebuild_failure` in health and as `mandible:rebuild-failed`,
@@ -191,9 +212,25 @@ with the message "The merge landed, but Mandible did not update: <reason>." A
 rebuild hook that exited 75 belongs to its handoff and is pending, never a
 failure, until that handoff's journal fails.
 
-A failed automatic recovery health window retries after five minutes even when
-the generation evidence is unchanged. Changed evidence permits an immediate
-retry. Only one observation runs at a time.
+Pending and failed current-runtime verification reuse the daemon's reconciliation
+sweep. An unchanged incomplete health window retries after five minutes;
+changed evidence permits an immediate retry. A cheap read-only precheck still
+checks concrete defects during that backoff. Pending owners bypass settled
+caches. The exact handoff's observation lease spans the health window, guarded
+DB acceptance, receipt recheck, completion and acknowledgment, and excludes
+retirement. Pending verification consumes no hook attempt and emits no
+rebuild-failed incident.
+
+Lifecycle ownership uses the shared macOS process-lifetime `lockf` guard also
+used by secure local connection setup. The kernel guard keeps a stable inode
+and spans the owned operation. Complete process identity is prepared before
+the owner directory is published; release and recovery recheck its exact
+generation under that guard. A crashed observer releases the kernel guard,
+allowing the next observer to recover a proven stale owner. Uncertain legacy
+owner records remain pending and are never stolen. Loss of the guard stops
+further observation writes and acceptance effects. A verified ready response
+is persisted as an established serving fact; a later concrete connection
+refusal cannot be reclassified as normal startup.
 
 ## Verification
 
@@ -247,8 +284,8 @@ and desktop gate still runs on the exact unmodified candidate; this fixture
 does not claim identical source bytes after its port transforms.
 
 Verification-only recovery uses the same retained hook row, publication proof,
-failed handoff journal, receipt verifier, and convergence settlement. It never
-runs a build, installer, merge, or restart. The failed journal remains failed
+pending or failed handoff journal, receipt verifier, and convergence settlement. It never
+runs a build, installer, merge, or restart. An existing failed journal remains failed
 through a 31-second observation of the exact current daemon, installation,
 loaded launchd definitions, and actual stderr writer. Hook acceptance commits
 before the journal becomes complete; interrupted acknowledgment can be replayed.
@@ -256,7 +293,7 @@ Concurrent observers cannot replace a receipt after its hook acceptance commits.
 The original failure and hook attempt history remain available. Recovery
 applies the same convergence rule as the handoff: it reads and hashes the
 complete current-process log, following rotated segments as described below,
-and lifetime hard failures such as crashes, error rows, restarts and event
+and lifetime hard failures such as crashes, error rows, restarts and non-HTTP event
 storms remain fatal even when they are old. The recovery receipt records the
 exact interval, initial and final samples, full log offset/digest/byte count,
 and bounded performance findings.
@@ -267,14 +304,17 @@ rewriting the journal or an accepted recovery receipt.
 
 A failed convergence hook can be executed again with
 `mandible auth retry-convergence <request> [--hook <id>]`. This retries the hook
-without publishing the merge again. Pending means admitted and still running;
-a failed or unconfirmed result is not completion. Inspect `mandible auth show
+without publishing the merge again. Pending means convergence has not been
+confirmed; a failed or unconfirmed result is not completion. Inspect `mandible auth show
 <request>` before taking another action after a connection loss.
 
 The protected retry route accepts `mode: "verify-current"` and requires an
 active durable credential with project write access and exact delivery custody
 (or configured operator recovery). `mandible auth handoff recover <request>
-[--operator-recovery]` calls it. Public routes accept ambiguity-safe short
+[--operator-recovery]` calls it. Its response carries a separate typed
+`verification.outcome` (`confirmed` or `pending`), reason, and retained-failure
+flag alongside the actual convergence state. The CLI reports pending as
+unconfirmed and retains the earlier failure reason. Public routes accept ambiguity-safe short
 request references. When the deployed daemon predates this capability, the
 candidate-owned `scripts/verify-current-convergence.ts` is a finite one-shot:
 pass the full exact request ID and optionally `--operator-recovery`, with the

@@ -23,7 +23,7 @@ it("keeps the staged publication database open until asynchronous verification r
   try {
     const runtime = execFileSync("/bin/sh", ["scripts/bun-runtime.sh"], { encoding: "utf8", timeout: 10_000 }).trim();
     const binding = {
-      home, requestId: "lifetime-request", executionId: "lifetime-run", commandDigest: "c".repeat(64),
+      home, requestId: "lifetime-request", executionId: "lifetime-run", hookId: 'builtin-mandible-rebuild', commandDigest: "c".repeat(64),
       runtime: { path: runtime, sha256: createHash("sha256").update(fs.readFileSync(runtime)).digest("hex") },
     };
     const dir = handoffDirectory(home, binding.requestId, binding.executionId);

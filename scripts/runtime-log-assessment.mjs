@@ -1,7 +1,5 @@
-// A storm is one event or route above STORM_LIMIT lines in any STORM_WINDOW_MS
-// window: the signature of a runaway loop. Planned backlog passes log one
-// summary per pass, not one line per item (docs/runtime-handoff.md), so this
-// rule needs no exemptions.
+// Repeated non-HTTP events retain their storm policy. HTTP route rates aggregate
+// independent callers and describe traffic volume, not proof of a failed update.
 const STORM_WINDOW_MS = 10_000;
 const STORM_LIMIT = 100;
 // Performance signals: recorded in diagnostics.health_events, never failures.
@@ -97,9 +95,8 @@ export function createRuntimeLogAssessor() {
       eventSummaries.push({ ...counts, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
     }
     const httpRoutes = [];
-    for (const [key, route] of routes) {
+    for (const route of routes.values()) {
       const peak = peakWindow(route);
-      if (peak > STORM_LIMIT) { hardFailureCount++; failures.push(`Repeated request storm: ${key} (${peak} in ${STORM_WINDOW_MS}ms)`); }
       const { times, ...summary } = route;
       httpRoutes.push({ ...summary, peak_window_count: peak, first: times.length ? new Date(times[0]).toISOString() : null, last: times.length ? new Date(times.at(-1)).toISOString() : null });
     }
@@ -107,7 +104,7 @@ export function createRuntimeLogAssessor() {
     eventSummaries.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || a.event.localeCompare(b.event));
     return {
       failures,
-      diagnostics: { hard_failure_count: hardFailureCount, health_events: { retained: healthEvents, omitted: healthEventCount - healthEvents.length }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
+      diagnostics: { hard_failure_count: hardFailureCount, health_events: { retained: healthEvents, omitted: healthEventCount - healthEvents.length }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
     };
   };
   return { add, finish };

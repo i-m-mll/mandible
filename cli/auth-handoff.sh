@@ -35,6 +35,7 @@ if [[ "$action" == status ]]; then
       "Runtime handoff lock held: \($l.file)",
       "  request \(($l.requestId // "unknown")[0:8]) phase \($l.phase // "unknown")",
       (if $l.error then "  error: \($l.error)" else empty end),
+      (if $l.lastObservation then "  verification pending: \($l.lastObservation.reason)" else empty end),
       "  journal \($l.journalPath // "unknown")",
       "  binding digest \($l.bindingDigest // "unknown")"
     end'
@@ -49,7 +50,12 @@ if [[ "$action" == recover ]]; then
     exit 1
   }
   if [[ "$json" == 1 ]]; then printf '%s\n' "$response" | jq .; exit 0; fi
-  printf '%s\n' "$response" | jq -r '"Recovered the runtime handoff for request \(.request_id[0:8]): convergence \(.convergence.state)."'
+  printf '%s\n' "$response" | jq -r '
+    if .verification.outcome == "pending" then
+      "Runtime handoff verification is pending for request \(.request_id[0:8]): \(.verification.reason)",
+      (if .verification.retainedFailure then "The earlier recorded handoff failure remains retained.",
+        (.convergence.hooks[]? | select(.state == "failed" and .failure != null) | "  \(.hook_id): \(.failure)") else empty end)
+    else "Recovered the runtime handoff for request \(.request_id[0:8]): convergence \(.convergence.state)." end'
   exit 0
 fi
 if [[ ! "$digest" =~ ^[0-9a-f]{64}$ || -z "${reason//[[:space:]]/}" ]]; then

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import SqliteDatabase from '../src/sqlite.js';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -10,9 +11,11 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, runRuntimeHandoffWorker, withRuntimeObservation, retireFailedRuntimeHandoff, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
+import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
+import { acquireProcessLock } from '../scripts/process-lock.mjs';
 import { rotateStderrLogSegments } from '../src/daemon-log.ts';
 import { resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
@@ -216,50 +219,377 @@ it('runs real recovery observation through complete log and journal evidence', a
   ]);
 });
 
-it.each(['running', 'running-unreplaced', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const)('requires the desktop before accepting recovery: %s', async state => {
-  const processStart = new Date(Date.now() - 2000).toISOString();
-  const f = recoveryFixture(startedAt => [startupLine(startedAt)], processStart);
-  const binding = { ...f.failed.binding, desktopWasRunning: true };
-  const failed = { ...f.failed, binding, bindingDigest: bindingDigest(binding), stages: state === 'running-unreplaced' ? {} : { desktopRelaunch: { completedAt: 1 } } };
+it.each(['initial', 'recovery'] as const)('accepts independent healthy clients and retains route evidence during %s handoff', async mode => {
+  const f = recoveryFixture((processStartedAt, fakeStart) => [
+    startupLine(processStartedAt),
+    ...Array.from({ length: 120 }, (_, client) => ['/api/health', '/api/projects'].map(pathname =>
+      JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname, status: 200,
+        request_id: `client-${client}`, time: new Date(fakeStart - 500 + client).toISOString() }))).flat(),
+  ]);
+  const journal = { ...f.failed, phase: mode === 'initial' ? 'observing' : 'failed' };
+  fs.writeFileSync(path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json'), JSON.stringify(journal));
+  const observe = async () => {
+    let time = f.fakeStart;
+    const options = { observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+      probe: freshProbe(f.evidence, f.fakeStart) };
+    return mode === 'initial' ? await observeRuntimeHandoff(journal, options)
+      : (await observeFailedRuntimeHandoff(journal, { user_id: 'agent' }, options)).recovery.receipt;
+  };
+  const receipt = await observe();
+  expect(JSON.parse(JSON.stringify(receipt)).performance.httpRequests).toMatchObject({ total: 240, route_count: 2,
+    routes: [
+      { pathname: '/api/health', count: 120, peak_window_count: 120, statuses: { '200': 120 } },
+      { pathname: '/api/projects', count: 120, peak_window_count: 120, statuses: { '200': 120 } },
+    ], omitted_routes: 0 });
+  fs.appendFileSync(f.log, JSON.stringify({ level: 'error', message: 'concrete_handler_error', time: new Date(f.fakeStart).toISOString() }) + '\n');
+  await expect(observe()).rejects.toMatchObject({ code: 'log_assessment_failed' });
+});
+
+it.each(['external-reopen', 'issued-ambiguous', 'old-shell', 'closed', 'known-exit', 'originally-closed'] as const)('verifies desktop facts without launching during recovery: %s', async state => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const desktopStart = new Date(f.fakeStart - 1000).toUTCString();
+  const binding = { ...f.failed.binding, desktopWasRunning: state !== 'originally-closed' };
+  const identity = { pid: 987654, startedAt: desktopStart, installedImage: true, imageInode: fs.statSync(f.executable).ino };
+  const issued = state === 'issued-ambiguous' || state === 'known-exit';
+  const failed = { ...f.failed, binding, bindingDigest: bindingDigest(binding),
+    desktopInstallation: { issuedAt: f.fakeStart - 3000, prior: state === 'old-shell' ? [identity] : [] },
+    stages: issued ? { desktopRelaunch: { issuedAt: f.fakeStart - 2000, ...(state === 'known-exit' ? { identity } : {}) } } : {} };
   const dir = handoffDirectory(binding.home, binding.requestId, binding.executionId);
   fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(failed));
   fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: failed.bindingDigest }));
-  let running = state === 'running' || state === 'running-unreplaced';
+  let running = !['closed', 'known-exit', 'originally-closed'].includes(state);
   const spawnSync = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
   vi.mocked(childProcess.spawnSync).mockImplementation(((binary: string, args: string[], options: any) => {
-    if (binary === '/bin/ps' && args.includes(String(process.pid))) return { status: 0, stdout: processStart };
     if (binary === '/usr/bin/pgrep') return { status: running ? 0 : 1, stdout: running ? '987654\n' : '' };
-    if (binary === '/bin/ps' && args.includes('987654')) return { status: 0, stdout: `${binding.nativeApp}/Contents/MacOS/mandible-app` };
+    if (binary === '/bin/ps' && args.includes('987654')) return { status: 0, stdout: args.includes('lstart=') ? desktopStart : f.executable };
+    if (binary === '/usr/sbin/lsof' && args.includes('987654')) return { status: 0, stdout: `i${identity.imageInode}\nn${f.executable}\n` };
     return spawnSync(binary, args, options);
   }) as typeof spawnSync);
-  const relaunch = vi.mocked(supervisor.runSupervisedCommand).mockImplementation(async () => {
-    if (state === 'relaunch-fails') throw new Error('fixture relaunch failed');
-    running = state !== 'exits-after-relaunch';
-  });
+  const relaunch = vi.mocked(supervisor.runSupervisedCommand);
   let time = f.fakeStart;
-  let probes = 0;
   const observe = () => observeFailedRuntimeHandoff(failed, { kind: 'daemon_reconciliation' }, {
     observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
-    probe: async () => {
-      expect(running).toBe(true);
-      return ++probes === 1 ? f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)) : f.evidence(diagnostics(2, f.fakeStart - 10, f.fakeStart + 10));
-    },
+    probe: freshProbe(f.evidence, f.fakeStart),
   });
-  if (state === 'relaunch-fails' || state === 'exits-after-relaunch') {
-    await expect(observe()).rejects.toThrow(state === 'relaunch-fails' ? 'Installed desktop could not be relaunched' : 'Installed desktop did not remain running');
-    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.phase).toBe('failed');
+  if (['closed', 'old-shell', 'known-exit'].includes(state)) {
+    await expect(observe()).rejects.toMatchObject({ outcome: state === 'known-exit' ? 'failed' : 'pending', code: state === 'known-exit' ? 'desktop_exited' : 'desktop_unconfirmed' });
+    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.error).toBe(f.failed.error);
     expect(readRuntimeRecoveryAttempts(binding.home, binding.requestId, binding.executionId)).toHaveLength(1);
   } else {
     const recovered = await observe();
     expect(recovered.recovery.receipt).toBeDefined();
-    expect(readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.stages.desktopRelaunch.completedAt).toEqual(state === 'running' ? 1 : expect.any(Number));
-    // Receipt verification is the acknowledgment gate, including after acceptance.
-    const complete = { ...recovered, phase: 'complete', receipt: recovered.recovery.receipt };
-    running = false;
-    await expect(verifyRuntimeHandoffReceipt(complete, { probe: false })).rejects.toThrow('Installed desktop did not remain running');
+    if (state !== 'originally-closed') {
+      const stage = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId)?.stages.desktopRelaunch;
+      expect(stage.identity).toEqual(identity);
+      expect(stage.completedAt).toBeUndefined();
+      if (state === 'external-reopen') { expect(stage.suppliedExternally).toBe(true); expect(stage).not.toHaveProperty('issuedAt'); }
+      const complete = { ...recovered, phase: 'complete', receipt: recovered.recovery.receipt };
+      running = false;
+      await expect(verifyRuntimeHandoffReceipt(complete, { probe: false })).rejects.toMatchObject({ code: 'desktop_exited' });
+    }
   }
-  expect(relaunch).toHaveBeenCalledTimes(state === 'running' ? 0 : 1);
-  if (state !== 'running') expect(relaunch).toHaveBeenCalledWith('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', binding.nativeApp, 'mandible-app', '0'], expect.objectContaining({ cwd: binding.root, timeout: 15000 }));
+  expect(relaunch).not.toHaveBeenCalled();
+});
+
+it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-desktop-outstanding'] as const)('continues after its execution budget without replaying effects: %s', async pendingAt => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, desktopWasRunning: pendingAt === 'desktop-wait' || pendingAt === 'backend-wait-desktop-outstanding', oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 1000, bridgeInstalled: true, stages: {}, environment: {} };
+  delete (journal as any).error;
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const sample = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  const processes = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 }, gateway: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
+  const evidence = { ...sample, processes };
+  let time = f.fakeStart;
+  let first = true;
+  let oldShell = pendingAt === 'backend-wait-desktop-outstanding';
+  let desktopRunning = oldShell;
+  let desktopBirth = new Date(f.fakeStart - 1000).toUTCString();
+  const actualSpawn = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
+  vi.mocked(childProcess.spawnSync).mockImplementation(((binary: string, args: string[], options: any) => {
+    if (binary === '/usr/bin/pgrep') return { status: desktopRunning ? 0 : 1, stdout: desktopRunning ? (oldShell ? '987655\n' : '987654\n') : '' };
+    if (binary === '/bin/ps' && args.includes('987654')) return { status: 0, stdout: args.includes('lstart=') ? desktopBirth : f.executable };
+    if (binary === '/usr/sbin/lsof' && args.includes('987654')) return { status: 0, stdout: `i${fs.statSync(f.executable).ino}\nn${f.executable}\n` };
+    if (binary === '/bin/ps' && args.includes('987655')) return { status: 0, stdout: args.includes('lstart=') ? new Date(f.fakeStart - 10000).toUTCString() : f.executable };
+    if (binary === '/usr/sbin/lsof' && args.includes('987655')) return { status: 0, stdout: `i${fs.statSync(f.executable).ino + 1}\nn${f.executable}\n` };
+    return actualSpawn(binary, args, options);
+  }) as typeof actualSpawn);
+  const desktopLaunch = vi.mocked(supervisor.runSupervisedCommand).mockImplementation(async () => {
+    expect(commands.at(-1)).toBe('handoff-verify');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).stages.desktopRelaunch).toMatchObject({ issuedAt: expect.any(Number) });
+    throw Object.assign(new Error('issued desktop wait expired'), { code: 'STAGE_DEADLINE' });
+  });
+  const commands: string[] = [];
+  const control = vi.fn(async (current, command) => {
+    commands.push(command);
+    if (command === 'handoff-start') {
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'starting', launch: { enteredAt: f.fakeStart } });
+    }
+    if (first && (command === 'handoff-verify' && pendingAt.startsWith('backend-wait') || command === 'handoff-start' && pendingAt === 'launch-ambiguous')) { first = false; throw new RuntimeObservationError('observation_deadline', 'probe wait expired', { lastRealSample: sample }, 'pending'); }
+    return JSON.stringify(evidence);
+  });
+  const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });
+  const desktop = vi.fn();
+  const verifyPublication = vi.fn(async () => {});
+  let receiptReady = false;
+  const observation = vi.fn(async (current, options) => { const receipt = await observeRuntimeHandoff(current, { ...options,
+    observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+    probe: freshProbe(f.evidence, time),
+  }); receiptReady = true; return receipt; });
+  const run = () => runRuntimeHandoffWorker(file, { now: () => time, stage, ...(binding.desktopWasRunning ? {} : { desktop }), control, verifyPublication, observe: observation });
+  const pending = await run();
+  expect(pending).toMatchObject({ phase: 'verification-pending', attempts: 1, launch: { processes }, lastObservation: { outcome: 'pending', code: pendingAt === 'desktop-wait' ? 'desktop_unconfirmed' : 'observation_deadline' } });
+  expect(pending).not.toHaveProperty('receipt');
+  expect(pending).not.toHaveProperty('error');
+  expect(stage).toHaveBeenCalledTimes(4);
+  expect(desktop).not.toHaveBeenCalled();
+  time += 600_000;
+  desktopRunning = binding.desktopWasRunning;
+  if (oldShell) {
+    const outstanding = await run();
+    expect(outstanding).toMatchObject({ phase: 'verification-pending', lastObservation: { code: 'desktop_unconfirmed' }, launch: { readyAt: expect.any(Number) } });
+    expect(desktopLaunch).not.toHaveBeenCalled();
+    expect(outstanding.stages).not.toHaveProperty('desktopRelaunch');
+    oldShell = false;
+  }
+  desktopBirth = new Date(time - 1000).toUTCString();
+  const rmdir = fs.rmdirSync;
+  let checkedRelease = false;
+  let contender: Promise<unknown> | undefined;
+  const fullObservations = vi.fn();
+  vi.spyOn(fs, 'rmdirSync').mockImplementation((directory, options) => {
+    if (directory === path.join(path.dirname(file), '.verification.lock') && receiptReady && !checkedRelease) {
+      checkedRelease = true;
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).phase).toBe('complete');
+      contender = withRuntimeObservation(journal, () => {
+        const phase = JSON.parse(fs.readFileSync(file, 'utf8')).phase;
+        if (phase === 'observing') fullObservations();
+        expect(phase).toBe('complete');
+      });
+      void contender.catch(() => {});
+    }
+    return rmdir(directory, options);
+  });
+  const complete = await run();
+  expect(checkedRelease).toBe(true);
+  try { await contender; } catch (error) { expect(error).toMatchObject({ outcome: 'pending', code: 'observer_busy' }); }
+  expect(fullObservations).not.toHaveBeenCalled();
+  expect(complete).toMatchObject({ phase: 'complete', attempts: 1, receipt: { bindingDigest: journal.bindingDigest } });
+  expect(commands.filter(command => command === 'handoff-start')).toHaveLength(1);
+  expect(commands.filter(command => command === 'handoff-remove')).toHaveLength(1);
+  expect(stage).toHaveBeenCalledTimes(4);
+  expect(desktop).not.toHaveBeenCalled();
+  expect(observation).toHaveBeenCalledTimes(pendingAt === 'backend-wait-desktop-outstanding' ? 2 : 1);
+  if (pendingAt === 'backend-wait-desktop-outstanding') {
+    expect(complete.stages.desktopRelaunch).toMatchObject({ suppliedExternally: true, identity: { pid: 987654 } });
+    expect(complete.stages.desktopRelaunch).not.toHaveProperty('issuedAt');
+    expect(complete.stages.desktopRelaunch).not.toHaveProperty('completedAt');
+  }
+  expect(desktopLaunch).toHaveBeenCalledTimes(pendingAt === 'desktop-wait' ? 1 : 0);
+  if (pendingAt === 'desktop-wait') {
+    expect(complete.stages.desktopRelaunch).toMatchObject({ issuedAt: expect.any(Number), identity: { pid: 987654 } });
+    expect(complete.stages.desktopRelaunch).not.toHaveProperty('completedAt');
+  }
+});
+
+it.each([false, true])('waits for prelaunch ownership without publishing ambiguous launch history (expires=%s)', async expires => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 2500, bridgeInstalled: true, stages: {}, environment: {} };
+  delete (journal as any).error;
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+  const observer = withRuntimeObservation(journal, async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let time = f.fakeStart;
+  const evidence = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  const control = vi.fn(async (current, command) => {
+    if (command === 'handoff-start') expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'starting', launch: { enteredAt: time } });
+    return JSON.stringify(evidence);
+  });
+  const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });
+  const wait = vi.fn(async milliseconds => {
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).not.toHaveProperty('launch');
+    expect(stage).toHaveBeenCalledTimes(4);
+    time += milliseconds;
+    if (!expires) { release.resolve(); await observer; }
+  });
+  try {
+    const result = await runRuntimeHandoffWorker(file, { now: () => time, wait, control, stage,
+      verifyPublication: async () => {}, desktop: async () => {}, observe: async current => ({ bindingDigest: current.bindingDigest }) });
+    expect(result.attempts).toBe(1);
+    expect(stage).toHaveBeenCalledTimes(4);
+    expect(control.mock.calls.filter(([, command]) => command === 'handoff-remove')).toHaveLength(1);
+    expect(control.mock.calls.filter(([, command]) => command === 'handoff-start')).toHaveLength(expires ? 0 : 1);
+    expect(wait).toHaveBeenCalled();
+    if (expires) {
+      expect(result).toMatchObject({ phase: 'failed', error: expect.stringContaining('execution budget exhausted before acquiring launch ownership') });
+      expect(result).not.toHaveProperty('launch');
+    } else expect(result.phase).toBe('complete');
+  } finally { release.resolve(); await observer; }
+});
+
+it.each(['verification-pending', 'failed'] as const)('checks concrete log faults before retaining an incomplete %s observation', async phase => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const journal = { ...f.failed, phase, launch: { enteredAt: f.fakeStart - 1000 } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  const before = fs.readFileSync(file, 'utf8');
+  const pending = new RuntimeObservationError('observation_deadline', 'unanswered probe', null, 'pending');
+  const readEvidence = async () => f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  fs.appendFileSync(f.log, JSON.stringify({ level: 'error', message: 'real_startup_error', time: new Date(f.fakeStart).toISOString() }) + '\n');
+  await expect(observeFailedRuntimeHandoff(journal, { kind: 'fixture' }, { probe: async () => { throw pending; }, readEvidence })).rejects.toMatchObject({ outcome: 'failed', code: 'log_assessment_failed' });
+  if (phase === 'failed') expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  else expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)).toMatchObject({ phase: 'failed', failure: { code: 'log_assessment_failed' } });
+});
+
+it('assesses the full retained log chain when the initial evidence inspection is pending', async () => {
+  const f = recoveryFixture((startedAt, fakeStart) => [startupLine(startedAt),
+    ...Array.from({ length: 101 }, () => JSON.stringify({ level: 'info', message: 'concrete_non_http_loop', time: new Date(fakeStart - 2000).toISOString() })),
+  ]);
+  rotate(f.log);
+  fs.appendFileSync(f.log, info('after_rotation', f.fakeStart - 1000));
+  const journal = { ...f.failed, phase: 'verification-pending', launch: { enteredAt: f.fakeStart } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  const probe = vi.fn();
+  const readEvidence = async () => { throw new RuntimeObservationError('starting', 'gateway has no PID yet', f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)), 'pending'); };
+  await expect(observeFailedRuntimeHandoff(journal, {}, { probe, readEvidence })).rejects.toMatchObject({ outcome: 'failed', code: 'log_assessment_failed' });
+  expect(probe).not.toHaveBeenCalled();
+  expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)).toMatchObject({ phase: 'failed', failure: { code: 'log_assessment_failed' } });
+});
+
+it('keeps a contender pending while the complete owner is prepared before publication', async () => {
+  const f = fixture();
+  const lock = path.join(f.dir, '.verification.lock');
+  const duplicate = vi.fn();
+  const actualSpawn = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
+  let contender: Promise<unknown> | undefined;
+  vi.mocked(childProcess.spawnSync).mockImplementation(((binary: string, args: string[], options: any) => {
+    if (!contender && binary === '/bin/ps' && args.includes('command=')) {
+      expect(fs.existsSync(lock)).toBe(false);
+      contender = withRuntimeObservation(f.journal, duplicate);
+      void contender.catch(() => {});
+    }
+    return actualSpawn(binary, args, options);
+  }) as typeof actualSpawn);
+  await withRuntimeObservation(f.journal, async () => {
+    const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
+    expect(owner).toMatchObject({ pid: process.pid, token: expect.any(String), identity: expect.any(String) });
+    await expect(contender).rejects.toMatchObject({ code: 'observer_busy', outcome: 'pending' });
+  });
+  expect(duplicate).not.toHaveBeenCalled();
+});
+
+it('keeps a contender pending through release and preserves uncertain legacy ownership', async () => {
+  const f = fixture();
+  const lock = path.join(f.dir, '.verification.lock');
+  const guardFile = `${lock}.process`;
+  const guard = await acquireProcessLock(guardFile);
+  const operation = vi.fn();
+  try {
+    // Ownership has disappeared during release; the old kernel guard still owns this generation.
+    expect(fs.existsSync(lock)).toBe(false);
+    await expect(withRuntimeObservation(f.journal, operation)).rejects.toMatchObject({ code: 'observer_busy', outcome: 'pending' });
+    expect(operation).not.toHaveBeenCalled();
+  } finally { await guard.release(); }
+  const inode = fs.statSync(guardFile).ino;
+  for (const owner of [null, '{"pid":']) {
+    fs.mkdirSync(lock);
+    if (owner) fs.writeFileSync(path.join(lock, 'owner.json'), owner);
+    await expect(withRuntimeObservation(f.journal, operation)).rejects.toMatchObject({ code: 'observer_busy', outcome: 'pending' });
+    expect(operation).not.toHaveBeenCalled();
+    expect(fs.existsSync(lock)).toBe(true);
+    if (owner) expect(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')).toBe(owner);
+    fs.rmSync(lock, { recursive: true });
+  }
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, identity: 'previous process lifetime' }));
+  await withRuntimeObservation(f.journal, operation);
+  expect(operation).toHaveBeenCalledOnce();
+  expect(fs.statSync(guardFile).ino).toBe(inode);
+  expect(fs.existsSync(lock)).toBe(false);
+});
+
+it('serializes observations and refuses retirement while its observer is active', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64) };
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'verification-pending', launch: { enteredAt: f.fakeStart } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  await withRuntimeObservation(journal, async () => {
+    await expect(observeFailedRuntimeHandoff(journal, {}, { probe: async () => { throw new Error('must not probe'); } })).rejects.toMatchObject({ code: 'observer_busy', outcome: 'pending' });
+    await expect(retireFailedRuntimeHandoff(f.home, { bindingDigest: journal.bindingDigest, actor: { user_id: 'operator' }, reason: 'stop' })).rejects.toThrow('verification is still running');
+  });
+  const dir = path.dirname(file);
+  fs.writeFileSync(path.join(dir, 'sqlite.mjs'), `export {default} from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), 'src/sqlite.ts')).href)};`);
+  const db = new SqliteDatabase(journal.database);
+  db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, command_digest TEXT, state TEXT, output TEXT)');
+  db.prepare('INSERT INTO auth_hook_executions VALUES (?, ?, ?, ?, ?, ?)').run(journal.binding.executionId, journal.binding.requestId, journal.binding.hookId, journal.binding.commandDigest, 'pending', '');
+  db.close();
+  const bytes = fs.readFileSync(file);
+  const activeFile = path.join(f.home, 'config/local-sessions/handoff-active.json');
+  const rename = fs.renameSync;
+  const interrupted = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+    if (source === activeFile) throw new Error('fixture interrupted retirement lock move');
+    return rename(source, destination);
+  });
+  await expect(retireFailedRuntimeHandoff(f.home, { bindingDigest: journal.bindingDigest, actor: { user_id: 'operator' }, reason: 'abandon unconfirmed launch' })).rejects.toThrow('fixture interrupted');
+  interrupted.mockRestore();
+  const retirementBytes = fs.readFileSync(path.join(dir, 'retirement.json'));
+  expect(fs.existsSync(activeFile)).toBe(true);
+  await expect(retireFailedRuntimeHandoff(f.home, { bindingDigest: journal.bindingDigest, actor: { user_id: 'operator' }, reason: 'finish interrupted retirement' })).resolves.toMatchObject({ bindingDigest: journal.bindingDigest, reason: 'abandon unconfirmed launch' });
+  expect(fs.readFileSync(path.join(dir, 'retirement.json'))).toEqual(retirementBytes);
+  expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)).toMatchObject({ phase: 'retired' });
+  expect(fs.readFileSync(file)).toEqual(bytes);
+  const control = vi.fn(); const stage = vi.fn();
+  expect(await runRuntimeHandoffWorker(file, { control, stage })).toMatchObject({ phase: 'retired' });
+  expect(control).not.toHaveBeenCalled(); expect(stage).not.toHaveBeenCalled();
+  expect(fs.existsSync(path.join(f.home, 'config/local-sessions/handoff-active.json'))).toBe(false);
+});
+
+it.each(['rolled-back', 'committed', 'mismatched-marker', 'normal-marker-for-recovery', 'changed-command', 'unreadable'] as const)('retires pending verification only with proven unaccepted DB state: %s', async disposition => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64) };
+  const dir = handoffDirectory(f.home, binding.requestId, binding.executionId);
+  const file = path.join(dir, 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'verification-pending',
+    launch: { enteredAt: f.fakeStart }, recovery: { digest: 'd'.repeat(64), receipt: {} } };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  fs.writeFileSync(path.join(dir, 'sqlite.mjs'), `export {default} from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), 'src/sqlite.ts')).href)};`);
+  const db = new SqliteDatabase(journal.database);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, command_digest TEXT, state TEXT, output TEXT)');
+    db.prepare('INSERT INTO auth_hook_executions VALUES (?, ?, ?, ?, ?, ?)').run(binding.executionId, binding.requestId, binding.hookId, binding.commandDigest, 'pending', '');
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare("UPDATE auth_hook_executions SET state = 'complete', output = ?").run(`MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${journal.recovery.digest}`);
+    db.exec(disposition === 'rolled-back' ? 'ROLLBACK' : 'COMMIT');
+    if (disposition === 'mismatched-marker') db.prepare('UPDATE auth_hook_executions SET output = ?').run('MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:another-observation');
+    if (disposition === 'normal-marker-for-recovery') db.prepare('UPDATE auth_hook_executions SET output = ?').run(`MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}`);
+    if (disposition === 'changed-command') db.prepare('UPDATE auth_hook_executions SET command_digest = ?').run('changed');
+    if (disposition === 'unreadable') journal.database = path.join(f.home, 'missing.db');
+    fs.writeFileSync(file, JSON.stringify(journal));
+    const before = fs.readFileSync(file);
+    const retirement = retireFailedRuntimeHandoff(f.home, { bindingDigest: journal.bindingDigest, actor: { user_id: 'operator' }, reason: 'abandon unconfirmed launch' });
+    if (disposition === 'rolled-back') {
+      await expect(retirement).resolves.toMatchObject({ bindingDigest: journal.bindingDigest });
+      expect(readRuntimeHandoff(f.home, binding.requestId, binding.executionId)?.phase).toBe('retired');
+    } else {
+      await expect(retirement).rejects.toThrow(disposition === 'committed' ? 'acceptance already committed' : disposition === 'unreadable' ? /open|exist|database/i : 'unresolved or inconsistent');
+      expect(fs.existsSync(path.join(f.home, 'config/local-sessions/handoff-active.json'))).toBe(true);
+      expect(fs.existsSync(path.join(dir, 'retirement.json'))).toBe(false);
+    }
+    expect(fs.readFileSync(file)).toEqual(before);
+  } finally { db.close(); }
 });
 
 it('records a refused recovery without overwriting a concurrently accepted receipt', async () => {
@@ -460,15 +790,86 @@ it('runs the staged bundled helper without activating imported command-line entr
 /** Copy the handoff controller and the daemon modules it imports, as a qualified installation lays them out. */
 function installQualifiedController(home: string): string {
   const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
-  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
+  stageHandoffController(process.cwd(), qualified);
+  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs']) {
     fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
   }
   fs.mkdirSync(path.join(home, 'src'));
   for (const name of ['runtime-health-contract.ts', 'stderr-log-chain.ts']) fs.copyFileSync(path.join(process.cwd(), 'src', name), path.join(home, 'src', name));
   fs.mkdirSync(path.join(home, 'scripts'));
   fs.copyFileSync(path.join(process.cwd(), 'scripts/runtime-probe-cadence.mjs'), path.join(home, 'scripts/runtime-probe-cadence.mjs'));
+  fs.writeFileSync(path.join(home, 'scripts/runtime-observation.mjs'), "export * from '../qualified/runtime-observation.mjs';");
   return qualified;
 }
+
+it('lets probes slower than the cheap precheck establish a full observation with its larger actual deadline', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const journal = { ...f.failed, phase: 'verification-pending', launch: { enteredAt: f.fakeStart } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  const qualified = installQualifiedController(f.home);
+  const stateFile = path.join(f.home, 'slow-probe.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ time: f.fakeStart, lastEnd: f.fakeStart - 1000, sequence: 0, budgets: [] }));
+  const evidence = f.evidence(diagnostics(1, f.fakeStart - 1000, f.fakeStart));
+  fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), `import fs from 'node:fs';
+const stateFile = ${JSON.stringify(stateFile)};
+const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+const evidence = ${JSON.stringify(evidence)};
+if (process.argv[2] === 'handoff-evidence') { console.log(JSON.stringify(evidence)); }
+else {
+  const until = Number(process.argv[process.argv.indexOf('--until') + 1]);
+  state.budgets.push(until - state.time);
+  if (until - state.time < 6000) {
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    console.error(JSON.stringify({ schema: 'mandible-runtime-observation@1', outcome: 'pending', code: 'probe_deadline', message: 'answer needs six seconds', evidence: null }));
+    process.exitCode = 1;
+  } else {
+    const start = state.lastEnd;
+    state.time += 6000; state.sequence++; state.lastEnd = state.time;
+    for (const name of ['eventLoop', 'memory']) Object.assign(evidence.health[name], { sequence: state.sequence, intervalStartedAt: start, intervalEndedAt: state.time });
+    fs.writeFileSync(stateFile, JSON.stringify(state)); console.log(JSON.stringify(evidence));
+  }
+}
+`);
+  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
+  const cheap = await runtime.runtimeRecoveryEvidenceKey(journal);
+  expect(cheap).toMatchObject({ outcome: 'pending' });
+  const readState = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  const recovered = await runtime.observeFailedRuntimeHandoff(runtime.readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId), {}, {
+    now: () => readState().time,
+    wait: async milliseconds => { const state = readState(); state.time += milliseconds; fs.writeFileSync(stateFile, JSON.stringify(state)); },
+  });
+  expect(recovered.recovery.receipt.observation).toMatchObject({ startedAt: f.fakeStart, mustCover: f.fakeStart + 31_000, deadline: f.fakeStart + 62_000 });
+  expect(readState().time).toBeGreaterThanOrEqual(f.fakeStart + 31_000);
+  expect(readState().budgets[0]).toBeLessThan(6000);
+  expect(readState().budgets.slice(1).every(budget => budget >= 6000)).toBe(true);
+});
+
+it('retains the first serving observation so a later refused path is a concrete failure', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const journal = { ...f.failed, phase: 'verification-pending', launch: { enteredAt: f.fakeStart } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  const qualified = installQualifiedController(f.home);
+  const sample = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  fs.writeFileSync(path.join(qualified, 'local-runtime.mjs'), `import fs from 'node:fs';
+import { handoffFrontDoorObservation } from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), 'scripts/local-runtime.mjs')).href)};
+const journal = JSON.parse(fs.readFileSync(process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL, 'utf8'));
+const evidence = ${JSON.stringify(sample)};
+if (process.argv[2] === 'handoff-evidence' || !journal.launch.readyAt) console.log(JSON.stringify(evidence));
+else {
+  const result = handoffFrontDoorObservation({ main: { backend_generation: journal.binding.mergeCommit },
+    status: { state: 'starting', dashboard_ready: false }, backend: { ok: false, code: 'connection_refused', error: 'connection refused after serving' }, gateway: { ok: true } },
+    journal.binding.mergeCommit, { expectedServing: !!journal.launch.readyAt });
+  console.error(JSON.stringify({ schema: 'mandible-runtime-observation@1', ...result, message: result.error, evidence: null })); process.exitCode = 1;
+}
+`);
+  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
+  let time = f.fakeStart;
+  await expect(runtime.observeFailedRuntimeHandoff(journal, {}, { observationMs: 10, deadlineMs: 2000, now: () => time, wait: async () => { time += 10; } }))
+    .rejects.toMatchObject({ outcome: 'failed', code: 'connection_refused' });
+  expect(runtime.readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)).toMatchObject({ phase: 'failed', launch: { readyAt: f.fakeStart }, failure: { code: 'connection_refused' } });
+});
 
 it('loads a frozen handoff controller with its complete probe-cadence import closure', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-controller-closure-')); roots.push(home);

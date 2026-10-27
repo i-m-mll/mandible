@@ -172,7 +172,7 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
   }
 });
 
-it('separates startup traffic and health cadence from a repeated same-route request loop', async () => {
+it('retains bounded aggregate route diagnostics without treating caller volume as failure', async () => {
   const { assessRuntimeLogs } = await import('../scripts/runtime-log-assessment.mjs');
   const start = Date.parse('2026-10-05T05:00:00Z');
   const request = (pathname: string, offset: number) => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname, status: 200, time: new Date(start + offset).toISOString() });
@@ -185,12 +185,17 @@ it('separates startup traffic and health cadence from a repeated same-route requ
   expect(assessment.diagnostics.http_requests).toMatchObject({ total: 203, route_count: 129, omitted_routes: 109 });
   expect(assessment.diagnostics.http_requests.routes[0]).toMatchObject({ pathname: '/api/health', count: 75, peak_window_count: 21, statuses: { '200': 75 } });
   expect(assessment.diagnostics.http_requests.routes).toHaveLength(20);
-  const loop = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 50)).join('\n');
-  expect(assessRuntimeLogs(loop).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+  const aggregate = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 50)).join('\n');
+  expect(assessRuntimeLogs(aggregate)).toMatchObject({ failures: [], diagnostics: { hard_failure_count: 0,
+    http_requests: { total: 101, routes: [{ pathname: '/api/projects', count: 101, peak_window_count: 101, statuses: { '200': 101 } }] } } });
+  expect(assessAcceptanceLogs(aggregate).failures).toEqual([]);
   const cadence = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 1000)).join('\n');
   expect(assessRuntimeLogs(cadence).failures).toEqual([]);
   const untimed = Array.from({ length: 101 }, () => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname: '/api/projects' })).join('\n');
-  expect(assessRuntimeLogs(untimed).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+  expect(assessRuntimeLogs(untimed)).toMatchObject({ failures: [], diagnostics: { hard_failure_count: 0,
+    http_requests: { routes: [{ count: 101, untimed: 101, peak_window_count: 101 }] } } });
+  const error = JSON.stringify({ level: 'error', message: 'http_request', method: 'GET', pathname: '/api/projects', status: 500 });
+  expect(assessRuntimeLogs(`${aggregate}\n${error}`).failures).toEqual([error]);
 });
 
 

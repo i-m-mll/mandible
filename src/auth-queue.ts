@@ -81,7 +81,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeVerificationResult } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -703,38 +703,55 @@ export class AuthQueue {
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
-    const ids = await this.hookManager.reconcileRuntimeHandoffs(
-      async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
-      async (id, handoffError) => {
-        // The independent handoff that owned this rebuild has now failed.
+    try {
+      const ids = await this.hookManager.reconcileRuntimeHandoffs(
+        async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
+        async (id, handoffError) => {
+          // The independent handoff that owned this rebuild has now failed.
+          const request = this.getRequestById(id);
+          if (request?.repo !== "mandible") return;
+          (await this.settleConvergence(request));
+          this.failRebuild(request, handoffError);
+        },
+        (id, error) => {
+          // Retained update state is not a fault of the observing daemon.
+          // Keep its incident visible while reconciliation retries.
+          authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
+          try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+        (id) => {
+          authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
+          const incidentId = this.handoffIncidents.get(id);
+          this.handoffIncidents.delete(id);
+          try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+      );
+      for (const id of ids) {
         const request = this.getRequestById(id);
-        if (request?.repo !== "mandible") return;
-        (await this.settleConvergence(request));
-        this.failRebuild(request, handoffError);
-      },
-      (id, error) => {
-        // Retained update state is not a fault of the observing daemon.
-        // Keep its incident visible while reconciliation retries.
-        authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
-        try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-      (id) => {
-        authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
-        const incidentId = this.handoffIncidents.get(id);
-        this.handoffIncidents.delete(id);
-        try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-    );
-    for (const id of ids) {
-      const request = this.getRequestById(id);
-      if (request && !(await this.successfulMergeEvidenceFailure(request))) {
-        (await this.finalizeSuccessfulMerge(request));
-        await this.afterConvergenceHook(request);
+        if (request && !(await this.successfulMergeEvidenceFailure(request))) {
+          (await this.finalizeSuccessfulMerge(request));
+          await this.afterConvergenceHook(request);
+        }
       }
+      if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
+    } finally { this.publishRuntimeVerificationChanges(); }
+  }
+
+  private lastRuntimeVerificationStatus: ReturnType<AuthHookManager['runtimeVerificationStatus']> = null;
+
+  private publishRuntimeVerificationChanges(): void {
+    if (typeof this.hookManager.runtimeVerificationStatus !== 'function') return;
+    const current = this.hookManager.runtimeVerificationStatus();
+    const previous = this.lastRuntimeVerificationStatus;
+    if (JSON.stringify(current) === JSON.stringify(previous)) return;
+    this.lastRuntimeVerificationStatus = current;
+    for (const id of new Set([previous?.requestId, current?.requestId])) {
+      if (!id) continue;
+      const request = this.getRequestById(id);
+      if (request) this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, convergence: this.convergenceForRequest(id) } } });
     }
-    if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
   }
 
   /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
@@ -965,7 +982,7 @@ export class AuthQueue {
         });
       }
       return retirement;
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Open the rebuild window that the UI splash and restart-availability track. */
@@ -5856,7 +5873,7 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult }> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Hook convergence retry");
@@ -5879,16 +5896,18 @@ export class AuthQueue {
           const owner = this.requestCustodyForActor(current, recovery.actor);
           if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
         };
+        let verification: RuntimeVerificationResult;
         try {
-          await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
         }
+        if (verification.outcome === 'pending') return { ...this.convergenceForRequest(request.id), verification };
         // Recovery settles this request only. Existing merge finalizers retain
         // their normal daemon lifecycle; a one-shot must not enqueue global work.
         await this.finalizerQueue.drain();
-        return (await this.afterConvergenceHook(this.requireRequest(request.id)));
+        return { ...await this.afterConvergenceHook(this.requireRequest(request.id)), verification };
       }
       if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
       this.hookManager.grantRetry(request.id, hookId);
@@ -5901,7 +5920,7 @@ export class AuthQueue {
         });
       });
       return (await this.afterConvergenceHook(this.getRequestById(request.id) ?? request));
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Exact-id lookup with no prefix resolution and no expiry side effect. */
