@@ -1,3 +1,4 @@
+import { appHistory } from '../ui/src/app-history';
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +13,7 @@ describe('App routing', () => {
     const hash = routeHashWithParams('#/auth?request=old&sidebar=hidden&agent_session=worker&unknown=keep',
       'auth', { request: 'next' }, ['request']);
     const changed = vi.fn();
-    window.addEventListener('hashchange', changed);
+    const unsubscribe = appHistory().subscribe(changed);
     try {
       const historyLength = window.history.length;
       replaceRouteHash(hash);
@@ -25,7 +26,7 @@ describe('App routing', () => {
       expect(changed).toHaveBeenCalledTimes(1);
       expect(routeHashWithParams(hash, 'auth', { request: null })).not.toContain('request=');
     } finally {
-      window.removeEventListener('hashchange', changed);
+      unsubscribe();
       window.history.replaceState(null, '', '/');
     }
   });

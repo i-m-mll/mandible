@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { withOwnedRunLock, validateOwnedRunFinalization, ownedRunIdentityMatches, saveOwnedMetadata, ownedRunReceipt, processIdentity } from './owned-run.mjs';
+import { withOwnedRunLock, validateOwnedRunFinalization, ownedRunIdentityMatches, saveOwnedMetadata, ownedRunReceipt, processReleaseBlocked } from './owned-run.mjs';
 
 export async function withPreviewRun(handle, operation) {
   if (!handle?.root || !handle.runId) throw new Error('Exact preview run handle required');
@@ -64,9 +64,10 @@ export function verifyPreviewConsumerStopped(consumer) {
   const child = JSON.parse(fs.readFileSync(consumer.metadataFile, 'utf8'));
   if (child.ownership?.runId !== consumer.runId || !ownedRunIdentityMatches(consumer.root, child.ownership)
     || child.ownership.rootIdentity.dev !== consumer.rootIdentity.dev || child.ownership.rootIdentity.ino !== consumer.rootIdentity.ino) throw new Error('Native consumer root identity changed');
-  if (child.pid && processIdentity(child.pid) !== null) throw new Error('Native consumer still has a live process');
-  if (child.buildProcess?.pid && processIdentity(child.buildProcess.pid) !== null) throw new Error('Native consumer still has a live build process');
-  if (child.buildProcess?.remaining?.some(entry => processIdentity(entry.pid) !== null)) throw new Error('Native consumer still has live build descendants');
+  const stopped = child.status === 'stopped';
+  if (processReleaseBlocked(child, stopped)) throw new Error('Native consumer still has a live process');
+  if (processReleaseBlocked(child.buildProcess, stopped || Boolean(child.buildProcess?.finishedAt))) throw new Error('Native consumer still has a live build process');
+  if (child.buildProcess?.remaining?.some(entry => processReleaseBlocked(entry, stopped))) throw new Error('Native consumer still has live build descendants');
   if (child.status !== 'stopped') {
     if (!['visible', 'loading', 'failed', 'launched', 'launching'].includes(child.status)) throw new Error('Native consumer must be reconciled stopped before backend refresh or reacquisition');
     child.status = 'stopped'; child.stoppedAt = new Date().toISOString(); child.ownership.revision++;
@@ -127,6 +128,10 @@ export function releasePreviewConsumer(reservation) {
 export function previewBaseDir(override = null) {
   const selected = override ?? process.env.MANDIBLE_PREVIEW_BASE_DIR ?? path.join(os.homedir(), '.cache', 'mandible', 'previews');
   return path.resolve(selected.replace(/^~(?=$|\/)/, os.homedir()));
+}
+
+export function nativePreviewBaseDir() {
+  return path.join(os.homedir(), '.cache', 'mandible', 'native-previews');
 }
 
 export function previewPaths(branch) {

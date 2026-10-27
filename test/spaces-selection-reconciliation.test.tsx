@@ -1,3 +1,4 @@
+import { useAppHistory } from '../ui/src/hooks/useAppHistory';
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useCallback, useEffect, useState } from 'preact/hooks';
@@ -42,13 +43,9 @@ function deferred<T>() {
 function Harness({ load, active = true, navigated }: {
   load: (id: string) => Promise<SpaceFactPacket>; active?: boolean; navigated: (target: SpacesRouteTarget) => void;
 }) {
-  const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
+  const navigation = useAppHistory();
+  const route = parseRouteFromHash(new URL(navigation.href).hash);
   const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    const update = () => setRoute(parseRouteFromHash(window.location.hash));
-    window.addEventListener('hashchange', update);
-    return () => window.removeEventListener('hashchange', update);
-  }, []);
   useEffect(() => {
     if (active && route.tab === 'spaces' && route.params.space) {
       writeSpacesLastView({ projectId: route.params.project ?? null, spaceId: route.params.space });

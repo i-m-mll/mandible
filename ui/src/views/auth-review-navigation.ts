@@ -1,3 +1,4 @@
+import { pushAppHistory, replaceAppHistory } from '../app-history';
 import { useRef } from 'preact/hooks';
 import type { DiffFileIdentity } from '../components/diff-file-identity';
 import { routeHashWithParams, shortRouteId } from '../routing';
@@ -63,14 +64,12 @@ export function authReviewHash(hash: string, requestId: string, view: AuthReview
 
 export function navigateAuthFile(requestId: string, file: DiffFileIdentity, info: AuthInfoSnapshot): void {
   const origin = reviewHistory();
-  window.history.replaceState(historyState({ version: 1, entryId: origin?.entryId ?? crypto.randomUUID(), info }), '', authReviewHash(window.location.hash, requestId, 'info'));
-  window.history.pushState(historyState({ version: 1, entryId: crypto.randomUUID() }), '', authReviewHash(window.location.hash, requestId, 'diff', file));
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  replaceAppHistory(authReviewHash(window.location.hash, requestId, 'info'), historyState({ version: 1, entryId: origin?.entryId ?? crypto.randomUUID(), info }));
+  pushAppHistory(authReviewHash(window.location.hash, requestId, 'diff', file), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
 export function navigateAuthReviewView(requestId: string, view: AuthReviewView): void {
-  window.history.pushState(historyState({ version: 1, entryId: crypto.randomUUID() }), '', authReviewHash(window.location.hash, requestId, view));
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  pushAppHistory(authReviewHash(window.location.hash, requestId, view), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
 export type AuthReviewNavigation = {

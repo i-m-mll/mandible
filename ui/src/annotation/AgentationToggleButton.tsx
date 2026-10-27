@@ -1,3 +1,4 @@
+import { appTip } from '../components/shared/AppHoverTips';
 type AgentationToggleButtonProps = {
   visible: boolean;
   expandedRail: boolean;
@@ -13,7 +14,7 @@ export function AgentationToggleButton({ visible, expandedRail, onToggle }: Agen
       className="app-rail__item"
       aria-label={label}
       aria-pressed={visible}
-      title={label}
+      {...appTip(label, 'right')}
       onClick={onToggle}
     >
       <span className="app-rail__icon">
@@ -22,7 +23,7 @@ export function AgentationToggleButton({ visible, expandedRail, onToggle }: Agen
           <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
         </svg>
       </span>
-      {expandedRail ? <span className="app-rail__label">Agentation</span> : <span className="app-rail__tooltip">{label}</span>}
+      {expandedRail ? <span className="app-rail__label">Agentation</span> : null}
     </button>
   );
 }

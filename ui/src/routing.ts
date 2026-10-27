@@ -1,3 +1,4 @@
+import { replaceAppHistory } from './app-history';
 import { compactLongIdSegments } from './resource-refs';
 import { BRIEFING_ROUTE_SELECTORS, patchRouteQuery } from '../../src/route-query';
 
@@ -72,8 +73,7 @@ export function routeHashWithParams(
 /** Keep the mounted router synchronized with a selection written without a history entry. */
 export function replaceRouteHash(hash: string): void {
   if (window.location.hash === hash) return;
-  window.history.replaceState(window.history.state, '', hash);
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  replaceAppHistory(hash, window.history.state);
 }
 
 export function briefingRoute(briefingId: string, roundId?: string | null, hashValue = ''): string {

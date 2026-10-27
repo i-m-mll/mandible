@@ -4,7 +4,7 @@ import { computeAuthRequestOutcome } from "../contracts.js";
 import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
 import type { RepoInfo } from "../work-scanner.js";
 import { listLedgerOpenIssues } from "../ledger/issue-projection.js";
-import { mapWorkUnitRow } from "../work-unit-utils.js";
+import { mapWorkUnitRow, readWorkUnitLivenessSnapshot } from "../work-unit-utils.js";
 import { getIntSetting } from "../routes/settings.js";
 import { listManagedReminderOccurrences, getManagedReminder, resolveManagedReminderProject } from "../managed-reminders.js";
 
@@ -255,66 +255,64 @@ export function reminderOccurrenceItems(db: Db, projectRef?: string): Array<Reco
   });
 }
 
-function listInboxWorkUnits(db: Db, continuation: boolean) {
+function listInboxWorkUnits(db: Db, continuation: boolean, repo: string | null) {
   return (db.prepare(`SELECT * FROM work_units WHERE state IN ('open', 'committed')
-    ${continuation ? "AND continuation IS NOT NULL" : ""}
-    ORDER BY ${continuation ? "continuation_at" : "created_at"} DESC`).all() as Record<string, unknown>[]).map(mapWorkUnitRow);
+    ${continuation ? "AND continuation IS NOT NULL" : ""}${repo ? " AND repo_id = ?" : ""}
+    ORDER BY ${continuation ? "continuation_at" : "created_at"} DESC`).all(...(repo ? [repo] : [])) as Record<string, unknown>[]).map(mapWorkUnitRow);
 }
 
-export function inboxGlobal(db: Db, { sessionId, repos }: { sessionId: string; repos: RepoInfo[] | null }) {
-  // Continuations: all unacknowledged, any branch
+export type InboxScope = { kind: "global" } | { kind: "scoped"; branch: string | null; repo: string | null };
+
+export function inbox(db: Db, { sessionId, repos, scope }: { sessionId: string; repos: RepoInfo[] | null; scope: InboxScope }) {
+  const global = scope.kind === "global";
+  const branch = scope.kind === "scoped" ? scope.branch : null;
+  const repo = scope.kind === "scoped" ? scope.repo : null;
   const continuations = db
     .prepare(
       `SELECT id, branch, continuation, ended_at, cwd FROM sessions
        WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL
-         AND status IN ('ended', 'dead')
+         AND status IN ('ended', 'dead')${branch ? " AND branch = ? AND id != ?" : ""}
        ORDER BY ended_at DESC`
     )
-    .all() as ContinuationRow[];
+    .all(...(branch ? [branch, sessionId] : [])) as ContinuationRow[];
 
-  // Bug: 4e32923 — same three-tier query as branch-scoped inbox, but without
-  // a branch filter. If session_id is unknown, only legacy (tier 0) and
-  // global-grace-aged (tier 3) rows surface — owner/project tiers require a
-  // session id to make sense.
   const repoRoot = sessionId ? getSessionRepoRoot(db, sessionId) : null;
   const authResultTiers = queryAuthResultsForSession(db, {
     sessionId,
     repoRoot,
-    branch: null,
+    branch,
   });
 
-  // Bug: 8a281b3 — work units needing attention (all repos)
-  const workUnits = listInboxWorkUnits(db, false);
-  const workUnitContinuations = listInboxWorkUnits(db, true);
+  const workUnits = listInboxWorkUnits(db, false, repo);
+  const workUnitContinuations = listInboxWorkUnits(db, true, repo);
 
-  // Open issues: all ledger repos (kept for backward compat).
-  const openIssues = repos ? listLedgerOpenIssues(db, { getRepos: () => repos }) : [];
+  const issues = repos && (global || repo) ? listLedgerOpenIssues(db, { getRepos: () => repos }, repo ?? undefined) : [];
+  const openIssues = global ? issues : issues.map(({ id, title, labels }) => ({ id, title, labels }));
 
-  // Bug: 9f66ad9 — pending webhook events (all)
   const pendingWebhooks = db
     .prepare(
       `SELECT * FROM webhook_events
-       WHERE status = 'pending'
+       WHERE status = 'pending'${branch ? " AND target_branch = ?" : ""}
        ORDER BY created_at DESC LIMIT 50`
     )
-    .all() as WebhookEventRow[];
+    .all(...(branch ? [branch] : [])) as WebhookEventRow[];
 
-  const reminderOccurrences = reminderOccurrenceItems(db);
-  const hookAlerts = hookAlertItems(db, null);
+  const reminderOccurrences = reminderOccurrenceItems(db, repo ?? undefined);
+  const hookAlerts = hookAlertItems(db, repo);
 
   const total = continuations.length + authResultTiers.length + openIssues.length
     + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
     + reminderOccurrences.length + hookAlerts.length;
 
-  return {
+  const payload = {
     continuations: continuations.map((row) => ({
       session_id: row.id,
       continuation: row.continuation,
       branch: row.branch,
       ended_at: row.ended_at,
-      repo: row.cwd ? path.basename(row.cwd) : null,
+      ...(global ? { repo: row.cwd ? path.basename(row.cwd) : null } : {}),
     })),
-    auth_results: authResultTiers.map(({ row, tier }) => mapAuthResultRow(db, row, tier, true)),
+    auth_results: authResultTiers.map(({ row, tier }) => mapAuthResultRow(db, row, tier, global)),
     open_issues: openIssues,
     work_units: workUnits,
     work_unit_continuations: workUnitContinuations,
@@ -338,4 +336,5 @@ export function inboxGlobal(db: Db, { sessionId, repos }: { sessionId: string; r
     hook_alerts: hookAlerts,
     total,
   };
+  return { payload, liveness: readWorkUnitLivenessSnapshot(db, [...workUnits, ...workUnitContinuations]) };
 }

@@ -22,6 +22,7 @@ export function nativeCandidate(worktree) {
 }
 
 export function verifyNativeSelection(selected, candidate) {
+  if (!selected.ownership?.source?.source_digest) throw new Error('Refresh the selected backend to establish its exact source identity before native acquisition');
   if (selected.instanceEnv?.MANDIBLE_BACKEND_GENERATION !== candidate.commit
     || selected.ownership?.source?.commit !== candidate.commit
     || selected.ownership?.source?.source_digest !== candidate.source_digest) {

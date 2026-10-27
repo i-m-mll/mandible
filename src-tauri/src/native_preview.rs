@@ -1,12 +1,20 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tauri::Manager;
+
+static POSITION_EVIDENCE_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+fn position_evidence(run_id: &str, event: &str, position: tauri::PhysicalPosition<i32>) -> Value {
+    serde_json::json!({ "runId": run_id, "event": event, "pid": std::process::id(),
+        "windowLabel": "main", "coordinateSpace": "screen-physical-pixels", "x": position.x, "y": position.y })
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +27,8 @@ pub struct NativePreview {
     pub home: PathBuf,
     pub window_title: String,
     pub agent_session: Option<String>,
+    #[serde(default)]
+    pub initial_path: Option<String>,
 }
 
 fn read_json(file: &Path) -> Result<Value, String> {
@@ -31,20 +41,42 @@ impl NativePreview {
     }
 
     pub fn initial_url(&self) -> Result<tauri::Url, String> {
-        let mut url = tauri::Url::parse(&self.origin).map_err(|e| e.to_string())?;
-        let mut fragment = String::from("/overview");
+        let base = tauri::Url::parse(&self.origin).map_err(|e| e.to_string())?;
+        let path = self.initial_path.as_deref().unwrap_or("/#/overview");
+        if !path.starts_with('/')
+            || path.starts_with("//")
+            || path.contains('\\')
+            || path.chars().any(char::is_control)
+        {
+            return Err("Native preview initialPath must be a root-relative path".into());
+        }
+        let mut url = base.join(path).map_err(|e| e.to_string())?;
+        if !self.permits(&url) {
+            return Err("Native preview initialPath must retain the approved origin".into());
+        }
+        let mut fragment = url.fragment().unwrap_or("/overview").to_string();
         if let Some(session) = &self.agent_session {
-            url.query_pairs_mut().append_pair("agent_session", session);
-            let query = url.query().unwrap().to_string();
-            url.set_query(None);
-            fragment.push('?');
-            fragment.push_str(&query);
+            let (route, query) = fragment.split_once('?').unwrap_or((&fragment, ""));
+            let mut binding = url.clone();
+            binding.set_query(Some(query));
+            let pairs: Vec<_> = binding
+                .query_pairs()
+                .filter(|(key, _)| key != "agent_session")
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            binding.set_query(None);
+            binding
+                .query_pairs_mut()
+                .extend_pairs(pairs)
+                .append_pair("agent_session", session);
+            fragment = format!("{}?{}", route, binding.query().unwrap());
         }
         url.set_fragment(Some(&fragment));
         Ok(url)
     }
 
     fn validate(&self, manifest: &Value, health: &Value) -> Result<(), String> {
+        self.initial_url()?;
         let root = self
             .manifest
             .parent()
@@ -179,6 +211,26 @@ pub fn page_loaded(
     let context = webview.state::<crate::NativeLaunchContext>();
     let Some(config) = &context.0 else { return };
     if webview.label() == "main" && config.permits(url) {
+        if let Some(window) = webview.app_handle().get_webview_window("main") {
+            if !POSITION_EVIDENCE_INSTALLED.swap(true, Ordering::AcqRel) {
+                match window.outer_position() {
+                    Ok(position) => eprintln!(
+                        "native-preview-window-position {}",
+                        position_evidence(&config.run_id, "initial", position)
+                    ),
+                    Err(error) => eprintln!("Cannot read native preview window position: {error}"),
+                }
+                let run_id = config.run_id.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Moved(position) = event {
+                        eprintln!(
+                            "native-preview-window-position {}",
+                            position_evidence(&run_id, "moved", *position)
+                        );
+                    }
+                });
+            }
+        }
         let evidence = serde_json::json!({"pid": std::process::id(), "origin": config.origin,
             "instanceId": config.instance_id, "runId": config.run_id, "windowLabel": "main",
             "windowTitle": config.window_title, "url": url.as_str(), "profile": config.home});
@@ -193,6 +245,16 @@ pub fn page_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn movement_evidence_uses_physical_screen_coordinates_and_owned_run() {
+        let evidence =
+            super::position_evidence("owned-run", "moved", tauri::PhysicalPosition::new(-120, 80));
+        assert_eq!(evidence["coordinateSpace"], "screen-physical-pixels");
+        assert_eq!(evidence["runId"], "owned-run");
+        assert_eq!(evidence["event"], "moved");
+        assert_eq!(evidence["x"], -120);
+        assert_eq!(evidence["y"], 80);
+    }
     use super::*;
 
     #[test]
@@ -228,6 +290,7 @@ mod tests {
             home: home.clone(),
             window_title: "Preview".into(),
             agent_session: Some("session & other".into()),
+            initial_path: None,
         };
         fs::write(
             native.join("metadata.json"),
@@ -306,6 +369,27 @@ mod tests {
             .fragment()
             .unwrap()
             .contains("agent_session=session+%26+other"));
+        let mut selected = config.clone();
+        selected.initial_path = Some("/dist/proofs/3434b09/splash.html?reason=starting#/overview?keep=yes&agent_session=wrong".into());
+        let selected_url = selected.initial_url().unwrap();
+        assert_eq!(selected_url.origin().ascii_serialization(), origin);
+        assert_eq!(selected_url.path(), "/dist/proofs/3434b09/splash.html");
+        assert_eq!(selected_url.query(), Some("reason=starting"));
+        assert_eq!(
+            selected_url.fragment(),
+            Some("/overview?keep=yes&agent_session=session+%26+other")
+        );
+        for path in [
+            "https://example.com/",
+            "//example.com/",
+            "\\\\example.com/",
+            "dist/proof.html",
+            "/\nproof",
+        ] {
+            selected.initial_path = Some(path.into());
+            assert!(selected.initial_url().is_err(), "{path}");
+            assert!(selected.validate(&manifest, &health).is_err(), "{path}");
+        }
         for (pointer, value) in [
             ("/instance/role", "production"),
             ("/instance/installation_id", "foreign"),

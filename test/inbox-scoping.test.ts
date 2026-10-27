@@ -193,7 +193,7 @@ describe("inbox tier query (auth_results)", () => {
     });
 
     const inbox = await import("../src/routes/inbox.js");
-    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "sibling" });
+    const result = await callInbox(inbox.registerInboxRoutes, db, { session_id: "sibling" });
     // sibling sees only the aged-out row; the fresh one belongs to the owner only.
     expect(result.auth_results.map((r: { id: string }) => r.id)).toEqual(["r2"]);
     expect(result.auth_results[0].tier).toBe(2);
@@ -219,7 +219,7 @@ describe("inbox tier query (auth_results)", () => {
     });
 
     const inbox = await import("../src/routes/inbox.js");
-    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "outsider" });
+    const result = await callInbox(inbox.registerInboxRoutes, db, { session_id: "outsider" });
     expect(result.auth_results.map((r: { id: string }) => r.id)).toEqual(["r3"]);
     expect(result.auth_results[0].tier).toBe(3);
   });
@@ -236,7 +236,7 @@ describe("inbox tier query (auth_results)", () => {
     });
 
     const inbox = await import("../src/routes/inbox.js");
-    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
+    const result = await callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
     expect(result.auth_results).toHaveLength(0);
   });
 
@@ -1005,7 +1005,7 @@ interface MinimalRes {
   json: (body: unknown) => void;
 }
 
-function callInbox(
+async function callInbox(
   registerInboxRoutes: (
     server: { get: (path: string, h: (req: unknown, res: unknown) => void) => void;
               post: (path: string, h: (req: unknown, res: unknown) => void) => void; },
@@ -1015,7 +1015,7 @@ function callInbox(
   ) => void,
   _db: InstanceType<typeof SqliteDatabase>,
   query: Record<string, string>
-	): { auth_results: Array<{ id: string; tier: number; action_outcomes?: unknown[] }> } {
+	): Promise<{ auth_results: Array<{ id: string; tier: number; action_outcomes?: unknown[] }> }> {
   let handler: ((req: unknown, res: unknown) => void) | undefined;
   const server = {
     get: (path: string, h: (req: unknown, res: unknown) => void) => {
@@ -1032,7 +1032,7 @@ function callInbox(
     status: (code: number) => { capturedStatus = code; },
     json: (body: unknown) => { captured = body; }
   };
-  handler({ query }, res);
+  await handler({ query }, res);
   if (capturedStatus !== 200) {
     throw new Error(`Inbox returned status ${capturedStatus}: ${JSON.stringify(captured)}`);
   }

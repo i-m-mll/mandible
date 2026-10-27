@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useAppHistory } from '../../ui/src/hooks/useAppHistory';
+import { useCallback, useRef, useState } from 'preact/hooks';
 import { AppShellProvider } from '../../ui/src/app-shell';
 import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
 import { parseRouteFromHash } from '../../ui/src/routing';
@@ -29,19 +30,14 @@ export const navigationRequest: AuthRequest = {
 };
 
 export function RoutedAuthReview({ requests = [navigationRequest], active = true, sidebarHidden = true }: { requests?: AuthRequest[]; active?: boolean; sidebarHidden?: boolean }) {
-  const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
+  const navigation = useAppHistory();
+  const route = parseRouteFromHash(new URL(navigation.href).hash);
   const authRoute = useRef(route);
   if (route.tab === 'auth') authRoute.current = route;
   const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
   const registerMainNoticeHost = useCallback((host: HTMLElement) => {
     setNoticeHost(host);
     return () => setNoticeHost(current => current === host ? null : current);
-  }, []);
-  useEffect(() => {
-    const update = () => setRoute(parseRouteFromHash(window.location.hash));
-    window.addEventListener('hashchange', update);
-    window.addEventListener('popstate', update);
-    return () => { window.removeEventListener('hashchange', update); window.removeEventListener('popstate', update); };
   }, []);
   return <AppShellProvider value={{ active: true, noticeHost, registerMainNoticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
     registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>

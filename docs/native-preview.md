@@ -28,6 +28,11 @@ Repeating setup reuses the matching live native attachment; a separate native
 instance requires the repository entrypoint's explicit new-instance option.
 The low-level launcher accepts `--new-instance true`.
 
+Pass `--initial-path '/path?query#fragment'` to open another root-relative path
+on the selected preview origin. The default is `/#/overview`. The native profile
+records the selected path as `initialPath`; stop the attachment before changing
+it, then launch again to preserve the same owned profile and build target.
+
 The host requires macOS 14 or newer for an isolated WebKit store, normal Tauri
 build prerequisites and the standard macOS build/inspection utilities. No
 trust installation, production bootstrap or production daemon startup occurs.
@@ -72,6 +77,13 @@ candidate, and source identity is checked again after compilation. An explicit
 `--bundle /absolute/noninstalled.app` is accepted only when its marker matches.
 Stale bundles are refused. Failure records its cause, stops the exact spawned
 processes and reclaims generated residue, or records pending cleanup and why.
+
+Supported setup or exact backend refresh adopts older owned previews only after
+verifying their retained runtime, registration and native receipts. Status remains
+read-only. Adoption preserves both stopped and live native profiles and records the
+unique live attachment as the default, even after it is explicitly stopped. A
+missing backend source digest remains unclaimed until ordinary refresh installs
+a verified build; native acquisition requires that exact source identity.
 
 ## Native isolation
 

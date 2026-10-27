@@ -2,10 +2,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { withLifecycleLock } from './lifecycle-lock.mjs';
+import { withLifecycleLock, processIdentity } from './lifecycle-lock.mjs';
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
+
+export function processLifetimeMatches(record, observed) {
+  const recorded = record.birth ?? record.processIdentity ?? record.identity;
+  if (typeof recorded !== 'string' || recorded.length < 24) return null;
+  return record.birth ? observed.slice(0, 24) === record.birth : observed === recorded;
+}
+
+/** A stopped record can outlive its PID; missing lifetime evidence remains busy. */
+export function processReleaseBlocked(record, stopped = false) {
+  if (!record?.pid) return false;
+  const observed = processIdentity(record.pid);
+  return observed !== null && !(stopped && processLifetimeMatches(record, observed) === false);
+}
 
 export async function withOwnedRunLock(root, operation) {
   return withLifecycleLock(root, operation);

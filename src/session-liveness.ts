@@ -130,7 +130,7 @@ export function resolveSessionAlias(
 ): SessionAliasResolution | null {
   const id = suppliedId.trim();
   if (!id) return null;
-  return new SessionAliasIndex(db, [id], options).resolve(id);
+  return new SessionAliasIndex(readSessionAliasSources(db, [id]), options).resolve(id);
 }
 
 /**
@@ -143,9 +143,16 @@ export function sessionAliasResolverFor(
   suppliedIds: Iterable<string>,
   options: SessionLivenessOptions = {},
 ): SessionAliasResolver {
-  const ids = [...suppliedIds].map((id) => id.trim()).filter(Boolean);
-  const index = new SessionAliasIndex(db, ids, options);
-  return (_db, id) => {
+  const resolve = sessionAliasResolverFromSources(readSessionAliasSources(db, suppliedIds), options);
+  return (_db, id) => resolve(id);
+}
+
+export function sessionAliasResolverFromSources(
+  sources: SessionAliasSources,
+  options: SessionLivenessOptions = {},
+): (id: string) => SessionAliasResolution | null {
+  const index = new SessionAliasIndex(sources, options);
+  return (id) => {
     const trimmed = id.trim();
     return trimmed ? index.resolve(trimmed) : null;
   };
@@ -194,7 +201,7 @@ export function sessionAliasLiveness(
   suppliedId: string,
   options: SessionLivenessOptions = {},
 ): LivenessState {
-  return new SessionAliasIndex(db, [suppliedId], options).liveness(suppliedId);
+  return new SessionAliasIndex(readSessionAliasSources(db, [suppliedId]), options).liveness(suppliedId);
 }
 
 function statusLiveness(status: unknown): LivenessState {
@@ -207,69 +214,86 @@ function statusLiveness(status: unknown): LivenessState {
  * (`app`, `last_active`, `updated_at`) are optional, and a missing one must
  * read as "unknown", never as an error.
  */
-class SessionAliasIndex {
-  private readonly ids: Set<string>;
-  private readonly hasSessions: boolean;
-  private readonly hasConversationId: boolean;
-  private readonly hasConsole: boolean;
-  private readonly sessionsById = new Map<string, SessionRow>();
-  private readonly sessionsByConversation = new Map<string, SessionRow[]>();
-  private readonly consoleByAlias = new Map<string, ConsoleRow[]>();
-  private readonly ingestions: Map<string, ProviderSessionIngestion> | Error | null;
-  private resolutions: Map<string, SessionAliasResolution | null> | null = null;
+export interface SessionAliasSources {
+  ids: Set<string>;
+  hasSessions: boolean;
+  sessionsById: Map<string, SessionRow>;
+  sessionsByConversation: Map<string, SessionRow[]>;
+  consoleByAlias: Map<string, ConsoleRow[]>;
+  ingestions: Map<string, ProviderSessionIngestion> | Error | null;
+  execution: Map<string, SessionExecutionObservation | null>;
+}
 
-  constructor(private readonly db: Db, suppliedIds: Iterable<string>, private readonly options: SessionLivenessOptions) {
-    this.ids = new Set(suppliedIds);
-    const ids = JSON.stringify([...this.ids]);
-    this.hasSessions = tableExists(db, "sessions");
-    this.hasConversationId = this.hasSessions && columnExists(db, "sessions", "conversation_id");
-    this.hasConsole = tableExists(db, "console_sessions");
+/** Ledger inputs only; live provider task observations stay with the caller. */
+export function readSessionAliasSources(db: Db, suppliedIds: Iterable<string>): SessionAliasSources {
+  const sources: SessionAliasSources = {
+    ids: new Set(), hasSessions: false, sessionsById: new Map(), sessionsByConversation: new Map(),
+    consoleByAlias: new Map(), ingestions: null, execution: new Map(),
+  };
+  sources.ids = new Set([...suppliedIds].map(id => id.trim()).filter(Boolean));
+  const ids = JSON.stringify([...sources.ids]);
+  sources.hasSessions = tableExists(db, "sessions");
+  const hasConversationId = sources.hasSessions && columnExists(db, "sessions", "conversation_id");
+  const hasConsole = tableExists(db, "console_sessions");
 
-    const consoleRows = new Map<string, ConsoleRow>();
-    if (this.hasConsole) {
-      for (const column of ["id", "mandible_session_id", "provider_session_id"]) {
-        for (const row of db.prepare(`SELECT * FROM console_sessions WHERE ${column} IN (SELECT value FROM json_each(?))`).all(ids) as ConsoleRow[]) {
-          consoleRows.set(row.id, row);
-        }
-      }
-      for (const row of consoleRows.values()) {
-        for (const alias of new Set([row.id, row.mandible_session_id, row.provider_session_id])) {
-          if (typeof alias !== "string" || !this.ids.has(alias)) continue;
-          const rows = this.consoleByAlias.get(alias);
-          if (rows) rows.push(row);
-          else this.consoleByAlias.set(alias, [row]);
-        }
+  const consoleRows = new Map<string, ConsoleRow>();
+  if (hasConsole) {
+    for (const column of ["id", "mandible_session_id", "provider_session_id"]) {
+      for (const row of db.prepare(`SELECT * FROM console_sessions WHERE ${column} IN (SELECT value FROM json_each(?))`).all(ids) as ConsoleRow[]) {
+        consoleRows.set(row.id, row);
       }
     }
-
-    if (this.hasSessions) {
-      const sessionIds = new Set(this.ids);
-      for (const row of consoleRows.values()) if (row.mandible_session_id) sessionIds.add(row.mandible_session_id);
-      for (const row of db.prepare("SELECT * FROM sessions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...sessionIds])) as SessionRow[]) {
-        this.sessionsById.set(row.id, row);
-      }
-      if (this.hasConversationId) {
-        for (const row of db.prepare(
-          `SELECT * FROM sessions
-           WHERE conversation_id IN (SELECT value FROM json_each(?))
-           ORDER BY updated_at DESC, id ASC`,
-        ).all(ids) as SessionRow[]) {
-          const rows = this.sessionsByConversation.get(row.conversation_id!);
-          if (rows) rows.push(row);
-          else this.sessionsByConversation.set(row.conversation_id!, [row]);
-        }
-      }
-    }
-
-    if (!tableExists(db, "conversations")) this.ingestions = null;
-    else {
-      try {
-        this.ingestions = resolveProviderSessionIngestions(db, [...this.ids].map((id) => id.trim()));
-      } catch (error) {
-        this.ingestions = error instanceof Error ? error : new Error(String(error));
+    for (const row of consoleRows.values()) {
+      for (const alias of new Set([row.id, row.mandible_session_id, row.provider_session_id])) {
+        if (typeof alias !== "string" || !sources.ids.has(alias)) continue;
+        const rows = sources.consoleByAlias.get(alias);
+        if (rows) rows.push(row);
+        else sources.consoleByAlias.set(alias, [row]);
       }
     }
   }
+
+  if (sources.hasSessions) {
+    const sessionIds = new Set(sources.ids);
+    for (const row of consoleRows.values()) if (row.mandible_session_id) sessionIds.add(row.mandible_session_id);
+    for (const row of db.prepare("SELECT * FROM sessions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...sessionIds])) as SessionRow[]) {
+      sources.sessionsById.set(row.id, row);
+    }
+    if (hasConversationId) {
+      for (const row of db.prepare(
+        `SELECT * FROM sessions
+         WHERE conversation_id IN (SELECT value FROM json_each(?))
+         ORDER BY updated_at DESC, id ASC`,
+      ).all(ids) as SessionRow[]) {
+        const rows = sources.sessionsByConversation.get(row.conversation_id!);
+        if (rows) rows.push(row);
+        else sources.sessionsByConversation.set(row.conversation_id!, [row]);
+      }
+    }
+  }
+
+  if (!tableExists(db, "conversations")) sources.ingestions = null;
+  else {
+    try {
+      sources.ingestions = resolveProviderSessionIngestions(db, [...sources.ids].map((id) => id.trim()));
+    } catch (error) {
+      sources.ingestions = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  const index = new SessionAliasIndex(sources, {});
+  const identities = [...sources.ids].map(id => [id, index.identity(id)] as const);
+  const execution = sessionExecutionReader(db, identities.flatMap(([, identity]) =>
+    identity?.provider_session_id ? [identity.provider_session_id] : []));
+  for (const [id, identity] of identities) {
+    sources.execution.set(id, identity ? execution(identity.provider, identity.provider_session_id) : null);
+  }
+  return sources;
+}
+
+class SessionAliasIndex {
+  private resolutions: Map<string, SessionAliasResolution | null> | null = null;
+
+  constructor(private readonly sources: SessionAliasSources, private readonly options: SessionLivenessOptions) {}
 
   resolve(id: string): SessionAliasResolution | null {
     this.resolutions ??= this.resolveAll();
@@ -288,18 +312,15 @@ class SessionAliasIndex {
   }
 
   private resolveAll(): Map<string, SessionAliasResolution | null> {
-    const resolutions = new Map([...this.ids].map((id) => [id, this.resolveIdentity(id)]));
-    const execution = sessionExecutionReader(this.db, [...resolutions.values()].flatMap((resolution) =>
-      resolution?.provider_session_id ? [resolution.provider_session_id] : []));
-    for (const resolution of resolutions.values()) {
-      if (resolution) resolution.execution = execution(resolution.provider, resolution.provider_session_id);
-    }
-    return resolutions;
+    return new Map([...this.sources.ids].map((id) => {
+      const identity = this.identity(id);
+      return [id, identity ? { ...identity, liveness: this.liveness(id), execution: this.sources.execution.get(id) ?? null } : null];
+    }));
   }
 
-  private resolveIdentity(id: string): SessionAliasResolution | null {
-    const directSession = this.session(id) ?? this.sessionsByConversation.get(id)?.[0] ?? null;
-    const consoleRow = this.pickConsoleRow(this.consoleByAlias.get(id) ?? []);
+  identity(id: string): Omit<SessionAliasResolution, "liveness"> | null {
+    const directSession = this.session(id) ?? this.sources.sessionsByConversation.get(id)?.[0] ?? null;
+    const consoleRow = this.pickConsoleRow(this.sources.consoleByAlias.get(id) ?? []);
     const ingestion = this.ingestion(id);
     const providerIngestion = ingestion instanceof Error || ingestion?.status !== "ingested" ? null : ingestion;
     if (!directSession && !consoleRow && !providerIngestion) return null;
@@ -324,16 +345,15 @@ class SessionAliasIndex {
         ?? linkedSession?.updated_at
         ?? providerIngestion?.last_activity
         ?? null,
-      liveness: this.liveness(id),
     };
   }
 
   private session(id: string): SessionRow | null {
-    return this.sessionsById.get(id) ?? null;
+    return this.sources.sessionsById.get(id) ?? null;
   }
 
   private ingestion(id: string): ProviderSessionIngestion | Error | null {
-    return this.ingestions instanceof Map ? this.ingestions.get(id.trim()) ?? null : this.ingestions;
+    return this.sources.ingestions instanceof Map ? this.sources.ingestions.get(id.trim()) ?? null : this.sources.ingestions;
   }
 
   /**
@@ -343,12 +363,12 @@ class SessionAliasIndex {
   private *livenessEvidence(id: string): Generator<LivenessState | null> {
     const direct = this.session(id);
     if (direct) yield statusLiveness(direct.status);
-    for (const row of this.sessionsByConversation.get(id) ?? []) {
+    for (const row of this.sources.sessionsByConversation.get(id) ?? []) {
       if (row.id !== id) yield statusLiveness(row.status);
     }
-    for (const row of this.consoleByAlias.get(id) ?? []) {
+    for (const row of this.sources.consoleByAlias.get(id) ?? []) {
       yield statusLiveness(row.status);
-      const linked = this.hasSessions ? this.session(row.mandible_session_id ?? id) : null;
+      const linked = this.sources.hasSessions ? this.session(row.mandible_session_id ?? id) : null;
       if (linked) yield statusLiveness(linked.status);
     }
     yield this.codexTaskLiveness(id);

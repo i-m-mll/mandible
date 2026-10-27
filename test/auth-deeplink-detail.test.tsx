@@ -1,3 +1,4 @@
+import { useAppHistory } from '../ui/src/hooks/useAppHistory';
 // @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 2cddba2 — a deep-link (`#/auth?request=<id>`) to a resolved/archived
@@ -126,12 +127,8 @@ function renderDeepLinkedView(queue: AuthRequest[], initialRequestId: string) {
 }
 
 function RoutedAuthView({ queue }: { queue: AuthRequest[] }) {
-  const [route, setRoute] = useState(() => parseRouteFromHash(window.location.hash));
-  useEffect(() => {
-    const readRoute = () => setRoute(parseRouteFromHash(window.location.hash));
-    window.addEventListener('hashchange', readRoute);
-    return () => window.removeEventListener('hashchange', readRoute);
-  }, []);
+  const navigation = useAppHistory();
+  const route = parseRouteFromHash(new URL(navigation.href).hash);
   return <ControlledAuthView queue={queue} route={route.params.request} onNavigate={(id) => {
     replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id }));
   }} />;

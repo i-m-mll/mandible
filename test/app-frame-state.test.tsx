@@ -49,7 +49,7 @@ function Harness() {
     <button onClick={() => setRevision(n => n + 1)}>Reconcile</button>
     <span aria-label="Liquid Glass available">{String(liquidGlassRegular)}</span>
     <output aria-label="Chosen item">{chosen}</output>
-    <AppFrame nativeControlsReservation={reservation} rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
+    <AppFrame navigation={{ canBack: true, canForward: true, href: '', entryId: 'fixture', revision: 0, back: () => window.history.back(), forward: () => window.history.forward() }} nativeControlsReservation={reservation} rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
       <section hidden={route !== 'chat'}>
         <AppShellProvider value={{ ...context, active: route === 'chat' }}>
           <Selection.Provider value={`selected-${revision}`}>

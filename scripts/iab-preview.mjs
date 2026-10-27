@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import fs from "node:fs";
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, ownedRunIdentityMatches, ownedRunHandle, ownedRunReceipt, processIdentity } from "./owned-run.mjs";
-import { previewPaths, previewBaseDir, verifyPreviewConsumerStopped } from "./preview-custody.mjs";
+import { previewPaths, previewBaseDir, nativePreviewBaseDir, verifyPreviewConsumerStopped } from "./preview-custody.mjs";
+import { adoptLegacyPreview } from './preview-legacy.mjs';
 import { previewRegistration, reconcilePreviewRegistration } from './preview-registration.mjs';
 import { probeJson } from './local-runtime.mjs';
 import https from 'node:https';
@@ -87,12 +88,13 @@ export async function main(options) {
   assertOrdinaryPreviewLifecycleAllowed();
   const selected = selectPreviewBranch(git(["rev-parse", "--show-toplevel"]).stdout.trim(), options).branch;
   const root = previewPaths(selected).root;
-  const result = await withOwnedRunLock(root, async () => {
-    try { return await createOrReusePreview({ ...options, branch: selected }); }
+  if (options.dryRun) return createOrReusePreview({ ...options, branch: selected });
+  const result = await withOwnedRunLock(root, async token => {
+    try { return await createOrReusePreview({ ...options, branch: selected, lifecycleLockToken: token }); }
     catch (error) {
       const file = path.join(root, "metadata.json");
       const metadata = readJsonFile(file);
-      if (metadata?.ownership && (metadata.ownership.state === "creating" || metadata.ownership.disposable)) {
+      if (metadata?.ownership?.lifecycle && (metadata.ownership.state === "creating" || metadata.ownership.disposable)) {
         const active = await previewConsumerReason(metadata, root);
         if (!active) {
           try {
@@ -142,11 +144,44 @@ async function createOrReusePreview(options) {
   const selection = selectPreviewBranch(repoRoot, options);
   const { branch, mode, protectedBranch } = selection;
 
-  let worktree;
+  let worktree = mode === "current-worktree" ? repoRoot : plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
+  const preview = previewPaths(branch);
+  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
+
+  if (options.dryRun) {
+    const existing = options.forceNew ? null : await healthyExistingPreview(branch, {
+      worktree, readOnly: true, verifyPublic: options.effects?.verifyPublic,
+    });
+    const refresh = existing && (existing.health.startup_commit.hash !== git(['rev-parse', 'HEAD'], { cwd: worktree }).stdout.trim()
+      || existing.ownership.source?.source_digest !== trackedSourceDigest(worktree));
+    return {
+      ok: true,
+      status: "dry-run",
+      mode,
+      branch,
+      worktree,
+      protectedBranch,
+      previewRoot: preview.root,
+      wouldBuild: existing ? Boolean(refresh) : !options.noBuild,
+      wouldCopyDb: false,
+      wouldProjectDb: !existing,
+      wouldStart: !existing || Boolean(refresh),
+      wouldAdopt: Boolean(existing && !existing.ownership.lifecycle),
+      projection: {
+        logs: "all rows from 24h plus warn/error rows from 7d",
+        conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
+        conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
+      },
+      // Port, database copy, and pid file are not chosen until the preview
+      // actually starts, so the dry run reports exactly the root-derived part
+      // of the contract — from the same definition the launcher pins.
+      instanceEnv: previewIsolationEnv(preview.root, sourceDb),
+    };
+  }
 
   if (mode === "current-worktree") {
     worktree = repoRoot;
-    const existing = await healthyExistingPreview(branch, { worktree, verifyPublic: options.effects?.verifyPublic });
+    const existing = await healthyExistingPreview(branch, { worktree, options, verifyPublic: options.effects?.verifyPublic });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
@@ -165,7 +200,7 @@ async function createOrReusePreview(options) {
   } else {
     const selectedWorktree = worktreeForBranch(repoRoot, branch);
     const existing = !options.forceNew
-      ? await healthyExistingPreview(branch, { worktree: selectedWorktree, verifyPublic: options.effects?.verifyPublic })
+      ? await healthyExistingPreview(branch, { worktree: selectedWorktree, options, verifyPublic: options.effects?.verifyPublic })
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
@@ -194,7 +229,6 @@ async function createOrReusePreview(options) {
     worktree = plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
   }
 
-  const preview = previewPaths(branch);
   // A dead preview is replaceable, but its port is browser identity: keeping
   // it preserves origin-scoped UI state and lets the existing IAB tab recover
   // on reload. Capture that identity before stale-cache cleanup removes bytes.
@@ -205,32 +239,7 @@ async function createOrReusePreview(options) {
     && Number.isInteger(priorMetadata.port)
     ? priorMetadata.port
     : null;
-  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
 
-  if (options.dryRun) {
-    return {
-      ok: true,
-      status: "dry-run",
-      mode,
-      branch,
-      worktree,
-      protectedBranch,
-      previewRoot: preview.root,
-      wouldBuild: !options.noBuild,
-      wouldCopyDb: false,
-      wouldProjectDb: true,
-      wouldStart: true,
-      projection: {
-        logs: "all rows from 24h plus warn/error rows from 7d",
-        conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
-        conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
-      },
-      // Port, database copy, and pid file are not chosen until the preview
-      // actually starts, so the dry run reports exactly the root-derived part
-      // of the contract — from the same definition the launcher pins.
-      instanceEnv: previewIsolationEnv(preview.root, sourceDb),
-    };
-  }
 
   const owner = resolvePreviewOwner(fs.existsSync(worktree) ? worktree : repoRoot,
     fs.existsSync(worktree) ? branch : git(['branch', '--show-current'], { cwd: repoRoot }).stdout.trim(), options);
@@ -889,8 +898,10 @@ export async function previewStatus(options) {
   const root = path.resolve(expandHome(options.root));
   return withOwnedRunLock(root, () => {
     const selected = selectedPreviewRun(options, root);
-    return { ok: true, status: selected.receipt ? selected.cleanup : selected.ownership.lifecycle?.phase,
-      handle: { root, runId: options.runId }, ...selected };
+    return { ...selected, ok: true,
+      status: selected.receipt ? selected.cleanup : selected.ownership.lifecycle?.phase
+        ?? (selected.ownership.legacyAdoption ? 'adopting-owned-runtime' : 'legacy-owned-runtime'),
+      handle: { root, runId: options.runId } };
   });
 }
 
@@ -905,6 +916,7 @@ export async function stopPreview(options) {
   return withOwnedRunLock(root, async () => {
     const metadata = selectedPreviewRun(options, root);
     if (metadata.receipt) return { ok: metadata.cleanup === 'completed', status: 'cleaned', ...metadata };
+    if (!metadata.ownership.lifecycle) throw new Error('Adopt legacy runtime custody through supported setup or exact refresh before stopping the preview');
     metadata.ownership.lifecycle.phase = 'stopping';
     persistPreview(metadata);
     await retirePreviewRuntime(metadata, { cleanupChildren: false });
@@ -1140,7 +1152,8 @@ function printResult(result, json) {
   }
 
   console.log(`Mandible IAB preview ${result.status}`);
-  if (result.message) console.log(result.message);
+  if (result.status === 'refreshed') console.log(`Serving commit: ${result.ownership.source.commit}`);
+  else if (result.message) console.log(result.message);
   console.log(`URL: ${result.freshUrl ?? result.url}`);
   if (result.pairingUrl) console.log(`Pair new browser: ${result.pairingUrl}`);
   console.log(`Branch: ${result.branch}`);
@@ -1245,6 +1258,19 @@ export async function healthyExistingPreview(branch, expected = {}) {
   const readiness = await readPreviewReadiness(metadata.port);
   if (!readiness.ok) return refuseLivePreviewReuse(metadata, preview.root, readiness.reason);
   const { health } = readiness;
+  if (!metadata.ownership || !ownedRunIdentityMatches(preview.root, metadata.ownership)) return refuseLivePreviewReuse(metadata, preview.root, 'owned run lifecycle is not ready: identity is not verified');
+  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
+  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
+  const drift = previewInstanceEnvDrift(metadata, preview.root);
+  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
+  if (metadata.ownership && !metadata.ownership.lifecycle) {
+    if (expected.readOnly) {
+      if (metadata.ownership.state !== 'active') return refuseLivePreviewReuse(metadata, preview.root, 'legacy owner is not active');
+      await (expected.verifyPublic ?? verifyPublicPreview)(metadata);
+      return { ...metadata, health, inspectionOnly: true };
+    }
+    await ensurePreviewLifecycle(metadata, preview, expected.options ?? {}, health);
+  }
   if (!metadata.ownership || !ownedRunIdentityMatches(preview.root, metadata.ownership)
     || metadata.ownership.lifecycle?.teardown || metadata.ownership.lifecycle?.phase !== 'ready') return refuseLivePreviewReuse(metadata, preview.root, 'owned run lifecycle is not ready');
   const launch = metadata.ownership.lifecycle.launch;
@@ -1252,10 +1278,6 @@ export async function healthyExistingPreview(branch, expected = {}) {
   if (!identity || identity.slice(0, 24) !== launch.startedAt || readPidFile(metadata.pidFile) !== launch.pid
     || !identity.includes(launch.runtime) || !identity.includes('src/index.ts')) throw new Error('Ready preview process identity does not match owned launch');
   await (expected.verifyPublic ?? verifyPublicPreview)(metadata);
-  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
-  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
-  const drift = previewInstanceEnvDrift(metadata, preview.root);
-  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
 
   return {
     ...metadata,
@@ -1273,12 +1295,65 @@ async function refuseLivePreviewReuse(metadata, root, reason) {
 export async function refreshPreview(options) {
   if (!options.root || options.revision === undefined) throw new Error("refresh requires --root, --run-id and --revision");
   const root = path.resolve(expandHome(options.root));
-  return withOwnedRunLock(root, async () => {
+  return withOwnedRunLock(root, async token => {
     const existing = selectedPreviewRun(options, root);
-    if (existing.receipt || existing.ownership.lifecycle.teardown) throw new Error("Retired preview cannot refresh; finish its teardown");
+    if (existing.receipt) throw new Error("Retired preview cannot refresh; finish its teardown");
+    await ensurePreviewLifecycle(existing, previewPaths(existing.branch), { ...options, lifecycleLockToken: token });
+    if (existing.ownership.lifecycle.teardown) throw new Error("Retired preview cannot refresh; finish its teardown");
     return refreshExistingPreview(existing, { branch: existing.branch, worktree: existing.worktree, mode: existing.mode,
       currentHead: git(["rev-parse", "HEAD"], { cwd: existing.worktree }).stdout.trim(), options });
   });
+}
+
+async function ensurePreviewLifecycle(metadata, preview, options, observedHealth = null) {
+  if (metadata.ownership.lifecycle) return metadata;
+  if (!options.lifecycleLockToken) throw new Error('Legacy owned preview requires supported setup or exact refresh to prove and adopt its runtime custody');
+  if (!ownedRunIdentityMatches(preview.root, metadata.ownership) || metadata.previewRoot !== metadata.ownership.root) throw new Error('Legacy preview root identity differs');
+  validatePreviewIdentity(metadata, preview, metadata.branch, metadata.worktree);
+  const registeredWorktree = worktreeForBranch(metadata.worktree, metadata.branch);
+  if (!registeredWorktree || canonicalPath(registeredWorktree) !== canonicalPath(metadata.worktree)
+    || git(['branch', '--show-current'], { cwd: metadata.worktree }).stdout.trim() !== metadata.branch) throw new Error('Legacy preview branch/worktree registration differs');
+  const owner = options.effects?.resolveOwner ? await options.effects.resolveOwner(metadata.worktree, metadata.branch)
+    : resolvePreviewOwner(metadata.worktree, metadata.branch, options);
+  if (owner.project !== metadata.ownership.project || owner.workUnit !== metadata.ownership.workUnit) throw new Error('Legacy preview project/work-unit custody differs');
+  const readiness = observedHealth ? { ok: true, health: observedHealth } : await readPreviewReadiness(metadata.port);
+  const health = readiness.health;
+  const generation = metadata.instanceEnv?.MANDIBLE_BACKEND_GENERATION;
+  const matchesObserved = health => hasExpectedPreviewReadiness(health, {
+    head: generation, dbCopy: metadata.db, sourceDb: metadata.sourceDb, previewRoot: preview.root,
+  }) && health.instance.instance_id === metadata.ownership.instanceId
+    && health.instance.backend_generation === generation
+    && health.instance.installation_id === metadata.instanceEnv.MANDIBLE_INSTALLATION_ID
+    && health.instance.public_origin === metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN;
+  if (!readiness.ok || !matchesObserved(health)
+    || metadata.health?.startup_commit?.hash !== generation || health.instance?.instance_id !== metadata.ownership.instanceId
+    || metadata.ownership.source && metadata.ownership.source.commit !== generation) throw new Error('Legacy preview observed generation or policy differs from retained evidence');
+  validateRefreshContract({ ...metadata, health }, preview, { branch: metadata.branch, worktree: metadata.worktree, currentHead: generation });
+  const pid = readPidFile(metadata.pidFile);
+  if (!pid || metadata.restartLifecycle?.mechanism !== 'detached-child' || metadata.restartLifecycle.launcherPid !== pid) throw new Error('Legacy preview lacks matching detached launch/PID evidence');
+  const identity = processIdentity(pid);
+  if (!identity) throw new Error('Legacy preview recorded daemon is no longer live');
+  const launch = { pid, identity, startedAt: identity.slice(0, 24), runScript: metadata.runScript,
+    runtime: bunRuntime(metadata.worktree), worktree: metadata.worktree };
+  const runScript = fs.readFileSync(metadata.runScript, 'utf8');
+  if (fs.lstatSync(metadata.runScript).isSymbolicLink() || !runScript.includes(`cd ${shellQuote(metadata.worktree)}`)
+    || !runScript.includes(`${shellQuote(launch.runtime)} src/index.ts`)
+    || !runScript.includes(`MANDIBLE_BACKEND_GENERATION=${shellQuote(generation)}`)) throw new Error('Legacy preview run script does not prove its retained launch context');
+  const verifyRuntime = async () => {
+    if (processIdentity(pid) !== identity || readPidFile(metadata.pidFile) !== pid || fs.readFileSync(metadata.runScript, 'utf8') !== runScript
+      || !identity.includes(launch.runtime) || !identity.includes('src/index.ts')) throw new Error('Legacy preview process/start identity changed');
+    const cwd = run('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']).stdout.split('\n').find(line => line.startsWith('n'))?.slice(1);
+    const listeners = run('lsof', ['-a', '-p', String(pid), `-iTCP:${metadata.port}`, '-sTCP:LISTEN', '-Fp']).stdout
+      .split('\n').filter(line => line.startsWith('p'));
+    if (!cwd || canonicalPath(cwd) !== canonicalPath(metadata.worktree)
+      || listeners.length !== 1 || listeners[0] !== `p${pid}`) throw new Error('Legacy preview listener or launch worktree differs');
+    const fresh = await readPreviewReadiness(metadata.port);
+    if (!fresh.ok || !matchesObserved(fresh.health)) throw new Error('Legacy preview health changed during adoption proof');
+    await (options.effects?.verifyPublic ?? verifyPublicPreview)(metadata);
+  };
+  return adoptLegacyPreview(metadata, { token: options.lifecycleLockToken, home: mandibleHome(), runtime: { commit: generation, launch },
+    registration: previewRegistration(metadata.instanceEnv), verifyRuntime,
+    nativeBase: options.effects?.nativeBase ?? nativePreviewBaseDir(), effects: options.effects });
 }
 
 async function refreshExistingPreview(existing, details) {
@@ -1291,6 +1366,10 @@ async function refreshExistingPreview(existing, details) {
   const run = existing.ownership;
   if (run.lifecycle.teardown) throw new Error("Teardown intent prevents refresh");
   const previous = ['failed-stopped', 'retired'].includes(run.lifecycle.phase) ? null : run.lifecycle.registration;
+  delete existing.message;
+  delete existing.previousStartupCommit;
+  delete existing.refreshedAt;
+  existing.status = 'refreshing'; existing.ok = false;
   run.lifecycle.phase = "building";
   persistPreview(existing);
   if (details.options.effects?.build) await details.options.effects.build(details.worktree);
@@ -1324,6 +1403,7 @@ async function refreshExistingPreview(existing, details) {
     persistPreview(existing);
     return withBrowserReadyUrl(existing, { pairBrowser: details.options.pairBrowser });
   } catch (error) {
+    existing.status = 'refresh-failed'; existing.ok = false;
     run.lifecycle.phase = "refresh-failed"; run.lifecycle.failure = String(error);
     persistPreview(existing);
     const failures = [error];
