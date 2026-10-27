@@ -1152,7 +1152,8 @@ function printResult(result, json) {
   }
 
   console.log(`Mandible IAB preview ${result.status}`);
-  if (result.message) console.log(result.message);
+  if (result.status === 'refreshed') console.log(`Serving commit: ${result.ownership.source.commit}`);
+  else if (result.message) console.log(result.message);
   console.log(`URL: ${result.freshUrl ?? result.url}`);
   if (result.pairingUrl) console.log(`Pair new browser: ${result.pairingUrl}`);
   console.log(`Branch: ${result.branch}`);
@@ -1365,6 +1366,10 @@ async function refreshExistingPreview(existing, details) {
   const run = existing.ownership;
   if (run.lifecycle.teardown) throw new Error("Teardown intent prevents refresh");
   const previous = ['failed-stopped', 'retired'].includes(run.lifecycle.phase) ? null : run.lifecycle.registration;
+  delete existing.message;
+  delete existing.previousStartupCommit;
+  delete existing.refreshedAt;
+  existing.status = 'refreshing'; existing.ok = false;
   run.lifecycle.phase = "building";
   persistPreview(existing);
   if (details.options.effects?.build) await details.options.effects.build(details.worktree);
@@ -1398,6 +1403,7 @@ async function refreshExistingPreview(existing, details) {
     persistPreview(existing);
     return withBrowserReadyUrl(existing, { pairBrowser: details.options.pairBrowser });
   } catch (error) {
+    existing.status = 'refresh-failed'; existing.ok = false;
     run.lifecycle.phase = "refresh-failed"; run.lifecycle.failure = String(error);
     persistPreview(existing);
     const failures = [error];
