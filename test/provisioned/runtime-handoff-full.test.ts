@@ -304,7 +304,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(executionId) as any;
       if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
       return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
-    }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
+    }, 180000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, executionId)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     expect(fs.existsSync(xattrMarker)).toBe(false);
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(executionId) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);

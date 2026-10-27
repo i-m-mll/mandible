@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { applicationIdentity, resolveAcceptedRelease } from './accepted-release.mjs';
+import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt } from './accepted-release.mjs';
+import { readInstalledRelease } from './installed-release.mjs';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
 
@@ -13,6 +14,12 @@ export function verifyAcceptedApplication(binding) {
   const accepted = acceptedApplication(binding);
   if (applicationIdentity(binding.nativeApp) !== accepted.receipt.package.sha256) throw new Error('Installed application differs from the exact accepted package.');
   return accepted;
+}
+export function inspectAcceptedApplication(binding) {
+  const receipt = readAcceptedReleaseReceipt(binding.acceptedRelease.reference);
+  const shipped = readInstalledRelease(path.join(binding.nativeApp, 'Contents/Resources'));
+  if (JSON.stringify(shipped) !== JSON.stringify(receipt.shipped)) throw new Error('Installed manifest differs from the exact accepted release.');
+  return receipt;
 }
 export function acceptedInstallPaths(binding) {
   const scope = `${binding.requestId}-${binding.executionId}`;

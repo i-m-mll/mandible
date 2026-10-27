@@ -22,7 +22,7 @@ import { RuntimeObservationError } from './runtime-observation.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 import { readBundleOwner, nativeServiceControl, readBundleLaunch, bundleLoginSession } from './bundle-services.mjs';
-import { acceptedApplication, verifyAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
+import { verifyAcceptedApplication, inspectAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 
 const ACCOUNT_HOME = os.userInfo().homedir;
 const DEFAULT_HOME = path.join(ACCOUNT_HOME, ".mandible");
@@ -516,13 +516,13 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null) {
   const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(binding.acceptedRelease ? bundleContext(binding) : INSTALLATION));
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
-  if (binding.acceptedRelease) verifyAcceptedApplication(binding);
+  if (binding.acceptedRelease) inspectAcceptedApplication(binding);
   if (!binding.acceptedRelease && backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services differ from the pinned runtime.');
   const backendJob = inspectJob(BACKEND_LABEL), gatewayJob = inspectJob(GATEWAY_LABEL);
   const installed = locateLaunchAgent(BACKEND_LABEL);
   const logPath = binding.acceptedRelease ? binding.daemonLog : installed?.record.StandardErrorPath;
   if (!path.isAbsolute(logPath || '')) throw new Error('Loaded service log provenance is unavailable.');
-  const startup = fs.existsSync(logPath) ? candidateStartupFailure(readLogTail(logPath), binding.acceptedRelease ? acceptedApplication(binding).receipt.shipped.provenance.commit : binding.mergeCommit) : null;
+  const startup = fs.existsSync(logPath) ? candidateStartupFailure(readLogTail(logPath), binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit) : null;
   if (startup) throw new RuntimeObservationError('startup_failed', `Candidate runtime failed to start: ${startup}`);
   const processes = {};
   let waiting = null;
@@ -557,9 +557,9 @@ export async function verifyHandoffDefinitions(binding, { until = Date.now(), aw
   catch (error) { if (!awaitReady || !(error instanceof RuntimeObservationError) || error.outcome !== 'pending') throw error; }
   const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
   const { inspection: status, error, exited, outcome, code } = awaitReady
-    ? await awaitHandoffReadiness(binding.acceptedRelease ? acceptedApplication(binding).receipt.shipped.provenance.commit : binding.mergeCommit, until, inspect, { expectedProcesses, expectedServing })
+    ? await awaitHandoffReadiness(binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit, until, inspect, { expectedProcesses, expectedServing })
     : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection,
-      ...handoffFrontDoorObservation(inspection, binding.acceptedRelease ? acceptedApplication(binding).receipt.shipped.provenance.commit : binding.mergeCommit, { expectedServing }), exited: false }));
+      ...handoffFrontDoorObservation(inspection, binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit, { expectedServing }), exited: false }));
   if (exited) {
     const logPath = locateLaunchAgent(BACKEND_LABEL)?.record.StandardErrorPath;
     let startup = null;
