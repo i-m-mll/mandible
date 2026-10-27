@@ -9,8 +9,8 @@ export type ChromeAppearancePreviewState = {
 };
 
 export const CHROME_APPEARANCE_DEFAULTS: Readonly<ChromeAppearanceThemes> = {
-  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.28 },
-  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.28 },
+  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12 },
+  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.12 },
 };
 export const CHROME_APPEARANCE_PREVIEW_DEFAULTS: ChromeAppearancePreviewState = { version: 1, overrides: {} };
 export const CHROME_APPEARANCE_LIMITS = {

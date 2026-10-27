@@ -252,7 +252,7 @@ describe('rendered workspace shadow', () => {
   it.each(['light', 'dark'] as const)('applies %s glass tint endpoints and default once on the native frame while content and shadow geometry stay fixed', theme => {
     const directory = mkdtempSync(join(tmpdir(), 'mandible-native-tint-'));
     try {
-      const cases = [0, 0.28, 1].map(glassTransparency => {
+      const cases = [0, CHROME_APPEARANCE_DEFAULTS[theme].glassTransparency, 1].map(glassTransparency => {
         const screenshot = join(directory, `tint-${glassTransparency}.png`);
         return { glassTransparency, screenshot, result: renderCase('chat', 1280, theme, true, false, 1, { glassTransparency, screenshotPath: screenshot }) };
       });

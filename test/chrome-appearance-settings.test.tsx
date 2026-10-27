@@ -29,7 +29,7 @@ describe('preview chrome appearance controls', () => {
     const { container, rerender, unmount } = render(<Harness />);
     const slider = screen.getByRole('slider', { name: 'Liquid Glass transparency' }) as HTMLInputElement;
     expect(slider.disabled).toBe(true);
-    expect(slider.value).toBe('28');
+    expect(slider.value).toBe('12');
     expect(screen.getByText('Available in the macOS preview window.')).toBeTruthy();
     rerender(<Harness glassAvailable />);
     expect(slider.disabled).toBe(false);
@@ -49,7 +49,7 @@ describe('preview chrome appearance controls', () => {
     render(<Harness glassAvailable />);
     expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('100');
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('28');
+    expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('12');
     expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65 } });
   });
 
@@ -112,10 +112,10 @@ describe('preview chrome appearance controls', () => {
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'light' } });
     fireEvent.input(screen.getByLabelText('Width value'), { target: { value: '8' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.28 } } });
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12 } } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy parameters' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Parameters copied.'));
-    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.28 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.28 } };
+    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12 } };
     expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual(exported);
     expect(JSON.parse((screen.getByLabelText('Chrome parameters') as HTMLTextAreaElement).value)).toEqual(exported);
     writeText.mockRejectedValue(new Error('clipboard denied'));
@@ -154,7 +154,7 @@ describe('preview chrome appearance controls', () => {
       expect(screen.queryByLabelText('Preview theme')).toBeNull();
       expect(screen.getByLabelText('theme override').textContent).toBe('none');
       expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-dark-linear')).toBe(chromeAppearanceFrameStyles()['--app-shadow-dark-linear']);
-      expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-chrome-dark-tint-percentage')).toBe('72%');
+      expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-chrome-dark-tint-percentage')).toBe('88%');
     }
     rerender(<Harness />);
     expect(screen.getByLabelText('theme override').textContent).toBe('dark');
