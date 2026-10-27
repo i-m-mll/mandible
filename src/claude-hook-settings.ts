@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { publicCommand } from "./product-resources.js";
 
 type ClaudeSettings = Record<string, unknown>;
 type ClaudeStatusLine = Record<string, unknown>;
@@ -97,7 +97,7 @@ export function mergeMandibleClaudeHookSettingsWithMetadata(
   const base = isRecord(baseSettings) ? baseSettings : {};
   const next: ClaudeSettings = { ...base };
   const baseHooks = isRecord(base.hooks) ? base.hooks : {};
-  const hooks: Record<string, unknown> = { ...baseHooks };
+  const hooks: Record<string, unknown> = removeManagedHooks(baseHooks);
 
   for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
     const command = mandibleHookCommand(scriptName, sessionRef, MANAGED_HOOK_MARKER);
@@ -225,7 +225,7 @@ export function getUserClaudeIntegrationStatus(
     }
   }
   const statusLine = normalizeStatusLineCommand(settings.statusLine);
-  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !statusLine.includes("mandible-claude-statusline.sh")) {
+  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !hasHookInvocation(statusLine, "mandible-claude-statusline.sh")) {
     details.push("statusline_missing");
   }
   const status = details.length > 0 ? "drifted" : "installed";
@@ -250,7 +250,7 @@ function appendHookMatcher(existing: unknown[], matcher: ClaudeHookMatcher): unk
 
 function mandibleHookCommand(scriptName: string, sessionRef: string, marker?: string): string {
   const prefix = marker ? `${marker} ` : "";
-  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${shellQuote(hookScriptPath(scriptName))}`;
+  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${hookInvocation(scriptName)}`;
 }
 
 function mergeMandibleStatusLine(
@@ -279,7 +279,7 @@ function mandibleStatusLineCommand(sessionRef: string, chainedStatusLine: string
   if (chainedStatusLine) {
     parts.push(`MANDIBLE_CHAINED_STATUSLINE=${shellQuote(chainedStatusLine)}`);
   }
-  parts.push(shellQuote(hookScriptPath("mandible-claude-statusline.sh")));
+  parts.push(hookInvocation("mandible-claude-statusline.sh"));
   return parts.join(" ");
 }
 
@@ -307,11 +307,17 @@ function normalizeStatusLineCommand(value: unknown): string | null {
 }
 
 function isMandibleStatusLineCommand(command: string | null): boolean {
-  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || command?.includes("mandible-claude-statusline.sh"));
+  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || (command && hasHookInvocation(command, "mandible-claude-statusline.sh")));
 }
 
-function hookScriptPath(scriptName: string): string {
-  return fileURLToPath(new URL(`../cli/hooks/${scriptName}`, import.meta.url));
+function hookInvocation(scriptName: string): string {
+  const hook = scriptName.replace(/^mandible-claude-/, "").replace(/\.sh$/, "");
+  const invocation = publicCommand("hook", hook);
+  return [invocation.command, ...invocation.args].map(shellQuote).join(" ");
+}
+
+function hasHookInvocation(command: string, scriptName: string): boolean {
+  return command.includes(scriptName) || command.includes(hookInvocation(scriptName));
 }
 
 function defaultHookSettingsDir(): string {
@@ -441,7 +447,7 @@ function hasManagedHook(hooksValue: unknown, eventName: string, scriptName: stri
       isRecord(hook) &&
       typeof hook.command === "string" &&
       hook.command.includes(MANAGED_HOOK_MARKER) &&
-      hook.command.includes(scriptName)
+      hasHookInvocation(hook.command, scriptName)
     ))
   ));
 }

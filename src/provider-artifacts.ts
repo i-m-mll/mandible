@@ -1773,10 +1773,10 @@ function lexicalWorktreeDir(lexicalPath: string): string | null {
 // Classify the relationship between a user-supplied local path and its realpath
 // so the durable-path planner can pick a non-disposable stored URI and explain
 // the decision (issue 2f9c3c3).
-function classifyLocalSymlink(
+export function classifyLocalSymlink(
   lexicalAbs: string,
   resolvedAbs: string,
-  gitState: ArtifactGitState,
+  gitState: Pick<ArtifactGitState, "inside_worktree" | "repo_root">,
 ): Omit<LocalPathDecision, "stored_uri"> {
   const symlinkResolved = lexicalAbs !== resolvedAbs;
   if (!symlinkResolved) {

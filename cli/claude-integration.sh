@@ -1,5 +1,5 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
-repo_root=$(cd "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/.." && pwd -P)
-exec "$("$repo_root/scripts/bun-runtime.sh")" --no-install "$repo_root/dist/claude-integration-cli.js" "$@"
+source "$(cd "$(dirname "$0")" && pwd -P)/command-syntax.sh"
+exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module claude-integration-cli)" "$@"

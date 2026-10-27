@@ -49,6 +49,9 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
   const sourceRoot = path.resolve(options.sourceRoot);
   const targetDir = path.resolve(options.targetDir ?? defaultCoworkCliCacheDir());
   const files = collectCacheFiles(sourceRoot);
+  const priorManifestPath = path.join(targetDir, "manifest.json");
+  const priorFiles = fs.existsSync(priorManifestPath)
+    ? (JSON.parse(fs.readFileSync(priorManifestPath, "utf8")) as CoworkCliCacheManifest).files : [];
 
   if (files.length === 0) {
     throw new Error(`no CLI files found under ${path.join(sourceRoot, CLI_SOURCE_DIR)}`);
@@ -68,11 +71,6 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
       sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
       size: bytes.length,
     });
-  }
-  if (installedResourceRoot()) {
-    const selector = path.join(sourceRoot, "scripts/bun-runtime.sh");
-    const quoted = "'" + selector.replaceAll("'", "'\\''") + "'";
-    writeFileAtomically(path.join(targetDir, "runtime/scripts/bun-runtime.sh"), '#!/bin/sh\nexec ' + quoted + ' "$@"\n', 0o755);
   }
   for (const file of options.generatedFiles ?? []) {
     const normalizedPath = normalizeGeneratedFilePath(file.path);
@@ -99,6 +97,11 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
     generated_at: new Date().toISOString(),
     files: manifestFiles,
   };
+  const desiredPaths = new Set(manifestFiles.map(file => file.path));
+  for (const file of priorFiles) {
+    const relative = normalizeGeneratedFilePath(file.path);
+    if (!desiredPaths.has(relative)) fs.rmSync(path.join(targetDir, relative), { force: true });
+  }
   writeFileAtomically(
     path.join(targetDir, "manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
@@ -127,6 +130,10 @@ function copyFileAtomically(sourcePath: string, destinationPath: string, mode: n
 }
 
 function writeFileAtomically(destinationPath: string, data: string | Buffer, mode: number): void {
+  if (fs.existsSync(destinationPath) && fs.readFileSync(destinationPath).equals(Buffer.from(data))) {
+    fs.chmodSync(destinationPath, mode);
+    return;
+  }
   const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   fs.writeFileSync(tempPath, data, { mode });
   fs.chmodSync(tempPath, mode);
@@ -146,15 +153,17 @@ function collectCacheFiles(sourceRoot: string): Array<{ source: string; path: st
     }
   }
 
-  // A flattened CLI bundle needs the selector's complete, platform-independent
-  // identity contract. Reuse its verification/install path rather than inventing
-  // a cache-specific runtime or trusting the destination's ambient executable.
   if (files.some((file) => file.path === "command-syntax.sh")) {
-    for (const source of installedResourceRoot() ? ["scripts/bun-runtime.sh"] : [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv", "scripts/sqlite-runtime-install.mjs", "src/sqlite-runtime.ts", "scripts/installed-release.mjs"]) {
-      if (!fs.statSync(path.join(sourceRoot, source)).isFile()) {
-        throw new Error(`missing CLI runtime dependency: ${source}`);
-      }
-      files.push({ source, path: path.join("runtime", source) });
+    const installed = installedResourceRoot();
+    const runtimeRoot = installed ? path.join(sourceRoot, "cowork-runtime") : sourceRoot;
+    const addRuntime = (relative: string) => {
+      const source = path.relative(sourceRoot, path.join(runtimeRoot, relative));
+      if (!fs.statSync(path.join(sourceRoot, source)).isFile()) throw new Error(`missing projected CLI runtime: ${source}`);
+      files.push({ source, path: path.join("runtime", relative) });
+    };
+    for (const relative of [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv"]) addRuntime(relative);
+    if (installed) {
+      for (const name of fs.readdirSync(path.join(runtimeRoot, "runtime")).sort()) addRuntime(path.join("runtime", name));
     }
   }
 

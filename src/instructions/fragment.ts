@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { productResource } from "../product-resources.js";
 
 export const MANDIBLE_INSTRUCTIONS_BEGIN = "<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->";
 export const MANDIBLE_INSTRUCTIONS_END = "<!-- END MANDIBLE MANAGED INSTRUCTIONS -->";
@@ -12,10 +11,10 @@ export interface InstallResult {
 }
 
 export function renderMandibleInstructionsFragment(): string {
-  const { renderCommands } = createRequire(import.meta.url)(findRepoFile("cli/command-syntax.cjs")) as {
+  const { renderCommands } = createRequire(import.meta.url)(productResource("cli/command-syntax.cjs")) as {
     renderCommands(source: string): string;
   };
-  return renderCommands(fs.readFileSync(findRepoFile("cli/instructions-contract.md"), "utf8"));
+  return renderCommands(fs.readFileSync(productResource("cli/instructions-contract.md"), "utf8"));
 }
 
 export function renderManagedInstructionsBlock(fragment = renderMandibleInstructionsFragment()): string {
@@ -92,16 +91,4 @@ function buildLineDiff(before: string, after: string): string[] {
     }
   }
   return lines;
-}
-
-function findRepoFile(relativePath: string): string {
-  let current = path.dirname(fileURLToPath(import.meta.url));
-  for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = path.join(current, relativePath);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-    current = path.dirname(current);
-  }
-  throw new Error(`Could not find ${relativePath}`);
 }
