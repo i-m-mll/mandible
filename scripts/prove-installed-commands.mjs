@@ -112,7 +112,7 @@ try {
   const projected = await run('/bin/bash', [path.join(cache, 'issue.sh'), 'report'], '', { ...environment, MANDIBLE_CLI_DIR: cache });
   assert.equal(projected.status, 2, projected.stderr); assert.match(projected.stderr, /Arguments do not match/);
   assert.doesNotMatch(projected.stderr, /download|Cannot find|unavailable|denied/i);
-  process.stdout.write(`${JSON.stringify({ passed: true, resources, scratch, evidence: ['public CLI grammar and prebuilt SQLite query', 'native log inspection and parsed blocks', 'instruction rendering', 'generated hook stdin/stdout and provider identity', 'execution outbox hook', 'public channel MCP initialization', 'Git rejects unsigned update and unavailable guard', 'projected client grammar from packaged offline archive'] }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest, resources, scratch, evidence: ['public CLI grammar and prebuilt SQLite query', 'native log inspection and parsed blocks', 'instruction rendering', 'generated hook stdin/stdout and provider identity', 'execution outbox hook', 'public channel MCP initialization', 'Git rejects unsigned update and unavailable guard', 'projected client grammar from packaged offline archive'] }, null, 2)}\n`);
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }
