@@ -7,6 +7,7 @@ import { nativeProcessGroupMembers } from './native-process-group.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 import { verifyInstalledRelease } from './installed-release.mjs';
 import { finalizeAppPayload } from './finalize-app-payload.mjs';
+import { resolveAppSigning, openAppSigner } from './app-signing.mjs';
 
 function command(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 10_000 });
@@ -78,7 +79,7 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, frontendDist: bootstrap };
   config.bundle = { ...config.bundle, resources, targets: ['app'],
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
-    macOS: { ...config.bundle.macOS, frameworks: [sqliteLibrary] } };
+    macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary] } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });
@@ -152,10 +153,11 @@ export async function buildNativePreview({ worktree, root, candidate, receipt, s
     log: path.join(root, 'build.log'), budgetMs, receipt, save, identity }).then(ms => { receipt.nativeBuild.phases[name] = ms; save(); });
   await phase('prepare', '/bin/sh', [path.join(worktree, 'scripts/make-dist.sh')], worktree, 60_000);
   receipt.nativeBuild.status = 'compiling'; save();
-  await phase('compile', staged.bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--debug', '--bundles', 'app', '--ci', '--', '--locked',
+  await phase('compile', staged.bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--debug', '--bundles', 'app', '--no-sign', '--ci', '--', '--locked',
     '--config', `build.build-dir=${JSON.stringify(staged.env.CARGO_BUILD_BUILD_DIR)}`], staged.source, 600_000);
   if (JSON.stringify(nativeCandidate(worktree)) !== JSON.stringify(candidate)) throw new Error('Native candidate sources changed during compilation');
-  finalizeAppPayload(staged.bundle);
+  const signer = openAppSigner(resolveAppSigning(staged.source, [], {}));
+  try { finalizeAppPayload(staged.bundle, signer); } finally { signer.close(); }
   verifyNativeBundle(staged.bundle, candidate);
   receipt.nativeBuild.status = 'built'; receipt.nativeBuild.bundle = staged.bundle; save();
   return staged.bundle;

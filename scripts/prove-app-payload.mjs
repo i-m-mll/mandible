@@ -8,6 +8,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { stageAppPayload } from './stage-app-payload.mjs';
 import { installedRuntimeEnvironment, verifyInstalledRelease } from './installed-release.mjs';
+import { finalizeAppPayload } from './finalize-app-payload.mjs';
+import { openAppSigner } from './app-signing.mjs';
 import { installedExecutionProfile } from './installed-execution.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +20,9 @@ if (process.argv[2]) {
   fs.cpSync(path.resolve(fs.realpathSync(process.argv[2]), '..'), contents, { recursive: true });
   const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', path.dirname(contents)], { encoding: 'utf8', timeout: 10_000 });
   assert.equal(signature.status, 0, signature.stderr);
+  const signer = openAppSigner({ identity: '-', hardenedRuntime: true, entitlements: null });
+  try { assert.throws(() => finalizeAppPayload(path.dirname(contents), signer), /already signed/); }
+  finally { signer.close(); }
   stage = { resources: path.join(contents, 'Resources') };
 } else stage = await stageAppPayload(path.join(scratch, 'Mandible.app/Contents'));
 const release = verifyInstalledRelease(stage.resources);
