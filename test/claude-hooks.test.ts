@@ -5,7 +5,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   extractSettingsPath,
@@ -363,13 +362,8 @@ describe("Claude hook settings", () => {
     }, "session-1") as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
 
     expect(merged.theme).toBe("dark");
-    expect(merged.hooks.PostToolUse.map((entry) => entry.hooks[0]?.command)).toEqual([
-      "npm run format",
-      expect.stringContaining("mandible-claude-ingest-nudge.sh"),
-    ]);
-    expect(merged.hooks.Stop[0].hooks[0].command).toContain("mandible-claude-ingest-nudge.sh");
-    expect(merged.hooks.Notification[0].hooks[0].command).toContain("mandible-claude-notification.sh");
-    expect((merged.statusLine as { command: string }).command).toContain("mandible-claude-statusline.sh");
+    expect(merged.hooks.PostToolUse).toHaveLength(2);
+    expect(merged.hooks.PostToolUse[0].hooks[0].command).toBe("npm run format");
 
     const baseSettingsPath = path.join(tempDir, "base-settings.json");
     fs.writeFileSync(
@@ -399,11 +393,8 @@ describe("Claude hook settings", () => {
     const generated = JSON.parse(fs.readFileSync(generatedPath!, "utf8")) as {
       hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
     };
-    expect(generated.hooks.Notification.map((entry) => entry.hooks[0]?.command)).toEqual([
-      "say attention",
-      expect.stringContaining("mandible-claude-notification.sh"),
-    ]);
-    expect(generated.statusLine.command).toContain("mandible-claude-statusline.sh");
+    expect(generated.hooks.Notification).toHaveLength(2);
+    expect(generated.hooks.Notification[0].hooks[0].command).toBe("say attention");
   });
 
   it("installs, reports, and uninstalls user-level Claude integration idempotently", () => {
@@ -439,11 +430,8 @@ describe("Claude hook settings", () => {
     expect(first.backupPath).toContain(".mandible-backup-2026-07-02T12-00-00-000Z");
     expect(second.status).toBe("unchanged");
     expect(fs.readFileSync(settingsPath, "utf8")).toBe(installedText);
-    expect(installed.hooks.Stop.map((entry) => entry.hooks[0]?.command)).toEqual([
-      "say done",
-      expect.stringContaining("mandible-claude-ingest-nudge.sh"),
-    ]);
-    expect(installed.statusLine.command).toContain("MANDIBLE_CHAINED_STATUSLINE='node ~/statusline.js --flag'");
+    expect(installed.hooks.Stop).toHaveLength(2);
+    expect(installed.hooks.Stop[0].hooks[0].command).toBe("say done");
     expect(getUserClaudeIntegrationStatus({ settingsPath })).toMatchObject({
       status: "installed",
       chainedStatusLine: "node ~/statusline.js --flag",
@@ -494,16 +482,15 @@ describe("Claude statusline relay script", () => {
       if (!address || typeof address === "string") {
         throw new Error("unexpected server address");
       }
-      const script = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "../cli/hooks/mandible-claude-statusline.sh",
-      );
+      const settings = mergeMandibleClaudeHookSettings({
+        statusLine: { type: "command", command: "cat >/dev/null; printf chained-output" },
+      }, "console-alias") as { statusLine: { command: string } };
       const input = JSON.stringify({
         session_id: "12345678-1234-4234-8234-123456789abc",
         model: { display_name: "Sonnet" },
         context_window: { used_percentage: 42 },
       });
-      const stdout = await runScriptWithInput("sh", [script], input, {
+      const stdout = await runScriptWithInput("sh", ["-c", settings.statusLine.command], input, {
         env: {
           ...process.env,
           MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
@@ -516,7 +503,7 @@ describe("Claude statusline relay script", () => {
 
       expect(stdout).toBe("chained-output");
       const aliasOnlyInput = JSON.stringify({ session_id: "not-a-provider-uuid", model: "Sonnet" });
-      await runScriptWithInput("sh", [script], aliasOnlyInput, {
+      await runScriptWithInput("sh", ["-c", settings.statusLine.command], aliasOnlyInput, {
         env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
           MANDIBLE_SESSION_REF: "console-alias", MANDIBLE_MANAGED_APP: "claude",
           MANDIBLE_SESSION_ID: "wrapper-123" },

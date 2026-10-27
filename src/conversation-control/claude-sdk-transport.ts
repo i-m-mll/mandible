@@ -1,9 +1,8 @@
 import { installedResourceRoot, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
+import { publicCommand } from "../product-resources.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { logChildStderr } from "../daemon-log.js";
 import type { HookCallback, Options, Query, SDKUserMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk";
@@ -109,8 +108,7 @@ export class ClaudeSdkTransport {
       includePartialMessages: true,
       agentProgressSummaries: true,
       extraArgs: { "replay-user-messages": null },
-      mcpServers: { mandible: { type: "stdio", command: process.execPath,
-        args: [installed && release ? releaseFile(installed, release.entrypoints.channel) : resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js")],
+      mcpServers: { mandible: { type: "stdio", ...publicCommand("channel"),
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
       hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
