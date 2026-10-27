@@ -598,6 +598,7 @@ async function observeRuntimeHandoffOnce(journal, {
       httpRequests: assessment.diagnostics.http_requests,
     },
     logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: daemonLog.sha256, daemonLogBytes: daemonLog.bytes, daemonLogOffset: coverage.offset, daemonLogSegments: coverage.segments };
+  if (b.acceptedRelease) await verifyAcceptedBytes(journal);
   recheckRuntimeObservation(journal, receipt);
   return receipt;
 }
