@@ -167,7 +167,7 @@ function loadedJob(service, label, result, context) {
         const actual = executable.stdout.trim();
         // launchd publishes its PID before xpcproxy execs the native helper,
         // whose initial comm can itself precede the full bundled Bun path.
-        if (['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service'].includes(actual)) {
+        if (['xpcproxy', 'mandible-service'].includes(actual)) {
           const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2500 });
           const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
           pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
