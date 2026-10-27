@@ -1,3 +1,4 @@
+import { installedResourceRoot, readInstalledRelease, releaseFile } from "../scripts/installed-release.mjs";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -43,7 +44,11 @@ export function sqliteRuntimePaths() {
   return { root, library: path.join(root, "libsqlite3.dylib"), archive: path.join(root, "sqlite.tar.gz") };
 }
 export function verifySqliteLibrary(filename: string) {
-  if (!fs.existsSync(filename) || hash(filename) !== SQLITE_RUNTIME_LOCK.librarySha256) {
+  const installed = installedResourceRoot();
+  const release = installed ? readInstalledRelease(installed) : null;
+  const expected = release ? release.files[release.native.sqlite].sha256 : SQLITE_RUNTIME_LOCK.librarySha256;
+  if (installed && path.resolve(filename) !== releaseFile(installed, release!.native.sqlite)) throw new Error("Installed SQLite cannot use an external library.");
+  if (!fs.existsSync(filename) || hash(filename) !== expected) {
     throw new Error(`Pinned SQLite library is missing or corrupt: ${filename}. Provision the preserved SQLite archive before opening a database.`);
   }
   return filename;
@@ -105,8 +110,9 @@ const processOwnership = globalThis as typeof globalThis & { [ownershipKey]?: Li
 export function configureSqliteRuntime(Driver?: NativeDriver) {
   if (process.platform !== "darwin") return;
   if (`${process.platform}-${process.arch}` !== SQLITE_RUNTIME_LOCK.platform) throw new Error("No qualified stock SQLite library for this macOS architecture");
-  const files = sqliteRuntimePaths();
-  const override = process.env.MANDIBLE_SQLITE_LIBRARY;
+  const installed = installedResourceRoot();
+  const override = installed ? releaseFile(installed, readInstalledRelease(installed).native.sqlite) : process.env.MANDIBLE_SQLITE_LIBRARY;
+  const files = override ? { library: override, archive: "" } : sqliteRuntimePaths();
   if (!override && process.env.MANDIBLE_SQLITE_LIBRARY_ARCHIVE) {
     verifySqliteArchive(process.env.MANDIBLE_SQLITE_LIBRARY_ARCHIVE);
     if (!fs.existsSync(files.library) || !fs.existsSync(files.archive)) provisionSqliteLibrary(process.env.MANDIBLE_SQLITE_LIBRARY_ARCHIVE);

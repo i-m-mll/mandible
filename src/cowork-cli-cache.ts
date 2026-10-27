@@ -1,3 +1,4 @@
+import { installedResourceRoot } from "../scripts/installed-release.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -67,6 +68,11 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
       sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
       size: bytes.length,
     });
+  }
+  if (installedResourceRoot()) {
+    const selector = path.join(sourceRoot, "scripts/bun-runtime.sh");
+    const quoted = "'" + selector.replaceAll("'", "'\\''") + "'";
+    writeFileAtomically(path.join(targetDir, "runtime/scripts/bun-runtime.sh"), '#!/bin/sh\nexec ' + quoted + ' "$@"\n', 0o755);
   }
   for (const file of options.generatedFiles ?? []) {
     const normalizedPath = normalizeGeneratedFilePath(file.path);
@@ -144,7 +150,7 @@ function collectCacheFiles(sourceRoot: string): Array<{ source: string; path: st
   // identity contract. Reuse its verification/install path rather than inventing
   // a cache-specific runtime or trusting the destination's ambient executable.
   if (files.some((file) => file.path === "command-syntax.sh")) {
-    for (const source of [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv", "scripts/sqlite-runtime-install.mjs", "src/sqlite-runtime.ts"]) {
+    for (const source of installedResourceRoot() ? ["scripts/bun-runtime.sh"] : [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv", "scripts/sqlite-runtime-install.mjs", "src/sqlite-runtime.ts", "scripts/installed-release.mjs"]) {
       if (!fs.statSync(path.join(sourceRoot, source)).isFile()) {
         throw new Error(`missing CLI runtime dependency: ${source}`);
       }

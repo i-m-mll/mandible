@@ -1,3 +1,4 @@
+import { installedResourceRoot, readInstalledRelease, releaseFile } from "../scripts/installed-release.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -36,7 +37,9 @@ export function claudeSdkProvenance(): ProviderStartupProvenance {
     throw new Error(`Claude SDK wrapper ${identity.version} does not match native package ${platformManifest.version}`);
   }
   const binaryName = process.platform === "win32" ? "claude.exe" : "claude";
-  const entrypoint = fs.realpathSync(path.join(path.dirname(platformManifestPath), binaryName));
+  const installed = installedResourceRoot();
+  const entrypoint = installed ? releaseFile(installed, readInstalledRelease(installed).native.claude)
+    : fs.realpathSync(path.join(path.dirname(platformManifestPath), binaryName));
   return {
     backend_type: "sdk",
     provider: "claude",
