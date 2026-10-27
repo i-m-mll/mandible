@@ -362,7 +362,11 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     if (requestState?.output) requestState.output = requestState.output.slice(-16000);
     const hookStates = requestId && db ? (db.prepare('SELECT hook_id, position, state, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? ORDER BY position').all(requestId) as any[]).map(row => ({ ...row, output: row.output?.slice(-16000) })) : [];
     const candidateAcceptance = requestId && db ? readBootstrapAcceptanceEvidence(db, requestId) : null;
-    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, candidateAcceptance, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
+    const acceptanceReference = candidateAcceptance?.result?.receipt;
+    const outcomeFile = typeof acceptanceReference === 'string' && acceptanceReference.startsWith('accepted-release:')
+      ? readAcceptedReleaseReceipt(acceptanceReference).evidence.receipt : acceptanceReference;
+    const candidateOutcome = typeof outcomeFile === 'string' && fs.existsSync(outcomeFile) ? JSON.parse(fs.readFileSync(outcomeFile, 'utf8')) : null;
+    fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, requestState, hookStates, candidateAcceptance, candidateOutcome, journal: requestId && executionId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
   } finally {
     const nativeHelper = path.join(nativeApp, 'Contents/MacOS/mandible-service');
     if (fs.existsSync(nativeHelper)) for (const role of ['gateway', 'backend']) {
