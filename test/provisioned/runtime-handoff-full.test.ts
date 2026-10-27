@@ -125,6 +125,8 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
   const backendLabel = `${fixtureIdentifier}.local-session-production`; const gatewayLabel = `${fixtureIdentifier}.local-front-door`;
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let candidateRoot = ''; let requestId = ''; let executionId = ''; let journal: any;
   const nativeApp = path.join(scratch, 'Mandible.app');
+  const acceptedBuildGuard = path.join(scratch, 'accepted-no-build');
+  const poisonBuild = path.join(scratch, 'build-after-acceptance');
   const evidence = path.join(buildHome, '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
     // Reuse the installed build toolchain, while cloning dependency cache bytes
@@ -168,7 +170,20 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     for (const file of git(candidateRoot, ['ls-files', '-z']).split('\0').filter(Boolean)) fs.rmSync(path.join(candidateRoot, file), { force: true });
     archive(process.cwd(), candidate, candidateRoot); configurePorts(candidateRoot, runtime, ports, env);
     const acceptanceProgram = path.join(candidateRoot, 'scripts/candidate-acceptance.mjs');
-    fs.writeFileSync(acceptanceProgram, fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; if (result.status === 'passed') result.bootstrapOversized = 'x'.repeat(70000);`));
+    let acceptanceSource = fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; if (result.status === 'passed') result.bootstrapOversized = 'x'.repeat(70000);`);
+    const nativeCache = process.env.MANDIBLE_BOOTSTRAP_CARGO_CACHE;
+    if (nativeCache) {
+      const cache = fs.realpathSync(nativeCache);
+      const buildCall = "    await runSupervisedCommand(runtime, ['run', 'tauri:build'";
+      if (!acceptanceSource.includes(buildCall)) throw new Error('Native cache fixture transform requires review.');
+      acceptanceSource = acceptanceSource.replace(buildCall, `    if (!fs.existsSync(path.join(root, 'src-tauri/target'))) command('/bin/cp', ['-c', '-R', ${JSON.stringify(cache)}, path.join(root, 'src-tauri/target')]);\n${buildCall}`);
+    }
+    fs.writeFileSync(acceptanceProgram, acceptanceSource);
+    const manifestFile = path.join(candidateRoot, 'package.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    const guard = `if [ -e ${quote(acceptedBuildGuard)} ]; then echo attempted > ${quote(poisonBuild)}; exit 98; fi; `;
+    for (const name of ['build', 'tauri:build', 'postinstall']) manifest.scripts[name] = guard + manifest.scripts[name];
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
     git(candidateRoot, ['add', '-A']); git(candidateRoot, ['commit', '-m', 'Candidate source with isolated connection ports']);
     const poisonedShim = path.join(userHome, '.dotfiles/bin/mandible'); fs.mkdirSync(path.dirname(poisonedShim), { recursive: true });
     const poisonMarker = path.join(scratch, 'old-cli-used');
@@ -206,6 +221,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const keychainPassword = randomBytes(32).toString('hex');
     const keychainBatch = [
       `create-keychain -p ${batchQuote(keychainPassword)} ${batchQuote(privateKeychain)}`,
+      `set-keychain-settings -t 1800 ${batchQuote(privateKeychain)}`,
       `unlock-keychain -p ${batchQuote(keychainPassword)} ${batchQuote(privateKeychain)}`,
       `add-generic-password -s mandible-operator -a ${batchQuote('isolated-upgrade-operator')} -T /usr/bin/security -w ${batchQuote(operatorToken.token)} ${batchQuote(privateKeychain)}`,
     ].join('\n') + '\n';
@@ -246,7 +262,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const requestDetail = await readBootstrapDelivery(agentApi, request.id);
     const action = await fetch(`${baseUrl}/api/auth/request/${request.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: issue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: accepted.result.receipt } }, expected_revision: requestDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: requestDetail.lifecycle_events.at(-1)!.custody_generation }) });
     expect(action.ok, JSON.stringify(await action.json())).toBe(true);
-    const poisonBuild = path.join(scratch, 'build-after-acceptance');
+    fs.writeFileSync(acceptedBuildGuard, 'accepted');
     const poisonScript = path.join(scratch, 'deny-build');
     fs.writeFileSync(poisonScript, `#!/bin/sh\necho invoked > ${quote(poisonBuild)}\nexit 98\n`, { mode: 0o700 });
     const denyBuildCommand = `MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND=${quote(poisonScript)} MANDIBLE_POST_MERGE_BUILD_COMMAND=${quote(poisonScript)} MANDIBLE_DESKTOP_BUILD_COMMAND=${quote(poisonScript)} `;
@@ -271,7 +287,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       if (journal?.phase === 'failed') throw new Error(journal.error);
       if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
       const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(request.id) as any;
-      if (state && (state.status === 'rejected' || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-16000) })}`);
+      if (state && (['rejected', 'failed'].includes(state.status) || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-4000) })}`);
       return !!journal?.bridgeInstalled;
     }, 60000, 'Candidate executor source-root handoff admission');
     expect(journal.binding.root).toBe(repo);
@@ -313,7 +329,9 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const second = await submitBootstrapDelivery({ ...agentApi, cwd: repo, repo: 'mandible', headBranch: 'feature/actual-upgrade', baseBranch: 'main', headSha: git(candidateRoot, ['rev-parse', 'HEAD']), baseSha: git(repo, ['rev-parse', 'main']), issueRef: secondIssue.id, workUnitId: secondUnit, requesterCredentialId: agentToken.credential.id, verification,
       commitMessage: `Merge subsequent packaged publication\n\nWhy: Replace the native installation with exact accepted bytes.\n\nVerification:\n${verification}\n` });
     requestId = second.id; executionId = '';
+    fs.unlinkSync(acceptedBuildGuard);
     await acceptBootstrapDelivery(agentApi, second.id);
+    fs.writeFileSync(acceptedBuildGuard, 'accepted');
     const secondAccepted = readBootstrapAcceptanceEvidence(db, second.id)!;
     const secondRetained = resolveAcceptedRelease(secondAccepted.result.receipt);
     const secondDetail = await readBootstrapDelivery(agentApi, second.id);
@@ -326,6 +344,8 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       journal = executionId ? readRuntimeHandoff(home, second.id, executionId) : null;
       if (journal?.phase === 'failed') throw new Error(journal.error);
       if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Subsequent handoff refused: ${hook.output}`);
+      const state = db!.prepare('SELECT status, error FROM auth_requests WHERE id=?').get(second.id) as any;
+      if (['rejected', 'failed'].includes(state?.status)) throw new Error(`Subsequent publication failed: ${state.error}`);
       return journal?.phase === 'acknowledged';
     }, 120000, 'Native bundle-to-bundle acknowledgment');
     expect(applicationIdentity(nativeApp)).toBe(secondRetained.receipt.package.sha256);

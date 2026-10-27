@@ -39,7 +39,9 @@ const INSTALLATION_AUTHORITY = path.join(HOME, "config", "client-auth", "authori
 const GATEWAY_CONFIG = path.join(RUNTIME_DIR, "Caddyfile");
 const LOG_DIR = path.join(HOME_DIR, ".cache", "mandible");
 const DOMAIN = `gui/${process.getuid?.() ?? 0}`;
+const handoffControl = !!(process.env.MANDIBLE_RUNTIME_HANDOFF_CAPTURE || process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL);
 const INSTALLATION = serviceInstallationContext({ home: HOME,
+  ...(handoffControl ? { bundleRoot: null } : {}),
   ...(HOME !== DEFAULT_HOME && process.env.MANDIBLE_SERVICE_ACCOUNT_HOME ? { accountHome: process.env.MANDIBLE_SERVICE_ACCOUNT_HOME } : {}) });
 const SERVICE_DIR = INSTALLATION.serviceDir;
 const PRIVATE_SERVICE_DIR = INSTALLATION.privateServiceDir;
@@ -49,7 +51,7 @@ const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
 const MIGRATABLE_MAIN_EFFECT = "preferences:instance";
-const installedResources = process.env.MANDIBLE_RELEASE_ROOT;
+const installedResources = handoffControl ? null : process.env.MANDIBLE_RELEASE_ROOT;
 const installedModule = installedResources ? await import('./installed-release.mjs') : null;
 const installedRelease = installedModule?.readInstalledRelease(installedResources);
 if (installedModule) Object.assign(process.env, installedModule.installedRuntimeEnvironment(installedResources));
