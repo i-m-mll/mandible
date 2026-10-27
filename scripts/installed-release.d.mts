@@ -6,9 +6,11 @@ export interface InstalledRelease {
   provenance: { commit: string; source_digest: string; summary: string; date: string; bun_revision: string };
   entrypoints: Record<'daemon' | 'cli' | 'channel' | 'controller' | 'trustSetup', string> & { service?: string };
   native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper', string>;
+  signing: Record<string, string>;
   files: Record<string, { sha256: string; size: number }>;
 }
 export const RELEASE_SCHEMA: string;
+export function installedFileIdentity(file: string): { sha256: string; size: number };
 export function installedResourceRoot(): string | null;
 export function installedProgramRoots(root: string, layout: InstalledRelease['layout']): string[];
 export function releaseFile(root: string, relative: string, layout?: InstalledRelease['layout']): string;

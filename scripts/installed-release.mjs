@@ -4,26 +4,48 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 export const RELEASE_SCHEMA = 'mandible-installed-release@1';
+const executionContext = 'source';
 const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export function installedFileIdentity(file) {
+  const descriptor = fs.openSync(file, 'r');
+  try {
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let size = 0;
+    let count;
+    while ((count = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0) {
+      digest.update(buffer.subarray(0, count));
+      size += count;
+    }
+    return { sha256: digest.digest('hex'), size };
+  } finally { fs.closeSync(descriptor); }
+}
 
 /** Installed context is supplied by the native launcher or the installed module location. */
 export function installedResourceRoot() {
   const explicit = process.env.MANDIBLE_RELEASE_ROOT;
   if (explicit) {
     if (!path.isAbsolute(explicit)) throw new Error('MANDIBLE_RELEASE_ROOT must be absolute.');
-    readInstalledRelease(explicit);
-    return explicit;
+    const root = fs.realpathSync(explicit);
+    readInstalledRelease(root);
+    return root;
   }
-  return fs.existsSync(path.join(moduleRoot, 'release.json')) ? moduleRoot : null;
+  if (executionContext === 'installed') {
+    readInstalledRelease(moduleRoot);
+    return moduleRoot;
+  }
+  return null;
 }
 
 /** Layout adapters declare program roots; the resource root only locates the manifest. */
 export function installedProgramRoots(root, layout) {
   if (layout?.kind !== 'macos-app') throw new Error('Unsupported installed program layout.');
-  return Object.values(layout.roots).map(relative => path.resolve(root, relative));
+  return Object.values(layout.roots).map(relative => path.resolve(fs.realpathSync(root), relative));
 }
 
 export function releaseFile(root, relative, layout = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8')).layout) {
+  root = fs.realpathSync(root);
   if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.includes('\\')) throw new Error('Invalid installed resource path.');
   const absolute = path.resolve(root, relative);
   if (!installedProgramRoots(root, layout).some(directory => absolute.startsWith(`${directory}${path.sep}`))) throw new Error(`Installed resource leaves its program roots: ${relative}`);
@@ -50,13 +72,14 @@ export function verifyInstalledRelease(root) {
   const release = readInstalledRelease(root);
   for (const [relative, expected] of Object.entries(release.files)) {
     const file = releaseFile(root, relative, release.layout);
-    const bytes = fs.readFileSync(file);
-    if (bytes.length !== expected.size || createHash('sha256').update(bytes).digest('hex') !== expected.sha256) throw new Error(`Installed resource changed: ${relative}`);
+    const actual = installedFileIdentity(file);
+    if (actual.size !== expected.size || actual.sha256 !== expected.sha256) throw new Error(`Installed resource changed: ${relative}`);
   }
   return release;
 }
 
 export function installedRuntimeEnvironment(root, environment = process.env) {
+  root = fs.realpathSync(root);
   const release = readInstalledRelease(root);
   const native = Object.fromEntries(Object.entries(release.native).map(([key, relative]) => [key, releaseFile(root, relative, release.layout)]));
   const result = { ...environment, MANDIBLE_RELEASE_ROOT: root, MANDIBLE_RUNTIME: native.bun,
