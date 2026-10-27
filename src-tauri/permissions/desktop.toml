@@ -8,6 +8,7 @@ commands.allow = [
   "daemon_start",
   "daemon_stop",
   "daemon_restart",
+  "daemon_background_settings",
   "native_window_capabilities",
   "navigate_to_desktop_bootstrap",
   "navigate_to_desktop_dashboard",
