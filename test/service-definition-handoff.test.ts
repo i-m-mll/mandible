@@ -33,7 +33,8 @@ it('waits through the native launch executable transition and refuses a foreign 
   const { inspectServiceDefinitionsSync } = await import('../scripts/service-definitions.mjs');
   for (executable of ['xpcproxy', 'mandible-service']) {
     const pending = inspectServiceDefinitionsSync(context);
-    expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting' } });
+    expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting', evidence: { pid: 42, executable,
+      service: 'backend', label: context.backendLabel, bundleProgram: 'Contents/MacOS/mandible-service', parentBundleIdentifier: 'bio.mll.mandible' } } });
     if (!pending.ok) expect(pending.refusal.message).toContain(`PID 42 is still starting (${executable})`);
   }
   executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');

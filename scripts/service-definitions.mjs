@@ -168,7 +168,13 @@ function loadedJob(service, label, result, context) {
         // launchd publishes its PID before xpcproxy execs the native helper,
         // whose initial comm can itself precede the full bundled Bun path.
         if (['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service'].includes(actual)) {
-          return refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
+          const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2500 });
+          const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
+          pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
+            startedAt: birth.status === 0 ? birth.stdout.trim() : null,
+            runs: Number(result.stdout.match(/\bruns = (\d+)/)?.[1]) || 0,
+            bundleProgram: job.bundleProgram, parentBundleIdentifier: job.parentBundleIdentifier };
+          return pending;
         }
         if (![path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun'), path.join(context.bundleRoot, 'Contents/MacOS/mandible-service')].includes(actual)) {
           return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);

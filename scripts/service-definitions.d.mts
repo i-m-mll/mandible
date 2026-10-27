@@ -18,6 +18,7 @@ export interface ServiceDefinitionRefusal {
   service: ServiceKind; label: string;
   category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch' | 'starting';
   fields: string[]; message: string;
+  evidence?: { service: ServiceKind; label: string; executable: string; pid: number; startedAt: string | null; runs: number; bundleProgram: string; parentBundleIdentifier: string };
 }
 export interface InstalledServiceDefinition { file: string; bytesBase64: string; sha256: string; record: ServiceDefinition }
 export interface ServiceObservation {

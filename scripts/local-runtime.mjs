@@ -250,7 +250,8 @@ function processStart(pid) {
 }
 
 function handoffService(label, inspection) {
-  if (!inspection.ok && inspection.refusal.category === 'starting') throw new RuntimeObservationError('starting', inspection.refusal.message, inspection, 'pending');
+  if (!inspection.ok && inspection.refusal.category === 'starting') throw new RuntimeObservationError('starting', inspection.refusal.message,
+    { ...inspection, pendingProcesses: { [inspection.refusal.service]: inspection.refusal.evidence } }, 'pending');
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   const observation = inspection.observations.find(item => item.label === label);
   const installed = observation.installed[0];

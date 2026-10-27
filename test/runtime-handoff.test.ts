@@ -176,6 +176,32 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
 
 const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
 
+it.each([false, true])('retains unconfirmed launch evidence and checks process continuity (replaced=%s)', async replaced => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: Date.now() + 30_000, bridgeInstalled: true, stages: {}, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const pending = { pid: process.pid, startedAt: f.processStartedAt, runs: 1, executable: 'xpcproxy' };
+  const options = { verifyPublication: async () => {}, desktop: async () => {},
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); } };
+  const waiting = await runRuntimeHandoffWorker(file, { ...options, control: async (_journal, command) => {
+    if (['handoff-evidence', 'handoff-verify'].includes(command)) throw new RuntimeObservationError('starting', 'Native launcher is unconfirmed.', { pendingProcesses: { backend: pending } }, 'pending');
+    return '{}';
+  } });
+  expect(waiting).toMatchObject({ phase: 'verification-pending', launch: { pendingProcesses: { backend: pending } } });
+  expect(waiting.launch.processes).toBeUndefined();
+  const evidence = { ...f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)),
+    processes: { backend: { pid: process.pid + Number(replaced), startedAt: f.processStartedAt, runs: 1 } } };
+  const observe = vi.fn(async current => ({ bindingDigest: current.bindingDigest, evidence }));
+  const result = await runRuntimeHandoffWorker(file, { ...options, control: async () => JSON.stringify(evidence), observe });
+  expect(result.phase).toBe(replaced ? 'failed' : 'complete');
+  if (replaced) { expect(result.error).toContain('changed after its pending launch observation'); expect(observe).not.toHaveBeenCalled(); }
+  else expect(result.launch.processes).toEqual(evidence.processes);
+});
+
 it('gives health coverage its full observation budget after readiness', async () => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
