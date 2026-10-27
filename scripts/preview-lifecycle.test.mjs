@@ -196,7 +196,7 @@ async function exercisePreviewLifecycle(legacy = false) {
   });
   await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
   const publicRoot = `http://127.0.0.1:${gateway.address().port}`;
-  let snapshots = 0; const legacyChildren = [];
+  let snapshots = 0; const legacyChildren = []; let foreignProcess;
   const nativeBase = path.join(base, 'native-previews'); fs.mkdirSync(nativeBase);
   const effects = {
     nativeBase, resolveOwner: () => ({ project: 'fixture', workUnit: 'fixture-unit' }),
@@ -244,7 +244,20 @@ async function exercisePreviewLifecycle(legacy = false) {
       const current = await legacyNative(old, path.join(nativeBase, 'native-z-live'), true);
       assert.equal(processIdentity(current.pid), read(current.file).processIdentity, 'native fixture identity must remain stable after launch evidence');
       legacyChildren.push(stopped, current);
+      foreignProcess = spawn('/bin/sleep', ['120'], { stdio: 'ignore' });
+      await new Promise((resolve, reject) => { foreignProcess.once('spawn', resolve); foreignProcess.once('error', reject); });
+      const historical = read(stopped.file);
+      saveOwnedMetadata(stopped.file, { ...historical, pid: foreignProcess.pid });
+      stopped.historical = { ...historical, pid: foreignProcess.pid };
       const unchanged = fs.readFileSync(file, 'utf8');
+      const childBytes = legacyChildren.map(child => fs.readFileSync(child.file, 'utf8'));
+      const processBefore = [oldLaunch.pid, current.pid, foreignProcess.pid].map(processIdentity);
+      assert.equal((await main({ ...options, dryRun: true })).status, 'dry-run');
+      assert.equal(fs.readFileSync(file, 'utf8'), unchanged);
+      assert.deepEqual(legacyChildren.map(child => fs.readFileSync(child.file, 'utf8')), childBytes);
+      assert.equal(fs.existsSync(bindingFile), false);
+      assert.deepEqual([oldLaunch.pid, current.pid, foreignProcess.pid].map(processIdentity), processBefore);
+      assert.equal(snapshots, 1);
       const status = await previewStatus({ ...original.handle, revision: 12 });
       assert.equal(status.status, 'legacy-owned-runtime'); assert.equal(fs.readFileSync(file, 'utf8'), unchanged);
       await assert.rejects(stopPreview({ ...original.handle, revision: 12 }), /Adopt legacy runtime custody/);
@@ -295,7 +308,13 @@ async function exercisePreviewLifecycle(legacy = false) {
       assert.throws(() => verifyNativeSelection(last, original.ownership.source), /Refresh.*exact source identity/);
       assert.ok(processIdentity(current.pid)); assert.ok(processIdentity(oldLaunch.pid));
       await stopNativePreview(current.file);
+      const stoppedBeforeRefresh = read(stopped.file);
+      const unprovenLifetime = { ...stoppedBeforeRefresh }; delete unprovenLifetime.processIdentity;
+      saveOwnedMetadata(stopped.file, unprovenLifetime);
+      await assert.rejects(refresh(), /Native consumer still has a live process/);
+      saveOwnedMetadata(stopped.file, stoppedBeforeRefresh);
       last = await refresh();
+      assert.ok(processIdentity(foreignProcess.pid));
       assert.equal(last.ownership.source.commit, git(['rev-parse', 'HEAD']));
       assert.equal(last.ownership.consumers[0].runId, current.runId);
       assert.equal(read(current.file).profile, current.profile);
@@ -317,6 +336,12 @@ async function exercisePreviewLifecycle(legacy = false) {
     const route = `${publicRoot}/${last.ownership.instanceId}/api/health`;
     const teardown = { ...last.handle, revision: last.ownership.revision, outcome: 'assessed', disposition: 'discard', summary: 'Owned fixture complete', effects };
     const cleaned = await finalizePreview(teardown); assert.equal(cleaned.ok, true); assert.equal((await fetch(route)).status, 404);
+    if (foreignProcess) {
+      assert.ok(processIdentity(foreignProcess.pid), 'teardown must never signal the foreign process reusing a historical PID');
+      const stopped = legacyChildren[0];
+      const receipt = read(path.join(nativeBase, '.receipts', `${stopped.runId}.json`)).nativePreview;
+      for (const key of ['pid', 'processIdentity', 'stoppedAt']) assert.equal(receipt[key], stopped.historical[key]);
+    }
     assert.equal((await finalizePreview(teardown)).cleanup, 'completed');
     assert.equal(fs.existsSync(repository), true);
   } finally {
@@ -325,6 +350,9 @@ async function exercisePreviewLifecycle(legacy = false) {
       await stopPreviewProcess(actual.ownership.lifecycle ? actual : original);
     }
     for (const child of legacyChildren) if (fs.existsSync(child.file)) await stopNativePreview(child.file);
+    if (foreignProcess && foreignProcess.exitCode === null && foreignProcess.signalCode === null) {
+      const exited = new Promise(resolve => foreignProcess.once('exit', resolve)); foreignProcess.kill(); await exited;
+    }
     process.chdir(oldCwd);
     for (const [key, value] of [['MANDIBLE_HOME', oldHome], ['MANDIBLE_PREVIEW_BASE_DIR', oldBase], ['MANDIBLE_RUNTIME', oldRuntime]]) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;

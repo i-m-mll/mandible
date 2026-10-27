@@ -88,6 +88,7 @@ export async function main(options) {
   assertOrdinaryPreviewLifecycleAllowed();
   const selected = selectPreviewBranch(git(["rev-parse", "--show-toplevel"]).stdout.trim(), options).branch;
   const root = previewPaths(selected).root;
+  if (options.dryRun) return createOrReusePreview({ ...options, branch: selected });
   const result = await withOwnedRunLock(root, async token => {
     try { return await createOrReusePreview({ ...options, branch: selected, lifecycleLockToken: token }); }
     catch (error) {
@@ -143,7 +144,40 @@ async function createOrReusePreview(options) {
   const selection = selectPreviewBranch(repoRoot, options);
   const { branch, mode, protectedBranch } = selection;
 
-  let worktree;
+  let worktree = mode === "current-worktree" ? repoRoot : plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
+  const preview = previewPaths(branch);
+  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
+
+  if (options.dryRun) {
+    const existing = options.forceNew ? null : await healthyExistingPreview(branch, {
+      worktree, readOnly: true, verifyPublic: options.effects?.verifyPublic,
+    });
+    const refresh = existing && (existing.health.startup_commit.hash !== git(['rev-parse', 'HEAD'], { cwd: worktree }).stdout.trim()
+      || existing.ownership.source?.source_digest !== trackedSourceDigest(worktree));
+    return {
+      ok: true,
+      status: "dry-run",
+      mode,
+      branch,
+      worktree,
+      protectedBranch,
+      previewRoot: preview.root,
+      wouldBuild: existing ? Boolean(refresh) : !options.noBuild,
+      wouldCopyDb: false,
+      wouldProjectDb: !existing,
+      wouldStart: !existing || Boolean(refresh),
+      wouldAdopt: Boolean(existing && !existing.ownership.lifecycle),
+      projection: {
+        logs: "all rows from 24h plus warn/error rows from 7d",
+        conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
+        conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
+      },
+      // Port, database copy, and pid file are not chosen until the preview
+      // actually starts, so the dry run reports exactly the root-derived part
+      // of the contract — from the same definition the launcher pins.
+      instanceEnv: previewIsolationEnv(preview.root, sourceDb),
+    };
+  }
 
   if (mode === "current-worktree") {
     worktree = repoRoot;
@@ -195,7 +229,6 @@ async function createOrReusePreview(options) {
     worktree = plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
   }
 
-  const preview = previewPaths(branch);
   // A dead preview is replaceable, but its port is browser identity: keeping
   // it preserves origin-scoped UI state and lets the existing IAB tab recover
   // on reload. Capture that identity before stale-cache cleanup removes bytes.
@@ -206,32 +239,7 @@ async function createOrReusePreview(options) {
     && Number.isInteger(priorMetadata.port)
     ? priorMetadata.port
     : null;
-  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
 
-  if (options.dryRun) {
-    return {
-      ok: true,
-      status: "dry-run",
-      mode,
-      branch,
-      worktree,
-      protectedBranch,
-      previewRoot: preview.root,
-      wouldBuild: !options.noBuild,
-      wouldCopyDb: false,
-      wouldProjectDb: true,
-      wouldStart: true,
-      projection: {
-        logs: "all rows from 24h plus warn/error rows from 7d",
-        conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
-        conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
-      },
-      // Port, database copy, and pid file are not chosen until the preview
-      // actually starts, so the dry run reports exactly the root-derived part
-      // of the contract — from the same definition the launcher pins.
-      instanceEnv: previewIsolationEnv(preview.root, sourceDb),
-    };
-  }
 
   const owner = resolvePreviewOwner(fs.existsSync(worktree) ? worktree : repoRoot,
     fs.existsSync(worktree) ? branch : git(['branch', '--show-current'], { cwd: repoRoot }).stdout.trim(), options);
@@ -1249,7 +1257,17 @@ export async function healthyExistingPreview(branch, expected = {}) {
   const readiness = await readPreviewReadiness(metadata.port);
   if (!readiness.ok) return refuseLivePreviewReuse(metadata, preview.root, readiness.reason);
   const { health } = readiness;
+  if (!metadata.ownership || !ownedRunIdentityMatches(preview.root, metadata.ownership)) return refuseLivePreviewReuse(metadata, preview.root, 'owned run lifecycle is not ready: identity is not verified');
+  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
+  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
+  const drift = previewInstanceEnvDrift(metadata, preview.root);
+  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
   if (metadata.ownership && !metadata.ownership.lifecycle) {
+    if (expected.readOnly) {
+      if (metadata.ownership.state !== 'active') return refuseLivePreviewReuse(metadata, preview.root, 'legacy owner is not active');
+      await (expected.verifyPublic ?? verifyPublicPreview)(metadata);
+      return { ...metadata, health, inspectionOnly: true };
+    }
     await ensurePreviewLifecycle(metadata, preview, expected.options ?? {}, health);
   }
   if (!metadata.ownership || !ownedRunIdentityMatches(preview.root, metadata.ownership)
@@ -1259,10 +1277,6 @@ export async function healthyExistingPreview(branch, expected = {}) {
   if (!identity || identity.slice(0, 24) !== launch.startedAt || readPidFile(metadata.pidFile) !== launch.pid
     || !identity.includes(launch.runtime) || !identity.includes('src/index.ts')) throw new Error('Ready preview process identity does not match owned launch');
   await (expected.verifyPublic ?? verifyPublicPreview)(metadata);
-  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return refuseLivePreviewReuse(metadata, preview.root, "file-RPC custody does not match the selected preview root");
-  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
-  const drift = previewInstanceEnvDrift(metadata, preview.root);
-  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) return refuseLivePreviewReuse(metadata, preview.root, `instance policy or environment differs: ${drift.join(", ") || describePreviewPolicy(health)}`);
 
   return {
     ...metadata,

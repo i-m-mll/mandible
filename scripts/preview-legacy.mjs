@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { ownedRunIdentityMatches, processIdentity, saveOwnedMetadata, withOwnedRunLock } from './owned-run.mjs';
+import { ownedRunIdentityMatches, processIdentity, processLifetimeMatches, saveOwnedMetadata, withOwnedRunLock } from './owned-run.mjs';
 import { withLegacyPreviewRegistration } from './preview-registration.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -59,10 +59,11 @@ function inspectNative(metadata, record) {
   const marker = read(path.join(path.dirname(path.dirname(child.executable)), 'Resources', 'build-revision.json'));
   if (!isDeepStrictEqual(marker, child.build)) throw new Error('Legacy native package differs from its actual recorded build');
   const currentIdentity = processIdentity(child.pid);
-  const identity = child.status === 'stopped' && currentIdentity !== child.processIdentity ? null : currentIdentity;
+  const matchesLifetime = currentIdentity !== null && processLifetimeMatches(child, currentIdentity) === true;
+  const identity = child.status === 'stopped' && !matchesLifetime ? null : currentIdentity;
   if (identity !== null) {
     const checks = [
-      ['status', child.status === 'visible'], ['process lifetime', identity === child.processIdentity],
+      ['status', child.status === 'visible'], ['process lifetime', matchesLifetime],
       ['executable', identity.includes(child.executable)], ['window PID', child.window?.pid === child.pid],
       ['window run', child.window?.runId === child.ownership.runId], ['window profile', child.window?.profile === child.profile],
       ['window instance', child.window?.instanceId === owner.instanceId], ['window origin', child.window?.origin === child.origin],
