@@ -47,7 +47,7 @@ function archive(source: string, revision: string, destination: string) {
 }
 function configurePorts(root: string, runtime: string, ports: { public: number; backend: number; admin: number }, env: NodeJS.ProcessEnv) {
   const identifier = env.MANDIBLE_FIXTURE_IDENTIFIER!;
-  for (const relative of ['scripts/service-definitions.mjs', 'scripts/local-session-production-runner.mjs', 'scripts/bundle-service-roles.mjs', 'src-tauri/tauri.conf.json']) {
+  for (const relative of ['scripts/service-definitions.mjs', 'scripts/local-session-production-runner.mjs', 'scripts/bundle-service-roles.mjs', 'scripts/prepare-bundle-services.mjs', 'src-tauri/tauri.conf.json']) {
     const file = path.join(root, relative);
     if (fs.existsSync(file)) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('bio.mll.mandible', identifier));
   }
@@ -168,7 +168,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     for (const file of git(candidateRoot, ['ls-files', '-z']).split('\0').filter(Boolean)) fs.rmSync(path.join(candidateRoot, file), { force: true });
     archive(process.cwd(), candidate, candidateRoot); configurePorts(candidateRoot, runtime, ports, env);
     const acceptanceProgram = path.join(candidateRoot, 'scripts/candidate-acceptance.mjs');
-    fs.writeFileSync(acceptanceProgram, fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; result.bootstrapOversized = 'x'.repeat(70000);`));
+    fs.writeFileSync(acceptanceProgram, fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; if (result.status === 'passed') result.bootstrapOversized = 'x'.repeat(70000);`));
     git(candidateRoot, ['add', '-A']); git(candidateRoot, ['commit', '-m', 'Candidate source with isolated connection ports']);
     const poisonedShim = path.join(userHome, '.dotfiles/bin/mandible'); fs.mkdirSync(path.dirname(poisonedShim), { recursive: true });
     const poisonMarker = path.join(scratch, 'old-cli-used');
