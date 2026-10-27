@@ -343,6 +343,13 @@ function exactActiveOwner(journal) {
   if (active.journal !== journalFile(journal.binding) || active.bindingDigest !== journal.bindingDigest) throw new Error('Active runtime handoff owner changed.');
 }
 
+export function assertRuntimeHandoffOwner(journal) {
+  assertObservationLease();
+  if (journal.phase === 'acknowledged') return;
+  if (journal.phase === 'complete' && journal.cleanupStartedAt && !fs.existsSync(runtimeHandoffLockFile(journal.binding.home))) return;
+  exactActiveOwner(journal);
+}
+
 function observationLockRoot(journal) { return path.join(path.dirname(journalFile(journal.binding)), 'verification'); }
 function assertObservationLease() {
   try { assertLifecycleLockHeld(); }
@@ -565,6 +572,11 @@ export async function runtimeRecoveryEvidenceKey(journal) {
 }
 
 async function runtimeRecoveryEvidenceKeyOnce(journal) {
+  const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
+  if (!current || current.bindingDigest !== journal.bindingDigest) throw new Error('Runtime handoff binding changed before evidence ownership was acquired.');
+  Object.assign(journal, current);
+  if (journal.phase === 'retired') return null;
+  if (['complete', 'acknowledged'].includes(journal.phase)) return { outcome: 'confirmed', key: hash(JSON.stringify({ phase: journal.phase, receipt: journal.receipt, recovery: journal.recovery })) };
   exactActiveOwner(journal);
   let evidence;
   try {

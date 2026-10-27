@@ -163,7 +163,7 @@ it("validates only unsettled handoff journals and revisits a settled one only af
     db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
       VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(id, now, now, now + 60_000);
     db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
-      VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, now, now);
+      VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, now, now);
   }
   const phaseReads: string[] = [];
   const validatedReads: string[] = [];
@@ -258,7 +258,7 @@ function terminalHandoff(id: string, output: string, journal: Partial<RuntimeHan
 }
 
 it("retries a completed handoff whose receipt probe failed transiently, and acknowledges it on the next sweep", async () => {
-  const { db, journal } = terminalHandoff("transient", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  const { db, journal } = terminalHandoff("transient", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
   let probes = 0;
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => journal.phase,
@@ -322,7 +322,7 @@ it("keeps retrying a recovery that cannot be finished, reporting it once per dis
 });
 
 it("keeps a completed handoff whose journal is briefly missing unsettled until it can be acknowledged", async () => {
-  const { db, journal } = terminalHandoff("missing", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  const { db, journal } = terminalHandoff("missing", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
   let present = false;
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => present ? journal.phase : undefined,
@@ -353,7 +353,7 @@ const incident = (db: ReturnType<typeof createMigratedDb>, task: string) =>
   db.prepare("SELECT resolved_at FROM operational_incidents WHERE task = ?").get(task) as { resolved_at: number | null } | undefined;
 
 it("raises a daemon incident for a stuck handoff and resolves it once the handoff settles", async () => {
-  const { db, journal } = terminalHandoff("resolving", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  const { db, journal } = terminalHandoff("resolving", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
   let probes = 0;
   const queue = queueFor(db, new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => journal.phase,

@@ -515,7 +515,7 @@ it('serializes observations and refuses retirement while its observer is active'
   expect(fs.existsSync(path.join(f.home, 'config/local-sessions/handoff-active.json'))).toBe(false);
 });
 
-it.each(['rolled-back', 'committed', 'mismatched-marker', 'changed-command', 'unreadable'] as const)('retires pending verification only with proven unaccepted DB state: %s', async disposition => {
+it.each(['rolled-back', 'committed', 'mismatched-marker', 'normal-marker-for-recovery', 'changed-command', 'unreadable'] as const)('retires pending verification only with proven unaccepted DB state: %s', async disposition => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64) };
   const dir = handoffDirectory(f.home, binding.requestId, binding.executionId);
@@ -534,6 +534,7 @@ it.each(['rolled-back', 'committed', 'mismatched-marker', 'changed-command', 'un
     db.prepare("UPDATE auth_hook_executions SET state = 'complete', output = ?").run(`MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${journal.recovery.digest}`);
     db.exec(disposition === 'rolled-back' ? 'ROLLBACK' : 'COMMIT');
     if (disposition === 'mismatched-marker') db.prepare('UPDATE auth_hook_executions SET output = ?').run('MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:another-observation');
+    if (disposition === 'normal-marker-for-recovery') db.prepare('UPDATE auth_hook_executions SET output = ?').run(`MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}`);
     if (disposition === 'changed-command') db.prepare('UPDATE auth_hook_executions SET command_digest = ?').run('changed');
     if (disposition === 'unreadable') journal.database = path.join(f.home, 'missing.db');
     fs.writeFileSync(file, JSON.stringify(journal));
