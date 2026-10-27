@@ -5,10 +5,11 @@
 set -e
 bun scripts/generate-canonical-origin.mjs --check
 bun scripts/prepare-desktop-runtime.mjs
-mkdir -p src-tauri/dist
+bootstrap_output="${MANDIBLE_DESKTOP_BOOTSTRAP_DIR:-src-tauri/dist}"
+mkdir -p "$bootstrap_output"
 scripts/build-local-ca-trust-helper.sh
-cp src-tauri/bootstrap/index.html src-tauri/dist/index.html
-cp src-tauri/bootstrap/bootstrap.css src-tauri/dist/bootstrap.css
-cp src-tauri/bootstrap/bootstrap.js src-tauri/dist/bootstrap.js
-cp src-tauri/bootstrap/canonical-origin.js src-tauri/dist/canonical-origin.js
+cp src-tauri/bootstrap/index.html "$bootstrap_output/index.html"
+cp src-tauri/bootstrap/bootstrap.css "$bootstrap_output/bootstrap.css"
+cp src-tauri/bootstrap/bootstrap.js "$bootstrap_output/bootstrap.js"
+cp src-tauri/bootstrap/canonical-origin.js "$bootstrap_output/canonical-origin.js"
 echo "desktop bootstrap assets generated"

@@ -1,7 +1,10 @@
 # Preview output lifetime
 
 A preview run records its canonical project, delivery work unit, instance, root
-identity and owned output paths in `metadata.json` before producing a snapshot.
+identity and owned output paths in `metadata.json` before acquiring a worktree,
+building or producing a snapshot. A run ID is distinct from branch-derived
+instance identity and candidate generation. Setup returns `{root, runId}` as its
+exact handle and a compact receipt path.
 The owner file uses `mandible-owned-run@1`. Lifecycle operations serialize on one
 sibling lock; an interrupted lock requires inspection of its recorded process.
 Missing or old ownership metadata never grants cleanup permission.
@@ -22,10 +25,24 @@ space and limits prospective preview intermediates to 2 GiB across this cache.
 These are allocation limits, never deletion permission. Existing protected or
 unowned material causes an actionable refusal when it prevents new allocation.
 
-After stopping the exact preview and resolving all owning work, finalize it:
+Inspect the exact run, stop it while retaining data, or refresh its candidate:
 
 ```sh
-bun scripts/iab-preview.mjs finalize --root /absolute/preview/root \
+bun run iab-preview -- status --root /absolute/preview/root --run-id <run-id> --json
+bun run iab-preview -- stop --root /absolute/preview/root --run-id <run-id> --revision 3 --json
+bun run iab-preview -- refresh --root /absolute/preview/root --run-id <run-id> --revision 5 --json
+```
+
+Live mutations require the revision returned by status. Stop validates the
+recorded process lifetime, executable, working directory, PID file and serving
+instance before signaling. It also retires the registration and reconciles the
+gateway, so another process cannot inherit traffic merely by reusing the port.
+Stop does not dispose of copied ledger or native profile data.
+
+Resolve owning work and tear down the exact run:
+
+```sh
+bun run iab-preview -- teardown --root /absolute/preview/root --run-id <run-id> \
   --revision 3 --outcome accepted --converged \
   --disposition transferred --destination /absolute/accepted/material \
   --transfer-reference artifact-version:accepted-version \
@@ -45,7 +62,7 @@ An investigation names its need and delivery work-unit owner and has a review
 deadline within seven days:
 
 ```sh
-bun scripts/iab-preview.mjs finalize --root /absolute/preview/root \
+bun run iab-preview -- finalize --root /absolute/preview/root --run-id <run-id> \
   --revision 3 --outcome investigating --review-by 2026-10-06T18:00:00Z \
   --summary 'Reproduce the failed interaction' --json
 ```
@@ -64,8 +81,30 @@ Only enumerated disposed children are removed. Unknown files keep the directory
 and owner record for recovery. A partial cleanup retries remaining paths without
 repeating publication, transfer or merge.
 
+`finalize` delegates to the same teardown. Teardown records intent before
+stopping children, preventing further native acquisition. Native associations
+reserve their owned run ID before build or spawn, and publish only for the
+unchanged parent candidate. Stopped native build/profile material remains
+associated until terminal cleanup. A stopped exact child can be reacquired for
+rebuild while retaining its warm Cargo target and profile. Lock order is parent
+preview, native child, installation gateway.
+
+Registration updates compare the complete installed tuple and durable run
+binding. One installation lock covers mutation, reading the latest full registry,
+rendering and applying the gateway configuration through `local-runtime`.
+Unrelated rows remain intact. A reload failure retains a pending retirement;
+after inspection, retry with the current metadata revision. No production daemon
+restart or gateway shutdown is needed to retire a preview.
+
+Repeat completed teardown with its original root/run ID to resolve the compact
+receipt after the root is removed. A later run at that path is a different run
+and remains untouched. Receipts retain candidate identity, native associations,
+runtime retirement and worktree custody. Borrowed worktrees remain with their
+owner. Newly acquired worktrees remain retained while the delivery work unit
+is unresolved; subsequent worktree disposition uses `wt`.
+
 ```sh
-bun scripts/iab-preview.mjs cleanup --apply --json
+bun run iab-preview -- cleanup --apply --json
 ```
 
 A pass examines at most 64 cache entries and yields between entries. Root-level
@@ -83,3 +122,4 @@ Reports count apparent bytes unlinked; they do not claim measured physical APFS
 recovery. Compact receipts remain outside the removed intermediate root.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+Co-Authored-By: Codex (GPT) <codex@openai.com>

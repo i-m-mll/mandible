@@ -3,6 +3,10 @@ import { registerArtifactFixtureHistory } from './artifact-resolution-fixtures';
 import { render as testingRender, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { afterEach, beforeEach, expect, vi } from 'vitest';
 import { h } from 'preact';
+import { fixtureView, finishUiFixtures, jsonFixture, StrictUiFixture, type FixtureHandler } from './strict-ui-fixture';
+import { USER_SETTING_KEYS, type UserSettingKey } from '../../src/contracts';
+import type { UserSettingSnapshot } from '../../src/user-settings';
+import type { AppThemePreference } from '../../ui/src/api';
 
 
 
@@ -10,7 +14,6 @@ import { h } from 'preact';
 import { clearPersistedDetailCache } from '../../ui/src/detail-cache';
 import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { PRODUCTION_EFFECTS } from '../../src/security/effect-policy.js';
-import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../../src/conversations/retention-contract';
 
 import { clearApiGetCache, type InstanceInfo } from '../../ui/src/api';
 
@@ -136,8 +139,8 @@ const render: typeof testingRender = (view, options) => {
     registerInitialRouteLoad: () => undefined,
     updateRightSidebar: () => undefined,
   } }, content);
-  const result = testingRender(wrap(view), options);
-  return { ...result, rerender: (next) => result.rerender(wrap(next)) };
+  const result = testingRender(fixtureView(wrap(view)) as typeof view, options);
+  return { ...result, rerender: (next) => result.rerender(fixtureView(wrap(next)) as typeof view) };
 };
 
 beforeEach(async () => {
@@ -185,10 +188,10 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
   document.head.querySelector('[data-test-compact-header-styles]')?.remove();
+  try { finishUiFixtures(); } finally { vi.unstubAllGlobals(); }
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -270,61 +273,6 @@ function installMemoryLocalStorage(initial: Record<string, string> = {}): () => 
   return restore;
 }
 
-function stubFetch(): void {
-  const mockFetch = vi.fn((input: RequestInfo) => {
-    const url = String(input);
-    if (url.includes('/api/work/repos/') && url.includes('/commits')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({
-          repo_root: '/tmp/repo',
-          branch: 'feature/work',
-          default_branch: 'main',
-          merge_base: 'base',
-          commits: [
-            {
-              hash: 'abc123456789',
-              short_hash: 'abc1234',
-              message: 'Fresh work',
-              author: 'Test User',
-              date: '2024-01-03T10:00:00Z',
-              parents: ['base0000'],
-              classification: 'unique',
-              is_pre_branch_point: false,
-              is_merged_elsewhere: false,
-            },
-          ],
-          total: 1,
-          limit: 50,
-          offset: 0,
-        }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    }
-    if (url.includes('/api/work/repos/repo/compare')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({
-          repo_root: '/tmp/repo',
-          from: 'main',
-          to: 'feature',
-          mode: 'merge-base',
-          range: 'main...feature',
-          raw: 'diff --git a/a.txt b/a.txt\n',
-          stat: 'a.txt | 1 +',
-        }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify([]), {
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-  });
-  vi.stubGlobal('fetch', mockFetch);
-}
-
 function stubEventSource(): { emit: (payload: unknown) => void } {
   const messageListeners = new Set<(event: MessageEvent) => void>();
   class MockEventSource {
@@ -357,58 +305,24 @@ function stubEventSource(): { emit: (payload: unknown) => void } {
   };
 }
 
-function stubAppShellFetch(): void {
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes('/api/issues/dotfiles/e70757d/ledger-detail')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ error: 'not needed for shell test' }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    }
-    if (url === '/api/issues') {
-      return Promise.resolve(
-        new Response(JSON.stringify({
-          repos: [{
-            repo_id: 'dotfiles',
-            repo_name: 'dotfiles',
-            open_count: 1,
-            closed_count: 0,
-            issues: [{
-              id: 'e70757d',
-              display_id: 'e70757d',
-              title: 'Deep linked issue',
-              status: 'open',
-            }],
-          }],
-        }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    }
-    if (url === '/api/inbox/global') {
-      return Promise.resolve(
-        new Response(JSON.stringify({
-          continuations: [],
-          auth_results: [],
-          open_issues: [],
-          total: 0,
-        }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify([]), {
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-  }));
+export function userSettingFixture(key: UserSettingKey, value: string | null = null, revision = 0): UserSettingSnapshot {
+  return { version: 1, key, value, revision };
 }
 
-function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
+export function appStartupFixtures(): FixtureHandler[] {
+  return [
+    { name: 'app settings', method: 'GET', path: '/api/settings', respond: () => jsonFixture({}) },
+    { name: 'cold health', method: 'GET', path: '/api/health', respond: () => jsonFixture({ ready: true, warm: false }) },
+    { name: 'dashboard badges', method: 'GET', path: '/api/dashboard/badges', respond: () => jsonFixture({ auth: 3, briefing: 2, inbox: 1, work: 0, incidents: 0, tasks: 0 }) },
+    { name: 'app theme', method: 'GET', path: '/api/host-preferences/app-theme', respond: () => jsonFixture({ version: 1, key: 'app_theme', value: null, revision: 0 } satisfies AppThemePreference) },
+    ...Object.values(USER_SETTING_KEYS).map(key => ({
+      name: 'user setting ' + key, method: 'GET', path: '/api/user-settings/' + key,
+      respond: () => jsonFixture(userSettingFixture(key)),
+    })),
+  ];
+}
+
+function stubRailSettingsFetch(initialSetting?: string, failPut = false, additionalHandlers: FixtureHandler[] = []): {
   getStored: () => string | undefined;
   getCalls: ReturnType<typeof vi.fn>;
   putCalls: ReturnType<typeof vi.fn>;
@@ -423,56 +337,28 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
   let revision = stored ? 1 : 0;
   const getCalls = vi.fn();
   const putCalls = vi.fn();
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url === '/api/settings/child-retention') {
-      return new Response(JSON.stringify(DEFAULT_CHILD_RETENTION_SETTINGS), { headers: { 'content-type': 'application/json' } });
-    }
-    if (url === '/api/settings' && init?.method !== 'PUT') {
-      return new Response(JSON.stringify({}), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+  new StrictUiFixture('rail settings', [
+    ...additionalHandlers,
+    { name: 'read rail order', method: 'GET', path: '/api/user-settings/app_rail_order', respond: ({ input, init }) => {
       getCalls(input, init);
-      return new Response(JSON.stringify({
-        version: 1,
-        key: 'app_rail_order',
-        value: stored ?? null,
-        revision,
-      }), { headers: { 'content-type': 'application/json' } });
-    }
-    if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
-      putCalls(input, init);
-      if (failPut) return new Response('{}', { status: 500 });
-      stored = (JSON.parse(String(init.body)) as { value: string }).value;
+      return jsonFixture(userSettingFixture('app_rail_order', stored ?? null, revision));
+    } },
+    { name: 'save rail order', method: 'PUT', path: '/api/user-settings/app_rail_order', respond: async (request) => {
+      putCalls(request.input, request.init);
+      if (failPut) return jsonFixture({ error: 'rail save failed' }, 500);
+      stored = (await request.json() as { value: string }).value;
       revision += 1;
-      return new Response(JSON.stringify({
-        version: 1,
-        key: 'app_rail_order',
-        value: stored,
-        revision,
-      }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    if (url === '/api/dashboard/badges') {
-      return new Response(JSON.stringify({ auth: 3, briefing: 2, inbox: 1, work: 0, incidents: 0, tasks: 0 }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    return new Response(JSON.stringify([]), {
-      headers: { 'content-type': 'application/json' },
-    });
-  }));
+      return jsonFixture(userSettingFixture('app_rail_order', stored ?? null, revision));
+    } },
+    { name: 'empty spaces', method: 'GET', path: '/api/spaces', respond: () => jsonFixture({ groups: [] }) },
+    { name: 'empty approval queue', method: 'GET', path: '/api/auth/queue', respond: () => jsonFixture([]) },
+    { name: 'empty approval history', method: 'GET', path: '/api/auth/history', respond: () => jsonFixture([]) },
+    { name: 'empty work repositories', method: 'GET', path: '/api/work/repos', respond: () => jsonFixture([]) },
+    ...appStartupFixtures(),
+  ]).install();
   return {
-    getStored: () => stored,
-    getCalls,
-    putCalls,
-    setRemote: (value, nextRevision) => {
-      stored = value;
-      revision = nextRevision;
-    },
+    getStored: () => stored, getCalls, putCalls,
+    setRemote: (value, nextRevision) => { stored = value; revision = nextRevision; },
   };
 }
 
@@ -766,10 +652,8 @@ function makeArtifactSeries(seriesId: string, artifacts: any[], title?: string):
 }
 
 function jsonResponse(body: unknown): Promise<Response> {
-  return Promise.resolve(new Response(JSON.stringify(body), {
-    headers: { 'content-type': 'application/json' },
-  }));
+  return Promise.resolve(jsonFixture(body));
 }
 
 
-export { railReorderReady, ruleBody, changeSelect, setViewportWidth, readSharedSidebarWidth, mockLeftChromeRects, installMemoryLocalStorage, stubFetch, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, makeArtifactVersion, makeArtifactFixture, makeArtifactSeries, jsonResponse, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance, preferenceWritablePreviewInstance };
+export { railReorderReady, ruleBody, changeSelect, setViewportWidth, readSharedSidebarWidth, mockLeftChromeRects, installMemoryLocalStorage, stubEventSource, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, makeArtifactVersion, makeArtifactFixture, makeArtifactSeries, jsonResponse, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance, preferenceWritablePreviewInstance };

@@ -33,7 +33,8 @@ test('native cleanup signals only its owned executable and preserves the selecte
     await stopNativePreview(metadata);
     assert.equal(processIdentity(native.pid), null);
     assert.ok(processIdentity(daemon.pid));
-    const cleaned = await cleanupNativePreview(metadata);
+    await assert.rejects(cleanupNativePreview(metadata), /explicitly discard/);
+    const cleaned = await cleanupNativePreview(metadata, { disposition: 'discard' });
     assert.equal(fs.existsSync(root), false);
     assert.equal(JSON.parse(fs.readFileSync(cleaned.receipt)).nativePreview.executable, executable);
     assert.ok(processIdentity(daemon.pid));

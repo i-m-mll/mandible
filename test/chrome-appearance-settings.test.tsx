@@ -1,13 +1,22 @@
 // @vitest-environment jsdom
-import { installMemoryLocalStorage, stubEventSource, stubRailSettingsFetch, previewInstance, mainInstance } from './helpers/ui-workspace-fixture';
-import { cleanup, fireEvent, render, screen, waitFor, act } from './helpers/dom.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { installMemoryLocalStorage, stubEventSource, stubRailSettingsFetch, previewInstance, mainInstance, render } from './helpers/ui-workspace-fixture';
+import { cleanup, fireEvent, screen, waitFor, act } from './helpers/dom.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChromeAppearancePreview } from '../ui/src/hooks/useChromeAppearancePreview';
 import { ChromeAppearanceSettings } from '../ui/src/components/settings/ChromeAppearanceSettings';
 import { AppFrame } from '../ui/src/app-frame';
 import { App } from '../ui/src/app';
 import * as api from '../ui/src/api';
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
+import { jsonFixture } from './helpers/strict-ui-fixture';
 import { chromeAppearanceFrameStyles, chromeAppearancePreviewKey } from '../ui/src/chrome-appearance';
+
+function stubChromeSettingsFetch(): void {
+  stubRailSettingsFetch(undefined, false, [{
+    name: 'child retention settings', method: 'GET', path: '/api/settings/child-retention',
+    respond: () => jsonFixture(DEFAULT_CHILD_RETENTION_SETTINGS),
+  }]);
+}
 
 const key = chromeAppearancePreviewKey(previewInstance);
 const seeded = JSON.stringify({ version: 1, theme: 'dark', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42 } } });
@@ -20,6 +29,10 @@ function Harness({ role = 'preview', instanceId = previewInstance.instance_id, o
     {open && preview.controller ? <ChromeAppearanceSettings controller={preview.controller} /> : null}
   </AppFrame>;
 }
+
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+});
 
 afterEach(() => cleanup());
 
@@ -55,7 +68,7 @@ describe('preview chrome appearance controls', () => {
 
   it('reacts to the existing native capability owner and removes the material when Regular glass becomes unavailable', async () => {
     installMemoryLocalStorage();
-    stubRailSettingsFetch();
+    stubChromeSettingsFetch();
     stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
     window.history.replaceState(null, '', '#/settings');
@@ -163,7 +176,7 @@ describe('preview chrome appearance controls', () => {
 
   it('integrates Settings navigation, root theme and route persistence without canonical mutation calls', async () => {
     installMemoryLocalStorage();
-    stubRailSettingsFetch();
+    stubChromeSettingsFetch();
     const events = stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
     window.history.replaceState(null, '', '#/settings');
@@ -185,7 +198,7 @@ describe('preview chrome appearance controls', () => {
 
   it('hides the Settings section and ignores seeded preview values and theme in the production App', async () => {
     installMemoryLocalStorage({ [key]: seeded, [chromeAppearancePreviewKey({ ...mainInstance, role: 'preview' })]: seeded });
-    stubRailSettingsFetch();
+    stubChromeSettingsFetch();
     stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
     window.history.replaceState(null, '', '#/settings');

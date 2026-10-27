@@ -2,12 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { scratchDir } from './helpers/cli-process.js';
 import { SQLITE_RUNTIME_LOCK } from '../src/sqlite-runtime.js';
+import { createTestRuntime } from '../scripts/test-runtime-isolation.mjs';
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 function fixture(fail = false) {
@@ -93,7 +94,7 @@ bash -c ${quote(`source ${quote(f.syntax)}; mandible_command_syntax user.show`)}
 
 it('keeps Bun identity checks for parser-only selection and SQLite checks for the default selector', () => {
   const selector = path.resolve('scripts/bun-runtime.sh');
-  for (const args of [[], ['--bun-only']]) {
+  for (const args of [[], ['--bun-only'], ['--exec', '--print', '"unqualified payload"']]) {
     const bad = spawnSync(selector, args, { encoding: 'utf8', env: { ...process.env, MANDIBLE_RUNTIME: '/bin/false' } });
     expect(bad.status).not.toBe(0);
     expect(bad.stderr).toContain('must match the pinned Bun');
@@ -113,4 +114,44 @@ it('keeps Bun identity checks for parser-only selection and SQLite checks for th
   const helper = spawnSync('bash', ['-c', `source ${quote(path.resolve('cli/command-syntax.sh'))} --mandible-syntax-definitions-only; mandible_bun_runtime`], { encoding: 'utf8', env });
   expect(helper.status).not.toBe(0);
   expect(helper.stderr).toContain('Pinned SQLite library is missing or corrupt');
+});
+
+it('qualifies payloads and bare Bun descendants while preserving arguments, exit status and custom tools', () => {
+  const root = scratchDir('runtime-execution'); roots.push(root);
+  const bin = path.join(root, 'ambient');
+  fs.mkdirSync(bin);
+  const wrongRuntimeUsed = path.join(root, 'wrong-runtime-used');
+  const version = fs.readFileSync('.bun-version', 'utf8').trim();
+  fs.writeFileSync(path.join(bin, 'bun'), `#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\\n' ${quote(version)}; exit 0; fi
+touch ${quote(wrongRuntimeUsed)}
+exit 96
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nprintf "%s" custom-git\n', { mode: 0o755 });
+  const payload = path.join(root, 'payload.mjs');
+  fs.writeFileSync(payload, `import { spawnSync } from 'node:child_process';
+const child = spawnSync('bun', ['--no-install', '--print', 'process.execPath'], { encoding: 'utf8' });
+const git = spawnSync('git', ['--version'], { encoding: 'utf8' });
+console.log(JSON.stringify({ runtime: process.execPath, selected: process.env.MANDIBLE_RUNTIME,
+  args: process.argv.slice(2), child: child.stdout.trim(), childStatus: child.status,
+  git: git.stdout, gitStatus: git.status }));
+process.exit(23);
+`);
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+  const args = ['space value', '$literal', 'quote"value', '--flag'];
+  const assertExecution = (result: ReturnType<typeof spawnSync>) => {
+    expect(result.status, String(result.stderr)).toBe(23);
+    expect(JSON.parse(String(result.stdout))).toEqual({ runtime: process.execPath, selected: process.execPath,
+      args, child: process.execPath, childStatus: 0, git: 'custom-git', gitStatus: 0 });
+    expect(fs.existsSync(wrongRuntimeUsed)).toBe(false);
+  };
+  assertExecution(spawnSync(path.resolve('scripts/bun-runtime.sh'), ['--exec', '--no-install', payload, ...args], {
+    env: { ...process.env, MANDIBLE_RUNTIME: '' }, encoding: 'utf8', timeout: 10_000,
+  }));
+  const runtime = createTestRuntime();
+  try {
+    assertExecution(spawnSync(runtime.env.MANDIBLE_RUNTIME, ['--no-install', payload, ...args], {
+      env: runtime.env, encoding: 'utf8', timeout: 10_000,
+    }));
+  } finally { runtime.close(); }
 });
