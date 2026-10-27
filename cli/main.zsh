@@ -60,8 +60,9 @@ case "${1:-}" in
         shift
         source "$MANDIBLE_CLI_DIR/command-syntax.sh"
         exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/session-execution)" "$@" ;;
+      session-start|session-end|subagent-start|subagent-stop) hook=$1; shift; exec "$MANDIBLE_CLI_DIR/../hooks/$hook.sh" "$@" ;;
       ingest-nudge|notification|statusline) hook=$1; shift; exec "$MANDIBLE_CLI_DIR/hooks/mandible-claude-$hook.sh" "$@" ;;
-      *) echo "Usage: mandible hook <ingest-nudge|notification|statusline|session-execution>" >&2; exit 2 ;;
+      *) echo "Usage: mandible hook <ingest-nudge|notification|statusline|session-execution|session-start|session-end|subagent-start|subagent-stop>" >&2; exit 2 ;;
     esac ;;
   channel) shift; exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" --no-install "$MANDIBLE_CLI_DIR/../dist/channel-server/index.js" "$@" ;;
   git-guard) shift; exec "$MANDIBLE_CLI_DIR/../hooks/git/reference-transaction" "$@" ;;
@@ -82,6 +83,17 @@ auth_usage() {
 }
 
 case "${1:-}" in
+  identity)
+    if [[ "${2:-}" != exec || "${3:-}" != -- || $# -lt 4 ]]; then
+      printf 'Usage: mandible identity exec -- <command> [args...]\n' >&2; exit 2
+    fi
+    shift 3
+    exec "$@" ;;
+  settings)
+    if [[ $# != 2 || "${2:-}" != read ]]; then
+      mandible_command_help settings >&2; exit 2
+    fi
+    api_get /api/settings ;;
   wrap)    shift; exec "$MANDIBLE_CLI_DIR/wrap.sh" "$@" ;;
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
   reminder) shift; exec "$MANDIBLE_CLI_DIR/reminder.sh" "$@" ;;
