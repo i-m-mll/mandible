@@ -181,12 +181,12 @@ it("validates only unsettled handoff journals and revisits a settled one only af
   const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {});
 
   await sweep();
-  expect(validatedReads).toEqual(["unacknowledged"]);
+  expect(validatedReads).toEqual(["unacknowledged", "unacknowledged"]);
   expect(phases.get("unacknowledged")).toBe("acknowledged");
 
   phaseReads.length = 0; validatedReads.length = 0;
   await sweep();
-  expect(phaseReads).toEqual(["unacknowledged"]);
+  expect(phaseReads).toEqual([]);
   expect(validatedReads).toEqual([]);
 
   phaseReads.length = 0;

@@ -34,7 +34,7 @@ import { readRuntimeHandoffLock, runtimeHandoffLockRefusal, type RuntimeHandoffL
 import { inspectServiceDefinitions, serviceInstallationContext, runtimeHandoffReadiness } from "../scripts/service-definitions.mjs";
 import type { AuthPublicationBlocker } from "./contracts.js";
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
-import { observationPending, runtimeObservationAcceptance } from "../scripts/runtime-observation.mjs";
+import { observationPending, runtimeObservationAcceptance, RuntimeObservationError } from "../scripts/runtime-observation.mjs";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
@@ -426,16 +426,27 @@ export class AuthHookManager {
     } finally { this.verificationInFlight.delete(request.id); this.settledHandoffs.delete(request.id); }
   }
 
+  private async withRuntimeHandoffObservation<T>(runtime: RuntimeHandoffClient, journal: RuntimeHandoffJournal, operation: (token?: string) => Promise<T>): Promise<T> {
+    if (runtime.withRuntimeObservation) return runtime.withRuntimeObservation(journal, operation);
+    if (!this.handoffClient) throw new Error('Runtime verification lease is unavailable.');
+    return operation();
+  }
+
   private async verifyCurrentRuntimeHandoffOnce(request: Pick<AuthRequest, "id">, actor: unknown, guard: () => void): Promise<RuntimeVerificationResult> {
-    const run = this.getRun(request.id, 'builtin-mandible-rebuild');
-    if (!run || !this.hasRuntimeHandoff(run)) throw new Error('Request has no retained runtime handoff.');
+    const expectedRun = this.getRun(request.id, 'builtin-mandible-rebuild');
+    if (!expectedRun || !this.hasRuntimeHandoff(expectedRun)) throw new Error('Request has no retained runtime handoff.');
     const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
-    if (!runtime.completeRuntimeHandoffRecovery || run.state !== 'complete'
+    if (!runtime.completeRuntimeHandoffRecovery || expectedRun.state !== 'complete'
         && (!runtime.persistRuntimeRecoveryObservation || !runtime.observeFailedRuntimeHandoff || !runtime.recheckRuntimeObservation)) throw new Error('Runtime verification-only recovery is unavailable.');
-    const retained = await runtime.readRuntimeHandoff(getMandibleHome(), request.id, run.id);
-    if (!retained || retained.binding.requestId !== request.id || retained.binding.executionId !== run.id || retained.binding.hookId !== run.hook_id || retained.binding.commandDigest !== run.command_digest) throw new Error('Retained recovery binding differs.');
+    const retained = await runtime.readRuntimeHandoff(getMandibleHome(), request.id, expectedRun.id);
+    if (!retained || retained.binding.requestId !== request.id || retained.binding.executionId !== expectedRun.id || retained.binding.hookId !== expectedRun.hook_id || retained.binding.commandDigest !== expectedRun.command_digest) throw new Error('Retained recovery binding differs.');
     let journal: RuntimeHandoffJournal = retained;
     const verify = async (observerToken?: string): Promise<RuntimeVerificationResult> => {
+      const run = this.getRun(request.id, 'builtin-mandible-rebuild');
+      const current = await runtime.readRuntimeHandoff(getMandibleHome(), request.id, expectedRun.id);
+      if (!run || run.id !== expectedRun.id || run.command_digest !== expectedRun.command_digest || run.attempts !== expectedRun.attempts
+          || !current || current.bindingDigest !== retained.bindingDigest) throw new Error('Retained handoff changed before verification ownership was acquired.');
+      journal = current;
       (await verifyRuntimeHandoffPublication(this.db, journal.binding));
       guard();
       if (run.state !== 'complete') {
@@ -457,14 +468,13 @@ export class AuthHookManager {
       } else if (!recoveryAccepted(run, journal)) {
         throw new Error('Completed hook has no exact verification-only recovery acceptance.');
       }
+      if (journal.phase === 'acknowledged') return { outcome: 'confirmed' };
       if (['failed', 'verification-pending', 'starting', 'observing'].includes(journal.phase)) journal = await runtime.completeRuntimeHandoffRecovery!(journal);
       await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
       await runtime.acknowledgeRuntimeHandoff(journal.binding);
       return { outcome: 'confirmed' };
     };
-    if (runtime.withRuntimeObservation) return runtime.withRuntimeObservation(journal, verify);
-    if (!this.handoffClient) throw new Error('Runtime verification lease is unavailable.');
-    return verify();
+    return this.withRuntimeHandoffObservation(runtime, journal, verify);
   }
 
   /** External handoff observations never consume an attempt or start another hook. */
@@ -567,27 +577,38 @@ export class AuthHookManager {
             throw new Error(`Independent runtime handoff failed: ${handoffError}; inspect its retained journal and logs before repair`);
           }
           if (journal.phase !== "complete") continue;
-          await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
-          // A crash after the DB transaction and before helper acknowledgment
-          // must retry only acknowledgment, preserving the accepted hook row.
-          if (run.state === "complete") {
-            await runtime.acknowledgeRuntimeHandoff(journal.binding);
-            if (recoveryAccepted(run, journal)) accepted.push(run.auth_request_id);
-            continue;
-          }
-          const proof = (await verifyRuntimeHandoffPublication(this.db, binding));
-          const commitAdoption = await adopt(binding, proof);
-          this.db.transaction(() => {
-            const current = this.getRun(run.auth_request_id, run.hook_id);
-            if (!current || current.id !== run.id || current.command_digest !== run.command_digest || current.state === "complete") return;
-            commitAdoption();
-            const now = Date.now();
-            this.db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0, output = ?, finished_at = ?, updated_at = ? WHERE id = ?").run(
-              truncateOutput(`${current.output}\nMANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}\n${JSON.stringify(journal.receipt)}`), now, now, current.id,
-            );
-          })();
+          await this.withRuntimeHandoffObservation(runtime, journal, async () => {
+            const currentRun = this.getRun(run.auth_request_id, run.hook_id);
+            const currentJournal = await runtime.readRuntimeHandoff(getMandibleHome(), run.auth_request_id, run.id);
+            if (!currentRun || currentRun.id !== run.id || currentRun.command_digest !== run.command_digest
+                || currentRun.attempts !== run.attempts || !currentJournal || currentJournal.bindingDigest !== journal!.bindingDigest
+                || currentJournal.binding.executionId !== run.id || currentJournal.binding.commandDigest !== currentRun.command_digest) {
+              throw new Error('Runtime handoff binding changed before completion ownership was acquired.');
+            }
+            if (currentJournal.phase === 'acknowledged' && currentRun.state === 'complete') return;
+            if (currentJournal.phase !== 'complete') throw new RuntimeObservationError('observation_changed',
+              'Runtime handoff is no longer ready for completion acceptance.', null, 'pending');
+            await runtime.verifyRuntimeHandoffReceipt(currentJournal, { probe: true });
+            if (currentRun.state !== 'complete') {
+              const proof = await verifyRuntimeHandoffPublication(this.db, currentJournal.binding);
+              const commitAdoption = await adopt(currentJournal.binding, proof);
+              this.db.transaction(() => {
+                const latest = this.getRun(run.auth_request_id, run.hook_id);
+                if (!latest || latest.id !== currentRun.id || latest.command_digest !== currentRun.command_digest
+                    || latest.attempts !== currentRun.attempts) throw new Error('Runtime hook changed during completion acceptance.');
+                if (latest.state !== currentRun.state) throw new RuntimeObservationError('observation_changed',
+                  'Runtime hook acceptance advanced during verification.', null, 'pending');
+                commitAdoption();
+                const now = Date.now();
+                this.db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0, output = ?, finished_at = ?, updated_at = ? WHERE id = ?").run(
+                  truncateOutput(`${latest.output}\nMANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${currentJournal.bindingDigest}\n${JSON.stringify(currentJournal.receipt)}`), now, now, latest.id,
+                );
+              }).immediate();
+            }
+            await runtime.acknowledgeRuntimeHandoff(currentJournal.binding);
+          });
           accepted.push(run.auth_request_id);
-          await runtime.acknowledgeRuntimeHandoff(journal.binding);
+          await settled();
         } catch (error) {
           if (observationPending(error)) continue;
           // Record the refusal once: the row's first transition to failed is the

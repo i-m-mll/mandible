@@ -839,7 +839,7 @@ export async function runRuntimeHandoffWorker(file, {
   }
   const inspectEvidence = async () => JSON.parse(await control(journal, 'handoff-evidence', true, { until: now() + 5000 }));
   const verify = async initial => {
-    const receipt = await withRuntimeObservation(journal, async token => {
+    await withRuntimeObservation(journal, async token => {
       await verifyPublication(journal);
       const until = now() + waitMs;
       if (initial) await control(journal, 'handoff-start', false, { until: journal.deadline });
@@ -851,10 +851,10 @@ export async function runRuntimeHandoffWorker(file, {
       await control(journal, 'handoff-verify', !initial, { until, awaitReady: true });
       save(journal, { phase: 'observing', launch: { ...journal.launch, readyAt: journal.launch.readyAt ?? now() } });
       if (initial) await desktop(journal);
-      return observe(journal, { observerToken: token, deadlineMs: Math.max(0, until - now()), readEvidence: inspectEvidence });
+      const receipt = await observe(journal, { observerToken: token, deadlineMs: Math.max(0, until - now()), readEvidence: inspectEvidence });
+      unchangedJournal(journal);
+      save(journal, { phase: 'complete', receipt });
     });
-    unchangedJournal(journal);
-    save(journal, { phase: 'complete', receipt });
   };
   try {
     if (possibleLaunch) {

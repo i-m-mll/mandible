@@ -334,10 +334,11 @@ it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-deskt
   const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });
   const desktop = vi.fn();
   const verifyPublication = vi.fn(async () => {});
-  const observation = vi.fn(async (current, options) => observeRuntimeHandoff(current, { ...options,
+  let receiptReady = false;
+  const observation = vi.fn(async (current, options) => { const receipt = await observeRuntimeHandoff(current, { ...options,
     observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
     probe: freshProbe(f.evidence, time),
-  }));
+  }); receiptReady = true; return receipt; });
   const run = () => runRuntimeHandoffWorker(file, { now: () => time, stage, ...(binding.desktopWasRunning ? {} : { desktop }), control, verifyPublication, observe: observation });
   const pending = await run();
   expect(pending).toMatchObject({ phase: 'verification-pending', attempts: 1, launch: { processes }, lastObservation: { outcome: 'pending', code: pendingAt === 'desktop-wait' ? 'desktop_unconfirmed' : 'observation_deadline' } });
@@ -355,7 +356,27 @@ it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-deskt
     oldShell = false;
   }
   desktopBirth = new Date(time - 1000).toUTCString();
+  const rmdir = fs.rmdirSync;
+  let checkedRelease = false;
+  let contender: Promise<unknown> | undefined;
+  const fullObservations = vi.fn();
+  vi.spyOn(fs, 'rmdirSync').mockImplementation((directory, options) => {
+    if (directory === path.join(path.dirname(file), '.verification.lock') && receiptReady && !checkedRelease) {
+      checkedRelease = true;
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).phase).toBe('complete');
+      contender = withRuntimeObservation(journal, () => {
+        const phase = JSON.parse(fs.readFileSync(file, 'utf8')).phase;
+        if (phase === 'observing') fullObservations();
+        expect(phase).toBe('complete');
+      });
+      void contender.catch(() => {});
+    }
+    return rmdir(directory, options);
+  });
   const complete = await run();
+  expect(checkedRelease).toBe(true);
+  try { await contender; } catch (error) { expect(error).toMatchObject({ outcome: 'pending', code: 'observer_busy' }); }
+  expect(fullObservations).not.toHaveBeenCalled();
   expect(complete).toMatchObject({ phase: 'complete', attempts: 1, receipt: { bindingDigest: journal.bindingDigest } });
   expect(commands.filter(command => command === 'handoff-start')).toHaveLength(1);
   expect(commands.filter(command => command === 'handoff-remove')).toHaveLength(1);

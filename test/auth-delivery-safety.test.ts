@@ -15,6 +15,7 @@ import {
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
 import { RuntimeObservationError } from "../scripts/runtime-observation.mjs";
+import { withRuntimeObservation } from "../scripts/runtime-handoff.mjs";
 import { assessRuntimeLogs } from "../scripts/runtime-log-assessment.mjs";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -112,10 +113,11 @@ describe("protected delivery evidence", () => {
     expect((await queue.getRequest(request.id))).toMatchObject({ status: "completed", exit_code: 0 });
     expect(getAttributionEvidence(db, (await queue.getRequest(request.id))!.execution_evidence_id!)?.details.publication_verified).toBe(true);
     expect(acknowledgements).toBe(1);
-    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
+    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "open" });
     // The DB acceptance survived; startup retries only helper acknowledgment.
     await queue.resumeHookConvergence();
     expect(acknowledgements).toBe(2);
+    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
     expect(hooks.getRun(request.id, run.hook_id)?.attempt_history).toEqual(attemptHistory);
     await queue.resumeHookConvergence();
     expect(acknowledgements).toBe(2);
@@ -411,6 +413,55 @@ describe('runtime convergence recovery', () => {
     await queue.resumeHookConvergence();
     expect(f.observation).toHaveBeenCalledTimes(3);
     expect(f.ack).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('serializes normal completion and concurrent acknowledgment replay (interrupted=%s)', async interruptAck => {
+    const f = await recoveryFixture(interruptAck);
+    f.journal.phase = 'complete'; f.journal.receipt = { bindingDigest: f.journal.bindingDigest };
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    let entered = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    const verify = vi.fn(async () => { entered.resolve(); await release.promise; });
+    const client = (f.hooks as any).handoffClient;
+    Object.assign(client, { withRuntimeObservation, verifyRuntimeHandoffReceipt: verify });
+    const competing = createInstalledServiceHookManager(db, { handoffClient: client });
+    const adopt = vi.fn(async () => () => {});
+    const failed = vi.fn(); const stuck = vi.fn();
+    const race = async () => {
+      const first = queue.resumeHookConvergence();
+      try {
+        await entered.promise;
+        expect(await competing.reconcileRuntimeHandoffs(adopt, failed, stuck)).toEqual([]);
+        expect(failed).not.toHaveBeenCalled(); expect(stuck).not.toHaveBeenCalled();
+        expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+      } finally { release.resolve(); }
+      await first;
+    };
+    await race();
+    if (interruptAck) {
+      expect(f.journal.phase).toBe('complete');
+      expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('complete');
+      expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+      entered = Promise.withResolvers<void>(); release = Promise.withResolvers<void>();
+      await race();
+    }
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(adopt).not.toHaveBeenCalled();
+    expect(f.ack).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
+    const run = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    expect(run).toMatchObject({ state: 'complete', attempts: f.run.attempts });
+    expect(run.output.match(/MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:/g)).toHaveLength(1);
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
+    const closureEvents = () => db.prepare("SELECT id, payload_json FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'").all(f.issue.id);
+    const closed = closureEvents();
+    expect(closed).toHaveLength(1);
+    await queue.resumeHookConvergence();
+    await competing.reconcileRuntimeHandoffs(adopt, failed, stuck);
+    expect(closureEvents()).toEqual(closed);
+    expect(f.ack).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
+    expect(verify).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
   });
 
   it('reports observer contention as pending without a failure incident or duplicate observation', async () => {
