@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease } from '../scripts/accepted-release.mjs';
+import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease } from '../scripts/accepted-release.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
@@ -57,7 +57,17 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
     expect(() => resolveAcceptedRelease(reference, { ...candidate, head_sha: 'f'.repeat(40) })).toThrow('different candidate');
     fs.writeFileSync(path.join(selected.resources, 'program'), 'changed program');
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('application bytes changed');
-    fs.writeFileSync(path.join(selected.receipt.package.handle.root, 'accepted-release.json'), '{}');
+    fs.writeFileSync(path.join(selected.resources, 'program'), 'accepted program');
+    const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
+    const receiptBytes = fs.readFileSync(receiptFile);
+    fs.writeFileSync(receiptFile, '{}');
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('receipt bytes changed');
+    fs.writeFileSync(receiptFile, receiptBytes);
+    const disposed = await disposeAcceptedRelease(reference, candidate, 'Delivery fixture complete');
+    expect(disposed.action).toBe('delete-owned');
+    expect(disposed.remaining).toEqual([]);
+    expect(fs.existsSync(selected.receipt.package.handle.root)).toBe(false);
+    expect(fs.readFileSync(receiptFile)).toEqual(receiptBytes);
+    expect(fs.existsSync(evidence)).toBe(true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
