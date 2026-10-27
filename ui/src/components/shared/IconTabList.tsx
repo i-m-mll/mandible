@@ -1,4 +1,5 @@
 import type { ComponentChildren } from 'preact';
+import { appTip } from './AppHoverTips';
 
 export type IconTab = {
   id: string;
@@ -35,7 +36,7 @@ export function IconTabList({
           aria-controls={`${idPrefix}-panel-${tab.id}`}
           aria-selected={activeTab === tab.id}
           aria-label={tab.label}
-          title={tab.tooltip ?? tab.label}
+          {...(presentation === 'frame' ? appTip(tab.tooltip ?? tab.label) : { title: tab.tooltip ?? tab.label })}
           tabIndex={activeTab === tab.id ? 0 : -1}
           onClick={() => onActiveTabChange(tab.id)}
           onKeyDown={(event) => {

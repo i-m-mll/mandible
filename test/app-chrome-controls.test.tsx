@@ -1,11 +1,42 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
+import { useState } from 'preact/hooks';
 import { act, cleanup, fireEvent, render, screen } from './helpers/dom';
 import { AppHoverTips, appTip } from '../ui/src/components/shared/AppHoverTips';
 import { installNativeTopBarDragging } from '../ui/src/native-top-bar';
 import { NativeTopBarBand } from '../ui/src/components/NativeTopBarBand';
+import { AppRightSidebarHeaderControls } from '../ui/src/app-shell';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+it('uses shared quick tips on actual right-sidebar header tabs while retaining tab semantics and navigation', async () => {
+  function Header() {
+    const [activeTab, onActiveTabChange] = useState('info');
+    return <><AppHoverTips /><AppRightSidebarHeaderControls descriptor={{ id: 'review', kind: 'tabs', ariaLabel: 'Review details',
+      open: true, width: 360, onOpenChange: () => undefined, onWidthChange: () => undefined,
+      activeTab, onActiveTabChange, tabs: [
+        { id: 'info', label: 'Info', tooltip: 'Review information', icon: <span>I</span>, content: null },
+        { id: 'diff', label: 'Diff', tooltip: 'Review changes', icon: <span>D</span>, content: null },
+      ] }} /></>;
+  }
+  render(<Header />);
+  const info = screen.getByRole('tab', { name: 'Info' });
+  const diff = screen.getByRole('tab', { name: 'Diff' });
+  expect(screen.getByRole('tablist', { name: 'Review details' })).toBeTruthy();
+  expect(info.getAttribute('aria-controls')).toBe('app-right-sidebar-panel-info');
+  expect(info.getAttribute('aria-selected')).toBe('true');
+  expect(info.tabIndex).toBe(0); expect(diff.tabIndex).toBe(-1);
+  expect(info.hasAttribute('title')).toBe(false); expect(diff.hasAttribute('title')).toBe(false);
+  act(() => info.focus());
+  await screen.findByText('Review information', { selector: '[role=tooltip]' });
+  fireEvent.keyDown(info, { key: 'ArrowRight' });
+  await screen.findByText('Review changes', { selector: '[role=tooltip]' });
+  expect(document.activeElement).toBe(diff);
+  expect(diff.getAttribute('aria-selected')).toBe('true');
+  expect(diff.tabIndex).toBe(0); expect(info.tabIndex).toBe(-1);
+  fireEvent.click(info);
+  expect(info.getAttribute('aria-selected')).toBe('true');
+});
 
 it('shows one shared fast tip for disabled controls and keyboard focus, preserving existing descriptions', async () => {
   render(<><AppHoverTips /><button disabled {...appTip('Back')}>Back</button><button aria-describedby="existing" {...appTip('Open menu')}>Menu</button></>);
