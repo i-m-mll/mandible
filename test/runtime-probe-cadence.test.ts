@@ -13,7 +13,7 @@ function inspection(ready: boolean, generation = 'merge') {
   };
 }
 
-it('keeps paired readiness inspections plus an ordinary client below the unchanged storm limit', async () => {
+it('reduces paired readiness traffic while retaining both aggregate rates as diagnostics', async () => {
   const run = async (pauseMs?: number) => {
     let time = 0;
     let nextClient = 0;
@@ -35,10 +35,13 @@ it('keeps paired readiness inspections plus an ordinary client below the unchang
   };
   const previous = await run(200);
   const current = await run();
-  expect(previous.failures).toEqual([expect.stringContaining('Repeated request storm: GET /api/health')]);
+  expect(previous.failures).toEqual([]);
   expect(previous.diagnostics.http_requests.routes[0].peak_window_count).toBeGreaterThan(100);
   expect(current.failures).toEqual([]);
-  expect(current.diagnostics.http_requests.routes[0].peak_window_count).toBeLessThan(100);
+  expect(current.diagnostics.http_requests.routes[0].peak_window_count)
+    .toBeLessThan(previous.diagnostics.http_requests.routes[0].peak_window_count);
+  expect(previous.diagnostics.hard_failure_count).toBe(0);
+  expect(current.diagnostics.hard_failure_count).toBe(0);
   console.info('paired readiness + one 2s client, peak requests/10s', {
     previous: previous.diagnostics.http_requests.routes[0].peak_window_count,
     current: current.diagnostics.http_requests.routes[0].peak_window_count,

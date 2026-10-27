@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { rotateStderrLogSegments } from '../src/daemon-log.ts';
@@ -214,6 +214,32 @@ it('runs real recovery observation through complete log and journal evidence', a
     { actor: { user_id: 'agent' }, failedPhase: 'failed', failure: legacyFailure, code: 'recovery_observation_failed' },
     { code: 'log_assessment_failed', evidence: { failures: [expect.stringContaining('ingestion_worker_error')] } },
   ]);
+});
+
+it.each(['initial', 'recovery'] as const)('accepts independent healthy clients and retains route evidence during %s handoff', async mode => {
+  const f = recoveryFixture((processStartedAt, fakeStart) => [
+    startupLine(processStartedAt),
+    ...Array.from({ length: 120 }, (_, client) => ['/api/health', '/api/projects'].map(pathname =>
+      JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname, status: 200,
+        request_id: `client-${client}`, time: new Date(fakeStart - 500 + client).toISOString() }))).flat(),
+  ]);
+  const journal = { ...f.failed, phase: mode === 'initial' ? 'observing' : 'failed' };
+  fs.writeFileSync(path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json'), JSON.stringify(journal));
+  const observe = async () => {
+    let time = f.fakeStart;
+    const options = { observationMs: 10, deadlineMs: 20, now: () => time, wait: async () => { time += 10; },
+      probe: freshProbe(f.evidence, f.fakeStart) };
+    return mode === 'initial' ? await observeRuntimeHandoff(journal, options)
+      : (await observeFailedRuntimeHandoff(journal, { user_id: 'agent' }, options)).recovery.receipt;
+  };
+  const receipt = await observe();
+  expect(JSON.parse(JSON.stringify(receipt)).performance.httpRequests).toMatchObject({ total: 240, route_count: 2,
+    routes: [
+      { pathname: '/api/health', count: 120, peak_window_count: 120, statuses: { '200': 120 } },
+      { pathname: '/api/projects', count: 120, peak_window_count: 120, statuses: { '200': 120 } },
+    ], omitted_routes: 0 });
+  fs.appendFileSync(f.log, JSON.stringify({ level: 'error', message: 'concrete_handler_error', time: new Date(f.fakeStart).toISOString() }) + '\n');
+  await expect(observe()).rejects.toMatchObject({ code: 'log_assessment_failed' });
 });
 
 it.each(['running', 'running-unreplaced', 'closed', 'relaunch-fails', 'exits-after-relaunch'] as const)('requires the desktop before accepting recovery: %s', async state => {

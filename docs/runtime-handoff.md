@@ -47,8 +47,10 @@ memory warnings, in samples and in the log, are recorded in the receipt's
 `performance` (bounded) and never fail the handoff. Candidate acceptance, which
 runs before the merge on an empty fixture database, fails on any of them.
 The log assessment fails on any `error` line from the current process and on
-any one event or route that exceeds 100 lines in a 10-second window. That rate
-rule detects runaway loops. Scheduled work that goes through a backlog, such as
+any non-HTTP event that exceeds 100 lines in a 10-second window. HTTP method/route
+volume aggregates independent callers and remains diagnostic evidence: bounded
+route counts, peak windows and status distributions are retained in candidate
+acceptance evidence and successful handoff receipts. Scheduled work that goes through a backlog, such as
 reconciler passes, startup backfills, ingestion reconcile and full ingest,
 therefore logs one summary event per pass, with counts and a bounded sample of
 identifiers. The per-item record stays in its durable rows, such as
@@ -256,7 +258,7 @@ Concurrent observers cannot replace a receipt after its hook acceptance commits.
 The original failure and hook attempt history remain available. Recovery
 applies the same convergence rule as the handoff: it reads and hashes the
 complete current-process log, following rotated segments as described below,
-and lifetime hard failures such as crashes, error rows, restarts and event
+and lifetime hard failures such as crashes, error rows, restarts and non-HTTP event
 storms remain fatal even when they are old. The recovery receipt records the
 exact interval, initial and final samples, full log offset/digest/byte count,
 and bounded performance findings.

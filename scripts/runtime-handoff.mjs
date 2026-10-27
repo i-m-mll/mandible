@@ -382,6 +382,7 @@ export async function observeRuntimeHandoff(journal, {
     performance: {
       healthFindings: observed.performance,
       logEvents: assessment.diagnostics.health_events,
+      httpRequests: assessment.diagnostics.http_requests,
     },
     logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: daemonLog.sha256, daemonLogBytes: daemonLog.bytes, daemonLogOffset: coverage.offset, daemonLogSegments: coverage.segments };
   recheckRuntimeObservation(journal, receipt);
