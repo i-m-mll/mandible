@@ -59,11 +59,11 @@ function inspectNative(metadata, record) {
   const marker = read(path.join(path.dirname(path.dirname(child.executable)), 'Resources', 'build-revision.json'));
   if (!isDeepStrictEqual(marker, child.build)) throw new Error('Legacy native package differs from its actual recorded build');
   const currentIdentity = processIdentity(child.pid);
-  const matchesLifetime = currentIdentity !== null && processLifetimeMatches(child, currentIdentity) === true;
-  const identity = child.status === 'stopped' && !matchesLifetime ? null : currentIdentity;
+  const matchesLifetime = currentIdentity === null ? false : processLifetimeMatches(child, currentIdentity);
+  const identity = child.status === 'stopped' && matchesLifetime === false ? null : currentIdentity;
   if (identity !== null) {
     const checks = [
-      ['status', child.status === 'visible'], ['process lifetime', matchesLifetime],
+      ['status', child.status === 'visible'], ['process lifetime', matchesLifetime === true],
       ['executable', identity.includes(child.executable)], ['window PID', child.window?.pid === child.pid],
       ['window run', child.window?.runId === child.ownership.runId], ['window profile', child.window?.profile === child.profile],
       ['window instance', child.window?.instanceId === owner.instanceId], ['window origin', child.window?.origin === child.origin],

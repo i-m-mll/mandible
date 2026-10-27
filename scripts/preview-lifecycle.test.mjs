@@ -282,6 +282,9 @@ async function exercisePreviewLifecycle(legacy = false) {
       await assert.rejects(refresh(), /process.start identity/); saveOwnedMetadata(current.file, childBefore);
       saveOwnedMetadata(current.file, { ...childBefore, manifest: '/unproven/parent/metadata.json' });
       await assert.rejects(refresh(), /ownership or profile evidence/); saveOwnedMetadata(current.file, childBefore);
+      const stoppedBeforeAdoption = read(stopped.file);
+      saveOwnedMetadata(stopped.file, { ...stoppedBeforeAdoption, processIdentity: 'insufficient' });
+      await assert.rejects(refresh(), /process.start identity/); saveOwnedMetadata(stopped.file, stoppedBeforeAdoption);
       const ambiguous = await legacyNative(old, path.join(nativeBase, 'native-ambiguous'), true);
       await assert.rejects(refresh(), /default is ambiguous/);
       await stopNativePreview(ambiguous.file); fs.rmSync(ambiguous.root, { recursive: true });
