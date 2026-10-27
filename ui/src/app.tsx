@@ -1,3 +1,4 @@
+import { IntegrationIntroduction } from './components/AgentIntegrations';
 import { Icon, type IconName } from './components/icons/Icon';
 import { AppHoverTips, appTip } from './components/shared/AppHoverTips';
 import { NativeTopBarBand } from './components/NativeTopBarBand';
@@ -48,6 +49,7 @@ import {
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
   canEditUserPreferences,
+  canPerformOperation,
   type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
@@ -2671,6 +2673,9 @@ function App(): JSX.Element {
 
   return renderAppShell(
     <>
+      {startupSettingsReady && instanceInfo?.role === 'main' && canPerformOperation(instanceInfo, 'PUT', '/api/settings/integrations') && (
+        <IntegrationIntroduction settings={state.settings} onSave={handleSettingsSave} />
+      )}
       {rebuildFailure && (
         // Issue 54a0b88 — report a failed self-update without taking over the view.
         <div className="daemon-toast daemon-toast--failure" role="alert">

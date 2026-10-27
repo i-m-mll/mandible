@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { getDb } from "../db.js";
@@ -13,6 +14,10 @@ import { readBody, sendJson } from "./http.js";
 import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 import { CHILD_RETENTION_SETTINGS_SCHEMA, CHILD_RETENTION_SETTINGS_KEY } from "../conversations/retention-contract.js";
 import { readChildRetentionSettings, writeChildRetentionSettings } from "../conversations/retention-state.js";
+
+import { INTEGRATION_ACTION, readOptionalIntegrations, applyOptionalIntegration } from "../optional-integrations.js";
+
+const { ownershipConflict } = createRequire(import.meta.url)("../../cli/integration-files.cjs") as { ownershipConflict(target: string): string | null };
 
 const INSTRUCTION_TARGETS_KEY = "instructions.targets";
 const INSTRUCTION_POST_EXPORT_KEY = "instructions.post_export";
@@ -29,6 +34,7 @@ type InstructionDeliveryResult = {
   targets: InstructionTarget[];
   postExport: string;
   configuredTargets: boolean;
+  conflicts: Array<{ path: string; detail: string }>;
   preview_only?: boolean;
   configuration_saved?: boolean;
   export: {
@@ -83,14 +89,6 @@ function parseInstructionTargetsSetting(value: string | undefined): InstructionT
   }
 }
 
-function defaultInstructionTargets(): InstructionTarget[] {
-  const home = os.homedir();
-  return [
-    { path: path.join(home, ".claude", "CLAUDE.md"), mode: "managed-block" },
-    { path: path.join(home, ".codex", "AGENTS.md"), mode: "managed-block" },
-  ];
-}
-
 function getSettingValue(key: string, fallback = ""): string {
   const db = getDb();
   const row = db
@@ -112,7 +110,7 @@ function getConfiguredInstructionTargets(): { targets: InstructionTarget[]; conf
   const configured = raw.trim().length > 0;
   const targets = parseInstructionTargetsSetting(raw);
   return {
-    targets: configured ? targets : defaultInstructionTargets(),
+    targets,
     configured,
   };
 }
@@ -131,25 +129,19 @@ function resolveRepoRoot(): string {
   }
 }
 
-function runInstructions(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+function runInstructions(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const repoRoot = resolveRepoRoot();
   const script = process.env.MANDIBLE_INSTRUCTIONS_CLI || path.join(repoRoot, "cli", "instructions.sh");
   const nodeDir = path.dirname(process.execPath);
   const pathValue = process.env.PATH ? `${nodeDir}${path.delimiter}${process.env.PATH}` : nodeDir;
-  const result = spawnSync("bash", [script, ...args], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      NODE_BIN: process.env.NODE_BIN || process.execPath,
-      PATH: pathValue,
-    },
-    encoding: "utf8",
+  return new Promise(resolve => {
+    execFile("bash", [script, ...args], {
+      cwd: repoRoot,
+      env: { ...process.env, NODE_BIN: process.env.NODE_BIN || process.execPath, PATH: pathValue },
+      encoding: "utf8",
+      timeout: 30_000,
+    }, (error, stdout, stderr) => resolve({ ok: error === null, stdout, stderr: stderr || (error ? String(error) : "") }));
   });
-  return {
-    ok: result.status === 0,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? (result.error ? String(result.error) : ""),
-  };
 }
 
 function diffRemovedInstructionTargets(
@@ -169,6 +161,10 @@ function instructionDeliverySnapshot(
     targets: configured.targets,
     postExport: getSettingValue(INSTRUCTION_POST_EXPORT_KEY, ""),
     configuredTargets: configured.configured,
+    conflicts: configured.targets.flatMap(target => {
+      try { const detail = ownershipConflict(target.path); return detail ? [{ path: target.path, detail }] : []; }
+      catch (error) { return [{ path: target.path, detail: String(error) }]; }
+    }),
     ...(previewOnly ? { preview_only: true } : {}),
     export: exportResult,
     cleanup: [],
@@ -250,6 +246,16 @@ function clientAuthSettingForbidden(): { error: string; code: string; hint: stri
 export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: InstanceRole = "main"): void {
   const db = getDb();
 
+  server.get("/api/settings/integrations", (_req, res) => {
+    sendJson(res, 200, readOptionalIntegrations(instanceRole === "preview"));
+  }, { operation: { id: "get:/api/settings/integrations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  server.put("/api/settings/integrations", globalCapabilityRoute("change_settings", (req, res) => {
+    const parsed = INTEGRATION_ACTION.safeParse(readBody(req));
+    if (!parsed.success) { sendJson(res, 400, { error: "Invalid integration choice" }); return; }
+    const result = applyOptionalIntegration(parsed.data, instanceRole === "preview");
+    sendJson(res, result.ok ? 200 : 409, result.ok ? result.value : { error: result.error });
+  }), { operation: { id: "put:/api/settings/integrations", effects: ["files:production"], requestSchema: INTEGRATION_ACTION, reportingCategory: "settings" }, fileRpc: "deny" });
+
   server.get("/api/settings/child-retention", (_req, res) => {
     sendJson(res, 200, readChildRetentionSettings(db));
   }, { operation: { id: "get:/api/settings/child-retention", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
@@ -287,27 +293,29 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       : instructionDeliverySnapshot());
   }, { operation: { id: "get:/api/settings/instructions-delivery", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", (req, res) => {
+  server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", async (req, res) => {
     const body = readBody<{
       targets?: unknown;
       postExport?: unknown;
       cleanupRemovedTargets?: unknown;
       resetToDefaults?: unknown;
     }>(req);
+    if (("targets" in body && (!Array.isArray(body.targets) || body.targets.some(target =>
+      !target || typeof target !== "object" || typeof target.path !== "string" || !path.isAbsolute(target.path) || !INSTRUCTION_TARGET_MODES.has(target.mode))))
+      || ("postExport" in body && typeof body.postExport !== "string")) {
+      sendJson(res, 400, { error: "Select absolute instruction destinations, valid modes, and a string post-export command" });
+      return;
+    }
     const previous = getConfiguredInstructionTargets();
     let nextTargets = previous.targets;
     let targetsChanged = false;
 
     if (body.resetToDefaults === true) {
-      nextTargets = defaultInstructionTargets();
+      nextTargets = [];
       setSettingValue(INSTRUCTION_TARGETS_KEY, JSON.stringify(nextTargets));
       targetsChanged = true;
     } else if ("targets" in body) {
       nextTargets = normalizeInstructionTargets(body.targets);
-      if (nextTargets.length === 0) {
-        sendJson(res, 400, { error: "At least one instruction target is required" });
-        return;
-      }
       setSettingValue(INSTRUCTION_TARGETS_KEY, JSON.stringify(nextTargets));
       targetsChanged = true;
     }
@@ -334,7 +342,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
     const cleanupResults: InstructionDeliveryResult["cleanup"] = [];
     if (targetsChanged && body.cleanupRemovedTargets === true) {
       for (const oldTarget of diffRemovedInstructionTargets(previous.targets, nextTargets)) {
-        const cleanup = runInstructions([
+        const cleanup = await runInstructions([
           "cleanup",
           "--target",
           oldTarget.path,
@@ -343,25 +351,19 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
         ]);
         cleanupResults.push({ target: oldTarget, ...cleanup });
         if (!cleanup.ok) {
-          sendJson(res, 500, {
-            error: `Failed to clean previous instruction target: ${oldTarget.path}`,
-            cleanup: cleanupResults,
-          });
+          const snapshot = instructionDeliverySnapshot({ ok: false, stdout: "", stderr: `Optional cleanup failed: ${oldTarget.path}. ${cleanup.stderr}` });
+          snapshot.configuration_saved = true;
+          snapshot.cleanup = cleanupResults;
+          sendJson(res, 200, snapshot);
           return;
         }
       }
     }
 
-    const exportResult = runInstructions(["install"]);
+    const exportResult = await runInstructions(["install"]);
     const snapshot = instructionDeliverySnapshot(exportResult);
     snapshot.cleanup = cleanupResults;
-    if (!exportResult.ok) {
-      sendJson(res, 500, {
-        error: "Instruction export failed after saving settings",
-        ...snapshot,
-      });
-      return;
-    }
+    snapshot.configuration_saved = true;
     sendJson(res, 200, snapshot);
   }), { operation: { id: "put:/api/settings/instructions-delivery", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 

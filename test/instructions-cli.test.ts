@@ -1,8 +1,7 @@
 // @vitest-environment node
 /**
  * Installing the instruction fragment: never into a tracked file on the
- * protected branch, mapped into a worktree when asked, through symlinks without
- * replacing them, and on the pinned Bun even when none is on PATH.
+ * protected branch, mapped into a worktree when asked, refusing symlink ownership crossings, and on the pinned Bun even when none is on PATH.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -76,51 +75,46 @@ describe("instructions CLI", () => {
     expect(fs.readFileSync(sourceTarget, "utf8")).toBe("# Source\n");
   });
 
-  it("preserves symlinked instruction targets when installing and cleaning", async () => {
-    const tempDir = scratchDir("instructions-symlink");
-    const home = scratchDir("instructions-symlink-home");
-
-    const managedReal = path.join(tempDir, "tracked", "AGENTS.md");
-    const managedLink = path.join(tempDir, "home", "AGENTS.md");
-    fs.mkdirSync(path.dirname(managedReal), { recursive: true });
-    fs.mkdirSync(path.dirname(managedLink), { recursive: true });
-    fs.writeFileSync(managedReal, "# Existing\n", "utf8");
-    fs.symlinkSync(managedReal, managedLink);
-
-    const managedInstall = await run(["instructions", "install", "--target", managedLink]);
-    expect(managedInstall.status).toBe(0);
-    expect(fs.lstatSync(managedLink).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(managedLink)).toBe(managedReal);
-    expect(fs.readFileSync(managedReal, "utf8")).toContain("Mandible Interface Contract");
-
-    const managedCleanup = await run([
-      "instructions",
-      "cleanup",
-      "--target",
-      managedLink,
-      "--mode",
-      "managed-block",
-    ]);
-    expect(managedCleanup.status).toBe(0);
-    expect(fs.lstatSync(managedLink).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(managedLink)).toBe(managedReal);
-    expect(fs.readFileSync(managedReal, "utf8")).toBe("# Existing\n");
-
-    const standaloneReal = path.join(tempDir, "tracked", "50-mandible.generated.md");
-    const standaloneLink = path.join(tempDir, "home", "50-mandible.generated.md");
-    fs.writeFileSync(standaloneReal, "stale\n", "utf8");
-    fs.symlinkSync(standaloneReal, standaloneLink);
+  it("writes only selected owned targets, preserves user text, and refuses symlink destinations", async () => {
+    const home = scratchDir("instructions-choice");
     const env = { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") };
-
-    const addStandalone = await run(["instructions", "targets", "add", standaloneLink, "--mode", "standalone"], env);
-    expect(addStandalone.status).toBe(0);
-
-    const standaloneInstall = await run(["instructions", "install"], env);
-    expect(standaloneInstall.status).toBe(0);
-    expect(fs.lstatSync(standaloneLink).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(standaloneLink)).toBe(standaloneReal);
-    const standaloneInstalled = fs.readFileSync(standaloneReal, "utf8");
-    expect(standaloneInstalled).toContain("Mandible Interface Contract");
-    expect(standaloneInstalled).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
+    const empty = await run(["instructions", "install"], env);
+    expect(empty.status, empty.stderr).toBe(0);
+    expect(fs.existsSync(path.join(home, ".claude"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".codex"))).toBe(false);
+    const target = path.join(home, "selected.md");
+    fs.writeFileSync(target, "User instructions\n");
+    expect((await run(["instructions", "targets", "add", target], env)).status).toBe(0);
+    const selected = await run(["instructions", "install"], env);
+    expect(selected.status, selected.stderr).toBe(0);
+    fs.appendFileSync(target, "\nMore user instructions\n");
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    const content = fs.readFileSync(target, "utf8");
+    expect(content.startsWith("User instructions\n")).toBe(true);
+    expect(content.endsWith("More user instructions\n")).toBe(true);
+    expect(content.match(/BEGIN MANDIBLE MANAGED/g)).toHaveLength(1);
+    expect((await run(["instructions", "post-export", "set", "false"], env)).status).toBe(0);
+    const refreshFailure = await run(["instructions", "install"], env);
+    expect(refreshFailure.status).toBe(1);
+    expect(fs.readFileSync(target, "utf8")).toBe(content);
+    expect((await run(["instructions", "post-export", "clear"], env)).status).toBe(0);
+    const standalone = path.join(home, "standalone.md");
+    expect((await run(["instructions", "targets", "add", standalone, "--mode", "standalone"], env)).status).toBe(0);
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    fs.appendFileSync(standalone, "User edit\n");
+    const edited = fs.readFileSync(standalone, "utf8");
+    expect((await run(["instructions", "install"], env)).status).toBe(3);
+    expect(fs.readFileSync(standalone, "utf8")).toBe(edited);
+    const link = path.join(home, "linked.md");
+    fs.symlinkSync(target, link);
+    const refused = await run(["instructions", "install", "--target", link], env);
+    expect(refused.status).toBe(3);
+    expect(fs.readFileSync(target, "utf8")).toBe(content);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    const linkedDir = path.join(home, "linked-directory");
+    fs.symlinkSync(home, linkedDir);
+    expect((await run(["instructions", "install", "--target", path.join(linkedDir, "new.md")], env)).status).toBe(3);
+    expect(fs.existsSync(path.join(home, "new.md"))).toBe(false);
   });
 });

@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { publicCommand } from "./product-resources.js";
+
+const { ownershipConflict } = createRequire(import.meta.url)("../cli/integration-files.cjs");
 
 type ClaudeSettings = Record<string, unknown>;
 type ClaudeStatusLine = Record<string, unknown>;
@@ -61,6 +64,10 @@ const MANAGED_STATUSLINE_MARKER = "MANDIBLE_MANAGED_CLAUDE_STATUSLINE=1";
 const MANAGED_METADATA_KEY = "__mandible";
 const CLAUDE_INTEGRATION_KEY = "claudeIntegration";
 const HOOK_EVENTS = {
+  SessionStart: "mandible-claude-session-start.sh",
+  SessionEnd: "mandible-claude-session-end.sh",
+  SubagentStart: "mandible-claude-subagent-start.sh",
+  SubagentStop: "mandible-claude-subagent-stop.sh",
   PostToolUse: "mandible-claude-ingest-nudge.sh",
   Stop: "mandible-claude-ingest-nudge.sh",
   Notification: "mandible-claude-notification.sh",
@@ -157,8 +164,11 @@ export function installUserClaudeIntegration(
   options: ClaudeIntegrationInstallOptions = {},
 ): ClaudeIntegrationInstallResult {
   const settingsPath = options.settingsPath ?? defaultClaudeUserSettingsPath();
+  const conflict = ownershipConflict(settingsPath);
+  if (conflict) throw new Error(conflict);
   const existingText = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, "utf8") : "";
-  const baseSettings = parseJsonObject(existingText);
+  const baseSettings = existingText.trim() ? JSON.parse(existingText) : {};
+  if (!isRecord(baseSettings)) throw new Error(`Expected settings object: ${settingsPath}`);
   const merge = mergeMandibleClaudeHookSettingsWithMetadata(baseSettings, "external");
   const metadata = integrationMetadata(baseSettings);
   const backupPath = metadata ? metadata.backupPath ?? null : createSettingsBackup(settingsPath, existingText, options.now);
@@ -180,6 +190,8 @@ export function uninstallUserClaudeIntegration(
   options: ClaudeIntegrationInstallOptions = {},
 ): ClaudeIntegrationUninstallResult {
   const settingsPath = options.settingsPath ?? defaultClaudeUserSettingsPath();
+  const conflict = ownershipConflict(settingsPath);
+  if (conflict) throw new Error(conflict);
   if (!fs.existsSync(settingsPath)) {
     return { status: "absent", settingsPath };
   }
@@ -196,7 +208,8 @@ export function uninstallUserClaudeIntegration(
   const next = removeIntegrationMetadata({
     ...settings,
     hooks: removeManagedHooks(settings.hooks),
-    statusLine: restorePriorStatusLine(metadata?.priorStatusLine),
+    statusLine: isMandibleStatusLineCommand(normalizeStatusLineCommand(settings.statusLine))
+      ? restorePriorStatusLine(metadata?.priorStatusLine) : settings.statusLine,
   });
   if (next.statusLine === undefined) {
     delete next.statusLine;
@@ -325,7 +338,7 @@ function defaultHookSettingsDir(): string {
 }
 
 function defaultClaudeUserSettingsPath(): string {
-  return path.join(os.homedir(), ".claude", "settings.json");
+  return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "settings.json");
 }
 
 function readJsonObject(filePath: string): ClaudeSettings {
