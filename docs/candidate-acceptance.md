@@ -74,7 +74,9 @@ or abandonment the owner calls `disposeAcceptedRelease(reference, candidate,
 reason)`, which explicitly finalizes the retained run with a discard disposition
 and uses ordinary owned-run cleanup. Pending approval never
 expires retained bytes. Acceptance evidence and compact cleanup receipts remain
-available after package disposal.
+available after package disposal. The immutable accepted-release receipt also
+remains in `<authority-home>/accepted-releases/.receipts/<run-id>-accepted-release.json`,
+outside the package cleanup root; its original reference and hash do not change.
 
 The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
 this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete

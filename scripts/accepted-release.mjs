@@ -51,7 +51,8 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   if (expectedCandidate && candidateKeys.some(key => expectedCandidate[key] !== receipt.candidate[key])) throw new Error('Accepted release belongs to a different candidate.');
   if (installedFileIdentity(receipt.evidence.receipt).sha256 !== receipt.evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
   const handle = receipt.package.handle;
-  if (path.dirname(file) !== handle?.root || receipt.acceptance.run_id !== handle.runId) throw new Error('Accepted release custody locator changed.');
+  if (!handle?.root || file !== path.join(path.dirname(handle.root), '.receipts', `${handle.runId}-accepted-release.json`)
+      || receipt.acceptance.run_id !== handle.runId) throw new Error('Accepted release custody locator changed.');
   const metadata = JSON.parse(fs.readFileSync(path.join(handle.root, 'metadata.json'), 'utf8'));
   if (!ownedRunIdentityMatches(handle.root, metadata.ownership) || metadata.ownership.runId !== handle.runId
       || metadata.ownership.project !== receipt.retention.project || metadata.ownership.workUnit !== receipt.retention.work_unit) throw new Error('Accepted release owner changed.');
@@ -87,7 +88,7 @@ export async function retainAcceptedRelease({ app, storage, ownership, candidate
   fs.mkdirSync(retained, { mode: 0o700 });
   return withOwnedRunLock(retained, async () => {
     const owner = createOwnedRun({ root: retained, runId: ownership.runId, instanceId: ownership.instanceId,
-      project: ownership.project, workUnit: ownership.workUnit, outputs: [{ path: 'Mandible.app', kind: 'interactive' }, { path: 'accepted-release.json', kind: 'interactive' }] });
+      project: ownership.project, workUnit: ownership.workUnit, outputs: [{ path: 'Mandible.app', kind: 'interactive' }] });
     saveOwnedMetadata(path.join(retained, 'metadata.json'), { ownership: owner });
     try {
     fs.cpSync(app, path.join(retained, 'Mandible.app'), { recursive: true, verbatimSymlinks: true });
@@ -96,7 +97,9 @@ export async function retainAcceptedRelease({ app, storage, ownership, candidate
     const receipt = { schema: ACCEPTED_RELEASE_SCHEMA, acceptance: { ...acceptance, run_id: ownership.runId }, candidate,
       target: shipped.target, shipped, package: { custody: 'owned-run', handle: { root: retained, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
       retention: { project: ownership.project, work_unit: ownership.workUnit, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' }, evidence };
-    const file = path.join(retained, 'accepted-release.json');
+    const receipts = path.join(path.dirname(retained), '.receipts');
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 });
+    const file = path.join(receipts, `${ownership.runId}-accepted-release.json`);
     saveOwnedMetadata(file, receipt);
     const reference = referenceFor(file);
     resolveAcceptedRelease(reference, candidate);
