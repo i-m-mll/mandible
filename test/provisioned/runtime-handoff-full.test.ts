@@ -154,8 +154,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     fs.writeFileSync(ca.receipt, JSON.stringify({ ...receipt, storage_root: ca.storageRoot, fixture_source_digest: digest(fs.readFileSync(sourceCa.receipt)) }), { mode: 0o600 });
     const serviceConfig = path.join(home, 'config/local-sessions/service-config.json');
     fs.mkdirSync(path.dirname(serviceConfig), { recursive: true });
-    fs.writeFileSync(serviceConfig, JSON.stringify({ environment: { MANDIBLE_DB: ledger, MANDIBLE_SECURITY_BIN: securityAdapter,
-      MANDIBLE_WORK_SCANNER_ROOTS: env.MANDIBLE_WORK_SCANNER_ROOTS, ...libraryInputs }, toolDirectories: [] }), { mode: 0o600 });
+    fs.writeFileSync(serviceConfig, JSON.stringify({ environment: { MANDIBLE_DB: ledger, MANDIBLE_SECURITY_BIN: securityAdapter, ...libraryInputs }, toolDirectories: [] }), { mode: 0o600 });
     command(runtime, ['scripts/local-runtime.mjs', 'install', '--root', repo], { cwd: repo, env });
     command(runtime, ['scripts/local-runtime.mjs', 'start'], { cwd: repo, env });
     await until(async () => { try { const r = await fetch(`http://127.0.0.1:${ports.backend}/api/health`); return (await r.json()).ready === true; } catch { return false; } }, 30000, 'Actual old daemon readiness');
@@ -228,6 +227,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     // Use supported setup mechanisms for private identities and custody. Auth
     // request publication and approval are exclusively ordinary HTTP routes.
     db = new SqliteDatabase(ledger);
+    setSetting(db, 'work_scanner_scan_roots', env.MANDIBLE_WORK_SCANNER_ROOTS);
     setupOperator(db, { slug: 'isolated-upgrade-operator', display_name: 'Isolated Upgrade Operator' });
     const signing = configureSigningCredential(db, repo, 'ssh_key'); fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\n');
     git(repo, ['config', 'commit.gpgsign', 'true']);
