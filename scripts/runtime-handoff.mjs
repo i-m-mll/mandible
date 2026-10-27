@@ -14,13 +14,13 @@ import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, assessRunt
 import { runtimeEnvironment } from './runtime-environment.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, decodeObservationError, runtimeObservationAcceptance } from './runtime-observation.mjs';
-import { withLifecycleLock, recoverLifecycleLock, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
+import { withLifecycleLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
 
 const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
-const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
+const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'process-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
   'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs'];
 const STAGED_HANDOFF_FILES = ['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
 
@@ -78,6 +78,7 @@ function desktopIdentities(app) {
 }
 const desktopRunning = app => desktopIdentities(app).length > 0;
 function requireDesktopForObservation(journal) {
+  assertObservationLease();
   const b = journal.binding;
   if (!b.desktopWasRunning) return;
   const stage = journal.stages?.desktopRelaunch;
@@ -113,6 +114,7 @@ async function restoreDesktop(journal) {
     save(journal, { stages: { ...journal.stages, desktopRelaunch: { issuedAt: Date.now(), prior: desktopIdentities(b.nativeApp) } } });
     const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
     try {
+      assertObservationLease();
       await runStage('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], {
         cwd: b.root,
         env: { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(b) },
@@ -120,6 +122,7 @@ async function restoreDesktop(journal) {
         log,
       });
     } catch (error) {
+      if (observationPending(error)) throw error;
       fs.appendFileSync(log, `${error.message}\n`);
       if (error.code === 'STAGE_DEADLINE') throw new RuntimeObservationError('desktop_unconfirmed',
         'The issued desktop relaunch did not confirm completion within its wait.', { issuedAt: journal.stages.desktopRelaunch.issuedAt }, 'pending');
@@ -169,6 +172,7 @@ export function readRuntimeHandoffPhase(home, requestId, executionId) {
   return readJournalFile(home, requestId, executionId)?.phase;
 }
 function save(journal, changes) {
+  assertObservationLease();
   Object.assign(journal, changes, { updatedAt: Date.now() });
   atomic(journalFile(journal.binding), journal);
 }
@@ -186,6 +190,7 @@ function handoffAnswerDeadline(journal, now = Date.now()) {
   return Math.max(journal.deadline ?? 0, now + OBSERVATION_MS);
 }
 async function controller(journal, command, currentVerifier = false, { until = handoffAnswerDeadline(journal), awaitReady = false, signal } = {}) {
+  assertObservationLease();
   const binding = journal.binding;
   const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding), GIT_OPTIONAL_LOCKS: '0' };
   const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
@@ -198,8 +203,10 @@ async function controller(journal, command, currentVerifier = false, { until = h
     const result = await execFileAsync(binding.runtime.path, args, {
       cwd: binding.root, env, timeout: Math.max(1, until - Date.now()), signal, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
     });
+    assertObservationLease();
     return result.stdout.trim();
   } catch (error) {
+    if (error instanceof RuntimeObservationError) throw error;
     const structured = decodeObservationError(String(error.stderr ?? '').trim());
     if (structured) throw structured;
     if ((error.killed || signal?.aborted) && ['handoff-verify', 'handoff-evidence', 'handoff-start'].includes(command)) throw new RuntimeObservationError('observation_deadline',
@@ -331,31 +338,33 @@ export function runtimeHandoffDrainIdentity(journal) {
 }
 
 function exactActiveOwner(journal) {
+  assertObservationLease();
   const active = JSON.parse(fs.readFileSync(runtimeHandoffLockFile(journal.binding.home), 'utf8'));
   if (active.journal !== journalFile(journal.binding) || active.bindingDigest !== journal.bindingDigest) throw new Error('Active runtime handoff owner changed.');
 }
 
 function observationLockRoot(journal) { return path.join(path.dirname(journalFile(journal.binding)), 'verification'); }
-function observationLockHeld(journal) {
-  const root = observationLockRoot(journal);
-  const lock = path.join(path.dirname(root), '.verification.lock');
-  if (!fs.existsSync(lock)) return false;
-  const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
-  if (!owner.identity) throw new Error('Runtime observation lock identity is unavailable.');
-  if (lockProcessIdentity(owner.pid) === owner.identity) return true;
-  recoverLifecycleLock(root);
-  return false;
+function assertObservationLease() {
+  try { assertLifecycleLockHeld(); }
+  catch (error) {
+    if (error.code === 'PROCESS_LOCK_LOST') throw new RuntimeObservationError('observer_lost', 'Runtime verification ownership was lost; observation remains unconfirmed.', null, 'pending');
+    throw error;
+  }
+}
+async function observationLockHeld(journal) {
+  return ['held', 'uncertain'].includes((await inspectLifecycleLock(observationLockRoot(journal))).state);
 }
 export async function withRuntimeObservation(journal, operation, token) {
+  assertObservationLease();
   if (token) {
     const owner = JSON.parse(fs.readFileSync(path.join(path.dirname(observationLockRoot(journal)), '.verification.lock/owner.json'), 'utf8'));
     if (owner.token !== token || owner.pid !== process.pid || lockProcessIdentity(owner.pid) !== owner.identity) throw new Error('Runtime observation lease changed.');
     return operation(token);
   }
-  if (observationLockHeld(journal)) throw new RuntimeObservationError('observer_busy', 'Runtime verification is already in progress.', null, 'pending');
-  try { return await withLifecycleLock(observationLockRoot(journal), operation); }
+  try { return await withLifecycleLock(observationLockRoot(journal), operation, { recoverStale: true }); }
   catch (error) {
-    if (observationLockHeld(journal)) throw new RuntimeObservationError('observer_busy', 'Runtime verification is already in progress.', null, 'pending');
+    if (error.code === 'PROCESS_LOCK_BUSY') throw new RuntimeObservationError('observer_busy', 'Runtime verification is already in progress.', null, 'pending');
+    if (error.code === 'PROCESS_LOCK_LOST') throw new RuntimeObservationError('observer_lost', 'Runtime verification ownership was lost; observation remains unconfirmed.', null, 'pending');
     throw error;
   }
 }
@@ -402,6 +411,7 @@ function bindLaunchedProcesses(journal, evidence) {
 }
 
 async function checkIncompleteEvidence(journal, available, files = {}) {
+  assertObservationLease();
   const b = journal.binding;
   if (run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw observationFailure('installation_changed', 'Observed approved checkout changed.');
   for (const [file, expected] of Object.entries(files)) if (fileHash(file) !== expected) throw observationFailure('installation_changed', `Observed installation changed: ${file}`);
@@ -491,9 +501,10 @@ async function observeRuntimeHandoffOnce(journal, {
   if (JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
   const fixedFiles = [marker, installedMarker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')];
   let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
-  if (journal.launch && inspectEvidence) bindLaunchedProcesses(journal, await inspectEvidence());
   let observed;
-  try { observed = await observeRuntimeHealthWindow({
+  try {
+    if (journal.launch && inspectEvidence) bindLaunchedProcesses(journal, await inspectEvidence());
+    observed = await observeRuntimeHealthWindow({
     probe: async (until, signal) => {
       const value = await probeRuntime(until, signal);
       if (!value.process?.startupEpoch || !value.daemonLog) throw observationFailure('process_unavailable', 'Current-process observation is unavailable.', value);
@@ -502,6 +513,10 @@ async function observeRuntimeHandoffOnce(journal, {
         initialEvidence = value;
         coverage = await resolveStderrLogCoverage(value.daemonLog, value.process.startedAt);
         files = { ...files, ...Object.fromEntries([value.backend.file, value.gateway.file].map(file => [file, fileHash(file)])) };
+      }
+      if (journal.launch && journal.phase !== 'failed' && !journal.launch.readyAt) {
+        unchangedJournal(journal);
+        save(journal, { launch: { ...journal.launch, readyAt: now() } });
       }
       return value;
     },
@@ -512,7 +527,7 @@ async function observeRuntimeHandoffOnce(journal, {
     validateEvidence: () => requireDesktopForObservation(journal),
   }); } catch (error) {
     if (!observationPending(error)) throw error;
-    let available = initialEvidence;
+    let available = initialEvidence ?? error.evidence;
     if (inspectEvidence) {
       try { available = await inspectEvidence(); }
       catch (inspectionError) { if (!observationPending(inspectionError)) throw inspectionError; available = inspectionError.evidence ?? available; }
@@ -635,6 +650,7 @@ function retainedFailure(journal) {
 }
 
 function recordRecoveryAttempt(journal, actor, failure, error) {
+  assertObservationLease();
   const directory = path.join(handoffDirectory(journal.binding.home, journal.binding.requestId, journal.binding.executionId), 'recovery-attempts');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const attemptedAt = Date.now();
@@ -701,6 +717,7 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
 
 export async function acknowledgeRuntimeHandoff(binding) {
   const read = () => {
+    assertObservationLease();
     const current = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId);
     if (!current || current.bindingDigest !== bindingDigest(binding)) throw new Error('Runtime handoff acknowledgment binding differs.');
     return current;
@@ -757,7 +774,7 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
   if (journal?.schema !== 'mandible-runtime-handoff@1' || bindingDigest(journal.binding) !== journal.bindingDigest || journal.bindingDigest !== expected
       || path.resolve(journalFile(journal.binding)) !== journalPath) throw new Error('The owning journal is malformed or differs from the lock; preserving it.');
   if (!['failed', 'verification-pending'].includes(journal.phase)) throw new Error(`Only a failed or idle verification-pending handoff can be retired; this handoff is in phase ${journal.phase}.`);
-  if (observationLockHeld(journal)) throw new Error('Runtime handoff verification is still running; preserving the lock.');
+  if (await observationLockHeld(journal)) throw new Error('Runtime handoff verification is still running; preserving the lock.');
   return withRuntimeObservation(journal, async () => {
     exactActiveOwner(journal);
     if (journalState(JSON.parse(fs.readFileSync(journalPath, 'utf8'))) !== journalState(journal)) throw new Error('Owning journal changed before retirement; preserving it.');
@@ -771,6 +788,7 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
     const archivedLock = path.join(dir, 'retired-active.json');
     if (fs.existsSync(archivedLock)) throw new Error('Retirement lock archive already exists; preserving it.');
     const finishRetirement = retirement => {
+      assertObservationLease();
       fs.renameSync(file, archivedLock);
       for (const directory of [path.dirname(file), dir]) {
         const fd = fs.openSync(directory, 'r');
@@ -797,6 +815,7 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
       requestId: journal.binding.requestId, executionId: journal.binding.executionId,
       failure: journal.failure ?? { phase: journal.phase, error: journal.error ?? null, attempts: journal.attempts, updatedAt: journal.updatedAt },
       journalSha256: fileHash(journalPath), helperBootedOut: loaded.status === 0, actor, reason: reason.trim(), retiredAt: Date.now() };
+    assertObservationLease();
     atomic(retirementFile, retirement);
     return finishRetirement(retirement);
   });

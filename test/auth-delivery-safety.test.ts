@@ -413,6 +413,22 @@ describe('runtime convergence recovery', () => {
     expect(f.ack).toHaveBeenCalledOnce();
   });
 
+  it('reports observer contention as pending without a failure incident or duplicate observation', async () => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'verification-pending'; f.journal.launch = { enteredAt: Date.now() };
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    automaticRecovery(f);
+    const lease = vi.fn(async () => { throw new RuntimeObservationError('observer_busy', 'owner is publishing or releasing', null, 'pending'); });
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation: lease });
+    const failed = vi.fn(); const stuck = vi.fn();
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), failed, stuck);
+    expect(lease).toHaveBeenCalledOnce();
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(f.persist).not.toHaveBeenCalled(); expect(f.ack).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled(); expect(stuck).not.toHaveBeenCalled();
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'pending', attempts: f.run.attempts });
+  });
+
   it('keeps a retired pending handoff terminal after an interrupted DB disposition', async () => {
     const f = await recoveryFixture();
     f.journal.phase = 'retired';

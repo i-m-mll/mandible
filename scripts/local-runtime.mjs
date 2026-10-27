@@ -16,7 +16,7 @@ import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
-import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 import { RuntimeObservationError } from './runtime-observation.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
@@ -213,6 +213,7 @@ function readTrustedRoot() {
 }
 
 function runLaunchctl(args, timeout = 2500) {
+  assertLifecycleLockHeld();
   if (process.platform !== "darwin") throw new Error("Mandible's supervised local runtime requires macOS launchd.");
   const result = spawnSync("/bin/launchctl", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
   if (result.error) throw new Error(`launchctl ${args[0]} failed: ${result.error.message}`);
@@ -401,13 +402,16 @@ const NEVER_EXITED = '(never exited)';
 export function handoffServiceExit(started, inspection) {
   for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
     const exit = job.lastExit && job.lastExit !== NEVER_EXITED ? ` (last exit code ${job.lastExit})` : '';
-    if (!job.loaded) return `The candidate ${name} service was unloaded.`;
-    if (!job.pid) return `The candidate ${name} process exited${exit}.`;
     const first = started?.[name];
-    if (first && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
+    if (!job.loaded && first?.pid) return `The candidate ${name} service was unloaded.`;
+    if (!job.pid) {
+      if (first?.pid || exit) return `The candidate ${name} process exited${exit}.`;
+      continue;
+    }
+    if (first?.pid && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
   }
   const backend = inspection.backendJob;
-  if (!started && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
+  if (!started?.backend?.pid && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
   return null;
 }
 
@@ -423,12 +427,15 @@ export async function awaitHandoffReadiness(mergeCommit, until, inspect, {
   wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
   expectedProcesses = null, expectedServing = false,
 } = {}) {
-  let started = expectedProcesses;
+  let started = expectedProcesses ? structuredClone(expectedProcesses) : null;
   for (;;) {
     const inspection = await inspect(handoffProbeTimeout(until, now()));
     const exited = handoffServiceExit(started, inspection);
     if (exited) return { inspection, error: exited, exited: true, outcome: 'failed', code: 'process_changed' };
-    started ??= Object.fromEntries([['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]].map(([name, job]) => [name, { pid: job.pid, runs: job.runs }]));
+    started ??= {};
+    for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
+      if (job.pid && !started[name]?.pid) started[name] = { pid: job.pid, runs: job.runs };
+    }
     const outcome = handoffFrontDoorObservation(inspection, mergeCommit, { expectedServing });
     if (outcome.outcome !== 'pending' || now() >= until) return { inspection, ...outcome, error: outcome.error ?? null, exited: false };
     await wait(Math.min(pauseMs, Math.max(0, until - now())));
@@ -657,6 +664,7 @@ function locateLaunchAgent(label) {
 }
 
 function archiveLaunchAgent(file, label, bytes) {
+  assertLifecycleLockHeld();
   const digest = createHash("sha256").update(bytes).digest("hex");
   const archiveDir = path.join(RUNTIME_DIR, "launch-agent-history");
   const archive = path.join(archiveDir, `${label}-${digest.slice(0, 12)}.plist`);
@@ -671,6 +679,7 @@ function archiveLaunchAgent(file, label, bytes) {
 }
 
 function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8");
@@ -697,6 +706,7 @@ function assertOwnedLaunchAgent(file, record, label, recognizesLegacy) {
 }
 
 function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
   const { installed } = observeOwnedService(service);
   for (const existing of installed.filter(item => item.file !== file)) {
@@ -715,6 +725,7 @@ function parsePlist(file) {
 }
 
 function prepareRunner(root) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
   for (const [sourceName, targetName] of [
     ["local-session-production-runner.mjs", "production-runner.mjs"],

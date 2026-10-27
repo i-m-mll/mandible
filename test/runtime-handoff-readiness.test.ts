@@ -25,7 +25,7 @@ import { fileRpc, runCli } from "./helpers/cli-process.js";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
 
-function inspection(ready: boolean, generation = "merge", backend: { pid: number | null; runs?: number; lastExit?: string } = { pid: 41 }) {
+function inspection(ready: boolean, generation = "merge", backend: { pid: number | null; loaded?: boolean; runs?: number; lastExit?: string } = { pid: 41 }) {
   return {
     status: { dashboard_ready: ready, state: ready ? "running" : "starting", detail: ready ? null : "Backend: The service responded, but Mandible is not ready yet." },
     main: { backend_generation: generation },
@@ -33,6 +33,22 @@ function inspection(ready: boolean, generation = "merge", backend: { pid: number
     gatewayJob: { loaded: true, pid: 7, runs: 3, lastExit: "0" },
   };
 }
+
+it.each([true, false])('keeps startup pending before the first PID is observed (loaded=%s)', async loaded => {
+  let time = 100;
+  const answers = [inspection(false, 'merge', { loaded, pid: null }), inspection(false), inspection(true)];
+  const inspect = vi.fn(async () => answers.shift()!);
+  const expectedProcesses = {};
+  await expect(awaitHandoffReadiness('merge', 5000, inspect, { expectedProcesses, now: () => time, wait: async milliseconds => { time += milliseconds; } }))
+    .resolves.toMatchObject({ outcome: 'confirmed', exited: false, error: null });
+  expect(inspect).toHaveBeenCalledTimes(3);
+  expect(expectedProcesses).toEqual({});
+  const gone = [inspection(false, 'merge', { loaded, pid: null }), inspection(false), inspection(false, 'merge', { pid: null })];
+  await expect(awaitHandoffReadiness('merge', 10000, async () => gone.shift()!, { now: () => time, wait: async milliseconds => { time += milliseconds; } }))
+    .resolves.toMatchObject({ outcome: 'failed', exited: true, error: expect.stringContaining('process exited') });
+  await expect(awaitHandoffReadiness('merge', 10000, async () => inspection(false, 'merge', { loaded, pid: null, lastExit: '1' })))
+    .resolves.toMatchObject({ outcome: 'failed', exited: true, error: expect.stringContaining('last exit code 1') });
+});
 
 it("waits for a busy daemon's answer and for readiness, bounded by the handoff deadline", async () => {
   // Busy for longer than the 900 ms status probe, as a blocked event loop is.

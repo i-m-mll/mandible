@@ -53,6 +53,7 @@
       "../scripts/runtime-probe-cadence.mjs": "runtime-probe-cadence.mjs",
       "../scripts/runtime-observation.mjs": "runtime-observation.mjs",
       "../scripts/lifecycle-lock.mjs": "lifecycle-lock.mjs",
+      "../scripts/process-lock.mjs": "process-lock.mjs",
       "../scripts/runtime-environment.mjs": "runtime-environment.mjs",
       "../scripts/service-definitions.mjs": "service-definitions.mjs",
       "../scripts/service-configuration.mjs": "service-configuration.mjs",

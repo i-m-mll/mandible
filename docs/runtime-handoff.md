@@ -221,6 +221,17 @@ DB acceptance, receipt recheck, completion and acknowledgment, and excludes
 retirement. Pending verification consumes no hook attempt and emits no
 rebuild-failed incident.
 
+Lifecycle ownership uses the shared macOS process-lifetime `lockf` guard also
+used by secure local connection setup. The kernel guard keeps a stable inode
+and spans the owned operation. Complete process identity is prepared before
+the owner directory is published; release and recovery recheck its exact
+generation under that guard. A crashed observer releases the kernel guard,
+allowing the next observer to recover a proven stale owner. Uncertain legacy
+owner records remain pending and are never stolen. Loss of the guard stops
+further observation writes and acceptance effects. A verified ready response
+is persisted as an established serving fact; a later concrete connection
+refusal cannot be reclassified as normal startup.
+
 ## Verification
 
 Three provisioned tests cover lifecycle reconciliation and handoff on macOS. Each derives its inputs from
