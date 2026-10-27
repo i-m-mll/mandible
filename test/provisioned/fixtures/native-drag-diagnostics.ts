@@ -9,7 +9,11 @@ const INTERACTIVE = 'a,button,input,textarea,select,option,summary,[role="button
 const describe = (element: Element | null): string | null => element
   ? `${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}${element.classList.length ? '.' + Array.from(element.classList).join('.') : ''}`
   : null;
-const errorText = (value: unknown): string => value instanceof Error ? value.stack ?? value.message : String(value);
+const errorText = (value: unknown): string => {
+  if (Object.prototype.toString.call(value) === '[object ArrayBuffer]') return new TextDecoder().decode(new Uint8Array(value as ArrayBuffer));
+  if (ArrayBuffer.isView(value)) return new TextDecoder().decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  return value instanceof Error ? value.stack ?? value.message : String(value);
+};
 
 export function installNativeDragDiagnostics(): () => void {
   const host = window as ProofWindow;
