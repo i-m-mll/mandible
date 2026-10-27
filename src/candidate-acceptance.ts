@@ -214,7 +214,19 @@ export class CandidateAcceptanceRuns {
     let result = outcome.result == null ? null : JSON.stringify(outcome.result);
     if (result && result.length > MAX_RESULT_CHARS) {
       const value = outcome.result as Record<string, unknown>;
-      result = JSON.stringify({ truncated: true, status: value?.status ?? null, candidate: value?.candidate ?? null, error: value?.error ?? null, receipt: value?.receipt ?? null });
+      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown } | undefined;
+      const text = (field: unknown, limit: number) => typeof field === 'string' ? field.slice(0, limit) : null;
+      const failureLogs = Array.isArray(checks?.failure_logs) ? checks.failure_logs
+        .filter(log => log && (log.name === 'daemon' || log.name === 'gateway')).slice(0, 2)
+        .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
+          excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
+      result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128),
+        error: text(value?.error, 512), receipt: text(value?.receipt, 512), checks: {
+          ...(checks?.initial_transport_error ? { initial_transport_error: {
+            code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
+          } } : {}),
+          ...(failureLogs ? { failure_logs: failureLogs } : {}),
+        } });
     }
     const closed = this.db.prepare(
       "UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status = 'running'",
