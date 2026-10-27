@@ -674,12 +674,12 @@
   color: var(--text-muted);
 }
 
-.chrome-shadow-settings__inputs { display: flex; align-items: center; gap: 8px; }
-.chrome-shadow-settings__inputs input[type='range'] { width: clamp(100px, 18vw, 240px); }
-.chrome-shadow-settings__inputs input[type='number'] { width: 76px; }
-.chrome-shadow-settings__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.chrome-shadow-settings__export { display: grid; gap: 12px; }
-.chrome-shadow-settings__export textarea { width: 100%; resize: vertical; font-family: var(--font-mono); }
+.chrome-appearance-settings__inputs { display: flex; align-items: center; gap: 8px; }
+.chrome-appearance-settings__inputs input[type='range'] { width: clamp(100px, 18vw, 240px); }
+.chrome-appearance-settings__inputs input[type='number'] { width: 76px; }
+.chrome-appearance-settings__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.chrome-appearance-settings__export { display: grid; gap: 12px; }
+.chrome-appearance-settings__export textarea { width: 100%; resize: vertical; font-family: var(--font-mono); }
 @media (max-width: 640px) {
-  .chrome-shadow-settings__parameter { flex-wrap: wrap; }
+  .chrome-appearance-settings__parameter { flex-wrap: wrap; }
 }

@@ -3,7 +3,7 @@ import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailP
 import { render } from 'preact';
 import { useCallback } from 'preact/hooks';
 import { AppFrame } from '../../../ui/src/app-frame';
-import { CHROME_SHADOW_DEFAULTS, normalizeChromeShadow } from '../../../ui/src/chrome-shadow';
+import { CHROME_APPEARANCE_DEFAULTS, normalizeChromeAppearance } from '../../../ui/src/chrome-appearance';
 import { ViewSidebar } from '../../../ui/src/components/ViewSidebar';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -175,7 +175,10 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
   const shadowOverride = new URLSearchParams(location.search).get('shadow');
-  const chromeShadows = shadowOverride ? { light: normalizeChromeShadow(JSON.parse(shadowOverride), CHROME_SHADOW_DEFAULTS.light), dark: normalizeChromeShadow(JSON.parse(shadowOverride), CHROME_SHADOW_DEFAULTS.dark) } : undefined;
+  const glassOverride = new URLSearchParams(location.search).get('glass');
+  const appearanceOverride = shadowOverride ? JSON.parse(shadowOverride) : {};
+  if (glassOverride !== null) appearanceOverride.glassTransparency = Number(glassOverride);
+  const chromeAppearance = shadowOverride || glassOverride !== null ? { light: normalizeChromeAppearance(appearanceOverride, CHROME_APPEARANCE_DEFAULTS.light), dark: normalizeChromeAppearance(appearanceOverride, CHROME_APPEARANCE_DEFAULTS.dark) } : undefined;
   const railMode = new URLSearchParams(location.search).has('fullRail') ? 'both' : 'icons';
   const railWidth = APP_RAIL_WIDTHS[railMode];
   const [nativeControlsReservation, setNativeControlsReservation] = useState(document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0);
@@ -188,7 +191,7 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   return (
     <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-native-controls-reservation': `${nativeControlsReservation}px`, '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
       <AppShellProvider value={{ active: true, rightSidebar: descriptor, frameHeaderHost: host, registerFrameHeader, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: setLeftWidth, viewSidebarWidth: effectiveLeft }}>
-      <AppFrame chromeShadows={chromeShadows} nativeControlsReservation={nativeControlsReservation} headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail"><nav className="app-rail__nav" aria-label="Main navigation"><a className="app-rail__item" href="#/chat" aria-label="Chats"><TestIcon kind="chat" />{railMode === 'both' ? <span>Chats</span> : null}</a></nav></aside>}>
+      <AppFrame chromeAppearance={chromeAppearance} nativeControlsReservation={nativeControlsReservation} headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail"><nav className="app-rail__nav" aria-label="Main navigation"><a className="app-rail__item" href="#/chat" aria-label="Chats"><TestIcon kind="chat" />{railMode === 'both' ? <span>Chats</span> : null}</a></nav></aside>}>
         <main className={`app-content app-content--${surface}`}>
           <div className="fixture-split">
           <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div data-paint-probe-content>Left content</div></ViewSidebar>

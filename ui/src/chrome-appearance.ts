@@ -1,56 +1,58 @@
-export type ChromeShadowTheme = 'light' | 'dark';
-export type ChromeShadowParameters = { widthPx: number; profile: number; maxDarkness: number };
-export type ChromeShadowThemes = Record<ChromeShadowTheme, ChromeShadowParameters>;
-export type ChromeShadowPreviewState = {
+export type ChromeAppearanceTheme = 'light' | 'dark';
+export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number };
+export type ChromeShadowParameters = Pick<ChromeAppearanceParameters, 'widthPx' | 'profile' | 'maxDarkness'>;
+export type ChromeAppearanceThemes = Record<ChromeAppearanceTheme, ChromeAppearanceParameters>;
+export type ChromeAppearancePreviewState = {
   version: 1;
-  overrides: Partial<ChromeShadowThemes>;
-  theme?: ChromeShadowTheme;
+  overrides: Partial<ChromeAppearanceThemes>;
+  theme?: ChromeAppearanceTheme;
 };
 
-export const CHROME_SHADOW_DEFAULTS: Readonly<ChromeShadowThemes> = {
-  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04 },
-  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0 },
+export const CHROME_APPEARANCE_DEFAULTS: Readonly<ChromeAppearanceThemes> = {
+  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.28 },
+  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.28 },
 };
-export const CHROME_SHADOW_PREVIEW_DEFAULTS: ChromeShadowPreviewState = { version: 1, overrides: {} };
-export const CHROME_SHADOW_LIMITS = {
+export const CHROME_APPEARANCE_PREVIEW_DEFAULTS: ChromeAppearancePreviewState = { version: 1, overrides: {} };
+export const CHROME_APPEARANCE_LIMITS = {
   widthPx: { min: 1, max: 32, step: 0.25 },
   profile: { min: 0, max: 1, step: 0.01 },
   maxDarkness: { min: 0, max: 1, step: 0.001 },
+  glassTransparency: { min: 0, max: 1, step: 0.01 },
 } as const;
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-export function normalizeChromeShadow(value: unknown, defaults: ChromeShadowParameters): ChromeShadowParameters {
+export function normalizeChromeAppearance(value: unknown, defaults: ChromeAppearanceParameters): ChromeAppearanceParameters {
   const source = record(value);
   const result = { ...defaults };
-  for (const key of Object.keys(CHROME_SHADOW_LIMITS) as (keyof ChromeShadowParameters)[]) {
+  for (const key of Object.keys(CHROME_APPEARANCE_LIMITS) as (keyof ChromeAppearanceParameters)[]) {
     const input = source?.[key];
     if (typeof input !== 'number' || !Number.isFinite(input)) continue;
-    const { min, max, step } = CHROME_SHADOW_LIMITS[key];
+    const { min, max, step } = CHROME_APPEARANCE_LIMITS[key];
     result[key] = Number((Math.round(Math.min(max, Math.max(min, input)) / step) * step).toFixed(6));
   }
   return result;
 }
 
-export function normalizeChromeShadowPreview(value: unknown): ChromeShadowPreviewState {
+export function normalizeChromeAppearancePreview(value: unknown): ChromeAppearancePreviewState {
   const source = record(value);
-  if (source?.version !== 1) return CHROME_SHADOW_PREVIEW_DEFAULTS;
+  if (source?.version !== 1) return CHROME_APPEARANCE_PREVIEW_DEFAULTS;
   const overrides = record(source.overrides);
-  const result: ChromeShadowPreviewState = { version: 1, overrides: {} };
+  const result: ChromeAppearancePreviewState = { version: 1, overrides: {} };
   for (const theme of ['light', 'dark'] as const) {
-    if (record(overrides?.[theme])) result.overrides[theme] = normalizeChromeShadow(overrides![theme], CHROME_SHADOW_DEFAULTS[theme]);
+    if (record(overrides?.[theme])) result.overrides[theme] = normalizeChromeAppearance(overrides![theme], CHROME_APPEARANCE_DEFAULTS[theme]);
   }
   if (source.theme === 'light' || source.theme === 'dark') result.theme = source.theme;
   return result;
 }
 
-export function effectiveChromeShadows(state: ChromeShadowPreviewState): ChromeShadowThemes {
-  return { light: state.overrides.light ?? CHROME_SHADOW_DEFAULTS.light, dark: state.overrides.dark ?? CHROME_SHADOW_DEFAULTS.dark };
+export function effectiveChromeAppearances(state: ChromeAppearancePreviewState): ChromeAppearanceThemes {
+  return { light: state.overrides.light ?? CHROME_APPEARANCE_DEFAULTS.light, dark: state.overrides.dark ?? CHROME_APPEARANCE_DEFAULTS.dark };
 }
 
-export function chromeShadowPreviewKey(instance: { role: string; instance_id: string } | null): string {
+export function chromeAppearancePreviewKey(instance: { role: string; instance_id: string } | null): string {
   return instance?.role === 'preview' && instance.instance_id ? `mandible.chrome-shadow-preview.v1:${instance.instance_id}` : '';
 }
 
@@ -90,11 +92,12 @@ export function chromeShadowSamples(parameters: ChromeShadowParameters): ChromeS
 const number = (value: number) => String(Number(value.toFixed(8)));
 const color = (alpha: number) => `rgba(0, 0, 0, ${number(alpha)})`;
 
-export function chromeShadowFrameStyles(themes: Readonly<ChromeShadowThemes> = CHROME_SHADOW_DEFAULTS): Record<string, string> {
+export function chromeAppearanceFrameStyles(themes: Readonly<ChromeAppearanceThemes> = CHROME_APPEARANCE_DEFAULTS): Record<string, string> {
   const styles: Record<string, string> = {};
   for (const theme of ['light', 'dark'] as const) {
     const parameters = themes[theme];
     const samples = chromeShadowSamples(parameters);
+    styles[`--app-chrome-${theme}-tint-percentage`] = `${number((1 - parameters.glassTransparency) * 100)}%`;
     styles[`--app-shadow-${theme}-width`] = `${number(parameters.widthPx)}px`;
     styles[`--app-shadow-${theme}-linear`] = [...samples].reverse().map(({ distancePx, alpha }) => `${color(alpha)} ${number(parameters.widthPx - distancePx)}px`).join(', ');
     styles[`--app-shadow-${theme}-radial`] = `transparent var(--radius-chat-surface), ${samples.map(({ distancePx, alpha }) => `${color(alpha)} calc(var(--radius-chat-surface) + ${number(distancePx)}px)`).join(', ')}`;
@@ -102,6 +105,6 @@ export function chromeShadowFrameStyles(themes: Readonly<ChromeShadowThemes> = C
   return styles;
 }
 
-export function exportChromeShadows(themes: ChromeShadowThemes): string {
+export function exportChromeAppearances(themes: ChromeAppearanceThemes): string {
   return JSON.stringify({ version: 1, ...themes });
 }

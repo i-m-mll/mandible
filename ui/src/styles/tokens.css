@@ -107,7 +107,6 @@
   /* Tier 2: semantic tokens */
   --surface-main: #181818;
   --surface-chrome: #222222;
-  --surface-glass-tint: color-mix(in srgb, var(--surface-chrome) 72%, transparent);
   --surface-app: var(--surface-main);
   --surface-page: var(--surface-main);
   --surface-panel: var(--neutral-2);
