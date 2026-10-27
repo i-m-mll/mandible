@@ -32,7 +32,7 @@ describe('SettingsView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
     expect(await screen.findByRole('button', { name: 'Remove' })).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith('/api/settings/integrations', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ id: 'cli', action: 'install' }) }));
-    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip optional integrations' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('integrations.setup', 'skipped'));
     view.rerender(content({ 'integrations.setup': 'skipped' }));
     expect(screen.queryByRole('region', { name: 'Welcome to Mandible' })).toBeNull();

@@ -1782,7 +1782,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.integrations.id} section={SETTINGS_SECTIONS.integrations}>
         <SettingsSectionHeader section={SETTINGS_SECTIONS.integrations} description="Optional connections for external agents. Mandible works without these integrations." />
         <div className="settings-view__section-body"><AgentIntegrations instance={instance} />
-          <button className="btn btn--sm" disabled={!instructionSettingsAllowed} onClick={() => { void saveSetting('integrations.setup', 'complete').then(() => setFeedback({ type: 'success', message: 'Integration choices saved.' }), error => setFeedback({ type: 'error', message: String(error) })); }}>Done choosing integrations</button>
+          <button className="btn btn--sm" aria-label="Complete optional integrations" disabled={!instructionSettingsAllowed || settings['integrations.setup'] === 'complete'} onClick={() => { void saveSetting('integrations.setup', 'complete').then(() => setFeedback({ type: 'success', message: 'Integration choices saved.' }), error => setFeedback({ type: 'error', message: String(error) })); }}>Done choosing integrations</button>
         </div>
       </SettingsSectionShell>,
 

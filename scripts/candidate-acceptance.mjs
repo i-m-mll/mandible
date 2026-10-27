@@ -362,9 +362,9 @@ async function main() {
       if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance.');
       if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app exited before its interaction completed.');
       return fs.existsSync(evidencePath);
-    }, 30000, 'Packaged dashboard Settings edit');
+    }, 45000, 'Packaged dashboard setup persistence and Settings edit');
     const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
-    if (!evidence.passed || !evidence.rendered || !evidence.edit) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
+    if (!evidence.passed || !evidence.rendered || !evidence.edit || evidence.setup?.skipped !== 'skipped' || evidence.setup?.completed !== 'complete' || evidence.setup?.reloads !== 2 || !evidence.setup?.promptDismissedAfterReload || !evidence.setup?.integrationsUnchanged) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
     result.checks.desktop_interaction = evidence;
     // Observe beyond the requested interval until one completed sampler window
     // proves coverage of its end. The deadline is fixed, so a stalled or stale

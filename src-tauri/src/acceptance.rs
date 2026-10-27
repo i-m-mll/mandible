@@ -95,34 +95,8 @@ pub fn page_loaded(
         return;
     }
     let nonce = serde_json::to_string(&config.nonce).unwrap();
-    let script = format!(
-        r#"(async () => {{
-      const report = evidence => window.__TAURI__.core.invoke('candidate_acceptance_report', {{nonce:{nonce}, evidence}});
-      try {{
-        const until = async predicate => {{ const end = Date.now()+15000; while(Date.now()<end) {{ if(predicate()) return; await new Promise(r=>setTimeout(r,50)); }} throw new Error('dashboard interaction timed out'); }};
-        await until(() => document.querySelector('a[aria-label="Settings"]'));
-        document.querySelector('a[aria-label="Settings"]').click();
-        await until(() => location.hash.startsWith('#/settings') && document.querySelector('input,select'));
-        await until(() => {{ const field = document.getElementById('settings-app-theme'); return field && !field.disabled; }});
-        const theme = document.getElementById('settings-app-theme');
-        const before = await (await fetch('/api/host-preferences/app-theme')).json();
-        const next = before.value === 'dark' ? 'light' : 'dark';
-        theme.value = next;
-        theme.dispatchEvent(new Event('change', {{bubbles:true}}));
-        let persisted;
-        const end = Date.now()+15000;
-        while (Date.now()<end) {{
-          const response = await fetch('/api/host-preferences/app-theme');
-          if (!response.ok) throw new Error('theme request: '+response.status);
-          persisted = await response.json();
-          if (persisted.value === next && persisted.revision > before.revision) break;
-          await new Promise(r=>setTimeout(r,100));
-        }}
-        if (persisted?.value !== next || persisted.revision <= before.revision) throw new Error('Settings edit was not persisted');
-        await report({{passed:true, url:location.href, rendered:document.body.innerText.includes('App theme'), edit:{{key:'app_theme',before:before.value,after:persisted.value,revision:persisted.revision}}}});
-      }} catch(error) {{ await report({{passed:false,error:String(error)}}); }}
-    }})()"#
-    );
+    let script =
+        include_str!("acceptance-interaction.js").replace("__MANDIBLE_ACCEPTANCE_NONCE__", &nonce);
     if let Err(error) = webview.eval(&script) {
         eprintln!("candidate_acceptance_eval_failed: {error}");
     }

@@ -55,7 +55,7 @@ export function IntegrationIntroduction({ settings, onSave }: {
   return <div className="daemon-toast daemon-toast--introduction" role="region" aria-label="Welcome to Mandible">
     <span>Mandible keeps your agent work together. You can optionally connect external agents and the command line.</span>
     <a className="daemon-toast__link" href="#/settings?section=settings-integrations">Choose integrations</a>
-    <button className="btn btn--sm" disabled={busy} onClick={() => {
+    <button className="btn btn--sm" aria-label="Skip optional integrations" disabled={busy} onClick={() => {
       setBusy(true);
       void onSave('integrations.setup', 'skipped').catch(error => setError(String(error))).finally(() => setBusy(false));
     }}>Skip for now</button>
